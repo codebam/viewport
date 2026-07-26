@@ -284,7 +284,7 @@ socat - UNIX:$VIEWPORT_SOCKET
 
 | Message | Payload |
 | --- | --- |
-| `view.layout` | `id`, `x`, `y`, `width`, `height` |
+| `view.layout` | `id`, `x`, `y`, `width`, `height`, optional `clip{x,y,width,height}` |
 | `view.visible` | `id`, `visible` |
 | `view.focus` | `id` |
 | `view.close` | `id` |
@@ -301,6 +301,13 @@ hardware cannot drive is reported back as an `error` instead of blanking the
 screen you are configuring from. A configuration that *does* commit is still
 provisional: it reverts after twelve seconds unless an `output.confirm` arrives,
 because a wrong mode blanks the very screen you would need in order to undo it.
+
+A window is a real Wayland surface, so nothing the shell draws can crop it —
+CSS `overflow` bounds the shell's own painting and no more. `clip` on
+`view.layout` is how a window is cropped to the part of it that is on its
+output, which is what keeps a column scrolled off the left of one monitor from
+being drawn on the monitor beside it. Only the surface is clipped, never the
+container: a popup is entitled to extend past the window it belongs to.
 
 ### Testing the shell
 

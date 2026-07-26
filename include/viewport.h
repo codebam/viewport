@@ -311,6 +311,15 @@ struct viewport_toplevel {
 
 	/* Target rect most recently supplied by the shell over IPC. */
 	struct wlr_box box;
+	/* Region of the window the shell wants shown, in layout coordinates.
+	 *
+	 * Normally the whole window, but a scrolled strip pushes columns past the
+	 * edge of their output, and a client surface is not clipped by anything the
+	 * shell draws — CSS overflow bounds the shell's own painting, not a real
+	 * Wayland surface. Without this a column scrolled off the left of one
+	 * monitor is simply drawn on the monitor next to it. */
+	struct wlr_box clip;
+	bool has_clip;
 	/* Last clip applied, so diagnostics only fire on change. */
 	struct wlr_box last_clip;
 	bool has_box;

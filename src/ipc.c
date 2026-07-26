@@ -465,6 +465,21 @@ static void handle_view_layout(struct viewport_server *server,
 		return;
 	}
 
+	/* Optional: the part of the window that is actually on its output. Absent
+	 * means all of it, which is the ordinary tiled case. */
+	if (json_object_has_member(object, "clip")) {
+		JsonObject *clip = json_object_get_object_member(object, "clip");
+		toplevel->clip = (struct wlr_box){
+			.x = object_int(clip, "x", box.x),
+			.y = object_int(clip, "y", box.y),
+			.width = object_int(clip, "width", box.width),
+			.height = object_int(clip, "height", box.height),
+		};
+		toplevel->has_clip = true;
+	} else {
+		toplevel->has_clip = false;
+	}
+
 	viewport_toplevel_set_box(toplevel, &box);
 }
 

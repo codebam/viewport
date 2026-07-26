@@ -84,7 +84,11 @@ class El {
     return null;
   }
   getBoundingClientRect() {
-    return { left: 0, top: 0, width: 1920, height: 1050, x: 0, y: 0 };
+    /* Overridable per element, so a test can place a window off the edge of
+     * its output and check what gets clipped. */
+    const r = this.__rect ??
+      { left: 0, top: 0, width: 1920, height: 1050 };
+    return { ...r, x: r.left, y: r.top };
   }
   cloneNode() { return buildDesktop(); }
 }
@@ -212,6 +216,38 @@ if (mode === 'tiling') {
   const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
     .map((m) => m.id));
   check('every window still reachable', laidOut.size === 4);
+}
+
+/* Clipping: a window scrolled off the left of its output must be reported with
+ * a clip rect covering only the part still on screen. Nothing stops the
+ * compositor drawing the rest onto the monitor next door otherwise. */
+{
+  const views = globalThis.__shell.views;
+  const target = [...views.keys()][0];
+  views.get(target).viewport.__rect =
+    { left: -400, top: 0, width: 800, height: 600 };
+  views.get(target).box = null; // force a resend
+
+  const before = sent.length;
+  emit({ type: 'view.focused', id: target });
+
+  const layout = sent.slice(before).reverse()
+    .find((m) => m.type === 'view.layout' && m.id === target);
+  check('off-screen window reports a clip', !!layout?.clip);
+  check('clip starts at the output edge', layout?.clip?.x === 0);
+  check('clip covers only what is on screen', layout?.clip?.width === 400);
+  check('clip keeps the full height', layout?.clip?.height === 600);
+
+  /* And a window fully inside its output is not clipped down. */
+  views.get(target).viewport.__rect =
+    { left: 100, top: 100, width: 800, height: 600 };
+  views.get(target).box = null;
+  const mark = sent.length;
+  emit({ type: 'view.focused', id: target });
+  const full = sent.slice(mark).reverse()
+    .find((m) => m.type === 'view.layout' && m.id === target);
+  check('on-screen window clips to its whole self',
+    full?.clip?.width === 800 && full?.clip?.height === 600);
 }
 
 emit({ type: 'view.removed', id: 1 });

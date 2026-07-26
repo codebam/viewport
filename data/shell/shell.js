@@ -863,6 +863,20 @@ function setContainerLayout(layout) {
   relayoutAll();
 }
 
+/* The area of the output a window may be drawn in, in page coordinates. Used
+ * to work out how much of a window is actually on screen. */
+function windowsAreaOf(workspace) {
+  const name = hostOfWorkspace(workspace);
+  const output = name !== null ? outputs.get(name) : null;
+  if (!output) return null;
+
+  const rect = output.windowsEl.getBoundingClientRect();
+  return {
+    left: rect.left, top: rect.top,
+    right: rect.left + rect.width, bottom: rect.top + rect.height,
+  };
+}
+
 function reportGeometry(id) {
   const view = views.get(id);
   if (!view) return;
@@ -880,14 +894,45 @@ function reportGeometry(id) {
     return;
   }
 
+  /* How much of the window falls inside its output.
+   *
+   * A scrolled strip pushes columns past the edge, and `overflow: hidden`
+   * does not help: it bounds what the *shell* paints, and the window is a real
+   * Wayland surface the compositor draws itself. Left unclipped, a column
+   * scrolled off the left of one monitor appears on the monitor beside it. The
+   * compositor crops the surface to this rect. */
+  const area = windowsAreaOf(workspaceOf(id));
+  const clip = area ? {
+    x: Math.round(Math.max(box.x, area.left)),
+    y: Math.round(Math.max(box.y, area.top)),
+    width: 0, height: 0,
+  } : null;
+  if (clip) {
+    clip.width = Math.round(Math.min(box.x + box.width, area.right)) - clip.x;
+    clip.height = Math.round(Math.min(box.y + box.height, area.bottom)) - clip.y;
+    if (clip.width < 0) clip.width = 0;
+    if (clip.height < 0) clip.height = 0;
+  }
+
   const prev = view.box;
+  const prevClip = view.clip;
   if (prev && prev.x === box.x && prev.y === box.y &&
-      prev.width === box.width && prev.height === box.height) {
+      prev.width === box.width && prev.height === box.height &&
+      sameBox(prevClip, clip)) {
     return;
   }
 
   view.box = box;
-  send({ type: 'view.layout', id, ...box });
+  view.clip = clip;
+  send(clip ? { type: 'view.layout', id, ...box, clip }
+    : { type: 'view.layout', id, ...box });
+}
+
+function sameBox(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.x === b.x && a.y === b.y &&
+    a.width === b.width && a.height === b.height;
 }
 
 const resizeObserver = new ResizeObserver((entries) => {

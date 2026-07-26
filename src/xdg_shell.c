@@ -493,6 +493,46 @@ void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data)
 	wl_signal_add(&xdg_popup->events.destroy, &popup->destroy);
 }
 
+/* Crop the surface to the part of it the shell says is on screen.
+ *
+ * The clip is expressed in the root surface's coordinate space, whose origin
+ * sits at the surface's top-left — which is not the window origin, since a
+ * client drawing its own shadows puts the window geometry somewhere inside a
+ * larger surface. So the requested region is rebased through the geometry
+ * offset, the same correction that placement already makes.
+ *
+ * Only the surface tree is clipped, never the container: popups are children of
+ * the container and a menu is entitled to extend past the window it belongs to. */
+static void apply_clip(struct viewport_toplevel *toplevel)
+{
+	if (toplevel->surface_tree == NULL) {
+		return;
+	}
+
+	if (!toplevel->has_clip) {
+		wlr_scene_subsurface_tree_set_clip(&toplevel->surface_tree->node, NULL);
+		toplevel->last_clip = (struct wlr_box){0};
+		return;
+	}
+
+	struct wlr_box geo = viewport_view_geometry(toplevel);
+	struct wlr_box clip = {
+		.x = toplevel->clip.x - toplevel->box.x + geo.x,
+		.y = toplevel->clip.y - toplevel->box.y + geo.y,
+		.width = toplevel->clip.width,
+		.height = toplevel->clip.height,
+	};
+
+	if (toplevel->server->config.debug &&
+			memcmp(&clip, &toplevel->last_clip, sizeof(clip)) != 0) {
+		wlr_log(WLR_DEBUG, "view %u clip %d,%d %dx%d", toplevel->id, clip.x,
+			clip.y, clip.width, clip.height);
+	}
+	toplevel->last_clip = clip;
+
+	wlr_scene_subsurface_tree_set_clip(&toplevel->surface_tree->node, &clip);
+}
+
 void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 	const struct wlr_box *box)
 {
@@ -547,8 +587,15 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 	 * frame while dragging. */
 	viewport_view_set_size(toplevel, width, height);
 
+	/* Scrolled entirely off its output: nothing to show, and clipping to a
+	 * zero-sized region would disable the clip rather than apply it. */
+	bool offscreen = toplevel->has_clip &&
+		(toplevel->clip.width <= 0 || toplevel->clip.height <= 0);
+
+	apply_clip(toplevel);
+
 	if (toplevel->mapped) {
-		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, true);
+		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, !offscreen);
 	}
 
 	if (toplevel->server->config.debug) {
