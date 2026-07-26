@@ -7,7 +7,7 @@
 
 pkgname=viewport
 pkgver=0.1.0
-pkgrel=2
+pkgrel=3
 pkgdesc='Wayland compositor whose entire shell is a web page'
 arch=('x86_64' 'aarch64')
 url='https://tangled.org/@codebam.tngl.sh/viewport'
