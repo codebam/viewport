@@ -2529,12 +2529,77 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   saveSession();
 }
 
+/* The first window inside a subtree, in tree order. */
+function firstLeafIn(node) {
+  if (node.type === 'leaf') return views.has(node.id) ? node.id : null;
+  for (const [leaf] of walk(node)) {
+    if (views.has(leaf.id)) return leaf.id;
+  }
+  return null;
+}
+
+/* Which window to focus once this one closes.
+ *
+ * Picked before the window is removed, because afterwards the tree has already
+ * collapsed around the hole and there is nothing left to say where it was.
+ *
+ * The two layouts want different answers. In the strip, closing a window should
+ * leave you on the column to its left — the strip has a direction, and being
+ * dropped at its start after closing something in the middle means scrolling
+ * back. In a tiling tree the meaningful neighbour is the one it shared a
+ * container with, which is what "the parent" amounts to: the split it was part
+ * of, not whatever happens to be first on the workspace. */
+function focusAfterClosing(id) {
+  const workspace = workspaceOf(id);
+  if (workspace === null) return null;
+
+  const found = findLeaf(id);
+
+  if (layoutMode === 'scrolling' && found) {
+    const root = workspaceRoot(workspace);
+    const index = columnIndexOf(workspace, id);
+    const column = root.children[index];
+
+    /* Another window stacked in the same column comes first: closing one of a
+       pair should not move you to a different column. */
+    if (column && column.type === 'split') {
+      const leaves = [...walk(column)].map(([leaf]) => leaf)
+        .filter((leaf) => leaf.id !== id && views.has(leaf.id));
+      if (leaves.length > 0) return leaves[0].id;
+    }
+
+    /* Then the column to the left, and only if there is none, the right. */
+    for (const next of [index - 1, index + 1]) {
+      const neighbour = root.children[next];
+      const pick = neighbour ? firstLeafIn(neighbour) : null;
+      if (pick !== null && pick !== id) return pick;
+    }
+  }
+
+  if (found) {
+    const siblings = found.parent.children;
+    const at = siblings.indexOf(found.leaf);
+    for (const next of [at - 1, at + 1]) {
+      const sibling = siblings[next];
+      const pick = sibling ? firstLeafIn(sibling) : null;
+      if (pick !== null && pick !== id) return pick;
+    }
+  }
+
+  /* Nothing beside it — a floating window, or the last one in its container.
+     Anything still on the workspace beats dropping focus to the shell. */
+  const remaining = idsOf(workspace).filter((other) => other !== id);
+  return remaining.length > 0 ? remaining[0] : null;
+}
+
 function removeView(id) {
   const view = views.get(id);
   if (!view) return;
 
   const wasFocused = focusedId === id;
   const workspace = workspaceOf(id);
+  /* Worked out while the tree still knows where this window was. */
+  const successor = wasFocused ? focusAfterClosing(id) : null;
 
   resizeObserver.unobserve(view.viewport);
   view.el.remove();
@@ -2555,9 +2620,8 @@ function removeView(id) {
    * focus to the shell and leave the keyboard pointing at nothing. */
   if (wasFocused) {
     focusedId = null;
-    const survivors = workspace !== null ? idsOf(workspace) : [];
-    send(survivors.length > 0
-      ? { type: 'view.focus', id: survivors[0] }
+    send(successor !== null
+      ? { type: 'view.focus', id: successor }
       : { type: 'shell.focus' });
   }
 }

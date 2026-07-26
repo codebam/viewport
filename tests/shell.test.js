@@ -299,6 +299,28 @@ for (let id = 1; id <= 4; id++) {
 const layouts = sent.filter((m) => m.type === 'view.layout');
 check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
 
+/* Closing a window hands focus to its neighbour, not to whatever is first on
+ * the workspace. */
+{
+  const open = (id) => emit({ type: 'view.added', id, title: `c${id}`,
+    app_id: 'closer', output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+
+  for (const id of [70, 71, 72]) open(id);
+  emit({ type: 'view.focused', id: 72 });
+
+  const before = sent.length;
+  emit({ type: 'view.removed', id: 72 });
+  const focus = sent.slice(before).find((m) => m.type === 'view.focus');
+  check('closing focuses the neighbour it sat beside', focus?.id === 71);
+
+  /* And not something arbitrary from the other end of the workspace. */
+  check('not merely the first window on the workspace', focus?.id !== 70);
+
+  for (const id of [70, 71]) emit({ type: 'view.removed', id });
+  emit({ type: 'view.focused', id: 4 });
+}
+
 /* A newly opened window takes focus, however it was launched. */
 {
   const before = sent.length;

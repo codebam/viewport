@@ -633,6 +633,17 @@ Fading a window in cannot be done in CSS for the same reason, so it is tweened
 in the shell and sent as `view.opacity`, which the compositor applies to the
 surface itself. `prefers-reduced-motion` disables all of it.
 
+Closing a window hands focus to its neighbour rather than to whatever is first
+on the workspace, and the two layouts want different neighbours. In the strip it
+is the column to the left — the strip has a direction, and being dropped at its
+start after closing something in the middle means scrolling back to where you
+were. In a tiling tree it is whatever shared a container with it: the split it
+was part of, which is what "the parent" amounts to. A window stacked in the
+same column comes before either, since closing one of a pair should not move you
+to a different column. The choice is made before the window is removed, because
+afterwards the tree has collapsed around the hole and nothing records where it
+was.
+
 A window takes focus when it opens, however it was launched. `replay` marks the
 copies sent when the shell reloads or asks for the window list — those describe
 windows that have been open for a while, and focusing on every `view.added`
