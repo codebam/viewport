@@ -119,6 +119,11 @@ function buildWindow() {
 }
 
 const sent = [];
+/* The compositor answers a view.focus request with a view.focused event. The
+ * shell relies on that round trip — its own focusedId only moves when the
+ * event comes back — so the stub has to close the loop or every test runs with
+ * a stale focus. */
+const pendingFocus = [];
 const outputsEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
@@ -134,7 +139,11 @@ global.document = {
 
 const windowListeners = {};
 global.window = {
-  webkit: { messageHandlers: { viewport: { postMessage: (m) => sent.push(JSON.parse(m)) } } },
+  webkit: { messageHandlers: { viewport: { postMessage: (m) => {
+    const msg = JSON.parse(m);
+    sent.push(msg);
+    if (msg.type === 'view.focus') pendingFocus.push(msg.id);
+  } } } },
   addEventListener: (type, fn) => { (windowListeners[type] ??= []).push(fn); },
 };
 global.ResizeObserver = class { observe() {} unobserve() {} };
@@ -142,12 +151,22 @@ global.requestAnimationFrame = (fn) => fn();
 
 /* Top-level const/let inside an eval stay in that eval's own scope, so the
  * shell's state is unreachable from out here unless it hands it over. */
-const EXPORTS = ';globalThis.__shell = { views, workspaces, floats };';
+const EXPORTS = ';globalThis.__shell = { views, workspaces, floats, outputs,'
+  + ' get activeOutput() { return activeOutput; } };';
 const src = fs.readFileSync(process.argv[2], 'utf8') + '\n' + EXPORTS;
 (0, eval)(src);
 
 function emit(message) {
   for (const fn of windowListeners.viewport ?? []) fn({ detail: message });
+
+  /* Bounded, because a shell bug that focuses in a loop should fail the test
+     rather than hang it. */
+  for (let guard = 0; pendingFocus.length > 0 && guard < 20; guard++) {
+    const id = pendingFocus.shift();
+    for (const fn of windowListeners.viewport ?? []) {
+      fn({ detail: { type: 'view.focused', id } });
+    }
+  }
 }
 
 /* --- drive it --------------------------------------------------------- */
@@ -216,6 +235,34 @@ if (mode === 'tiling') {
   const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
     .map((m) => m.id));
   check('every window still reachable', laidOut.size === 4);
+}
+
+if (mode === 'scrolling') {
+  /* Off the end of the strip must carry focus to the next monitor. Before this
+   * the leftmost and rightmost columns trapped focus on one screen. */
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-3', x: 1920, y: 0, width: 1920, height: 1080,
+      usable_x: 1920, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+
+  const outs = globalThis.__shell.outputs;
+  outs.get('DP-1').el.__rect = { left: 0, top: 0, width: 1920, height: 1080 };
+  outs.get('DP-3').el.__rect =
+    { left: 1920, top: 0, width: 1920, height: 1080 };
+
+  /* Stand on the rightmost column of the left monitor and keep going right. */
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['last'] });
+  const start = globalThis.__shell.activeOutput;
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['right'] });
+  check('past the last column focus moves to the next monitor',
+    globalThis.__shell.activeOutput !== start);
+
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['left'] });
+  check('and back again', globalThis.__shell.activeOutput === start);
 }
 
 /* Clipping: a window scrolled off the left of its output must be reported with

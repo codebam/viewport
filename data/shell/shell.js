@@ -512,37 +512,59 @@ function focusedWorkspace() {
  * usually scrolled off screen, and directional focus works from what is on it. */
 function scrollFocus(direction) {
   const workspace = focusedWorkspace();
-  if (workspace === null) return;
+
+  /* Nothing focused, or nothing on this workspace: the keypress still means
+     "go that way", so it falls through to the monitor in that direction — the
+     same thing the compositor's own directional focus does when it finds no
+     window. */
+  if (workspace === null) {
+    focusOutputDirection(direction);
+    return;
+  }
 
   const root = workspaceRoot(workspace);
   const columns = root.children;
-  if (columns.length === 0) return;
+  if (columns.length === 0) {
+    focusOutputDirection(direction);
+    return;
+  }
+
+  const firstOf = (column) =>
+    column.type === 'leaf' ? column.id : [...walk(column)][0][0].id;
+
+  if (direction === 'first' || direction === 'last') {
+    send({ type: 'view.focus',
+      id: firstOf(columns[direction === 'first' ? 0 : columns.length - 1]) });
+    return;
+  }
 
   const index = columnIndexOf(workspace, focusedId);
 
-  if (direction === 'first' || direction === 'last') {
-    const column = columns[direction === 'first' ? 0 : columns.length - 1];
-    const target = column.type === 'leaf' ? column.id : [...walk(column)][0][0].id;
-    send({ type: 'view.focus', id: target });
-    return;
-  }
-
   if (direction === 'left' || direction === 'right') {
     const next = index + (direction === 'right' ? 1 : -1);
-    if (next < 0 || next >= columns.length) return;
-    const column = columns[next];
-    const target = column.type === 'leaf' ? column.id : [...walk(column)][0][0].id;
-    send({ type: 'view.focus', id: target });
+    /* Off the end of the strip is not a dead end: carry on to the next
+       monitor, which is what the same keys do when tiling. Without this the
+       leftmost and rightmost columns trapped focus on one screen. */
+    if (next < 0 || next >= columns.length) {
+      focusOutputDirection(direction);
+      return;
+    }
+    send({ type: 'view.focus', id: firstOf(columns[next]) });
     return;
   }
 
-  /* Up and down stay inside the column. */
+  /* Up and down stay inside the column, and fall through to the monitor above
+     or below once there is nothing left to step onto. */
   const column = columns[index];
-  if (!column || column.type === 'leaf') return;
-  const leaves = [...walk(column)].map(([leaf]) => leaf);
+  const leaves = column && column.type !== 'leaf'
+    ? [...walk(column)].map(([leaf]) => leaf) : [];
   const at = leaves.findIndex((leaf) => leaf.id === focusedId);
   const next = at + (direction === 'down' ? 1 : -1);
-  if (next < 0 || next >= leaves.length) return;
+
+  if (at < 0 || next < 0 || next >= leaves.length) {
+    focusOutputDirection(direction);
+    return;
+  }
   send({ type: 'view.focus', id: leaves[next].id });
 }
 
