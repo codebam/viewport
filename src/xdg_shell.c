@@ -62,16 +62,6 @@ static void handle_toplevel_commit(struct wl_listener *listener, void *data)
 		 * using server-side decorations. */
 		wlr_scene_node_set_position(&toplevel->scene_tree->node,
 			toplevel->box.x, toplevel->box.y);
-
-		/* wlr_scene_surface recomputes each buffer's destination size from the
-		 * surface on every commit, which wipes any scale set outside it. A
-		 * window with live content — a video, a chat — therefore snapped back
-		 * to full size the moment it painted, which in the overview meant the
-		 * busy windows were the ones that refused to shrink. Re-applying here
-		 * is what makes the scale stick. */
-		if (toplevel->scale > 0.0 && toplevel->scale < 1.0) {
-			viewport_toplevel_apply_scale(toplevel);
-		}
 	}
 
 	if (toplevel->xdg_toplevel->base->initial_commit) {
@@ -525,6 +515,10 @@ void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data)
  * the scale returns to 1, and the overview is a transient view, so this is a
  * cheaper trade than scaling positions the subsurface tree would immediately
  * recompute. */
+/* Set while a scaled window is being walked, so the log line below is only
+ * emitted when --debug is on. */
+static bool debug_scale;
+
 static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 	void *data)
 {
@@ -533,15 +527,31 @@ static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 	if (buffer->buffer == NULL) {
 		return;
 	}
-	if (scale >= 1.0) {
-		/* Zero means "use the buffer's own size", which is the default. */
-		wlr_scene_buffer_set_dest_size(buffer, 0, 0);
-		return;
+
+	int width = 0, height = 0;
+	if (scale < 1.0) {
+		width = (int)(buffer->buffer->width * scale);
+		height = (int)(buffer->buffer->height * scale);
 	}
 
-	wlr_scene_buffer_set_dest_size(buffer,
-		(int)(buffer->buffer->width * scale),
-		(int)(buffer->buffer->height * scale));
+	/* Only when it differs. Setting the destination size damages the node, and
+	 * this runs once a frame while the overview is up — writing the same value
+	 * every frame would keep the whole screen permanently damaged. Zero means
+	 * "the buffer's own size", which is the default and how the scale is
+	 * cleared. */
+	if (buffer->dst_width != width || buffer->dst_height != height) {
+		wlr_scene_buffer_set_dest_size(buffer, width, height);
+		/* Capped: a client that repaints continuously resets its own
+		 * destination size on every commit, so this runs once a frame for as
+		 * long as the overview is open. A handful of lines is enough to tell
+		 * whether scaling is reaching a given window. */
+		static int logged;
+		if (debug_scale && logged < 20) {
+			logged++;
+			wlr_log(WLR_DEBUG, "scale buffer %dx%d -> %dx%d",
+				buffer->buffer->width, buffer->buffer->height, width, height);
+		}
+	}
 }
 
 void viewport_toplevel_apply_scale(struct viewport_toplevel *toplevel)
@@ -550,8 +560,10 @@ void viewport_toplevel_apply_scale(struct viewport_toplevel *toplevel)
 		return;
 	}
 	double scale = toplevel->scale > 0.0 ? toplevel->scale : 1.0;
+	debug_scale = toplevel->server->config.debug;
 	wlr_scene_node_for_each_buffer(&toplevel->surface_tree->node,
 		scale_iterator, &scale);
+	debug_scale = false;
 }
 
 static void apply_clip(struct viewport_toplevel *toplevel)

@@ -330,11 +330,14 @@ clients to resize would be refused about as often as it was honoured, and
 slow when it wasn't. `view.layout` carries the window's real size plus a
 `scale`, and the compositor scales the buffers the client already produced.
 
-The scale has to be re-applied after every commit: `wlr_scene_surface`
-recomputes each buffer's destination size from the surface, so a window with
-live content — a video, a chat — snapped back to full size the moment it
-painted. In the overview that meant the busiest windows were the ones that
-refused to shrink.
+The scale has to be re-applied once per frame, before compositing.
+`wlr_scene_surface` recomputes each buffer's destination size from its surface
+on every commit, so a window with live content snaps back to full size the
+moment it paints. Doing it per commit is not enough either: a client that
+paints through subsurfaces — Firefox — commits on surfaces the toplevel has no
+listener for, so its content stayed full size while simpler windows shrank.
+Once a frame catches every case, and the write is skipped when the value already
+matches, so it does not damage the scene by itself.
 
 Two consequences worth knowing. Only the offsets *between* buffers are left
 unscaled, so a client painting through subsurfaces — a browser compositing

@@ -14,6 +14,23 @@ static void handle_output_frame(struct wl_listener *listener, void *data)
 	struct viewport_output *output = wl_container_of(listener, output, frame);
 	struct viewport_server *server = output->server;
 
+	/* Re-apply the overview's scaling before compositing.
+	 *
+	 * wlr_scene_surface recomputes a buffer's destination size from its surface
+	 * whenever that surface commits, which undoes any scale set from outside.
+	 * Doing it per commit is not enough either: a client painting through
+	 * subsurfaces — Firefox does — commits on surfaces the toplevel has no
+	 * listener for, so its content stayed stubbornly full size while simpler
+	 * windows shrank. Once a frame catches every case, costs nothing while no
+	 * window is scaled, and the iterator only writes when the value differs so
+	 * this does not damage the scene on its own. */
+	if (server->overview) {
+		struct viewport_toplevel *toplevel;
+		wl_list_for_each(toplevel, &server->toplevels, link) {
+			viewport_toplevel_apply_scale(toplevel);
+		}
+	}
+
 	/* One call composites everything: the shell's dma-buf underneath, each
 	 * client's dma-buf in the rect the shell asked for. The scene picks damage
 	 * regions, decides whether a surface can be scanned out directly, and
