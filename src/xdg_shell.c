@@ -583,9 +583,19 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 	}
 
 	/* Only reconfigure when the size actually changed: every configure is a
-	 * round trip, and the shell may resend the same rect on each animation
-	 * frame while dragging. */
-	viewport_view_set_size(toplevel, width, height);
+	 * round trip, and the shell resends the rect on every frame of an
+	 * animation. A window sliding across the screen changes position sixty
+	 * times a second and its size not at all; asking the client to resize each
+	 * time would make a move as expensive as a resize.
+	 *
+	 * X11 is exempt: there, position and size travel in the same configure, so
+	 * skipping it would pin the window in place. */
+	if (toplevel->kind != VIEWPORT_VIEW_XDG ||
+			width != toplevel->last_width || height != toplevel->last_height) {
+		toplevel->last_width = width;
+		toplevel->last_height = height;
+		viewport_view_set_size(toplevel, width, height);
+	}
 
 	/* Scrolled entirely off its output: nothing to show, and clipping to a
 	 * zero-sized region would disable the clip rather than apply it. */

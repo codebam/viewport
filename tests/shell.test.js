@@ -147,7 +147,13 @@ global.window = {
   addEventListener: (type, fn) => { (windowListeners[type] ??= []).push(fn); },
 };
 global.ResizeObserver = class { observe() {} unobserve() {} };
-global.requestAnimationFrame = (fn) => fn();
+/* Frame callbacks run inline, and a timestamp is supplied because the fade
+ * tween is driven by elapsed time. It advances by a frame each call so the
+ * tween terminates instead of spinning at t=0. */
+let fakeClock = 0;
+global.requestAnimationFrame = (fn) => { fakeClock += 16; fn(fakeClock); };
+global.performance = { now: () => fakeClock };
+global.matchMedia = () => ({ matches: false });
 
 /* Top-level const/let inside an eval stay in that eval's own scope, so the
  * shell's state is unreachable from out here unless it hands it over. */
@@ -193,6 +199,14 @@ for (let id = 1; id <= 4; id++) {
 
 const layouts = sent.filter((m) => m.type === 'view.layout');
 check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
+
+/* Opening a window fades it in: the compositor cannot be told this in CSS,
+ * because the window's contents are a surface the shell does not draw. */
+const fades = sent.filter((m) => m.type === 'view.opacity' && m.id === 4);
+check('a new window fades in from zero',
+  fades.length > 1 && fades[0].opacity === 0);
+check('and ends fully opaque',
+  fades[fades.length - 1].opacity === 1);
 
 if (mode === 'tiling') {
   emit({ type: 'shell.command', command: 'layout.tabbed', args: [] });

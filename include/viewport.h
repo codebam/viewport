@@ -320,6 +320,9 @@ struct viewport_toplevel {
 	 * monitor is simply drawn on the monitor next to it. */
 	struct wlr_box clip;
 	bool has_clip;
+	/* Size most recently requested of the client, so a move does not
+	 * reconfigure it. */
+	int last_width, last_height;
 	/* Last clip applied, so diagnostics only fire on change. */
 	struct wlr_box last_clip;
 	bool has_box;

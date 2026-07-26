@@ -823,6 +823,8 @@ function beginColumnDrag(event, workspace, column) {
 
   let last = event.clientX;
   const generation = treeGeneration;
+  const strip = event.currentTarget.parentElement;
+  strip?.classList.add('dragging');
 
   const onMove = (move) => {
     if (generation !== treeGeneration) {
@@ -839,6 +841,7 @@ function beginColumnDrag(event, workspace, column) {
   };
 
   const onUp = () => {
+    strip?.classList.remove('dragging');
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
   };
@@ -1054,13 +1057,89 @@ function reportGeometry(id) {
   if (prev && prev.x === box.x && prev.y === box.y &&
       prev.width === box.width && prev.height === box.height &&
       sameBox(prevClip, clip)) {
-    return;
+    return false;
   }
 
   view.box = box;
   view.clip = clip;
   send(clip ? { type: 'view.layout', id, ...box, clip }
     : { type: 'view.layout', id, ...box });
+  return true;
+}
+
+/* Keep reporting geometry while the layout is still moving.
+ *
+ * Window frames are CSS, so they animate for free — but a window's *contents*
+ * are a real surface the compositor draws at whatever rect it was last told.
+ * Sampling once after a relayout would slide the frame smoothly and snap the
+ * contents straight to the destination, which looks worse than no animation at
+ * all. So geometry is resampled every frame until it stops changing.
+ *
+ * Self-terminating rather than tied to transition events: transitions get
+ * interrupted, replaced and cancelled constantly while dragging, and a missed
+ * `transitionend` would leave a window stranded mid-flight. A few extra frames
+ * of sampling after everything settles is the cheaper mistake. */
+const PUMP_IDLE_FRAMES = 3;
+/* Hard ceiling, about a second. Rounding can leave two windows disagreeing by
+ * a pixel forever, and a permanently spinning frame callback that sends IPC on
+ * every tick is a worse bug than a window settling a frame late. */
+const PUMP_MAX_FRAMES = 60;
+let pumpRemaining = 0;
+let pumping = false;
+
+function pumpGeometry() {
+  pumpRemaining = PUMP_IDLE_FRAMES;
+  if (pumping) return;
+  pumping = true;
+
+  let budget = PUMP_MAX_FRAMES;
+
+  const step = () => {
+    let changed = false;
+    for (const [id, view] of views) {
+      if (!view.el.hidden && reportGeometry(id)) changed = true;
+    }
+
+    pumpRemaining = changed ? PUMP_IDLE_FRAMES : pumpRemaining - 1;
+    if (pumpRemaining > 0 && --budget > 0) {
+      requestAnimationFrame(step);
+    } else {
+      pumping = false;
+    }
+  };
+
+  requestAnimationFrame(step);
+}
+
+/* Whether the user has asked for less motion. Checked at the point of use so
+ * changing the setting takes effect without a reload. */
+function reducedMotion() {
+  return typeof matchMedia === 'function' &&
+    matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+/* Fade a newly opened window in.
+ *
+ * This one cannot be CSS. The frame is the shell's, but the window's contents
+ * are a surface the compositor draws, and no style here touches it — so the
+ * opacity is tweened in JS and sent over IPC, where the compositor applies it
+ * to the surface itself. Short, and skipped entirely when motion is reduced. */
+const FADE_MS = 120;
+
+function fadeIn(id) {
+  if (reducedMotion()) return;
+
+  send({ type: 'view.opacity', id, opacity: 0 });
+
+  const started = performance.now();
+  const step = (now) => {
+    const t = Math.min((now - started) / FADE_MS, 1);
+    /* Ease-out, matching the CSS curve closely enough that a window opening
+       beside one that is moving does not look like a different animation. */
+    send({ type: 'view.opacity', id, opacity: 1 - Math.pow(1 - t, 3) });
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 function sameBox(a, b) {
@@ -1146,12 +1225,9 @@ function relayoutAll() {
     view.el.classList.toggle('fullscreen', isFullscreen(id));
   }
 
-  /* Measure after the browser has laid the new tree out. */
-  requestAnimationFrame(() => {
-    for (const [id, view] of views) {
-      if (!view.el.hidden) reportGeometry(id);
-    }
-  });
+  /* Measure after the browser has laid the new tree out, and keep measuring
+     for as long as it is still moving. */
+  pumpGeometry();
 }
 
 /* ------------------------------------------------------------------------
@@ -1448,6 +1524,16 @@ function moveByDelta(id, dx, dy) {
   const floating = floats.get(id);
   if (!floating) return;
 
+  /* Follow the pointer exactly for the duration of the drag; the class is
+     dropped once the window stops moving. */
+  const view = views.get(id);
+  view?.el.classList.add('dragging');
+  clearTimeout(view?.dragTimer);
+  if (view) {
+    view.dragTimer = setTimeout(
+      () => view.el.classList.remove('dragging'), 120);
+  }
+
   const output = outputs.get(hostOfWorkspace(floating.workspace) ?? '');
   const area = output?.windowsEl?.getBoundingClientRect();
 
@@ -1508,11 +1594,13 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
      is inserted so setFloating has a workspace to read. */
   if (floating) {
     setFloating(id, true);
+    fadeIn(id);
     return;
   }
 
   treeGeneration++;
   relayoutAll();
+  fadeIn(id);
 }
 
 function removeView(id) {

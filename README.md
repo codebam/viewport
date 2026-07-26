@@ -288,6 +288,7 @@ socat - UNIX:$VIEWPORT_SOCKET
 | `view.visible` | `id`, `visible` |
 | `view.focus` | `id` |
 | `view.close` | `id` |
+| `view.opacity` | `id`, `opacity` (0–1) |
 | `view.query` | — |
 | `shell.focus` | — |
 | `bind.add` | `chord`, `action` |
@@ -308,6 +309,26 @@ CSS `overflow` bounds the shell's own painting and no more. `clip` on
 output, which is what keeps a column scrolled off the left of one monitor from
 being drawn on the monitor beside it. Only the surface is clipped, never the
 container: a popup is entitled to extend past the window it belongs to.
+
+### Animation
+
+Window frames are DOM, so moving and resizing them animates in CSS and costs
+the compositor nothing. What does not come free is the window's *contents*: a
+real surface drawn at whatever rect the compositor was last told. Sampling
+geometry once after a relayout would slide the frame smoothly and snap the
+contents straight to the destination — worse than not animating at all.
+
+So the shell resamples every window's rect each frame until the layout stops
+moving, self-terminating a few idle frames later rather than listening for
+`transitionend`, which is unreliable while dragging. Two things keep the cost
+down: the compositor skips the client reconfigure when only the position
+changed, so a window sliding across the screen never asks its client to resize;
+and drags set a class that disables the transition, because interpolating
+toward a pointer lags it by the whole duration.
+
+Fading a window in cannot be done in CSS for the same reason, so it is tweened
+in the shell and sent as `view.opacity`, which the compositor applies to the
+surface itself. `prefers-reduced-motion` disables all of it.
 
 ### Testing the shell
 

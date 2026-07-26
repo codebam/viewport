@@ -24,6 +24,18 @@
   --bar: 30px;
   --radius: 6px;
   --tab: 24px;
+
+  /* Short enough that it never feels like waiting, long enough to read as
+     motion rather than a jump. Ease-out: fast off the mark, settling at the
+     end, which is what makes a short duration feel unhurried. */
+  --anim: 130ms;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+}
+
+/* Motion is decoration. Anyone who has asked the system for less of it gets
+   none, and the layout still works exactly the same. */
+@media (prefers-reduced-motion: reduce) {
+  :root { --anim: 0ms; }
 }
 
 * { box-sizing: border-box; }
@@ -173,6 +185,7 @@ body {
   height: 100%;
   min-width: 0;
   min-height: 0;
+  transition: flex-grow var(--anim) var(--ease);
 }
 
 .split.horizontal { flex-direction: row; }
@@ -274,7 +287,7 @@ body {
   width: max-content;
   /* No `gap`: like a split, the space between columns is a real .divider so
      the edge can be grabbed. */
-  transition: transform .12s ease-out;
+  transition: transform var(--anim) var(--ease);
 }
 
 .strip > .divider { cursor: col-resize; }
@@ -286,7 +299,12 @@ body {
   height: 100%;
   min-width: 0;
   display: flex;
+  transition: width var(--anim) var(--ease);
 }
+
+/* Dragging a column edge sets the width directly; interpolating fights the
+   pointer. */
+.strip.dragging .column { transition: none; }
 
 .column > * { flex: 1 1 auto; min-width: 0; }
 
@@ -295,7 +313,23 @@ body {
   border-radius: var(--radius);
   overflow: hidden;
   display: flex;
+
+  /* What actually moves. `flex-grow` covers tiled windows sharing a split;
+     left/top/width/height cover floating ones, which are positioned. The
+     compositor follows along because the shell resamples geometry every frame
+     while any of this is running — see pumpGeometry. */
+  transition:
+    flex-grow var(--anim) var(--ease),
+    left var(--anim) var(--ease),
+    top var(--anim) var(--ease),
+    width var(--anim) var(--ease),
+    height var(--anim) var(--ease),
+    border-color var(--anim) var(--ease);
 }
+
+/* A window being dragged must track the pointer exactly. Interpolating toward
+   the cursor lags it by the whole duration and feels like ice. */
+.window.dragging { transition: none; }
 
 .window.focused { border-color: var(--border-focus); }
 

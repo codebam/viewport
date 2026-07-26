@@ -483,6 +483,41 @@ static void handle_view_layout(struct viewport_server *server,
 	viewport_toplevel_set_box(toplevel, &box);
 }
 
+/* Per-window opacity, applied to the surface itself.
+ *
+ * The shell cannot fade a window by styling anything: the frame is DOM, the
+ * contents are a surface this compositor draws. So the tween runs in the shell
+ * and the value arrives here each frame. */
+static void opacity_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
+	void *data)
+{
+	wlr_scene_buffer_set_opacity(buffer, *(float *)data);
+}
+
+static void handle_view_opacity(struct viewport_server *server,
+	JsonObject *object)
+{
+	uint32_t id = (uint32_t)object_int(object, "id", 0);
+	struct viewport_toplevel *toplevel =
+		viewport_server_find_toplevel(server, id);
+	if (toplevel == NULL || toplevel->surface_tree == NULL) {
+		return;
+	}
+
+	float opacity = 1.0f;
+	if (json_object_has_member(object, "opacity")) {
+		opacity = (float)json_object_get_double_member(object, "opacity");
+	}
+	if (opacity < 0.0f) {
+		opacity = 0.0f;
+	} else if (opacity > 1.0f) {
+		opacity = 1.0f;
+	}
+
+	wlr_scene_node_for_each_buffer(&toplevel->surface_tree->node,
+		opacity_iterator, &opacity);
+}
+
 static void handle_view_visible(struct viewport_server *server,
 	JsonObject *object)
 {
@@ -797,6 +832,8 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		}
 	} else if (strcmp(type, "shell.focus") == 0) {
 		viewport_focus_web(server);
+	} else if (strcmp(type, "view.opacity") == 0) {
+		handle_view_opacity(server, object);
 	} else if (strcmp(type, "output.configure") == 0) {
 		handle_output_configure(server, object);
 	} else if (strcmp(type, "output.confirm") == 0) {
