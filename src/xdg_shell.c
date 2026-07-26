@@ -90,6 +90,15 @@ static void handle_toplevel_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&toplevel->set_app_id.link);
 	wl_list_remove(&toplevel->request_fullscreen.link);
 
+	/* The surface tree goes with the xdg_surface, but the container tree around
+	 * it is ours and nothing else frees it. Without this every window ever
+	 * opened leaves an empty tree behind in layer_apps for the life of the
+	 * session. */
+	if (toplevel->scene_tree != NULL) {
+		wlr_scene_node_destroy(&toplevel->scene_tree->node);
+		toplevel->scene_tree = NULL;
+	}
+
 	free(toplevel);
 }
 
