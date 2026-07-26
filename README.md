@@ -339,6 +339,12 @@ listener for, so its content stayed full size while simpler windows shrank.
 Once a frame catches every case, and the write is skipped when the value already
 matches, so it does not damage the scene by itself.
 
+The destination size is derived from the buffer's *source box* rather than the
+whole buffer, because clipping narrows that box: sizing from the full buffer
+stretches whatever survived the clip back out to the width the entire window
+would have had, so a window half outside its thumbnail came out looking like a
+funhouse mirror.
+
 Two consequences worth knowing. Only the offsets *between* buffers are left
 unscaled, so a client painting through subsurfaces — a browser compositing
 video, mostly — shows those parts misplaced while shrunk; it is exact again the

@@ -530,8 +530,18 @@ static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 
 	int width = 0, height = 0;
 	if (scale < 1.0) {
-		width = (int)(buffer->buffer->width * scale);
-		height = (int)(buffer->buffer->height * scale);
+		/* Scale what is actually being shown, which is not the whole buffer
+		 * once a clip is in force: clipping narrows the source box, and sizing
+		 * the destination from the full buffer stretches the surviving strip
+		 * back out to the width the whole window would have had. A window half
+		 * outside its thumbnail came out looking like a funhouse mirror. */
+		double source_width = buffer->src_box.width > 0.0
+			? buffer->src_box.width : buffer->buffer->width;
+		double source_height = buffer->src_box.height > 0.0
+			? buffer->src_box.height : buffer->buffer->height;
+
+		width = (int)(source_width * scale);
+		height = (int)(source_height * scale);
 	}
 
 	/* Only when it differs. Setting the destination size damages the node, and
@@ -546,10 +556,11 @@ static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 		 * long as the overview is open. A handful of lines is enough to tell
 		 * whether scaling is reaching a given window. */
 		static int logged;
-		if (debug_scale && logged < 20) {
+		if (debug_scale && width > 0 && logged < 20) {
 			logged++;
-			wlr_log(WLR_DEBUG, "scale buffer %dx%d -> %dx%d",
-				buffer->buffer->width, buffer->buffer->height, width, height);
+			wlr_log(WLR_DEBUG, "scale buffer %dx%d src %.0fx%.0f -> %dx%d",
+				buffer->buffer->width, buffer->buffer->height,
+				buffer->src_box.width, buffer->src_box.height, width, height);
 		}
 	}
 }

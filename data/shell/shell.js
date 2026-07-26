@@ -633,7 +633,9 @@ function renderOverview(output, list) {
 
   for (const n of list) {
     const cell = document.createElement('div');
-    cell.className = 'thumb' + (n === output.workspace ? ' current' : '');
+    cell.className = 'thumb'
+      + (n === output.workspace ? ' current' : '')
+      + (idsOf(n).length === 0 ? ' empty-workspace' : '');
 
     const label = document.createElement('span');
     label.className = 'thumb-label';
