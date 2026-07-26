@@ -906,6 +906,19 @@ static void handle_output_configure(struct viewport_server *server,
 void viewport_ipc_handle(struct viewport_server *server, const char *json,
 	size_t len)
 {
+	/* The first message the shell sends, once.
+	 *
+	 * "The shell did not lay anything out" has two very different causes: the
+	 * page never ran, or it ran and its layout was wrong. Nothing in the log
+	 * distinguished them — a working shell is silent, so an absence of output
+	 * proved nothing either way. This line is the difference: if it appears,
+	 * the page loaded and its scripts are talking. */
+	static bool announced;
+	if (!announced) {
+		announced = true;
+		wlr_log(WLR_INFO, "shell is talking to us");
+	}
+
 	JsonParser *parser = json_parser_new();
 	GError *error = NULL;
 
