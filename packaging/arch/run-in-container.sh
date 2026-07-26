@@ -239,10 +239,20 @@ if [ ${#elevate[@]} -eq 0 ] && [ "$(id -u)" != 0 ]; then
 fi
 
 # Root's podman keeps its own image store, so an image built rootless is not
-# there. Copied across once rather than rebuilt, which would download every
-# package a second time; skipped when it is already present.
-if ! "${elevate[@]}" podman image exists "$runtime" 2>/dev/null; then
-	echo "==> copying $runtime into root's image store (once; it is not small)"
+# there. Copied across rather than rebuilt, which would download every package a
+# second time.
+#
+# On identity, not existence. Asking only whether root has an image by that name
+# means the first copy is kept forever: every rebuild lands in the user's store,
+# the TTY run keeps starting the stale one, and the fix you just made appears to
+# have had no effect — for hours, in the case that produced this comment. The
+# nested mode reads the user's store and updates normally, which makes it look
+# like the two modes disagree about the same package.
+local_image=$(podman image inspect --format '{{.Id}}' "$runtime")
+root_image=$("${elevate[@]}" podman image inspect --format '{{.Id}}' "$runtime" \
+	2>/dev/null || true)
+if [ "$local_image" != "$root_image" ]; then
+	echo "==> copying $runtime into root's image store (it is not small)"
 	podman image save -o "$work/runtime.tar" "$runtime"
 	"${elevate[@]}" podman load -i "$work/runtime.tar"
 	rm -f "$work/runtime.tar"
