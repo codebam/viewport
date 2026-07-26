@@ -281,6 +281,7 @@ bool viewport_server_init(struct viewport_server *server,
 	/* After the seat: the relay follows keyboard focus through the seat's own
 	 * focus_change signal. */
 	server->ime = viewport_ime_create(server);
+	viewport_gestures_init(server);
 
 	if (server->session != NULL) {
 		server->session_active.notify = handle_session_active;
@@ -493,6 +494,16 @@ void viewport_server_finish(struct viewport_server *server)
 		wl_list_remove(&server->touch_motion.link);
 		wl_list_remove(&server->touch_frame.link);
 		wl_list_remove(&server->touch_cancel.link);
+		if (server->pointer_gestures != NULL) {
+			wl_list_remove(&server->swipe_begin.link);
+			wl_list_remove(&server->swipe_update.link);
+			wl_list_remove(&server->swipe_end.link);
+			wl_list_remove(&server->pinch_begin.link);
+			wl_list_remove(&server->pinch_update.link);
+			wl_list_remove(&server->pinch_end.link);
+			wl_list_remove(&server->hold_begin.link);
+			wl_list_remove(&server->hold_end.link);
+		}
 
 		wlr_cursor_destroy(server->cursor);
 		server->cursor = NULL;

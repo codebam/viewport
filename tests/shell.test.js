@@ -175,7 +175,7 @@ global.matchMedia = () => ({ matches: false });
 
 /* Top-level const/let inside an eval stay in that eval's own scope, so the
  * shell's state is unreachable from out here unless it hands it over. */
-const EXPORTS = ';globalThis.__shell = { views, workspaces, floats, outputs,'
+const EXPORTS = ';globalThis.__shell = { views, workspaces, floats, outputs, scrollOffsets,'
   + ' get activeOutput() { return activeOutput; } };';
 const src = fs.readFileSync(process.argv[2], 'utf8') + '\n' + EXPORTS;
 (0, eval)(src);
@@ -361,6 +361,32 @@ if (mode === 'scrolling') {
   check('and released to slide into place', el.style.transform === '');
 
   delete el.getBoundingClientRect;
+}
+
+if (mode === 'scrolling') {
+  /* A three-finger swipe scrolls the strip under the fingers, then settles on
+   * whichever column it was left on — without that last step the next relayout
+   * would scroll straight back to wherever focus happened to be. */
+  const outs = globalThis.__shell.outputs;
+  const ws = outs.get(globalThis.__shell.activeOutput).workspace;
+  const offsets = globalThis.__shell.scrollOffsets;
+
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+  const before = offsets.get(ws) ?? 0;
+
+  emit({ type: 'shell.command', command: 'gesture.scroll', args: ['600'] });
+  check('a swipe moves the strip', (offsets.get(ws) ?? 0) > before);
+
+  const focusBefore = sent.length;
+  emit({ type: 'shell.command', command: 'gesture.settle', args: [] });
+  check('and settles onto a column',
+    sent.slice(focusBefore).some((m) => m.type === 'view.focus'));
+
+  /* Scrolling left of the first column is not a thing. */
+  emit({ type: 'shell.command', command: 'gesture.scroll', args: ['-99999'] });
+  check('the strip does not scroll past its start',
+    (offsets.get(ws) ?? 0) === 0);
+  emit({ type: 'shell.command', command: 'gesture.settle', args: [] });
 }
 
 /* Fullscreen is per workspace. Two monitors each showing something fullscreen

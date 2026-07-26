@@ -37,25 +37,30 @@
 #include <glib.h>
 #include <json-glib/json-glib.h>
 
+#include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/log.h>
 
 #include "viewport.h"
 
 /* Strings handed to viewport_config are owned here and freed by
- * viewport_config_finish(). */
-static char *config_strings[16];
-static size_t config_string_count;
+ * viewport_config_finish().
+ *
+ * Growable rather than a fixed table: the config can be reloaded at runtime,
+ * and each reload allocates a fresh set. A fixed array would silently start
+ * leaking the moment it filled. Strings from previous loads are kept until
+ * shutdown — they are a handful of bytes each, and freeing them at reload time
+ * would dangle every config field that the new file did not mention. */
+static GPtrArray *config_strings;
 
 static const char *keep(char *owned)
 {
 	if (owned == NULL) {
 		return NULL;
 	}
-	if (config_string_count < sizeof(config_strings) / sizeof(config_strings[0])) {
-		config_strings[config_string_count++] = owned;
-		return owned;
+	if (config_strings == NULL) {
+		config_strings = g_ptr_array_new_with_free_func(g_free);
 	}
-	/* Should never happen: the table is sized for every field below. */
+	g_ptr_array_add(config_strings, owned);
 	return owned;
 }
 
@@ -193,10 +198,58 @@ bool viewport_config_load(struct viewport_server *server,
 	return true;
 }
 
+/* Re-read the config file into a running compositor.
+ *
+ * Only the keys the file actually contains are applied, so a reload never
+ * resets something back to a built-in default that a command-line flag had
+ * set. That does mean a key present in the file wins over the flag on reload,
+ * which is the behaviour worth having: the file is what the user just edited.
+ *
+ * Startup-only settings — the shell URL, the backend, the IPC socket path —
+ * are re-read into the config struct but have no effect until restart. There
+ * is nothing sensible to do about a changed socket path in a live session. */
+void viewport_config_reload(struct viewport_server *server)
+{
+	char *path = server->config_path != NULL
+		? g_strdup(server->config_path) : viewport_config_default_path();
+	if (path == NULL) {
+		return;
+	}
+
+	/* Bindings are rebuilt from scratch: a reload that only added would leave
+	 * every binding the user just deleted still working. */
+	viewport_bindings_finish(server);
+	wl_list_init(&server->bindings);
+	server->config.binds_from_config = false;
+
+	bool loaded = viewport_config_load(server, &server->config, path,
+		server->config_path != NULL);
+	if (!loaded || !server->config.binds_from_config) {
+		viewport_bindings_add_defaults(server, server->config.terminal,
+			server->config.menu);
+	}
+
+	viewport_keyboards_reconfigure(server);
+	viewport_appearance_set_dark(server->appearance, server->config.dark_mode);
+	if (server->xcursor_mgr != NULL && server->config.cursor_size > 0) {
+		/* A new theme or size only reaches the pointer once a manager for it
+		 * exists; the old one stays alive because the cursor may still be
+		 * showing an image from it. */
+		struct wlr_xcursor_manager *manager = wlr_xcursor_manager_create(
+			server->config.cursor_theme, server->config.cursor_size);
+		if (manager != NULL) {
+			server->xcursor_mgr = manager;
+		}
+	}
+
+	/* The shell decides layout, so it has to hear about a changed model. */
+	viewport_ipc_notify_config(server);
+
+	g_free(path);
+	wlr_log(WLR_INFO, "config reloaded");
+}
+
 void viewport_config_finish(void)
 {
-	for (size_t i = 0; i < config_string_count; i++) {
-		g_free(config_strings[i]);
-	}
-	config_string_count = 0;
+	g_clear_pointer(&config_strings, g_ptr_array_unref);
 }

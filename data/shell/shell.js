@@ -77,6 +77,11 @@ let layoutMode = 'tiling';
 /* Horizontal scroll offset per workspace, in pixels, for the scrolling layout.
  * Only ever adjusted to bring the focused column into view. */
 const scrollOffsets = new Map();
+/* While a three-finger swipe is in progress the strip follows the fingers
+ * rather than the focused column, and the transition is off so it tracks them
+ * exactly. Cleared on settle, when focus is moved to whichever column the
+ * gesture landed on and the ordinary follow logic takes over again. */
+let gestureWorkspace = null;
 
 const outputsEl = document.getElementById('outputs');
 const desktopTemplate = document.getElementById('desktop-template');
@@ -493,11 +498,13 @@ function renderStrip(root, output) {
 
   /* Scroll the least amount that brings the focused column fully into view. A
      column wider than the screen is aligned to the left edge instead, since it
-     cannot be fully shown either way. */
+     cannot be fully shown either way. Suppressed mid-gesture: the fingers are
+     driving, and snapping back to the focused column would fight them. */
+  const dragging = gestureWorkspace === output.workspace;
   const workspace = output.workspace;
   const lastScroll = scrollOffsets.get(workspace) ?? 0;
   let scroll = lastScroll;
-  if (focusedStart !== null) {
+  if (focusedStart !== null && !dragging) {
     if (focusedWidth >= area.width || focusedStart < scroll) {
       scroll = focusedStart;
     } else if (focusedStart + focusedWidth > scroll + area.width) {
@@ -512,8 +519,9 @@ function renderStrip(root, output) {
      scrolled. Start it where the last one ended and move it in the same frame
      the windows are flipped, so the two animations run together. */
   const previous = scrollOffsets.has(workspace) ? lastScroll : scroll;
-  strip.style.transform = `translateX(${-previous}px)`;
+  strip.style.transform = `translateX(${-(dragging ? scroll : previous)}px)`;
   strip.dataset.scroll = String(scroll);
+  if (dragging) strip.classList.add('dragging');
 
   return columns.length > 0 ? strip : null;
 }
@@ -539,6 +547,69 @@ function normaliseForLayout() {
     }
   }
   scrollOffsets.clear();
+}
+
+/* Move the strip under the fingers. The compositor sends a delta per touchpad
+ * event; the shell owns where the limits are. */
+function gestureScroll(dx) {
+  if (layoutMode !== 'scrolling') return;
+
+  const output = outputs.get(activeOutputName());
+  if (!output) return;
+  const workspace = output.workspace;
+
+  gestureWorkspace = workspace;
+  const at = scrollOffsets.get(workspace) ?? 0;
+  /* Clamped in renderStrip against the real strip length, which is only known
+     once the columns have been measured. */
+  scrollOffsets.set(workspace, Math.max(0, at + dx));
+  relayoutAll();
+}
+
+/* The gesture ended. Focus whichever column the strip was left on, so the
+ * ordinary follow logic agrees with where the user put it — otherwise the next
+ * relayout would scroll back to wherever focus happened to be. */
+function gestureSettle() {
+  const workspace = gestureWorkspace;
+  gestureWorkspace = null;
+  if (workspace === null) return;
+
+  const root = workspaceRoot(workspace);
+  const area = windowsAreaOf(workspace);
+  if (!area) return;
+
+  const scroll = scrollOffsets.get(workspace) ?? 0;
+  const centre = scroll + (area.right - area.left) / 2;
+
+  /* Whichever column contains the middle of the screen. */
+  let offset = 0;
+  let landed = null;
+  for (const column of root.children) {
+    const width = (area.right - area.left) * (column.width ?? COLUMN_WIDTHS[1]);
+    if (centre >= offset && centre < offset + width) {
+      landed = column;
+      break;
+    }
+    offset += width + gapPx();
+  }
+  if (landed === null) landed = root.children[root.children.length - 1];
+  if (!landed) return;
+
+  const id = landed.type === 'leaf' ? landed.id : [...walk(landed)][0][0].id;
+  send({ type: 'view.focus', id });
+  relayoutAll();
+}
+
+/* Step to the next or previous workspace on the active output, for a vertical
+ * three-finger swipe. */
+function stepWorkspace(delta) {
+  const name = activeOutputName();
+  const output = outputs.get(name);
+  if (!output) return;
+
+  const next = output.workspace + delta;
+  if (next < 1 || next > WORKSPACES) return;
+  switchWorkspace(name, next);
 }
 
 /* The column holding a window, as an index into the strip. */
@@ -1945,6 +2016,18 @@ function handleShellCommand(command, args) {
       break;
     case 'layout.column.height':
       cycleWindowHeight();
+      break;
+
+    /* Touchpad. The compositor keeps three-finger swipes for itself and sends
+       them here; everything else goes to the focused client. */
+    case 'gesture.scroll':
+      gestureScroll(Number(arg));
+      break;
+    case 'gesture.settle':
+      gestureSettle();
+      break;
+    case 'workspace.step':
+      stepWorkspace(Number(arg));
       break;
     case 'mode.changed':
       currentMode = arg || 'default';

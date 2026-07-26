@@ -400,6 +400,9 @@ static void run_action(struct viewport_server *server,
 		viewport_server_terminate(server);
 		break;
 	case VIEWPORT_ACTION_RELOAD:
+		/* Both halves: the config file is where bindings live, and reloading
+		 * only the shell meant a changed keybinding needed a full restart. */
+		viewport_config_reload(server);
 		if (server->web != NULL) {
 			wlr_log(WLR_INFO, "reloading shell");
 			viewport_web_reload(server->web);

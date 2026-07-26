@@ -807,18 +807,15 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
 	free(keyboard);
 }
 
-static void new_keyboard(struct viewport_server *server,
-	struct wlr_input_device *device)
+/* Apply the configured layout and repeat rate to one keyboard.
+ *
+ * Separate from creation so a config reload can re-apply it to keyboards that
+ * already exist — otherwise changing the layout would only affect devices
+ * plugged in afterwards. A virtual keyboard is skipped: it supplies its own
+ * keymap, and overwriting that would break whatever is driving it. */
+static void configure_keyboard(struct viewport_server *server,
+	struct wlr_keyboard *wlr_keyboard)
 {
-	struct wlr_keyboard *wlr_keyboard = wlr_keyboard_from_input_device(device);
-
-	struct viewport_keyboard *keyboard = calloc(1, sizeof(*keyboard));
-	if (keyboard == NULL) {
-		return;
-	}
-	keyboard->server = server;
-	keyboard->wlr_keyboard = wlr_keyboard;
-
 	/* A hardcoded layout is wrong for anyone not on a US keyboard, and there
 	 * is no way to discover the right one — so it comes from the config, with
 	 * NULL fields falling back to libxkbcommon's defaults. */
@@ -841,9 +838,36 @@ static void new_keyboard(struct viewport_server *server,
 		xkb_keymap_unref(keymap);
 	}
 	xkb_context_unref(context);
+
 	wlr_keyboard_set_repeat_info(wlr_keyboard,
 		server->config.repeat_rate > 0 ? server->config.repeat_rate : 25,
 		server->config.repeat_delay > 0 ? server->config.repeat_delay : 600);
+}
+
+void viewport_keyboards_reconfigure(struct viewport_server *server)
+{
+	struct viewport_keyboard *keyboard;
+	wl_list_for_each(keyboard, &server->keyboards, link) {
+		if (keyboard->virtual_keyboard) {
+			continue;
+		}
+		configure_keyboard(server, keyboard->wlr_keyboard);
+	}
+}
+
+static void new_keyboard(struct viewport_server *server,
+	struct wlr_input_device *device)
+{
+	struct wlr_keyboard *wlr_keyboard = wlr_keyboard_from_input_device(device);
+
+	struct viewport_keyboard *keyboard = calloc(1, sizeof(*keyboard));
+	if (keyboard == NULL) {
+		return;
+	}
+	keyboard->server = server;
+	keyboard->wlr_keyboard = wlr_keyboard;
+
+	configure_keyboard(server, wlr_keyboard);
 
 	keyboard->modifiers.notify = handle_keyboard_modifiers;
 	wl_signal_add(&wlr_keyboard->events.modifiers, &keyboard->modifiers);
@@ -867,6 +891,15 @@ void viewport_handle_new_virtual_keyboard(struct wl_listener *listener,
 	 * The client supplies its own keymap, so new_keyboard()'s default is not
 	 * imposed on it. */
 	new_keyboard(server, &virtual_keyboard->keyboard.base);
+
+	/* Flagged so a config reload does not overwrite that keymap. */
+	struct viewport_keyboard *keyboard;
+	wl_list_for_each(keyboard, &server->keyboards, link) {
+		if (keyboard->wlr_keyboard == &virtual_keyboard->keyboard) {
+			keyboard->virtual_keyboard = true;
+			break;
+		}
+	}
 }
 
 

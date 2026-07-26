@@ -164,6 +164,7 @@ int main(int argc, char *argv[])
 	/* Config file first, then command-line binds on top of it, then the
 	 * built-in defaults only if nothing has defined a keymap. Reversing that
 	 * order would let a stale config silently shadow an explicit flag. */
+	server.config_path = config_path;
 	if (config_path != NULL) {
 		viewport_config_load(&server, &server.config, config_path, true);
 	} else {

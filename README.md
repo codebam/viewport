@@ -125,6 +125,13 @@ a TTY.
 }
 ```
 
+`reload` re-reads the config file *and* reloads the shell, so a changed
+keybinding takes effect without a restart. Only keys the file actually contains
+are applied, which means a key present in the file wins over the equivalent
+command-line flag on reload — the file is what you just edited. Startup-only
+settings (shell URL, backend, socket path) are re-read but do nothing until
+restart.
+
 Actions are `exec COMMAND`, `close`, `exit`, `reload`, `focus DIRECTION`,
 `mode NAME`, `appearance toggle` and `shell COMMAND ARGS…`. Chords use sway's
 spelling — `Mod4`/`Super`/`Logo`, `Shift`, `Ctrl`, `Alt` — and any key
@@ -370,6 +377,8 @@ The view scrolls the minimum needed to keep the focused column on screen.
 | `Mod4`+right-drag, or dragging a column edge | set the column width freely |
 | `Mod4+Shift+r` | cycle the window's share of the column height |
 | `Mod4+Home` / `Mod4+End` | jump to either end of the strip |
+| three-finger swipe ←→ | scroll the strip under your fingers |
+| three-finger swipe ↑↓ | previous / next workspace |
 
 Resizing means changing a column's own width. Columns do not share space, so
 widening one takes nothing from its neighbours — it makes the strip longer and
@@ -523,7 +532,28 @@ Three things about X11 shape that file:
 
 Xwayland starts lazily: a session that never runs an X11 client pays nothing.
 
-Still unimplemented: tablet input, and per-window opacity rules.
+Touchpad gestures are split by finger count: three fingers belong to the
+compositor (swipe to scroll the strip or change workspace), everything else is
+forwarded to the focused client through `pointer-gestures-v1`, so pinch-to-zoom
+in a browser keeps working. A gesture that starts as the compositor's stays
+that way until it ends.
+
+Still unimplemented: tablet and stylus input.
+
+## When the shell breaks
+
+The entire layout lives in a web page, which is the point of this compositor
+and also its one structural risk: a JavaScript error or an unreachable shell
+means no window is ever placed, and the session becomes a black screen with a
+working keyboard.
+
+So placement is watched. A window that maps and is not given a rect within two
+and a half seconds is laid out by a deliberately stupid built-in tiler — equal
+columns across the output, ignoring workspaces and the tiling tree, since the
+thing that maintains them is what stopped responding. It is not a layout anyone
+would choose; it exists so a broken shell leaves a desktop usable enough to open
+a terminal and fix it. The moment the shell does answer, the watchdog is
+disarmed for that window, so a merely slow shell costs nothing.
 
 Not yet implemented: tablet and stylus input.
 

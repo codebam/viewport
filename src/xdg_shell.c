@@ -90,6 +90,10 @@ static void handle_toplevel_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&toplevel->set_app_id.link);
 	wl_list_remove(&toplevel->request_fullscreen.link);
 
+	/* A timer holding a pointer to this must not outlive it. Unmap normally
+	 * disarms it first; this covers a window destroyed without one. */
+	viewport_watchdog_disarm(toplevel);
+
 	/* The surface tree goes with the xdg_surface, but the container tree around
 	 * it is ours and nothing else frees it. Without this every window ever
 	 * opened leaves an empty tree behind in layer_apps for the life of the
@@ -536,6 +540,9 @@ static void apply_clip(struct viewport_toplevel *toplevel)
 void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 	const struct wlr_box *box)
 {
+	/* The shell answered, so the fallback is not needed for this window. */
+	viewport_watchdog_disarm(toplevel);
+
 	toplevel->box = *box;
 	toplevel->has_box = true;
 	toplevel->visible = true;

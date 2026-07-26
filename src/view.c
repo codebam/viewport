@@ -211,6 +211,9 @@ void viewport_view_map(struct viewport_toplevel *toplevel)
 
 	viewport_ipc_notify_view_added(toplevel);
 	viewport_foreign_view_map(toplevel);
+
+	/* If the shell never answers this, the window is placed without it. */
+	viewport_watchdog_arm(toplevel);
 }
 
 void viewport_view_unmap(struct viewport_toplevel *toplevel)
@@ -238,6 +241,7 @@ void viewport_view_unmap(struct viewport_toplevel *toplevel)
 
 	viewport_ipc_notify_view_removed(toplevel);
 
+	viewport_watchdog_disarm(toplevel);
 	viewport_foreign_view_unmap(toplevel);
 
 	toplevel->mapped = false;

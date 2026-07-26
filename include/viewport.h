@@ -167,6 +167,18 @@ struct viewport_server {
 	struct wl_listener touch_cancel;
 	/* Set once a touchscreen appears; drives the seat's touch capability. */
 	bool has_touch;
+	struct wlr_pointer_gestures_v1 *pointer_gestures;
+	struct wl_listener swipe_begin;
+	struct wl_listener swipe_update;
+	struct wl_listener swipe_end;
+	struct wl_listener pinch_begin;
+	struct wl_listener pinch_update;
+	struct wl_listener pinch_end;
+	struct wl_listener hold_begin;
+	struct wl_listener hold_end;
+	/* A three-finger swipe belongs to the compositor for its whole duration. */
+	bool gesture_active;
+	double gesture_dx, gesture_dy;
 	struct wlr_output_manager_v1 *output_manager;
 	struct wl_listener output_manager_apply;
 	struct wl_listener output_manager_test;
@@ -194,6 +206,8 @@ struct viewport_server {
 	struct viewport_status *status;
 	struct viewport_appearance *appearance;
 	struct viewport_config config;
+	/* Path given with --config, or NULL when the default location is used. */
+	const char *config_path;
 
 	/* Toplevel holding keyboard focus, or NULL when the shell has it. */
 	struct viewport_toplevel *focused;
@@ -323,6 +337,8 @@ struct viewport_toplevel {
 	/* Size most recently requested of the client, so a move does not
 	 * reconfigure it. */
 	int last_width, last_height;
+	/* Fires if the shell never places this window; see watchdog.c. */
+	unsigned int watchdog;
 	/* Last clip applied, so diagnostics only fire on change. */
 	struct wlr_box last_clip;
 	bool has_box;
@@ -380,6 +396,8 @@ struct viewport_popup {
 };
 
 struct viewport_keyboard {
+	/* Supplies its own keymap; never reconfigured from the config file. */
+	bool virtual_keyboard;
 	struct wl_list link;
 	struct viewport_server *server;
 	struct wlr_keyboard *wlr_keyboard;
@@ -432,6 +450,13 @@ void viewport_handle_request_activate(struct wl_listener *listener, void *data);
 void viewport_output_manager_init(struct viewport_server *server);
 void viewport_output_manager_update(struct viewport_server *server);
 void viewport_output_revert_cancel(struct viewport_server *server);
+
+/* Touchpad gestures: three fingers for the compositor, the rest forwarded. */
+void viewport_gestures_init(struct viewport_server *server);
+
+/* Last-resort placement, for when the shell stops answering. */
+void viewport_watchdog_arm(struct viewport_toplevel *toplevel);
+void viewport_watchdog_disarm(struct viewport_toplevel *toplevel);
 
 /* Input methods: the relay between text-input-v3 and input-method-v2. */
 struct viewport_ime *viewport_ime_create(struct viewport_server *server);
@@ -566,6 +591,11 @@ bool viewport_config_load(struct viewport_server *server,
 	struct viewport_config *config, const char *path, bool required);
 
 void viewport_config_finish(void);
+/* Re-reads the config file into a running compositor: bindings, keyboard,
+ * cursor, appearance and layout model. */
+void viewport_config_reload(struct viewport_server *server);
+/* Re-applies keymap and repeat settings to every attached keyboard. */
+void viewport_keyboards_reconfigure(struct viewport_server *server);
 
 /* -------------------------------------------------------------------------
  * binding.c
