@@ -358,6 +358,44 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 	viewport_binding_add(server, "resize/Return=mode default");
 	viewport_binding_add(server, "resize/Mod4+r=mode default");
 
+	/* Media and hardware keys.
+	 *
+	 * These are not compositor concepts at all — they are keys a keyboard
+	 * happens to have, and every one of them is somebody else's job. They are
+	 * bound here anyway because a desktop where the play key does nothing is
+	 * broken in a way no application can fix from its own side: the key never
+	 * reaches it. XF86AudioPlay does not go to "the focused window", it goes to
+	 * whichever player is playing, which is exactly what playerctl resolves
+	 * over MPRIS.
+	 *
+	 * Missing tools fail quietly per keypress rather than at startup, which is
+	 * the right trade for a binding nobody may ever press. Anything defined in
+	 * the config file replaces the lot, so a different mixer is a matter of
+	 * saying so there. */
+	viewport_binding_add(server,
+		"XF86AudioPlay=exec playerctl play-pause");
+	viewport_binding_add(server, "XF86AudioPause=exec playerctl pause");
+	viewport_binding_add(server, "XF86AudioNext=exec playerctl next");
+	viewport_binding_add(server, "XF86AudioPrev=exec playerctl previous");
+	viewport_binding_add(server, "XF86AudioStop=exec playerctl stop");
+
+	/* Volume and mute go to the sink rather than to a player: turning the
+	 * volume down means the machine, not whatever happens to be playing. */
+	viewport_binding_add(server,
+		"XF86AudioRaiseVolume=exec wpctl set-volume -l 1.5 "
+		"@DEFAULT_AUDIO_SINK@ 5%+");
+	viewport_binding_add(server,
+		"XF86AudioLowerVolume=exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-");
+	viewport_binding_add(server,
+		"XF86AudioMute=exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle");
+	viewport_binding_add(server,
+		"XF86AudioMicMute=exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle");
+
+	viewport_binding_add(server,
+		"XF86MonBrightnessUp=exec brightnessctl set 5%+");
+	viewport_binding_add(server,
+		"XF86MonBrightnessDown=exec brightnessctl set 5%-");
+
 	/* Workspaces are shell policy, so these are passthroughs. The shell
 	 * decides what "workspace 3" means; C only delivers the keystroke. */
 	/* sway's `workspace back_and_forth`. Repeating the switch for the workspace

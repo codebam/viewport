@@ -101,19 +101,60 @@ bool viewport_output_set_hdr(struct viewport_output *output, bool enabled)
 		return false;
 	}
 
-	/* Ten bits per channel, because eight is not enough to carry a PQ curve
-	 * without visible banding in dark gradients — the whole range this is for. */
+	/* Ten bits per channel if the hardware will take it: eight cannot carry a
+	 * PQ curve without visible banding in the dark gradients this exists for.
+	 *
+	 * But it is a preference, not a requirement. Which deep formats a plane
+	 * accepts depends on the driver, the connector and what else is on screen,
+	 * and a display that refuses one of them may well take another — or take
+	 * HDR at eight bits, which is worth having even with the banding. So the
+	 * options are tried in order of preference and the first that the hardware
+	 * accepts is the one committed. Each is tested rather than committed
+	 * hopefully: a mode the hardware will not take must leave the monitor
+	 * showing what it was showing, not go dark while someone works out why. */
+	static const uint32_t deep_formats[] = {
+		DRM_FORMAT_XRGB2101010,
+		DRM_FORMAT_XBGR2101010,
+	};
+
+	bool ok_test = false;
+	uint32_t chosen = DRM_FORMAT_INVALID;
+
 	if (enabled) {
-		wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB2101010);
+		for (size_t i = 0; i < sizeof(deep_formats) / sizeof(deep_formats[0]);
+				i++) {
+			wlr_output_state_set_render_format(&state, deep_formats[i]);
+			if (wlr_output_test_state(wlr_output, &state)) {
+				ok_test = true;
+				chosen = deep_formats[i];
+				break;
+			}
+		}
+
+		if (!ok_test) {
+			/* Whatever the output is already rendering at. HDR at eight bits
+			 * bands, but banded HDR beats no HDR. */
+			wlr_output_state_set_render_format(&state, wlr_output->render_format);
+			ok_test = wlr_output_test_state(wlr_output, &state);
+			if (ok_test) {
+				wlr_log(WLR_INFO,
+					"%s would not take a 10-bit format; HDR at the current "
+					"depth, expect banding in dark gradients",
+					wlr_output->name);
+			}
+		}
+	} else {
+		ok_test = wlr_output_test_state(wlr_output, &state);
 	}
 
-	/* Tested first: a mode the hardware will not take must leave the monitor
-	 * showing what it was showing, not go dark while someone works out why. */
-	if (!wlr_output_test_state(wlr_output, &state)) {
+	if (!ok_test) {
 		wlr_output_state_finish(&state);
-		wlr_log(WLR_ERROR, "%s will not take HDR with a 10-bit format",
+		wlr_log(WLR_ERROR, "%s will not take HDR in any tried format",
 			wlr_output->name);
 		return false;
+	}
+	if (chosen != DRM_FORMAT_INVALID) {
+		wlr_log(WLR_DEBUG, "%s HDR at format 0x%08x", wlr_output->name, chosen);
 	}
 
 	bool ok = wlr_output_commit_state(wlr_output, &state);

@@ -349,8 +349,12 @@ attached to the scene: clients say what their content actually is, and the
 renderer converts rather than reinterprets. SDR windows keep looking like SDR
 windows, and a client with real HDR content can say so.
 
-Capability is read from the connector and the change is tested before it is
-committed, so a display that will not take it is left showing what it was
+Ten bits is a preference rather than a requirement. Which deep formats a plane
+accepts depends on the driver, the connector and what else is on screen, so
+several are tried in order and the first the hardware accepts is committed —
+falling back to the output's current depth if none are taken, because banded
+HDR beats no HDR. Capability is read from the connector and every candidate is
+tested before it is committed, so a display that will not take it is left showing what it was
 showing rather than going dark. The bar shows `HDR` while an output is in it —
 otherwise the picture changes and nothing says why, and a monitor left in HDR
 by a mis-hit key looks like a broken colour profile rather than a setting.
@@ -358,6 +362,20 @@ by a mis-hit key looks like a broken colour profile rather than a setting.
 Only the features wlroots 0.20 actually implements are advertised: parametric
 image descriptions, PQ and BT.2020. sRGB is deliberately not advertised — the
 protocol treats it as always supported.
+
+## Media keys
+
+Bound by default, because a desktop where the play key does nothing is broken
+in a way no application can fix from its own side: the key never reaches it.
+`XF86AudioPlay` does not belong to the focused window — it belongs to whichever
+player is playing, which is what `playerctl` resolves over MPRIS. Volume and
+mute go to the sink through `wpctl`, since turning the volume down means the
+machine and not whatever happens to be playing, and the brightness keys go to
+`brightnessctl`.
+
+Missing tools fail quietly per keypress rather than at startup, which is the
+right trade for a binding nobody may ever press. As with every default, naming
+any `binds` in the config replaces the whole set.
 
 ## Idle
 
