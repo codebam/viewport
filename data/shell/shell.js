@@ -54,6 +54,12 @@ const outputs = new Map(); // name -> desktop elements + workspace + barHidden
 const views = new Map();   // id -> { el, viewport, title, app_id, box }
 const workspaces = new Map(); // number -> tiling tree root
 
+/* Floating windows sit outside the tiling tree entirely: they keep their own
+ * position and size and overlap whatever is tiled underneath. Dialogs land here
+ * automatically because tiling them squeezes the window they belong to, and the
+ * dialog itself usually cannot be resized to fill the slot it was given. */
+const floats = new Map(); // id -> { workspace, x, y, width, height }
+
 let focusedId = null;
 let activeOutput = null;
 /* Direction the next new window splits in, like sway's splith/splitv. */
@@ -109,6 +115,24 @@ function findLeaf(id) {
 function leavesOf(n) {
   const root = workspaces.get(n);
   return root ? [...walk(root)].map(([leaf]) => leaf) : [];
+}
+
+/* Which workspace a window is on, tiled or floating. */
+function workspaceOf(id) {
+  const floating = floats.get(id);
+  if (floating) return floating.workspace;
+  return findLeaf(id)?.workspace ?? null;
+}
+
+/* Every window on a workspace, in stacking order: tiled first, floating over
+ * the top. Used wherever "what is on this workspace" is the question rather
+ * than "where does it sit in the tree". */
+function idsOf(n) {
+  const ids = leavesOf(n).map((leaf) => leaf.id);
+  for (const [id, floating] of floats) {
+    if (floating.workspace === n) ids.push(id);
+  }
+  return ids;
 }
 
 function findParentOf(node, target) {
@@ -377,6 +401,20 @@ function resizeFocused(direction) {
 
 /* Mod4 + right drag, forwarded by the compositor as a pixel delta. */
 function resizeByDelta(id, dx, dy) {
+  /* A floating window resizes by simply becoming that much bigger — there are
+     no siblings to take the space from. Clamped so a drag cannot shrink it to
+     nothing and leave a window that can no longer be grabbed. */
+  const floating = floats.get(id);
+  if (floating) {
+    const view = views.get(id);
+    const minWidth = parseInt(view?.el?.style?.minWidth, 10) || 80;
+    const minHeight = parseInt(view?.el?.style?.minHeight, 10) || 60;
+    floating.width = Math.max(minWidth, floating.width + dx);
+    floating.height = Math.max(minHeight, floating.height + dy);
+    relayoutAll();
+    return;
+  }
+
   const found = findLeaf(id);
   if (!found) return;
 
@@ -454,8 +492,8 @@ function relayoutAll() {
   for (const [name, output] of outputs) shown.set(output.workspace, name);
 
   for (const [id, view] of views) {
-    const found = findLeaf(id);
-    const visible = found !== null && shown.has(found.workspace);
+    const workspace = workspaceOf(id);
+    const visible = workspace !== null && shown.has(workspace);
 
     view.el.hidden = !visible;
     if (!visible && view.box !== null) {
@@ -473,13 +511,33 @@ function relayoutAll() {
     output.windowsEl.replaceChildren();
     if (rendered) output.windowsEl.append(rendered);
 
-    output.emptyEl.hidden = leavesOf(output.workspace).length > 0;
+    /* Floating windows are positioned rather than laid out, so they are
+       appended after the tree and take their rect from their own record. CSS
+       lifts them above the tiled windows; the compositor stacks the real
+       surfaces to match when it is told their new rects. */
+    for (const [id, floating] of floats) {
+      if (floating.workspace !== output.workspace) continue;
+      const view = views.get(id);
+      if (!view) continue;
+      view.el.classList.add('floating');
+      output.windowsEl.append(view.el);
+      if (id === fullscreenId) continue; // covers the output; rect ignored
+      Object.assign(view.el.style, {
+        left: `${floating.x}px`,
+        top: `${floating.y}px`,
+        width: `${floating.width}px`,
+        height: `${floating.height}px`,
+        flexGrow: '',
+      });
+    }
+
+    output.emptyEl.hidden = idsOf(output.workspace).length > 0;
 
     /* A fullscreen window covers the whole output, bar included — that is what
      * fullscreen means, and a video with a status bar across the top is not
      * fullscreen. The bar also stays hidden while explicitly toggled off. */
     const fullscreenHere = fullscreenId !== null &&
-      findLeaf(fullscreenId)?.workspace === output.workspace;
+      workspaceOf(fullscreenId) === output.workspace;
     output.el.classList.toggle('has-fullscreen', fullscreenHere);
     output.el.classList.toggle('bar-hidden', output.barHidden);
     renderBar(name);
@@ -581,6 +639,24 @@ function syncOutputs(list) {
       width: `${info.width}px`,
       height: `${info.height}px`,
     });
+
+    /* Panels reserve space through layer-shell exclusive zones; the compositor
+       reports what is left. Expressed as insets so the bar and the tiling area
+       shift together and everything downstream keeps measuring elements as
+       before. Older compositor builds omit the fields — treat that as nothing
+       reserved rather than collapsing the desktop to zero. */
+    const usable = {
+      x: info.usable_x ?? info.x,
+      y: info.usable_y ?? info.y,
+      width: info.usable_width ?? info.width,
+      height: info.usable_height ?? info.height,
+    };
+    output.el.style.setProperty('--rsv-left', `${usable.x - info.x}px`);
+    output.el.style.setProperty('--rsv-top', `${usable.y - info.y}px`);
+    output.el.style.setProperty('--rsv-right',
+      `${(info.x + info.width) - (usable.x + usable.width)}px`);
+    output.el.style.setProperty('--rsv-bottom',
+      `${(info.y + info.height) - (usable.y + usable.height)}px`);
   }
 
   for (const [name, output] of outputs) {
@@ -617,9 +693,9 @@ function switchWorkspace(name, n) {
 function focusFirstOn(name) {
   const output = outputs.get(name);
   if (!output) return;
-  const leaves = leavesOf(output.workspace);
-  send(leaves.length > 0
-    ? { type: 'view.focus', id: leaves[0].id }
+  const ids = idsOf(output.workspace);
+  send(ids.length > 0
+    ? { type: 'view.focus', id: ids[0] }
     : { type: 'shell.focus' });
 }
 
@@ -702,7 +778,93 @@ function moveToWorkspace(n) {
  * Windows
  * --------------------------------------------------------------------- */
 
-function addView({ id, title, app_id, output: outputName, min_width, min_height }) {
+/* Make a window floating or tiled.
+ *
+ * The two are mutually exclusive: a floating window is not in the tree at all,
+ * so switching means moving it between the two representations rather than
+ * setting a flag. Its rect is remembered while tiled, so toggling back and
+ * forth returns it to where it was. */
+function setFloating(id, floating, rect = null) {
+  const view = views.get(id);
+  if (!view) return;
+
+  const workspace = workspaceOf(id);
+  if (workspace === null) return;
+
+  if (floating) {
+    if (floats.has(id)) return;
+    removeLeaf(id);
+
+    const output = outputs.get(hostOfWorkspace(workspace) ?? activeOutputName());
+    const area = output
+      ? output.windowsEl.getBoundingClientRect()
+      : { width: 800, height: 600 };
+
+    /* Positions are relative to the tiling area of the output, since that is
+       the element a floating window is absolutely positioned inside — not the
+       page. Using page coordinates here would offset every dialog on the second
+       monitor by the width of the first. */
+    const width = Math.min(rect?.width ?? view.naturalWidth ?? 640, area.width);
+    const height = Math.min(rect?.height ?? view.naturalHeight ?? 480,
+      area.height);
+
+    floats.set(id, {
+      workspace,
+      /* Centred. A dialog that opens in a corner reads as a glitch, and the
+         client never says where it wants to be. */
+      x: rect?.x ?? Math.round((area.width - width) / 2),
+      y: rect?.y ?? Math.round((area.height - height) / 2),
+      width: Math.round(width),
+      height: Math.round(height),
+    });
+  } else {
+    if (!floats.has(id)) return;
+    floats.delete(id);
+
+    /* Inline geometry would otherwise fight flexbox once it is back in the
+       tree. */
+    Object.assign(view.el.style, { left: '', top: '', width: '', height: '' });
+    view.el.classList.remove('floating');
+
+    insertLeaf(workspace, id);
+  }
+
+  treeGeneration++;
+  relayoutAll();
+}
+
+function toggleFloating(id) {
+  if (id == null) return;
+  setFloating(id, !floats.has(id));
+}
+
+/* Drag a floating window, in response to Mod4 + left drag reported by the
+ * compositor. Tiled windows have no position of their own, so this is a no-op
+ * for them rather than an error. */
+function moveByDelta(id, dx, dy) {
+  const floating = floats.get(id);
+  if (!floating) return;
+
+  const output = outputs.get(hostOfWorkspace(floating.workspace) ?? '');
+  const area = output?.windowsEl?.getBoundingClientRect();
+
+  floating.x += dx;
+  floating.y += dy;
+
+  /* Leave a grabbable strip on screen. A window dragged fully off the edge
+     cannot be dragged back, and there is no titlebar to alt-tab to it by. */
+  if (area) {
+    const margin = 40;
+    floating.x = Math.max(margin - floating.width,
+      Math.min(floating.x, area.width - margin));
+    floating.y = Math.max(0, Math.min(floating.y, area.height - margin));
+  }
+
+  relayoutAll();
+}
+
+function addView({ id, title, app_id, output: outputName, min_width, min_height,
+    floating, width, height }) {
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
   if (views.has(id)) return;
@@ -730,10 +892,22 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height 
   if (min_width > 0) el.style.minWidth = `${min_width}px`;
   if (min_height > 0) el.style.minHeight = `${min_height}px`;
 
-  views.set(id, { el, viewport, title, app_id, box: null });
+  views.set(id, {
+    el, viewport, title, app_id, box: null,
+    naturalWidth: width, naturalHeight: height,
+  });
   resizeObserver.observe(viewport);
 
   insertLeaf(output.workspace, id);
+
+  /* The compositor decides this from what the client says about itself — a
+     parent toplevel, an X11 dialog type, a fixed size. Applied after the leaf
+     is inserted so setFloating has a workspace to read. */
+  if (floating) {
+    setFloating(id, true);
+    return;
+  }
+
   treeGeneration++;
   relayoutAll();
 }
@@ -743,12 +917,12 @@ function removeView(id) {
   if (!view) return;
 
   const wasFocused = focusedId === id;
-  const found = findLeaf(id);
-  const workspace = found ? found.workspace : null;
+  const workspace = workspaceOf(id);
 
   resizeObserver.unobserve(view.viewport);
   view.el.remove();
   views.delete(id);
+  floats.delete(id);
   removeLeaf(id);
   treeGeneration++;
   if (fullscreenId === id) fullscreenId = null;
@@ -760,9 +934,9 @@ function removeView(id) {
    * focus to the shell and leave the keyboard pointing at nothing. */
   if (wasFocused) {
     focusedId = null;
-    const survivors = workspace !== null ? leavesOf(workspace) : [];
+    const survivors = workspace !== null ? idsOf(workspace) : [];
     send(survivors.length > 0
-      ? { type: 'view.focus', id: survivors[0].id }
+      ? { type: 'view.focus', id: survivors[0] }
       : { type: 'shell.focus' });
   }
 }
@@ -815,6 +989,8 @@ function renderBar(name) {
   for (const n of workspaces.keys()) {
     if (leavesOf(n).length > 0) occupied.add(n);
   }
+  /* A workspace holding only floating windows is still occupied. */
+  for (const floating of floats.values()) occupied.add(floating.workspace);
 
   output.workspacesEl.replaceChildren();
   for (const n of [...occupied].sort((a, b) => a - b)) {
@@ -828,14 +1004,14 @@ function renderBar(name) {
   }
 
   output.taskbarEl.replaceChildren();
-  for (const leaf of leavesOf(output.workspace)) {
-    const view = views.get(leaf.id);
+  for (const id of idsOf(output.workspace)) {
+    const view = views.get(id);
     if (!view) continue;
     const button = document.createElement('button');
-    button.className = leaf.id === focusedId ? 'focused' : '';
-    button.textContent = view.title || view.app_id || `view ${leaf.id}`;
-    button.addEventListener('click',
-      () => send({ type: 'view.focus', id: leaf.id }));
+    button.className = (id === focusedId ? 'focused' : '')
+      + (floats.has(id) ? ' floating' : '');
+    button.textContent = view.title || view.app_id || `view ${id}`;
+    button.addEventListener('click', () => send({ type: 'view.focus', id }));
     output.taskbarEl.append(button);
   }
 
@@ -889,8 +1065,17 @@ function handleShellCommand(command, args) {
     case 'window.fullscreen':
       toggleFullscreen();
       break;
-    case 'window.move':
+    case 'window.move': {
       if (focusedId == null) break;
+      /* A floating window has no place in the tree to move within, so the same
+       * keys nudge it instead — sway does this too. */
+      if (floats.has(focusedId)) {
+        const step = 40;
+        moveByDelta(focusedId,
+          arg === 'left' ? -step : arg === 'right' ? step : 0,
+          arg === 'up' ? -step : arg === 'down' ? step : 0);
+        break;
+      }
       /* Try to move within the workspace first; at the edge, carry the window
        * to the next monitor instead of stopping. */
       if (moveLeaf(focusedId, arg)) {
@@ -899,6 +1084,7 @@ function handleShellCommand(command, args) {
         moveViewToOutput(focusedId, arg);
       }
       break;
+    }
     case 'layout.split':
       pendingSplit = arg === 'vertical' ? 'vertical' : 'horizontal';
       break;
@@ -925,6 +1111,12 @@ function handleShellCommand(command, args) {
     }
     case 'layout.resize.delta':
       resizeByDelta(Number(args[0]), Number(args[1]), Number(args[2]));
+      break;
+    case 'layout.move.delta':
+      moveByDelta(Number(args[0]), Number(args[1]), Number(args[2]));
+      break;
+    case 'layout.float.toggle':
+      toggleFloating(focusedId);
       break;
     case 'mode.changed':
       currentMode = arg || 'default';

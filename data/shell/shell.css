@@ -53,6 +53,15 @@ body {
 .desktop {
   position: absolute;
   overflow: hidden;
+
+  /* Space claimed by layer-shell panels (waybar and friends) through their
+     exclusive zones. The compositor measures it and sends it per output; the
+     bar and the tiling area both sit inside what is left. Zero when nothing
+     has reserved anything, which is the common case. */
+  --rsv-top: 0px;
+  --rsv-right: 0px;
+  --rsv-bottom: 0px;
+  --rsv-left: 0px;
 }
 
 /* ---------------------------------------------------------------------
@@ -61,7 +70,7 @@ body {
 
 .bar {
   position: absolute;
-  inset: 0 0 auto 0;
+  inset: var(--rsv-top) var(--rsv-right) auto var(--rsv-left);
   height: var(--bar);
   display: flex;
   align-items: center;
@@ -143,11 +152,14 @@ body {
 
 .windows {
   position: absolute;
-  inset: var(--bar) 0 0 0;
+  inset: calc(var(--bar) + var(--rsv-top)) var(--rsv-right) var(--rsv-bottom)
+    var(--rsv-left);
   padding: var(--gap);
 }
 
-.desktop.bar-hidden .windows { inset: 0; }
+.desktop.bar-hidden .windows {
+  inset: var(--rsv-top) var(--rsv-right) var(--rsv-bottom) var(--rsv-left);
+}
 
 /* Fullscreen fills the output: no bar, no gap, no border. */
 .desktop.has-fullscreen .windows { inset: 0; padding: 0; }
@@ -189,6 +201,10 @@ body {
 
 .window.focused { border-color: var(--border-focus); }
 
+/* Floating windows are marked in the taskbar so the list still reflects the
+   layout when one is hidden behind another. */
+.taskbar button.floating { font-style: italic; }
+
 /* The hole. No background — see the note at the top of this file. */
 .viewport {
   flex: 1 1 auto;
@@ -200,10 +216,25 @@ body {
 /* Fullscreen covers the output entirely, bar included, like sway. */
 .window.fullscreen {
   position: absolute;
-  inset: 0;
+  /* !important because a floating window carries its rect as inline style, and
+     fullscreen has to win over it without the JS having to strip and restore
+     those properties. */
+  inset: 0 !important;
+  left: 0 !important;
+  top: 0 !important;
+  width: auto !important;
+  height: auto !important;
   z-index: 10;
   border: 0;
   border-radius: 0;
+}
+
+/* Floating: positioned rather than laid out, and above everything tiled. The
+   rect itself comes from inline styles the shell sets per window. */
+.window.floating {
+  position: absolute;
+  z-index: 5;
+  box-shadow: 0 .5rem 1.5rem #0008;
 }
 
 /* Hidden on another workspace: kept in the DOM so the client stays alive. */

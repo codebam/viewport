@@ -136,6 +136,11 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 	wlr_scene_output_layout_add_output(server->scene_layout, layout_output,
 		output->scene_output);
 
+	/* Until a panel claims anything the whole output is usable. Set before the
+	 * first IPC notify so the shell never sees a zero-sized usable area. */
+	wlr_output_layout_get_box(server->output_layout, wlr_output,
+		&output->usable_area);
+
 	int width, height;
 	viewport_layout_size(server, &width, &height);
 	if (server->web != NULL) {

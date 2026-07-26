@@ -21,6 +21,7 @@
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_touch.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
 
@@ -100,6 +101,23 @@ void viewport_focus_web(struct viewport_server *server)
 static void process_cursor_motion(struct viewport_server *server,
 	uint32_t time_msec)
 {
+	/* Moving a floating window works the same way: the shell owns the position,
+	 * so the compositor only reports how far the pointer travelled. */
+	if (server->moving != NULL) {
+		double dx = server->cursor->x - server->resize_start_x;
+		double dy = server->cursor->y - server->resize_start_y;
+		if (dx != 0.0 || dy != 0.0) {
+			server->resize_start_x = server->cursor->x;
+			server->resize_start_y = server->cursor->y;
+
+			char command[96];
+			snprintf(command, sizeof(command), "layout.move.delta %u %d %d",
+				server->moving->id, (int)dx, (int)dy);
+			viewport_ipc_notify_shell_command(server, command);
+		}
+		return;
+	}
+
 	/* An interactive resize owns the pointer: report the delta to the shell,
 	 * which turns it into split weights, and deliver nothing to clients. */
 	if (server->resizing != NULL) {
@@ -258,6 +276,10 @@ static void handle_cursor_button(struct wl_listener *listener, void *data)
 		server->resizing = NULL;
 		return;
 	}
+	if (!pressed && server->moving != NULL) {
+		server->moving = NULL;
+		return;
+	}
 	if (!pressed && server->pointer_grab_web) {
 		server->pointer_grab_web = false;
 		if (server->web != NULL) {
@@ -279,6 +301,17 @@ static void handle_cursor_button(struct wl_listener *listener, void *data)
 	 * Dragging a window *edge* is deliberately not handled here: the gap
 	 * between windows is drawn by the shell, so those pixels belong to the web
 	 * layer and the shell implements that itself. */
+	/* Mod4 + left drag moves a window, as in sway. Only floating windows have a
+	 * position of their own to move; on a tiled one the shell ignores it. */
+	if (pressed && toplevel != NULL && event->button == BTN_LEFT &&
+			(seat_modifiers(server) & WLR_MODIFIER_LOGO)) {
+		server->moving = toplevel;
+		server->resize_start_x = server->cursor->x;
+		server->resize_start_y = server->cursor->y;
+		viewport_toplevel_focus(toplevel);
+		return;
+	}
+
 	if (pressed && toplevel != NULL && event->button == BTN_RIGHT &&
 			(seat_modifiers(server) & WLR_MODIFIER_LOGO)) {
 		server->resizing = toplevel;
@@ -375,6 +408,106 @@ static void handle_request_set_shape(struct wl_listener *listener, void *data)
 	}
 	wlr_cursor_set_xcursor(server->cursor, server->xcursor_mgr,
 		wlr_cursor_shape_v1_name(event->shape));
+}
+
+/* ------------------------------------------------------------------------
+ * Touch
+ *
+ * A touchscreen is not a mouse: several fingers are down at once, each with its
+ * own id, and the client tracks them itself. Routing touch through the cursor
+ * would collapse that to one point and lose multi-touch entirely, so the events
+ * go to the seat's touch interface directly.
+ *
+ * The cursor is still moved to the first contact. Nothing else knows where a
+ * finger is, so without it a tap would not raise the window it landed on and
+ * the shell would keep highlighting whatever the mouse last touched.
+ * --------------------------------------------------------------------- */
+
+static struct wlr_surface *touch_surface_at(struct viewport_server *server,
+	struct wlr_touch *touch, double x, double y, double *sx, double *sy,
+	struct viewport_toplevel **toplevel_out)
+{
+	double lx, ly;
+	wlr_cursor_absolute_to_layout_coords(server->cursor, &touch->base, x, y,
+		&lx, &ly);
+	return viewport_surface_at(server, lx, ly, sx, sy, toplevel_out);
+}
+
+static void handle_touch_down(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, touch_down);
+	struct wlr_touch_down_event *event = data;
+
+	double sx, sy;
+	struct viewport_toplevel *toplevel = NULL;
+	struct wlr_surface *surface = touch_surface_at(server, event->touch,
+		event->x, event->y, &sx, &sy, &toplevel);
+
+	if (surface == NULL) {
+		return;
+	}
+
+	/* A tap focuses what it lands on, the same as a click does. */
+	if (toplevel != NULL && server->focused != toplevel) {
+		viewport_toplevel_focus(toplevel);
+	}
+
+	wlr_seat_touch_notify_down(server->seat, surface, event->time_msec,
+		event->touch_id, sx, sy);
+}
+
+static void handle_touch_up(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server = wl_container_of(listener, server, touch_up);
+	struct wlr_touch_up_event *event = data;
+
+	wlr_seat_touch_notify_up(server->seat, event->time_msec, event->touch_id);
+}
+
+static void handle_touch_motion(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, touch_motion);
+	struct wlr_touch_motion_event *event = data;
+
+	double sx, sy;
+	struct wlr_surface *surface = touch_surface_at(server, event->touch,
+		event->x, event->y, &sx, &sy, NULL);
+
+	/* A finger that has slid off the surface it started on still belongs to
+	 * that surface: the client owns the gesture until the finger lifts. wlroots
+	 * discards motion for a point it never saw go down, so passing the surface
+	 * under the finger is safe either way. */
+	if (surface == NULL) {
+		return;
+	}
+
+	wlr_seat_touch_notify_motion(server->seat, event->time_msec,
+		event->touch_id, sx, sy);
+}
+
+static void handle_touch_frame(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, touch_frame);
+	wlr_seat_touch_notify_frame(server->seat);
+}
+
+static void handle_touch_cancel(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, touch_cancel);
+	struct wlr_touch_cancel_event *event = data;
+
+	/* Cancel is addressed to the client owning the point, not the surface: the
+	 * whole gesture is being taken away from it, across every finger it is
+	 * tracking. */
+	struct wlr_touch_point *point =
+		wlr_seat_touch_get_point(server->seat, event->touch_id);
+	if (point != NULL && point->client != NULL) {
+		wlr_seat_touch_notify_cancel(server->seat, point->client);
+	}
 }
 
 /* Drag and drop between applications.
@@ -483,6 +616,17 @@ void viewport_cursor_init(struct viewport_server *server)
 			&server->request_set_shape);
 	}
 
+	server->touch_down.notify = handle_touch_down;
+	wl_signal_add(&server->cursor->events.touch_down, &server->touch_down);
+	server->touch_up.notify = handle_touch_up;
+	wl_signal_add(&server->cursor->events.touch_up, &server->touch_up);
+	server->touch_motion.notify = handle_touch_motion;
+	wl_signal_add(&server->cursor->events.touch_motion, &server->touch_motion);
+	server->touch_frame.notify = handle_touch_frame;
+	wl_signal_add(&server->cursor->events.touch_frame, &server->touch_frame);
+	server->touch_cancel.notify = handle_touch_cancel;
+	wl_signal_add(&server->cursor->events.touch_cancel, &server->touch_cancel);
+
 	server->request_start_drag.notify = handle_request_start_drag;
 	wl_signal_add(&server->seat->events.request_start_drag,
 		&server->request_start_drag);
@@ -524,6 +668,13 @@ static void handle_keyboard_modifiers(struct wl_listener *listener, void *data)
 	struct viewport_server *server = keyboard->server;
 
 	wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
+
+	/* An input method holding the keyboard grab gets the modifiers instead of
+	 * the client, matching where the keys themselves are going. */
+	if (viewport_ime_handle_modifiers(server->ime, keyboard->wlr_keyboard)) {
+		return;
+	}
+
 	if (server->focused != NULL) {
 		wlr_seat_keyboard_notify_modifiers(server->seat,
 			&keyboard->wlr_keyboard->modifiers);
@@ -621,6 +772,15 @@ static void handle_keyboard_key(struct wl_listener *listener, void *data)
 	 * focus without ever becoming a toplevel, and checking server->focused
 	 * alone would silently deliver its keystrokes to the web shell instead,
 	 * leaving the launcher unable to type. */
+	/* An input method composing a character takes the keyboard: the keys are
+	 * how it is being driven, and the application must not also see them or
+	 * everything gets typed twice. Checked after bindings, so Mod4 chords still
+	 * work while composing. */
+	if (viewport_ime_handle_key(server->ime, keyboard->wlr_keyboard,
+			event->time_msec, event->keycode, event->state)) {
+		return;
+	}
+
 	if (server->seat->keyboard_state.focused_surface != NULL) {
 		wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
 		wlr_seat_keyboard_notify_key(server->seat, event->time_msec,
@@ -709,6 +869,7 @@ void viewport_handle_new_virtual_keyboard(struct wl_listener *listener,
 	new_keyboard(server, &virtual_keyboard->keyboard.base);
 }
 
+
 void viewport_handle_new_input(struct wl_listener *listener, void *data)
 {
 	struct viewport_server *server =
@@ -722,6 +883,13 @@ void viewport_handle_new_input(struct wl_listener *listener, void *data)
 	case WLR_INPUT_DEVICE_POINTER:
 		wlr_cursor_attach_input_device(server->cursor, device);
 		break;
+	case WLR_INPUT_DEVICE_TOUCH:
+		/* Attached to the cursor only for its output mapping — the events
+		 * themselves are taken from the cursor's touch signals, not turned into
+		 * pointer motion. */
+		wlr_cursor_attach_input_device(server->cursor, device);
+		server->has_touch = true;
+		break;
 	default:
 		break;
 	}
@@ -729,6 +897,11 @@ void viewport_handle_new_input(struct wl_listener *listener, void *data)
 	uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
 	if (!wl_list_empty(&server->keyboards)) {
 		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+	}
+	if (server->has_touch) {
+		/* Clients bind wl_touch off this capability; without it a touchscreen
+		 * produces events no one is listening for. */
+		caps |= WL_SEAT_CAPABILITY_TOUCH;
 	}
 	wlr_seat_set_capabilities(server->seat, caps);
 }

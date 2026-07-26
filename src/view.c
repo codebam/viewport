@@ -17,6 +17,7 @@
 #include <stdlib.h>
 
 #include <wlr/types/wlr_scene.h>
+#include <wlr/xwayland.h>
 #include <wlr/util/log.h>
 
 #include "viewport.h"
@@ -116,6 +117,81 @@ struct wlr_box viewport_view_geometry(struct viewport_toplevel *toplevel)
 	};
 }
 
+/* The size the window would like to be, used to place it when floating. Its
+ * first buffer is normally already at that size, so this is what the client
+ * chose for itself rather than anything the shell imposed. */
+void viewport_view_natural_size(struct viewport_toplevel *toplevel, int *width,
+	int *height)
+{
+	struct wlr_box geometry = viewport_view_geometry(toplevel);
+	*width = geometry.width;
+	*height = geometry.height;
+
+	if (*width <= 0 || *height <= 0) {
+		/* Nothing committed yet. A dialog with no size at all cannot be placed,
+		 * so fall back to something usable rather than a zero-sized window. */
+		*width = 640;
+		*height = 480;
+	}
+}
+
+/* Whether the window should float rather than join the tiling layout.
+ *
+ * Tiling a modal dialog or a colour picker is the wrong answer: it squeezes the
+ * window it belongs to, and the dialog itself is usually not resizable, so it
+ * ends up clipped inside a slot it cannot fill. The signals below are the ones
+ * every window manager keys off, and the shell can still override the decision
+ * per window afterwards. */
+bool viewport_view_wants_floating(struct viewport_toplevel *toplevel)
+{
+	if (toplevel->kind == VIEWPORT_VIEW_XDG) {
+		struct wlr_xdg_toplevel *xdg = toplevel->xdg_toplevel;
+
+		/* A child of another toplevel is a dialog by definition. */
+		if (xdg->parent != NULL) {
+			return true;
+		}
+
+		/* Fixed size: the client is telling us it cannot be tiled. Both bounds
+		 * must be set, or a window with only a minimum would qualify. */
+		const struct wlr_xdg_toplevel_state *state = &xdg->current;
+		if (state->min_width > 0 && state->min_height > 0 &&
+				state->min_width == state->max_width &&
+				state->min_height == state->max_height) {
+			return true;
+		}
+		return false;
+	}
+
+	struct wlr_xwayland_surface *surface = toplevel->xwayland_surface;
+	if (surface->modal || surface->parent != NULL) {
+		return true;
+	}
+
+	static const enum wlr_xwayland_net_wm_window_type floating_types[] = {
+		WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DIALOG,
+		WLR_XWAYLAND_NET_WM_WINDOW_TYPE_UTILITY,
+		WLR_XWAYLAND_NET_WM_WINDOW_TYPE_TOOLBAR,
+		WLR_XWAYLAND_NET_WM_WINDOW_TYPE_SPLASH,
+	};
+	for (size_t i = 0; i < sizeof(floating_types) / sizeof(floating_types[0]);
+			i++) {
+		if (wlr_xwayland_surface_has_window_type(surface, floating_types[i])) {
+			return true;
+		}
+	}
+
+	/* X11 states fixed size through size hints rather than the toplevel. */
+	if (surface->size_hints != NULL &&
+			surface->size_hints->min_width > 0 &&
+			surface->size_hints->min_width == surface->size_hints->max_width &&
+			surface->size_hints->min_height == surface->size_hints->max_height) {
+		return true;
+	}
+
+	return false;
+}
+
 /* ------------------------------------------------------------------------
  * Shared lifecycle
  *
@@ -140,6 +216,16 @@ void viewport_view_map(struct viewport_toplevel *toplevel)
 void viewport_view_unmap(struct viewport_toplevel *toplevel)
 {
 	struct viewport_server *server = toplevel->server;
+
+	/* An interactive drag holds a bare pointer to its window. Closing the
+	 * window mid-drag — a dialog dismissing itself, a crash — would leave that
+	 * pointer dangling and the next pointer motion reading freed memory. */
+	if (server->resizing == toplevel) {
+		server->resizing = NULL;
+	}
+	if (server->moving == toplevel) {
+		server->moving = NULL;
+	}
 
 	if (server->focused == toplevel) {
 		/* Drop focus without announcing it: view.focused id=0 would reach the

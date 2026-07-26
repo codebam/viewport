@@ -21,6 +21,8 @@
 #include <string.h>
 
 #include <wlr/types/wlr_layer_shell_v1.h>
+#include <string.h>
+
 #include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 
@@ -58,51 +60,104 @@ static struct wlr_scene_tree *tree_for_layer(struct viewport_server *server,
 	return server->layer_top;
 }
 
-/* Re-applies the layer surface's anchors and margins against its output. */
-static void arrange_surface(struct viewport_layer_surface *surface)
+/* Configure one surface against the output, letting it carve its exclusive zone
+ * out of the running usable area.
+ *
+ * An unmapped surface is still configured — the protocol requires a configure
+ * before it may attach a buffer — but must not reserve anything, or a panel
+ * that has requested a zone and not yet drawn would shrink the desktop before
+ * it exists. The scene helper mutates the usable area it is handed, so an
+ * unmapped surface gets a throwaway copy. */
+static void arrange_surface(struct viewport_layer_surface *surface,
+	const struct wlr_box *full_area, struct wlr_box *usable_area)
 {
-	if (surface->output == NULL || surface->scene == NULL) {
+	if (surface->scene == NULL) {
 		return;
 	}
 
-	struct wlr_box full_area;
-	wlr_output_layout_get_box(surface->server->output_layout,
-		surface->output->wlr_output, &full_area);
+	struct wlr_box scratch = *usable_area;
+	struct wlr_box *target = surface->layer_surface->surface->mapped
+		? usable_area : &scratch;
 
-	/* Usable area starts as the whole output. A full implementation would
-	 * subtract each panel's exclusive zone here and hand the remainder to the
-	 * shell as the region it may place windows in; for now the shell owns the
-	 * whole output and panels overlap it. */
-	struct wlr_box usable_area = full_area;
-
-	wlr_scene_layer_surface_v1_configure(surface->scene, &full_area,
-		&usable_area);
+	wlr_scene_layer_surface_v1_configure(surface->scene, full_area, target);
 }
 
+typedef void (*layer_surface_iterator)(struct viewport_layer_surface *surface,
+	void *data);
+
+struct arrange_pass {
+	struct viewport_output *output;
+	struct wlr_box full_area;
+	struct wlr_box usable_area;
+	/* Exclusive zones are claimed in a first pass, so a panel reserving space
+	 * gets it regardless of which layer the surfaces filling the remainder are
+	 * on. */
+	bool exclusive;
+};
+
+static void arrange_layer(struct wlr_scene_tree *tree,
+	struct arrange_pass *pass)
+{
+	struct wlr_scene_node *node;
+	wl_list_for_each(node, &tree->children, link) {
+		struct viewport_node *tagged = node->data;
+		if (tagged == NULL || tagged->type != VIEWPORT_NODE_LAYER) {
+			continue;
+		}
+
+		struct viewport_layer_surface *surface =
+			(struct viewport_layer_surface *)tagged;
+		if (surface->output != pass->output) {
+			continue;
+		}
+		if ((surface->layer_surface->current.exclusive_zone > 0) !=
+				pass->exclusive) {
+			continue;
+		}
+
+		arrange_surface(surface, &pass->full_area, &pass->usable_area);
+	}
+}
+
+/* Lay out every layer surface on one output and work out what is left over.
+ *
+ * That remainder is the point: a panel with an exclusive zone is asking for
+ * space no window may occupy, and until now the shell was handed the whole
+ * output regardless, so waybar sat on top of the windows instead of beside
+ * them. The usable area is published over IPC and the shell tiles inside it.
+ *
+ * Layers are walked top down in both passes, matching the order the protocol
+ * gives them precedence in. */
 void viewport_layers_arrange(struct viewport_output *output)
 {
-	/* Walk the scene trees rather than keeping a second list: the scene graph
-	 * is already the authoritative record of what exists. */
 	struct viewport_server *server = output->server;
+
+	struct arrange_pass pass = { .output = output };
+	wlr_output_layout_get_box(server->output_layout, output->wlr_output,
+		&pass.full_area);
+	pass.usable_area = pass.full_area;
+
 	struct wlr_scene_tree *trees[] = {
-		server->layer_bg, server->layer_bottom,
-		server->layer_top, server->layer_overlay,
+		server->layer_overlay, server->layer_top,
+		server->layer_bottom, server->layer_bg,
 	};
 
-	for (size_t i = 0; i < sizeof(trees) / sizeof(trees[0]); i++) {
-		struct wlr_scene_node *node;
-		wl_list_for_each(node, &trees[i]->children, link) {
-			struct viewport_node *tagged = node->data;
-			if (tagged == NULL || tagged->type != VIEWPORT_NODE_LAYER) {
-				continue;
-			}
-			struct viewport_layer_surface *surface =
-				(struct viewport_layer_surface *)tagged;
-			if (surface->output == output) {
-				arrange_surface(surface);
-			}
+	for (int exclusive = 1; exclusive >= 0; exclusive--) {
+		pass.exclusive = exclusive == 1;
+		for (size_t i = 0; i < sizeof(trees) / sizeof(trees[0]); i++) {
+			arrange_layer(trees[i], &pass);
 		}
 	}
+
+	if (memcmp(&pass.usable_area, &output->usable_area,
+			sizeof(struct wlr_box)) == 0) {
+		return;
+	}
+	output->usable_area = pass.usable_area;
+
+	/* Windows are placed by the shell, so a changed usable area only takes
+	 * effect once the shell has been told and relaid out. */
+	viewport_ipc_notify_output_layout(server);
 }
 
 static void handle_commit(struct wl_listener *listener, void *data)
@@ -114,7 +169,7 @@ static void handle_commit(struct wl_listener *listener, void *data)
 	if (layer_surface->initial_commit) {
 		/* The protocol requires a configure in response to the first commit,
 		 * before the client may attach a buffer. */
-		arrange_surface(surface);
+		viewport_layers_arrange(surface->output);
 		return;
 	}
 
@@ -123,7 +178,7 @@ static void handle_commit(struct wl_listener *listener, void *data)
 		struct wlr_scene_tree *tree = tree_for_layer(surface->server,
 			layer_surface->current.layer);
 		wlr_scene_node_reparent(&surface->scene->tree->node, tree);
-		arrange_surface(surface);
+		viewport_layers_arrange(surface->output);
 	}
 }
 
@@ -158,7 +213,9 @@ static void handle_map(struct wl_listener *listener, void *data)
 {
 	struct viewport_layer_surface *surface =
 		wl_container_of(listener, surface, map);
-	arrange_surface(surface);
+	/* Now that it is mapped its exclusive zone counts, so the whole output is
+	 * rearranged rather than just this surface. */
+	viewport_layers_arrange(surface->output);
 	focus_layer_surface(surface);
 }
 
@@ -180,6 +237,10 @@ static void handle_unmap(struct wl_listener *listener, void *data)
 			viewport_focus_web(server);
 		}
 	}
+
+	/* Its exclusive zone goes with it — a dismissed panel must give the space
+	 * back rather than leaving a permanent gap. */
+	viewport_layers_arrange(surface->output);
 }
 
 static void handle_destroy(struct wl_listener *listener, void *data)

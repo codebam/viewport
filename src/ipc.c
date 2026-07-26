@@ -165,6 +165,20 @@ void viewport_ipc_notify_view_added(struct viewport_toplevel *toplevel)
 	json_builder_add_int_value(builder,
 		toplevel->kind == VIEWPORT_VIEW_XDG
 			? toplevel->xdg_toplevel->current.min_height : 0);
+
+	/* Dialogs and fixed-size windows want to float rather than be tiled. The
+	 * compositor can see the signals for that — a parent toplevel, an X11
+	 * window type — and the natural size is what to open them at. */
+	int natural_width, natural_height;
+	viewport_view_natural_size(toplevel, &natural_width, &natural_height);
+	json_builder_set_member_name(builder, "floating");
+	json_builder_add_boolean_value(builder,
+		viewport_view_wants_floating(toplevel));
+	json_builder_set_member_name(builder, "width");
+	json_builder_add_int_value(builder, natural_width);
+	json_builder_set_member_name(builder, "height");
+	json_builder_add_int_value(builder, natural_height);
+
 	json_builder_end_object(builder);
 
 	broadcast_builder(toplevel->server, builder);
@@ -339,6 +353,18 @@ void viewport_ipc_notify_output_layout(struct viewport_server *server)
 		json_builder_add_int_value(builder, box.width);
 		json_builder_set_member_name(builder, "height");
 		json_builder_add_int_value(builder, box.height);
+		/* The area panels have not reserved. The shell places windows inside
+		 * this rather than the full box, which is what keeps a bar from
+		 * overlapping them. */
+		json_builder_set_member_name(builder, "usable_x");
+		json_builder_add_int_value(builder, output->usable_area.x);
+		json_builder_set_member_name(builder, "usable_y");
+		json_builder_add_int_value(builder, output->usable_area.y);
+		json_builder_set_member_name(builder, "usable_width");
+		json_builder_add_int_value(builder, output->usable_area.width);
+		json_builder_set_member_name(builder, "usable_height");
+		json_builder_add_int_value(builder, output->usable_area.height);
+
 		json_builder_set_member_name(builder, "scale");
 		json_builder_add_double_value(builder, wlr_output->scale);
 		json_builder_set_member_name(builder, "transform");
@@ -447,6 +473,132 @@ static void handle_view_visible(struct viewport_server *server,
 		visible && toplevel->has_box);
 }
 
+/* How long an unconfirmed output change survives. Long enough to see whether
+ * the screen came back, short enough that a blank monitor is not a lockout. */
+#define OUTPUT_REVERT_SECONDS 12
+
+void viewport_output_revert_cancel(struct viewport_server *server)
+{
+	struct viewport_output_revert *revert = server->output_revert;
+	if (revert == NULL) {
+		return;
+	}
+	server->output_revert = NULL;
+
+	if (revert->timer != 0) {
+		g_source_remove(revert->timer);
+	}
+	g_free(revert->name);
+	free(revert);
+}
+
+static struct viewport_output *output_by_name(struct viewport_server *server,
+	const char *name)
+{
+	struct viewport_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (strcmp(output->wlr_output->name, name) == 0) {
+			return output;
+		}
+	}
+	return NULL;
+}
+
+static gboolean output_revert_fire(gpointer data)
+{
+	struct viewport_output_revert *revert = data;
+	struct viewport_server *server = revert->server;
+
+	revert->timer = 0;
+
+	struct viewport_output *output = output_by_name(server, revert->name);
+	if (output == NULL) {
+		/* The output is gone; there is nothing left to put back. */
+		viewport_output_revert_cancel(server);
+		return G_SOURCE_REMOVE;
+	}
+
+	struct wlr_output *wlr_output = output->wlr_output;
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	wlr_output_state_set_enabled(&state, revert->enabled);
+	if (revert->enabled) {
+		struct wlr_output_mode *match = NULL, *mode;
+		wl_list_for_each(mode, &wlr_output->modes, link) {
+			if (mode->width == revert->width &&
+					mode->height == revert->height &&
+					mode->refresh == revert->refresh) {
+				match = mode;
+				break;
+			}
+		}
+		if (match != NULL) {
+			wlr_output_state_set_mode(&state, match);
+		} else if (revert->width > 0 && revert->height > 0) {
+			wlr_output_state_set_custom_mode(&state, revert->width,
+				revert->height, revert->refresh);
+		}
+		wlr_output_state_set_scale(&state, revert->scale);
+		wlr_output_state_set_transform(&state, revert->transform);
+		wlr_output_state_set_adaptive_sync_enabled(&state,
+			revert->adaptive_sync);
+	}
+
+	bool ok = wlr_output_commit_state(wlr_output, &state);
+	wlr_output_state_finish(&state);
+
+	if (ok) {
+		wlr_output_layout_add(server->output_layout, wlr_output, revert->x,
+			revert->y);
+		int width, height;
+		viewport_layout_size(server, &width, &height);
+		if (server->web != NULL) {
+			viewport_web_resize(server->web, width, height);
+		}
+		viewport_ipc_notify_output_layout(server);
+		viewport_output_manager_update(server);
+	}
+
+	wlr_log(WLR_INFO, "output %s not confirmed; reverted", revert->name);
+	notify_error(server, "output.configure", "not confirmed; reverted");
+
+	viewport_output_revert_cancel(server);
+	return G_SOURCE_REMOVE;
+}
+
+/* Remember what the output looks like now, before it is changed. */
+static void output_revert_arm(struct viewport_server *server,
+	struct viewport_output *output)
+{
+	viewport_output_revert_cancel(server);
+
+	struct viewport_output_revert *revert = calloc(1, sizeof(*revert));
+	if (revert == NULL) {
+		return;
+	}
+
+	struct wlr_output *wlr_output = output->wlr_output;
+	struct wlr_box box;
+	wlr_output_layout_get_box(server->output_layout, wlr_output, &box);
+
+	revert->server = server;
+	revert->name = g_strdup(wlr_output->name);
+	revert->enabled = wlr_output->enabled;
+	revert->width = wlr_output->width;
+	revert->height = wlr_output->height;
+	revert->refresh = wlr_output->refresh;
+	revert->scale = wlr_output->scale;
+	revert->transform = wlr_output->transform;
+	revert->adaptive_sync =
+		wlr_output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
+	revert->x = box.x;
+	revert->y = box.y;
+
+	revert->timer = g_timeout_add_seconds(OUTPUT_REVERT_SECONDS,
+		output_revert_fire, revert);
+	server->output_revert = revert;
+}
+
 static void handle_output_configure(struct viewport_server *server,
 	JsonObject *object)
 {
@@ -529,9 +681,14 @@ static void handle_output_configure(struct viewport_server *server,
 		return;
 	}
 
+	/* Captured before the commit, so a revert has the old values rather than
+	 * the ones being applied. */
+	output_revert_arm(server, output);
+
 	bool ok = wlr_output_commit_state(wlr_output, &state);
 	wlr_output_state_finish(&state);
 	if (!ok) {
+		viewport_output_revert_cancel(server);
 		notify_error(server, "output.configure", "commit failed");
 		return;
 	}
@@ -550,6 +707,7 @@ static void handle_output_configure(struct viewport_server *server,
 		viewport_web_resize(server->web, width, height);
 	}
 	viewport_ipc_notify_output_layout(server);
+	viewport_output_manager_update(server);
 }
 
 void viewport_ipc_handle(struct viewport_server *server, const char *json,
@@ -611,6 +769,10 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		viewport_focus_web(server);
 	} else if (strcmp(type, "output.configure") == 0) {
 		handle_output_configure(server, object);
+	} else if (strcmp(type, "output.confirm") == 0) {
+		/* The shell saw the change land and the user accepted it, so the
+		 * pending revert is called off. */
+		viewport_output_revert_cancel(server);
 	} else if (strcmp(type, "output.active") == 0) {
 		if (json_object_has_member(object, "name")) {
 			free(server->active_output);

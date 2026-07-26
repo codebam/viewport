@@ -278,6 +278,9 @@ bool viewport_server_init(struct viewport_server *server,
 	}
 	viewport_cursor_init(server);
 	viewport_pointer_init(server);
+	/* After the seat: the relay follows keyboard focus through the seat's own
+	 * focus_change signal. */
+	server->ime = viewport_ime_create(server);
 
 	if (server->session != NULL) {
 		server->session_active.notify = handle_session_active;
@@ -406,6 +409,15 @@ void viewport_server_finish(struct viewport_server *server)
 		viewport_ipc_destroy(server->ipc);
 		server->ipc = NULL;
 	}
+	if (server->output_revert != NULL) {
+		/* Its GLib timer would otherwise fire into a destroyed server. */
+		viewport_output_revert_cancel(server);
+	}
+	if (server->ime != NULL) {
+		/* Before the seat goes: its focus_change listener hangs off it. */
+		viewport_ime_destroy(server->ime);
+		server->ime = NULL;
+	}
 
 	wl_display_destroy_clients(server->wl_display);
 
@@ -476,6 +488,11 @@ void viewport_server_finish(struct viewport_server *server)
 		wl_list_remove(&server->cursor_button.link);
 		wl_list_remove(&server->cursor_axis.link);
 		wl_list_remove(&server->cursor_frame.link);
+		wl_list_remove(&server->touch_down.link);
+		wl_list_remove(&server->touch_up.link);
+		wl_list_remove(&server->touch_motion.link);
+		wl_list_remove(&server->touch_frame.link);
+		wl_list_remove(&server->touch_cancel.link);
 
 		wlr_cursor_destroy(server->cursor);
 		server->cursor = NULL;

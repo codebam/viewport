@@ -156,10 +156,19 @@ struct viewport_server {
 	struct wl_listener request_activate;
 	struct wlr_cursor_shape_manager_v1 *cursor_shape;
 	struct wl_listener request_set_shape;
+	struct wl_listener touch_down;
+	struct wl_listener touch_up;
+	struct wl_listener touch_motion;
+	struct wl_listener touch_frame;
+	struct wl_listener touch_cancel;
+	/* Set once a touchscreen appears; drives the seat's touch capability. */
+	bool has_touch;
 	struct wlr_output_manager_v1 *output_manager;
 	struct wl_listener output_manager_apply;
 	struct wl_listener output_manager_test;
 	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
+	struct viewport_ime *ime;
+	struct viewport_output_revert *output_revert;
 	struct viewport_lock *lock;
 	bool locked;
 
@@ -211,6 +220,8 @@ struct viewport_server {
 
 	/* Interactive resize driven by Mod4 + right drag. */
 	struct viewport_toplevel *resizing;
+	/* Mod4 + left drag on a floating window moves it. */
+	struct viewport_toplevel *moving;
 	double resize_start_x, resize_start_y;
 
 	struct wl_list bindings; /* viewport_binding.link */
@@ -237,12 +248,36 @@ struct viewport_server {
 };
 
 struct viewport_foreign;
+struct viewport_ime;
+
+/* An output configuration applied but not yet confirmed.
+ *
+ * A wrong mode or a bad position blanks the very screen the user would need in
+ * order to undo it. So a change is provisional: it reverts on its own unless an
+ * output.confirm arrives, which is what every display settings panel does with
+ * its "keep this?" countdown. */
+struct viewport_output_revert {
+	struct viewport_server *server;
+	char *name;
+
+	bool enabled;
+	int width, height, refresh;
+	float scale;
+	enum wl_output_transform transform;
+	bool adaptive_sync;
+	int x, y;
+
+	unsigned int timer;
+};
 
 struct viewport_output {
 	struct wl_list link;
 	struct viewport_server *server;
 	struct wlr_output *wlr_output;
 	struct wlr_scene_output *scene_output;
+	/* What is left of the output after panels have claimed their exclusive
+	 * zones. Published to the shell, which tiles windows inside it. */
+	struct wlr_box usable_area;
 
 	struct wl_listener frame;
 	struct wl_listener request_state;
@@ -380,6 +415,16 @@ void viewport_handle_request_activate(struct wl_listener *listener, void *data);
 /* Display configuration, for wlr-randr and kanshi. */
 void viewport_output_manager_init(struct viewport_server *server);
 void viewport_output_manager_update(struct viewport_server *server);
+void viewport_output_revert_cancel(struct viewport_server *server);
+
+/* Input methods: the relay between text-input-v3 and input-method-v2. */
+struct viewport_ime *viewport_ime_create(struct viewport_server *server);
+void viewport_ime_destroy(struct viewport_ime *ime);
+bool viewport_ime_handle_key(struct viewport_ime *ime,
+	struct wlr_keyboard *keyboard, uint32_t time_msec, uint32_t keycode,
+	uint32_t state);
+bool viewport_ime_handle_modifiers(struct viewport_ime *ime,
+	struct wlr_keyboard *keyboard);
 
 /* The window list, as seen by taskbars and window switchers. */
 void viewport_foreign_init(struct viewport_server *server);
@@ -418,6 +463,9 @@ void viewport_view_set_activated(struct viewport_toplevel *toplevel,
 void viewport_view_set_fullscreen(struct viewport_toplevel *toplevel, bool on);
 void viewport_view_close(struct viewport_toplevel *toplevel);
 struct wlr_box viewport_view_geometry(struct viewport_toplevel *toplevel);
+void viewport_view_natural_size(struct viewport_toplevel *toplevel, int *width,
+	int *height);
+bool viewport_view_wants_floating(struct viewport_toplevel *toplevel);
 
 /* Shared lifecycle, used by both xdg_shell.c and xwayland.c. */
 void viewport_view_map(struct viewport_toplevel *toplevel);
