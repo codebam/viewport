@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <wlr/render/allocator.h>
@@ -312,6 +313,49 @@ bool viewport_server_init(struct viewport_server *server,
 	return true;
 }
 
+/* Hand the session's environment to systemd and to D-Bus activation.
+ *
+ * setenv() reaches processes this compositor spawns and nothing else, and the
+ * things that matter most here are started by neither: xdg-desktop-portal and
+ * its backends are user services, activated by D-Bus with whatever environment
+ * the user manager holds. xdg-desktop-portal-wlr guards itself with
+ *
+ *   ConditionEnvironment=WAYLAND_DISPLAY
+ *
+ * so with nothing exported it is skipped before it runs a line, and the whole
+ * of screen sharing fails from there: the ScreenCast interface reports no
+ * sources, browsers offer an empty picker, OBS shows no screen capture. The
+ * journal says "skipped, unmet condition check", which is accurate and names
+ * nothing anyone would search for.
+ *
+ * Both commands, because which one is authoritative depends on the system, and
+ * failure is fine: a session with neither systemd nor dbus wants no part of
+ * this and the desktop works regardless. Double-forked so no zombie is left
+ * for a compositor that never reaps. */
+static void export_session_environment(void)
+{
+	static const char *const commands[][6] = {
+		{ "systemctl", "--user", "import-environment",
+			"WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", NULL },
+		{ "dbus-update-activation-environment", "--systemd",
+			"WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", NULL, NULL },
+	};
+
+	for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+		pid_t pid = fork();
+		if (pid == 0) {
+			if (fork() == 0) {
+				execvp(commands[i][0], (char *const *)commands[i]);
+				_exit(127);
+			}
+			_exit(0);
+		}
+		if (pid > 0) {
+			waitpid(pid, NULL, 0);
+		}
+	}
+}
+
 void viewport_server_terminate(struct viewport_server *server)
 {
 	/* Order matters only in that both must happen: the GLib loop is what is
@@ -381,6 +425,7 @@ bool viewport_server_start(struct viewport_server *server)
 		server);
 
 	setenv("WAYLAND_DISPLAY", server->socket_name, 1);
+	export_session_environment();
 	return true;
 }
 
