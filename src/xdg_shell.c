@@ -15,6 +15,7 @@
 
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/util/log.h>
 
@@ -422,6 +423,27 @@ static void handle_popup_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&popup->reposition.link);
 	wl_list_remove(&popup->destroy.link);
 	free(popup);
+}
+
+/* A client asking for another window to be focused — following a link, or an
+ * application raising its existing instance instead of starting a second one.
+ * The token is validated by wlroots; all that is left is to honour it. */
+void viewport_handle_request_activate(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, request_activate);
+	const struct wlr_xdg_activation_v1_request_activate_event *event = data;
+
+	struct viewport_toplevel *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (viewport_view_surface(toplevel) != event->surface) {
+			continue;
+		}
+		if (toplevel->mapped) {
+			viewport_toplevel_focus(toplevel);
+		}
+		return;
+	}
 }
 
 void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data)

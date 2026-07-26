@@ -187,6 +187,7 @@ void viewport_ipc_notify_view_removed(struct viewport_toplevel *toplevel)
 
 void viewport_ipc_notify_view_props(struct viewport_toplevel *toplevel)
 {
+	viewport_foreign_view_props(toplevel);
 	JsonBuilder *builder = json_builder_new();
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "type");

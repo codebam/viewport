@@ -68,18 +68,26 @@ void viewport_view_set_activated(struct viewport_toplevel *toplevel,
 {
 	if (toplevel->kind == VIEWPORT_VIEW_XDG) {
 		wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, activated);
-		return;
+	} else {
+		wlr_xwayland_surface_activate(toplevel->xwayland_surface, activated);
 	}
-	wlr_xwayland_surface_activate(toplevel->xwayland_surface, activated);
+	/* Routing this through the same seam keeps an external switcher's idea of
+	 * which window is focused in step with the seat's, without every caller
+	 * having to remember to tell it. */
+	viewport_foreign_view_state(toplevel, activated, toplevel->fullscreen);
 }
 
 void viewport_view_set_fullscreen(struct viewport_toplevel *toplevel, bool on)
 {
+	toplevel->fullscreen = on;
+
 	if (toplevel->kind == VIEWPORT_VIEW_XDG) {
 		wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, on);
-		return;
+	} else {
+		wlr_xwayland_surface_set_fullscreen(toplevel->xwayland_surface, on);
 	}
-	wlr_xwayland_surface_set_fullscreen(toplevel->xwayland_surface, on);
+	viewport_foreign_view_state(toplevel, toplevel->server->focused == toplevel,
+		on);
 }
 
 void viewport_view_close(struct viewport_toplevel *toplevel)
@@ -126,6 +134,7 @@ void viewport_view_map(struct viewport_toplevel *toplevel)
 	wlr_scene_node_set_enabled(&toplevel->scene_tree->node, toplevel->has_box);
 
 	viewport_ipc_notify_view_added(toplevel);
+	viewport_foreign_view_map(toplevel);
 }
 
 void viewport_view_unmap(struct viewport_toplevel *toplevel)
@@ -142,6 +151,8 @@ void viewport_view_unmap(struct viewport_toplevel *toplevel)
 	}
 
 	viewport_ipc_notify_view_removed(toplevel);
+
+	viewport_foreign_view_unmap(toplevel);
 
 	toplevel->mapped = false;
 	wl_list_remove(&toplevel->link);

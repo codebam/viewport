@@ -24,7 +24,11 @@
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
+#include <wlr/types/wlr_alpha_modifier_v1.h>
+#include <wlr/types/wlr_content_type_v1.h>
 #include <wlr/types/wlr_screencopy_v1.h>
+#include <wlr/types/wlr_tearing_control_v1.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/types/wlr_server_decoration.h>
@@ -182,7 +186,15 @@ bool viewport_server_init(struct viewport_server *server,
 	 *   wmenu-run: menu_run: Assertion `context->activation != NULL' failed
 	 * so without this the launcher aborts before drawing anything, which looks
 	 * exactly like a dead keybinding. */
-	wlr_xdg_activation_v1_create(server->wl_display);
+	/* Handling request_activate is what makes "open this link" raise the
+	 * browser you already have open, rather than the request being accepted
+	 * and quietly discarded. */
+	server->activation = wlr_xdg_activation_v1_create(server->wl_display);
+	if (server->activation != NULL) {
+		server->request_activate.notify = viewport_handle_request_activate;
+		wl_signal_add(&server->activation->events.request_activate,
+			&server->request_activate);
+	}
 
 	/* Virtual keyboard: lets wtype and accessibility tools inject key events,
 	 * and makes keyboard-driven behaviour testable without a human at the
@@ -239,6 +251,8 @@ bool viewport_server_init(struct viewport_server *server,
 	 * control means clipboard managers see an empty clipboard, no idle notify
 	 * means an idle daemon never fires. */
 	viewport_session_lock_init(server);
+	viewport_output_manager_init(server);
+	viewport_foreign_init(server);
 	wlr_gamma_control_manager_v1_create(server->wl_display);
 	wlr_data_control_manager_v1_create(server->wl_display);
 	wlr_ext_data_control_manager_v1_create(server->wl_display, 1);
@@ -246,6 +260,13 @@ bool viewport_server_init(struct viewport_server *server,
 	wlr_idle_inhibit_v1_create(server->wl_display);
 	wlr_single_pixel_buffer_manager_v1_create(server->wl_display);
 	wlr_fractional_scale_manager_v1_create(server->wl_display, 1);
+	wlr_content_type_manager_v1_create(server->wl_display, 1);
+	wlr_alpha_modifier_v1_create(server->wl_display);
+
+	/* Tearing control lets a game opt out of vsync for its own surface, which
+	 * is the difference between smooth input and a frame of added latency in a
+	 * competitive title. Advertising it does not force tearing on anything. */
+	wlr_tearing_control_manager_v1_create(server->wl_display, 1);
 
 	/* Started lazily: no X server runs until an X11 client connects. */
 	viewport_xwayland_init(server);
@@ -411,6 +432,16 @@ void viewport_server_finish(struct viewport_server *server)
 	if (server->session_lock_manager != NULL) {
 		wl_list_remove(&server->new_session_lock.link);
 	}
+	if (server->activation != NULL) {
+		wl_list_remove(&server->request_activate.link);
+	}
+	if (server->cursor_shape != NULL) {
+		wl_list_remove(&server->request_set_shape.link);
+	}
+	if (server->output_manager != NULL) {
+		wl_list_remove(&server->output_manager_apply.link);
+		wl_list_remove(&server->output_manager_test.link);
+	}
 	if (server->xwayland != NULL) {
 		wl_list_remove(&server->new_xwayland_surface.link);
 		wl_list_remove(&server->xwayland_ready.link);
@@ -428,14 +459,23 @@ void viewport_server_finish(struct viewport_server *server)
 	if (server->new_decoration.notify != NULL) {
 		wl_list_remove(&server->new_decoration.link);
 	}
+	/* Seat signals, not cursor ones. They were removed under the cursor's guard
+	 * before, which both mixed up the ownership and missed three of them —
+	 * wlr_seat_destroy() asserts its listener lists are empty, so every clean
+	 * shutdown aborted at the first one it reached. */
+	if (server->seat != NULL) {
+		wl_list_remove(&server->request_cursor.link);
+		wl_list_remove(&server->request_set_selection.link);
+		wl_list_remove(&server->request_set_primary_selection.link);
+		wl_list_remove(&server->request_start_drag.link);
+		wl_list_remove(&server->start_drag.link);
+	}
 	if (server->cursor != NULL) {
 		wl_list_remove(&server->cursor_motion.link);
 		wl_list_remove(&server->cursor_motion_absolute.link);
 		wl_list_remove(&server->cursor_button.link);
 		wl_list_remove(&server->cursor_axis.link);
 		wl_list_remove(&server->cursor_frame.link);
-		wl_list_remove(&server->request_cursor.link);
-		wl_list_remove(&server->request_set_selection.link);
 
 		wlr_cursor_destroy(server->cursor);
 		server->cursor = NULL;

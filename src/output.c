@@ -142,6 +142,7 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 		viewport_web_resize(server->web, width, height);
 	}
 	viewport_ipc_notify_output_layout(server);
+	viewport_output_manager_update(server);
 
 	/* A frame may already be pending from before this output existed; without
 	 * a scheduled frame nothing would ever acknowledge it. */

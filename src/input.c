@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_pointer.h>
@@ -194,8 +195,17 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data)
 		return;
 	}
 
-	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x,
-		event->delta_y);
+	/* A confined pointer still moves, but only inside the region the client
+	 * named, so the move is resolved to a target position and clamped rather
+	 * than applied as a raw delta. */
+	double lx = server->cursor->x + event->delta_x;
+	double ly = server->cursor->y + event->delta_y;
+	if (viewport_pointer_confine(server, &lx, &ly)) {
+		wlr_cursor_warp_closest(server->cursor, &event->pointer->base, lx, ly);
+	} else {
+		wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x,
+			event->delta_y);
+	}
 	process_cursor_motion(server, event->time_msec);
 }
 
@@ -220,8 +230,12 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener,
 		return;
 	}
 
-	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x,
-		event->y);
+	if (viewport_pointer_confine(server, &lx, &ly)) {
+		wlr_cursor_warp_closest(server->cursor, &event->pointer->base, lx, ly);
+	} else {
+		wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x,
+			event->y);
+	}
 	process_cursor_motion(server, event->time_msec);
 }
 
@@ -347,6 +361,22 @@ static void handle_request_cursor(struct wl_listener *listener, void *data)
 	}
 }
 
+/* A client may ask for a named cursor shape rather than supplying a surface —
+ * the modern way to request a resize arrow or an I-beam. Without this such
+ * clients get no cursor change at all. */
+static void handle_request_set_shape(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, request_set_shape);
+	struct wlr_cursor_shape_manager_v1_request_set_shape_event *event = data;
+
+	if (server->seat->pointer_state.focused_client != event->seat_client) {
+		return;
+	}
+	wlr_cursor_set_xcursor(server->cursor, server->xcursor_mgr,
+		wlr_cursor_shape_v1_name(event->shape));
+}
+
 /* Drag and drop between applications.
  *
  * Without these the compositor silently drops every drag: dragging a file out
@@ -414,7 +444,13 @@ void viewport_cursor_init(struct viewport_server *server)
 	server->cursor = wlr_cursor_create();
 	wlr_cursor_attach_output_layout(server->cursor, server->output_layout);
 
-	server->xcursor_mgr = wlr_xcursor_manager_create(NULL, 24);
+	/* Theme and size come from the config so a HiDPI setup is not stuck with a
+	 * 24px cursor, and the same values are reported to clients through the
+	 * settings portal. */
+	int cursor_size = server->config.cursor_size > 0
+		? server->config.cursor_size : 24;
+	server->xcursor_mgr = wlr_xcursor_manager_create(
+		server->config.cursor_theme, cursor_size);
 	server->pointer_on_web = true;
 
 	server->cursor_motion.notify = handle_cursor_motion;
@@ -439,6 +475,14 @@ void viewport_cursor_init(struct viewport_server *server)
 		handle_request_set_primary_selection;
 	wl_signal_add(&server->seat->events.request_set_primary_selection,
 		&server->request_set_primary_selection);
+	server->cursor_shape = wlr_cursor_shape_manager_v1_create(
+		server->wl_display, 1);
+	if (server->cursor_shape != NULL) {
+		server->request_set_shape.notify = handle_request_set_shape;
+		wl_signal_add(&server->cursor_shape->events.request_set_shape,
+			&server->request_set_shape);
+	}
+
 	server->request_start_drag.notify = handle_request_start_drag;
 	wl_signal_add(&server->seat->events.request_start_drag,
 		&server->request_start_drag);

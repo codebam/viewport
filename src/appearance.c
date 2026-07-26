@@ -94,10 +94,14 @@ static void add_gnome_settings(struct viewport_appearance *appearance,
 		g_variant_new_string("Sans 10"));
 	g_variant_builder_add(builder, "{sv}", "text-scaling-factor",
 		g_variant_new_double(1.0));
+	/* These must agree with the cursor the compositor actually draws, or a
+	 * toolkit sizes its own cursors differently from the pointer on screen. */
+	const struct viewport_config *config = &appearance->server->config;
 	g_variant_builder_add(builder, "{sv}", "cursor-theme",
-		g_variant_new_string("default"));
+		g_variant_new_string(config->cursor_theme != NULL
+			? config->cursor_theme : "default"));
 	g_variant_builder_add(builder, "{sv}", "cursor-size",
-		g_variant_new_int32(24));
+		g_variant_new_int32(config->cursor_size > 0 ? config->cursor_size : 24));
 	g_variant_builder_add(builder, "{sv}", "enable-animations",
 		g_variant_new_boolean(TRUE));
 }

@@ -116,6 +116,17 @@ bool viewport_config_load(struct viewport_server *server,
 		config->terminal = keep(g_strdup(
 			json_object_get_string_member(object, "terminal")));
 	}
+	if (json_object_has_member(object, "cursor")) {
+		JsonObject *cursor = json_object_get_object_member(object, "cursor");
+		if (json_object_has_member(cursor, "theme")) {
+			config->cursor_theme = keep(g_strdup(
+				json_object_get_string_member(cursor, "theme")));
+		}
+		if (json_object_has_member(cursor, "size")) {
+			config->cursor_size =
+				(int)json_object_get_int_member(cursor, "size");
+		}
+	}
 	if (json_object_has_member(object, "keyboard")) {
 		JsonObject *keyboard = json_object_get_object_member(object, "keyboard");
 		if (json_object_has_member(keyboard, "layout")) {

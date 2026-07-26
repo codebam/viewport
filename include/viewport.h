@@ -90,6 +90,9 @@ struct viewport_config {
 	const char *xkb_options;
 	int repeat_rate;
 	int repeat_delay;
+	/* Cursor theme and size; NULL/0 use the defaults. */
+	const char *cursor_theme;
+	int cursor_size;
 	/* Commands bound to the default terminal and launcher chords. */
 	const char *terminal;
 	const char *menu;
@@ -149,6 +152,14 @@ struct viewport_server {
 
 	struct wlr_session_lock_manager_v1 *session_lock_manager;
 	struct wl_listener new_session_lock;
+	struct wlr_xdg_activation_v1 *activation;
+	struct wl_listener request_activate;
+	struct wlr_cursor_shape_manager_v1 *cursor_shape;
+	struct wl_listener request_set_shape;
+	struct wlr_output_manager_v1 *output_manager;
+	struct wl_listener output_manager_apply;
+	struct wl_listener output_manager_test;
+	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
 	struct viewport_lock *lock;
 	bool locked;
 
@@ -225,6 +236,8 @@ struct viewport_server {
 	struct wl_listener start_drag;
 };
 
+struct viewport_foreign;
+
 struct viewport_output {
 	struct wl_list link;
 	struct viewport_server *server;
@@ -263,6 +276,10 @@ struct viewport_toplevel {
 	struct wlr_box last_clip;
 	bool has_box;
 	bool mapped;
+	/* Last fullscreen state the shell asked for; mirrored to external tools. */
+	bool fullscreen;
+	/* Handle published to external taskbars; NULL while unmapped. */
+	struct viewport_foreign *foreign;
 	/* False while the shell has it parked on another workspace. Directional
 	 * focus must skip these: their box is stale and they are not on screen. */
 	bool visible;
@@ -358,6 +375,19 @@ void viewport_layout_size(struct viewport_server *server,
 void viewport_handle_new_xdg_toplevel(struct wl_listener *listener, void *data);
 void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data);
 void viewport_handle_new_decoration(struct wl_listener *listener, void *data);
+void viewport_handle_request_activate(struct wl_listener *listener, void *data);
+
+/* Display configuration, for wlr-randr and kanshi. */
+void viewport_output_manager_init(struct viewport_server *server);
+void viewport_output_manager_update(struct viewport_server *server);
+
+/* The window list, as seen by taskbars and window switchers. */
+void viewport_foreign_init(struct viewport_server *server);
+void viewport_foreign_view_map(struct viewport_toplevel *toplevel);
+void viewport_foreign_view_unmap(struct viewport_toplevel *toplevel);
+void viewport_foreign_view_props(struct viewport_toplevel *toplevel);
+void viewport_foreign_view_state(struct viewport_toplevel *toplevel,
+	bool activated, bool fullscreen);
 
 /* Applies an IPC-supplied rect: repositions the scene node and reconfigures
  * the client. Safe to call before the toplevel maps. */
@@ -540,6 +570,8 @@ void viewport_pointer_deactivate_constraint(struct viewport_server *server);
 void viewport_pointer_check_constraint(struct viewport_server *server,
 	struct wlr_surface *surface);
 bool viewport_pointer_is_locked(struct viewport_server *server);
+bool viewport_pointer_confine(struct viewport_server *server, double *lx,
+	double *ly);
 void viewport_pointer_send_relative(struct viewport_server *server,
 	uint32_t time_msec, double dx, double dy, double dx_unaccel,
 	double dy_unaccel);

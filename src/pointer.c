@@ -153,6 +153,81 @@ void viewport_pointer_check_constraint(struct viewport_server *server,
 	}
 }
 
+/* Confinement, as opposed to locking.
+ *
+ * A locked pointer stops dead; a confined one still moves, but may not leave a
+ * region the client nominated. That is what a windowed game or a map widget
+ * asks for. The region is surface-local, so it has to be shifted into layout
+ * coordinates before the cursor position can be tested against it.
+ *
+ * Returns true when the position was outside the region and has been pulled
+ * back to its edge. */
+bool viewport_pointer_confine(struct viewport_server *server, double *lx,
+	double *ly)
+{
+	struct wlr_pointer_constraint_v1 *constraint = server->active_constraint;
+	if (constraint == NULL ||
+			constraint->type != WLR_POINTER_CONSTRAINT_V1_CONFINED) {
+		return false;
+	}
+
+	struct viewport_toplevel *toplevel = NULL, *candidate;
+	wl_list_for_each(candidate, &server->toplevels, link) {
+		if (viewport_view_surface(candidate) == constraint->surface) {
+			toplevel = candidate;
+			break;
+		}
+	}
+	if (toplevel == NULL) {
+		return false;
+	}
+
+	double sx = *lx - toplevel->box.x;
+	double sy = *ly - toplevel->box.y;
+
+	/* An empty region means the whole surface, per the protocol. */
+	const pixman_region32_t *region = &constraint->region;
+	if (!pixman_region32_not_empty(region)) {
+		return false;
+	}
+	if (pixman_region32_contains_point(region, (int)sx, (int)sy, NULL)) {
+		return false;
+	}
+
+	/* Outside: snap to the nearest point of the nearest rectangle. Boxes are
+	 * half-open, so the far edges sit one pixel short of the bound. */
+	int count = 0;
+	const pixman_box32_t *boxes = pixman_region32_rectangles(
+		(pixman_region32_t *)region, &count);
+
+	double best_x = sx, best_y = sy, best_distance = -1.0;
+	for (int i = 0; i < count; i++) {
+		double cx = sx, cy = sy;
+		if (cx < boxes[i].x1) {
+			cx = boxes[i].x1;
+		} else if (cx > boxes[i].x2 - 1) {
+			cx = boxes[i].x2 - 1;
+		}
+		if (cy < boxes[i].y1) {
+			cy = boxes[i].y1;
+		} else if (cy > boxes[i].y2 - 1) {
+			cy = boxes[i].y2 - 1;
+		}
+
+		double dx = cx - sx, dy = cy - sy;
+		double distance = dx * dx + dy * dy;
+		if (best_distance < 0.0 || distance < best_distance) {
+			best_distance = distance;
+			best_x = cx;
+			best_y = cy;
+		}
+	}
+
+	*lx = toplevel->box.x + best_x;
+	*ly = toplevel->box.y + best_y;
+	return true;
+}
+
 bool viewport_pointer_is_locked(struct viewport_server *server)
 {
 	return server->active_constraint != NULL &&

@@ -5,7 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <unistd.h>
+
+#include <glib-unix.h>
 
 #include <wlr/util/log.h>
 
@@ -28,6 +31,14 @@ static const char usage[] =
 	"  -H, --headless         use the headless backend instead of DRM\n"
 	"  -d, --debug            verbose logging\n"
 	"  -h, --help             this message\n";
+
+static gboolean handle_signal(gpointer data)
+{
+	struct viewport_server *server = data;
+	wlr_log(WLR_INFO, "signal received; shutting down");
+	viewport_server_terminate(server);
+	return G_SOURCE_CONTINUE;
+}
 
 int main(int argc, char *argv[])
 {
@@ -204,7 +215,20 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	/* Without a handler SIGTERM kills the process where it stands: the web
+	 * process is orphaned, and on a TTY the DRM master and session are dropped
+	 * by the kernel rather than released, which is how a compositor leaves a
+	 * black screen behind. Ending the loop instead runs the same teardown as
+	 * Mod4+Shift+e. These are GLib signal sources because GLib owns the outer
+	 * loop, so the handler runs between iterations rather than in async-signal
+	 * context. */
+	guint sigterm = g_unix_signal_add(SIGTERM, handle_signal, &server);
+	guint sigint = g_unix_signal_add(SIGINT, handle_signal, &server);
+
 	viewport_server_run(&server);
+
+	g_source_remove(sigterm);
+	g_source_remove(sigint);
 	status = EXIT_SUCCESS;
 
 out:
