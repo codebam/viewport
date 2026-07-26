@@ -265,6 +265,41 @@ if (mode === 'scrolling') {
   check('and back again', globalThis.__shell.activeOutput === start);
 }
 
+if (mode === 'scrolling') {
+  /* Resizing in the strip means changing the column's own width. The tiling
+   * path shifts flex weights between siblings, which the strip ignores
+   * entirely — columns are laid out at a fixed size — so a drag did nothing. */
+  const ws = globalThis.__shell.workspaces;
+  const activeWs = globalThis.__shell.outputs
+    .get(globalThis.__shell.activeOutput).workspace;
+  const columns = ws.get(activeWs).children;
+  const target = columns[0];
+  const first = target.width;
+
+  const firstId = target.type === 'leaf'
+    ? target.id : [...ws.get(activeWs).children].length && null;
+  emit({ type: 'view.focused', id: firstId ?? 1 });
+  emit({ type: 'shell.command',
+    command: 'layout.resize.delta', args: [String(firstId ?? 1), '192', '0'] });
+
+  check('a horizontal drag widens the column', target.width > first);
+
+  /* And the neighbour keeps its width: columns do not share space. */
+  const neighbour = columns[1];
+  const kept = neighbour.width;
+  emit({ type: 'shell.command',
+    command: 'layout.resize.delta', args: [String(firstId ?? 1), '192', '0'] });
+  check('the next column keeps its width', neighbour.width === kept);
+
+  /* Clamped, so a drag cannot shrink a column to nothing. */
+  for (let i = 0; i < 40; i++) {
+    emit({ type: 'shell.command',
+      command: 'layout.resize.delta',
+      args: [String(firstId ?? 1), '-192', '0'] });
+  }
+  check('column width is clamped above zero', target.width >= 0.1);
+}
+
 /* Fullscreen is per workspace. Two monitors each showing something fullscreen
  * must not cancel each other — a single global made the second one silently
  * un-fullscreen the first. */

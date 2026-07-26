@@ -272,9 +272,12 @@ body {
   align-items: stretch;
   height: 100%;
   width: max-content;
-  gap: var(--gap);
+  /* No `gap`: like a split, the space between columns is a real .divider so
+     the edge can be grabbed. */
   transition: transform .12s ease-out;
 }
+
+.strip > .divider { cursor: col-resize; }
 
 /* Fixed width, set per column from its preset. Columns never flex: that is
    what stops a new window from reflowing the ones already open. */

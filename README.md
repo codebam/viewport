@@ -346,8 +346,16 @@ The view scrolls the minimum needed to keep the focused column on screen.
 | `Mod4+Shift+h/l` | move the column along the strip, or to the next monitor at its end |
 | `Mod4+comma` / `Mod4+period` | consume the next window into this column / expel it back out |
 | `Mod4+r` | cycle the column width (⅓, ½, ⅔, full) |
+| `Mod4`+right-drag, or dragging a column edge | set the column width freely |
 | `Mod4+Shift+r` | cycle the window's share of the column height |
 | `Mod4+Home` / `Mod4+End` | jump to either end of the strip |
+
+Resizing means changing a column's own width. Columns do not share space, so
+widening one takes nothing from its neighbours — it makes the strip longer and
+shifts everything after it along. Nothing you are not touching changes size,
+which is the point of the model and the one place it will surprise a sway user.
+Vertical resizing inside a column works the ordinary way, since windows stacked
+in a column *do* share it.
 
 Directional focus moves to the shell in this mode: the compositor decides
 direction from where windows are on screen, and the column you are reaching for

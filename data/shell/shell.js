@@ -432,6 +432,17 @@ function renderTree(node) {
 /* Column widths as a fraction of the output, cycled by layout.column.width.
  * Same set as niri's default preset list. */
 const COLUMN_WIDTHS = [1 / 3, 1 / 2, 2 / 3, 1];
+
+/* Width of the divider between columns, which is --gap. Read from the
+ * stylesheet so the two cannot drift apart, with a fallback for the case where
+ * computed styles are unavailable (the test harness has no layout engine). */
+function gapPx() {
+  const raw = typeof getComputedStyle === 'function'
+    ? getComputedStyle(document.documentElement).getPropertyValue('--gap')
+    : '';
+  const value = parseInt(raw, 10);
+  return Number.isFinite(value) ? value : 8;
+}
 const COLUMN_HEIGHTS = [1 / 3, 1 / 2, 2 / 3, 1];
 
 function renderStrip(root, output) {
@@ -446,8 +457,22 @@ function renderStrip(root, output) {
   let focusedStart = null;
   let focusedWidth = 0;
 
-  for (const column of columns) {
+  columns.forEach((column, i) => {
     const width = Math.round(area.width * (column.width ?? 1 / 2));
+
+    if (i > 0) {
+      /* Grabbable edge, same as between tiled windows. It drags the column to
+         its left; the gap it sits in is shell-drawn, so no compositor support
+         is needed. */
+      const divider = document.createElement('div');
+      divider.className = 'divider';
+      divider.addEventListener('mousedown', (event) =>
+        beginColumnDrag(event, output.workspace, columns[i - 1]));
+      strip.append(divider);
+      /* Counted, or the scroll offset drifts by one gap per column and the
+         focused column stops lining up with the edge of the screen. */
+      offset += gapPx();
+    }
 
     const el = document.createElement('div');
     el.className = 'column';
@@ -464,7 +489,7 @@ function renderStrip(root, output) {
       focusedWidth = width;
     }
     offset += width;
-  }
+  });
 
   /* Scroll the least amount that brings the focused column fully into view. A
      column wider than the screen is aligned to the left edge instead, since it
@@ -784,6 +809,44 @@ function beginDividerDrag(event, node, index) {
 /* Nearest ancestor split running along `axis`, with the child on the path.
  * Resizing "width" means adjusting the closest horizontal container, which is
  * what makes it feel local rather than reshaping the whole workspace. */
+/* Drag the edge between two columns. Unlike a tiling divider this only ever
+ * changes the column on its left: the one on the right keeps its width and the
+ * strip shifts, which is what makes the model predictable — nothing you are not
+ * touching changes size. */
+function beginColumnDrag(event, workspace, column) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const area = windowsAreaOf(workspace);
+  const extent = area ? area.right - area.left : 0;
+  if (extent <= 0) return;
+
+  let last = event.clientX;
+  const generation = treeGeneration;
+
+  const onMove = (move) => {
+    if (generation !== treeGeneration) {
+      onUp();
+      return;
+    }
+    const delta = move.clientX - last;
+    if (delta === 0) return;
+    last = move.clientX;
+
+    const next = (column.width ?? COLUMN_WIDTHS[1]) + delta / extent;
+    column.width = Math.max(0.1, Math.min(next, 1));
+    relayoutAll();
+  };
+
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+}
+
 function ancestorOnAxis(id, axis) {
   const found = findLeaf(id);
   if (!found) return null;
@@ -827,6 +890,46 @@ function resizeFocused(direction) {
 }
 
 /* Mod4 + right drag, forwarded by the compositor as a pixel delta. */
+/* Shift one axis of a tiled window's share of its container. */
+function resizeAxis(id, axis, delta) {
+  const target = ancestorOnAxis(id, axis);
+  if (!target) return false;
+
+  const el = views.get(id)?.el?.parentElement;
+  const extent = el
+    ? (axis === 'horizontal'
+      ? el.getBoundingClientRect().width
+      : el.getBoundingClientRect().height)
+    : 0;
+  if (extent <= 0) return false;
+
+  const { parent, index } = target;
+  const usePrevious = index === parent.children.length - 1;
+  return shiftWeight(parent, usePrevious ? index - 1 : index,
+    (usePrevious ? -1 : 1) * (delta / extent));
+}
+
+/* Widen or narrow the column a window is in, as a fraction of the output.
+ *
+ * Columns do not share space: widening one does not take anything from its
+ * neighbours, it makes the strip longer and shifts everything after it along.
+ * That is the model — a column keeps the width it was given no matter what
+ * happens elsewhere — so there is nothing here that resizes an adjacent
+ * window, unlike a tiling split. */
+function resizeColumn(workspace, id, dx) {
+  const root = workspaceRoot(workspace);
+  const column = root.children[columnIndexOf(workspace, id)];
+  if (!column) return false;
+
+  const area = windowsAreaOf(workspace);
+  const extent = area ? area.right - area.left : 0;
+  if (extent <= 0) return false;
+
+  const next = (column.width ?? COLUMN_WIDTHS[1]) + dx / extent;
+  column.width = Math.max(0.1, Math.min(next, 1));
+  return true;
+}
+
 function resizeByDelta(id, dx, dy) {
   /* A floating window resizes by simply becoming that much bigger — there are
      no siblings to take the space from. Clamped so a drag cannot shrink it to
@@ -842,33 +945,29 @@ function resizeByDelta(id, dx, dy) {
     return;
   }
 
-  const found = findLeaf(id);
-  if (!found) return;
+  /* In the strip, horizontal means the column's own width — weights do
+     nothing there, because columns are laid out at a fixed size rather than
+     flexed. Vertical is still a share of the column, so it goes through the
+     ordinary path. */
+  if (layoutMode === 'scrolling') {
+    const workspace = workspaceOf(id);
+    if (workspace === null) return;
+    let changed = false;
+    if (dx !== 0) changed = resizeColumn(workspace, id, dx) || changed;
+    if (dy !== 0) changed = resizeAxis(id, 'vertical', dy) || changed;
+    if (changed) relayoutAll();
+    return;
+  }
+
+  if (!findLeaf(id)) return;
 
   for (const [axis, delta] of [['horizontal', dx], ['vertical', dy]]) {
     if (delta === 0) continue;
-    const target = ancestorOnAxis(id, axis);
-    if (!target) continue;
-
-    const el = views.get(id)?.el?.parentElement;
-    const extent = el
-      ? (axis === 'horizontal'
-        ? el.getBoundingClientRect().width
-        : el.getBoundingClientRect().height)
-      : 0;
-    if (extent <= 0) continue;
-
-    const { parent, index } = target;
-    const usePrevious = index === parent.children.length - 1;
-    shiftWeight(parent, usePrevious ? index - 1 : index,
-      (usePrevious ? -1 : 1) * (delta / extent));
+    resizeAxis(id, axis, delta);
   }
   relayoutAll();
 }
 
-/* sway's `layout toggle split`: flip the container the focused window is in,
- * rearranging the windows already inside it rather than affecting the next
- * one to open. */
 function toggleLayout() {
   if (focusedId == null) return;
   const found = findLeaf(focusedId);
