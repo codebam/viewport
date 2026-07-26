@@ -91,6 +91,9 @@ let overviewActive = false;
  * compositor wants the window's real size plus a factor, not the size it
  * appears at. */
 const overviewScales = new Map(); // view id -> scale
+/* The thumbnail each window is drawn in, so its clip can be taken from that
+ * rather than from the whole output. */
+const overviewCells = new Map(); // view id -> thumbnail element
 
 const outputsEl = document.getElementById('outputs');
 const desktopTemplate = document.getElementById('desktop-template');
@@ -459,11 +462,15 @@ function gapPx() {
 }
 const COLUMN_HEIGHTS = [1 / 3, 1 / 2, 2 / 3, 1];
 
-function renderStrip(root, output) {
+/* `area` may be supplied by the caller. The overview renders a strip into a
+ * container that is not in the document yet, and an unattached element measures
+ * zero — which collapsed every column to nothing and left the windows sized by
+ * their own content instead of by the layout. */
+function renderStrip(root, output, area = null) {
   const strip = document.createElement('div');
   strip.className = 'strip';
 
-  const area = output.windowsEl.getBoundingClientRect();
+  area = area ?? output.windowsEl.getBoundingClientRect();
   const columns = root.children.filter(
     (child) => child.type === 'split' || views.has(child.id));
 
@@ -567,19 +574,51 @@ function normaliseForLayout() {
  *
  * The windows inside are real surfaces. The compositor shrinks them for us,
  * told through the scale on view.layout, so nothing is asked to resize. */
-function renderOverview(output) {
+/* Which workspaces each output shows in the overview.
+ *
+ * A window element exists once in the DOM, so a workspace can only be drawn on
+ * one screen — rendering every workspace on every output would have each grid
+ * steal the windows from the last. Dealing them out instead means both monitors
+ * are used, which is the point of having two.
+ *
+ * Each output keeps the workspace it is currently displaying, so the thumbnail
+ * of what you were just looking at is on the screen you were looking at. The
+ * rest are dealt round-robin in order. */
+function overviewAssignment() {
+  /* Every workspace, not only the occupied ones. An overview is how you get
+     somewhere, and the empty workspace you want to move a window to has to be
+     visible to be a target. It also keeps the grid a grid: with one workspace
+     in use the alternative is a single cell at almost full size, which looks
+     like nothing happened. */
+  const names = [...outputs.keys()];
+  const assignment = new Map(names.map((name) => [name, []]));
+
+  const remaining = [];
+  for (let n = 1; n <= WORKSPACES; n++) remaining.push(n);
+  for (const name of names) {
+    const own = outputs.get(name).workspace;
+    const at = remaining.indexOf(own);
+    if (at >= 0) {
+      remaining.splice(at, 1);
+      assignment.get(name).push(own);
+    }
+  }
+
+  let turn = 0;
+  for (const n of remaining) {
+    assignment.get(names[turn % names.length]).push(n);
+    turn++;
+  }
+
+  for (const list of assignment.values()) list.sort((a, b) => a - b);
+  return assignment;
+}
+
+function renderOverview(output, list) {
   const grid = document.createElement('div');
   grid.className = 'overview';
 
-  /* Every workspace that has something on it, plus the one this output is
-     showing, so an empty current workspace is still a target to return to. */
-  const occupied = new Set([output.workspace]);
-  for (const n of workspaces.keys()) {
-    if (leavesOf(n).length > 0) occupied.add(n);
-  }
-  for (const floating of floats.values()) occupied.add(floating.workspace);
-
-  const list = [...occupied].sort((a, b) => a - b);
+  if (list.length === 0) return grid;
   const area = output.windowsEl.getBoundingClientRect();
 
   /* Squarish grid: enough columns that the thumbnails stay wide rather than
@@ -610,7 +649,8 @@ function renderOverview(output) {
     const root = workspaces.get(n);
     const rendered = root
       ? (layoutMode === 'scrolling'
-        ? renderStrip(root, { ...output, workspace: n, windowsEl: inner })
+        ? renderStrip(root, { ...output, workspace: n },
+          { width: area.width, height: area.height })
         : renderTree(root))
       : null;
     if (rendered) inner.append(rendered);
@@ -629,13 +669,22 @@ function renderOverview(output) {
       renderedIds.add(id);
     }
 
-    /* Everything drawn in this thumbnail is drawn at its scale. */
-    for (const id of idsOf(n)) overviewScales.set(id, scale);
+    /* Everything drawn in this thumbnail is drawn at its scale, and clipped to
+       the thumbnail rather than to the whole output — otherwise a window whose
+       layout overflows spills across its neighbours, since the surfaces the
+       compositor draws are not bounded by the thumbnail's `overflow: hidden`. */
+    for (const id of idsOf(n)) {
+      overviewScales.set(id, scale);
+      overviewCells.set(id, cell);
+    }
 
     cell.append(inner);
     cell.addEventListener('mousedown', () => {
+      /* Switch the output the thumbnail is on, not whichever was last active:
+         clicking a workspace on the right monitor means you want it there. */
       setOverview(false);
-      switchWorkspace(activeOutputName(), n);
+      setActiveOutput(output.name);
+      switchWorkspace(output.name, n);
     });
     grid.append(cell);
   }
@@ -647,7 +696,10 @@ function setOverview(active) {
   if (overviewActive === active) return;
   overviewActive = active;
 
-  if (!active) overviewScales.clear();
+  if (!active) {
+    overviewScales.clear();
+    overviewCells.clear();
+  }
 
   /* The compositor routes input to the shell while this is up: the windows on
      screen are miniatures, and a click on one means "go there". */
@@ -1227,17 +1279,36 @@ function reportGeometry(id) {
    * Wayland surface the compositor draws itself. Left unclipped, a column
    * scrolled off the left of one monitor appears on the monitor beside it. The
    * compositor crops the surface to this rect. */
-  const area = windowsAreaOf(workspaceOf(id));
-  const clip = area ? {
-    x: Math.round(Math.max(box.x, area.left)),
-    y: Math.round(Math.max(box.y, area.top)),
-    width: 0, height: 0,
-  } : null;
-  if (clip) {
-    clip.width = Math.round(Math.min(box.x + box.width, area.right)) - clip.x;
-    clip.height = Math.round(Math.min(box.y + box.height, area.bottom)) - clip.y;
-    if (clip.width < 0) clip.width = 0;
-    if (clip.height < 0) clip.height = 0;
+  /* In the overview a window is bounded by its thumbnail, not by the output. */
+  const cell = overviewCells.get(id);
+  const area = cell
+    ? (() => {
+      const r = cell.getBoundingClientRect();
+      return { left: r.left, top: r.top,
+        right: r.left + r.width, bottom: r.top + r.height };
+    })()
+    : windowsAreaOf(workspaceOf(id));
+  let clip = null;
+  if (area) {
+    /* Intersect on screen, where the window is drawn — with a scale in effect
+       the measured rect is much smaller than the window's real size, so
+       intersecting the real size against screen coordinates would clip almost
+       everything away and, at zero width, hide the window entirely.
+
+       The result is then converted back into the window's own coordinates,
+       which is the space the compositor expects and the only one that means
+       anything to the client's buffer. */
+    const left = Math.max(rect.left, area.left);
+    const top = Math.max(rect.top, area.top);
+    const right = Math.min(rect.left + rect.width, area.right);
+    const bottom = Math.min(rect.top + rect.height, area.bottom);
+
+    clip = {
+      x: Math.round(box.x + (left - rect.left) / scale),
+      y: Math.round(box.y + (top - rect.top) / scale),
+      width: Math.max(0, Math.round((right - left) / scale)),
+      height: Math.max(0, Math.round((bottom - top) / scale)),
+    };
   }
 
   const prev = view.box;
@@ -1439,7 +1510,11 @@ function relayoutAll() {
      still not shown. */
   renderedIds = new Set();
 
-  if (overviewActive) overviewScales.clear();
+  if (overviewActive) {
+    overviewScales.clear();
+    overviewCells.clear();
+  }
+  const assignment = overviewActive ? overviewAssignment() : null;
 
   for (const [name, output] of outputs) {
     const root = workspaces.get(output.workspace);
@@ -1447,7 +1522,7 @@ function relayoutAll() {
        DOM, so two grids would fight over the same windows and the second would
        simply steal them. The others go blank for the duration. */
     const rendered = overviewActive
-      ? (name === activeOutputName() ? renderOverview(output) : null)
+      ? renderOverview(output, assignment.get(name) ?? [])
       : (root
         ? (layoutMode === 'scrolling'
           ? renderStrip(root, output)
@@ -1572,6 +1647,9 @@ function syncOutputs(list) {
       const fragment = desktopTemplate.content.cloneNode(true);
       const el = fragment.querySelector('.desktop');
       output = {
+        /* The output's own name, so code holding the record does not have to
+           be handed the key separately. */
+        name: info.name,
         el,
         windowsEl: el.querySelector('.windows'),
         emptyEl: el.querySelector('.empty'),

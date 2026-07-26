@@ -62,6 +62,16 @@ static void handle_toplevel_commit(struct wl_listener *listener, void *data)
 		 * using server-side decorations. */
 		wlr_scene_node_set_position(&toplevel->scene_tree->node,
 			toplevel->box.x, toplevel->box.y);
+
+		/* wlr_scene_surface recomputes each buffer's destination size from the
+		 * surface on every commit, which wipes any scale set outside it. A
+		 * window with live content — a video, a chat — therefore snapped back
+		 * to full size the moment it painted, which in the overview meant the
+		 * busy windows were the ones that refused to shrink. Re-applying here
+		 * is what makes the scale stick. */
+		if (toplevel->scale > 0.0 && toplevel->scale < 1.0) {
+			viewport_toplevel_apply_scale(toplevel);
+		}
 	}
 
 	if (toplevel->xdg_toplevel->base->initial_commit) {
@@ -534,7 +544,7 @@ static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 		(int)(buffer->buffer->height * scale));
 }
 
-static void apply_scale(struct viewport_toplevel *toplevel)
+void viewport_toplevel_apply_scale(struct viewport_toplevel *toplevel)
 {
 	if (toplevel->surface_tree == NULL) {
 		return;
@@ -647,7 +657,7 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 		(toplevel->clip.width <= 0 || toplevel->clip.height <= 0);
 
 	apply_clip(toplevel);
-	apply_scale(toplevel);
+	viewport_toplevel_apply_scale(toplevel);
 
 	if (toplevel->mapped) {
 		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, !offscreen);

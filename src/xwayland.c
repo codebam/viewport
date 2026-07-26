@@ -28,6 +28,18 @@
 
 #include "viewport.h"
 
+/* Same reason as the xdg path: a commit resets the buffers' destination size,
+ * so a scaled X11 window would snap back to full size as soon as it painted. */
+static void handle_surface_commit(struct wl_listener *listener, void *data)
+{
+	struct viewport_toplevel *toplevel =
+		wl_container_of(listener, toplevel, commit);
+
+	if (toplevel->scale > 0.0 && toplevel->scale < 1.0) {
+		viewport_toplevel_apply_scale(toplevel);
+	}
+}
+
 static void handle_map(struct wl_listener *listener, void *data)
 {
 	struct viewport_toplevel *toplevel = wl_container_of(listener, toplevel, map);
@@ -138,6 +150,8 @@ static void handle_associate(struct wl_listener *listener, void *data)
 		toplevel->scene_tree, surface->surface);
 	toplevel->scene_tree->node.data = toplevel;
 
+	toplevel->commit.notify = handle_surface_commit;
+	wl_signal_add(&surface->surface->events.commit, &toplevel->commit);
 	toplevel->map.notify = handle_map;
 	wl_signal_add(&surface->surface->events.map, &toplevel->map);
 	toplevel->unmap.notify = handle_unmap;
@@ -149,6 +163,7 @@ static void handle_dissociate(struct wl_listener *listener, void *data)
 	struct viewport_toplevel *toplevel =
 		wl_container_of(listener, toplevel, dissociate);
 
+	wl_list_remove(&toplevel->commit.link);
 	wl_list_remove(&toplevel->map.link);
 	wl_list_remove(&toplevel->unmap.link);
 

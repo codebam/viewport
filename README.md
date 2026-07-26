@@ -330,12 +330,25 @@ clients to resize would be refused about as often as it was honoured, and
 slow when it wasn't. `view.layout` carries the window's real size plus a
 `scale`, and the compositor scales the buffers the client already produced.
 
+The scale has to be re-applied after every commit: `wlr_scene_surface`
+recomputes each buffer's destination size from the surface, so a window with
+live content — a video, a chat — snapped back to full size the moment it
+painted. In the overview that meant the busiest windows were the ones that
+refused to shrink.
+
 Two consequences worth knowing. Only the offsets *between* buffers are left
 unscaled, so a client painting through subsurfaces — a browser compositing
 video, mostly — shows those parts misplaced while shrunk; it is exact again the
 moment the scale returns to 1. And input is routed to the shell for the duration
 (`shell.overview`), because a click on a miniature means "take me there" rather
 than reaching the client underneath.
+
+Every workspace is shown, not only the occupied ones — an overview is how you
+get somewhere, and an empty workspace has to be visible to be a target. They are
+dealt out across the monitors rather than crowded onto one: a window element
+exists once in the DOM, so a workspace can only be drawn on one screen, and
+rendering all of them everywhere would have each grid steal the windows from the
+last. Each output keeps the workspace it was already showing.
 
 ### Animation
 

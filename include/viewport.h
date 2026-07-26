@@ -451,6 +451,9 @@ void viewport_handle_new_xdg_toplevel(struct wl_listener *listener, void *data);
 void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data);
 void viewport_handle_new_decoration(struct wl_listener *listener, void *data);
 void viewport_handle_request_activate(struct wl_listener *listener, void *data);
+/* Re-applies the window's render scale to its buffers. Needed after any commit,
+ * because wlr_scene_surface resets the destination size from the surface. */
+void viewport_toplevel_apply_scale(struct viewport_toplevel *toplevel);
 
 /* Display configuration, for wlr-randr and kanshi. */
 void viewport_output_manager_init(struct viewport_server *server);
