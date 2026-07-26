@@ -2012,6 +2012,10 @@ function syncOutputs(list) {
       height: `${info.height}px`,
     });
 
+    output.hdr = info.hdr === true;
+    output.hdrCapable = info.hdr_capable === true;
+    output.el.classList.toggle('hdr', output.hdr);
+
     /* Panels reserve space through layer-shell exclusive zones; the compositor
        reports what is left. Expressed as insets so the bar and the tiling area
        shift together and everything downstream keeps measuring elements as
@@ -2462,10 +2466,18 @@ function renderBar(name) {
   }
 
   /* Show the active binding mode, as sway's bar does — without it there is no
-   * way to tell that hjkl has stopped moving focus and started resizing. */
-  output.modeEl.textContent =
-    currentMode === 'default' ? '' : currentMode.toUpperCase();
-  output.modeEl.hidden = currentMode === 'default';
+   * way to tell that hjkl has stopped moving focus and started resizing.
+   *
+   * HDR shares the indicator, because it is invisible otherwise: the picture
+   * changes and nothing says why, and a monitor left in HDR by a mis-hit key
+   * looks like a broken colour profile rather than a setting. Both can be true
+   * at once, so both are shown. */
+  const labels = [];
+  if (output.hdr) labels.push('HDR');
+  if (currentMode !== 'default') labels.push(currentMode.toUpperCase());
+
+  output.modeEl.textContent = labels.join(' · ');
+  output.modeEl.hidden = labels.length === 0;
 
   const m = output.modules;
   const now = new Date();
@@ -2616,6 +2628,11 @@ function handleShellCommand(command, args) {
       break;
     case 'layout.overview':
       setOverview(!overviewActive);
+      break;
+    case 'output.hdr':
+      /* No state of its own: the compositor owns whether an output is in HDR,
+         and toggling is asking it to flip whatever it currently has. */
+      send({ type: 'output.hdr', name: activeOutputName() });
       break;
     case 'workspace.step':
       stepWorkspace(Number(arg));

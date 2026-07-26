@@ -60,6 +60,17 @@ layer_shell_protocol_h = custom_target(
   command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
 )
 
+# Colour management comes from wayland-protocols staging rather than being
+# vendored — it is shipped there, unlike wlr-layer-shell — but wlroots still
+# does not install the generated header its own header needs.
+color_management_protocol_h = custom_target(
+  'color-management-v1-protocol.h',
+  input: wayland_protocols.get_variable(pkgconfig: 'pkgdatadir')
+    / 'staging/color-management/color-management-v1.xml',
+  output: 'color-management-v1-protocol.h',
+  command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+
 # Same story for output power management, whose wlroots header needs the
 # generated one to compile.
 output_power_protocol_h = custom_target(
@@ -144,6 +155,7 @@ viewport_sources = files(
   'src/watchdog.c',
   'src/session.c',
   'src/idle.c',
+  'src/hdr.c',
   'src/gesture.c',
   'src/ipc.c',
   'src/glib_loop.c',
@@ -155,6 +167,7 @@ viewport_sources = files(
 
 viewport_sources += layer_shell_protocol_h
 viewport_sources += output_power_protocol_h
+viewport_sources += color_management_protocol_h
 
 executable(
   'viewport',

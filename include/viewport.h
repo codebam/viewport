@@ -189,6 +189,10 @@ struct viewport_server {
 	/* A client holding this receives Mod4 chords itself: a virtual machine, a
 	 * nested compositor, a remote desktop. Without it there is no way for one
 	 * to ever see them. */
+	/* Colour management: what lets the renderer convert between what a client
+	 * painted and what an output is showing, which is what makes HDR usable. */
+	struct wlr_color_manager_v1 *color_manager;
+
 	struct wlr_idle_notifier_v1 *idle_notifier;
 	struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
 	struct wlr_output_power_manager_v1 *output_power;
@@ -339,6 +343,9 @@ struct viewport_output {
 	/* What is left of the output after panels have claimed their exclusive
 	 * zones. Published to the shell, which tiles windows inside it. */
 	struct wlr_box usable_area;
+	/* Whether this output is currently in an HDR mode. Per output, because a
+	 * monitor that can do it sits next to one that cannot. */
+	bool hdr;
 
 	struct wl_listener frame;
 	struct wl_listener request_state;
@@ -506,6 +513,11 @@ void viewport_output_revert_cancel(struct viewport_server *server);
 /* Runs a command detached from the compositor, so quitting does not take it
  * down and no zombie is left behind. */
 void viewport_spawn(const char *command);
+
+/* HDR, per output. */
+void viewport_hdr_init(struct viewport_server *server);
+bool viewport_output_hdr_capable(struct viewport_output *output);
+bool viewport_output_set_hdr(struct viewport_output *output, bool enabled);
 
 /* Idle policy: lock and blank when nobody is there. */
 void viewport_idle_init(struct viewport_server *server);

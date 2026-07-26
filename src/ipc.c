@@ -400,6 +400,14 @@ void viewport_ipc_notify_output_layout(struct viewport_server *server)
 		json_builder_set_member_name(builder, "usable_height");
 		json_builder_add_int_value(builder, output->usable_area.height);
 
+		/* So the shell can show which monitor is in HDR, and offer it only
+		 * where the display will take it. */
+		json_builder_set_member_name(builder, "hdr");
+		json_builder_add_boolean_value(builder, output->hdr);
+		json_builder_set_member_name(builder, "hdr_capable");
+		json_builder_add_boolean_value(builder,
+			viewport_output_hdr_capable(output));
+
 		json_builder_set_member_name(builder, "scale");
 		json_builder_add_double_value(builder, wlr_output->scale);
 		json_builder_set_member_name(builder, "transform");
@@ -907,6 +915,27 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		handle_view_opacity(server, object);
 	} else if (strcmp(type, "output.configure") == 0) {
 		handle_output_configure(server, object);
+	} else if (strcmp(type, "output.hdr") == 0) {
+		/* Named output, or the active one. Absent "enabled" toggles, which is
+		 * what a keybinding wants and what a settings panel does not. */
+		const char *name = json_object_has_member(object, "name")
+			? json_object_get_string_member(object, "name")
+			: server->active_output;
+		struct viewport_output *output = name != NULL
+			? output_by_name(server, name) : NULL;
+
+		if (output == NULL) {
+			notify_error(server, "output.hdr", "no such output");
+		} else {
+			bool enabled = json_object_has_member(object, "enabled")
+				? json_object_get_boolean_member(object, "enabled")
+				: !output->hdr;
+			if (!viewport_output_set_hdr(output, enabled)) {
+				notify_error(server, "output.hdr",
+					enabled ? "the display would not take HDR"
+						: "could not leave HDR");
+			}
+		}
 	} else if (strcmp(type, "output.confirm") == 0) {
 		/* The shell saw the change land and the user accepted it, so the
 		 * pending revert is called off. */

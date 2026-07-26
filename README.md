@@ -296,7 +296,7 @@ socat - UNIX:$VIEWPORT_SOCKET
 | `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `floating`, `width`, `height`, `min_width`, `min_height` |
 | `view.props` | `id`, `title`, `app_id` |
 | `view.removed` | `id` |
-| `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `scale`, `transform`, `modes[]` |
+| `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `hdr`, `hdr_capable`, `scale`, `transform`, `modes[]` |
 | `error` | `context`, `message` |
 
 ### Shell → compositor
@@ -316,6 +316,7 @@ socat - UNIX:$VIEWPORT_SOCKET
 | `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |
 | `output.query` | — |
 | `output.confirm` | — |
+| `output.hdr` | optional `name` (default: active output), optional `enabled` (absent toggles) |
 | `session.save` | `state` (opaque string) |
 | `session.query` | — |
 | `quit` | — |
@@ -332,6 +333,31 @@ CSS `overflow` bounds the shell's own painting and no more. `clip` on
 output, which is what keeps a column scrolled off the left of one monitor from
 being drawn on the monitor beside it. Only the surface is clipped, never the
 container: a popup is entitled to extend past the window it belongs to.
+
+## HDR
+
+`Mod4+Shift+p` switches the monitor you are looking at into HDR, and back.
+Per output, because a display that can do it usually sits next to one that
+cannot, and global would mean choosing which of the two to get wrong.
+
+Two halves make it work. The output is switched to BT.2020 primaries and the PQ
+transfer function, at ten bits per channel — eight cannot carry a PQ curve
+without visible banding in exactly the dark gradients this is for. On its own
+that would make everything look *worse*, because every SDR window would be
+interpreted as if it were HDR. The other half is `wp-color-management-v1`,
+attached to the scene: clients say what their content actually is, and the
+renderer converts rather than reinterprets. SDR windows keep looking like SDR
+windows, and a client with real HDR content can say so.
+
+Capability is read from the connector and the change is tested before it is
+committed, so a display that will not take it is left showing what it was
+showing rather than going dark. The bar shows `HDR` while an output is in it —
+otherwise the picture changes and nothing says why, and a monitor left in HDR
+by a mis-hit key looks like a broken colour profile rather than a setting.
+
+Only the features wlroots 0.20 actually implements are advertised: parametric
+image descriptions, PQ and BT.2020. sRGB is deliberately not advertised — the
+protocol treats it as always supported.
 
 ## Idle
 

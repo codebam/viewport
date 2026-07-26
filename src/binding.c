@@ -316,6 +316,9 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 	 * leaving. The screens come back on the next keypress. */
 	viewport_binding_add(server, "Mod4+Shift+x=lock");
 	viewport_binding_add(server, "Mod4+Shift+b=blank");
+	/* HDR on the monitor you are looking at. Per output rather than global,
+	 * because a display that can do it usually sits next to one that cannot. */
+	viewport_binding_add(server, "Mod4+Shift+p=shell output.hdr");
 
 	if (scrolling) {
 		/* niri's column keys. A column is the unit here: windows stack inside

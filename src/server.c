@@ -282,6 +282,7 @@ bool viewport_server_init(struct viewport_server *server,
 	 * focus_change signal. */
 	server->ime = viewport_ime_create(server);
 	viewport_gestures_init(server);
+	viewport_hdr_init(server);
 
 	if (server->session != NULL) {
 		server->session_active.notify = handle_session_active;
