@@ -394,11 +394,19 @@ waiting for the shell to send each one a new rect: a window whose rect has not
 changed gets no message, and an idle window never repaints, so it kept the
 overview's size until something made it draw again.
 
-The destination size is derived from the buffer's *source box* rather than the
-whole buffer, because clipping narrows that box: sizing from the full buffer
-stretches whatever survived the clip back out to the width the entire window
-would have had, so a window half outside its thumbnail came out looking like a
-funhouse mirror.
+What gets scaled is the buffer's *destination size*, because whatever wlroots
+last put there already accounts for the surface's buffer scale, its transform,
+any viewport it set, and the crop. Computing from the buffer's own dimensions
+gets all of that wrong — most visibly for a client that renders at 2x and says
+so, which then draws at double size.
+
+It cannot simply be read back each frame either: wlroots recomputes the
+destination only when the surface commits, so in between, reading it returns
+what this code last wrote and multiplying again shrinks the window a little
+further every frame. Each buffer's unscaled size is remembered alongside the
+value written from it — if the destination still matches what was written the
+remembered size still stands, and if it has changed then wlroots recomputed it
+and the new value is the unscaled one.
 
 Two consequences worth knowing. Only the offsets *between* buffers are left
 unscaled, so a client painting through subsurfaces — a browser compositing

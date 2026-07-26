@@ -466,6 +466,8 @@ void viewport_handle_request_activate(struct wl_listener *listener, void *data);
  * any commit, because wlr_scene_surface resets both from the surface, and the
  * two must be applied together — the scale is derived from what the crop left. */
 void viewport_toplevel_apply_crop(struct viewport_toplevel *toplevel);
+/* Drops the remembered unscaled sizes. Called when nothing is scaled any more. */
+void viewport_scale_forget(void);
 
 /* Display configuration, for wlr-randr and kanshi. */
 void viewport_output_manager_init(struct viewport_server *server);

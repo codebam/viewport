@@ -14,6 +14,8 @@
 #include <string.h>
 
 #include <wlr/types/wlr_output.h>
+#include <glib.h>
+
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
@@ -515,8 +517,36 @@ void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data)
  * the scale returns to 1, and the overview is a transient view, so this is a
  * cheaper trade than scaling positions the subsurface tree would immediately
  * recompute. */
-/* Set while a scaled window is being walked, so the log line below is only
- * emitted when --debug is on. */
+/* Scaling, and remembering what a buffer's size would have been unscaled.
+ *
+ * The destination size is the right thing to scale: whatever wlroots last put
+ * there already accounts for the surface's buffer scale, its transform, any
+ * viewport it set, and the crop. Computing from the buffer's own dimensions
+ * gets all of that wrong — most visibly for a client that renders at 2x and
+ * says so, which then draws at double size.
+ *
+ * But it cannot simply be read each time. wlroots recomputes the destination
+ * only when the surface commits; in between, reading it back gives whatever
+ * this code last wrote, and multiplying that again shrinks the window a little
+ * further every frame. So each buffer's unscaled size is remembered alongside
+ * the value written from it: if the destination still matches what was
+ * written, the remembered size is still the unscaled one; if it has changed,
+ * wlroots recomputed it and the new value is the unscaled one.
+ *
+ * Keyed by buffer pointer, and dropped wholesale when nothing is scaled — the
+ * entries are only meaningful while the overview is up. */
+struct scale_state {
+	int natural_width, natural_height;
+	int applied_width, applied_height;
+};
+
+static GHashTable *scale_states;
+
+void viewport_scale_forget(void)
+{
+	g_clear_pointer(&scale_states, g_hash_table_destroy);
+}
+
 static bool debug_scale;
 
 static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
@@ -524,45 +554,47 @@ static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 {
 	double scale = *(double *)data;
 
-	if (buffer->buffer == NULL) {
+	if (buffer->buffer == NULL || buffer->dst_width <= 0 ||
+			buffer->dst_height <= 0) {
 		return;
 	}
 
-	int width = 0, height = 0;
-	if (scale < 1.0) {
-		/* Scale what is actually being shown, which is not the whole buffer
-		 * once a clip is in force: clipping narrows the source box, and sizing
-		 * the destination from the full buffer stretches the surviving strip
-		 * back out to the width the whole window would have had. A window half
-		 * outside its thumbnail came out looking like a funhouse mirror. */
-		double source_width = buffer->src_box.width > 0.0
-			? buffer->src_box.width : buffer->buffer->width;
-		double source_height = buffer->src_box.height > 0.0
-			? buffer->src_box.height : buffer->buffer->height;
-
-		width = (int)(source_width * scale);
-		height = (int)(source_height * scale);
+	if (scale_states == NULL) {
+		scale_states = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+			NULL, g_free);
 	}
 
-	/* Only when it differs. Setting the destination size damages the node, and
-	 * this runs once a frame while the overview is up — writing the same value
-	 * every frame would keep the whole screen permanently damaged. Zero means
-	 * "the buffer's own size", which is the default and how the scale is
-	 * cleared. */
-	if (buffer->dst_width != width || buffer->dst_height != height) {
-		wlr_scene_buffer_set_dest_size(buffer, width, height);
-		/* Capped: a client that repaints continuously resets its own
-		 * destination size on every commit, so this runs once a frame for as
-		 * long as the overview is open. A handful of lines is enough to tell
-		 * whether scaling is reaching a given window. */
-		static int logged;
-		if (debug_scale && width > 0 && logged < 20) {
-			logged++;
-			wlr_log(WLR_DEBUG, "scale buffer %dx%d src %.0fx%.0f -> %dx%d",
-				buffer->buffer->width, buffer->buffer->height,
-				buffer->src_box.width, buffer->src_box.height, width, height);
-		}
+	struct scale_state *state = g_hash_table_lookup(scale_states, buffer);
+	if (state == NULL) {
+		state = g_new0(struct scale_state, 1);
+		g_hash_table_insert(scale_states, buffer, state);
+		state->applied_width = -1;
 	}
+
+	if (buffer->dst_width != state->applied_width ||
+			buffer->dst_height != state->applied_height) {
+		/* Not our value, so wlroots recomputed it: this is the unscaled size. */
+		state->natural_width = buffer->dst_width;
+		state->natural_height = buffer->dst_height;
+	}
+
+	int width = (int)(state->natural_width * scale);
+	int height = (int)(state->natural_height * scale);
+	if (width <= 0 || height <= 0) {
+		return;
+	}
+
+	static int logged;
+	if (debug_scale && logged < 20 &&
+			(width != state->applied_width || height != state->applied_height)) {
+		logged++;
+		wlr_log(WLR_DEBUG, "scale buffer dst %dx%d -> %dx%d",
+			state->natural_width, state->natural_height, width, height);
+	}
+
+	state->applied_width = width;
+	state->applied_height = height;
+	wlr_scene_buffer_set_dest_size(buffer, width, height);
 }
 
 static void apply_scale(struct viewport_toplevel *toplevel)
@@ -570,7 +602,14 @@ static void apply_scale(struct viewport_toplevel *toplevel)
 	if (toplevel->surface_tree == NULL) {
 		return;
 	}
+
 	double scale = toplevel->scale > 0.0 ? toplevel->scale : 1.0;
+	if (scale >= 1.0) {
+		/* Nothing to do: the crop pass has just left every destination at the
+		 * size it should be drawn at. */
+		return;
+	}
+
 	debug_scale = toplevel->server->config.trace;
 	wlr_scene_node_for_each_buffer(&toplevel->surface_tree->node,
 		scale_iterator, &scale);

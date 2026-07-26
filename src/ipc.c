@@ -899,6 +899,7 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 				viewport_toplevel_apply_crop(toplevel);
 				cleared++;
 			}
+			viewport_scale_forget();
 			wlr_log(WLR_DEBUG, "overview closed; scale cleared on %d windows",
 				cleared);
 		}
