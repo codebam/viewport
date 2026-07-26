@@ -47,15 +47,18 @@ this is a throwaway container driving real hardware, and pinning down exactly
 which capabilities libinput and the GPU driver need across kernel versions is a
 worse trade than granting them.
 
-WebKit's sandbox is disabled in the container. It sandboxes its web process
-with bubblewrap, and inside a privileged container that is available enough to
-be used and broken enough not to work — the page loads, its scripts never run,
-and the desktop comes up with no bar and nothing laid out. A rootless container
-avoids this by accident: WebKit notices bubblewrap cannot work at all and turns
-itself off, which was the only difference between a nested run that worked and
-a TTY run that did not. There is nothing here for the sandbox to protect
-against anyway — a throwaway container built from a known package, rendering a
-shell that ships inside it.
+The package depends on `shared-mime-info`, and the reason is worth knowing
+because its absence looks nothing like a missing package. The bundled shell is
+loaded from `file://`, which carries no `Content-Type`, so WebKit works out what
+the page is from the shared MIME database. Without that database it concludes
+the page is an empty document — the load reports started, committed and finished
+against the right URI, no script runs, no subresource is ever requested, not
+even a `<meta refresh>` fires. The desktop comes up with no bar and nothing laid
+out, while every line in the log says the load succeeded. A clean Arch install
+does not have it, so this is not only a container problem.
+
+WebKit's bubblewrap sandbox was blamed for this for a while and is innocent:
+disabling it changed nothing, and the shell comes up with it enabled.
 
 Seat management is the part with no obvious answer inside a container. logind is
 not running in there, and libseat's builtin backend — which would open the
