@@ -41,6 +41,22 @@ static void handle_map(struct wl_listener *listener, void *data)
 		wlr_scene_node_reparent(&toplevel->scene_tree->node,
 			toplevel->server->layer_overlay);
 		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, true);
+
+		/* Menus need the keyboard, not just the pointer.
+		 *
+		 * An X11 menu is an override-redirect window that takes focus and
+		 * closes when it loses it. Left unfocused it sits there inert: Steam's
+		 * menu appeared but nothing in it could be clicked, because the menu
+		 * was waiting for a focus it never received. Only surfaces that ask are
+		 * given it — a tooltip must not steal the keyboard. */
+		if (wlr_xwayland_surface_override_redirect_wants_focus(surface)) {
+			struct viewport_server *server = toplevel->server;
+			struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
+			wlr_seat_keyboard_notify_enter(server->seat, surface->surface,
+				keyboard != NULL ? keyboard->keycodes : NULL,
+				keyboard != NULL ? keyboard->num_keycodes : 0,
+				keyboard != NULL ? &keyboard->modifiers : NULL);
+		}
 		return;
 	}
 
@@ -54,6 +70,20 @@ static void handle_unmap(struct wl_listener *listener, void *data)
 
 	if (toplevel->xwayland_surface->override_redirect) {
 		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, false);
+
+		/* Hand the keyboard back, or dismissing a menu leaves the session with
+		 * focus on a surface that no longer exists and typing goes nowhere. */
+		struct viewport_server *server = toplevel->server;
+		if (server->seat->keyboard_state.focused_surface ==
+				toplevel->xwayland_surface->surface) {
+			if (server->focused != NULL) {
+				struct viewport_toplevel *previous = server->focused;
+				server->focused = NULL;
+				viewport_toplevel_focus(previous);
+			} else {
+				viewport_focus_web(server);
+			}
+		}
 		return;
 	}
 
@@ -84,6 +114,21 @@ static void handle_request_configure(struct wl_listener *listener, void *data)
 
 	wlr_xwayland_surface_configure(surface, toplevel->box.x, toplevel->box.y,
 		toplevel->box.width, toplevel->box.height);
+}
+
+/* An unmanaged surface moving itself. Submenus do this: the parent menu stays
+ * put and the child appears beside it, at coordinates the client picks. Without
+ * following them a submenu opens wherever its first placement happened to be. */
+static void handle_set_geometry(struct wl_listener *listener, void *data)
+{
+	struct viewport_toplevel *toplevel =
+		wl_container_of(listener, toplevel, set_geometry);
+	struct wlr_xwayland_surface *surface = toplevel->xwayland_surface;
+
+	if (surface->override_redirect && toplevel->scene_tree != NULL) {
+		wlr_scene_node_set_position(&toplevel->scene_tree->node, surface->x,
+			surface->y);
+	}
 }
 
 static void handle_set_title(struct wl_listener *listener, void *data)
@@ -166,6 +211,7 @@ static void handle_destroy(struct wl_listener *listener, void *data)
 
 	wl_list_remove(&toplevel->associate.link);
 	wl_list_remove(&toplevel->dissociate.link);
+	wl_list_remove(&toplevel->set_geometry.link);
 	wl_list_remove(&toplevel->request_configure.link);
 	wl_list_remove(&toplevel->set_title.link);
 	wl_list_remove(&toplevel->set_app_id.link);
@@ -202,6 +248,8 @@ void viewport_handle_new_xwayland_surface(struct wl_listener *listener,
 	wl_signal_add(&surface->events.associate, &toplevel->associate);
 	toplevel->dissociate.notify = handle_dissociate;
 	wl_signal_add(&surface->events.dissociate, &toplevel->dissociate);
+	toplevel->set_geometry.notify = handle_set_geometry;
+	wl_signal_add(&surface->events.set_geometry, &toplevel->set_geometry);
 	toplevel->request_configure.notify = handle_request_configure;
 	wl_signal_add(&surface->events.request_configure,
 		&toplevel->request_configure);
@@ -221,10 +269,6 @@ static void handle_ready(struct wl_listener *listener, void *data)
 	struct viewport_server *server =
 		wl_container_of(listener, server, xwayland_ready);
 
-	/* Clients find the X server through DISPLAY, so it has to be exported
-	 * before anything is launched — and it is only known once Xwayland has
-	 * started, which is why this is not set up front. */
-	setenv("DISPLAY", server->xwayland->display_name, 1);
 	wlr_xwayland_set_seat(server->xwayland, server->seat);
 
 	wlr_log(WLR_INFO, "XWayland ready on %s", server->xwayland->display_name);
@@ -240,6 +284,16 @@ void viewport_xwayland_init(struct viewport_server *server)
 		wlr_log(WLR_INFO, "XWayland unavailable; X11 clients will not run");
 		return;
 	}
+
+	/* Exported now, not when Xwayland reports ready.
+	 *
+	 * The X11 socket exists from this moment; starting lazily only defers
+	 * running the server until something connects to it. But `ready` does not
+	 * fire until that has happened, so setting DISPLAY there means the first
+	 * client to launch finds no DISPLAY at all — it fails, and the *second*
+	 * launch works because by then something else has woken Xwayland. Which is
+	 * exactly how it looked from the outside. */
+	setenv("DISPLAY", server->xwayland->display_name, 1);
 
 	server->new_xwayland_surface.notify = viewport_handle_new_xwayland_surface;
 	wl_signal_add(&server->xwayland->events.new_surface,

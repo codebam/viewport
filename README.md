@@ -858,6 +858,20 @@ Three things about X11 shape that file:
   manager entirely. They are never tiled and appear exactly where the client
   asks, on the overlay layer. Tiling them would break every X11 menu.
 
+`DISPLAY` is exported the moment the X11 socket exists, not when Xwayland
+reports itself ready. Starting lazily only defers *running* the server until
+something connects; `ready` does not fire until that has happened, so setting
+`DISPLAY` there means the first client to launch finds none — it fails, and the
+second launch works because by then something else has woken Xwayland.
+
+Override-redirect surfaces that ask for focus are given the keyboard. An X11
+menu takes focus and closes when it loses it, so left unfocused it sits there
+inert — the menu appears and nothing in it can be clicked. Only surfaces that
+ask are given it, since a tooltip must not steal the keyboard, and focus goes
+back to the previously focused window when the menu closes. They also follow
+their own `set_geometry`, because a submenu moves itself beside its parent
+rather than opening where it was first placed.
+
 Xwayland starts lazily: a session that never runs an X11 client pays nothing.
 
 Touchpad gestures are split by finger count: three fingers belong to the

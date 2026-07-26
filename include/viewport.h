@@ -452,6 +452,7 @@ struct viewport_toplevel {
 	struct wl_listener associate;
 	struct wl_listener dissociate;
 	struct wl_listener request_configure;
+	struct wl_listener set_geometry;
 };
 
 struct viewport_decoration {
