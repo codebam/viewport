@@ -652,6 +652,23 @@ reloaded, which is every time it is edited. The other exception is a window a
 rule deliberately placed on another workspace: that was an instruction to leave
 it there, not to be taken there.
 
+### Reporting a problem
+
+```sh
+./scripts/collect-report.sh
+```
+
+Writes one file with the log and the facts needed to read it: which commit,
+which renderer, which GPU and connectors, and what the config actually
+contained. A log on its own rarely settles anything, because the same line
+means different things on different hardware or against a different build —
+and "which binary was running" is usually the first question, since an
+installed copy and a checkout build diverge the moment one is ahead.
+
+Long logs are trimmed to their ends. A failure shows up either where it started
+or where everything stopped; the middle of a long run is frame timing. Nothing
+is uploaded — it is a plain file, worth reading before sending on.
+
 ### Testing the shell
 
 The layout engine lives in `shell.js`, and running it under a headless

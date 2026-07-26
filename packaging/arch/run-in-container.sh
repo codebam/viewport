@@ -26,6 +26,7 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 work=${TMPDIR:-/tmp}/viewport-container
+logdir=${VIEWPORT_LOGDIR:-$HOME/viewport-logs}
 pkgver=0.1.0
 
 builder=localhost/viewport-builder
@@ -162,11 +163,18 @@ fi
 # --privileged rather than a list of capabilities: this is a throwaway container
 # driving real hardware, and enumerating exactly which capabilities libinput and
 # amdgpu need between kernel versions is a worse trade than granting them.
+mkdir -p "$logdir"
+stamp=$(date +%Y%m%d-%H%M%S)
+logfile=$logdir/viewport-$stamp.log
+
 tty_args=(
 	--rm -it
 	--privileged
 	-v /dev:/dev
 	-v /run/udev:/run/udev:ro
+	# The log has to land on the host: the container is --rm, and a log that
+	# disappears with it is no use for reporting anything afterwards.
+	-v "$logdir:/logs:z"
 	-e LIBSEAT_BACKEND=builtin
 	-e XDG_RUNTIME_DIR=/tmp/xdg
 	-e HOME=/root
@@ -194,5 +202,19 @@ if [ "$mode" = shell ]; then
 fi
 
 echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
-exec "${elevate[@]}" podman run "${tty_args[@]}" "$runtime" \
-	bash -c 'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg && exec viewport --startup foot'
+echo "==> logging to $logfile"
+
+# tee rather than a plain redirect, so the console still shows what is happening
+# — a compositor that fails to start with its output in a file looks identical
+# to one that hung. Not exec'd, because the log needs its ownership fixing
+# afterwards: it is written by root inside the container.
+"${elevate[@]}" podman run "${tty_args[@]}" "$runtime" bash -c "
+	mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
+	viewport --debug --startup foot 2>&1 | tee /logs/viewport-$stamp.log
+" || true
+
+"${elevate[@]}" chown "$(id -u):$(id -g)" "$logfile" 2>/dev/null || true
+
+echo
+echo "==> log saved: $logfile"
+echo "    a report to hand over:  ./scripts/collect-report.sh"

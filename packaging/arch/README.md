@@ -57,6 +57,11 @@ Root's podman keeps its own image store, so the image built rootless is not
 visible to it. It is copied across once rather than rebuilt, which would
 download every package a second time, and skipped when it is already there.
 
+The compositor's output is written to `~/viewport-logs/viewport-TIMESTAMP.log`
+as well as to the console — a log that vanishes with the container is no use
+afterwards, and a failure with its output hidden in a file looks identical to a
+hang. `VIEWPORT_LOGDIR` puts it elsewhere.
+
 `--shell` gives a root shell in the container with the same devices, for when
 the interesting question is what the environment looks like rather than whether
 the compositor starts.
