@@ -13,6 +13,7 @@
 #   ./packaging/arch/run-in-container.sh --nested     # a window in the session you are in
 #   ./packaging/arch/run-in-container.sh --build-only # build the images, run nothing
 #   ./packaging/arch/run-in-container.sh --asan       # run an AddressSanitizer build
+#   ./packaging/arch/run-in-container.sh --gdb        # backtrace the packaged build if it dies
 #
 # The TTY mode needs root, because taking DRM master and reading input devices
 # is not something a rootless container can do. There is no logind in the
@@ -35,6 +36,7 @@ runtime=localhost/viewport-arch
 
 rebuild=0
 asan=0
+gdb=0
 mode=tty
 for arg in "$@"; do
 	case $arg in
@@ -43,6 +45,7 @@ for arg in "$@"; do
 		--nested) mode=nested ;;
 		--build-only) mode=build ;;
 		--asan) asan=1 ;;
+		--gdb) gdb=1 ;;
 		-h|--help) sed -n '2,24p' "$0" | sed 's/^# \?//'; exit 0 ;;
 		*) echo "unknown option: $arg" >&2; exit 1 ;;
 	esac
@@ -153,10 +156,15 @@ fi
 echo "==> building $runtime"
 cp "$(ls -t "$work"/viewport-"$pkgver"-*-x86_64.pkg.tar.zst | head -1)" \
 	"$work/viewport.pkg.tar.zst"
+# The debug symbols go in too. gdb on a stripped binary reports addresses, which
+# is one indirection away from useless when the question is which line freed
+# what; makepkg already split them out, so this costs a copy.
+cp "$(ls -t "$work"/viewport-debug-"$pkgver"-*-x86_64.pkg.tar.zst | head -1)" \
+	"$work/viewport-debug.pkg.tar.zst"
 
 cat > "$work/Containerfile.runtime" <<'EOF'
 FROM docker.io/library/archlinux:latest
-COPY viewport.pkg.tar.zst /tmp/
+COPY viewport.pkg.tar.zst viewport-debug.pkg.tar.zst /tmp/
 # foot and a font so there is something to open and something to read; mesa and
 # the Vulkan driver so the renderer has one; seatd for libseat; xwayland for X11
 # clients. --disable-sandbox because pacman cannot drop privileges for its
@@ -169,9 +177,10 @@ COPY viewport.pkg.tar.zst /tmp/
 # document and the desktop came up bare with every log line reporting success.
 RUN pacman -Syu --noconfirm --disable-sandbox --needed \
       foot ttf-dejavu mesa vulkan-radeon vulkan-icd-loader \
-      seatd xorg-xwayland wmenu \
+      seatd xorg-xwayland wmenu gdb \
  && pacman -U --noconfirm --disable-sandbox /tmp/viewport.pkg.tar.zst \
- && rm /tmp/viewport.pkg.tar.zst \
+ && pacman -U --noconfirm --disable-sandbox /tmp/viewport-debug.pkg.tar.zst \
+ && rm /tmp/viewport.pkg.tar.zst /tmp/viewport-debug.pkg.tar.zst \
  && pacman -Scc --noconfirm
 EOF
 podman build -t "$runtime" -f "$work/Containerfile.runtime" "$work"
@@ -337,12 +346,22 @@ is no logind here to restore the console, and the way out is the power button.
 
 WARN
 
+# Under gdb when asked. -batch so it needs no terminal of its own, and the
+# backtrace goes to the same log as everything else; SIGPIPE is not stopped
+# because Xwayland raises it routinely and stopping there would strand the
+# session with no way to answer the prompt.
+launch="viewport --debug --startup foot"
+if [ "$gdb" = 1 ]; then
+	launch="gdb -batch -ex 'handle SIGPIPE nostop noprint pass' -ex run \
+		-ex 'thread apply all bt full' --args $launch"
+fi
+
 echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
 
 # The container inherits the stdout already being teed, so its output lands in
 # the same log as the build steps above it — one file describing the whole run.
 "${elevate[@]}" podman run "${tty_args[@]}" "$runtime" \
-	bash -c "$start_seatd exec viewport --debug --startup foot" \
+	bash -c "$start_seatd exec $launch" \
 	|| echo "==> viewport exited $?"
 
 echo
