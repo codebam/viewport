@@ -25,6 +25,34 @@ Optional, and each one only matters for a specific default binding:
 `playerctl`, `wireplumber` and `brightnessctl` for the media keys, and `rio`
 and `wmenu` for the terminal and launcher bindings.
 
+## Trying it on real hardware without installing it
+
+`run-in-container.sh` builds the package, installs it into a clean Arch image,
+and runs it on the actual display and input devices — what someone receiving the
+package gets, with nothing left over from development.
+
+```sh
+# from a text console, not from inside a desktop
+./packaging/arch/run-in-container.sh
+```
+
+It refuses to start in TTY mode from inside a graphical session, since taking
+DRM master from the compositor you are currently using does not end well. Pass
+`--nested` to open it as a window in the session you are in instead, or
+`--build-only` to build the images and run nothing.
+
+TTY mode needs root. Taking DRM master and reading input devices is not
+something a rootless container can do, and there is no logind inside the
+container to ask — libseat's builtin backend opens the devices directly, which
+only works as root. That is also why it is `--privileged`: this is a throwaway
+container driving real hardware, and pinning down exactly which capabilities
+libinput and the GPU driver need across kernel versions is a worse trade than
+granting them.
+
+`--shell` gives a root shell in the container with the same devices, for when
+the interesting question is what the environment looks like rather than whether
+the compositor starts.
+
 ## Building it
 
 The `PKGBUILD` takes a source tarball rather than fetching, so it can be built
