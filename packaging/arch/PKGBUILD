@@ -1,0 +1,82 @@
+# Maintainer: Sean Behan <swb1998@gmail.com>
+#
+# Everything this needs is already in the Arch repositories, including the
+# awkward one: wpewebkit is built there with the WPE platform API enabled, so
+# wpe-platform-2.0.pc exists and no WebKit has to be compiled here. That is
+# what makes this a small package rather than an afternoon.
+
+pkgname=viewport
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Wayland compositor whose entire shell is a web page'
+arch=('x86_64' 'aarch64')
+url='https://tangled.org/@codebam.tngl.sh/viewport'
+license=('MIT')
+
+depends=(
+  'wlroots0.20'
+  'wpewebkit'
+  'wayland'
+  'libxkbcommon'
+  'pixman'
+  'libdrm'
+  'libinput'
+  'xcb-util-wm'
+  'glib2'
+  'json-glib'
+  'libglvnd'
+)
+
+makedepends=(
+  'meson'
+  'ninja'
+  'wayland-protocols'
+  'pkgconf'
+)
+
+optdepends=(
+  'xorg-xwayland: run X11 applications'
+  'swaylock: the locker the idle policy runs by default'
+  'playerctl: media keys'
+  'wireplumber: volume keys (wpctl)'
+  'brightnessctl: brightness keys'
+  'rio: the default terminal binding'
+  'wmenu: the default launcher binding'
+)
+
+# Built from a tarball made with:
+#   git archive --format=tar.gz --prefix=viewport-0.1.0/ -o viewport-0.1.0.tar.gz HEAD
+# rather than fetched, so the package can be built from a working tree that has
+# not been pushed anywhere.
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  # Vulkan renderer and explicit sync are the point of the project, and both
+  # come from wlroots rather than from any option here — the build is plain.
+  arch-meson "$pkgname-$pkgver" build
+  meson compile -C build
+}
+
+check() {
+  # The shell is where the layout lives and a headless compositor exercises
+  # none of it, so this is the test that matters. Skipped when node is absent
+  # rather than making it a build dependency for everyone.
+  if command -v node >/dev/null; then
+    cd "$pkgname-$pkgver"
+    for mode in tiling scrolling; do
+      timeout 60 node tests/shell.test.js data/shell/shell.js "$mode" \
+        | grep -q FAIL && return 1
+    done
+  fi
+  return 0
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+
+  install -Dm644 "$pkgname-$pkgver/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$pkgname-$pkgver/README.md" \
+    "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

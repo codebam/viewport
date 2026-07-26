@@ -17,7 +17,7 @@
 static const char usage[] =
 	"usage: viewport [options]\n"
 	"\n"
-	"  -u, --url URL          shell UI endpoint (default: http://localhost:3000)\n"
+	"  -u, --url URL          shell UI endpoint (default: the bundled shell)\n"
 	"  -f, --fallback URL     used when --url fails (default: bundled fallback.html)\n"
 	"  -t, --timeout MS       first-paint deadline before falling back (default: 5000)\n"
 	"  -s, --socket PATH      JSON control socket (default: $XDG_RUNTIME_DIR/viewport-<display>.sock)\n"
@@ -44,7 +44,11 @@ static gboolean handle_signal(gpointer data)
 int main(int argc, char *argv[])
 {
 	struct viewport_config config = {
-		.url = "http://localhost:3000",
+		/* The bundled shell, so an installed copy works with no arguments and
+		 * no server running. Anyone developing a shell passes --url and points
+		 * it at their own; that is the unusual case, and it was the default for
+		 * as long as this was only ever run from a checkout. */
+		.url = "file://" VIEWPORT_PKGDATADIR "/shell/index.html",
 		.fallback_url = "file://" VIEWPORT_PKGDATADIR "/fallback.html",
 		.load_timeout_ms = 5000,
 		.startup_cmd = NULL,

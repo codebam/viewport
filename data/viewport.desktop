@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Viewport
+Comment=Wayland compositor whose shell is a web page
+Exec=viewport
+Type=Application
+DesktopNames=viewport

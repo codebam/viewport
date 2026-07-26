@@ -195,6 +195,13 @@ install_data(
 )
 install_subdir('data/shell', install_dir: pkgdatadir)
 
+# So a display manager offers this as a session to log into, rather than it
+# only being startable from a TTY.
+install_data(
+  'data/viewport.desktop',
+  install_dir: get_option('datadir') / 'wayland-sessions',
+)
+
 summary({
   'wlroots': wlroots.version(),
   'wpe-platform': wpe_platform.version(),
