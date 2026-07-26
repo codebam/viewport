@@ -240,6 +240,14 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 {
 	char spec[512];
 
+	/* The scrolling layout needs different movement keys, not just a different
+	 * renderer. Directional focus in the compositor works from where windows
+	 * are on screen, and in an infinite strip the column you want to reach is
+	 * usually scrolled off it — so focus and movement go to the shell, which is
+	 * the only thing that knows the strip exists. */
+	const bool scrolling = server->config.layout != NULL &&
+		strcmp(server->config.layout, "scrolling") == 0;
+
 	if (terminal != NULL) {
 		snprintf(spec, sizeof(spec), "Mod4+Return=exec %s", terminal);
 		viewport_binding_add(server, spec);
@@ -254,14 +262,19 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 	viewport_binding_add(server, "Mod4+Shift+c=reload");
 
 	/* sway's movement keys, plus the arrows. */
-	viewport_binding_add(server, "Mod4+h=focus left");
-	viewport_binding_add(server, "Mod4+j=focus down");
-	viewport_binding_add(server, "Mod4+k=focus up");
-	viewport_binding_add(server, "Mod4+l=focus right");
-	viewport_binding_add(server, "Mod4+Left=focus left");
-	viewport_binding_add(server, "Mod4+Down=focus down");
-	viewport_binding_add(server, "Mod4+Up=focus up");
-	viewport_binding_add(server, "Mod4+Right=focus right");
+	static const char *const directions[] = { "left", "down", "up", "right" };
+	static const char *const letters[] = { "h", "j", "k", "l" };
+	static const char *const arrows[] = { "Left", "Down", "Up", "Right" };
+
+	for (int i = 0; i < 4; i++) {
+		const char *action = scrolling ? "shell layout.focus" : "focus";
+		snprintf(spec, sizeof(spec), "Mod4+%s=%s %s", letters[i], action,
+			directions[i]);
+		viewport_binding_add(server, spec);
+		snprintf(spec, sizeof(spec), "Mod4+%s=%s %s", arrows[i], action,
+			directions[i]);
+		viewport_binding_add(server, spec);
+	}
 	viewport_binding_add(server, "Mod4+Tab=focus next");
 	viewport_binding_add(server, "Mod4+Shift+Tab=focus prev");
 
@@ -284,13 +297,40 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 	/* sway's `layout toggle split`: flip the container the focused window is
 	 * in between side-by-side and stacked. */
 	viewport_binding_add(server, "Mod4+e=shell layout.toggle");
+	/* sway's tabbed and stacked containers. Both show one window at a time out
+	 * of a container, with a strip of titles to pick from — the one place this
+	 * shell draws titles, because without them a tab cannot be identified. */
+	viewport_binding_add(server, "Mod4+w=shell layout.tabbed");
+	viewport_binding_add(server, "Mod4+s=shell layout.stacked");
 	viewport_binding_add(server, "Mod4+n=shell bar.toggle");
 	viewport_binding_add(server, "Mod4+Shift+d=appearance toggle");
+
+	if (scrolling) {
+		/* niri's column keys. A column is the unit here: windows stack inside
+		 * one, and the strip scrolls between them.
+		 *
+		 * Consume and expel are what make the model work — pulling the window
+		 * beside you into your column, or pushing one back out into its own —
+		 * and there is no equivalent in a tiling tree. */
+		viewport_binding_add(server, "Mod4+comma=shell layout.consume");
+		viewport_binding_add(server, "Mod4+period=shell layout.expel");
+		/* Cycle the focused column through a few widths, as Mod+R does in
+		 * niri. Nothing else resizes: columns do not share space, so widening
+		 * one just pushes the rest along the strip. */
+		viewport_binding_add(server, "Mod4+r=shell layout.column.width");
+		viewport_binding_add(server,
+			"Mod4+Shift+r=shell layout.column.height");
+		/* Jump to the ends of the strip. */
+		viewport_binding_add(server, "Mod4+Home=shell layout.focus first");
+		viewport_binding_add(server, "Mod4+End=shell layout.focus last");
+	}
 
 	/* Resize mode, as in sway: Mod4+r enters it, hjkl and the arrows resize a
 	 * step at a time, Escape or Return leaves. Bindings are scoped to the mode
 	 * so h/j/k/l keep meaning "move focus" everywhere else. */
-	viewport_binding_add(server, "Mod4+r=mode resize");
+	if (!scrolling) {
+		viewport_binding_add(server, "Mod4+r=mode resize");
+	}
 	viewport_binding_add(server, "resize/h=shell layout.resize left");
 	viewport_binding_add(server, "resize/j=shell layout.resize down");
 	viewport_binding_add(server, "resize/k=shell layout.resize up");

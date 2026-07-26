@@ -23,6 +23,7 @@
   --gap: 8px;
   --bar: 30px;
   --radius: 6px;
+  --tab: 24px;
 }
 
 * { box-sizing: border-box; }
@@ -191,6 +192,100 @@ body {
 .split.horizontal > .divider { cursor: col-resize; }
 .split.vertical > .divider { cursor: row-resize; }
 .divider:hover { background: #ffffff14; border-radius: 3px; }
+
+/* ---------------------------------------------------------------------
+ * Tabbed and stacked containers
+ *
+ * One window visible, the rest behind a strip of titles. This is the only
+ * place the shell draws a title at all: without one there is nothing to tell
+ * two collapsed tabs apart. Tabs run across the top; stacked runs one title
+ * per row, which is the only difference between the two in sway as well.
+ * ------------------------------------------------------------------ */
+
+.split.tabbed, .split.stacked {
+  flex-direction: column;
+}
+
+.tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding-bottom: var(--gap);
+}
+
+.split.stacked > .tabs { flex-direction: column; }
+
+.tab {
+  flex: 1 1 0;
+  min-width: 0;
+  height: var(--tab);
+  padding: 0 .5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #1b1f28;
+  color: var(--muted);
+  font: inherit;
+  font-size: .78rem;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.split.stacked > .tabs > .tab { flex: 0 0 var(--tab); }
+
+.tab.active {
+  border-color: var(--border-focus);
+  background: #232a38;
+  color: var(--text);
+}
+
+/* The selected tab's contents fill whatever the title strip left. */
+.tab-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.tab-body > * { flex: 1 1 auto; }
+
+/* ---------------------------------------------------------------------
+ * Scrolling layout (niri)
+ *
+ * An endless row of fixed-width columns that slides left and right. The
+ * container clips it and the strip itself is translated — no real scrollbar,
+ * because the position is decided by which window has focus rather than by
+ * dragging.
+ * ------------------------------------------------------------------ */
+
+.windows.scrolling { overflow: hidden; }
+
+/* A transform makes the strip the containing block for anything positioned
+   inside it, which would anchor a fullscreen window to the scrolled strip
+   rather than to the output. Fullscreen therefore stops the scrolling. */
+.desktop.has-fullscreen .strip { transform: none !important; }
+
+.strip {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  width: max-content;
+  gap: var(--gap);
+  transition: transform .12s ease-out;
+}
+
+/* Fixed width, set per column from its preset. Columns never flex: that is
+   what stops a new window from reflowing the ones already open. */
+.column {
+  flex: 0 0 auto;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+}
+
+.column > * { flex: 1 1 auto; min-width: 0; }
 
 .window {
   border: 2px solid var(--border);

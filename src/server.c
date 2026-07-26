@@ -500,6 +500,15 @@ void viewport_server_finish(struct viewport_server *server)
 	if (server->xcursor_mgr != NULL) {
 		wlr_xcursor_manager_destroy(server->xcursor_mgr);
 	}
+	/* Before the renderer: the scene holds a texture for every surface that was
+	 * ever composited, and those are renderer allocations. Destroying the
+	 * renderer first leaves them behind — "shared_buffer_finish: N allocations
+	 * left" — and only once a client has actually mapped something, which is
+	 * why it stays invisible until the session has been used. */
+	if (server->scene != NULL) {
+		wlr_scene_node_destroy(&server->scene->tree.node);
+		server->scene = NULL;
+	}
 	if (server->allocator != NULL) {
 		wlr_allocator_destroy(server->allocator);
 	}

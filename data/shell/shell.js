@@ -67,6 +67,12 @@ let pendingSplit = 'horizontal';
 let fullscreenId = null;
 let lastStatus = {};
 let currentMode = 'default';
+/* 'tiling' (i3-style splits) or 'scrolling' (niri's strip of columns). Set by
+ * the compositor from the config file; the shell implements both. */
+let layoutMode = 'tiling';
+/* Horizontal scroll offset per workspace, in pixels, for the scrolling layout.
+ * Only ever adjusted to bring the focused column into view. */
+const scrollOffsets = new Map();
 
 const outputsEl = document.getElementById('outputs');
 const desktopTemplate = document.getElementById('desktop-template');
@@ -82,8 +88,11 @@ const windowTemplate = document.getElementById('window-template');
 /* `weight` is the child's share of its parent's axis, rendered as flex-grow.
  * Equal weights give equal sizes; resizing only ever changes these numbers and
  * lets the browser recompute the pixels. */
+/* `layout` is how the children are presented: 'split' lays them out side by
+ * side, 'tabbed' and 'stacked' show one at a time behind a strip of titles.
+ * `active` is which child that is. */
 function newSplit(dir) {
-  return { type: 'split', dir, children: [], weight: 1 };
+  return { type: 'split', dir, children: [], weight: 1, layout: 'split', active: 0 };
 }
 
 function newLeaf(id) {
@@ -147,14 +156,20 @@ function findParentOf(node, target) {
 
 /* Drop empty splits and inline single-child ones, so the tree does not
  * accumulate meaningless nesting as windows come and go. */
-function collapse(node) {
+function collapse(node, isRoot = false) {
   if (node.type === 'leaf') return;
 
-  node.children.forEach(collapse);
+  /* Explicit arrow: forEach would otherwise pass the index as `isRoot` and
+     every child after the first would be treated as a root. */
+  node.children.forEach((child) => collapse(child));
   node.children = node.children.filter(
     (c) => c.type === 'leaf' || c.children.length > 0);
 
-  if (node.children.length === 1 && node.children[0].type === 'split') {
+  /* Inlining a lone child into the workspace root would destroy the strip: the
+     root's children *are* the columns, so a single column holding three windows
+     would be flattened into three columns. */
+  if (node.children.length === 1 && node.children[0].type === 'split' &&
+      !(isRoot && layoutMode === 'scrolling')) {
     const only = node.children[0];
     node.dir = only.dir;
     node.children = only.children;
@@ -173,7 +188,7 @@ function removeLeaf(id) {
   if (!found) return;
   found.parent.children =
     found.parent.children.filter((c) => c.id !== id);
-  collapse(workspaces.get(found.workspace));
+  collapse(workspaces.get(found.workspace), true);
 }
 
 /* Insert next to the focused window, splitting in the pending direction —
@@ -182,6 +197,17 @@ function removeLeaf(id) {
 function insertLeaf(workspace, id) {
   const root = workspaceRoot(workspace);
   const leaf = newLeaf(id);
+
+  /* In the scrolling layout a new window is a new column, placed just right of
+     the one in focus. Nothing already open changes size — that is the whole
+     point of the model — so the strip simply gets longer. */
+  if (layoutMode === 'scrolling') {
+    root.dir = 'horizontal';
+    leaf.width = COLUMN_WIDTHS[1];
+    const index = root.children.findIndex(containsFocus);
+    root.children.splice(index < 0 ? root.children.length : index + 1, 0, leaf);
+    return;
+  }
 
   const anchor = focusedId != null ? findLeaf(focusedId) : null;
   if (!anchor || anchor.workspace !== workspace) {
@@ -232,7 +258,7 @@ function moveLeaf(id, direction) {
         [parent.children[index], parent.children[target]] =
           [parent.children[target], parent.children[index]];
       }
-      collapse(root);
+      collapse(root, true);
       return true;
     }
   }
@@ -242,7 +268,7 @@ function moveLeaf(id, direction) {
     const parentIndex = grandparent.children.indexOf(parent);
     parent.children.splice(index, 1);
     grandparent.children.splice(parentIndex + (forward ? 1 : 0), 0, leaf);
-    collapse(root);
+    collapse(root, true);
     return true;
   }
 
@@ -256,11 +282,97 @@ function moveLeaf(id, direction) {
  * Rendering
  * --------------------------------------------------------------------- */
 
+/* Windows the current render actually put on screen. A window in a tabbed
+ * container that is not the selected tab is in the DOM but displays nothing, so
+ * it must be reported to the compositor as invisible — otherwise its surface
+ * keeps being painted into a hole that is no longer there. */
+let renderedIds = new Set();
+
+/* Title for a tab. A container gets a count instead: there is no single title
+ * for four windows, and "4 windows" is what sway shows too. */
+function tabLabel(node) {
+  if (node.type === 'leaf') {
+    const view = views.get(node.id);
+    return view ? (view.title || view.app_id || `view ${node.id}`) : '';
+  }
+  const count = [...walk(node)].length;
+  return `${count} window${count === 1 ? '' : 's'}`;
+}
+
+/* Does this subtree contain the focused window? Used to mark the active tab,
+ * and to keep the selected tab in step with focus. */
+function containsFocus(node) {
+  if (focusedId == null) return false;
+  if (node.type === 'leaf') return node.id === focusedId;
+  return [...walk(node)].some(([leaf]) => leaf.id === focusedId);
+}
+
+/* Tabbed and stacked containers: one child visible, the rest reachable through
+ * a strip of titles. The only difference between them is which way the strip
+ * runs — tabs across the top, stacked titles one per row — which is exactly how
+ * sway distinguishes them. */
+function renderTabbed(node) {
+  const el = document.createElement('div');
+  el.className = `split ${node.layout}`;
+  el.style.flexGrow = String(node.weight ?? 1);
+
+  const children = node.children.filter(
+    (child) => child.type === 'split' || views.has(child.id));
+  if (children.length === 0) return null;
+
+  /* Focus wins over the stored selection: focusing a window inside a collapsed
+     tab has to bring that tab forward, or the focused window stays hidden. A
+     fullscreen window wins outright — it covers the output, so it has to be in
+     the DOM whatever the tab strip says. */
+  let active = fullscreenId !== null
+    ? children.findIndex((child) => child.type === 'leaf'
+      ? child.id === fullscreenId
+      : [...walk(child)].some(([leaf]) => leaf.id === fullscreenId))
+    : -1;
+  if (active < 0) active = children.findIndex(containsFocus);
+  if (active < 0) active = Math.min(node.active ?? 0, children.length - 1);
+  node.active = active;
+
+  const tabs = document.createElement('div');
+  tabs.className = 'tabs';
+
+  children.forEach((child, i) => {
+    const tab = document.createElement('button');
+    tab.className = 'tab' + (i === active ? ' active' : '');
+    tab.textContent = tabLabel(child);
+    tab.addEventListener('mousedown', () => {
+      node.active = i;
+      /* Clicking a tab focuses what is in it, the way clicking a window does. */
+      const first = child.type === 'leaf'
+        ? child.id : [...walk(child)][0]?.[0]?.id;
+      if (first != null) send({ type: 'view.focus', id: first });
+      relayoutAll();
+    });
+    tabs.append(tab);
+  });
+
+  el.append(tabs);
+
+  const body = document.createElement('div');
+  body.className = 'tab-body';
+  const childEl = renderTree(children[active]);
+  if (childEl) body.append(childEl);
+  el.append(body);
+
+  return el;
+}
+
 function renderTree(node) {
   if (node.type === 'leaf') {
     const view = views.get(node.id);
-    if (view) view.el.style.flexGrow = String(node.weight ?? 1);
-    return view ? view.el : null;
+    if (!view) return null;
+    view.el.style.flexGrow = String(node.weight ?? 1);
+    renderedIds.add(node.id);
+    return view.el;
+  }
+
+  if (node.layout === 'tabbed' || node.layout === 'stacked') {
+    return renderTabbed(node);
   }
 
   const el = document.createElement('div');
@@ -288,6 +400,285 @@ function renderTree(node) {
   });
 
   return rendered.length > 0 ? el : null;
+}
+
+/* ------------------------------------------------------------------------
+ * Scrolling layout (niri)
+ *
+ * A workspace is an endless horizontal strip of columns. Each column holds one
+ * or more windows stacked vertically, and columns keep the width they were
+ * given: opening a window never reflows the ones already there, it just makes
+ * the strip longer. The view scrolls to keep the focused column on screen.
+ *
+ * The tree still holds the structure — the root's children are the columns —
+ * so everything that walks or edits it keeps working. What differs is the
+ * rendering: fixed widths and a scroll offset instead of flex-grow.
+ * --------------------------------------------------------------------- */
+
+/* Column widths as a fraction of the output, cycled by layout.column.width.
+ * Same set as niri's default preset list. */
+const COLUMN_WIDTHS = [1 / 3, 1 / 2, 2 / 3, 1];
+const COLUMN_HEIGHTS = [1 / 3, 1 / 2, 2 / 3, 1];
+
+function renderStrip(root, output) {
+  const strip = document.createElement('div');
+  strip.className = 'strip';
+
+  const area = output.windowsEl.getBoundingClientRect();
+  const columns = root.children.filter(
+    (child) => child.type === 'split' || views.has(child.id));
+
+  let offset = 0;
+  let focusedStart = null;
+  let focusedWidth = 0;
+
+  for (const column of columns) {
+    const width = Math.round(area.width * (column.width ?? 1 / 2));
+
+    const el = document.createElement('div');
+    el.className = 'column';
+    el.style.width = `${width}px`;
+
+    /* A column is itself a vertical stack, so the existing renderer handles
+       what is inside it. */
+    const inner = renderTree(column);
+    if (inner) el.append(inner);
+    strip.append(el);
+
+    if (containsFocus(column)) {
+      focusedStart = offset;
+      focusedWidth = width;
+    }
+    offset += width;
+  }
+
+  /* Scroll the least amount that brings the focused column fully into view. A
+     column wider than the screen is aligned to the left edge instead, since it
+     cannot be fully shown either way. */
+  const workspace = output.workspace;
+  let scroll = scrollOffsets.get(workspace) ?? 0;
+  if (focusedStart !== null) {
+    if (focusedWidth >= area.width || focusedStart < scroll) {
+      scroll = focusedStart;
+    } else if (focusedStart + focusedWidth > scroll + area.width) {
+      scroll = focusedStart + focusedWidth - area.width;
+    }
+  }
+  /* Never scroll past either end of the strip. */
+  scroll = Math.max(0, Math.min(scroll, Math.max(0, offset - area.width)));
+  scrollOffsets.set(workspace, scroll);
+
+  strip.style.transform = `translateX(${-scroll}px)`;
+  return columns.length > 0 ? strip : null;
+}
+
+/* Reshape existing workspaces when the layout model changes at runtime.
+ *
+ * The two models share the tree but read it differently: the strip needs the
+ * root to be horizontal with one child per column, and each column to carry a
+ * width. Coming back the other way, those widths are meaningless and the tabbed
+ * containers a strip never has are left alone. Without this a switch mid-session
+ * renders a tree the new model cannot make sense of. */
+function normaliseForLayout() {
+  for (const root of workspaces.values()) {
+    if (layoutMode === 'scrolling') {
+      root.dir = 'horizontal';
+      root.layout = 'split';
+      for (const column of root.children) {
+        if (column.width === undefined) column.width = COLUMN_WIDTHS[1];
+        if (column.type === 'split') column.dir = 'vertical';
+      }
+    } else {
+      for (const column of root.children) delete column.width;
+    }
+  }
+  scrollOffsets.clear();
+}
+
+/* The column holding a window, as an index into the strip. */
+function columnIndexOf(workspace, id) {
+  const root = workspaceRoot(workspace);
+  return root.children.findIndex((column) => column.type === 'leaf'
+    ? column.id === id
+    : [...walk(column)].some(([leaf]) => leaf.id === id));
+}
+
+function focusedWorkspace() {
+  return focusedId != null ? workspaceOf(focusedId) : null;
+}
+
+/* Move focus along the strip, or up and down inside the focused column. The
+ * compositor cannot do this itself here: the column you are moving to is
+ * usually scrolled off screen, and directional focus works from what is on it. */
+function scrollFocus(direction) {
+  const workspace = focusedWorkspace();
+  if (workspace === null) return;
+
+  const root = workspaceRoot(workspace);
+  const columns = root.children;
+  if (columns.length === 0) return;
+
+  const index = columnIndexOf(workspace, focusedId);
+
+  if (direction === 'first' || direction === 'last') {
+    const column = columns[direction === 'first' ? 0 : columns.length - 1];
+    const target = column.type === 'leaf' ? column.id : [...walk(column)][0][0].id;
+    send({ type: 'view.focus', id: target });
+    return;
+  }
+
+  if (direction === 'left' || direction === 'right') {
+    const next = index + (direction === 'right' ? 1 : -1);
+    if (next < 0 || next >= columns.length) return;
+    const column = columns[next];
+    const target = column.type === 'leaf' ? column.id : [...walk(column)][0][0].id;
+    send({ type: 'view.focus', id: target });
+    return;
+  }
+
+  /* Up and down stay inside the column. */
+  const column = columns[index];
+  if (!column || column.type === 'leaf') return;
+  const leaves = [...walk(column)].map(([leaf]) => leaf);
+  const at = leaves.findIndex((leaf) => leaf.id === focusedId);
+  const next = at + (direction === 'down' ? 1 : -1);
+  if (next < 0 || next >= leaves.length) return;
+  send({ type: 'view.focus', id: leaves[next].id });
+}
+
+/* Move the focused window along the strip, or within its column. Moving left or
+ * right carries the whole window into the neighbouring position as its own
+ * column, which is what niri does. */
+function scrollMove(direction) {
+  const workspace = focusedWorkspace();
+  if (workspace === null) return false;
+
+  const root = workspaceRoot(workspace);
+  const index = columnIndexOf(workspace, focusedId);
+  if (index < 0) return false;
+
+  if (direction === 'left' || direction === 'right') {
+    const target = index + (direction === 'right' ? 1 : -1);
+    if (target < 0 || target >= root.children.length) return false;
+    const [column] = root.children.splice(index, 1);
+    root.children.splice(target, 0, column);
+    treeGeneration++;
+    relayoutAll();
+    return true;
+  }
+
+  const column = root.children[index];
+  if (column.type === 'leaf') return false;
+
+  const at = column.children.findIndex((child) =>
+    child.type === 'leaf' && child.id === focusedId);
+  const target = at + (direction === 'down' ? 1 : -1);
+  if (at < 0 || target < 0 || target >= column.children.length) return false;
+
+  [column.children[at], column.children[target]] =
+    [column.children[target], column.children[at]];
+  treeGeneration++;
+  relayoutAll();
+  return true;
+}
+
+/* Pull the first window of the next column into this one, stacking it below the
+ * focused window. The inverse of expel, and the pair is how columns are built
+ * up and taken apart without a tree to split. */
+function consumeWindow() {
+  const workspace = focusedWorkspace();
+  if (workspace === null) return;
+
+  const root = workspaceRoot(workspace);
+  const index = columnIndexOf(workspace, focusedId);
+  if (index < 0 || index + 1 >= root.children.length) return;
+
+  const next = root.children[index + 1];
+  let moved;
+  if (next.type === 'leaf') {
+    moved = next;
+    root.children.splice(index + 1, 1);
+  } else {
+    moved = next.children.shift();
+    if (next.children.length === 0) root.children.splice(index + 1, 1);
+  }
+  if (!moved) return;
+
+  let column = root.children[index];
+  if (column.type === 'leaf') {
+    /* A single-window column becomes a real stack the moment it holds two. */
+    const stack = newSplit('vertical');
+    stack.width = column.width ?? COLUMN_WIDTHS[1];
+    stack.children = [column];
+    root.children[index] = stack;
+    column = stack;
+  }
+  column.children.push(moved);
+
+  treeGeneration++;
+  relayoutAll();
+}
+
+/* Push the focused window out of its column into one of its own, to the right. */
+function expelWindow() {
+  const workspace = focusedWorkspace();
+  if (workspace === null) return;
+
+  const root = workspaceRoot(workspace);
+  const index = columnIndexOf(workspace, focusedId);
+  if (index < 0) return;
+
+  const column = root.children[index];
+  if (column.type === 'leaf') return; // already alone
+
+  const at = column.children.findIndex((child) =>
+    child.type === 'leaf' && child.id === focusedId);
+  if (at < 0) return;
+
+  const [moved] = column.children.splice(at, 1);
+  moved.width = column.width ?? COLUMN_WIDTHS[1];
+  root.children.splice(index + 1, 0, moved);
+
+  if (column.children.length === 1 && column.children[0].type === 'leaf') {
+    /* One window left: collapse the stack back to a plain column. */
+    const only = column.children[0];
+    only.width = column.width;
+    root.children[index] = only;
+  }
+
+  treeGeneration++;
+  relayoutAll();
+}
+
+/* Step the focused column through the width presets. Widening a column pushes
+ * the rest of the strip along rather than taking space from a neighbour. */
+function cycleColumnWidth() {
+  const workspace = focusedWorkspace();
+  if (workspace === null) return;
+
+  const root = workspaceRoot(workspace);
+  const column = root.children[columnIndexOf(workspace, focusedId)];
+  if (!column) return;
+
+  const current = COLUMN_WIDTHS.indexOf(column.width ?? COLUMN_WIDTHS[1]);
+  column.width = COLUMN_WIDTHS[(current + 1) % COLUMN_WIDTHS.length];
+  relayoutAll();
+}
+
+/* The same for the focused window's share of its column's height. */
+function cycleWindowHeight() {
+  const workspace = focusedWorkspace();
+  if (workspace === null) return;
+
+  const found = findLeaf(focusedId);
+  if (!found || found.parent.children.length < 2) return;
+
+  const current = COLUMN_HEIGHTS.indexOf(found.leaf.weight);
+  const next = COLUMN_HEIGHTS[(current + 1) % COLUMN_HEIGHTS.length];
+  /* Weights are relative within the column, so this is a share rather than a
+     fraction of the screen — the same number reads as roughly the same size. */
+  found.leaf.weight = next * found.parent.children.length;
+  relayoutAll();
 }
 
 /* ------------------------------------------------------------------------
@@ -447,8 +838,28 @@ function toggleLayout() {
   const found = findLeaf(focusedId);
   if (!found) return;
 
-  found.parent.dir =
-    found.parent.dir === 'horizontal' ? 'vertical' : 'horizontal';
+  /* Leaving a tabbed or stacked container puts its windows back side by side,
+     which is what sway's `layout toggle split` does from either of them. */
+  if (found.parent.layout !== 'split') {
+    found.parent.layout = 'split';
+  } else {
+    found.parent.dir =
+      found.parent.dir === 'horizontal' ? 'vertical' : 'horizontal';
+  }
+  relayoutAll();
+}
+
+/* sway's `layout tabbed` and `layout stacking`. Applied to the container the
+ * focused window is in; a window alone on a workspace has only the workspace
+ * root, so tabbing it is a no-op until there is something to tab between. */
+function setContainerLayout(layout) {
+  if (focusedId == null) return;
+  const found = findLeaf(focusedId);
+  if (!found) return;
+
+  /* Asking for the layout it already has turns it back into a split, so the
+     same key toggles rather than sticking. */
+  found.parent.layout = found.parent.layout === layout ? 'split' : layout;
   relayoutAll();
 }
 
@@ -491,24 +902,22 @@ function relayoutAll() {
   const shown = new Map();
   for (const [name, output] of outputs) shown.set(output.workspace, name);
 
-  for (const [id, view] of views) {
-    const workspace = workspaceOf(id);
-    const visible = workspace !== null && shown.has(workspace);
-
-    view.el.hidden = !visible;
-    if (!visible && view.box !== null) {
-      view.box = null;
-      send({ type: 'view.visible', id, visible: false });
-    }
-    view.el.classList.toggle('focused', id === focusedId);
-    view.el.classList.toggle('fullscreen', id === fullscreenId);
-  }
+  /* Render first, then decide what is visible. Which windows are on screen is
+     now a result of rendering rather than something knowable in advance: a
+     collapsed tab, or a column scrolled off the strip, is on its workspace and
+     still not shown. */
+  renderedIds = new Set();
 
   for (const [name, output] of outputs) {
     const root = workspaces.get(output.workspace);
-    const rendered = root ? renderTree(root) : null;
+    const rendered = root
+      ? (layoutMode === 'scrolling'
+        ? renderStrip(root, output)
+        : renderTree(root))
+      : null;
 
     output.windowsEl.replaceChildren();
+    output.windowsEl.classList.toggle('scrolling', layoutMode === 'scrolling');
     if (rendered) output.windowsEl.append(rendered);
 
     /* Floating windows are positioned rather than laid out, so they are
@@ -521,6 +930,7 @@ function relayoutAll() {
       if (!view) continue;
       view.el.classList.add('floating');
       output.windowsEl.append(view.el);
+      renderedIds.add(id);
       if (id === fullscreenId) continue; // covers the output; rect ignored
       Object.assign(view.el.style, {
         left: `${floating.x}px`,
@@ -541,6 +951,20 @@ function relayoutAll() {
     output.el.classList.toggle('has-fullscreen', fullscreenHere);
     output.el.classList.toggle('bar-hidden', output.barHidden);
     renderBar(name);
+  }
+
+  for (const [id, view] of views) {
+    const workspace = workspaceOf(id);
+    const visible = workspace !== null && shown.has(workspace) &&
+      renderedIds.has(id);
+
+    view.el.hidden = !visible;
+    if (!visible && view.box !== null) {
+      view.box = null;
+      send({ type: 'view.visible', id, visible: false });
+    }
+    view.el.classList.toggle('focused', id === focusedId);
+    view.el.classList.toggle('fullscreen', id === fullscreenId);
   }
 
   /* Measure after the browser has laid the new tree out. */
@@ -1067,6 +1491,13 @@ function handleShellCommand(command, args) {
       break;
     case 'window.move': {
       if (focusedId == null) break;
+      /* The strip moves whole columns rather than rearranging a tree. At its
+       * ends the window carries over to the next monitor, exactly as it does
+       * when tiling — the strip is per workspace, not per session. */
+      if (layoutMode === 'scrolling' && !floats.has(focusedId)) {
+        if (!scrollMove(arg)) moveViewToOutput(focusedId, arg);
+        break;
+      }
       /* A floating window has no place in the tree to move within, so the same
        * keys nudge it instead — sway does this too. */
       if (floats.has(focusedId)) {
@@ -1118,6 +1549,30 @@ function handleShellCommand(command, args) {
     case 'layout.float.toggle':
       toggleFloating(focusedId);
       break;
+    case 'layout.tabbed':
+      setContainerLayout('tabbed');
+      break;
+    case 'layout.stacked':
+      setContainerLayout('stacked');
+      break;
+
+    /* Scrolling layout. Bound only when the compositor is configured for it,
+       but harmless to receive otherwise. */
+    case 'layout.focus':
+      scrollFocus(arg);
+      break;
+    case 'layout.consume':
+      consumeWindow();
+      break;
+    case 'layout.expel':
+      expelWindow();
+      break;
+    case 'layout.column.width':
+      cycleColumnWidth();
+      break;
+    case 'layout.column.height':
+      cycleWindowHeight();
+      break;
     case 'mode.changed':
       currentMode = arg || 'default';
       renderBars();
@@ -1138,6 +1593,19 @@ window.addEventListener('viewport', (event) => {
   const message = event.detail;
 
   switch (message.type) {
+    case 'config':
+      /* Which layout model to run. Sent on connect and on reload, so switching
+         it in the config file and reloading takes effect without a restart —
+         the tree survives, it is only presented differently. */
+      if (message.layout === 'scrolling' || message.layout === 'tiling') {
+        if (message.layout !== layoutMode) {
+          layoutMode = message.layout;
+          normaliseForLayout();
+          relayoutAll();
+        }
+      }
+      break;
+
     case 'output.layout':
       syncOutputs(message.outputs);
       send({ type: 'view.query' });

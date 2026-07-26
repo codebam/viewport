@@ -19,6 +19,17 @@
   "url": "http://localhost:3000",
   "timeout_ms": 5000,
 
+  "_layout": [
+    "\"tiling\"   i3/sway: splits, plus tabbed and stacked containers.",
+    "\"scrolling\" niri: an endless strip of columns that scrolls to follow",
+    "             focus. Opening a window never resizes the ones already",
+    "             open. Changes the default movement bindings to match:",
+    "             Mod4+h/l walk the strip, Mod4+j/k move inside a column,",
+    "             Mod4+comma/period consume and expel, Mod4+r cycles the",
+    "             column width."
+  ],
+  "layout": "tiling",
+
   "terminal": "ghostty",
   "menu": "wmenu-run -f 'Fira Code NerdFont 11' -i",
 

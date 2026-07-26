@@ -220,6 +220,21 @@ void viewport_ipc_notify_view_props(struct viewport_toplevel *toplevel)
 	g_object_unref(builder);
 }
 
+void viewport_ipc_notify_config(struct viewport_server *server)
+{
+	JsonBuilder *builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "config");
+	json_builder_set_member_name(builder, "layout");
+	json_builder_add_string_value(builder,
+		server->config.layout != NULL ? server->config.layout : "tiling");
+	json_builder_end_object(builder);
+
+	broadcast_builder(server, builder);
+	g_object_unref(builder);
+}
+
 void viewport_ipc_notify_views(struct viewport_server *server)
 {
 	struct viewport_toplevel *toplevel;
@@ -782,6 +797,7 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 	} else if (strcmp(type, "output.query") == 0) {
 		viewport_ipc_notify_output_layout(server);
 	} else if (strcmp(type, "view.query") == 0) {
+		viewport_ipc_notify_config(server);
 		viewport_ipc_notify_views(server);
 	} else if (strcmp(type, "bind.add") == 0) {
 		/* Runtime binds from the shell are additive and expendable; the ones
@@ -899,6 +915,7 @@ static int handle_socket_connection(int fd, uint32_t mask, void *data)
 	/* Bring the newcomer up to date immediately: outputs, then every view
 	 * that mapped before it connected. */
 	viewport_ipc_notify_output_layout(ipc->server);
+	viewport_ipc_notify_config(ipc->server);
 	viewport_ipc_notify_views(ipc->server);
 	return 0;
 }

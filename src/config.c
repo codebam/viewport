@@ -116,6 +116,10 @@ bool viewport_config_load(struct viewport_server *server,
 		config->terminal = keep(g_strdup(
 			json_object_get_string_member(object, "terminal")));
 	}
+	if (json_object_has_member(object, "layout")) {
+		config->layout = keep(g_strdup(
+			json_object_get_string_member(object, "layout")));
+	}
 	if (json_object_has_member(object, "cursor")) {
 		JsonObject *cursor = json_object_get_object_member(object, "cursor");
 		if (json_object_has_member(cursor, "theme")) {

@@ -93,6 +93,10 @@ struct viewport_config {
 	/* Cursor theme and size; NULL/0 use the defaults. */
 	const char *cursor_theme;
 	int cursor_size;
+	/* Which layout model the shell runs: "tiling" for i3-style splits, or
+	 * "scrolling" for niri's infinite strip of columns. The shell implements
+	 * both; this only picks the default and the matching key bindings. */
+	const char *layout;
 	/* Commands bound to the default terminal and launcher chords. */
 	const char *terminal;
 	const char *menu;
@@ -645,6 +649,10 @@ void viewport_ipc_notify_view_added(struct viewport_toplevel *toplevel);
 void viewport_ipc_notify_view_removed(struct viewport_toplevel *toplevel);
 void viewport_ipc_notify_view_props(struct viewport_toplevel *toplevel);
 void viewport_ipc_notify_output_layout(struct viewport_server *server);
+
+/* Settings the shell needs in order to render: which layout model to use.
+ * Sent on connect and on page load, alongside the view replay. */
+void viewport_ipc_notify_config(struct viewport_server *server);
 
 /* Replays view.added for every currently mapped toplevel.
  *

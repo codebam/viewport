@@ -112,6 +112,7 @@ a TTY.
 {
   "url": "http://localhost:3000",
   "timeout_ms": 5000,
+  "layout": "tiling",       // or "scrolling"
   "terminal": "ghostty",
   "menu": "wmenu-run -i",
   "binds": {
@@ -272,10 +273,11 @@ socat - UNIX:$VIEWPORT_SOCKET
 
 | Message | Payload |
 | --- | --- |
-| `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on) |
+| `config` | `layout` (`"tiling"` or `"scrolling"`) |
+| `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `floating`, `width`, `height`, `min_width`, `min_height` |
 | `view.props` | `id`, `title`, `app_id` |
 | `view.removed` | `id` |
-| `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `x`, `y`, `width`, `height`, `scale`, `transform`, `modes[]` |
+| `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `scale`, `transform`, `modes[]` |
 | `error` | `context`, `message` |
 
 ### Shell → compositor
@@ -291,11 +293,60 @@ socat - UNIX:$VIEWPORT_SOCKET
 | `bind.add` | `chord`, `action` |
 | `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |
 | `output.query` | — |
+| `output.confirm` | — |
 | `quit` | — |
 
 `output.configure` runs `wlr_output_test_state` before committing, so a mode the
 hardware cannot drive is reported back as an `error` instead of blanking the
-screen you are configuring from.
+screen you are configuring from. A configuration that *does* commit is still
+provisional: it reverts after twelve seconds unless an `output.confirm` arrives,
+because a wrong mode blanks the very screen you would need in order to undo it.
+
+### Testing the shell
+
+The layout engine lives in `shell.js`, and running it under a headless
+compositor proves nothing: the web view renders, but nothing drives the layout,
+so a broken tree looks exactly like a working one. `tests/shell.test.js` stubs
+the DOM far enough to run the real file unmodified and checks structure — four
+windows make four columns, consume and expel are inverses, a tabbed container
+shows exactly one window and it is the focused one.
+
+```sh
+timeout 20 node tests/shell.test.js data/shell/shell.js tiling
+timeout 20 node tests/shell.test.js data/shell/shell.js scrolling
+```
+
+`timeout` because the shell sets a live-reload interval and so never exits.
+
+## Layout models
+
+`"layout"` in the config file picks which one the shell runs.
+
+**`tiling`** — i3 and sway. Windows split the space they are given; containers
+can be `split`, `tabbed` or `stacked`. `Mod4+w` and `Mod4+s` set the last two,
+`Mod4+e` returns to a split. Tabs are the one place this shell draws a window
+title, because a collapsed tab cannot be identified without one.
+
+**`scrolling`** — niri. A workspace is an endless horizontal strip of columns;
+each column holds one or more windows stacked vertically, and columns keep the
+width they were given, so opening a window never reflows what is already there.
+The view scrolls the minimum needed to keep the focused column on screen.
+
+| Key | Scrolling layout |
+| --- | --- |
+| `Mod4+h` / `Mod4+l` | focus the column left / right |
+| `Mod4+j` / `Mod4+k` | focus within the column |
+| `Mod4+Shift+h/l` | move the column along the strip, or to the next monitor at its end |
+| `Mod4+comma` / `Mod4+period` | consume the next window into this column / expel it back out |
+| `Mod4+r` | cycle the column width (⅓, ½, ⅔, full) |
+| `Mod4+Shift+r` | cycle the window's share of the column height |
+| `Mod4+Home` / `Mod4+End` | jump to either end of the strip |
+
+Directional focus moves to the shell in this mode: the compositor decides
+direction from where windows are on screen, and the column you are reaching for
+is usually scrolled off it. Both models share one tree — the strip's columns are
+the workspace root's children — so switching `layout` and reloading rearranges
+what is open rather than discarding it.
 
 ## Writing a shell
 
@@ -436,14 +487,9 @@ Three things about X11 shape that file:
 
 Xwayland starts lazily: a session that never runs an X11 client pays nothing.
 
-Still unimplemented: touch input, tabbed and stacked containers, floating
-windows, drag-and-drop between shell and clients, layer-shell exclusive zones,
-and the `output.configure` confirm-timeout revert.
+Still unimplemented: tablet input, and per-window opacity rules.
 
-Not yet implemented: touch input, `xdg-decoration` negotiation, XWayland,
-drag-and-drop between shell and clients, the `output.configure` confirm-timeout
-revert described in the settings design, and the bootstrap config file (flags
-only for now).
+Not yet implemented: tablet and stylus input.
 
 ## Licence
 
