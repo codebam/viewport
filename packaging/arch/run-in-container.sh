@@ -245,6 +245,25 @@ if [ "$mode" = shell ]; then
 		bash -c "$start_seatd exec bash"
 fi
 
+# The compositor currently corrupts its heap during teardown and can die of it
+# while still holding DRM master. In a normal session that is survivable — the
+# process is exiting anyway and logind restores the console. Here there is no
+# logind, so a death at the wrong moment leaves the display dead and VT
+# switching gone, and the only way out is the power button. It has happened.
+if [ -z "${VIEWPORT_I_ACCEPT_THE_LOCKUP_RISK:-}" ]; then
+	cat >&2 <<'WARN'
+This can lock up the machine.
+
+The compositor has a teardown bug that can crash it while it still holds the
+display, and nothing in this container will hand the console back if it does.
+That means a hard power off, losing whatever is unsaved elsewhere.
+
+--nested is safe and tests the same package. If you need the real display
+anyway, set VIEWPORT_I_ACCEPT_THE_LOCKUP_RISK=1.
+WARN
+	exit 1
+fi
+
 echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
 
 # The container inherits the stdout already being teed, so its output lands in
