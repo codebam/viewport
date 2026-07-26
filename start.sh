@@ -44,12 +44,33 @@ export XDG_CONFIG_DIRS="$PWD/data/portal-config:${XDG_CONFIG_DIRS:-/etc/xdg}"
 
 if command -v dbus-update-activation-environment >/dev/null 2>&1; then
 	dbus-update-activation-environment --systemd \
-		XDG_CURRENT_DESKTOP XDG_DATA_DIRS XDG_CONFIG_DIRS 2>/dev/null || true
+		XDG_CURRENT_DESKTOP XDG_DATA_DIRS XDG_CONFIG_DIRS \
+		NIX_XDG_DESKTOP_PORTAL_DIR 2>/dev/null || true
 fi
 
-# The portal caches its backend list at startup, so a portal already running
-# from a previous session will not see ours until it restarts.
-systemctl --user stop xdg-desktop-portal.service 2>/dev/null || true
+# On NixOS, xdg-desktop-portal is patched to read portal definitions from a
+# single directory named by NIX_XDG_DESKTOP_PORTAL_DIR, and ignores
+# XDG_DATA_DIRS entirely — so dropping viewport.portal onto the data path has
+# no effect there no matter how it is arranged. Build a directory holding the
+# system portals plus ours and point the variable at it.
+if [ -n "${NIX_XDG_DESKTOP_PORTAL_DIR:-}" ]; then
+	merged="${XDG_RUNTIME_DIR:-/tmp}/viewport-portals"
+	rm -rf "$merged"
+	mkdir -p "$merged"
+	for portal in "$NIX_XDG_DESKTOP_PORTAL_DIR"/*.portal; do
+		[ -e "$portal" ] && ln -sf "$portal" "$merged/"
+	done
+	ln -sf "$PWD/data/portal-share/xdg-desktop-portal/portals/viewport.portal" \
+		"$merged/"
+	export NIX_XDG_DESKTOP_PORTAL_DIR="$merged"
+	systemctl --user set-environment \
+		"NIX_XDG_DESKTOP_PORTAL_DIR=$merged" 2>/dev/null || true
+fi
+
+# The portal caches its backend list at startup, so one already running from a
+# previous session will not see ours until it restarts.
+systemctl --user restart xdg-desktop-portal.service 2>/dev/null \
+	|| systemctl --user stop xdg-desktop-portal.service 2>/dev/null || true
 
 if [ ! -x build/viewport ]; then
 	echo "build/viewport missing — run: nix develop --command ninja -C build" >&2

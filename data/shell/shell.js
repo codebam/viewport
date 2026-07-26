@@ -702,7 +702,7 @@ function moveToWorkspace(n) {
  * Windows
  * --------------------------------------------------------------------- */
 
-function addView({ id, title, app_id, output: outputName }) {
+function addView({ id, title, app_id, output: outputName, min_width, min_height }) {
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
   if (views.has(id)) return;
@@ -723,6 +723,12 @@ function addView({ id, title, app_id, output: outputName }) {
   el.dataset.viewId = String(id);
   viewport.dataset.viewId = String(id);
   el.addEventListener('mousedown', () => send({ type: 'view.focus', id }));
+
+  /* A client's own minimum, enforced by flexbox. Without it a divider drag
+   * happily shrinks the hole past what the client accepts: the client keeps
+   * its real size, the frame does not, and the window overflows its slot. */
+  if (min_width > 0) el.style.minWidth = `${min_width}px`;
+  if (min_height > 0) el.style.minHeight = `${min_height}px`;
 
   views.set(id, { el, viewport, title, app_id, box: null });
   resizeObserver.observe(viewport);

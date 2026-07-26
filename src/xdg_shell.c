@@ -393,13 +393,29 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 			geo.x, geo.y, geo.width, geo.height, cur->width, cur->height);
 	}
 
+	/* Never ask a client for less than it says it can handle.
+	 *
+	 * A client that receives a configure below its minimum is entitled to
+	 * ignore it and commit whatever size it likes, which leaves the window
+	 * overflowing the hole the shell drew — the layout and the reality drift
+	 * apart with no way to reconcile them. Clamping here keeps the request
+	 * honest; the shell is told the minimum separately so it can stop the
+	 * resize at the same point rather than appearing to shrink past it. */
+	struct wlr_xdg_toplevel_state *current = &toplevel->xdg_toplevel->current;
+	int width = box->width;
+	int height = box->height;
+	if (current->min_width > 0 && width < current->min_width) {
+		width = current->min_width;
+	}
+	if (current->min_height > 0 && height < current->min_height) {
+		height = current->min_height;
+	}
+
 	/* Only reconfigure when the size actually changed: every configure is a
 	 * round trip, and the shell may resend the same rect on each animation
 	 * frame while dragging. */
-	struct wlr_xdg_toplevel_state *current = &toplevel->xdg_toplevel->current;
-	if (current->width != box->width || current->height != box->height) {
-		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, box->width,
-			box->height);
+	if (current->width != width || current->height != height) {
+		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, width, height);
 	}
 
 	if (toplevel->mapped) {

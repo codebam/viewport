@@ -156,6 +156,13 @@ void viewport_ipc_notify_view_added(struct viewport_toplevel *toplevel)
 	json_builder_set_member_name(builder, "output");
 	json_builder_add_string_value(builder,
 		output_for_new_view(toplevel->server));
+	/* So the shell can refuse to shrink a window past what it accepts. */
+	json_builder_set_member_name(builder, "min_width");
+	json_builder_add_int_value(builder,
+		toplevel->xdg_toplevel->current.min_width);
+	json_builder_set_member_name(builder, "min_height");
+	json_builder_add_int_value(builder,
+		toplevel->xdg_toplevel->current.min_height);
 	json_builder_end_object(builder);
 
 	broadcast_builder(toplevel->server, builder);
