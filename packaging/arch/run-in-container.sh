@@ -71,6 +71,17 @@ else
 	done
 fi
 
+# -it only when there is a terminal. Asked for unconditionally, podman warns
+# and the compositor's output goes somewhere other than the log, which makes a
+# run that failed look like a run that printed nothing.
+# Written as an if rather than "[ -t 0 ] && interactive=(-it)": under set -e a
+# trailing test that fails takes the whole script down with it, and a run that
+# exits silently at this line looks exactly like one that never started.
+interactive=()
+if [ -t 0 ]; then
+	interactive=(-it)
+fi
+
 mkdir -p "$work"
 
 # Everything from here is logged, not just the compositor.
@@ -147,6 +158,12 @@ COPY viewport.pkg.tar.zst /tmp/
 # the Vulkan driver so the renderer has one; seatd for libseat; xwayland for X11
 # clients. --disable-sandbox because pacman cannot drop privileges for its
 # downloads inside a rootless container.
+#
+# shared-mime-info arrives as a dependency of the package now. It did not
+# always, and the failure it caused was the most misleading one in this project:
+# WebKit has no Content-Type for a file:// page and guesses from the MIME
+# database, so with none installed the bundled shell loaded as an empty
+# document and the desktop came up bare with every log line reporting success.
 RUN pacman -Syu --noconfirm --disable-sandbox --needed \
       foot ttf-dejavu mesa vulkan-radeon vulkan-icd-loader \
       seatd xorg-xwayland wmenu \
@@ -165,16 +182,22 @@ if [ "$mode" = nested ]; then
 
 	# Only the one socket is bound in. Mounting the whole runtime directory
 	# would hand the container every other socket in it as well.
-	exec podman run --rm -it \
+	#
+	# It is bound outside XDG_RUNTIME_DIR, and named by absolute path, because
+	# the compositor creates its own socket in that directory: with the host's
+	# socket already sitting there as wayland-0, binding fails outright and the
+	# run dies with "wl_display_add_socket_auto failed" before anything starts.
+	exec podman run --rm "${interactive[@]}" \
 		--userns=keep-id:uid=1000,gid=1000 \
 		--group-add keep-groups \
 		--device /dev/dri \
-		-v "$host_socket:/tmp/xdg/wayland-0" \
+		-v "$host_socket:/tmp/host.sock" \
 		-e XDG_RUNTIME_DIR=/tmp/xdg \
-		-e WAYLAND_DISPLAY=wayland-0 \
+		-e WAYLAND_DISPLAY=/tmp/host.sock \
 		-e WLR_BACKENDS=wayland \
 		-e HOME=/tmp \
-		"$runtime" viewport --startup foot
+		"$runtime" bash -c "mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
+exec viewport --debug --startup foot"
 fi
 
 if [ "$mode" = build ]; then
@@ -195,25 +218,18 @@ fi
 # driving real hardware, and enumerating exactly which capabilities libinput and
 # amdgpu need between kernel versions is a worse trade than granting them.
 tty_args=(
-	--rm -it
+	--rm "${interactive[@]}"
 	--privileged
 	-v /dev:/dev
 	-v /run/udev:/run/udev:ro
 	-e LIBSEAT_BACKEND=seatd
 	-e XDG_RUNTIME_DIR=/tmp/xdg
 	-e HOME=/root
-	# WebKit sandboxes its web process with bubblewrap, and inside a privileged
-	# container that sandbox is available enough to be used and broken enough
-	# not to work: the page loads, its scripts never run, and the desktop comes
-	# up with no bar and no layout. Rootless containers avoid this by accident,
-	# because WebKit notices bubblewrap cannot work at all and turns itself off
-	# — the only difference between the nested run, which worked, and this one,
-	# which did not.
-	#
-	# Turned off deliberately here. This is a throwaway container built from a
-	# known package, rendering a shell that ships inside it; there is no
-	# untrusted content for the sandbox to be protecting anything from.
-	-e WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+	# WebKit's own sandbox is deliberately left alone. It was disabled here for
+	# a while on the theory that bubblewrap half-working inside a privileged
+	# container was what left the desktop bare; it was not, and disabling it
+	# changed nothing. The shell comes up with the sandbox on, now that it is
+	# served over HTTP rather than from file://.
 )
 
 if [ ${#elevate[@]} -eq 0 ] && [ "$(id -u)" != 0 ]; then
@@ -271,7 +287,7 @@ echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
 # The container inherits the stdout already being teed, so its output lands in
 # the same log as the build steps above it — one file describing the whole run.
 "${elevate[@]}" podman run "${tty_args[@]}" "$runtime" \
-	bash -c "$start_seatd exec viewport --debug --startup foot" \
+	bash -c "$start_seatdexec viewport --debug --startup foot" \
 	|| echo "==> viewport exited $?"
 
 echo
