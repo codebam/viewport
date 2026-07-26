@@ -287,7 +287,7 @@ echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
 # The container inherits the stdout already being teed, so its output lands in
 # the same log as the build steps above it — one file describing the whole run.
 "${elevate[@]}" podman run "${tty_args[@]}" "$runtime" \
-	bash -c "$start_seatdexec viewport --debug --startup foot" \
+	bash -c "$start_seatd exec viewport --debug --startup foot" \
 	|| echo "==> viewport exited $?"
 
 echo
