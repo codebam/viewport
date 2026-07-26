@@ -18,6 +18,7 @@
 
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_keyboard_shortcuts_inhibit_v1.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
@@ -206,6 +207,7 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data)
 	struct viewport_server *server =
 		wl_container_of(listener, server, cursor_motion);
 	struct wlr_pointer_motion_event *event = data;
+	viewport_idle_activity(server);
 
 	/* Relative motion first, and unconditionally: a game reads deltas whether
 	 * or not the cursor is constrained, and mouselook is driven by how far the
@@ -241,6 +243,7 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener,
 	struct viewport_server *server =
 		wl_container_of(listener, server, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *event = data;
+	viewport_idle_activity(server);
 
 	/* Absolute devices — tablets, and the nested backends — still have to
 	 * produce relative deltas for a constrained client, so derive them from
@@ -446,6 +449,7 @@ static void handle_touch_down(struct wl_listener *listener, void *data)
 	struct viewport_server *server =
 		wl_container_of(listener, server, touch_down);
 	struct wlr_touch_down_event *event = data;
+	viewport_idle_activity(server);
 
 	double sx, sy;
 	struct viewport_toplevel *toplevel = NULL;
@@ -516,6 +520,57 @@ static void handle_touch_cancel(struct wl_listener *listener, void *data)
 	if (point != NULL && point->client != NULL) {
 		wlr_seat_touch_notify_cancel(server->seat, point->client);
 	}
+}
+
+/* Keyboard shortcut inhibiting.
+ *
+ * A virtual machine, a nested compositor or a remote desktop client needs the
+ * chords this compositor would otherwise swallow — Mod4+Return has to reach the
+ * guest, not open a terminal here. The protocol is how a client asks for that,
+ * and it only takes effect while that client is focused, so the bindings come
+ * back the moment focus moves away.
+ *
+ * The exit binding is deliberately not inhibited. A client that has taken the
+ * keyboard and then stops responding would otherwise leave no way out of the
+ * session short of a TTY. */
+static void handle_inhibitor_destroy(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, inhibitor_destroy);
+
+	wl_list_remove(&server->inhibitor_destroy.link);
+	server->active_inhibitor = NULL;
+}
+
+static void handle_new_shortcuts_inhibitor(struct wl_listener *listener,
+	void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, new_shortcuts_inhibitor);
+	struct wlr_keyboard_shortcuts_inhibitor_v1 *inhibitor = data;
+
+	/* Only the focused client may take the keyboard, and only one at a time. */
+	if (server->seat->keyboard_state.focused_surface != inhibitor->surface) {
+		return;
+	}
+	if (server->active_inhibitor != NULL) {
+		return;
+	}
+
+	server->active_inhibitor = inhibitor;
+	server->inhibitor_destroy.notify = handle_inhibitor_destroy;
+	wl_signal_add(&inhibitor->events.destroy, &server->inhibitor_destroy);
+
+	wlr_keyboard_shortcuts_inhibitor_v1_activate(inhibitor);
+	wlr_log(WLR_INFO, "client took the keyboard shortcuts");
+}
+
+/* True while a focused client has asked for the keyboard. */
+static bool shortcuts_inhibited(struct viewport_server *server)
+{
+	return server->active_inhibitor != NULL &&
+		server->active_inhibitor->surface ==
+			server->seat->keyboard_state.focused_surface;
 }
 
 /* Drag and drop between applications.
@@ -624,6 +679,14 @@ void viewport_cursor_init(struct viewport_server *server)
 			&server->request_set_shape);
 	}
 
+	server->shortcuts_inhibit =
+		wlr_keyboard_shortcuts_inhibit_v1_create(server->wl_display);
+	if (server->shortcuts_inhibit != NULL) {
+		server->new_shortcuts_inhibitor.notify = handle_new_shortcuts_inhibitor;
+		wl_signal_add(&server->shortcuts_inhibit->events.new_inhibitor,
+			&server->new_shortcuts_inhibitor);
+	}
+
 	server->touch_down.notify = handle_touch_down;
 	wl_signal_add(&server->cursor->events.touch_down, &server->touch_down);
 	server->touch_up.notify = handle_touch_up;
@@ -694,6 +757,7 @@ static void handle_keyboard_key(struct wl_listener *listener, void *data)
 	struct viewport_keyboard *keyboard = wl_container_of(listener, keyboard, key);
 	struct viewport_server *server = keyboard->server;
 	struct wlr_keyboard_key_event *event = data;
+	viewport_idle_activity(server);
 	bool pressed = event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
 
 	/* WPE wants an evdev keycode (libinput's, offset by 8 as X11 numbers
@@ -768,8 +832,11 @@ static void handle_keyboard_key(struct wl_listener *listener, void *data)
 
 	/* Compositor bindings outrank both the focused client and the shell, and
 	 * are checked on press only — forwarding the release of a consumed chord
-	 * would leave the client with an unmatched key-up. */
-	if (pressed &&
+	 * would leave the client with an unmatched key-up.
+	 *
+	 * Unless the focused client has asked for the keyboard, in which case they
+	 * are its chords for as long as it holds focus. */
+	if (pressed && !shortcuts_inhibited(server) &&
 			(viewport_bindings_handle(server, modifiers, raw_syms, n_raw) ||
 			 viewport_bindings_handle(server, modifiers, syms, nsyms))) {
 		return;

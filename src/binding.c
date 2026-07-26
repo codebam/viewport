@@ -365,7 +365,7 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
  * Execution
  * --------------------------------------------------------------------- */
 
-static void spawn(const char *command)
+void viewport_spawn(const char *command)
 {
 	/* Double fork so the child is reparented to init. A single fork would
 	 * leave a zombie for every launched program, because the compositor never
@@ -395,7 +395,7 @@ static void run_action(struct viewport_server *server,
 	switch (binding->action) {
 	case VIEWPORT_ACTION_EXEC:
 		wlr_log(WLR_DEBUG, "exec: %s", binding->argument);
-		spawn(binding->argument);
+		viewport_spawn(binding->argument);
 		break;
 	case VIEWPORT_ACTION_CLOSE:
 		if (server->focused != NULL) {

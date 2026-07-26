@@ -38,6 +38,24 @@
   ],
   "adaptive_sync": false,
 
+  "_idle": [
+    "What to do when nobody is there. Both thresholds are in seconds and",
+    "either can be omitted; with neither set there is no policy at all and an",
+    "external daemon such as swayidle can own it instead.",
+    "",
+    "The compositor does not draw the lock screen itself — it runs the locker",
+    "named here, so that the program drawing it can crash without unlocking",
+    "anything. Checked every 5 seconds, so thresholds round up to that.",
+    "",
+    "Idle inhibitors are honoured: a video player holding one keeps the",
+    "screen awake."
+  ],
+  "idle": {
+    "lock_after": 600,
+    "lock_command": "swaylock -f",
+    "blank_after": 900
+  },
+
   "terminal": "ghostty",
   "menu": "wmenu-run -f 'Fira Code NerdFont 11' -i",
 

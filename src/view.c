@@ -59,7 +59,17 @@ void viewport_view_set_size(struct viewport_toplevel *toplevel, int width,
 	/* X11 has no separate notion of position and size: a configure carries
 	 * both, and the coordinates are absolute in the X screen, which here is
 	 * the output layout. So the window's placement has to be repeated on
-	 * every resize. */
+	 * every resize.
+	 *
+	 * Not while the window has no surface. The shell keeps sending rects for a
+	 * window it has not yet heard is gone, and configuring an X11 window whose
+	 * client has already destroyed it produces the BadWindow errors xwm logs.
+	 * Harmless — the X server discards them — but they are noise that would
+	 * hide a real one. */
+	if (toplevel->xwayland_surface->surface == NULL) {
+		return;
+	}
+
 	wlr_xwayland_surface_configure(toplevel->xwayland_surface,
 		toplevel->box.x, toplevel->box.y, width, height);
 }

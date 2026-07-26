@@ -63,6 +63,10 @@ const SLOT_TIMEOUT_MS = 45_000;
 
 let nextSlotId = -1;
 let slotsPending = 0;
+/* Places kept for floating windows. Not slots in the tree — a floating window
+ * has no position in it — so they are held separately and matched the same
+ * way, by application. */
+let floatSlots = [];
 
 /* Which workspace a monitor starts on, by output name. Anything unlisted gets
  * the lowest workspace not already on screen. */
@@ -772,11 +776,28 @@ function serialiseNode(node) {
 }
 
 function serialiseSession() {
-  const saved = { version: 1, layout: layoutMode, workspaces: {}, outputs: {} };
+  const saved = {
+    version: 1, layout: layoutMode, workspaces: {}, outputs: {}, floating: [],
+  };
 
   for (const [n, root] of workspaces) {
     const tree = serialiseNode(root);
     if (tree !== null) saved.workspaces[n] = tree;
+  }
+
+  /* Floating windows live outside the tree, so walking it misses them
+     entirely — they came back tiled, in whatever order they happened to open.
+     Their rect is the whole of their layout, so it is what gets written. */
+  for (const [id, floating] of floats) {
+    const view = views.get(id);
+    const app = view ? (view.app_id || view.title) : null;
+    if (!app) continue;
+    saved.floating.push({
+      app,
+      workspace: floating.workspace,
+      x: floating.x, y: floating.y,
+      width: floating.width, height: floating.height,
+    });
   }
   for (const [name, output] of outputs) {
     saved.outputs[name] = {
@@ -838,6 +859,8 @@ function restoreSession(text) {
     const revived = reviveNode(tree);
     if (revived) workspaces.set(Number(n), revived);
   }
+  floatSlots = (saved.floating ?? []).filter((slot) => slot && slot.app);
+
   for (const [name, state] of Object.entries(saved.outputs ?? {})) {
     const output = outputs.get(name);
     if (output && Number.isFinite(state.workspace)) {
@@ -848,7 +871,7 @@ function restoreSession(text) {
 
   /* Nothing is showing yet — every leaf is a slot — but the workspace
      assignment and the shape are in place for the windows to arrive into. */
-  if (slotsPending > 0) {
+  if (slotsPending > 0 || floatSlots.length > 0) {
     setTimeout(dropUnclaimedSlots, SLOT_TIMEOUT_MS);
   }
   relayoutAll();
@@ -856,6 +879,7 @@ function restoreSession(text) {
 
 /* Give up on slots nothing came back for. */
 function dropUnclaimedSlots() {
+  floatSlots = [];
   if (slotsPending === 0) return;
   slotsPending = 0;
 
@@ -893,6 +917,18 @@ function claimSlot(id, app) {
     }
   }
   return false;
+}
+
+/* The place a floating window left behind, if it had one. Returns the rect to
+ * reopen it at, or null. */
+function claimFloatSlot(id, app) {
+  if (floatSlots.length === 0 || !app) return null;
+
+  const at = floatSlots.findIndex((slot) => slot.app === app);
+  if (at < 0) return null;
+
+  const [slot] = floatSlots.splice(at, 1);
+  return slot;
 }
 
 /* Move one window to a workspace, without it having to be focused first. The
@@ -2269,10 +2305,19 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   });
   resizeObserver.observe(viewport);
 
-  /* If this application left a slot behind before the last restart, it goes
-     back into it. Floating windows are excluded: their place is a rectangle,
-     not a position in the tree, and a dialog reopening does not want the one
-     its predecessor had. */
+  /* A window that was floating comes back floating, at the rect it had —
+     including one the compositor would not have floated on its own, because
+     the decision to float it was the user's and is worth keeping. */
+  const floatSlot = claimFloatSlot(id, app_id || title);
+  if (floatSlot) {
+    insertLeaf(floatSlot.workspace, id);
+    setFloating(id, true, floatSlot);
+    fadeIn(id);
+    saveSession();
+    return;
+  }
+
+  /* If this application left a slot in the tree, it goes back into it. */
   if (!floating && claimSlot(id, app_id || title)) {
     treeGeneration++;
     relayoutAll();

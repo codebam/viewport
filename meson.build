@@ -59,6 +59,15 @@ layer_shell_protocol_h = custom_target(
   output: 'wlr-layer-shell-unstable-v1-protocol.h',
   command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
 )
+
+# Same story for output power management, whose wlroots header needs the
+# generated one to compile.
+output_power_protocol_h = custom_target(
+  'wlr-output-power-management-unstable-v1-protocol.h',
+  input: 'protocols/wlr-output-power-management-unstable-v1.xml',
+  output: 'wlr-output-power-management-unstable-v1-protocol.h',
+  command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
 add_project_arguments(
   ['-I' + wayland_protocols.get_variable(pkgconfig: 'includedir')],
   language: 'c',
@@ -134,6 +143,7 @@ viewport_sources = files(
   'src/text_input.c',
   'src/watchdog.c',
   'src/session.c',
+  'src/idle.c',
   'src/gesture.c',
   'src/ipc.c',
   'src/glib_loop.c',
@@ -144,6 +154,7 @@ viewport_sources = files(
 )
 
 viewport_sources += layer_shell_protocol_h
+viewport_sources += output_power_protocol_h
 
 executable(
   'viewport',

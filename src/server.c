@@ -256,8 +256,8 @@ bool viewport_server_init(struct viewport_server *server,
 	wlr_gamma_control_manager_v1_create(server->wl_display);
 	wlr_data_control_manager_v1_create(server->wl_display);
 	wlr_ext_data_control_manager_v1_create(server->wl_display, 1);
-	wlr_idle_notifier_v1_create(server->wl_display);
-	wlr_idle_inhibit_v1_create(server->wl_display);
+	server->idle_notifier = wlr_idle_notifier_v1_create(server->wl_display);
+	server->idle_inhibit = wlr_idle_inhibit_v1_create(server->wl_display);
 	wlr_single_pixel_buffer_manager_v1_create(server->wl_display);
 	wlr_fractional_scale_manager_v1_create(server->wl_display, 1);
 	wlr_content_type_manager_v1_create(server->wl_display, 1);
@@ -347,6 +347,11 @@ static int handle_signal(int signal_number, void *data)
 
 bool viewport_server_start(struct viewport_server *server)
 {
+	/* Here rather than in init: the config file is read between the two, and
+	 * the idle thresholds come from it. Started in init, the policy would
+	 * always see zeroes and never run. */
+	viewport_idle_init(server);
+
 	server->socket_name = wl_display_add_socket_auto(server->wl_display);
 	if (server->socket_name == NULL) {
 		wlr_log(WLR_ERROR, "wl_display_add_socket_auto failed");
@@ -414,6 +419,7 @@ void viewport_server_finish(struct viewport_server *server)
 		/* Its GLib timer would otherwise fire into a destroyed server. */
 		viewport_output_revert_cancel(server);
 	}
+	viewport_idle_finish(server);
 	if (server->ime != NULL) {
 		/* Before the seat goes: its focus_change listener hangs off it. */
 		viewport_ime_destroy(server->ime);
@@ -494,6 +500,12 @@ void viewport_server_finish(struct viewport_server *server)
 		wl_list_remove(&server->touch_motion.link);
 		wl_list_remove(&server->touch_frame.link);
 		wl_list_remove(&server->touch_cancel.link);
+		if (server->shortcuts_inhibit != NULL) {
+			wl_list_remove(&server->new_shortcuts_inhibitor.link);
+		}
+		if (server->active_inhibitor != NULL) {
+			wl_list_remove(&server->inhibitor_destroy.link);
+		}
 		if (server->pointer_gestures != NULL) {
 			wl_list_remove(&server->swipe_begin.link);
 			wl_list_remove(&server->swipe_update.link);

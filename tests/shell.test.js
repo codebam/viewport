@@ -258,6 +258,24 @@ if (sessionTest) {
   check('they kept the sizes they had',
     pair.length === 2 && pair[0].weight === 1 && pair[1].weight === 2);
 
+  /* A floating window comes back floating, on its workspace, at its rect —
+     none of which is in the tree, so it needs its own record to survive. */
+  const floatState = JSON.stringify({
+    version: 1, layout: mode, workspaces: {}, outputs: {},
+    floating: [{ app: 'pavucontrol', workspace: 4,
+      x: 111, y: 222, width: 333, height: 444 }],
+  });
+  globalThis.__shell.views.clear();
+  emit({ type: 'session.restore', state: floatState });
+  open(20, 'pavucontrol');
+
+  const record = globalThis.__shell.floats.get(20);
+  check('a floating window comes back floating', record !== undefined);
+  check('on the workspace it was on', record?.workspace === 4);
+  check('at the rect it had',
+    record?.x === 111 && record?.y === 222 &&
+    record?.width === 333 && record?.height === 444);
+
   /* An application with no slot is placed normally rather than refused. */
   open(14, 'ghostty');
   check('an application with no saved place still opens',

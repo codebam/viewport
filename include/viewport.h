@@ -3,6 +3,8 @@
 #define VIEWPORT_H
 
 #include <stdbool.h>
+
+#include <glib.h>
 #include <stdint.h>
 
 #include <wayland-server-core.h>
@@ -100,6 +102,12 @@ struct viewport_config {
 	/* Cursor theme and size; NULL/0 use the defaults. */
 	const char *cursor_theme;
 	int cursor_size;
+	/* Seconds of inactivity before the locker is run and before the outputs
+	 * are turned off. Zero disables each; with both zero there is no policy at
+	 * all and an external idle daemon can own it. */
+	int idle_lock_after;
+	int idle_blank_after;
+	const char *idle_lock_command;
 	/* Ask outputs for variable refresh rate. Off by default: it is a property
 	 * of the monitor and the driver as much as of the compositor, and enabling
 	 * it where it is not properly supported causes flicker. */
@@ -178,6 +186,24 @@ struct viewport_server {
 	struct wl_listener touch_cancel;
 	/* Set once a touchscreen appears; drives the seat's touch capability. */
 	bool has_touch;
+	/* A client holding this receives Mod4 chords itself: a virtual machine, a
+	 * nested compositor, a remote desktop. Without it there is no way for one
+	 * to ever see them. */
+	struct wlr_idle_notifier_v1 *idle_notifier;
+	struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
+	struct wlr_output_power_manager_v1 *output_power;
+	struct wl_listener output_power_mode;
+	/* When the seat was last used, and what has already been done about it. */
+	gint64 idle_since;
+	unsigned int idle_timer;
+	bool idle_locked;
+	bool idle_blanked;
+
+	struct wlr_keyboard_shortcuts_inhibit_manager_v1 *shortcuts_inhibit;
+	struct wl_listener new_shortcuts_inhibitor;
+	struct wlr_keyboard_shortcuts_inhibitor_v1 *active_inhibitor;
+	struct wl_listener inhibitor_destroy;
+
 	struct wlr_pointer_gestures_v1 *pointer_gestures;
 	struct wl_listener swipe_begin;
 	struct wl_listener swipe_update;
@@ -473,6 +499,15 @@ void viewport_scale_forget(void);
 void viewport_output_manager_init(struct viewport_server *server);
 void viewport_output_manager_update(struct viewport_server *server);
 void viewport_output_revert_cancel(struct viewport_server *server);
+
+/* Runs a command detached from the compositor, so quitting does not take it
+ * down and no zombie is left behind. */
+void viewport_spawn(const char *command);
+
+/* Idle policy: lock and blank when nobody is there. */
+void viewport_idle_init(struct viewport_server *server);
+void viewport_idle_finish(struct viewport_server *server);
+void viewport_idle_activity(struct viewport_server *server);
 
 /* The layout, remembered across restarts. The blob is the shell's own format;
  * the compositor stores and returns it without interpreting it. */

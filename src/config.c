@@ -121,6 +121,21 @@ bool viewport_config_load(struct viewport_server *server,
 		config->terminal = keep(g_strdup(
 			json_object_get_string_member(object, "terminal")));
 	}
+	if (json_object_has_member(object, "idle")) {
+		JsonObject *idle = json_object_get_object_member(object, "idle");
+		if (json_object_has_member(idle, "lock_after")) {
+			config->idle_lock_after =
+				(int)json_object_get_int_member(idle, "lock_after");
+		}
+		if (json_object_has_member(idle, "blank_after")) {
+			config->idle_blank_after =
+				(int)json_object_get_int_member(idle, "blank_after");
+		}
+		if (json_object_has_member(idle, "lock_command")) {
+			config->idle_lock_command = keep(g_strdup(
+				json_object_get_string_member(idle, "lock_command")));
+		}
+	}
 	if (json_object_has_member(object, "adaptive_sync")) {
 		config->adaptive_sync =
 			json_object_get_boolean_member(object, "adaptive_sync");
@@ -232,6 +247,11 @@ void viewport_config_reload(struct viewport_server *server)
 		viewport_bindings_add_defaults(server, server->config.terminal,
 			server->config.menu);
 	}
+
+	/* Thresholds may have changed, so the policy is rebuilt rather than left
+	 * running with the old ones. */
+	viewport_idle_finish(server);
+	viewport_idle_init(server);
 
 	viewport_keyboards_reconfigure(server);
 	viewport_appearance_set_dark(server->appearance, server->config.dark_mode);

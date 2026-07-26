@@ -114,6 +114,8 @@ a TTY.
   "timeout_ms": 5000,
   "layout": "tiling",       // or "scrolling"
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
+  "idle": { "lock_after": 600, "lock_command": "swaylock -f",
+            "blank_after": 900 },
   "terminal": "ghostty",
   "menu": "wmenu-run -i",
   "binds": {
@@ -327,6 +329,36 @@ CSS `overflow` bounds the shell's own painting and no more. `clip` on
 output, which is what keeps a column scrolled off the left of one monitor from
 being drawn on the monitor beside it. Only the surface is clipped, never the
 container: a popup is entitled to extend past the window it belongs to.
+
+## Idle
+
+Advertising `idle-notify` is not a policy: with nothing listening, the screens
+stay lit for ever and the session never locks. `"idle"` in the config is the
+policy, so a machine left alone behaves without a daemon having to be installed
+and configured alongside it. Set neither threshold and there is none, leaving
+the field to swayidle or anything else.
+
+The compositor runs the locker named in `lock_command` rather than locking the
+screen itself. That is the whole point of `ext-session-lock`: the program
+drawing the lock screen is separate, and can crash without unlocking anything.
+Blanking turns the outputs off, which is what actually saves the panel.
+
+Idle inhibitors are honoured, and only while their surface is mapped — a paused
+video on a hidden workspace is not keeping anyone awake. An inhibitor counts as
+activity rather than merely pausing the countdown, so releasing one starts the
+clock again instead of firing immediately.
+
+`wlr-output-power-management-v1` is advertised too, so `wlopm` and settings
+panels can turn a monitor off on request rather than only on a timer.
+
+## Keyboard shortcuts
+
+A virtual machine, a nested compositor or a remote desktop client needs the
+chords this compositor would otherwise swallow — `Mod4+Return` has to reach the
+guest rather than opening a terminal here.
+`keyboard-shortcuts-inhibit-v1` is how a client asks for that, and it applies
+only while that client holds focus, so the bindings come back the moment focus
+moves away.
 
 ## Remembering the layout
 
