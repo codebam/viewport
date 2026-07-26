@@ -867,6 +867,25 @@ disarmed for that window, so a merely slow shell costs nothing.
 
 Not yet implemented: tablet and stylus input.
 
+## Installing
+
+On Arch or CachyOS, `packaging/arch/` has a PKGBUILD. Every dependency is
+already packaged there — including `wpewebkit` built with the WPE platform API,
+which is the one that would otherwise mean compiling a browser engine — so it
+builds in about a minute:
+
+```sh
+git archive --format=tar.gz --prefix=viewport-0.1.0/ -o viewport-0.1.0.tar.gz HEAD
+cp packaging/arch/PKGBUILD . && makepkg -si
+```
+
+An installed copy needs no arguments: it ships its own shell and defaults to
+it, and a `wayland-sessions` entry means a display manager will offer it as
+something to log into. See `packaging/arch/README.md` for building it in a
+container, which has two non-obvious wrinkles.
+
+On NixOS, `flake.nix` provides both a package and a dev shell.
+
 ## Licence
 
 MIT, matching wlroots. WPE WebKit and GLib are LGPL-2.1+ and dynamically
