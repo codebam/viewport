@@ -23,6 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+#include <glib.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -239,10 +241,57 @@ bool viewport_binding_add(struct viewport_server *server, const char *spec)
 	return true;
 }
 
+/* Something to open a terminal and a launcher with, when nothing said which.
+ *
+ * A fresh install has no config file, and without these two bindings the
+ * desktop comes up with no way to start anything at all — the only working key
+ * is the one that quits. Guessing is better than that, and the guess is
+ * checked: the first of these that is actually installed wins, so the binding
+ * either works or is not made.
+ *
+ * Ordered by how likely someone on this compositor is to have them rather than
+ * by popularity in general. */
+static const char *const terminal_candidates[] = {
+	"rio", "foot", "ghostty", "alacritty", "kitty", "wezterm", "xterm", NULL,
+};
+
+static const char *const menu_candidates[] = {
+	"wmenu-run", "fuzzel", "wofi", "rofi", "bemenu-run", "dmenu-wl_run", NULL,
+};
+
+static const char *first_installed(const char *const *candidates)
+{
+	for (size_t i = 0; candidates[i] != NULL; i++) {
+		char *path = g_find_program_in_path(candidates[i]);
+		if (path != NULL) {
+			g_free(path);
+			return candidates[i];
+		}
+	}
+	return NULL;
+}
+
 void viewport_bindings_add_defaults(struct viewport_server *server,
 	const char *terminal, const char *menu)
 {
 	char spec[512];
+
+	if (terminal == NULL) {
+		terminal = first_installed(terminal_candidates);
+		if (terminal != NULL) {
+			wlr_log(WLR_INFO, "no terminal configured; using %s", terminal);
+		} else {
+			wlr_log(WLR_ERROR,
+				"no terminal configured and none of the usual ones are "
+				"installed: Mod4+Return will do nothing");
+		}
+	}
+	if (menu == NULL) {
+		menu = first_installed(menu_candidates);
+		if (menu != NULL) {
+			wlr_log(WLR_INFO, "no launcher configured; using %s", menu);
+		}
+	}
 
 	/* The scrolling layout needs different movement keys, not just a different
 	 * renderer. Directional focus in the compositor works from where windows
