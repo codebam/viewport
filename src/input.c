@@ -17,6 +17,7 @@
 #include <stdlib.h>
 
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
@@ -346,6 +347,59 @@ static void handle_request_cursor(struct wl_listener *listener, void *data)
 	}
 }
 
+/* Drag and drop between applications.
+ *
+ * Without these the compositor silently drops every drag: dragging a file out
+ * of a file manager, or a tab out of a browser, starts and then nothing
+ * happens, because the seat is never told to begin the drag and the icon that
+ * follows the cursor is never put in the scene.
+ */
+static void handle_request_start_drag(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, request_start_drag);
+	struct wlr_seat_request_start_drag_event *event = data;
+
+	/* Only honour a drag from the client that actually holds the implicit
+	 * grab, or any client could start one at any time. */
+	if (wlr_seat_validate_pointer_grab_serial(server->seat, event->origin,
+			event->serial)) {
+		wlr_seat_start_pointer_drag(server->seat, event->drag, event->serial);
+		return;
+	}
+
+	wlr_data_source_destroy(event->drag->source);
+}
+
+static void handle_start_drag(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, start_drag);
+	struct wlr_drag *drag = data;
+
+	if (drag->icon == NULL) {
+		return;
+	}
+
+	/* The icon rides above everything, including a fullscreen window, and is
+	 * positioned by the scene as the cursor moves. */
+	struct wlr_scene_tree *tree =
+		wlr_scene_drag_icon_create(server->layer_overlay, drag->icon);
+	if (tree != NULL) {
+		wlr_scene_node_set_position(&tree->node, server->cursor->x,
+			server->cursor->y);
+	}
+}
+
+static void handle_request_set_primary_selection(struct wl_listener *listener,
+	void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, request_set_primary_selection);
+	struct wlr_seat_request_set_primary_selection_event *event = data;
+	wlr_seat_set_primary_selection(server->seat, event->source, event->serial);
+}
+
 static void handle_request_set_selection(struct wl_listener *listener,
 	void *data)
 {
@@ -381,6 +435,15 @@ void viewport_cursor_init(struct viewport_server *server)
 	server->request_set_selection.notify = handle_request_set_selection;
 	wl_signal_add(&server->seat->events.request_set_selection,
 		&server->request_set_selection);
+	server->request_set_primary_selection.notify =
+		handle_request_set_primary_selection;
+	wl_signal_add(&server->seat->events.request_set_primary_selection,
+		&server->request_set_primary_selection);
+	server->request_start_drag.notify = handle_request_start_drag;
+	wl_signal_add(&server->seat->events.request_start_drag,
+		&server->request_start_drag);
+	server->start_drag.notify = handle_start_drag;
+	wl_signal_add(&server->seat->events.start_drag, &server->start_drag);
 }
 
 /* ------------------------------------------------------------------------
@@ -552,15 +615,31 @@ static void new_keyboard(struct viewport_server *server,
 	keyboard->server = server;
 	keyboard->wlr_keyboard = wlr_keyboard;
 
+	/* A hardcoded layout is wrong for anyone not on a US keyboard, and there
+	 * is no way to discover the right one — so it comes from the config, with
+	 * NULL fields falling back to libxkbcommon's defaults. */
 	struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL,
+	struct xkb_rule_names rules = {
+		.layout = server->config.xkb_layout,
+		.variant = server->config.xkb_variant,
+		.options = server->config.xkb_options,
+	};
+	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, &rules,
 		XKB_KEYMAP_COMPILE_NO_FLAGS);
+	if (keymap == NULL) {
+		wlr_log(WLR_ERROR, "invalid keymap (layout '%s'), using the default",
+			server->config.xkb_layout ? server->config.xkb_layout : "");
+		keymap = xkb_keymap_new_from_names(context, NULL,
+			XKB_KEYMAP_COMPILE_NO_FLAGS);
+	}
 	if (keymap != NULL) {
 		wlr_keyboard_set_keymap(wlr_keyboard, keymap);
 		xkb_keymap_unref(keymap);
 	}
 	xkb_context_unref(context);
-	wlr_keyboard_set_repeat_info(wlr_keyboard, 25, 600);
+	wlr_keyboard_set_repeat_info(wlr_keyboard,
+		server->config.repeat_rate > 0 ? server->config.repeat_rate : 25,
+		server->config.repeat_delay > 0 ? server->config.repeat_delay : 600);
 
 	keyboard->modifiers.notify = handle_keyboard_modifiers;
 	wl_signal_add(&wlr_keyboard->events.modifiers, &keyboard->modifiers);

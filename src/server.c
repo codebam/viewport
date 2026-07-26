@@ -18,7 +18,15 @@
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
+#include <wlr/types/wlr_data_control_v1.h>
+#include <wlr/types/wlr_ext_data_control_v1.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
+#include <wlr/types/wlr_gamma_control_v1.h>
+#include <wlr/types/wlr_idle_inhibit_v1.h>
+#include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_screencopy_v1.h>
+#include <wlr/types/wlr_session_lock_v1.h>
+#include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_viewporter.h>
@@ -148,6 +156,8 @@ bool viewport_server_init(struct viewport_server *server,
 	server->layer_apps = wlr_scene_tree_create(&server->scene->tree);
 	server->layer_top = wlr_scene_tree_create(&server->scene->tree);
 	server->layer_overlay = wlr_scene_tree_create(&server->scene->tree);
+	server->layer_lock = wlr_scene_tree_create(&server->scene->tree);
+	wlr_scene_node_set_enabled(&server->layer_lock->node, false);
 
 	server->new_output.notify = viewport_handle_new_output;
 	wl_signal_add(&server->backend->events.new_output, &server->new_output);
@@ -222,6 +232,20 @@ bool viewport_server_init(struct viewport_server *server,
 		wl_signal_add(&decoration_manager->events.new_toplevel_decoration,
 			&server->new_decoration);
 	}
+
+	/* Screen locking, and a set of small protocols that clients expect to
+	 * exist. Each is a single call, and their absence shows up as a tool that
+	 * silently does nothing: no gamma control means no night-light, no data
+	 * control means clipboard managers see an empty clipboard, no idle notify
+	 * means an idle daemon never fires. */
+	viewport_session_lock_init(server);
+	wlr_gamma_control_manager_v1_create(server->wl_display);
+	wlr_data_control_manager_v1_create(server->wl_display);
+	wlr_ext_data_control_manager_v1_create(server->wl_display, 1);
+	wlr_idle_notifier_v1_create(server->wl_display);
+	wlr_idle_inhibit_v1_create(server->wl_display);
+	wlr_single_pixel_buffer_manager_v1_create(server->wl_display);
+	wlr_fractional_scale_manager_v1_create(server->wl_display, 1);
 
 	/* Started lazily: no X server runs until an X11 client connects. */
 	viewport_xwayland_init(server);
@@ -383,6 +407,9 @@ void viewport_server_finish(struct viewport_server *server)
 	}
 	if (server->pointer_constraints != NULL) {
 		wl_list_remove(&server->new_constraint.link);
+	}
+	if (server->session_lock_manager != NULL) {
+		wl_list_remove(&server->new_session_lock.link);
 	}
 	if (server->xwayland != NULL) {
 		wl_list_remove(&server->new_xwayland_surface.link);

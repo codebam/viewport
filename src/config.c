@@ -43,7 +43,7 @@
 
 /* Strings handed to viewport_config are owned here and freed by
  * viewport_config_finish(). */
-static char *config_strings[8];
+static char *config_strings[16];
 static size_t config_string_count;
 
 static const char *keep(char *owned)
@@ -115,6 +115,29 @@ bool viewport_config_load(struct viewport_server *server,
 	if (json_object_has_member(object, "terminal")) {
 		config->terminal = keep(g_strdup(
 			json_object_get_string_member(object, "terminal")));
+	}
+	if (json_object_has_member(object, "keyboard")) {
+		JsonObject *keyboard = json_object_get_object_member(object, "keyboard");
+		if (json_object_has_member(keyboard, "layout")) {
+			config->xkb_layout = keep(g_strdup(
+				json_object_get_string_member(keyboard, "layout")));
+		}
+		if (json_object_has_member(keyboard, "variant")) {
+			config->xkb_variant = keep(g_strdup(
+				json_object_get_string_member(keyboard, "variant")));
+		}
+		if (json_object_has_member(keyboard, "options")) {
+			config->xkb_options = keep(g_strdup(
+				json_object_get_string_member(keyboard, "options")));
+		}
+		if (json_object_has_member(keyboard, "repeat_rate")) {
+			config->repeat_rate =
+				(int)json_object_get_int_member(keyboard, "repeat_rate");
+		}
+		if (json_object_has_member(keyboard, "repeat_delay")) {
+			config->repeat_delay =
+				(int)json_object_get_int_member(keyboard, "repeat_delay");
+		}
 	}
 	if (json_object_has_member(object, "dark_mode")) {
 		config->dark_mode = json_object_get_boolean_member(object, "dark_mode");

@@ -128,6 +128,7 @@ viewport_sources = files(
   'src/layer_shell.c',
   'src/input.c',
   'src/pointer.c',
+  'src/session_lock.c',
   'src/ipc.c',
   'src/glib_loop.c',
   'src/wpe_display.c',

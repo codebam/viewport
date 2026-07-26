@@ -21,6 +21,7 @@
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
@@ -83,6 +84,12 @@ struct viewport_config {
 	/* Verbose logging, and mirror the shell's console into the compositor
 	 * log — without this, a JS error in the shell is completely silent. */
 	bool debug;
+	/* Keyboard layout, in xkb terms; NULL means the system default. */
+	const char *xkb_layout;
+	const char *xkb_variant;
+	const char *xkb_options;
+	int repeat_rate;
+	int repeat_delay;
 	/* Commands bound to the default terminal and launcher chords. */
 	const char *terminal;
 	const char *menu;
@@ -132,11 +139,18 @@ struct viewport_server {
 	struct wlr_scene_tree *layer_apps;
 	struct wlr_scene_tree *layer_top;
 	struct wlr_scene_tree *layer_overlay;
+	/* Above everything: while locked nothing else may be shown. */
+	struct wlr_scene_tree *layer_lock;
 
 	struct wlr_layer_shell_v1 *layer_shell;
 	struct wl_listener new_layer_surface;
 
 	struct wlr_xdg_shell *xdg_shell;
+
+	struct wlr_session_lock_manager_v1 *session_lock_manager;
+	struct wl_listener new_session_lock;
+	struct viewport_lock *lock;
+	bool locked;
 
 	struct wlr_xwayland *xwayland;
 	struct wl_listener new_xwayland_surface;
@@ -206,6 +220,9 @@ struct viewport_server {
 	struct wl_listener cursor_frame;
 	struct wl_listener request_cursor;
 	struct wl_listener request_set_selection;
+	struct wl_listener request_set_primary_selection;
+	struct wl_listener request_start_drag;
+	struct wl_listener start_drag;
 };
 
 struct viewport_output {
@@ -268,6 +285,14 @@ struct viewport_decoration {
 	struct wlr_xdg_toplevel_decoration_v1 *decoration;
 	struct wl_listener request_mode;
 	struct wl_listener surface_commit;
+	struct wl_listener destroy;
+};
+
+struct viewport_lock {
+	struct viewport_server *server;
+	struct wlr_session_lock_v1 *lock;
+	struct wl_listener new_surface;
+	struct wl_listener unlock;
 	struct wl_listener destroy;
 };
 
@@ -489,6 +514,15 @@ bool viewport_bindings_handle(struct viewport_server *server,
 	uint32_t modifiers, const xkb_keysym_t *keysyms, int nsyms);
 
 void viewport_bindings_finish(struct viewport_server *server);
+
+/* -------------------------------------------------------------------------
+ * session_lock.c
+ *
+ * ext-session-lock-v1. Without it nothing can lock the screen: swaylock and
+ * every other locker exits immediately when the protocol is absent.
+ * ---------------------------------------------------------------------- */
+
+void viewport_session_lock_init(struct viewport_server *server);
 
 /* -------------------------------------------------------------------------
  * pointer.c
