@@ -470,7 +470,16 @@ function renderStrip(root, output, area = null) {
   const strip = document.createElement('div');
   strip.className = 'strip';
 
-  area = area ?? output.windowsEl.getBoundingClientRect();
+  if (area === null) {
+    /* The measured rect is the border box, and `.windows` is padded by a gap
+       on every side. Sizing columns against it makes a full-width column two
+       gaps wider than the space it can actually occupy — it overflowed the
+       right edge and never sat centred. The strip lives inside the padding, so
+       that is what it has to be measured against. */
+    const rect = output.windowsEl.getBoundingClientRect();
+    const pad = gapPx();
+    area = { width: rect.width - pad * 2, height: rect.height - pad * 2 };
+  }
   const columns = root.children.filter(
     (child) => child.type === 'split' || views.has(child.id));
 
@@ -478,8 +487,18 @@ function renderStrip(root, output, area = null) {
   let focusedStart = null;
   let focusedWidth = 0;
 
+  /* Dividers come out of the columns' own share rather than being added on
+     top. Otherwise two half-width columns plus the divider between them are
+     wider than the screen, and focusing the second one has to scroll by a gap
+     — the windows visibly shift when switching between two halves that ought
+     to sit still. Taking (N-1) gaps and spreading them across N columns makes
+     fractions that sum to 1 fill the width exactly. */
+  const share = columns.length > 1
+    ? gapPx() * (columns.length - 1) / columns.length : 0;
+
   columns.forEach((column, i) => {
-    const width = Math.round(area.width * (column.width ?? 1 / 2));
+    const width = Math.max(1,
+      Math.round(area.width * (column.width ?? 1 / 2) - share));
 
     if (i > 0) {
       /* Grabbable edge, same as between tiled windows. It drags the column to

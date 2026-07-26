@@ -298,6 +298,61 @@ if (mode === 'scrolling') {
 }
 
 if (mode === 'scrolling') {
+  /* A full-width column has to fit the space a window may occupy, which is the
+   * tiling area minus its padding. Measured against the border box instead, it
+   * came out two gaps too wide and ran off the right edge.
+   *
+   * Checked on the column element the shell sizes, not on the reported
+   * geometry: the stub returns one fixed rect for every element, so a measured
+   * width would say nothing about the layout. */
+  const ws0 = globalThis.__shell.outputs
+    .get(globalThis.__shell.activeOutput).workspace;
+  const cols0 = globalThis.__shell.workspaces.get(ws0).children;
+  const widened = cols0[0];
+  const savedWidth = widened.width;
+  widened.width = 1;
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+
+  const stripOf = () => {
+    for (const o of globalThis.__shell.outputs.values()) {
+      const el = o.windowsEl.children[0];
+      if (el?.classList?.contains('strip')) return el;
+    }
+    return null;
+  };
+  const columnWidths = () => (stripOf()?.children ?? [])
+    .filter((c) => c.classList.contains('column'))
+    .map((c) => parseInt(c.style.width, 10));
+
+  /* The stub reports a 1920-wide tiling area and an 8px gap, so the space a
+     window may occupy is 1904. */
+  const full = columnWidths()[0];
+  check('a full-width column fits inside the padding', full <= 1904);
+
+  widened.width = savedWidth;
+
+  /* Two half-width columns and the divider between them must fit exactly, or
+     moving focus from one to the other scrolls the strip and everything
+     visibly shifts. */
+  if (cols0.length >= 2) {
+    cols0[0].width = 1 / 2;
+    cols0[1].width = 1 / 2;
+    const offsets = globalThis.__shell.scrollOffsets;
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+
+    /* Two halves plus the divider between them must come to the whole width,
+       not more. */
+    const halves = columnWidths().slice(0, 2);
+    check('two halves and a divider fill the width exactly',
+      halves[0] + halves[1] + 8 <= 1904);
+
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+    const at = offsets.get(ws0) ?? 0;
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['right'] });
+    check('switching between two halves does not scroll',
+      (offsets.get(ws0) ?? 0) === at);
+  }
+
   /* Resizing in the strip means changing the column's own width. The tiling
    * path shifts flex weights between siblings, which the strip ignores
    * entirely — columns are laid out at a fixed size — so a drag did nothing. */

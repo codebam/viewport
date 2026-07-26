@@ -429,6 +429,15 @@ The view scrolls the minimum needed to keep the focused column on screen.
 | three-finger swipe ←→ | scroll the strip under your fingers |
 | three-finger swipe ↑↓ | previous / next workspace |
 
+Column widths are fractions of the space a window may occupy — the tiling area
+minus its padding — and the dividers between columns come out of those
+fractions rather than being added on top. Both details matter: measured against
+the padded box a full-width column is two gaps too wide and runs off the right
+edge, and with dividers added on top two half-width columns plus the divider
+between them are wider than the screen, so moving focus from one to the other
+scrolls the strip and everything visibly shifts. Taking the (N-1) dividers out
+of N columns makes fractions summing to 1 fill the width exactly.
+
 Resizing means changing a column's own width. Columns do not share space, so
 widening one takes nothing from its neighbours — it makes the strip longer and
 shifts everything after it along. Nothing you are not touching changes size,
