@@ -649,6 +649,15 @@ timeout 20 node tests/shell.test.js data/shell/shell.js scrolling
 
 `timeout` because the shell sets a live-reload interval and so never exits.
 
+Outputs come up at the fastest mode their preferred resolution offers, not at
+the mode the display nominates as preferred — plenty of high-refresh monitors
+put a 60Hz timing there, and taking it at face value runs a 240Hz panel at a
+quarter of its rate. Only the refresh rate is maximised: the highest refresh
+overall may belong to a lower resolution, and a sharper picture is worth more
+than a faster one. The chosen mode, refresh rate included, is logged at
+startup; `output.configure` or any `wlr-output-management` client can override
+it afterwards.
+
 ## Layout models
 
 `"layout"` in the config file picks which one the shell runs.

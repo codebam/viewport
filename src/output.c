@@ -117,8 +117,27 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 	wlr_output_state_init(&state);
 	wlr_output_state_set_enabled(&state, true);
 
+	/* The fastest mode at the preferred resolution.
+	 *
+	 * wlr_output_preferred_mode() returns what the display says it prefers,
+	 * and plenty of high-refresh monitors nominate a 60Hz mode there — the
+	 * panel is 240Hz and the EDID's preferred timing is 60. Taking that at face
+	 * value means running a 240Hz monitor at a quarter of its rate, which is
+	 * exactly the sort of thing nobody notices until they compare.
+	 *
+	 * Resolution comes from the preferred mode and only the refresh rate is
+	 * maximised: the highest refresh overall might belong to a lower
+	 * resolution, and a sharper picture is worth more than a faster one. */
 	struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
 	if (mode != NULL) {
+		struct wlr_output_mode *candidate;
+		wl_list_for_each(candidate, &wlr_output->modes, link) {
+			if (candidate->width == mode->width &&
+					candidate->height == mode->height &&
+					candidate->refresh > mode->refresh) {
+				mode = candidate;
+			}
+		}
 		wlr_output_state_set_mode(&state, mode);
 	}
 
@@ -195,8 +214,11 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 	 * a scheduled frame nothing would ever acknowledge it. */
 	wlr_output_schedule_frame(wlr_output);
 
-	wlr_log(WLR_INFO, "output %s online at %dx%d", wlr_output->name,
-		wlr_output->width, wlr_output->height);
+	/* The refresh rate is part of what mode was chosen, and leaving it out of
+	 * the line is how a monitor can sit at 60Hz unnoticed. */
+	wlr_log(WLR_INFO, "output %s online at %dx%d@%.3fHz", wlr_output->name,
+		wlr_output->width, wlr_output->height,
+		wlr_output->refresh / 1000.0);
 }
 
 /* Tell a surface what scale to paint at.
