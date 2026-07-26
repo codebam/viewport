@@ -112,10 +112,40 @@ static void handle_load_failed(WebKitWebView *view, WebKitLoadEvent event,
 	load_fallback(web, error != NULL ? error->message : "load failed");
 }
 
+/* A web process that dies takes the shell with it and says nothing: the last
+ * frame it painted stays on screen, so the desktop looks alive while nothing
+ * responds. Worth a loud line, because every other symptom points elsewhere. */
+static void handle_web_process_terminated(WebKitWebView *view,
+	WebKitWebProcessTerminationReason reason, gpointer user_data)
+{
+	static const char *const reasons[] = {
+		[WEBKIT_WEB_PROCESS_CRASHED] = "crashed",
+		[WEBKIT_WEB_PROCESS_EXCEEDED_MEMORY_LIMIT] = "exceeded its memory limit",
+		[WEBKIT_WEB_PROCESS_TERMINATED_BY_API] = "was terminated by the API",
+	};
+	wlr_log(WLR_ERROR, "the shell's web process %s",
+		reason <= WEBKIT_WEB_PROCESS_TERMINATED_BY_API
+			? reasons[reason] : "died");
+}
+
 static void handle_load_changed(WebKitWebView *view, WebKitLoadEvent event,
 	gpointer user_data)
 {
 	struct viewport_web *web = user_data;
+
+	/* Which of these arrived is the whole diagnosis when the desktop comes up
+	 * empty: a load that never commits is a URL or a sandbox problem, and one
+	 * that finishes and still lays nothing out is the page's own fault. Silence
+	 * here meant those two were indistinguishable in a log. */
+	static const char *const names[] = {
+		[WEBKIT_LOAD_STARTED] = "started",
+		[WEBKIT_LOAD_REDIRECTED] = "redirected",
+		[WEBKIT_LOAD_COMMITTED] = "committed",
+		[WEBKIT_LOAD_FINISHED] = "finished",
+	};
+	wlr_log(WLR_INFO, "shell load %s: %s",
+		event <= WEBKIT_LOAD_FINISHED ? names[event] : "?",
+		webkit_web_view_get_uri(view));
 
 	if (event == WEBKIT_LOAD_FINISHED) {
 		/* Hand the shell its starting state as soon as it can receive it.
@@ -318,6 +348,8 @@ struct viewport_web *viewport_web_create(struct viewport_server *server)
 		G_CALLBACK(handle_load_failed), web);
 	g_signal_connect(web->web_view, "load-changed",
 		G_CALLBACK(handle_load_changed), web);
+	g_signal_connect(web->web_view, "web-process-terminated",
+		G_CALLBACK(handle_web_process_terminated), web);
 
 	int width, height;
 	viewport_layout_size(server, &width, &height);
