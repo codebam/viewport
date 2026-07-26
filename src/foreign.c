@@ -209,6 +209,17 @@ static void handle_toplevel_capture_request(struct wl_listener *listener,
 					&toplevel->scene_tree->node, server->wl_event_loop,
 					server->allocator, server->renderer);
 		}
+		/* What wlroots will capture is the scene region this node reports,
+		 * so report it: a window sharing the top left of the screen means
+		 * these coordinates came back as zero, and there is no other way to
+		 * tell that from the outside. */
+		int lx = 0, ly = 0;
+		bool on_screen = wlr_scene_node_coords(&toplevel->scene_tree->node,
+			&lx, &ly);
+		wlr_log(WLR_INFO,
+			"capture requested for view %u at %d,%d (enabled=%d, clipped=%d)",
+			toplevel->id, lx, ly, on_screen, toplevel->has_clip);
+
 		if (toplevel->capture_source != NULL) {
 			wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(
 				request, toplevel->capture_source);
