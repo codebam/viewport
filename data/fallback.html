@@ -1,0 +1,117 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Viewport — offline</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid;
+    place-items: center;
+    font: 16px/1.6 system-ui, sans-serif;
+    color: #e6e6e6;
+    background: #16181d radial-gradient(60rem 40rem at 50% -10%, #23262e, transparent);
+  }
+  .card { max-width: 34rem; padding: 2rem; }
+  h1 { margin: 0 0 .25rem; font-size: 1.4rem; font-weight: 600; }
+  p { margin: .75rem 0; color: #a8adb8; }
+  code {
+    padding: .15em .4em;
+    border-radius: .3em;
+    background: #0e1014;
+    font-family: ui-monospace, monospace;
+    font-size: .9em;
+    color: #d7dae2;
+  }
+  ul { margin: .75rem 0; padding-left: 1.1rem; color: #a8adb8; }
+  li { margin: .3rem 0; }
+  .windows { margin-top: 1.5rem; border-top: 1px solid #2a2e37; padding-top: 1rem; }
+  .win {
+    display: flex; justify-content: space-between; gap: 1rem;
+    padding: .4rem .6rem; border-radius: .4rem; background: #1d2027;
+    margin: .3rem 0; font-size: .9rem;
+  }
+  .win button {
+    border: 0; border-radius: .3em; padding: .1rem .5rem; cursor: pointer;
+    background: #3a3f4b; color: #e6e6e6; font: inherit;
+  }
+  .empty { color: #6b7180; font-size: .9rem; }
+</style>
+
+<div class="card">
+  <h1>Shell unavailable</h1>
+  <p>
+    The compositor is running, but the web shell could not be loaded. This page
+    is the bundled fallback, served from disk.
+  </p>
+  <ul>
+    <li>Is the shell server reachable from this machine?</li>
+    <li>Did it respond, but fail to paint a first frame before the deadline?</li>
+    <li>Check the compositor log for the reason and the failing URL.</li>
+  </ul>
+  <p>
+    Wayland clients still run and are still composited. Retry with
+    <code>viewport --url &lt;URL&gt;</code>, or drive the compositor directly
+    over <code>$VIEWPORT_SOCKET</code>.
+  </p>
+
+  <div class="windows">
+    <strong style="font-size:.9rem">Open windows</strong>
+    <div id="list"><p class="empty">No windows open.</p></div>
+  </div>
+</div>
+
+<script>
+  // The fallback speaks the same IPC as a real shell, so windows opened while
+  // offline are still listed, tiled and closable rather than stranded.
+  const views = new Map();
+  const list = document.getElementById('list');
+
+  const send = (msg) =>
+    window.webkit?.messageHandlers?.viewport?.postMessage(JSON.stringify(msg));
+
+  function layout() {
+    const ids = [...views.keys()];
+    list.innerHTML = '';
+
+    if (!ids.length) {
+      list.innerHTML = '<p class="empty">No windows open.</p>';
+      return;
+    }
+
+    // Plain columns across the lower half of the screen — enough to keep
+    // working, not pretending to be a desktop.
+    const top = Math.round(innerHeight * 0.45);
+    const height = Math.round(innerHeight * 0.5);
+    const width = Math.floor(innerWidth / ids.length);
+
+    ids.forEach((id, i) => {
+      send({ type: 'view.layout', id, x: i * width, y: top, width, height });
+
+      const row = document.createElement('div');
+      row.className = 'win';
+      const label = document.createElement('span');
+      label.textContent = views.get(id).title || views.get(id).app_id || `view ${id}`;
+      const close = document.createElement('button');
+      close.textContent = 'Close';
+      close.onclick = () => send({ type: 'view.close', id });
+      row.append(label, close);
+      list.append(row);
+    });
+  }
+
+  window.addEventListener('viewport', (e) => {
+    const m = e.detail;
+    if (m.type === 'view.added' || m.type === 'view.props') {
+      views.set(m.id, { title: m.title, app_id: m.app_id });
+      layout();
+    } else if (m.type === 'view.removed') {
+      views.delete(m.id);
+      layout();
+    }
+  });
+
+  window.addEventListener('resize', layout);
+  send({ type: 'output.query' });
+  send({ type: 'view.query' });
+</script>

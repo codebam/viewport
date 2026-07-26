@@ -1,0 +1,237 @@
+/* SPDX-License-Identifier: MIT
+ *
+ * The important rule in this file is `.viewport { background: transparent }`.
+ *
+ * That element is a hole. The compositor paints the real Wayland client into
+ * whatever screen rect it occupies, on a layer above the web view, so anything
+ * painted there by CSS is simply covered. Give the frame around it a border or
+ * a shadow — but never give the hole a background, or you are drawing pixels
+ * that will never be seen while paying to composite them.
+ *
+ * The second thing worth knowing: the tiling tree renders to nested flexboxes,
+ * so the browser computes every window rectangle. The shell measures the
+ * result rather than calculating it.
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #14161b;
+  --border: #2a3040;
+  --border-focus: #7aa2f7;
+  --text: #e7e9ee;
+  --muted: #8b92a3;
+  --gap: 8px;
+  --bar: 30px;
+  --radius: 6px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden; /* the desktop never scrolls */
+  /* Family name as fontconfig reports it: "FiraCode Nerd Font", with no
+     space between Fira and Code. "Fira Code NerdFont" matches nothing, and
+     the fallback has no Material Design glyphs, so every bar icon renders as
+     a tofu box. Check with: fc-list : family | grep -i nerd */
+  font: 13px/1.4 "FiraCode Nerd Font", "FiraCode Nerd Font Mono",
+        "Symbols Nerd Font", "Fira Code", ui-monospace, monospace;
+  color: var(--text);
+}
+
+body {
+  /* The compositor clears to transparent and the web view is the bottom
+     layer, so this gradient is the actual desktop background. */
+  background:
+    radial-gradient(70rem 50rem at 20% -10%, #263047, transparent),
+    radial-gradient(50rem 40rem at 90% 110%, #1d2a2a, transparent),
+    var(--bg);
+}
+
+/* Positioned per output from JS, in layout coordinates. */
+.desktop {
+  position: absolute;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------
+ * Bar
+ * ------------------------------------------------------------------ */
+
+.bar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: var(--bar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 .5rem;
+  background: #0f1116e6;
+  border-bottom: 1px solid #ffffff12;
+  user-select: none;
+}
+
+.desktop.bar-hidden .bar,
+.desktop.has-fullscreen .bar { display: none; }
+
+.bar-left, .bar-right { display: flex; align-items: center; gap: .35rem; }
+
+.workspaces { display: flex; gap: .25rem; }
+
+.workspaces button {
+  min-width: 1.9rem;
+  padding: .1rem .45rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.workspaces button:hover { background: #ffffff14; }
+.workspaces button.active { background: var(--border-focus); color: #10141c; }
+/* Hosted by the other monitor: it exists, but not here. */
+.workspaces button.elsewhere { opacity: .45; }
+
+.taskbar {
+  display: flex;
+  gap: .25rem;
+  margin-left: .5rem;
+  padding-left: .5rem;
+  border-left: 1px solid #ffffff14;
+}
+
+.taskbar button {
+  max-width: 16rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: .1rem .5rem;
+  border: 0;
+  border-radius: 4px;
+  background: #ffffff0d;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.taskbar button.focused { background: #ffffff24; color: var(--text); }
+
+/* Active binding mode, e.g. RESIZE. Hidden in the default mode. */
+.mode {
+  padding: .1rem .5rem;
+  border-radius: 4px;
+  background: #f7768e;
+  color: #10141c;
+  font-weight: bold;
+}
+.mode[hidden] { display: none; }
+
+.module { color: var(--muted); padding: 0 .35rem; white-space: nowrap; }
+.module.clock { color: var(--text); }
+/* A module with nothing to say takes no space, rather than showing a gap. */
+.module:empty { display: none; }
+
+/* ---------------------------------------------------------------------
+ * Tiling
+ *
+ * Split containers are flexboxes; leaves are windows. Nesting these is what
+ * produces an i3-style tree, and the browser does all the arithmetic.
+ * ------------------------------------------------------------------ */
+
+.windows {
+  position: absolute;
+  inset: var(--bar) 0 0 0;
+  padding: var(--gap);
+}
+
+.desktop.bar-hidden .windows { inset: 0; }
+
+/* Fullscreen fills the output: no bar, no gap, no border. */
+.desktop.has-fullscreen .windows { inset: 0; padding: 0; }
+
+/* No `gap`: the space between children is a real .divider element so it can
+   be grabbed and dragged. */
+.split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.split.horizontal { flex-direction: row; }
+.split.vertical { flex-direction: column; }
+
+/* flex-grow comes from each node's weight; flex-basis 0 stops content from
+   biasing the split, which is what makes two terminals come out equal. */
+.split > * { flex-basis: 0; flex-shrink: 1; min-width: 0; min-height: 0; }
+
+/* The draggable edge between two windows. It occupies what would otherwise be
+   a CSS gap, and never grows. */
+.divider {
+  flex: 0 0 var(--gap);
+  align-self: stretch;
+}
+
+.split.horizontal > .divider { cursor: col-resize; }
+.split.vertical > .divider { cursor: row-resize; }
+.divider:hover { background: #ffffff14; border-radius: 3px; }
+
+.window {
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+}
+
+.window.focused { border-color: var(--border-focus); }
+
+/* The hole. No background — see the note at the top of this file. */
+.viewport {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+}
+
+/* Fullscreen covers the output entirely, bar included, like sway. */
+.window.fullscreen {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  border: 0;
+  border-radius: 0;
+}
+
+/* Hidden on another workspace: kept in the DOM so the client stays alive. */
+.window[hidden], .split[hidden] { display: none; }
+
+/* ---------------------------------------------------------------------
+ * Empty state
+ * ------------------------------------------------------------------ */
+
+.empty {
+  position: absolute;
+  inset: var(--bar) 0 0 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  text-align: center;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.empty h1 { margin: 0 0 .25rem; font-size: 1.1rem; color: var(--text); }
+.empty[hidden] { display: none; }
+
+.empty pre {
+  margin-top: .75rem;
+  padding: .6rem .9rem;
+  border-radius: 8px;
+  background: #0d0f13;
+  font-size: .85rem;
+  text-align: left;
+}

@@ -1,0 +1,4 @@
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.viewport
+Interfaces=org.freedesktop.impl.portal.Settings;
+UseIn=viewport

@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Viewport shell</title>
+<link rel="stylesheet" href="shell.css">
+
+<!--
+  Reference shell.
+
+  Everything visible here is ordinary DOM: the wallpaper, the bar, and the
+  frame around each window. What is *not* here is the window contents. Each
+  `.viewport` element is a hole — the compositor paints the real Wayland client
+  into the screen rect that element occupies.
+
+  Layout is therefore just CSS. The tiling tree below renders to nested
+  flexboxes and the browser computes every rectangle; the shell only measures
+  where each hole landed and reports it. Splits, moves and fullscreen change
+  the tree, never the geometry directly.
+-->
+
+<div id="outputs"></div>
+
+<template id="desktop-template">
+  <main class="desktop">
+    <nav class="bar">
+      <div class="bar-left">
+        <div class="workspaces"></div>
+        <div class="taskbar"></div>
+      </div>
+      <div class="bar-right">
+        <span class="mode" hidden></span>
+        <span class="module net" title="network"></span>
+        <span class="module disk" title="free on /"></span>
+        <span class="module cpu" title="cpu"></span>
+        <span class="module load" title="load average"></span>
+        <span class="module memory" title="memory"></span>
+        <span class="module clock"></span>
+      </div>
+    </nav>
+
+    <div class="windows"></div>
+
+    <div class="empty">
+      <h1>No windows</h1>
+      <p>Launch a client against <code>$WAYLAND_DISPLAY</code>.</p>
+      <pre>Mod4+Return  terminal
+Mod4+d       launcher</pre>
+    </div>
+  </main>
+</template>
+
+<!--
+  A window is a border and a hole. No titlebar, no close button: the compositor
+  requests server-side decorations so clients draw none either.
+-->
+<template id="window-template">
+  <section class="window">
+    <div class="viewport"></div>
+  </section>
+</template>
+
+<script src="shell.js"></script>

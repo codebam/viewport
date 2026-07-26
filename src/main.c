@@ -1,0 +1,215 @@
+/* SPDX-License-Identifier: MIT */
+#define _POSIX_C_SOURCE 200809L
+
+#include <getopt.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <wlr/util/log.h>
+
+#include "viewport.h"
+
+static const char usage[] =
+	"usage: viewport [options]\n"
+	"\n"
+	"  -u, --url URL          shell UI endpoint (default: http://localhost:3000)\n"
+	"  -f, --fallback URL     used when --url fails (default: bundled fallback.html)\n"
+	"  -t, --timeout MS       first-paint deadline before falling back (default: 5000)\n"
+	"  -s, --socket PATH      JSON control socket (default: $XDG_RUNTIME_DIR/viewport-<display>.sock)\n"
+	"  -c, --config PATH      config file (default: ~/.config/viewport/config.json)\n"
+	"  -T, --terminal CMD     command bound to Mod4+Return\n"
+	"  -M, --menu CMD         command bound to Mod4+d\n"
+	"  -b, --bind CHORD=ACT   add a keybinding; repeatable\n"
+	"                         e.g. --bind 'Mod4+Shift+e=exit'\n"
+	"                         actions: exec CMD | close | exit | reload\n"
+	"  -e, --startup CMD      command to run once the compositor is up\n"
+	"  -H, --headless         use the headless backend instead of DRM\n"
+	"  -d, --debug            verbose logging\n"
+	"  -h, --help             this message\n";
+
+int main(int argc, char *argv[])
+{
+	struct viewport_config config = {
+		.url = "http://localhost:3000",
+		.fallback_url = "file://" VIEWPORT_PKGDATADIR "/fallback.html",
+		.load_timeout_ms = 5000,
+		.startup_cmd = NULL,
+		.ipc_path = NULL,
+		.headless = false,
+		/* Match sway: ask clients to let the compositor own the frame. The
+		 * shell already draws one, so a client titlebar is a duplicate. */
+		.server_decorations = true,
+		/* Dark by default: the shell is dark, and a light Firefox next to it
+		 * looks like a bug. Override with "dark_mode": false in the config. */
+		.dark_mode = true,
+	};
+	enum wlr_log_importance log_level = WLR_INFO;
+
+	static const struct option options[] = {
+		{ "url", required_argument, NULL, 'u' },
+		{ "fallback", required_argument, NULL, 'f' },
+		{ "timeout", required_argument, NULL, 't' },
+		{ "socket", required_argument, NULL, 's' },
+		{ "config", required_argument, NULL, 'c' },
+		{ "terminal", required_argument, NULL, 'T' },
+		{ "menu", required_argument, NULL, 'M' },
+		{ "bind", required_argument, NULL, 'b' },
+		{ "startup", required_argument, NULL, 'e' },
+		{ "headless", no_argument, NULL, 'H' },
+		{ "debug", no_argument, NULL, 'd' },
+		{ "help", no_argument, NULL, 'h' },
+		{ 0 },
+	};
+
+	int c;
+	/* Binds are collected rather than applied, because they need a live
+	 * server to attach to and that does not exist until after init. */
+	const char *config_path = NULL;
+	const char *bind_specs[64];
+	size_t bind_count = 0;
+
+	while ((c = getopt_long(argc, argv, "u:f:t:s:e:c:T:M:b:Hdh", options,
+			NULL)) != -1) {
+		switch (c) {
+		case 'u':
+			config.url = optarg;
+			break;
+		case 'f':
+			config.fallback_url = optarg;
+			break;
+		case 't':
+			config.load_timeout_ms = (unsigned)strtoul(optarg, NULL, 10);
+			break;
+		case 's':
+			config.ipc_path = optarg;
+			break;
+		case 'c':
+			config_path = optarg;
+			break;
+		case 'T':
+			config.terminal = optarg;
+			break;
+		case 'M':
+			config.menu = optarg;
+			break;
+		case 'b':
+			if (bind_count < sizeof(bind_specs) / sizeof(bind_specs[0])) {
+				bind_specs[bind_count++] = optarg;
+			}
+			break;
+		case 'e':
+			config.startup_cmd = optarg;
+			break;
+		case 'H':
+			config.headless = true;
+			break;
+		case 'd':
+			log_level = WLR_DEBUG;
+			config.debug = true;
+			break;
+		case 'h':
+			fputs(usage, stdout);
+			return EXIT_SUCCESS;
+		default:
+			fputs(usage, stderr);
+			return EXIT_FAILURE;
+		}
+	}
+
+	if (optind < argc) {
+		fputs(usage, stderr);
+		return EXIT_FAILURE;
+	}
+
+	wlr_log_init(log_level, NULL);
+
+	/* The Vulkan renderer is the point of the exercise: it gives us explicit
+	 * sync (zwp_linux_drm_syncobj_v1) against Vulkan clients without the
+	 * implicit-fence round trips the GLES path needs. Honour an explicit
+	 * WLR_RENDERER from the environment so it stays debuggable. */
+	/* Portals route Settings requests to the backend matching the current
+	 * desktop, so ours has to be named before any client starts. */
+	setenv("XDG_CURRENT_DESKTOP", "viewport", 0);
+
+	if (getenv("WLR_RENDERER") == NULL) {
+		setenv("WLR_RENDERER", "vulkan", 1);
+	}
+
+	if (config.headless && getenv("WLR_BACKENDS") == NULL) {
+		setenv("WLR_BACKENDS", "headless", 1);
+	}
+
+	struct viewport_server server = { 0 };
+	int status = EXIT_FAILURE;
+	char *default_config_path = NULL;
+
+	if (!viewport_server_init(&server, &config)) {
+		wlr_log(WLR_ERROR, "compositor initialisation failed");
+		goto out;
+	}
+
+	/* Config file first, then command-line binds on top of it, then the
+	 * built-in defaults only if nothing has defined a keymap. Reversing that
+	 * order would let a stale config silently shadow an explicit flag. */
+	if (config_path != NULL) {
+		viewport_config_load(&server, &server.config, config_path, true);
+	} else {
+		default_config_path = viewport_config_default_path();
+		if (default_config_path != NULL) {
+			viewport_config_load(&server, &server.config,
+				default_config_path, false);
+		}
+	}
+
+	/* Re-apply flags: the config file must not override an explicit flag. */
+	if (config.url != NULL && strcmp(config.url, "http://localhost:3000") != 0) {
+		server.config.url = config.url;
+	}
+	if (config.terminal != NULL) {
+		server.config.terminal = config.terminal;
+	}
+	if (config.menu != NULL) {
+		server.config.menu = config.menu;
+	}
+
+	for (size_t i = 0; i < bind_count; i++) {
+		viewport_binding_add(&server, bind_specs[i]);
+	}
+
+	if (!server.config.binds_from_config && bind_count == 0) {
+		viewport_bindings_add_defaults(&server, server.config.terminal,
+			server.config.menu);
+	}
+
+	server.web = viewport_web_create(&server);
+	if (server.web == NULL) {
+		wlr_log(WLR_ERROR, "web engine initialisation failed");
+		goto out;
+	}
+
+	if (!viewport_server_start(&server)) {
+		wlr_log(WLR_ERROR, "backend start failed");
+		goto out;
+	}
+
+	wlr_log(WLR_INFO, "WAYLAND_DISPLAY=%s  shell=%s",
+		server.socket_name, config.url);
+
+	if (config.startup_cmd != NULL) {
+		if (fork() == 0) {
+			execl("/bin/sh", "/bin/sh", "-c", config.startup_cmd, (void *)NULL);
+			_exit(127);
+		}
+	}
+
+	viewport_server_run(&server);
+	status = EXIT_SUCCESS;
+
+out:
+	viewport_server_finish(&server);
+	viewport_config_finish();
+	free(default_config_path);
+	return status;
+}

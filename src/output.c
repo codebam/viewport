@@ -1,0 +1,164 @@
+/* SPDX-License-Identifier: MIT */
+#define _POSIX_C_SOURCE 200809L
+
+#include <stdlib.h>
+#include <time.h>
+
+#include <wlr/types/wlr_output.h>
+#include <wlr/util/log.h>
+
+#include "viewport.h"
+
+static void handle_output_frame(struct wl_listener *listener, void *data)
+{
+	struct viewport_output *output = wl_container_of(listener, output, frame);
+	struct viewport_server *server = output->server;
+
+	/* One call composites everything: the shell's dma-buf underneath, each
+	 * client's dma-buf in the rect the shell asked for. The scene picks damage
+	 * regions, decides whether a surface can be scanned out directly, and
+	 * threads explicit-sync timeline points through. No pixel is read back. */
+	bool committed = wlr_scene_output_commit(output->scene_output, NULL);
+
+	static int logged;
+	if (server->config.debug && logged < 40) {
+		logged++;
+		wlr_log(WLR_DEBUG, "output %s frame: committed=%d",
+			output->wlr_output->name, committed);
+	}
+
+
+	if (committed) {
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		wlr_scene_output_send_frame_done(output->scene_output, &now);
+	}
+
+	/* Acknowledge WebKit's frame even when the scene had nothing to repaint.
+	 *
+	 * wlr_scene_output_commit() returns false when there is no damage, and
+	 * returning early there deadlocks the shell: WebKit will not paint frame
+	 * N+1 until N is acknowledged, and nothing will ever damage the scene
+	 * because the only thing that would have is the shell painting. The
+	 * symptom is a shell frozen on its first frame until some unrelated input
+	 * — moving the mouse — damages the scene and breaks the cycle.
+	 *
+	 * The frame is on screen either way, so acknowledging is correct. */
+	if (server->web != NULL) {
+		viewport_web_notify_presented(server->web);
+	}
+}
+
+static void handle_output_request_state(struct wl_listener *listener,
+	void *data)
+{
+	struct viewport_output *output =
+		wl_container_of(listener, output, request_state);
+	const struct wlr_output_event_request_state *event = data;
+
+	if (wlr_output_commit_state(output->wlr_output, event->state)) {
+		viewport_layers_arrange(output);
+		int width, height;
+		viewport_layout_size(output->server, &width, &height);
+		if (output->server->web != NULL) {
+			viewport_web_resize(output->server->web, width, height);
+		}
+		viewport_ipc_notify_output_layout(output->server);
+	}
+}
+
+static void handle_output_destroy(struct wl_listener *listener, void *data)
+{
+	struct viewport_output *output = wl_container_of(listener, output, destroy);
+
+	wl_list_remove(&output->frame.link);
+	wl_list_remove(&output->request_state.link);
+	wl_list_remove(&output->destroy.link);
+	wl_list_remove(&output->link);
+
+	viewport_ipc_notify_output_layout(output->server);
+	free(output);
+}
+
+void viewport_handle_new_output(struct wl_listener *listener, void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, new_output);
+	struct wlr_output *wlr_output = data;
+
+	if (!wlr_output_init_render(wlr_output, server->allocator,
+			server->renderer)) {
+		wlr_log(WLR_ERROR, "wlr_output_init_render failed for %s",
+			wlr_output->name);
+		return;
+	}
+
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	wlr_output_state_set_enabled(&state, true);
+
+	struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
+	if (mode != NULL) {
+		wlr_output_state_set_mode(&state, mode);
+	}
+
+	bool ok = wlr_output_commit_state(wlr_output, &state);
+	wlr_output_state_finish(&state);
+	if (!ok) {
+		wlr_log(WLR_ERROR, "initial commit failed for %s", wlr_output->name);
+		return;
+	}
+
+	struct viewport_output *output = calloc(1, sizeof(*output));
+	if (output == NULL) {
+		return;
+	}
+	output->server = server;
+	output->wlr_output = wlr_output;
+	/* layer_shell.c resolves a wlr_output back to ours through this. */
+	wlr_output->data = output;
+
+	output->frame.notify = handle_output_frame;
+	wl_signal_add(&wlr_output->events.frame, &output->frame);
+	output->request_state.notify = handle_output_request_state;
+	wl_signal_add(&wlr_output->events.request_state, &output->request_state);
+	output->destroy.notify = handle_output_destroy;
+	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
+
+	wl_list_insert(&server->outputs, &output->link);
+
+	/* Auto-arrange left to right in connection order. A real deployment would
+	 * take this from the shell over IPC; the shell already learns the result
+	 * via the output.layout event below. */
+	struct wlr_output_layout_output *layout_output =
+		wlr_output_layout_add_auto(server->output_layout, wlr_output);
+	output->scene_output = wlr_scene_output_create(server->scene, wlr_output);
+	wlr_scene_output_layout_add_output(server->scene_layout, layout_output,
+		output->scene_output);
+
+	int width, height;
+	viewport_layout_size(server, &width, &height);
+	if (server->web != NULL) {
+		viewport_web_resize(server->web, width, height);
+	}
+	viewport_ipc_notify_output_layout(server);
+
+	/* A frame may already be pending from before this output existed; without
+	 * a scheduled frame nothing would ever acknowledge it. */
+	wlr_output_schedule_frame(wlr_output);
+
+	wlr_log(WLR_INFO, "output %s online at %dx%d", wlr_output->name,
+		wlr_output->width, wlr_output->height);
+}
+
+void viewport_layout_size(struct viewport_server *server, int *width,
+	int *height)
+{
+	struct wlr_box box;
+	wlr_output_layout_get_box(server->output_layout, NULL, &box);
+
+	/* Before any output is attached the layout is empty; hand back a sane
+	 * size so WebKit has something to lay out against. */
+	*width = box.width > 0 ? box.width : 1920;
+	*height = box.height > 0 ? box.height : 1080;
+}

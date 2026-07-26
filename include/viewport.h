@@ -1,0 +1,533 @@
+/* SPDX-License-Identifier: MIT */
+#ifndef VIEWPORT_H
+#define VIEWPORT_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include <wayland-server-core.h>
+
+#include <wlr/backend.h>
+#include <wlr/backend/session.h>
+#include <wlr/render/allocator.h>
+#include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_input_device.h>
+#include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/util/box.h>
+#include <xkbcommon/xkbcommon.h>
+
+/* Scene nodes carry a back-pointer in wlr_scene_node.data so hit-testing can
+ * walk up from whatever node the cursor landed on. More than one kind of
+ * object lives in the scene graph, so that pointer must be self-describing:
+ * casting a layer surface to a toplevel because both set `data` is a
+ * segfault the compiler cannot catch. Every struct stored there begins with
+ * one of these. */
+enum viewport_node_type {
+	VIEWPORT_NODE_TOPLEVEL,
+	VIEWPORT_NODE_LAYER,
+};
+
+struct viewport_node {
+	enum viewport_node_type type;
+};
+
+struct viewport_web;
+struct viewport_ipc;
+struct viewport_glib_loop;
+struct viewport_status;
+struct viewport_appearance;
+struct viewport_toplevel;
+
+/* -------------------------------------------------------------------------
+ * Configuration
+ * ---------------------------------------------------------------------- */
+
+struct viewport_config {
+	/* Shell UI endpoint, e.g. "http://localhost:3000". */
+	const char *url;
+	/* Loaded if `url` fails or does not commit a first frame in time. */
+	const char *fallback_url;
+	/* Milliseconds to wait for the shell's first paint before falling back. */
+	unsigned load_timeout_ms;
+	/* Optional command spawned once the compositor is up. */
+	const char *startup_cmd;
+	/* Path of the JSON control socket; NULL selects the default under
+	 * $XDG_RUNTIME_DIR. */
+	const char *ipc_path;
+	/* Run headless (nested/CI) rather than taking a DRM session. */
+	bool headless;
+	/* Verbose logging, and mirror the shell's console into the compositor
+	 * log — without this, a JS error in the shell is completely silent. */
+	bool debug;
+	/* Commands bound to the default terminal and launcher chords. */
+	const char *terminal;
+	const char *menu;
+	/* Set when the config file supplied a "binds" object, which suppresses
+	 * the built-in defaults so a user can define an empty keymap. */
+	bool binds_from_config;
+	/* Prefer dark for client applications, served over the settings portal. */
+	bool dark_mode;
+	/* Ask clients to drop their own titlebars and let the shell draw the
+	 * frame. Without this every window carries a second, redundant titlebar
+	 * above the one the shell already drew. */
+	bool server_decorations;
+};
+
+/* -------------------------------------------------------------------------
+ * Scene layers
+ *
+ * Bottom to top:
+ *   layer_web     the WPE WebKit shell, one full-output scene buffer
+ *   layer_apps    xdg-shell toplevels, positioned by the shell over IPC
+ *   layer_overlay drag icons, popups that must outrank apps
+ *
+ * Hit-testing falls out of this ordering: wlr_scene_node_at() returns a
+ * client surface when the pointer is over an app rect, and the web buffer
+ * everywhere else — which is exactly the routing rule we want.
+ * ---------------------------------------------------------------------- */
+
+struct viewport_server {
+	struct wl_display *wl_display;
+	struct wl_event_loop *wl_event_loop;
+
+	struct wlr_backend *backend;
+	struct wlr_session *session;
+	struct wlr_renderer *renderer;
+	struct wlr_allocator *allocator;
+	struct wlr_compositor *compositor;
+
+	struct wlr_scene *scene;
+	struct wlr_scene_output_layout *scene_layout;
+	struct wlr_output_layout *output_layout;
+
+	/* Bottom to top. Layer-shell surfaces bracket the app layer so a panel
+	 * can sit under windows and a launcher over them. */
+	struct wlr_scene_tree *layer_web;
+	struct wlr_scene_tree *layer_bg;
+	struct wlr_scene_tree *layer_bottom;
+	struct wlr_scene_tree *layer_apps;
+	struct wlr_scene_tree *layer_top;
+	struct wlr_scene_tree *layer_overlay;
+
+	struct wlr_layer_shell_v1 *layer_shell;
+	struct wl_listener new_layer_surface;
+
+	struct wlr_xdg_shell *xdg_shell;
+
+	struct wlr_seat *seat;
+	struct wlr_cursor *cursor;
+	struct wlr_xcursor_manager *xcursor_mgr;
+
+	struct wl_list outputs;    /* viewport_output.link */
+	struct wl_list toplevels;  /* viewport_toplevel.link */
+	struct wl_list keyboards;  /* viewport_keyboard.link */
+
+	struct viewport_web *web;
+	struct viewport_ipc *ipc;
+	struct viewport_glib_loop *glib_loop;
+	struct viewport_status *status;
+	struct viewport_appearance *appearance;
+	struct viewport_config config;
+
+	/* Toplevel holding keyboard focus, or NULL when the shell has it. */
+	struct viewport_toplevel *focused;
+	/* True while the pointer is over the web shell rather than a client. */
+	bool pointer_on_web;
+
+	uint32_t next_view_id;
+	const char *socket_name;
+
+	/* Output the shell considers active. The shell owns this concept — it
+	 * changes on keyboard focus moves, not just pointer motion — so C is told
+	 * rather than guessing from the cursor. NULL until the shell reports. */
+	char *active_output;
+
+	/* Active binding mode. Only bindings tagged with it — plus the ones that
+	 * leave it — are considered while it is not "default". */
+	char *mode;
+
+	/* True from a press over the shell until release, so a drag that starts on
+	 * shell chrome keeps receiving motion after the pointer crosses a window. */
+	bool pointer_grab_web;
+
+	/* Interactive resize driven by Mod4 + right drag. */
+	struct viewport_toplevel *resizing;
+	double resize_start_x, resize_start_y;
+
+	struct wl_list bindings; /* viewport_binding.link */
+
+	struct wl_listener new_output;
+	struct wl_listener new_input;
+	struct wl_listener new_xdg_toplevel;
+	struct wl_listener new_xdg_popup;
+	struct wl_listener new_decoration;
+	struct wl_listener new_virtual_keyboard;
+	struct wl_listener session_active;
+	struct wl_listener renderer_lost;
+
+	struct wl_listener cursor_motion;
+	struct wl_listener cursor_motion_absolute;
+	struct wl_listener cursor_button;
+	struct wl_listener cursor_axis;
+	struct wl_listener cursor_frame;
+	struct wl_listener request_cursor;
+	struct wl_listener request_set_selection;
+};
+
+struct viewport_output {
+	struct wl_list link;
+	struct viewport_server *server;
+	struct wlr_output *wlr_output;
+	struct wlr_scene_output *scene_output;
+
+	struct wl_listener frame;
+	struct wl_listener request_state;
+	struct wl_listener destroy;
+};
+
+struct viewport_toplevel {
+	/* Must stay first: scene node data is downcast through this. */
+	struct viewport_node node;
+
+	struct wl_list link;
+	struct viewport_server *server;
+
+	/* Stable identifier handed to JS; never reused within a session. */
+	uint32_t id;
+
+	struct wlr_xdg_toplevel *xdg_toplevel;
+	/* Container: holds the surface tree and any popups. Popups must live
+	 * outside the clipped surface tree or a menu that extends past the window
+	 * edge gets cropped. */
+	struct wlr_scene_tree *scene_tree;
+	struct wlr_scene_tree *surface_tree;
+
+	/* Target rect most recently supplied by the shell over IPC. */
+	struct wlr_box box;
+	/* Last clip applied, so diagnostics only fire on change. */
+	struct wlr_box last_clip;
+	bool has_box;
+	bool mapped;
+	/* False while the shell has it parked on another workspace. Directional
+	 * focus must skip these: their box is stale and they are not on screen. */
+	bool visible;
+
+	struct wl_listener map;
+	struct wl_listener unmap;
+	struct wl_listener commit;
+	struct wl_listener destroy;
+	struct wl_listener set_title;
+	struct wl_listener set_app_id;
+	struct wl_listener request_fullscreen;
+};
+
+struct viewport_decoration {
+	struct viewport_server *server;
+	struct wlr_xdg_toplevel_decoration_v1 *decoration;
+	struct wl_listener request_mode;
+	struct wl_listener surface_commit;
+	struct wl_listener destroy;
+};
+
+struct viewport_popup {
+	struct wlr_xdg_popup *xdg_popup;
+	/* NULL when the parent is another popup. */
+	struct viewport_toplevel *toplevel;
+	struct wl_listener commit;
+	struct wl_listener destroy;
+};
+
+struct viewport_keyboard {
+	struct wl_list link;
+	struct viewport_server *server;
+	struct wlr_keyboard *wlr_keyboard;
+
+	struct wl_listener modifiers;
+	struct wl_listener key;
+	struct wl_listener destroy;
+};
+
+/* -------------------------------------------------------------------------
+ * server.c
+ * ---------------------------------------------------------------------- */
+
+bool viewport_server_init(struct viewport_server *server,
+	const struct viewport_config *config);
+bool viewport_server_start(struct viewport_server *server);
+
+/* Shuts the compositor down.
+ *
+ * wl_display_terminate() alone is a no-op here: it only unblocks
+ * wl_display_run(), which we never call because GLib owns the outer loop. The
+ * GLib loop has to be quit explicitly or "exit" silently does nothing. */
+void viewport_server_terminate(struct viewport_server *server);
+void viewport_server_run(struct viewport_server *server);
+void viewport_server_finish(struct viewport_server *server);
+
+struct viewport_toplevel *viewport_server_find_toplevel(
+	struct viewport_server *server, uint32_t id);
+
+/* -------------------------------------------------------------------------
+ * output.c
+ * ---------------------------------------------------------------------- */
+
+void viewport_handle_new_output(struct wl_listener *listener, void *data);
+
+/* Total layout extent, used to size the shell's viewport. */
+void viewport_layout_size(struct viewport_server *server,
+	int *width, int *height);
+
+/* -------------------------------------------------------------------------
+ * xdg_shell.c
+ * ---------------------------------------------------------------------- */
+
+void viewport_handle_new_xdg_toplevel(struct wl_listener *listener, void *data);
+void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data);
+void viewport_handle_new_decoration(struct wl_listener *listener, void *data);
+
+/* Applies an IPC-supplied rect: repositions the scene node and reconfigures
+ * the client. Safe to call before the toplevel maps. */
+void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
+	const struct wlr_box *box);
+
+void viewport_toplevel_focus(struct viewport_toplevel *toplevel);
+void viewport_toplevel_close(struct viewport_toplevel *toplevel);
+
+/* Moves focus. `direction` is next, prev, left, right, up or down.
+ *
+ * Focus lives in C rather than the shell because it needs the seat, and
+ * because it has to keep working when the shell is unreachable. Directional
+ * moves compare window centres, so they follow what is on screen rather than
+ * stacking order. */
+void viewport_focus_direction(struct viewport_server *server,
+	const char *direction);
+
+/* -------------------------------------------------------------------------
+ * layer_shell.c
+ *
+ * wlr-layer-shell backs panels, wallpapers, lock screens and — the reason it
+ * is here — launchers. wmenu, wofi, rofi and friends are layer-shell clients;
+ * without this protocol they exit immediately and the launcher keybinding
+ * appears to do nothing at all.
+ * ---------------------------------------------------------------------- */
+
+void viewport_handle_new_layer_surface(struct wl_listener *listener,
+	void *data);
+
+/* Re-runs layer-surface layout for an output, e.g. after a mode change. */
+void viewport_layers_arrange(struct viewport_output *output);
+
+/* -------------------------------------------------------------------------
+ * input.c
+ * ---------------------------------------------------------------------- */
+
+void viewport_handle_new_input(struct wl_listener *listener, void *data);
+void viewport_handle_new_virtual_keyboard(struct wl_listener *listener,
+	void *data);
+void viewport_cursor_init(struct viewport_server *server);
+
+/* Topmost surface under a layout-space point, or NULL if the point lands on
+ * the web shell. `sx`/`sy` receive surface-local coordinates. */
+struct wlr_surface *viewport_surface_at(struct viewport_server *server,
+	double lx, double ly, double *sx, double *sy,
+	struct viewport_toplevel **toplevel_out);
+
+/* Moves keyboard focus to the shell (no client toplevel focused). */
+void viewport_focus_web(struct viewport_server *server);
+
+/* -------------------------------------------------------------------------
+ * appearance.c
+ *
+ * Serves org.freedesktop.appearance/color-scheme so client applications pick
+ * a dark or light theme. Styling the shell cannot do this: every toolkit asks
+ * the portal, and with nothing answering they all default to light.
+ * ---------------------------------------------------------------------- */
+
+struct viewport_appearance *viewport_appearance_create(
+	struct viewport_server *server, bool dark);
+void viewport_appearance_destroy(struct viewport_appearance *appearance);
+void viewport_appearance_set_dark(struct viewport_appearance *appearance,
+	bool dark);
+bool viewport_appearance_is_dark(struct viewport_appearance *appearance);
+
+/* -------------------------------------------------------------------------
+ * status.c
+ *
+ * Samples /proc for the shell's status bar. Only raw values — formatting,
+ * icons and which modules exist are the shell's business.
+ * ---------------------------------------------------------------------- */
+
+struct viewport_status *viewport_status_create(struct viewport_server *server);
+void viewport_status_destroy(struct viewport_status *status);
+
+/* -------------------------------------------------------------------------
+ * config.c
+ * ---------------------------------------------------------------------- */
+
+/* $XDG_CONFIG_HOME/viewport/config.json, else ~/.config/... Caller frees. */
+char *viewport_config_default_path(void);
+
+/* Applies a JSON config over `config` and registers its binds on `server`.
+ * Returns false if the file is absent or malformed. */
+bool viewport_config_load(struct viewport_server *server,
+	struct viewport_config *config, const char *path, bool required);
+
+void viewport_config_finish(void);
+
+/* -------------------------------------------------------------------------
+ * binding.c
+ * ---------------------------------------------------------------------- */
+
+enum viewport_action {
+	VIEWPORT_ACTION_EXEC,   /* run a shell command */
+	VIEWPORT_ACTION_CLOSE,  /* close the focused window */
+	VIEWPORT_ACTION_EXIT,   /* quit the compositor */
+	VIEWPORT_ACTION_RELOAD, /* reload the web shell */
+	VIEWPORT_ACTION_FOCUS,  /* move focus: next|prev|left|right|up|down */
+	VIEWPORT_ACTION_SHELL,  /* forward the rest of the line to the shell */
+	VIEWPORT_ACTION_MODE,   /* switch binding mode, e.g. sway's resize mode */
+	VIEWPORT_ACTION_APPEARANCE, /* toggle the dark/light preference */
+};
+
+struct viewport_binding {
+	struct wl_list link;
+	/* Mode this binding belongs to; "default" unless qualified. Written in
+	 * the config as `resize/h=...`, mirroring sway's `mode "resize"` blocks. */
+	char *mode;
+	uint32_t modifiers;   /* mask of WLR_MODIFIER_* */
+	xkb_keysym_t keysym;
+	enum viewport_action action;
+	char *argument;       /* command line, for VIEWPORT_ACTION_EXEC */
+};
+
+/* Parses "Mod4+Shift+q=close" or "Mod4+Return=exec ghostty". Returns false
+ * with a logged reason on malformed input. */
+bool viewport_binding_add(struct viewport_server *server, const char *spec);
+
+/* Installs the sway-compatible defaults. `terminal` and `menu` may be NULL to
+ * skip those two binds. */
+void viewport_bindings_add_defaults(struct viewport_server *server,
+	const char *terminal, const char *menu);
+
+/* Runs the binding matching this chord, if any. Returns true when the key was
+ * consumed and must not reach the focused client or the shell. */
+bool viewport_bindings_handle(struct viewport_server *server,
+	uint32_t modifiers, const xkb_keysym_t *keysyms, int nsyms);
+
+void viewport_bindings_finish(struct viewport_server *server);
+
+/* -------------------------------------------------------------------------
+ * ipc.c
+ * ---------------------------------------------------------------------- */
+
+struct viewport_ipc *viewport_ipc_create(struct viewport_server *server,
+	const char *path);
+void viewport_ipc_destroy(struct viewport_ipc *ipc);
+
+/* Handles one JSON message from either transport (UNIX socket or the page's
+ * script message handler). `json` is a NUL-terminated UTF-8 document. */
+void viewport_ipc_handle(struct viewport_server *server, const char *json,
+	size_t len);
+
+/* Pushes a JSON event to every listener: socket clients and the page. */
+void viewport_ipc_broadcast(struct viewport_server *server, const char *json);
+
+/* Convenience emitters used by the shell/xdg glue. */
+void viewport_ipc_notify_view_added(struct viewport_toplevel *toplevel);
+void viewport_ipc_notify_view_removed(struct viewport_toplevel *toplevel);
+void viewport_ipc_notify_view_props(struct viewport_toplevel *toplevel);
+void viewport_ipc_notify_output_layout(struct viewport_server *server);
+
+/* Replays view.added for every currently mapped toplevel.
+ *
+ * view.added is an edge, not a state: a client that maps before the shell has
+ * finished loading — or before an external tool connects — would otherwise be
+ * invisible to it forever. Sent on page load, on socket connect, and on
+ * explicit view.query, which also makes shell reloads non-destructive. */
+void viewport_ipc_notify_views(struct viewport_server *server);
+
+/* Tells the shell which view now holds focus; id 0 means the shell itself. */
+void viewport_ipc_notify_focus(struct viewport_server *server, uint32_t id);
+
+/* Forwards a keybinding to the shell as {"type":"shell.command",...}, so
+ * workspaces and other layout policy can live in JS where the layout already
+ * is, while still being bound to a key in the config file. */
+void viewport_ipc_notify_shell_command(struct viewport_server *server,
+	const char *command);
+
+/* -------------------------------------------------------------------------
+ * glib_loop.c
+ *
+ * WebKit needs a GMainContext; wlroots needs a wl_event_loop. We run GLib as
+ * the outer loop and attach the Wayland loop's epoll fd to it as a GSource,
+ * flushing clients in the prepare phase.
+ * ---------------------------------------------------------------------- */
+
+struct viewport_glib_loop;
+struct viewport_status;
+struct viewport_appearance;
+
+struct viewport_glib_loop *viewport_glib_loop_create(
+	struct wl_display *display);
+void viewport_glib_loop_run(struct viewport_glib_loop *loop);
+void viewport_glib_loop_quit(struct viewport_glib_loop *loop);
+void viewport_glib_loop_destroy(struct viewport_glib_loop *loop);
+
+/* -------------------------------------------------------------------------
+ * web.c
+ * ---------------------------------------------------------------------- */
+
+struct viewport_web *viewport_web_create(struct viewport_server *server);
+void viewport_web_destroy(struct viewport_web *web);
+
+void viewport_web_resize(struct viewport_web *web, int width, int height);
+
+/* Called once per presented output frame. Releases the frame WebKit is
+ * waiting on, which is what unblocks it to paint the next one — the shell's
+ * frame pacing is therefore driven by real vblank, not a timer. */
+void viewport_web_notify_presented(struct viewport_web *web);
+
+/* True while a WebKit frame is waiting to be acknowledged. Diagnostic only. */
+bool viewport_web_has_pending(struct viewport_web *web);
+
+/* Scene node backing the shell, used for hit-testing. */
+struct wlr_scene_buffer *viewport_web_scene_buffer(struct viewport_web *web);
+
+/* Re-fetches the shell from its URL, discarding the current document. */
+void viewport_web_reload(struct viewport_web *web);
+
+/* Sends a JSON string to the page as a `viewport` CustomEvent. */
+void viewport_web_post_to_page(struct viewport_web *web, const char *json);
+
+/* Routes an input event to the shell. Coordinates are layout-space. */
+void viewport_web_pointer_motion(struct viewport_web *web, uint32_t time_msec,
+	double lx, double ly);
+void viewport_web_pointer_button(struct viewport_web *web, uint32_t time_msec,
+	double lx, double ly, uint32_t button, bool pressed);
+void viewport_web_pointer_axis(struct viewport_web *web, uint32_t time_msec,
+	double lx, double ly, double dx, double dy, bool precise);
+void viewport_web_keyboard_key(struct viewport_web *web, uint32_t time_msec,
+	uint32_t keycode, uint32_t keysym, bool pressed, uint32_t modifiers);
+void viewport_web_focus(struct viewport_web *web, bool focused);
+
+/* -------------------------------------------------------------------------
+ * web_buffer.c
+ * ---------------------------------------------------------------------- */
+
+struct wpe_buffer_dma_buf;
+
+/* Wraps a WPEBufferDMABuf in a wlr_buffer without copying. The returned
+ * buffer owns one reference; drop it after handing it to the scene. */
+struct wlr_buffer *viewport_web_buffer_wrap(struct viewport_web *web,
+	void *wpe_buffer_dma_buf);
+
+#endif /* VIEWPORT_H */

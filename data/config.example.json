@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Copy to ~/.config/viewport/config.json, or pass --config PATH.",
+    "",
+    "This is the tier that must keep working when the web shell does not.",
+    "The shell is fetched over the network; if it 404s, throws, or hangs,",
+    "anything it owned dies with it. Bindings defined here still work in",
+    "that state, which is the difference between a broken desktop UI and a",
+    "machine you cannot quit without switching to a TTY.",
+    "",
+    "The shell may add more bindings at runtime with bind.add over IPC.",
+    "That layer is additive and expendable; keep exit and a terminal here.",
+    "",
+    "Precedence: command-line flags > this file > built-in defaults.",
+    "Defining any \"binds\" object at all suppresses the built-in defaults,",
+    "so an empty one means 'no keybindings'."
+  ],
+
+  "url": "http://localhost:3000",
+  "timeout_ms": 5000,
+
+  "terminal": "ghostty",
+  "menu": "wmenu-run -f 'Fira Code NerdFont 11' -i",
+
+  "binds": {
+    "Mod4+Return": "exec ghostty",
+    "Mod4+d": "exec wmenu-run -f 'Fira Code NerdFont 11' -i",
+    "Mod4+Shift+q": "close",
+    "Mod4+Shift+e": "exit",
+    "Mod4+Shift+c": "reload",
+
+    "XF86AudioRaiseVolume": "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 1%+",
+    "XF86AudioLowerVolume": "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 1%-",
+    "XF86AudioMute": "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+    "XF86MonBrightnessUp": "exec brightnessctl set +1%",
+    "XF86MonBrightnessDown": "exec brightnessctl set 1%-"
+  }
+}
