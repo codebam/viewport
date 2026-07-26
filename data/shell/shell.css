@@ -265,6 +265,58 @@ body {
 .tab-body > * { flex: 1 1 auto; }
 
 /* ---------------------------------------------------------------------
+ * Overview
+ *
+ * Every workspace at once. Each thumbnail contains the workspace's real tree,
+ * rendered at output size and scaled down — so the miniature is the layout,
+ * not a drawing of it. The windows inside are real surfaces the compositor
+ * shrinks on our behalf.
+ * ------------------------------------------------------------------ */
+
+.overview {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: var(--gap);
+  padding: var(--gap);
+}
+
+.thumb {
+  position: relative;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: #0f1116;
+  cursor: pointer;
+}
+
+.thumb:hover { border-color: #4b5670; }
+.thumb.current { border-color: var(--border-focus); }
+
+.thumb-label {
+  position: absolute;
+  top: .25rem;
+  left: .4rem;
+  z-index: 2;
+  font-size: .75rem;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+/* Full output size, shrunk. The origin matters: scaling about the centre would
+   push the contents out of the thumbnail. */
+.thumb-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+}
+
+/* An output that is not showing the overview shows nothing at all, rather than
+   a stale layout whose windows have been moved into someone else's grid. */
+.desktop.overview-active .empty { display: none; }
+
+/* ---------------------------------------------------------------------
  * Scrolling layout (niri)
  *
  * An endless row of fixed-width columns that slides left and right. The

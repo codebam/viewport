@@ -176,6 +176,9 @@ struct viewport_server {
 	struct wl_listener pinch_end;
 	struct wl_listener hold_begin;
 	struct wl_listener hold_end;
+	/* True while the shell is showing the overview. Input goes to the shell
+	 * rather than to the shrunken windows it is drawing. */
+	bool overview;
 	/* A three-finger swipe belongs to the compositor for its whole duration. */
 	bool gesture_active;
 	double gesture_dx, gesture_dy;
@@ -339,6 +342,9 @@ struct viewport_toplevel {
 	int last_width, last_height;
 	/* Fires if the shell never places this window; see watchdog.c. */
 	unsigned int watchdog;
+	/* Render scale. 1.0 normally; smaller in the overview, where a window is
+	 * drawn shrunk without its client being resized. */
+	double scale;
 	/* Last clip applied, so diagnostics only fire on change. */
 	struct wlr_box last_clip;
 	bool has_box;

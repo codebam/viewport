@@ -291,11 +291,12 @@ socat - UNIX:$VIEWPORT_SOCKET
 
 | Message | Payload |
 | --- | --- |
-| `view.layout` | `id`, `x`, `y`, `width`, `height`, optional `clip{x,y,width,height}` |
+| `view.layout` | `id`, `x`, `y`, `width`, `height`, optional `clip{x,y,width,height}`, optional `scale` |
 | `view.visible` | `id`, `visible` |
 | `view.focus` | `id` |
 | `view.close` | `id` |
 | `view.opacity` | `id`, `opacity` (0–1) |
+| `shell.overview` | `active` |
 | `view.query` | — |
 | `shell.focus` | — |
 | `bind.add` | `chord`, `action` |
@@ -316,6 +317,25 @@ CSS `overflow` bounds the shell's own painting and no more. `clip` on
 output, which is what keeps a column scrolled off the left of one monitor from
 being drawn on the monitor beside it. Only the surface is clipped, never the
 container: a popup is entitled to extend past the window it belongs to.
+
+### Overview
+
+`Mod4+o` shows every workspace at once. Each thumbnail contains the workspace's
+real tree — the same renderer, at output size, scaled down — so a miniature *is*
+the layout rather than a picture of it.
+
+The windows inside are real surfaces, and they are drawn shrunk rather than
+resized: a thumbnail is smaller than many windows' minimum size, so asking
+clients to resize would be refused about as often as it was honoured, and
+slow when it wasn't. `view.layout` carries the window's real size plus a
+`scale`, and the compositor scales the buffers the client already produced.
+
+Two consequences worth knowing. Only the offsets *between* buffers are left
+unscaled, so a client painting through subsurfaces — a browser compositing
+video, mostly — shows those parts misplaced while shrunk; it is exact again the
+moment the scale returns to 1. And input is routed to the shell for the duration
+(`shell.overview`), because a click on a miniature means "take me there" rather
+than reaching the client underneath.
 
 ### Animation
 

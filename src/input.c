@@ -43,6 +43,14 @@ struct wlr_surface *viewport_surface_at(struct viewport_server *server,
 		*toplevel_out = NULL;
 	}
 
+	/* In the overview every window on screen is a miniature the shell is
+	 * arranging, and a click on one means "take me there". Reporting no surface
+	 * sends the click to the web layer, which is the thing that can answer
+	 * that. */
+	if (server->overview) {
+		return NULL;
+	}
+
 	struct wlr_scene_node *node =
 		wlr_scene_node_at(&server->scene->tree.node, lx, ly, sx, sy);
 	if (node == NULL || node->type != WLR_SCENE_NODE_BUFFER) {

@@ -82,6 +82,15 @@ const scrollOffsets = new Map();
  * exactly. Cleared on settle, when focus is moved to whichever column the
  * gesture landed on and the ordinary follow logic takes over again. */
 let gestureWorkspace = null;
+/* The overview: every workspace at once, scaled down. Windows are drawn shrunk
+ * by the compositor rather than resized, so no client is asked to relayout
+ * itself into a thumbnail — which many would refuse anyway, having a minimum
+ * size larger than one. */
+let overviewActive = false;
+/* Scale currently applied to each window, so reportGeometry can undo it: the
+ * compositor wants the window's real size plus a factor, not the size it
+ * appears at. */
+const overviewScales = new Map(); // view id -> scale
 
 const outputsEl = document.getElementById('outputs');
 const desktopTemplate = document.getElementById('desktop-template');
@@ -547,6 +556,103 @@ function normaliseForLayout() {
     }
   }
   scrollOffsets.clear();
+}
+
+/* Every workspace at once, laid out as a grid of miniature desktops.
+ *
+ * Each thumbnail renders the workspace's real tree — the same renderTree and
+ * renderStrip used for the live layout — inside a container sized to the output
+ * and then scaled down. That is what makes the miniatures accurate rather than
+ * an approximation of the layout: they *are* the layout, drawn smaller.
+ *
+ * The windows inside are real surfaces. The compositor shrinks them for us,
+ * told through the scale on view.layout, so nothing is asked to resize. */
+function renderOverview(output) {
+  const grid = document.createElement('div');
+  grid.className = 'overview';
+
+  /* Every workspace that has something on it, plus the one this output is
+     showing, so an empty current workspace is still a target to return to. */
+  const occupied = new Set([output.workspace]);
+  for (const n of workspaces.keys()) {
+    if (leavesOf(n).length > 0) occupied.add(n);
+  }
+  for (const floating of floats.values()) occupied.add(floating.workspace);
+
+  const list = [...occupied].sort((a, b) => a - b);
+  const area = output.windowsEl.getBoundingClientRect();
+
+  /* Squarish grid: enough columns that the thumbnails stay wide rather than
+     tall, since an output is wider than it is high. */
+  const columns = Math.ceil(Math.sqrt(list.length)) || 1;
+  const rows = Math.ceil(list.length / columns);
+  const cellWidth = area.width / columns;
+  const cellHeight = area.height / rows;
+  const scale = Math.min(cellWidth / area.width, cellHeight / area.height) * 0.9;
+
+  grid.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+
+  for (const n of list) {
+    const cell = document.createElement('div');
+    cell.className = 'thumb' + (n === output.workspace ? ' current' : '');
+
+    const label = document.createElement('span');
+    label.className = 'thumb-label';
+    label.textContent = String(n);
+    cell.append(label);
+
+    const inner = document.createElement('div');
+    inner.className = 'thumb-inner';
+    inner.style.width = `${area.width}px`;
+    inner.style.height = `${area.height}px`;
+    inner.style.transform = `scale(${scale})`;
+
+    const root = workspaces.get(n);
+    const rendered = root
+      ? (layoutMode === 'scrolling'
+        ? renderStrip(root, { ...output, workspace: n, windowsEl: inner })
+        : renderTree(root))
+      : null;
+    if (rendered) inner.append(rendered);
+
+    /* Floating windows belong to the thumbnail of their own workspace too. */
+    for (const [id, floating] of floats) {
+      if (floating.workspace !== n) continue;
+      const view = views.get(id);
+      if (!view) continue;
+      view.el.classList.add('floating');
+      Object.assign(view.el.style, {
+        left: `${floating.x}px`, top: `${floating.y}px`,
+        width: `${floating.width}px`, height: `${floating.height}px`,
+      });
+      inner.append(view.el);
+      renderedIds.add(id);
+    }
+
+    /* Everything drawn in this thumbnail is drawn at its scale. */
+    for (const id of idsOf(n)) overviewScales.set(id, scale);
+
+    cell.append(inner);
+    cell.addEventListener('mousedown', () => {
+      setOverview(false);
+      switchWorkspace(activeOutputName(), n);
+    });
+    grid.append(cell);
+  }
+
+  return grid;
+}
+
+function setOverview(active) {
+  if (overviewActive === active) return;
+  overviewActive = active;
+
+  if (!active) overviewScales.clear();
+
+  /* The compositor routes input to the shell while this is up: the windows on
+     screen are miniatures, and a click on one means "go there". */
+  send({ type: 'shell.overview', active });
+  relayoutAll();
 }
 
 /* Move the strip under the fingers. The compositor sends a delta per touchpad
@@ -1098,11 +1204,15 @@ function reportGeometry(id) {
   if (!view) return;
 
   const rect = view.viewport.getBoundingClientRect();
+  /* In the overview the element is inside a scaled container, so the measured
+     rect is where it appears but not the size the client should be. The
+     compositor is told the real size and the factor to draw it at. */
+  const scale = overviewScales.get(id) ?? 1;
   const box = {
     x: Math.round(rect.left),
     y: Math.round(rect.top),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
+    width: Math.round(rect.width / scale),
+    height: Math.round(rect.height / scale),
   };
 
   if (box.width <= 0 || box.height <= 0) {
@@ -1134,14 +1244,21 @@ function reportGeometry(id) {
   const prevClip = view.clip;
   if (prev && prev.x === box.x && prev.y === box.y &&
       prev.width === box.width && prev.height === box.height &&
-      sameBox(prevClip, clip)) {
+      prev.scale === scale && sameBox(prevClip, clip)) {
     return false;
   }
 
-  view.box = box;
+  if (prev && prev.scale !== scale) {
+    /* Scale alone changed — worth a message even when the rect did not. */
+  }
+
+  view.box = { ...box, scale };
   view.clip = clip;
-  send(clip ? { type: 'view.layout', id, ...box, clip }
-    : { type: 'view.layout', id, ...box });
+
+  const message = { type: 'view.layout', id, ...box };
+  if (scale !== 1) message.scale = scale;
+  if (clip) message.clip = clip;
+  send(message);
   return true;
 }
 
@@ -1322,13 +1439,20 @@ function relayoutAll() {
      still not shown. */
   renderedIds = new Set();
 
+  if (overviewActive) overviewScales.clear();
+
   for (const [name, output] of outputs) {
     const root = workspaces.get(output.workspace);
-    const rendered = root
-      ? (layoutMode === 'scrolling'
-        ? renderStrip(root, output)
-        : renderTree(root))
-      : null;
+    /* Only one output shows the overview: a window element exists once in the
+       DOM, so two grids would fight over the same windows and the second would
+       simply steal them. The others go blank for the duration. */
+    const rendered = overviewActive
+      ? (name === activeOutputName() ? renderOverview(output) : null)
+      : (root
+        ? (layoutMode === 'scrolling'
+          ? renderStrip(root, output)
+          : renderTree(root))
+        : null);
 
     output.windowsEl.replaceChildren();
     output.windowsEl.classList.toggle('scrolling', layoutMode === 'scrolling');
@@ -1339,6 +1463,7 @@ function relayoutAll() {
        lifts them above the tiled windows; the compositor stacks the real
        surfaces to match when it is told their new rects. */
     for (const [id, floating] of floats) {
+      if (overviewActive) break; // thumbnails place their own
       if (floating.workspace !== output.workspace) continue;
       const view = views.get(id);
       if (!view) continue;
@@ -1361,7 +1486,9 @@ function relayoutAll() {
      * fullscreen means, and a video with a status bar across the top is not
      * fullscreen. The bar also stays hidden while explicitly toggled off. */
     const fullscreenHere = fullscreenOn(output.workspace) !== null;
-    output.el.classList.toggle('has-fullscreen', fullscreenHere);
+    output.el.classList.toggle('overview-active', overviewActive);
+    output.el.classList.toggle('has-fullscreen',
+      fullscreenHere && !overviewActive);
     output.el.classList.toggle('bar-hidden', output.barHidden);
     renderBar(name);
   }
@@ -2025,6 +2152,9 @@ function handleShellCommand(command, args) {
       break;
     case 'gesture.settle':
       gestureSettle();
+      break;
+    case 'layout.overview':
+      setOverview(!overviewActive);
       break;
     case 'workspace.step':
       stepWorkspace(Number(arg));

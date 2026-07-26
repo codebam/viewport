@@ -507,6 +507,43 @@ void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data)
  *
  * Only the surface tree is clipped, never the container: popups are children of
  * the container and a menu is entitled to extend past the window it belongs to. */
+/* Draw the window at a fraction of its real size.
+ *
+ * Only the buffers are scaled, not the offsets between them, so a client that
+ * paints through subsurfaces — a browser compositing video, mostly — shows
+ * those parts in the wrong place while shrunk. It is exact again the moment
+ * the scale returns to 1, and the overview is a transient view, so this is a
+ * cheaper trade than scaling positions the subsurface tree would immediately
+ * recompute. */
+static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
+	void *data)
+{
+	double scale = *(double *)data;
+
+	if (buffer->buffer == NULL) {
+		return;
+	}
+	if (scale >= 1.0) {
+		/* Zero means "use the buffer's own size", which is the default. */
+		wlr_scene_buffer_set_dest_size(buffer, 0, 0);
+		return;
+	}
+
+	wlr_scene_buffer_set_dest_size(buffer,
+		(int)(buffer->buffer->width * scale),
+		(int)(buffer->buffer->height * scale));
+}
+
+static void apply_scale(struct viewport_toplevel *toplevel)
+{
+	if (toplevel->surface_tree == NULL) {
+		return;
+	}
+	double scale = toplevel->scale > 0.0 ? toplevel->scale : 1.0;
+	wlr_scene_node_for_each_buffer(&toplevel->surface_tree->node,
+		scale_iterator, &scale);
+}
+
 static void apply_clip(struct viewport_toplevel *toplevel)
 {
 	if (toplevel->surface_tree == NULL) {
@@ -610,6 +647,7 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 		(toplevel->clip.width <= 0 || toplevel->clip.height <= 0);
 
 	apply_clip(toplevel);
+	apply_scale(toplevel);
 
 	if (toplevel->mapped) {
 		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, !offscreen);

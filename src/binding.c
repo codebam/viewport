@@ -303,6 +303,9 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 	viewport_binding_add(server, "Mod4+w=shell layout.tabbed");
 	viewport_binding_add(server, "Mod4+s=shell layout.stacked");
 	viewport_binding_add(server, "Mod4+n=shell bar.toggle");
+	/* Every workspace at once, scaled down. The compositor shrinks the windows
+	 * themselves — no client is asked to resize. */
+	viewport_binding_add(server, "Mod4+o=shell layout.overview");
 	viewport_binding_add(server, "Mod4+Shift+d=appearance toggle");
 
 	if (scrolling) {

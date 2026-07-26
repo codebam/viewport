@@ -465,6 +465,19 @@ static void handle_view_layout(struct viewport_server *server,
 		return;
 	}
 
+	/* Optional: draw the window shrunk, without resizing its client.
+	 *
+	 * The overview needs every window on screen at once, and asking each client
+	 * to resize itself to thumbnail dimensions would be both slow and often
+	 * refused — plenty of windows have a minimum size larger than the thumbnail.
+	 * So the client keeps the size it has and the compositor scales the buffer
+	 * it produced. */
+	toplevel->scale = json_object_has_member(object, "scale")
+		? json_object_get_double_member(object, "scale") : 1.0;
+	if (toplevel->scale <= 0.0 || toplevel->scale > 1.0) {
+		toplevel->scale = 1.0;
+	}
+
 	/* Optional: the part of the window that is actually on its output. Absent
 	 * means all of it, which is the ordinary tiled case. */
 	if (json_object_has_member(object, "clip")) {
@@ -832,6 +845,15 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		}
 	} else if (strcmp(type, "shell.focus") == 0) {
 		viewport_focus_web(server);
+	} else if (strcmp(type, "shell.overview") == 0) {
+		/* While the overview is up the shell is drawing miniatures of every
+		 * window, and a click on one means "go there" rather than reaching the
+		 * client underneath. Input is routed to the shell for the duration. */
+		server->overview = json_object_has_member(object, "active") &&
+			json_object_get_boolean_member(object, "active");
+		if (server->overview) {
+			viewport_focus_web(server);
+		}
 	} else if (strcmp(type, "view.opacity") == 0) {
 		handle_view_opacity(server, object);
 	} else if (strcmp(type, "output.configure") == 0) {

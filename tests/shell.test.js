@@ -389,6 +389,36 @@ if (mode === 'scrolling') {
   emit({ type: 'shell.command', command: 'gesture.settle', args: [] });
 }
 
+/* The overview draws every window shrunk rather than resizing it: a thumbnail
+ * is smaller than many windows' minimum size, so resizing would be refused as
+ * often as it was honoured. The compositor is told the real size plus a scale. */
+{
+  const before = sent.length;
+  emit({ type: 'shell.command', command: 'layout.overview', args: [] });
+
+  const announced = sent.slice(before)
+    .find((m) => m.type === 'shell.overview');
+  check('the compositor is told to route input to the shell',
+    announced?.active === true);
+
+  const scaled = sent.slice(before)
+    .filter((m) => m.type === 'view.layout' && m.scale !== undefined);
+  check('windows are laid out with a scale', scaled.length > 0);
+  check('the scale shrinks them',
+    scaled.every((m) => m.scale > 0 && m.scale < 1));
+  check('and their reported size is the real one, not the shrunken one',
+    scaled.every((m) => m.width > 0 && m.height > 0));
+
+  const exitAt = sent.length;
+  emit({ type: 'shell.command', command: 'layout.overview', args: [] });
+  check('leaving the overview hands input back',
+    sent.slice(exitAt).find((m) => m.type === 'shell.overview')
+      ?.active === false);
+  check('and drops the scale',
+    !sent.slice(exitAt).some((m) => m.type === 'view.layout' &&
+      m.scale !== undefined));
+}
+
 /* Fullscreen is per workspace. Two monitors each showing something fullscreen
  * must not cancel each other — a single global made the second one silently
  * un-fullscreen the first. */
