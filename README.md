@@ -351,6 +351,12 @@ video on a hidden workspace is not keeping anyone awake. An inhibitor counts as
 activity rather than merely pausing the countdown, so releasing one starts the
 clock again instead of firing immediately.
 
+Key presses count as activity; releases do not. That is what makes blanking
+from a keybinding possible at all — the chord fires on press, and letting go of
+it would otherwise say someone is there and turn the screens straight back on.
+A grace period would have to outlast however long the keys were held; not
+counting the release avoids the question.
+
 `Mod4+Shift+x` locks now and `Mod4+Shift+b` turns the screens off now — the
 same two things the timer does, for when you are leaving rather than waiting to
 be noticed leaving. The screens come back on the next keypress or mouse

@@ -39,6 +39,17 @@
  * checks rather than waking to compare timestamps. */
 #define IDLE_TICK_SECONDS 5
 
+/* How long input is ignored after the screens are turned off.
+ *
+ * Blanking from a keybinding is self-defeating without this: the binding fires
+ * on press, and then releasing the key — and the modifiers held with it —
+ * arrives as three more input events, each of which means someone is there.
+ * The screens came back on before the user had let go of the chord.
+ *
+ * Long enough to outlast a chord being released, short enough that it never
+ * feels like the screen is refusing to wake. */
+#define BLANK_GRACE_USEC (G_USEC_PER_SEC / 2)
+
 static bool inhibited(struct viewport_server *server)
 {
 	if (server->idle_inhibit == NULL) {
@@ -103,6 +114,7 @@ static gboolean idle_tick(gpointer data)
 			idle_seconds >= config->idle_blank_after) {
 		server->idle_blanked = true;
 		wlr_log(WLR_INFO, "idle for %lds; blanking", (long)idle_seconds);
+		server->idle_blanked_at = g_get_monotonic_time();
 		set_outputs_enabled(server, false);
 	}
 
@@ -116,6 +128,7 @@ void viewport_idle_blank(struct viewport_server *server)
 	 * that flag would leave no way to undo it short of a timer that has already
 	 * fired. */
 	server->idle_blanked = true;
+	server->idle_blanked_at = g_get_monotonic_time();
 	set_outputs_enabled(server, false);
 }
 
@@ -125,6 +138,13 @@ void viewport_idle_blank(struct viewport_server *server)
  * screen out from under someone using the mouse. */
 void viewport_idle_activity(struct viewport_server *server)
 {
+	if (server->idle_blanked &&
+			g_get_monotonic_time() - server->idle_blanked_at <
+				BLANK_GRACE_USEC) {
+		/* Still the keystroke that asked for this. */
+		return;
+	}
+
 	server->idle_since = g_get_monotonic_time();
 
 	if (server->idle_blanked) {

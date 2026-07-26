@@ -757,8 +757,16 @@ static void handle_keyboard_key(struct wl_listener *listener, void *data)
 	struct viewport_keyboard *keyboard = wl_container_of(listener, keyboard, key);
 	struct viewport_server *server = keyboard->server;
 	struct wlr_keyboard_key_event *event = data;
-	viewport_idle_activity(server);
 	bool pressed = event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
+
+	/* Presses only. A release is the tail of something already counted, and
+	 * counting it undoes a binding that turned the screens off: the chord fires
+	 * on press, and letting go of it then says someone is there. Holding the
+	 * keys longer would outlast any grace period, so the release must not count
+	 * at all rather than merely count late. */
+	if (pressed) {
+		viewport_idle_activity(server);
+	}
 
 	/* WPE wants an evdev keycode (libinput's, offset by 8 as X11 numbers
 	 * them) plus the resolved keysym. Resolve both up front: compositor

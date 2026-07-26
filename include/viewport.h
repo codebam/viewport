@@ -195,6 +195,9 @@ struct viewport_server {
 	struct wl_listener output_power_mode;
 	/* When the seat was last used, and what has already been done about it. */
 	gint64 idle_since;
+	/* When the screens were turned off, so the keystroke that asked for it
+	 * does not immediately turn them back on. */
+	gint64 idle_blanked_at;
 	unsigned int idle_timer;
 	bool idle_locked;
 	bool idle_blanked;
