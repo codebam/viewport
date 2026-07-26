@@ -102,6 +102,15 @@ if ! podman image exists "$builder" || [ "$rebuild" = 1 ]; then
 	podman build -t "$builder" -f "$here/Containerfile" "$here"
 fi
 
+# Rebuild when the commit has moved, not only when asked. The package is cached
+# between runs, and the failure it produces otherwise is the worst kind: the fix
+# you just made is missing and everything looks like it did before.
+head_commit=$(git -C "$repo" rev-parse HEAD)
+built_commit=$(cat "$work/built-from" 2>/dev/null || true)
+if [ "$head_commit" != "$built_commit" ]; then
+	rebuild=1
+fi
+
 if [ "$rebuild" = 1 ] || ! compgen -G "$work/viewport-$pkgver-*-x86_64.pkg.tar.zst" >/dev/null; then
 	echo "==> building the package from HEAD"
 	rm -f "$work"/*.pkg.tar.zst "$work/viewport-$pkgver.tar.gz"
@@ -120,6 +129,7 @@ if [ "$rebuild" = 1 ] || ! compgen -G "$work/viewport-$pkgver-*-x86_64.pkg.tar.z
 			makepkg --noconfirm --nodeps
 			cp *.pkg.tar.zst /out/
 		'
+	printf '%s' "$head_commit" > "$work/built-from"
 fi
 
 # ---------------------------------------------------------------------------
@@ -245,24 +255,16 @@ if [ "$mode" = shell ]; then
 		bash -c "$start_seatd exec bash"
 fi
 
-# The compositor currently corrupts its heap during teardown and can die of it
-# while still holding DRM master. In a normal session that is survivable — the
-# process is exiting anyway and logind restores the console. Here there is no
-# logind, so a death at the wrong moment leaves the display dead and VT
-# switching gone, and the only way out is the power button. It has happened.
-if [ -z "${VIEWPORT_I_ACCEPT_THE_LOCKUP_RISK:-}" ]; then
-	cat >&2 <<'WARN'
-This can lock up the machine.
+# Worth knowing rather than worth refusing. The use-after-free that used to
+# crash the compositor during teardown is fixed, but this container holds DRM
+# master with no logind behind it, so anything that does kill it mid-shutdown
+# still leaves the console with nobody to hand it back.
+cat >&2 <<'WARN'
+Note: this takes the display. If the compositor dies at the wrong moment there
+is no logind here to restore the console, and the way out is the power button.
+--nested exercises the same package without that risk.
 
-The compositor has a teardown bug that can crash it while it still holds the
-display, and nothing in this container will hand the console back if it does.
-That means a hard power off, losing whatever is unsaved elsewhere.
-
---nested is safe and tests the same package. If you need the real display
-anyway, set VIEWPORT_I_ACCEPT_THE_LOCKUP_RISK=1.
 WARN
-	exit 1
-fi
 
 echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
 
