@@ -81,9 +81,16 @@ struct viewport_config {
 	const char *ipc_path;
 	/* Run headless (nested/CI) rather than taking a DRM session. */
 	bool headless;
-	/* Verbose logging, and mirror the shell's console into the compositor
-	 * log — without this, a JS error in the shell is completely silent. */
+	/* Mirror the shell's console into the compositor log, and serve the shell
+	 * uncached — without this, a JS error in the shell is completely silent and
+	 * an edited shell appears to have no effect. Cheap enough to leave on. */
 	bool debug;
+	/* Per-frame tracing: every placement, clip and scale. Separate from `debug`
+	 * because an animation produces one line per window per frame — sixty times
+	 * a second — which is formatted I/O in the layout path and a log file that
+	 * grows by megabytes a minute. On when you are chasing a geometry bug, off
+	 * the rest of the time. */
+	bool trace;
 	/* Keyboard layout, in xkb terms; NULL means the system default. */
 	const char *xkb_layout;
 	const char *xkb_variant;
@@ -93,6 +100,10 @@ struct viewport_config {
 	/* Cursor theme and size; NULL/0 use the defaults. */
 	const char *cursor_theme;
 	int cursor_size;
+	/* Ask outputs for variable refresh rate. Off by default: it is a property
+	 * of the monitor and the driver as much as of the compositor, and enabling
+	 * it where it is not properly supported causes flicker. */
+	bool adaptive_sync;
 	/* Which layout model the shell runs: "tiling" for i3-style splits, or
 	 * "scrolling" for niri's infinite strip of columns. The shell implements
 	 * both; this only picks the default and the matching key bindings. */

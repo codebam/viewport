@@ -121,6 +121,10 @@ bool viewport_config_load(struct viewport_server *server,
 		config->terminal = keep(g_strdup(
 			json_object_get_string_member(object, "terminal")));
 	}
+	if (json_object_has_member(object, "adaptive_sync")) {
+		config->adaptive_sync =
+			json_object_get_boolean_member(object, "adaptive_sync");
+	}
 	if (json_object_has_member(object, "layout")) {
 		config->layout = keep(g_strdup(
 			json_object_get_string_member(object, "layout")));

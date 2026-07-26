@@ -214,7 +214,7 @@ static gboolean viewport_wpe_view_render_buffer(WPEView *wpe_view,
 	/* Bounded diagnostics: the first frames are what matter, and logging every
 	 * frame at 120Hz floods the log faster than it can be read. */
 	static int logged;
-	if (self->web->server->config.debug && logged < 40) {
+	if (self->web->server->config.trace && logged < 40) {
 		logged++;
 		const pixman_box32_t *extents = pixman_region32_extents(&damage);
 		wlr_log(WLR_DEBUG,

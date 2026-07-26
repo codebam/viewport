@@ -38,7 +38,7 @@ static void handle_output_frame(struct wl_listener *listener, void *data)
 	bool committed = wlr_scene_output_commit(output->scene_output, NULL);
 
 	static int logged;
-	if (server->config.debug && logged < 40) {
+	if (server->config.trace && logged < 40) {
 		logged++;
 		wlr_log(WLR_DEBUG, "output %s frame: committed=%d",
 			output->wlr_output->name, committed);
@@ -119,11 +119,30 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 		wlr_output_state_set_mode(&state, mode);
 	}
 
+	/* Variable refresh rate, when asked for and when the hardware will take it.
+	 * Tested separately rather than folded into the commit below: a monitor or
+	 * driver that cannot do it would otherwise take the mode down with it, and
+	 * a black screen is a poor trade for a smoother one. */
+	if (server->config.adaptive_sync) {
+		wlr_output_state_set_adaptive_sync_enabled(&state, true);
+		if (!wlr_output_test_state(wlr_output, &state)) {
+			wlr_log(WLR_INFO, "%s will not do adaptive sync; leaving it off",
+				wlr_output->name);
+			wlr_output_state_set_adaptive_sync_enabled(&state, false);
+		}
+	}
+
 	bool ok = wlr_output_commit_state(wlr_output, &state);
 	wlr_output_state_finish(&state);
 	if (!ok) {
 		wlr_log(WLR_ERROR, "initial commit failed for %s", wlr_output->name);
 		return;
+	}
+
+	if (server->config.adaptive_sync) {
+		wlr_log(WLR_INFO, "%s adaptive sync %s", wlr_output->name,
+			wlr_output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED
+				? "on" : "off");
 	}
 
 	struct viewport_output *output = calloc(1, sizeof(*output));

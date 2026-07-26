@@ -30,6 +30,14 @@
   ],
   "layout": "tiling",
 
+  "_adaptive_sync": [
+    "Variable refresh rate. Off by default because it depends on the monitor",
+    "and the driver as much as on the compositor, and enabling it where it is",
+    "not properly supported causes flicker. Tested against the hardware at",
+    "startup and quietly left off if it is refused."
+  ],
+  "adaptive_sync": false,
+
   "terminal": "ghostty",
   "menu": "wmenu-run -f 'Fira Code NerdFont 11' -i",
 

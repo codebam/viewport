@@ -100,6 +100,14 @@ fi
 
 echo "logging to $LOG (previous run: $LOG.1)"
 
+# --debug mirrors the shell's console into the log and serves the shell
+# uncached, which is what makes a JavaScript error visible at all and an edited
+# shell take effect. It is cheap and stays on.
+#
+# --trace is the expensive tier: one line per window per frame, which during an
+# animation is sixty a second and formatted I/O inside the layout path. Pass it
+# when chasing a geometry bug:  ./start.sh --trace
+
 exec nix develop --command ./build/viewport \
 	--url      "file://$PWD/data/shell/index.html" \
 	--fallback "file://$PWD/data/fallback.html" \

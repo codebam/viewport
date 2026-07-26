@@ -113,6 +113,7 @@ a TTY.
   "url": "http://localhost:3000",
   "timeout_ms": 5000,
   "layout": "tiling",       // or "scrolling"
+  "adaptive_sync": false,   // variable refresh rate, if the monitor will
   "terminal": "ghostty",
   "menu": "wmenu-run -i",
   "binds": {
@@ -318,6 +319,18 @@ output, which is what keeps a column scrolled off the left of one monitor from
 being drawn on the monitor beside it. Only the surface is clipped, never the
 container: a popup is entitled to extend past the window it belongs to.
 
+### Logging
+
+`--debug` mirrors the shell's console into the compositor log and serves the
+shell uncached. Without it a JavaScript error in the shell is completely
+silent and an edited shell appears to have no effect, so it is worth leaving
+on — it costs a page fetch.
+
+`--trace` is the expensive tier: every placement, clip and scale, which during
+an animation is one line per window per frame. That is formatted I/O inside the
+layout path and a log that grows by megabytes a minute, so it is separate. Pass
+it when chasing a geometry bug and not otherwise.
+
 ### Overview
 
 `Mod4+o` shows every workspace at once. Each thumbnail contains the workspace's
@@ -350,7 +363,10 @@ unscaled, so a client painting through subsurfaces — a browser compositing
 video, mostly — shows those parts misplaced while shrunk; it is exact again the
 moment the scale returns to 1. And input is routed to the shell for the duration
 (`shell.overview`), because a click on a miniature means "take me there" rather
-than reaching the client underneath.
+than reaching the client underneath. That routing is also what makes dragging
+possible: press a window and release it over another thumbnail to move it to
+that workspace, or release it where it started to go there. The overview stays
+open after a move, so several windows can be arranged in one visit.
 
 Visibility works differently while it is up. A window is normally on screen
 only if some monitor is displaying its workspace; the overview draws every

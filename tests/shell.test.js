@@ -163,6 +163,9 @@ global.window = {
     if (msg.type === 'view.focus') pendingFocus.push(msg.id);
   } } } },
   addEventListener: (type, fn) => { (windowListeners[type] ??= []).push(fn); },
+  removeEventListener: (type, fn) => {
+    windowListeners[type] = (windowListeners[type] ?? []).filter((f) => f !== fn);
+  },
 };
 global.ResizeObserver = class { observe() {} unobserve() {} };
 /* Frame callbacks run inline, and a timestamp is supplied because the fade
@@ -175,7 +178,8 @@ global.matchMedia = () => ({ matches: false });
 
 /* Top-level const/let inside an eval stay in that eval's own scope, so the
  * shell's state is unreachable from out here unless it hands it over. */
-const EXPORTS = ';globalThis.__shell = { views, workspaces, floats, outputs, scrollOffsets,'
+const EXPORTS = ';globalThis.__shell = { views, workspaces, floats, outputs, scrollOffsets, overviewThumbs,'
+  + ' workspaceOfForTest: workspaceOf,'
   + ' get activeOutput() { return activeOutput; } };';
 const src = fs.readFileSync(process.argv[2], 'utf8') + '\n' + EXPORTS;
 (0, eval)(src);
@@ -480,6 +484,36 @@ if (mode === 'scrolling') {
     scaled.every((m) => m.scale > 0 && m.scale < 1));
   check('and their reported size is the real one, not the shrunken one',
     scaled.every((m) => m.width > 0 && m.height > 0));
+
+  /* Dragging a window from one thumbnail to another moves it to that
+     workspace, and leaves the overview open so more can be arranged. */
+  {
+    const views = globalThis.__shell.views;
+    const dragged = [...views.keys()].find((vid) => !views.get(vid).el.hidden);
+    if (dragged !== undefined) {
+      const el = views.get(dragged).el;
+      const listeners = el.listeners.mousedown ?? [];
+      const before = globalThis.__shell.workspaceOfForTest(dragged);
+
+      /* Press on the window, release over a different thumbnail. */
+      const thumbs = globalThis.__shell.overviewThumbs;
+      const [[otherWs, otherCell]] = [...thumbs]
+        .filter(([n]) => n !== before);
+      otherCell.__rect = { left: 5000, top: 900, width: 100, height: 100 };
+
+      for (const fn of listeners) {
+        fn({ preventDefault() {}, stopPropagation() {} });
+      }
+      for (const fn of windowListeners.mouseup ?? []) {
+        fn({ clientX: 5050, clientY: 950 });
+      }
+
+      check('dragging a window between thumbnails moves it',
+        globalThis.__shell.workspaceOfForTest(dragged) === otherWs);
+      check('and the overview stays open for more',
+        sent.filter((m) => m.type === 'shell.overview').pop()?.active === true);
+    }
+  }
 
   const exitAt = sent.length;
   emit({ type: 'shell.command', command: 'layout.overview', args: [] });

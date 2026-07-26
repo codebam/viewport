@@ -367,6 +367,16 @@ body {
   border-width: 1px;
   border-radius: 3px;
   box-shadow: none;
+  cursor: grab;
+}
+
+/* Being carried to another workspace. Only the frame can show this — the
+   window's contents are a surface the compositor draws, and no style here
+   reaches it. */
+.thumb .window.dragging-overview {
+  cursor: grabbing;
+  border-color: var(--border-focus);
+  opacity: .85;
 }
 
 /* An output that is not showing the overview shows nothing at all, rather than

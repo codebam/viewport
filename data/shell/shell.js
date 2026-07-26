@@ -94,6 +94,8 @@ const overviewScales = new Map(); // view id -> scale
 /* The thumbnail each window is drawn in, so its clip can be taken from that
  * rather than from the whole output. */
 const overviewCells = new Map(); // view id -> thumbnail element
+/* Thumbnails by workspace, so a drag can find what it was released over. */
+const overviewThumbs = new Map(); // workspace -> thumbnail element
 
 const outputsEl = document.getElementById('outputs');
 const desktopTemplate = document.getElementById('desktop-template');
@@ -699,6 +701,8 @@ function renderOverview(output, list) {
       overviewCells.set(id, cell);
     }
 
+    overviewThumbs.set(n, cell);
+
     cell.append(inner);
     cell.addEventListener('mousedown', () => {
       /* Switch the output the thumbnail is on, not whichever was last active:
@@ -713,6 +717,87 @@ function renderOverview(output, list) {
   return grid;
 }
 
+/* Move one window to a workspace, without it having to be focused first. The
+ * overview can act on any window on screen, not just the current one. */
+function moveViewToWorkspace(id, n) {
+  if (n < 1 || n > WORKSPACES) return false;
+  if (workspaceOf(id) === n) return false;
+
+  const floating = floats.get(id);
+  if (floating) {
+    floating.workspace = n;
+  } else {
+    removeLeaf(id);
+    if (layoutMode === 'scrolling') {
+      const root = workspaceRoot(n);
+      root.dir = 'horizontal';
+      const leaf = newLeaf(id);
+      leaf.width = COLUMN_WIDTHS[1];
+      root.children.push(leaf);
+    } else {
+      workspaceRoot(n).children.push(newLeaf(id));
+    }
+  }
+
+  treeGeneration++;
+  return true;
+}
+
+/* Pressing a window in the overview either takes you to it or moves it.
+ *
+ * Which one is decided on release, by where the pointer ended up: released over
+ * the thumbnail it started in, it is a click and you go there; released over a
+ * different one, the window is moved to that workspace and the overview stays
+ * open so you can keep arranging. Dragging is the only gesture available here
+ * — the compositor routes all input to the shell while the overview is up, so
+ * the window under the pointer never sees any of this. */
+function beginOverviewDrag(event, id) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const from = overviewCells.get(id);
+  const view = views.get(id);
+  view?.el.classList.add('dragging-overview');
+
+  const thumbAt = (x, y) => {
+    for (const [n, cell] of overviewThumbs) {
+      const r = cell.getBoundingClientRect();
+      if (x >= r.left && x < r.left + r.width &&
+          y >= r.top && y < r.top + r.height) {
+        return { workspace: n, cell };
+      }
+    }
+    return null;
+  };
+
+  const onUp = (up) => {
+    window.removeEventListener('mouseup', onUp);
+    view?.el.classList.remove('dragging-overview');
+
+    const target = thumbAt(up.clientX, up.clientY);
+    if (target !== null && target.cell !== from) {
+      if (moveViewToWorkspace(id, target.workspace)) {
+        send({ type: 'view.focus', id });
+        relayoutAll();
+      }
+      return;
+    }
+
+    /* A click: go to the window. The output showing the overview is the one
+       that takes you there. */
+    const workspace = workspaceOf(id);
+    setOverview(false);
+    if (workspace !== null) {
+      const name = activeOutputName();
+      setActiveOutput(name);
+      switchWorkspace(name, workspace);
+    }
+    send({ type: 'view.focus', id });
+  };
+
+  window.addEventListener('mouseup', onUp);
+}
+
 function setOverview(active) {
   if (overviewActive === active) return;
   overviewActive = active;
@@ -720,6 +805,7 @@ function setOverview(active) {
   if (!active) {
     overviewScales.clear();
     overviewCells.clear();
+    overviewThumbs.clear();
   }
 
   /* The compositor routes input to the shell while this is up: the windows on
@@ -1534,6 +1620,7 @@ function relayoutAll() {
   if (overviewActive) {
     overviewScales.clear();
     overviewCells.clear();
+    overviewThumbs.clear();
   }
   const assignment = overviewActive ? overviewAssignment() : null;
 
@@ -1965,7 +2052,13 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
 
   el.dataset.viewId = String(id);
   viewport.dataset.viewId = String(id);
-  el.addEventListener('mousedown', () => send({ type: 'view.focus', id }));
+  el.addEventListener('mousedown', (event) => {
+    if (overviewActive) {
+      beginOverviewDrag(event, id);
+      return;
+    }
+    send({ type: 'view.focus', id });
+  });
 
   /* A client's own minimum, enforced by flexbox. Without it a divider drag
    * happily shrinks the hole past what the client accepts: the client keeps

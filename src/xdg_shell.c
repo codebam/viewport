@@ -571,7 +571,7 @@ void viewport_toplevel_apply_scale(struct viewport_toplevel *toplevel)
 		return;
 	}
 	double scale = toplevel->scale > 0.0 ? toplevel->scale : 1.0;
-	debug_scale = toplevel->server->config.debug;
+	debug_scale = toplevel->server->config.trace;
 	wlr_scene_node_for_each_buffer(&toplevel->surface_tree->node,
 		scale_iterator, &scale);
 	debug_scale = false;
@@ -597,7 +597,7 @@ static void apply_clip(struct viewport_toplevel *toplevel)
 		.height = toplevel->clip.height,
 	};
 
-	if (toplevel->server->config.debug &&
+	if (toplevel->server->config.trace &&
 			memcmp(&clip, &toplevel->last_clip, sizeof(clip)) != 0) {
 		wlr_log(WLR_DEBUG, "view %u clip %d,%d %dx%d", toplevel->id, clip.x,
 			clip.y, clip.width, clip.height);
@@ -631,7 +631,7 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 	 * window geometry origin, so the rect is applied verbatim. */
 	wlr_scene_node_set_position(&toplevel->scene_tree->node, box->x, box->y);
 
-	if (toplevel->server->config.debug) {
+	if (toplevel->server->config.trace) {
 		struct wlr_box geo = viewport_view_geometry(toplevel);
 		wlr_log(WLR_DEBUG, "view %u want %d,%d %dx%d | geo %d,%d %dx%d",
 			toplevel->id, box->x, box->y, box->width, box->height,
@@ -686,7 +686,7 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, !offscreen);
 	}
 
-	if (toplevel->server->config.debug) {
+	if (toplevel->server->config.trace) {
 		wlr_log(WLR_DEBUG, "view %u boxed (mapped=%d -> visible=%d)",
 			toplevel->id, toplevel->mapped, toplevel->mapped);
 	}

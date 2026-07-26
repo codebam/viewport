@@ -29,7 +29,8 @@ static const char usage[] =
 	"                         actions: exec CMD | close | exit | reload\n"
 	"  -e, --startup CMD      command to run once the compositor is up\n"
 	"  -H, --headless         use the headless backend instead of DRM\n"
-	"  -d, --debug            verbose logging\n"
+	"  -d, --debug            mirror the shell console, serve it uncached\n"
+	"      --trace            per-frame placement logging (very noisy)\n"
 	"  -h, --help             this message\n";
 
 static gboolean handle_signal(gpointer data)
@@ -56,6 +57,7 @@ int main(int argc, char *argv[])
 		 * looks like a bug. Override with "dark_mode": false in the config. */
 		.dark_mode = true,
 	};
+	enum { OPT_TRACE = 1000 };
 	enum wlr_log_importance log_level = WLR_INFO;
 
 	static const struct option options[] = {
@@ -70,6 +72,9 @@ int main(int argc, char *argv[])
 		{ "startup", required_argument, NULL, 'e' },
 		{ "headless", no_argument, NULL, 'H' },
 		{ "debug", no_argument, NULL, 'd' },
+		/* Long-only: every sensible short letter is taken, and this is not a
+		 * flag anyone wants to reach for by accident. */
+		{ "trace", no_argument, NULL, OPT_TRACE },
 		{ "help", no_argument, NULL, 'h' },
 		{ 0 },
 	};
@@ -119,6 +124,13 @@ int main(int argc, char *argv[])
 		case 'd':
 			log_level = WLR_DEBUG;
 			config.debug = true;
+			break;
+		case OPT_TRACE:
+			/* Implies --debug: tracing without the shell's console is a much
+			 * less useful half of the picture. */
+			log_level = WLR_DEBUG;
+			config.debug = true;
+			config.trace = true;
 			break;
 		case 'h':
 			fputs(usage, stdout);
