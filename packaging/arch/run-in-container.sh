@@ -73,6 +73,23 @@ fi
 
 mkdir -p "$work"
 
+# Everything from here is logged, not just the compositor.
+#
+# The first version captured only what the compositor printed, which meant the
+# one failure that actually happened — the run never getting that far — left no
+# trace at all. A build that cannot find an image, an elevation that is refused,
+# a package that will not compile: those are the interesting failures, and they
+# all happen before the compositor exists.
+if [ "$mode" != build ]; then
+	mkdir -p "$logdir"
+	stamp=$(date +%Y%m%d-%H%M%S)
+	logfile=$logdir/viewport-$stamp.log
+	# tee, so the console still shows progress. Written as the ordinary user
+	# from the outset, so nothing needs its ownership repaired afterwards.
+	exec > >(tee -a "$logfile") 2>&1
+	echo "==> logging to $logfile"
+fi
+
 # ---------------------------------------------------------------------------
 # Build the package, as an ordinary user.
 #
@@ -163,18 +180,11 @@ fi
 # --privileged rather than a list of capabilities: this is a throwaway container
 # driving real hardware, and enumerating exactly which capabilities libinput and
 # amdgpu need between kernel versions is a worse trade than granting them.
-mkdir -p "$logdir"
-stamp=$(date +%Y%m%d-%H%M%S)
-logfile=$logdir/viewport-$stamp.log
-
 tty_args=(
 	--rm -it
 	--privileged
 	-v /dev:/dev
 	-v /run/udev:/run/udev:ro
-	# The log has to land on the host: the container is --rm, and a log that
-	# disappears with it is no use for reporting anything afterwards.
-	-v "$logdir:/logs:z"
 	-e LIBSEAT_BACKEND=builtin
 	-e XDG_RUNTIME_DIR=/tmp/xdg
 	-e HOME=/root
@@ -202,18 +212,12 @@ if [ "$mode" = shell ]; then
 fi
 
 echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
-echo "==> logging to $logfile"
 
-# tee rather than a plain redirect, so the console still shows what is happening
-# — a compositor that fails to start with its output in a file looks identical
-# to one that hung. Not exec'd, because the log needs its ownership fixing
-# afterwards: it is written by root inside the container.
-"${elevate[@]}" podman run "${tty_args[@]}" "$runtime" bash -c "
-	mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
-	viewport --debug --startup foot 2>&1 | tee /logs/viewport-$stamp.log
-" || true
-
-"${elevate[@]}" chown "$(id -u):$(id -g)" "$logfile" 2>/dev/null || true
+# The container inherits the stdout already being teed, so its output lands in
+# the same log as the build steps above it — one file describing the whole run.
+"${elevate[@]}" podman run "${tty_args[@]}" "$runtime" \
+	bash -c 'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg && exec viewport --debug --startup foot' \
+	|| echo "==> viewport exited $?"
 
 echo
 echo "==> log saved: $logfile"

@@ -28,7 +28,7 @@ find_log() {
 	local candidates=()
 	[ -d "${VIEWPORT_LOGDIR:-$HOME/viewport-logs}" ] &&
 		while IFS= read -r line; do candidates+=("$line"); done < <(
-			find "${VIEWPORT_LOGDIR:-$HOME/viewport-logs}" -name 'viewport-*.log' \
+			find "${VIEWPORT_LOGDIR:-$HOME/viewport-logs}" -name '*.log' \
 				-printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-
 		)
 	[ -f "$HOME/viewport.log" ] && candidates+=("$HOME/viewport.log")
@@ -81,7 +81,15 @@ section() { printf '\n===== %s =====\n' "$1"; }
 	fi
 
 	section "log"
+	# Which log this is matters as much as its contents: a container run and a
+	# start.sh run fail in different ways, and picking the wrong one has already
+	# sent a report describing the wrong session.
 	if [ -n "$log" ] && [ -r "$log" ]; then
+		case $log in
+			*viewport-logs/*) printf 'source: the container script\n' ;;
+			*viewport.log.1) printf 'source: start.sh, the run before the last one\n' ;;
+			*viewport.log)   printf 'source: start.sh\n' ;;
+		esac
 		printf 'from %s (%s lines)\n\n' "$log" "$(wc -l < "$log")"
 		# The whole thing when it is small, otherwise the ends: a failure shows
 		# up either where it started or where everything stopped, and the middle
