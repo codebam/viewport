@@ -35,6 +35,18 @@ LOG="${VIEWPORT_LOG:-$HOME/viewport.log}"
 #                        variables above have to be pushed there before it
 #                        starts — otherwise it looks for a backend named after
 #                        whatever desktop was current at login.
+# VIEWPORT_NO_PORTAL=1 disables our settings portal, falling back to whatever
+# backend the session already had. Dark mode stops working; the point is to
+# isolate the portal when something else is being investigated.
+#
+# Skipping the setup is not enough on its own: systemctl --user set-environment
+# persists across runs, so variables exported by a previous launch would keep
+# our backend selected and the flag would appear to do nothing at all.
+if [ -n "${VIEWPORT_NO_PORTAL:-}" ]; then
+	systemctl --user unset-environment \
+		NIX_XDG_DESKTOP_PORTAL_DIR XDG_CURRENT_DESKTOP 2>/dev/null || true
+	systemctl --user restart xdg-desktop-portal.service 2>/dev/null || true
+else
 export XDG_CURRENT_DESKTOP=viewport
 export XDG_DATA_DIRS="$PWD/data/portal-share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 # Backend selection moved from the .portal file's UseIn= to a config file in
@@ -71,6 +83,7 @@ fi
 # previous session will not see ours until it restarts.
 systemctl --user restart xdg-desktop-portal.service 2>/dev/null \
 	|| systemctl --user stop xdg-desktop-portal.service 2>/dev/null || true
+fi
 
 if [ ! -x build/viewport ]; then
 	echo "build/viewport missing — run: nix develop --command ninja -C build" >&2

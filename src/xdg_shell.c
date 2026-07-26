@@ -294,6 +294,21 @@ void viewport_handle_new_decoration(struct wl_listener *listener, void *data)
  * configure. Skipping that is why Firefox's menus and right-click menus never
  * appeared: the client created the popup, waited to be told where it could go,
  * and gave up. */
+/* Re-run the positioner against the output the popup's root window is on. */
+static void unconstrain_popup(struct viewport_popup *popup);
+
+static void handle_popup_reposition(struct wl_listener *listener, void *data)
+{
+	struct viewport_popup *popup = wl_container_of(listener, popup, reposition);
+
+	/* A client may replace a popup's positioner after creation — Firefox
+	 * creates a menu at a placeholder size and then repositions it once it
+	 * knows how big its contents are. Ignoring this leaves the popup stuck at
+	 * that placeholder, which is why menus appeared far too small to hold
+	 * anything: an 18x70 request was the placeholder, not the menu. */
+	unconstrain_popup(popup);
+}
+
 static void handle_popup_commit(struct wl_listener *listener, void *data)
 {
 	struct viewport_popup *popup = wl_container_of(listener, popup, commit);
@@ -302,17 +317,111 @@ static void handle_popup_commit(struct wl_listener *listener, void *data)
 		return;
 	}
 
+	unconstrain_popup(popup);
+}
+
+static void unconstrain_popup(struct viewport_popup *popup)
+{
 	/* Keep the menu on screen: a dropdown near the bottom of a window should
-	 * flip upwards rather than run off the output. The box is in the parent
-	 * surface's coordinate space. */
+	 * flip upwards rather than run off the output.
+	 *
+	 * The box must be the output the window is on, expressed in the parent
+	 * *surface's* coordinate space. Two mistakes here both make menus come out
+	 * too small to hold their contents, because a client that cannot fit a
+	 * popup in the space offered is allowed to shrink it rather than flip it:
+	 *
+	 *   - passing the whole multi-monitor layout instead of one output, which
+	 *     describes space that does not exist beside this window;
+	 *   - converting with the window rect alone. The popup's origin is the
+	 *     parent surface, not its window geometry, and for a client that draws
+	 *     its own decorations those differ by the shadow margin. */
 	struct viewport_toplevel *toplevel = popup->toplevel;
 	if (toplevel != NULL) {
+		struct wlr_output *wlr_output = wlr_output_layout_output_at(
+			toplevel->server->output_layout,
+			toplevel->box.x + toplevel->box.width / 2,
+			toplevel->box.y + toplevel->box.height / 2);
+
 		struct wlr_box output_box;
-		wlr_output_layout_get_box(toplevel->server->output_layout, NULL,
+		wlr_output_layout_get_box(toplevel->server->output_layout, wlr_output,
 			&output_box);
-		output_box.x -= toplevel->box.x;
-		output_box.y -= toplevel->box.y;
+
+		struct wlr_box geo = toplevel->xdg_toplevel->base->geometry;
+		output_box.x -= toplevel->box.x - geo.x;
+		output_box.y -= toplevel->box.y - geo.y;
+
+		struct wlr_box before = popup->xdg_popup->scheduled.geometry;
 		wlr_xdg_popup_unconstrain_from_box(popup->xdg_popup, &output_box);
+		struct wlr_box after = popup->xdg_popup->scheduled.geometry;
+
+		if (toplevel->server->config.debug) {
+			wlr_log(WLR_DEBUG,
+				"popup want %d,%d %dx%d -> %d,%d %dx%d | box %d,%d %dx%d "
+				"| parent box %d,%d %dx%d geo %d,%d",
+				before.x, before.y, before.width, before.height,
+				after.x, after.y, after.width, after.height,
+				output_box.x, output_box.y, output_box.width,
+				output_box.height, toplevel->box.x, toplevel->box.y,
+				toplevel->box.width, toplevel->box.height, geo.x, geo.y);
+		}
+		return;
+	}
+
+	/* A popup whose parent is another popup — a submenu — still has to be
+	 * unconstrained, against the same output as the toplevel at the root of
+	 * the chain. Walking up to find it is what sway does; skipping it leaves
+	 * nested menus unconstrained and free to come out the wrong size. */
+	struct wlr_xdg_popup *root = popup->xdg_popup;
+	struct viewport_toplevel *owner = NULL;
+	int offset_x = 0, offset_y = 0;
+
+	while (root != NULL) {
+		struct wlr_xdg_surface *parent =
+			wlr_xdg_surface_try_from_wlr_surface(root->parent);
+		if (parent == NULL) {
+			break;
+		}
+		/* Each hop adds the popup's own offset within its parent. */
+		offset_x += root->current.geometry.x;
+		offset_y += root->current.geometry.y;
+
+		if (parent->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
+			struct wlr_scene_tree *tree = parent->data;
+			struct viewport_node *tagged =
+				tree != NULL ? tree->node.data : NULL;
+			if (tagged != NULL && tagged->type == VIEWPORT_NODE_TOPLEVEL) {
+				owner = (struct viewport_toplevel *)tagged;
+			}
+			break;
+		}
+		root = parent->popup;
+	}
+
+	if (owner != NULL) {
+		struct wlr_output *wlr_output = wlr_output_layout_output_at(
+			owner->server->output_layout,
+			owner->box.x + owner->box.width / 2,
+			owner->box.y + owner->box.height / 2);
+
+		struct wlr_box output_box;
+		wlr_output_layout_get_box(owner->server->output_layout, wlr_output,
+			&output_box);
+
+		struct wlr_box geo = owner->xdg_toplevel->base->geometry;
+		output_box.x -= owner->box.x - geo.x + offset_x;
+		output_box.y -= owner->box.y - geo.y + offset_y;
+
+		struct wlr_box before = popup->xdg_popup->scheduled.geometry;
+		wlr_xdg_popup_unconstrain_from_box(popup->xdg_popup, &output_box);
+
+		if (owner->server->config.debug) {
+			struct wlr_box after = popup->xdg_popup->scheduled.geometry;
+			wlr_log(WLR_DEBUG,
+				"nested popup want %dx%d -> %dx%d | box %d,%d %dx%d",
+				before.width, before.height, after.width, after.height,
+				output_box.x, output_box.y, output_box.width,
+				output_box.height);
+		}
 		return;
 	}
 
@@ -323,6 +432,7 @@ static void handle_popup_destroy(struct wl_listener *listener, void *data)
 {
 	struct viewport_popup *popup = wl_container_of(listener, popup, destroy);
 	wl_list_remove(&popup->commit.link);
+	wl_list_remove(&popup->reposition.link);
 	wl_list_remove(&popup->destroy.link);
 	free(popup);
 }
@@ -359,6 +469,8 @@ void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data)
 
 	popup->commit.notify = handle_popup_commit;
 	wl_signal_add(&xdg_popup->base->surface->events.commit, &popup->commit);
+	popup->reposition.notify = handle_popup_reposition;
+	wl_signal_add(&xdg_popup->events.reposition, &popup->reposition);
 	popup->destroy.notify = handle_popup_destroy;
 	wl_signal_add(&xdg_popup->events.destroy, &popup->destroy);
 }

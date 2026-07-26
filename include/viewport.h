@@ -243,6 +243,7 @@ struct viewport_popup {
 	/* NULL when the parent is another popup. */
 	struct viewport_toplevel *toplevel;
 	struct wl_listener commit;
+	struct wl_listener reposition;
 	struct wl_listener destroy;
 };
 

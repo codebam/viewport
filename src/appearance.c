@@ -31,6 +31,7 @@
 #define PORTAL_OBJECT_PATH "/org/freedesktop/portal/desktop"
 #define SETTINGS_INTERFACE "org.freedesktop.impl.portal.Settings"
 #define APPEARANCE_NAMESPACE "org.freedesktop.appearance"
+#define GNOME_NAMESPACE "org.gnome.desktop.interface"
 
 struct viewport_appearance {
 	struct viewport_server *server;
@@ -64,6 +65,72 @@ static const char introspection_xml[] =
 
 static GDBusNodeInfo *introspection_data;
 
+/* Font and scaling settings.
+ *
+ * Answering only color-scheme is worse than providing no portal at all: a
+ * client that finds a working Settings implementation trusts it instead of
+ * falling back to its own defaults, so a missing font or text-scaling value
+ * becomes a measurement of zero rather than a sensible default. Toolkits size
+ * menus from exactly these keys.
+ *
+ * The values are conventional defaults rather than anything clever — the point
+ * is that every key a toolkit asks for gets a usable answer. */
+static void add_gnome_settings(struct viewport_appearance *appearance,
+	GVariantBuilder *builder)
+{
+	g_variant_builder_add(builder, "{sv}", "color-scheme",
+		g_variant_new_string(appearance->color_scheme == 1
+			? "prefer-dark" : "prefer-light"));
+	g_variant_builder_add(builder, "{sv}", "gtk-theme",
+		g_variant_new_string(appearance->color_scheme == 1
+			? "Adwaita-dark" : "Adwaita"));
+	g_variant_builder_add(builder, "{sv}", "icon-theme",
+		g_variant_new_string("Adwaita"));
+	g_variant_builder_add(builder, "{sv}", "font-name",
+		g_variant_new_string("Sans 10"));
+	g_variant_builder_add(builder, "{sv}", "monospace-font-name",
+		g_variant_new_string("Monospace 10"));
+	g_variant_builder_add(builder, "{sv}", "document-font-name",
+		g_variant_new_string("Sans 10"));
+	g_variant_builder_add(builder, "{sv}", "text-scaling-factor",
+		g_variant_new_double(1.0));
+	g_variant_builder_add(builder, "{sv}", "cursor-theme",
+		g_variant_new_string("default"));
+	g_variant_builder_add(builder, "{sv}", "cursor-size",
+		g_variant_new_int32(24));
+	g_variant_builder_add(builder, "{sv}", "enable-animations",
+		g_variant_new_boolean(TRUE));
+}
+
+/* Returns a floating value, or NULL when the key is genuinely unknown. */
+static GVariant *lookup_setting(struct viewport_appearance *appearance,
+	const char *namespace, const char *key)
+{
+	if (strcmp(namespace, APPEARANCE_NAMESPACE) == 0) {
+		if (strcmp(key, "color-scheme") == 0) {
+			return g_variant_new_uint32(appearance->color_scheme);
+		}
+		/* Documented in the appearance namespace; clients read both. */
+		if (strcmp(key, "contrast") == 0) {
+			return g_variant_new_uint32(0);
+		}
+		return NULL;
+	}
+
+	if (strcmp(namespace, GNOME_NAMESPACE) != 0) {
+		return NULL;
+	}
+
+	GVariantBuilder builder;
+	g_variant_builder_init(&builder, G_VARIANT_TYPE("a{sv}"));
+	add_gnome_settings(appearance, &builder);
+	GVariant *all = g_variant_ref_sink(g_variant_builder_end(&builder));
+
+	GVariant *value = g_variant_lookup_value(all, key, NULL);
+	g_variant_unref(all);
+	return value;
+}
+
 static void handle_method(GDBusConnection *connection, const char *sender,
 	const char *object_path, const char *interface_name,
 	const char *method_name, GVariant *parameters,
@@ -75,13 +142,18 @@ static void handle_method(GDBusConnection *connection, const char *sender,
 		GVariantBuilder namespaces;
 		g_variant_builder_init(&namespaces, G_VARIANT_TYPE("a{sa{sv}}"));
 
-		GVariantBuilder keys;
-		g_variant_builder_init(&keys, G_VARIANT_TYPE("a{sv}"));
-		g_variant_builder_add(&keys, "{sv}", "color-scheme",
+		GVariantBuilder appearance_keys;
+		g_variant_builder_init(&appearance_keys, G_VARIANT_TYPE("a{sv}"));
+		g_variant_builder_add(&appearance_keys, "{sv}", "color-scheme",
 			g_variant_new_uint32(appearance->color_scheme));
-
 		g_variant_builder_add(&namespaces, "{sa{sv}}", APPEARANCE_NAMESPACE,
-			&keys);
+			&appearance_keys);
+
+		GVariantBuilder gnome_keys;
+		g_variant_builder_init(&gnome_keys, G_VARIANT_TYPE("a{sv}"));
+		add_gnome_settings(appearance, &gnome_keys);
+		g_variant_builder_add(&namespaces, "{sa{sv}}", GNOME_NAMESPACE,
+			&gnome_keys);
 
 		g_dbus_method_invocation_return_value(invocation,
 			g_variant_new("(a{sa{sv}})", &namespaces));
@@ -92,11 +164,10 @@ static void handle_method(GDBusConnection *connection, const char *sender,
 		const char *namespace = NULL, *key = NULL;
 		g_variant_get(parameters, "(&s&s)", &namespace, &key);
 
-		if (strcmp(namespace, APPEARANCE_NAMESPACE) == 0 &&
-				strcmp(key, "color-scheme") == 0) {
+		GVariant *value = lookup_setting(appearance, namespace, key);
+		if (value != NULL) {
 			g_dbus_method_invocation_return_value(invocation,
-				g_variant_new("(v)",
-					g_variant_new_uint32(appearance->color_scheme)));
+				g_variant_new("(v)", value));
 			return;
 		}
 
