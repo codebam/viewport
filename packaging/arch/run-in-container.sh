@@ -12,6 +12,7 @@
 #   ./packaging/arch/run-in-container.sh --shell      # a root shell in the container
 #   ./packaging/arch/run-in-container.sh --nested     # a window in the session you are in
 #   ./packaging/arch/run-in-container.sh --build-only # build the images, run nothing
+#   ./packaging/arch/run-in-container.sh --asan       # run an AddressSanitizer build
 #
 # The TTY mode needs root, because taking DRM master and reading input devices
 # is not something a rootless container can do. There is no logind in the
@@ -33,6 +34,7 @@ builder=localhost/viewport-builder
 runtime=localhost/viewport-arch
 
 rebuild=0
+asan=0
 mode=tty
 for arg in "$@"; do
 	case $arg in
@@ -40,6 +42,7 @@ for arg in "$@"; do
 		--shell) mode=shell ;;
 		--nested) mode=nested ;;
 		--build-only) mode=build ;;
+		--asan) asan=1 ;;
 		-h|--help) sed -n '2,24p' "$0" | sed 's/^# \?//'; exit 0 ;;
 		*) echo "unknown option: $arg" >&2; exit 1 ;;
 	esac
@@ -174,6 +177,36 @@ EOF
 podman build -t "$runtime" -f "$work/Containerfile.runtime" "$work"
 
 # ---------------------------------------------------------------------------
+# An AddressSanitizer build, for a fault that only happens on real hardware.
+#
+# Not the packaged binary: the package is what someone installs, and it should
+# not carry a sanitizer. This compiles the same source separately, inside the
+# builder image that already has the dependencies, and mounts the result over
+# the installed one. The package still supplies the shell, the session entry and
+# everything else, so what runs differs from the real thing in exactly one way.
+#
+# It exists because heap corruption at shutdown reports itself as "corrupted
+# double-linked list" and a dead display, which names neither the allocation nor
+# the write. ASAN names both.
+# ---------------------------------------------------------------------------
+if [ "$asan" = 1 ]; then
+	if [ ! -x "$work/viewport-asan" ] || [ "$rebuild" = 1 ] ||
+		[ "$head_commit" != "$(cat "$work/asan-built-from" 2>/dev/null)" ]; then
+		echo "==> building an AddressSanitizer viewport"
+		podman run --rm --userns=keep-id:uid=1000,gid=1000 -e HOME=/tmp \
+			-v "$work:/out:z" "$builder" bash -c '
+				set -e
+				rm -rf /tmp/asan && mkdir -p /tmp/asan && cd /tmp/asan
+				tar xf /out/viewport-*.tar.gz --strip-components=1
+				meson setup build --prefix=/usr -Db_sanitize=address -Db_lundef=false
+				ninja -C build
+				cp build/viewport /out/viewport-asan
+			'
+		printf '%s' "$head_commit" > "$work/asan-built-from"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
 # Run it.
 # ---------------------------------------------------------------------------
 if [ "$mode" = nested ]; then
@@ -231,6 +264,18 @@ tty_args=(
 	# changed nothing. The shell comes up with the sandbox on, now that it is
 	# served over HTTP rather than from file://.
 )
+
+# Mounted over the installed binary, so everything else about the run — the
+# shell, the data files, the dependencies — is still the package's.
+if [ "$asan" = 1 ]; then
+	tty_args+=(
+		-v "$work/viewport-asan:/usr/local/bin/viewport:ro"
+		# halt_on_error=0 so the run continues and the report reaches the log
+		# instead of the first complaint taking the display with it; leaks are
+		# not what this is looking for and would bury the report.
+		-e ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:halt_on_error=0:log_to_stderr=1
+	)
+fi
 
 if [ ${#elevate[@]} -eq 0 ] && [ "$(id -u)" != 0 ]; then
 	echo "no way to become root: install one of run0, sudo or doas, or set" >&2
