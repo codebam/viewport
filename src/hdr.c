@@ -57,22 +57,42 @@ static const enum wp_color_manager_v1_primaries primaries[] = {
 	WP_COLOR_MANAGER_V1_PRIMARIES_BT2020,
 };
 
-bool viewport_output_hdr_capable(struct viewport_output *output)
+/* Three things have to be true, and saying which one is missing is the whole
+ * value of checking separately: two are properties of the display and the third
+ * is a property of the renderer, and they fail for entirely different reasons. */
+static const char *hdr_unsupported_reason(struct viewport_output *output)
 {
 	struct wlr_output *wlr_output = output->wlr_output;
 
-	return (wlr_output->supported_primaries &
-			WLR_COLOR_NAMED_PRIMARIES_BT2020) != 0 &&
-		(wlr_output->supported_transfer_functions &
-			WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ) != 0;
+	if ((wlr_output->supported_primaries &
+			WLR_COLOR_NAMED_PRIMARIES_BT2020) == 0) {
+		return "the display does not accept BT.2020 primaries";
+	}
+	if ((wlr_output->supported_transfer_functions &
+			WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ) == 0) {
+		return "the display does not accept the PQ transfer function";
+	}
+	/* Without this the compositor could put the output into HDR and then have
+	 * no way to convert anything into it, which is worse than not offering it:
+	 * every window would be reinterpreted rather than converted. */
+	if (!output->server->renderer->features.output_color_transform) {
+		return "the renderer cannot do output colour transforms";
+	}
+	return NULL;
+}
+
+bool viewport_output_hdr_capable(struct viewport_output *output)
+{
+	return hdr_unsupported_reason(output) == NULL;
 }
 
 bool viewport_output_set_hdr(struct viewport_output *output, bool enabled)
 {
 	struct wlr_output *wlr_output = output->wlr_output;
 
-	if (enabled && !viewport_output_hdr_capable(output)) {
-		wlr_log(WLR_ERROR, "%s does not support HDR", wlr_output->name);
+	const char *reason = enabled ? hdr_unsupported_reason(output) : NULL;
+	if (reason != NULL) {
+		wlr_log(WLR_ERROR, "%s cannot do HDR: %s", wlr_output->name, reason);
 		return false;
 	}
 	if (output->hdr == enabled) {
@@ -83,18 +103,31 @@ bool viewport_output_set_hdr(struct viewport_output *output, bool enabled)
 	 * luminance fields are left at zero, which means "unset" — the display's
 	 * own capabilities are then used rather than numbers this compositor would
 	 * be inventing. */
-	struct wlr_output_image_description image_desc = {
-		.primaries = enabled
-			? WLR_COLOR_NAMED_PRIMARIES_BT2020
-			: WLR_COLOR_NAMED_PRIMARIES_SRGB,
-		.transfer_function = enabled
-			? WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ
-			: WLR_COLOR_TRANSFER_FUNCTION_SRGB,
-	};
-
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
-	if (!wlr_output_state_set_image_description(&state, &image_desc)) {
+
+	/* A full reconfiguration, not a lone image description.
+	 *
+	 * Changing what colour space a connector is driving is a modeset, and a
+	 * state carrying only the new colorimetry is refused outright — which is
+	 * how a monitor that plainly does HDR came back reporting that it would not
+	 * take it. The mode is restated and reconfiguration is permitted, so the
+	 * driver is allowed the brief disruption that switching actually costs. */
+	wlr_output_state_set_enabled(&state, true);
+	if (wlr_output->current_mode != NULL) {
+		wlr_output_state_set_mode(&state, wlr_output->current_mode);
+	}
+	state.allow_reconfiguration = true;
+
+	/* Leaving HDR is done by clearing the description rather than by naming
+	 * sRGB: that hands the output back to whatever its default is, which is not
+	 * necessarily sRGB and is not this compositor's to decide. */
+	const struct wlr_output_image_description image_desc = {
+		.primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020,
+		.transfer_function = WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ,
+	};
+	if (!wlr_output_state_set_image_description(&state,
+			enabled ? &image_desc : NULL)) {
 		wlr_output_state_finish(&state);
 		wlr_log(WLR_ERROR, "%s rejected the image description",
 			wlr_output->name);
@@ -198,6 +231,13 @@ void viewport_hdr_init(struct viewport_server *server)
 		wlr_log(WLR_ERROR, "colour management unavailable; HDR will not work");
 		return;
 	}
+
+	/* Stated at startup because it decides whether HDR is possible at all, and
+	 * finding that out from a failed keypress much later is a poor way to learn
+	 * it. The renderer, not the monitor, is the part most likely to be the
+	 * limit. */
+	wlr_log(WLR_INFO, "colour management up; renderer output transforms: %s",
+		server->renderer->features.output_color_transform ? "yes" : "no");
 
 	/* This is the half that makes HDR usable rather than merely on. Without it
 	 * the scene has no idea what any buffer contains, so switching an output to

@@ -349,6 +349,21 @@ attached to the scene: clients say what their content actually is, and the
 renderer converts rather than reinterprets. SDR windows keep looking like SDR
 windows, and a client with real HDR content can say so.
 
+Switching is a full reconfiguration, not a lone image description: changing the
+colour space a connector drives is a modeset, and a state carrying only the new
+colorimetry is refused outright — which is how a monitor that plainly does HDR
+came back reporting that it would not take it. The mode is restated and
+`allow_reconfiguration` is set, so the driver is allowed the brief disruption
+the switch actually costs.
+
+Three things must be true, and the failure says which is missing: the display
+has to accept BT.2020 primaries, it has to accept the PQ transfer function, and
+the renderer has to support output colour transforms. That last one is the
+likeliest limit — wlroots' Vulkan renderer supports it and its GLES2 renderer
+does not, which is another reason this compositor defaults to Vulkan. It is
+reported at startup rather than left to be discovered by a keypress that does
+nothing.
+
 Ten bits is a preference rather than a requirement. Which deep formats a plane
 accepts depends on the driver, the connector and what else is on screen, so
 several are tried in order and the first the hardware accepts is committed —
