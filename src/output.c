@@ -117,19 +117,37 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 	wlr_output_state_init(&state);
 	wlr_output_state_set_enabled(&state, true);
 
-	/* The fastest mode at the preferred resolution.
+	/* What the display says it prefers, unless the config says otherwise.
 	 *
-	 * wlr_output_preferred_mode() returns what the display says it prefers,
-	 * and plenty of high-refresh monitors nominate a 60Hz mode there — the
-	 * panel is 240Hz and the EDID's preferred timing is 60. Taking that at face
-	 * value means running a 240Hz monitor at a quarter of its rate, which is
-	 * exactly the sort of thing nobody notices until they compare.
-	 *
-	 * Resolution comes from the preferred mode and only the refresh rate is
-	 * maximised: the highest refresh overall might belong to a lower
-	 * resolution, and a sharper picture is worth more than a faster one. */
+	 * Preferred is the right default: it is the timing the manufacturer chose,
+	 * and second-guessing it for every display to suit one of them is how a
+	 * compositor ends up with a mode nobody asked for on hardware nobody
+	 * tested. But it is not always the fastest — plenty of high-refresh
+	 * monitors nominate a 60Hz timing — so the config can ask for the fastest
+	 * instead, or name a mode outright. */
 	struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
-	if (mode != NULL) {
+	const struct viewport_output_config *rule =
+		viewport_output_config_for(server, wlr_output->name);
+
+	if (rule != NULL && rule->width > 0 && rule->height > 0) {
+		/* A named mode. Matched on refresh too when one was given, and on
+		 * resolution alone when it was not. */
+		struct wlr_output_mode *candidate;
+		wl_list_for_each(candidate, &wlr_output->modes, link) {
+			if (candidate->width != rule->width ||
+					candidate->height != rule->height) {
+				continue;
+			}
+			if (rule->refresh > 0 && candidate->refresh != rule->refresh) {
+				continue;
+			}
+			mode = candidate;
+			break;
+		}
+	} else if (rule != NULL && rule->max_refresh && mode != NULL) {
+		/* Fastest at the preferred resolution. Only the refresh rate is
+		 * maximised: the highest refresh overall may belong to a lower
+		 * resolution, and a sharper picture is worth more than a faster one. */
 		struct wlr_output_mode *candidate;
 		wl_list_for_each(candidate, &wlr_output->modes, link) {
 			if (candidate->width == mode->width &&
@@ -138,6 +156,9 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 				mode = candidate;
 			}
 		}
+	}
+
+	if (mode != NULL) {
 		wlr_output_state_set_mode(&state, mode);
 	}
 

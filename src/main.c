@@ -250,6 +250,7 @@ int main(int argc, char *argv[])
 
 out:
 	viewport_server_finish(&server);
+	g_free(server.config.outputs);
 	viewport_config_finish();
 	free(default_config_path);
 	return status;

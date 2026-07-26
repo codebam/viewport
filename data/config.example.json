@@ -30,6 +30,17 @@
   ],
   "layout": "tiling",
 
+  "_outputs": [
+    "Modes are left to the display by default. max_refresh takes the fastest",
+    "refresh rate available at the preferred resolution, which is what a",
+    "high-refresh monitor that nominates a 60Hz timing needs. A named mode",
+    "may leave the refresh off to match on resolution alone. An exact name",
+    "beats \"*\" whichever order they appear in."
+  ],
+  "outputs": {
+    "*": { "max_refresh": false }
+  },
+
   "_adaptive_sync": [
     "Variable refresh rate. Off by default because it depends on the monitor",
     "and the driver as much as on the compositor, and enabling it where it is",

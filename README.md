@@ -649,14 +649,28 @@ timeout 20 node tests/shell.test.js data/shell/shell.js scrolling
 
 `timeout` because the shell sets a live-reload interval and so never exits.
 
-Outputs come up at the fastest mode their preferred resolution offers, not at
-the mode the display nominates as preferred — plenty of high-refresh monitors
-put a 60Hz timing there, and taking it at face value runs a 240Hz panel at a
-quarter of its rate. Only the refresh rate is maximised: the highest refresh
-overall may belong to a lower resolution, and a sharper picture is worth more
-than a faster one. The chosen mode, refresh rate included, is logged at
-startup; `output.configure` or any `wlr-output-management` client can override
-it afterwards.
+Outputs come up at whatever mode the display says it prefers. That is the right
+default — it is the timing the manufacturer chose — but it is not always the
+fastest, since plenty of high-refresh monitors nominate a 60Hz timing and
+running a 240Hz panel at a quarter of its rate is easy to miss. So it can be
+overridden per output:
+
+```jsonc
+"outputs": {
+  "*":    { "max_refresh": true },              // fastest at the preferred size
+  "DP-3": { "mode": "2560x1440@239.760" }       // or name one outright
+}
+```
+
+`max_refresh` only maximises the refresh rate: the highest refresh overall may
+belong to a lower resolution, and a sharper picture is worth more than a faster
+one. A named `mode` may leave the refresh off to match on resolution alone. An
+exact output name beats `"*"` whichever order they appear in.
+
+The chosen mode is logged at startup with its refresh rate, which the line used
+to omit — the omission is how a monitor sits at 60Hz unnoticed. Applied when an
+output appears; `output.configure` or any `wlr-output-management` client
+changes it afterwards.
 
 ## Layout models
 

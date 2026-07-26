@@ -69,6 +69,20 @@ struct viewport_toplevel;
  * Configuration
  * ---------------------------------------------------------------------- */
 
+/* What the config file asks of one output.
+ *
+ * Modes are left to the display by default; this is how to override that for a
+ * monitor whose preferred timing is not the one you want. */
+struct viewport_output_config {
+	/* Output name, or "*" for every output the rest do not name. */
+	const char *name;
+	/* Use the fastest refresh rate available at the preferred resolution. */
+	bool max_refresh;
+	/* An explicit mode. Zero means unset; refresh is in mHz, so 239.760Hz is
+	 * 239760, and zero refresh matches on resolution alone. */
+	int width, height, refresh;
+};
+
 struct viewport_config {
 	/* Shell UI endpoint, e.g. "http://localhost:3000". */
 	const char *url;
@@ -102,6 +116,9 @@ struct viewport_config {
 	/* Cursor theme and size; NULL/0 use the defaults. */
 	const char *cursor_theme;
 	int cursor_size;
+	/* Per-output mode preferences from the config file. */
+	struct viewport_output_config *outputs;
+	size_t output_count;
 	/* Window rules, as the JSON array the config file contained. Passed to the
 	 * shell untouched: what they mean is the shell's business. */
 	const char *rules_json;
@@ -733,6 +750,10 @@ bool viewport_config_load(struct viewport_server *server,
 	struct viewport_config *config, const char *path, bool required);
 
 void viewport_config_finish(void);
+/* The config block for an output, by name, falling back to "*". NULL when the
+ * config says nothing about it. */
+const struct viewport_output_config *viewport_output_config_for(
+	struct viewport_server *server, const char *name);
 /* Re-reads the config file into a running compositor: bindings, keyboard,
  * cursor, appearance and layout model. */
 void viewport_config_reload(struct viewport_server *server);

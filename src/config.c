@@ -121,6 +121,64 @@ bool viewport_config_load(struct viewport_server *server,
 		config->terminal = keep(g_strdup(
 			json_object_get_string_member(object, "terminal")));
 	}
+	/* Per-output mode preferences.
+	 *
+	 *   "outputs": { "DP-1": { "max_refresh": true },
+	 *                "DP-3": { "mode": "2560x1440@239.760" } }
+	 *
+	 * A "*" entry applies to any output the rest do not name. */
+	if (json_object_has_member(object, "outputs")) {
+		JsonObject *outputs = json_object_get_object_member(object, "outputs");
+		GList *names = json_object_get_members(outputs);
+
+		size_t count = g_list_length(names);
+		struct viewport_output_config *parsed = count > 0
+			? g_new0(struct viewport_output_config, count) : NULL;
+		size_t at = 0;
+
+		for (GList *item = names; item != NULL && parsed != NULL;
+				item = item->next) {
+			const char *name = item->data;
+			JsonObject *entry = json_object_get_object_member(outputs, name);
+
+			parsed[at].name = keep(g_strdup(name));
+			if (json_object_has_member(entry, "max_refresh")) {
+				parsed[at].max_refresh =
+					json_object_get_boolean_member(entry, "max_refresh");
+			}
+			if (json_object_has_member(entry, "mode")) {
+				/* "2560x1440@239.760", or "2560x1440" to match on resolution
+				 * alone. Refresh is stored in mHz, which is what wlroots and
+				 * DRM both use. */
+				const char *text =
+					json_object_get_string_member(entry, "mode");
+				double refresh = 0.0;
+				int width = 0, height = 0;
+				int fields = sscanf(text, "%dx%d@%lf", &width, &height,
+					&refresh);
+				if (fields >= 2) {
+					parsed[at].width = width;
+					parsed[at].height = height;
+					parsed[at].refresh = (int)(refresh * 1000.0 + 0.5);
+				} else {
+					wlr_log(WLR_ERROR,
+						"output %s: cannot read mode '%s', expected "
+						"WIDTHxHEIGHT[@REFRESH]", name, text);
+				}
+			}
+			at++;
+		}
+
+		g_list_free(names);
+		if (parsed != NULL) {
+			/* A reload parses afresh, so the previous array goes now. The names
+			 * inside it are owned by the string table and outlive it. */
+			g_free(config->outputs);
+			config->outputs = parsed;
+			config->output_count = at;
+		}
+	}
+
 	/* Window rules travel to the shell verbatim rather than being parsed here.
 	 * Which workspace a window opens on, whether it floats and how wide its
 	 * column is are all layout decisions, and the compositor has no opinion
@@ -283,6 +341,29 @@ void viewport_config_reload(struct viewport_server *server)
 
 	g_free(path);
 	wlr_log(WLR_INFO, "config reloaded");
+}
+
+const struct viewport_output_config *viewport_output_config_for(
+	struct viewport_server *server, const char *name)
+{
+	const struct viewport_output_config *wildcard = NULL;
+
+	for (size_t i = 0; i < server->config.output_count; i++) {
+		const struct viewport_output_config *entry = &server->config.outputs[i];
+		if (entry->name == NULL) {
+			continue;
+		}
+		if (strcmp(entry->name, name) == 0) {
+			/* An exact name beats the wildcard, whichever order they were
+			 * written in. */
+			return entry;
+		}
+		if (strcmp(entry->name, "*") == 0) {
+			wildcard = entry;
+		}
+	}
+
+	return wildcard;
 }
 
 void viewport_config_finish(void)
