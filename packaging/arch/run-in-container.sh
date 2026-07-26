@@ -192,6 +192,18 @@ tty_args=(
 	-e LIBSEAT_BACKEND=seatd
 	-e XDG_RUNTIME_DIR=/tmp/xdg
 	-e HOME=/root
+	# WebKit sandboxes its web process with bubblewrap, and inside a privileged
+	# container that sandbox is available enough to be used and broken enough
+	# not to work: the page loads, its scripts never run, and the desktop comes
+	# up with no bar and no layout. Rootless containers avoid this by accident,
+	# because WebKit notices bubblewrap cannot work at all and turns itself off
+	# — the only difference between the nested run, which worked, and this one,
+	# which did not.
+	#
+	# Turned off deliberately here. This is a throwaway container built from a
+	# known package, rendering a shell that ships inside it; there is no
+	# untrusted content for the sandbox to be protecting anything from.
+	-e WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
 )
 
 if [ ${#elevate[@]} -eq 0 ] && [ "$(id -u)" != 0 ]; then

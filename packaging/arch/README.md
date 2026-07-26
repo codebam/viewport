@@ -47,6 +47,16 @@ this is a throwaway container driving real hardware, and pinning down exactly
 which capabilities libinput and the GPU driver need across kernel versions is a
 worse trade than granting them.
 
+WebKit's sandbox is disabled in the container. It sandboxes its web process
+with bubblewrap, and inside a privileged container that is available enough to
+be used and broken enough not to work — the page loads, its scripts never run,
+and the desktop comes up with no bar and nothing laid out. A rootless container
+avoids this by accident: WebKit notices bubblewrap cannot work at all and turns
+itself off, which was the only difference between a nested run that worked and
+a TTY run that did not. There is nothing here for the sandbox to protect
+against anyway — a throwaway container built from a known package, rendering a
+shell that ships inside it.
+
 Seat management is the part with no obvious answer inside a container. logind is
 not running in there, and libseat's builtin backend — which would open the
 devices directly — is a build-time option Arch does not enable, so asking for it
