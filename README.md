@@ -397,6 +397,26 @@ CONSOLE INFO  outputs [object Object]
 CONSOLE ERROR TypeError: ...        # a shell exception, otherwise silent
 ```
 
+### Pointer capture
+
+Games need two things a desktop pointer does not provide, and they only work
+together:
+
+| Protocol | Why |
+| --- | --- |
+| `zwp_relative_pointer_v1` | mouselook is driven by how far the mouse moved, not where the cursor landed — an absolute position saturates at the screen edge, so a game without it can only turn so far |
+| `zwp_pointer_constraints_v1` | the cursor must stop moving, so it neither escapes onto the other monitor mid-fight nor feeds the client absolute motion it is no longer expecting |
+
+While a lock is active the compositor stops moving its cursor entirely and the
+client is driven purely by deltas. Unaccelerated values are forwarded
+separately so a game can apply its own sensitivity. A constraint belongs to a
+surface, so it lapses when that surface loses the pointer — otherwise a game
+would keep the mouse captured after you focused something else.
+
+This covers X11 games too. `XGrabPointer` has no direct equivalent on Wayland;
+Xwayland implements it by taking out these same two protocols on the client's
+behalf, so a native game and CS2 under Proton reach identical code.
+
 ### XWayland
 
 X11 clients are tiled like any other window. The difference is confined to

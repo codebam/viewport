@@ -17,6 +17,8 @@
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xcursor_manager.h>
@@ -176,6 +178,12 @@ struct viewport_server {
 	 * shell chrome keeps receiving motion after the pointer crosses a window. */
 	bool pointer_grab_web;
 
+	/* Pointer capture for games: relative motion plus lock/confine. */
+	struct wlr_relative_pointer_manager_v1 *relative_pointer;
+	struct wlr_pointer_constraints_v1 *pointer_constraints;
+	struct wlr_pointer_constraint_v1 *active_constraint;
+	struct wl_listener new_constraint;
+
 	/* Interactive resize driven by Mod4 + right drag. */
 	struct viewport_toplevel *resizing;
 	double resize_start_x, resize_start_y;
@@ -260,6 +268,12 @@ struct viewport_decoration {
 	struct wlr_xdg_toplevel_decoration_v1 *decoration;
 	struct wl_listener request_mode;
 	struct wl_listener surface_commit;
+	struct wl_listener destroy;
+};
+
+struct viewport_constraint {
+	struct viewport_server *server;
+	struct wlr_pointer_constraint_v1 *constraint;
 	struct wl_listener destroy;
 };
 
@@ -475,6 +489,26 @@ bool viewport_bindings_handle(struct viewport_server *server,
 	uint32_t modifiers, const xkb_keysym_t *keysyms, int nsyms);
 
 void viewport_bindings_finish(struct viewport_server *server);
+
+/* -------------------------------------------------------------------------
+ * pointer.c
+ *
+ * Pointer capture: relative motion and lock/confine constraints, which is what
+ * lets a first-person game read mouselook. Covers X11 games too — Xwayland
+ * implements XGrabPointer using these same protocols.
+ * ---------------------------------------------------------------------- */
+
+void viewport_pointer_init(struct viewport_server *server);
+void viewport_handle_new_constraint(struct wl_listener *listener, void *data);
+void viewport_pointer_apply_constraint(struct viewport_server *server,
+	struct wlr_pointer_constraint_v1 *constraint);
+void viewport_pointer_deactivate_constraint(struct viewport_server *server);
+void viewport_pointer_check_constraint(struct viewport_server *server,
+	struct wlr_surface *surface);
+bool viewport_pointer_is_locked(struct viewport_server *server);
+void viewport_pointer_send_relative(struct viewport_server *server,
+	uint32_t time_msec, double dx, double dy, double dx_unaccel,
+	double dy_unaccel);
 
 /* -------------------------------------------------------------------------
  * ipc.c

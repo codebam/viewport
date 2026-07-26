@@ -143,6 +143,7 @@ static void process_cursor_motion(struct viewport_server *server,
 		 * receiving motion, and hand the event to WebKit in layout space. */
 		if (!server->pointer_on_web) {
 			wlr_seat_pointer_notify_clear_focus(server->seat);
+			viewport_pointer_check_constraint(server, NULL);
 			server->pointer_on_web = true;
 		}
 		/* The shell draws its own cursor via CSS, but a client may have left
@@ -166,6 +167,10 @@ static void process_cursor_motion(struct viewport_server *server,
 
 	wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
 	wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
+
+	/* A constraint belongs to a surface, so it takes effect when that surface
+	 * has the pointer and lapses when it does not. */
+	viewport_pointer_check_constraint(server, surface);
 }
 
 static void handle_cursor_motion(struct wl_listener *listener, void *data)
@@ -173,6 +178,20 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data)
 	struct viewport_server *server =
 		wl_container_of(listener, server, cursor_motion);
 	struct wlr_pointer_motion_event *event = data;
+
+	/* Relative motion first, and unconditionally: a game reads deltas whether
+	 * or not the cursor is constrained, and mouselook is driven by how far the
+	 * mouse moved rather than where it ended up. Unaccelerated values are
+	 * passed through separately so a game can apply its own sensitivity. */
+	viewport_pointer_send_relative(server, event->time_msec, event->delta_x,
+		event->delta_y, event->unaccel_dx, event->unaccel_dy);
+
+	/* A locked pointer does not move. Moving the cursor anyway would let it
+	 * drift onto the other monitor during a fight, and would feed the client
+	 * absolute motion it is no longer expecting. */
+	if (viewport_pointer_is_locked(server)) {
+		return;
+	}
 
 	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x,
 		event->delta_y);
@@ -185,6 +204,20 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener,
 	struct viewport_server *server =
 		wl_container_of(listener, server, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *event = data;
+
+	/* Absolute devices — tablets, and the nested backends — still have to
+	 * produce relative deltas for a constrained client, so derive them from
+	 * the cursor's current position before it moves. */
+	double lx, ly;
+	wlr_cursor_absolute_to_layout_coords(server->cursor,
+		&event->pointer->base, event->x, event->y, &lx, &ly);
+	double dx = lx - server->cursor->x;
+	double dy = ly - server->cursor->y;
+	viewport_pointer_send_relative(server, event->time_msec, dx, dy, dx, dy);
+
+	if (viewport_pointer_is_locked(server)) {
+		return;
+	}
 
 	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x,
 		event->y);

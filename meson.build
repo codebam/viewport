@@ -127,6 +127,7 @@ viewport_sources = files(
   'src/xwayland.c',
   'src/layer_shell.c',
   'src/input.c',
+  'src/pointer.c',
   'src/ipc.c',
   'src/glib_loop.c',
   'src/wpe_display.c',

@@ -232,6 +232,7 @@ bool viewport_server_init(struct viewport_server *server,
 		return false;
 	}
 	viewport_cursor_init(server);
+	viewport_pointer_init(server);
 
 	if (server->session != NULL) {
 		server->session_active.notify = handle_session_active;
@@ -379,6 +380,9 @@ void viewport_server_finish(struct viewport_server *server)
 	}
 	if (server->layer_shell != NULL) {
 		wl_list_remove(&server->new_layer_surface.link);
+	}
+	if (server->pointer_constraints != NULL) {
+		wl_list_remove(&server->new_constraint.link);
 	}
 	if (server->xwayland != NULL) {
 		wl_list_remove(&server->new_xwayland_surface.link);
