@@ -206,6 +206,52 @@
       # NixOS module: session entry + seatd, so viewport can be picked from a
       # display manager or launched straight from a TTY.
       # ----------------------------------------------------------------------
+      # Portal wiring, on its own so it can be imported without adopting the
+      # session module. Getting screen sharing working is four lines of routing
+      # that nobody should have to rediscover: a browser's getDisplayMedia
+      # simply rejects, and no log anywhere names a portal or a desktop.
+      nixosModules.portal = { config, lib, pkgs, ... }:
+        {
+          options.programs.viewport.portals.enable =
+            lib.mkEnableOption "xdg-desktop-portal wiring for Viewport" // {
+              description = ''
+                Route the portal interfaces Viewport does not implement to
+                backends that do. Without this, screen sharing does not work:
+                the frontend exposes no ScreenCast interface at all and
+                applications report only that the request was not allowed.
+              '';
+            };
+
+          config = lib.mkIf config.programs.viewport.portals.enable {
+            xdg.portal = {
+              enable = true;
+
+              # The ScreenCast and Screenshot implementation. Viewport speaks
+              # the wlr-screencopy and ext-image-copy-capture protocols this
+              # backend needs.
+              wlr.enable = lib.mkDefault true;
+              extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
+
+              # Named for XDG_CURRENT_DESKTOP's first entry, which the
+              # compositor sets to "viewport:wlroots".
+              #
+              # Settings has to name viewport — that interface is answered by
+              # the compositor itself, and without it every application falls
+              # back to a light theme. Everything else goes to GTK or to
+              # whatever else is installed; naming viewport as the default
+              # would make it preferred for interfaces it does not implement,
+              # which is not an error anyone sees, only an interface that
+              # never appears on the bus.
+              config.viewport = {
+                default = [ "gtk" "*" ];
+                "org.freedesktop.impl.portal.Settings" = [ "viewport" "gtk" ];
+                "org.freedesktop.impl.portal.ScreenCast" = [ "wlr" ];
+                "org.freedesktop.impl.portal.Screenshot" = [ "wlr" ];
+              };
+            };
+          };
+        };
+
       nixosModules.default = { config, lib, pkgs, ... }:
         let
           cfg = config.programs.viewport;
@@ -224,6 +270,8 @@
             // cfg.settings));
         in
         {
+          imports = [ self.nixosModules.portal ];
+
           options.programs.viewport = {
             enable = mkEnableOption "the Viewport compositor";
 
@@ -298,7 +346,9 @@
             services.seatd.enable = true;
             security.polkit.enable = true;
             hardware.graphics.enable = true;
-            xdg.portal.enable = true;
+            # Screen sharing needs interfaces routed to a backend, not merely
+            # a portal frontend running.
+            programs.viewport.portals.enable = lib.mkDefault true;
 
             services.displayManager.sessionPackages = [
               (pkgs.writeTextFile {
