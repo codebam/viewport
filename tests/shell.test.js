@@ -128,7 +128,25 @@ const outputsEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
+/* The FLIP inverts positions, forces a reflow, then releases — all in one
+ * synchronous batch, so by the time relayout returns every transform is back
+ * to ''. The reflow is the only moment the inverted state exists, and reading
+ * documentElement.offsetWidth is what triggers it, so that read is where the
+ * state gets sampled. */
+let flipSnapshot = null;
+const documentElement = new El('html');
+Object.defineProperty(documentElement, 'offsetWidth', {
+  get() {
+    flipSnapshot = new Map();
+    for (const [id, view] of globalThis.__shell?.views ?? []) {
+      flipSnapshot.set(id, view.el.style.transform);
+    }
+    return 0;
+  },
+});
+
 global.document = {
+  documentElement,
   getElementById: (id) => ({
     outputs: outputsEl,
     'desktop-template': desktopTemplate,
@@ -312,6 +330,37 @@ if (mode === 'scrolling') {
       args: [String(firstId ?? 1), '-192', '0'] });
   }
   check('column width is clamped above zero', target.width >= 0.1);
+}
+
+/* Moving a window animates: the tree is rebuilt from scratch on every relayout,
+ * so there is no property change on a retained element for CSS to transition.
+ * The window elements are retained, and get offset back to where they came from
+ * so they slide into place. */
+{
+  const views = globalThis.__shell.views;
+  /* Must be a window that is actually on screen: earlier tests may have left a
+     tabbed container showing only one of them, and a hidden window is skipped. */
+  const entry = [...views].find(([, v]) => !v.el.hidden);
+  const [id, view] = entry;
+  const el = view.el;
+
+  /* Report one position while the old layout is measured and another once the
+     new one has landed — the difference a real layout engine would produce. */
+  let call = 0;
+  el.getBoundingClientRect = () => {
+    call += 1;
+    const left = call === 1 ? 400 : 0;
+    return { left, top: 0, width: 800, height: 600, x: left, y: 0 };
+  };
+
+  flipSnapshot = null;
+  emit({ type: 'view.focused', id });
+
+  check('a moved window is offset back to where it came from',
+    flipSnapshot?.get(id) === 'translate(400px, 0px)');
+  check('and released to slide into place', el.style.transform === '');
+
+  delete el.getBoundingClientRect;
 }
 
 /* Fullscreen is per workspace. Two monitors each showing something fullscreen

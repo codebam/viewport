@@ -495,7 +495,8 @@ function renderStrip(root, output) {
      column wider than the screen is aligned to the left edge instead, since it
      cannot be fully shown either way. */
   const workspace = output.workspace;
-  let scroll = scrollOffsets.get(workspace) ?? 0;
+  const lastScroll = scrollOffsets.get(workspace) ?? 0;
+  let scroll = lastScroll;
   if (focusedStart !== null) {
     if (focusedWidth >= area.width || focusedStart < scroll) {
       scroll = focusedStart;
@@ -507,7 +508,13 @@ function renderStrip(root, output) {
   scroll = Math.max(0, Math.min(scroll, Math.max(0, offset - area.width)));
   scrollOffsets.set(workspace, scroll);
 
-  strip.style.transform = `translateX(${-scroll}px)`;
+  /* The strip element is new every render, so it would simply appear already
+     scrolled. Start it where the last one ended and move it in the same frame
+     the windows are flipped, so the two animations run together. */
+  const previous = scrollOffsets.has(workspace) ? lastScroll : scroll;
+  strip.style.transform = `translateX(${-previous}px)`;
+  strip.dataset.scroll = String(scroll);
+
   return columns.length > 0 ? strip : null;
 }
 
@@ -1087,6 +1094,77 @@ const PUMP_MAX_FRAMES = 60;
 let pumpRemaining = 0;
 let pumping = false;
 
+/* Animate the move from an old layout to a new one, by inverting it.
+ *
+ * The tree is rebuilt from scratch on every relayout, so a window's new
+ * position arrives as a fresh set of parent elements — there is no property
+ * change on a retained element for CSS to transition, which is why simply
+ * declaring a transition animated nothing at all. The window elements
+ * themselves *are* retained though, so the standard trick works: measure where
+ * each one was, let the new layout land, then offset it back to where it came
+ * from and release it.
+ *
+ * Position only, deliberately. A window's contents are a real surface, and the
+ * compositor follows the frame by resizing the client — so animating size would
+ * ask every client to relayout itself sixty times a second for the duration.
+ * Sliding costs nothing extra; growing would cost a great deal. */
+function flipFrom(before) {
+  if (reducedMotion()) {
+    /* Still has to reach its destination, just without the journey. */
+    releaseStrips();
+    return;
+  }
+
+  const strips = pendingStrips();
+  const moved = [];
+  for (const [id, view] of views) {
+    if (view.el.hidden) continue;
+    const from = before.get(id);
+    if (!from) continue; // was hidden or is new: nothing to animate from
+
+    const to = view.el.getBoundingClientRect();
+    const dx = from.left - to.left;
+    const dy = from.top - to.top;
+    if (dx === 0 && dy === 0) continue;
+
+    view.el.classList.add('flipping');
+    view.el.style.transform = `translate(${dx}px, ${dy}px)`;
+    moved.push(view.el);
+  }
+  if (moved.length === 0 && strips.length === 0) return;
+
+  /* One forced reflow for the whole batch, so the browser sees the offset
+     position before the transition is re-enabled. Reading a layout property
+     per element would do the same thing N times over. */
+  void document.documentElement?.offsetWidth;
+
+  for (const el of moved) {
+    el.classList.remove('flipping');
+    el.style.transform = '';
+  }
+  releaseStrips();
+}
+
+/* Strips that were rendered at their previous scroll position and still need
+ * to be moved to their new one. */
+function pendingStrips() {
+  const found = [];
+  for (const output of outputs.values()) {
+    const strip = output.windowsEl.children[0];
+    if (strip?.classList?.contains('strip')) found.push(strip);
+  }
+  return found;
+}
+
+function releaseStrips() {
+  for (const strip of pendingStrips()) {
+    const target = Number(strip.dataset.scroll);
+    if (Number.isFinite(target)) {
+      strip.style.transform = `translateX(${-target}px)`;
+    }
+  }
+}
+
 function pumpGeometry() {
   pumpRemaining = PUMP_IDLE_FRAMES;
   if (pumping) return;
@@ -1157,6 +1235,12 @@ const resizeObserver = new ResizeObserver((entries) => {
 });
 
 function relayoutAll() {
+  /* Where everything was, before the tree is thrown away and rebuilt. */
+  const before = new Map();
+  for (const [id, view] of views) {
+    if (!view.el.hidden) before.set(id, view.el.getBoundingClientRect());
+  }
+
   /* workspace -> output showing it. A workspace appears at most once. */
   const shown = new Map();
   for (const [name, output] of outputs) shown.set(output.workspace, name);
@@ -1224,6 +1308,9 @@ function relayoutAll() {
     view.el.classList.toggle('focused', id === focusedId);
     view.el.classList.toggle('fullscreen', isFullscreen(id));
   }
+
+  /* Offset every window back to where it was and let it slide into place. */
+  flipFrom(before);
 
   /* Measure after the browser has laid the new tree out, and keep measuring
      for as long as it is still moving. */

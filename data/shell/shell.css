@@ -319,6 +319,7 @@ body {
      compositor follows along because the shell resamples geometry every frame
      while any of this is running — see pumpGeometry. */
   transition:
+    transform var(--anim) var(--ease),
     flex-grow var(--anim) var(--ease),
     left var(--anim) var(--ease),
     top var(--anim) var(--ease),
@@ -326,6 +327,11 @@ body {
     height var(--anim) var(--ease),
     border-color var(--anim) var(--ease);
 }
+
+/* Mid-FLIP: the window has just been offset back to where it came from, and
+   that jump must not itself animate. Cleared in the same frame, after a forced
+   reflow, which is what starts the slide. */
+.window.flipping { transition: none; }
 
 /* A window being dragged must track the pointer exactly. Interpolating toward
    the cursor lags it by the whole duration and feels like ice. */
