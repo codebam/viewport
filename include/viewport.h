@@ -122,6 +122,14 @@ struct viewport_config {
 	/* Window rules, as the JSON array the config file contained. Passed to the
 	 * shell untouched: what they mean is the shell's business. */
 	const char *rules_json;
+	/* Colours for the shell, as the JSON object the config file contained.
+	 * Passed on untouched for the same reason as the rules: they end up as CSS
+	 * custom properties, and the compositor has no opinion about them. */
+	const char *theme_json;
+	/* Whether the shell shows its bar: "visible", "hidden", or "auto", which
+	 * reveals it only while Mod4 is held. Anything else is left to the shell's
+	 * default. NULL when the config file said nothing. */
+	const char *bar;
 	/* Seconds of inactivity before the locker is run and before the outputs
 	 * are turned off. Zero disables each; with both zero there is no policy at
 	 * all and an external idle daemon can own it. */
@@ -254,6 +262,9 @@ struct viewport_server {
 	 * being destroyed in a fixed order, and a monitor disappearing because the
 	 * backend is going away is not news anyone can act on. */
 	bool shutting_down;
+	/* Whether Mod4 is currently held, so the shell hears about the edges
+	 * rather than about every modifier event. */
+	bool logo_held;
 	/* True while the shell is showing the overview. Input goes to the shell
 	 * rather than to the shrunken windows it is drawing. */
 	bool overview;
@@ -870,6 +881,10 @@ void viewport_ipc_notify_output_layout(struct viewport_server *server);
 /* Settings the shell needs in order to render: which layout model to use.
  * Sent on connect and on page load, alongside the view replay. */
 void viewport_ipc_notify_config(struct viewport_server *server);
+/* Tell the shell whether Mod4 is held. Only sent when the bar is set to
+ * "auto", because nothing else reacts to it and modifier traffic is otherwise
+ * pure noise on the socket. */
+void viewport_ipc_notify_modifiers(struct viewport_server *server, bool logo);
 
 /* Replays view.added for every currently mapped toplevel.
  *

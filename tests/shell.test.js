@@ -34,6 +34,7 @@ class El {
       set: (t, k, v) => { t[k] = v; return true; },
       get: (t, k) => {
         if (k === 'setProperty') return (n, v) => { t[n] = v; };
+        if (k === 'getPropertyValue') return (n) => t[n] ?? '';
         if (k === 'removeProperty') return (n) => { delete t[n]; };
         return t[k] ?? '';
       },
@@ -823,6 +824,40 @@ if (mode === 'scrolling') {
     .find((m) => m.type === 'view.layout' && m.id === target);
   check('on-screen window clips to its whole self',
     full?.clip?.width === 800 && full?.clip?.height === 600);
+}
+
+/* --- the bar that hides ------------------------------------------------
+ *
+ * 'auto' exists for OLED panels: the bar is the one thing on screen that never
+ * moves, so it is hidden until Mod4 is held. What matters here is that the
+ * reveal is driven by the modifier message and that releasing puts it back —
+ * a bar that reveals and then stays is the failure that defeats the point.
+ */
+{
+  const desktop = () => outputsEl.children[0];
+  const barHidden = () => desktop().classList.contains('bar-hidden');
+
+  emit({ type: 'config', layout: mode, bar: 'auto' });
+  check('auto hides the bar to begin with', barHidden());
+
+  emit({ type: 'modifiers', logo: true });
+  check('holding Mod4 reveals it', !barHidden());
+
+  emit({ type: 'modifiers', logo: false });
+  check('letting go hides it again', barHidden());
+
+  /* A theme from the config file lands as custom properties. */
+  emit({ type: 'config', layout: mode, bar: 'auto',
+    theme: { bg: '#000000', 'not a name': '#fff', text: 'javascript:x' } });
+  check('a colour from the config is applied',
+    document.documentElement.style.getPropertyValue('--bg') === '#000000');
+  check('a name that is not a custom property is refused',
+    document.documentElement.style.getPropertyValue('--not a name') === '');
+  check('a value that is not a colour is refused',
+    document.documentElement.style.getPropertyValue('--text') === '');
+
+  emit({ type: 'config', layout: mode, bar: 'visible' });
+  check('switching back to visible shows the bar', !barHidden());
 }
 
 emit({ type: 'view.removed', id: 1 });

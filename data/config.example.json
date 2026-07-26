@@ -30,6 +30,24 @@
   ],
   "layout": "tiling",
 
+  "_bar": [
+    "\"visible\" always, \"hidden\" never, or \"auto\", which reveals the bar",
+    "only while Mod4 is held. \"auto\" is for OLED panels: the bar is the one",
+    "part of the screen that never changes, which is what burns in. Mod4+n",
+    "still toggles it per output regardless of the mode."
+  ],
+  "bar": "visible",
+
+  "_theme": [
+    "Colours for the shell, set as CSS custom properties. Any name the",
+    "stylesheet reads works; the ones it defines are bg, text, muted, border,",
+    "border-focus, bar-bg, bar-border, glow-1, glow-2, bar, radius, tab and",
+    "gap. Values are colours or lengths,",
+    "not arbitrary CSS. On an OLED panel a true black bg costs no light at",
+    "all, which is the only background that does."
+  ],
+  "theme": {},
+
   "_outputs": [
     "Modes are left to the display by default. max_refresh takes the fastest",
     "refresh rate available at the preferred resolution, which is what a",

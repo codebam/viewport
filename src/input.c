@@ -813,6 +813,24 @@ static void handle_keyboard_modifiers(struct wl_listener *listener, void *data)
 
 	wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
 
+	/* A bar that appears while Mod4 is held needs to know when that starts and
+	 * stops, and this is the only place that sees it — a binding fires on a
+	 * chord, not on the modifier alone.
+	 *
+	 * On the transition only, and only when something is listening: this
+	 * handler runs for every Shift and Ctrl of ordinary typing, and a message
+	 * per keystroke to say Mod4 is still not held would be pure noise. Sent
+	 * before the IME check, because whether an input method holds the grab has
+	 * no bearing on whether the key is physically down. */
+	if (server->config.bar != NULL && strcmp(server->config.bar, "auto") == 0) {
+		bool logo = (wlr_keyboard_get_modifiers(keyboard->wlr_keyboard) &
+			WLR_MODIFIER_LOGO) != 0;
+		if (logo != server->logo_held) {
+			server->logo_held = logo;
+			viewport_ipc_notify_modifiers(server, logo);
+		}
+	}
+
 	/* An input method holding the keyboard grab gets the modifiers instead of
 	 * the client, matching where the keys themselves are going. */
 	if (viewport_ime_handle_modifiers(server->ime, keyboard->wlr_keyboard)) {

@@ -47,7 +47,22 @@
     <div class="windows"></div>
 
     <div class="empty">
-      <h1>No windows</h1>
+      <!--
+        The mark: a viewport. An outer frame, and inside it a second frame
+        offset as though the first were a window onto it — which is what the
+        compositor is, and what the shell is drawing right now.
+
+        Inline rather than a file: it is a dozen elements, it inherits
+        currentColor so it follows the theme with no second place to set
+        colours, and a file:// shell that has to fetch its own logo has one
+        more thing that can fail to load.
+      -->
+      <svg class="logo" viewBox="0 0 64 64" role="img" aria-label="Viewport"
+           fill="none" stroke="currentColor" stroke-width="2.5"
+           stroke-linejoin="round">
+        <rect x="4" y="10" width="42" height="32" rx="4"/>
+        <rect x="18" y="22" width="42" height="32" rx="4" opacity=".55"/>
+      </svg>
       <p>Launch a client against <code>$WAYLAND_DISPLAY</code>.</p>
       <pre>Mod4+Return  terminal
 Mod4+d       launcher</pre>

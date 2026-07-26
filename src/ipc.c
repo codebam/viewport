@@ -242,6 +242,11 @@ void viewport_ipc_notify_config(struct viewport_server *server)
 	json_builder_add_string_value(builder,
 		server->config.layout != NULL ? server->config.layout : "tiling");
 
+	if (server->config.bar != NULL) {
+		json_builder_set_member_name(builder, "bar");
+		json_builder_add_string_value(builder, server->config.bar);
+	}
+
 	/* Handed over as parsed JSON rather than a string, so the shell does not
 	 * have to parse a second time inside a message it already parsed. */
 	if (server->config.rules_json != NULL) {
@@ -254,7 +259,31 @@ void viewport_ipc_notify_config(struct viewport_server *server)
 		}
 		g_object_unref(parser);
 	}
+	if (server->config.theme_json != NULL) {
+		JsonParser *parser = json_parser_new();
+		if (json_parser_load_from_data(parser, server->config.theme_json, -1,
+				NULL)) {
+			json_builder_set_member_name(builder, "theme");
+			json_builder_add_value(builder,
+				json_node_copy(json_parser_get_root(parser)));
+		}
+		g_object_unref(parser);
+	}
 
+	json_builder_end_object(builder);
+
+	broadcast_builder(server, builder);
+	g_object_unref(builder);
+}
+
+void viewport_ipc_notify_modifiers(struct viewport_server *server, bool logo)
+{
+	JsonBuilder *builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "modifiers");
+	json_builder_set_member_name(builder, "logo");
+	json_builder_add_boolean_value(builder, logo);
 	json_builder_end_object(builder);
 
 	broadcast_builder(server, builder);

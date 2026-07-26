@@ -16,6 +16,14 @@
 :root {
   color-scheme: dark;
   --bg: #14161b;
+  /* The two washes of colour in the desktop background, and the bar's own
+     surface. Variables rather than literals so a config theme can reach them:
+     on an OLED panel the point is a background that emits nothing, and a base
+     colour alone does not get there while a gradient still glows over it. */
+  --glow-1: #263047;
+  --glow-2: #1d2a2a;
+  --bar-bg: #0f1116e6;
+  --bar-border: #ffffff12;
   --border: #2a3040;
   --border-focus: #7aa2f7;
   --text: #e7e9ee;
@@ -57,8 +65,8 @@ body {
   /* The compositor clears to transparent and the web view is the bottom
      layer, so this gradient is the actual desktop background. */
   background:
-    radial-gradient(70rem 50rem at 20% -10%, #263047, transparent),
-    radial-gradient(50rem 40rem at 90% 110%, #1d2a2a, transparent),
+    radial-gradient(70rem 50rem at 20% -10%, var(--glow-1), transparent),
+    radial-gradient(50rem 40rem at 90% 110%, var(--glow-2), transparent),
     var(--bg);
 }
 
@@ -89,13 +97,18 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0 .5rem;
-  background: #0f1116e6;
-  border-bottom: 1px solid #ffffff12;
+  background: var(--bar-bg);
+  border-bottom: 1px solid var(--bar-border);
   user-select: none;
 }
 
 .desktop.bar-hidden .bar,
 .desktop.has-fullscreen .bar { display: none; }
+
+/* The bar under 'auto' comes and goes with a modifier key, which is fast enough
+   to read as a flicker if it simply appears. Fading it costs nothing and makes
+   holding Mod4 feel like revealing something rather than triggering it. */
+.bar { transition: opacity var(--anim) var(--ease); }
 
 .bar-left, .bar-right { display: flex; align-items: center; gap: .35rem; }
 
@@ -512,7 +525,15 @@ body {
   pointer-events: none;
 }
 
-.empty h1 { margin: 0 0 .25rem; font-size: 1.1rem; color: var(--text); }
+/* Sized in rem so it scales with the rest of the empty state rather than with
+   the output: this is a mark on an empty desktop, not a splash screen. */
+.empty .logo {
+  width: 4.5rem;
+  height: 4.5rem;
+  margin-bottom: .9rem;
+  color: var(--text);
+  opacity: .8;
+}
 .empty[hidden] { display: none; }
 
 .empty pre {

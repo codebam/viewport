@@ -191,6 +191,19 @@ bool viewport_config_load(struct viewport_server *server,
 		config->rules_json = keep(json_generator_to_data(generator, NULL));
 		g_object_unref(generator);
 	}
+	/* Same reasoning as the rules: these become CSS custom properties in the
+	 * shell, and nothing here would do anything with them but pass them on. */
+	if (json_object_has_member(object, "theme")) {
+		JsonNode *theme = json_object_get_member(object, "theme");
+		JsonGenerator *generator = json_generator_new();
+		json_generator_set_root(generator, theme);
+		config->theme_json = keep(json_generator_to_data(generator, NULL));
+		g_object_unref(generator);
+	}
+	if (json_object_has_member(object, "bar")) {
+		config->bar = keep(g_strdup(
+			json_object_get_string_member(object, "bar")));
+	}
 	if (json_object_has_member(object, "idle")) {
 		JsonObject *idle = json_object_get_object_member(object, "idle");
 		if (json_object_has_member(idle, "lock_after")) {

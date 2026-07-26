@@ -80,6 +80,12 @@ const OUTPUT_WORKSPACE = {
  * --------------------------------------------------------------------- */
 
 const outputs = new Map(); // name -> desktop elements + workspace + barHidden
+
+/* How the bar behaves, from the config file: 'visible' always, 'hidden' never,
+   or 'auto', which reveals it only while Mod4 is held. 'auto' exists for OLED
+   panels, where a bar in the same pixels for hours is the thing that burns in. */
+let barMode = 'visible';
+let logoHeld = false;
 const views = new Map();   // id -> { el, viewport, title, app_id, box }
 const workspaces = new Map(); // number -> tiling tree root
 
@@ -2024,7 +2030,13 @@ function relayoutAll() {
     output.el.classList.toggle('overview-active', overviewActive);
     output.el.classList.toggle('has-fullscreen',
       fullscreenHere && !overviewActive);
-    output.el.classList.toggle('bar-hidden', output.barHidden);
+    /* Under 'auto' the bar is hidden except while Mod4 is held; the per-output
+       toggle (Mod4+n) still wins, so a bar someone asked for does not vanish
+       the moment they let go of the key that revealed it. */
+    const hidden = barMode === 'auto'
+      ? (output.barHidden && !logoHeld)
+      : output.barHidden;
+    output.el.classList.toggle('bar-hidden', hidden);
     renderBar(name);
   }
 
@@ -2132,7 +2144,7 @@ function syncOutputs(list) {
           disk: el.querySelector('.disk'),
           net: el.querySelector('.net'),
         },
-        barHidden: false,
+        barHidden: barMode !== 'visible',
         workspace: 0,
       };
       el.dataset.output = info.name;
@@ -2656,6 +2668,37 @@ function toggleFullscreen() {
   setFullscreen(focusedId, !isFullscreen(focusedId));
 }
 
+/* Colours from the config file, as CSS custom properties.
+   Names are restricted to what a custom property may contain and values to
+   what a colour may: this is a string from a file being written into the
+   document's style, and "it is the user's own config" is not a reason to hand
+   it a wider grammar than it needs. Unknown names are allowed through — the
+   stylesheet decides what it reads, and a typo showing no effect is a better
+   failure than a silent whitelist that has to be edited to add a variable. */
+function applyTheme(theme) {
+  if (!theme || typeof theme !== 'object') return;
+  const style = document.documentElement.style;
+  for (const [key, value] of Object.entries(theme)) {
+    if (!/^[a-z][a-z0-9-]*$/.test(key)) continue;
+    if (typeof value !== 'string' || !/^[#a-zA-Z0-9(),.%\s/-]+$/.test(value)) continue;
+    style.setProperty('--' + key, value);
+  }
+}
+
+function applyBarMode(mode) {
+  const next = mode === 'hidden' || mode === 'auto' || mode === 'visible'
+    ? mode : 'visible';
+  if (next === barMode) return;
+  barMode = next;
+  /* Existing outputs keep whatever they were told individually, except that a
+     mode change is exactly when that should be reconsidered: switching to
+     'visible' with every output toggled off would otherwise show nothing. */
+  for (const output of outputs.values()) {
+    output.barHidden = barMode !== 'visible';
+  }
+  relayoutAll();
+}
+
 function toggleBar() {
   const output = outputs.get(activeOutputName());
   if (!output) return;
@@ -2907,12 +2950,22 @@ window.addEventListener('viewport', (event) => {
          it in the config file and reloading takes effect without a restart —
          the tree survives, it is only presented differently. */
       windowRules = Array.isArray(message.rules) ? message.rules : [];
+      applyTheme(message.theme);
+      applyBarMode(message.bar);
       if (message.layout === 'scrolling' || message.layout === 'tiling') {
         if (message.layout !== layoutMode) {
           layoutMode = message.layout;
           normaliseForLayout();
           relayoutAll();
         }
+      }
+      break;
+
+    case 'modifiers':
+      /* Only sent while the bar is on 'auto'. */
+      if (logoHeld !== !!message.logo) {
+        logoHeld = !!message.logo;
+        relayoutAll();
       }
       break;
 
