@@ -109,6 +109,16 @@ static gboolean idle_tick(gpointer data)
 	return G_SOURCE_CONTINUE;
 }
 
+void viewport_idle_blank(struct viewport_server *server)
+{
+	/* Flagged as though the timer had done it, so the next keypress or mouse
+	 * movement brings the screens back through the same path. Blanking without
+	 * that flag would leave no way to undo it short of a timer that has already
+	 * fired. */
+	server->idle_blanked = true;
+	set_outputs_enabled(server, false);
+}
+
 /* Any input at all. Called from the key, pointer and touch paths rather than
  * from a single place, because there is no single place — the seat sees these
  * separately and an idle timer that only noticed the keyboard would blank the

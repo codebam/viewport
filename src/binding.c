@@ -132,6 +132,10 @@ static bool action_from_string(const char *text, enum viewport_action *action,
 		*action = VIEWPORT_ACTION_EXIT;
 	} else if (strcmp(text, "reload") == 0) {
 		*action = VIEWPORT_ACTION_RELOAD;
+	} else if (strcmp(text, "lock") == 0) {
+		*action = VIEWPORT_ACTION_LOCK;
+	} else if (strcmp(text, "blank") == 0) {
+		*action = VIEWPORT_ACTION_BLANK;
 	} else {
 		return false;
 	}
@@ -307,6 +311,11 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 	 * themselves — no client is asked to resize. */
 	viewport_binding_add(server, "Mod4+o=shell layout.overview");
 	viewport_binding_add(server, "Mod4+Shift+d=appearance toggle");
+	/* Lock now, and turn the screens off now — the same two things the idle
+	 * timer does, for when you are leaving rather than waiting to be noticed
+	 * leaving. The screens come back on the next keypress. */
+	viewport_binding_add(server, "Mod4+Shift+x=lock");
+	viewport_binding_add(server, "Mod4+Shift+b=blank");
 
 	if (scrolling) {
 		/* niri's column keys. A column is the unit here: windows stack inside
@@ -414,6 +423,19 @@ static void run_action(struct viewport_server *server,
 			wlr_log(WLR_INFO, "reloading shell");
 			viewport_web_reload(server->web);
 		}
+		break;
+	case VIEWPORT_ACTION_LOCK:
+		/* The same locker the idle timer would run, so there is one place to
+		 * configure it and no second answer to what locking means here. */
+		if (server->config.idle_lock_command != NULL) {
+			viewport_spawn(server->config.idle_lock_command);
+		} else {
+			wlr_log(WLR_ERROR,
+				"lock: no idle.lock_command in the config; nothing to run");
+		}
+		break;
+	case VIEWPORT_ACTION_BLANK:
+		viewport_idle_blank(server);
 		break;
 	case VIEWPORT_ACTION_FOCUS:
 		viewport_focus_direction(server, binding->argument);

@@ -136,7 +136,10 @@ settings (shell URL, backend, socket path) are re-read but do nothing until
 restart.
 
 Actions are `exec COMMAND`, `close`, `exit`, `reload`, `focus DIRECTION`,
-`mode NAME`, `appearance toggle` and `shell COMMAND ARGS…`. Chords use sway's
+`mode NAME`, `appearance toggle`, `lock`, `blank` and `shell COMMAND ARGS…`.
+`lock` runs the same `idle.lock_command` the idle timer would, so there is one
+place to configure what locking means; `blank` turns the outputs off until the
+next input, exactly as the idle timer does. Chords use sway's
 spelling — `Mod4`/`Super`/`Logo`, `Shift`, `Ctrl`, `Alt` — and any key
 `xkb_keysym_from_name` accepts, including `XF86AudioRaiseVolume`. Caps and num
 lock are masked out of matching. Bindings outrank both the focused client and
@@ -347,6 +350,11 @@ Idle inhibitors are honoured, and only while their surface is mapped — a pause
 video on a hidden workspace is not keeping anyone awake. An inhibitor counts as
 activity rather than merely pausing the countdown, so releasing one starts the
 clock again instead of firing immediately.
+
+`Mod4+Shift+x` locks now and `Mod4+Shift+b` turns the screens off now — the
+same two things the timer does, for when you are leaving rather than waiting to
+be noticed leaving. The screens come back on the next keypress or mouse
+movement, through the same path the timer's blanking uses.
 
 `wlr-output-power-management-v1` is advertised too, so `wlopm` and settings
 panels can turn a monitor off on request rather than only on a timer.

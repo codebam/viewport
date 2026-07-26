@@ -508,6 +508,9 @@ void viewport_spawn(const char *command);
 void viewport_idle_init(struct viewport_server *server);
 void viewport_idle_finish(struct viewport_server *server);
 void viewport_idle_activity(struct viewport_server *server);
+/* Turns the outputs off now. Any input turns them back on, exactly as it does
+ * when the idle timer blanks them. */
+void viewport_idle_blank(struct viewport_server *server);
 
 /* The layout, remembered across restarts. The blob is the shell's own format;
  * the compositor stores and returns it without interpreting it. */
@@ -674,6 +677,8 @@ enum viewport_action {
 	VIEWPORT_ACTION_SHELL,  /* forward the rest of the line to the shell */
 	VIEWPORT_ACTION_MODE,   /* switch binding mode, e.g. sway's resize mode */
 	VIEWPORT_ACTION_APPEARANCE, /* toggle the dark/light preference */
+	VIEWPORT_ACTION_LOCK,   /* run the configured locker now */
+	VIEWPORT_ACTION_BLANK,  /* turn the outputs off until the next input */
 };
 
 struct viewport_binding {
