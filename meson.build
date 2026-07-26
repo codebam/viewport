@@ -68,6 +68,10 @@ pixman = dependency('pixman-1')
 libdrm = dependency('libdrm')
 libinput = dependency('libinput')
 
+# wlroots' xwayland.h includes xcb/xcb_ewmh.h directly, so the header has to be
+# on the include path even though we never call xcb ourselves.
+xcb_ewmh = dependency('xcb-ewmh')
+
 glib = dependency('glib-2.0', version: '>=2.70')
 gobject = dependency('gobject-2.0')
 gio = dependency('gio-2.0')
@@ -85,6 +89,7 @@ viewport_deps = [
   pixman,
   libdrm,
   libinput,
+  xcb_ewmh,
   glib,
   gobject,
   gio,
@@ -118,6 +123,8 @@ viewport_sources = files(
   'src/server.c',
   'src/output.c',
   'src/xdg_shell.c',
+  'src/view.c',
+  'src/xwayland.c',
   'src/layer_shell.c',
   'src/input.c',
   'src/ipc.c',

@@ -79,7 +79,7 @@ struct wlr_surface *viewport_surface_at(struct viewport_server *server,
 void viewport_focus_web(struct viewport_server *server)
 {
 	if (server->focused != NULL) {
-		wlr_xdg_toplevel_set_activated(server->focused->xdg_toplevel, false);
+		viewport_view_set_activated(server->focused, false);
 		server->focused = NULL;
 	}
 

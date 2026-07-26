@@ -148,6 +148,10 @@
           udev
           libinput
           seatd
+          # wlroots' xwayland.h needs the xcb-ewmh headers, and Xwayland
+          # itself must be on PATH for X11 clients to run.
+          libxcb-wm
+          xwayland
           glib
           json-glib
           wpewebkit

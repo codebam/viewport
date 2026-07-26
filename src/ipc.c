@@ -149,20 +149,22 @@ void viewport_ipc_notify_view_added(struct viewport_toplevel *toplevel)
 	json_builder_add_int_value(builder, toplevel->id);
 	json_builder_set_member_name(builder, "title");
 	json_builder_add_string_value(builder,
-		toplevel->xdg_toplevel->title ? toplevel->xdg_toplevel->title : "");
+		viewport_view_title(toplevel));
 	json_builder_set_member_name(builder, "app_id");
 	json_builder_add_string_value(builder,
-		toplevel->xdg_toplevel->app_id ? toplevel->xdg_toplevel->app_id : "");
+		viewport_view_app_id(toplevel));
 	json_builder_set_member_name(builder, "output");
 	json_builder_add_string_value(builder,
 		output_for_new_view(toplevel->server));
 	/* So the shell can refuse to shrink a window past what it accepts. */
 	json_builder_set_member_name(builder, "min_width");
 	json_builder_add_int_value(builder,
-		toplevel->xdg_toplevel->current.min_width);
+		toplevel->kind == VIEWPORT_VIEW_XDG
+			? toplevel->xdg_toplevel->current.min_width : 0);
 	json_builder_set_member_name(builder, "min_height");
 	json_builder_add_int_value(builder,
-		toplevel->xdg_toplevel->current.min_height);
+		toplevel->kind == VIEWPORT_VIEW_XDG
+			? toplevel->xdg_toplevel->current.min_height : 0);
 	json_builder_end_object(builder);
 
 	broadcast_builder(toplevel->server, builder);
@@ -193,10 +195,10 @@ void viewport_ipc_notify_view_props(struct viewport_toplevel *toplevel)
 	json_builder_add_int_value(builder, toplevel->id);
 	json_builder_set_member_name(builder, "title");
 	json_builder_add_string_value(builder,
-		toplevel->xdg_toplevel->title ? toplevel->xdg_toplevel->title : "");
+		viewport_view_title(toplevel));
 	json_builder_set_member_name(builder, "app_id");
 	json_builder_add_string_value(builder,
-		toplevel->xdg_toplevel->app_id ? toplevel->xdg_toplevel->app_id : "");
+		viewport_view_app_id(toplevel));
 	json_builder_end_object(builder);
 
 	broadcast_builder(toplevel->server, builder);
@@ -590,7 +592,7 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		if (toplevel != NULL) {
 			bool on = json_object_has_member(object, "fullscreen")
 				? json_object_get_boolean_member(object, "fullscreen") : false;
-			wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, on);
+			viewport_view_set_fullscreen(toplevel, on);
 		}
 	} else if (strcmp(type, "view.focus") == 0) {
 		struct viewport_toplevel *toplevel = viewport_server_find_toplevel(

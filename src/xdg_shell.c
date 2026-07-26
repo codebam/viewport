@@ -24,34 +24,20 @@ static void handle_toplevel_map(struct wl_listener *listener, void *data)
 {
 	struct viewport_toplevel *toplevel = wl_container_of(listener, toplevel, map);
 
-	toplevel->mapped = true;
-	wl_list_insert(&toplevel->server->toplevels, &toplevel->link);
-
-	/* Stay invisible until the shell has placed us. Without this a window
-	 * flashes at 0,0 for one frame before the first layout message lands. */
-	wlr_scene_node_set_enabled(&toplevel->scene_tree->node, toplevel->has_box);
+	viewport_view_map(toplevel);
 
 	if (toplevel->server->config.debug) {
 		wlr_log(WLR_DEBUG, "view %u mapped (has_box=%d -> visible=%d)",
 			toplevel->id, toplevel->has_box, toplevel->has_box);
 	}
 
-	viewport_ipc_notify_view_added(toplevel);
 }
 
 static void handle_toplevel_unmap(struct wl_listener *listener, void *data)
 {
 	struct viewport_toplevel *toplevel =
 		wl_container_of(listener, toplevel, unmap);
-
-	if (toplevel->server->focused == toplevel) {
-		viewport_focus_web(toplevel->server);
-	}
-
-	viewport_ipc_notify_view_removed(toplevel);
-
-	toplevel->mapped = false;
-	wl_list_remove(&toplevel->link);
+	viewport_view_unmap(toplevel);
 }
 
 static void handle_toplevel_commit(struct wl_listener *listener, void *data)
@@ -157,6 +143,7 @@ void viewport_handle_new_xdg_toplevel(struct wl_listener *listener, void *data)
 	}
 
 	toplevel->node.type = VIEWPORT_NODE_TOPLEVEL;
+	toplevel->kind = VIEWPORT_VIEW_XDG;
 	toplevel->server = server;
 	toplevel->xdg_toplevel = xdg_toplevel;
 	toplevel->id = server->next_view_id++;
@@ -497,12 +484,10 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 	wlr_scene_node_set_position(&toplevel->scene_tree->node, box->x, box->y);
 
 	if (toplevel->server->config.debug) {
-		struct wlr_box geo = toplevel->xdg_toplevel->base->geometry;
-		struct wlr_xdg_toplevel_state *cur = &toplevel->xdg_toplevel->current;
-		wlr_log(WLR_DEBUG,
-			"view %u want %d,%d %dx%d | geo %d,%d %dx%d | current %dx%d",
+		struct wlr_box geo = viewport_view_geometry(toplevel);
+		wlr_log(WLR_DEBUG, "view %u want %d,%d %dx%d | geo %d,%d %dx%d",
 			toplevel->id, box->x, box->y, box->width, box->height,
-			geo.x, geo.y, geo.width, geo.height, cur->width, cur->height);
+			geo.x, geo.y, geo.width, geo.height);
 	}
 
 	/* Never ask a client for less than it says it can handle.
@@ -513,22 +498,23 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 	 * apart with no way to reconcile them. Clamping here keeps the request
 	 * honest; the shell is told the minimum separately so it can stop the
 	 * resize at the same point rather than appearing to shrink past it. */
-	struct wlr_xdg_toplevel_state *current = &toplevel->xdg_toplevel->current;
 	int width = box->width;
 	int height = box->height;
-	if (current->min_width > 0 && width < current->min_width) {
-		width = current->min_width;
-	}
-	if (current->min_height > 0 && height < current->min_height) {
-		height = current->min_height;
+	if (toplevel->kind == VIEWPORT_VIEW_XDG) {
+		struct wlr_xdg_toplevel_state *state =
+			&toplevel->xdg_toplevel->current;
+		if (state->min_width > 0 && width < state->min_width) {
+			width = state->min_width;
+		}
+		if (state->min_height > 0 && height < state->min_height) {
+			height = state->min_height;
+		}
 	}
 
 	/* Only reconfigure when the size actually changed: every configure is a
 	 * round trip, and the shell may resend the same rect on each animation
 	 * frame while dragging. */
-	if (current->width != width || current->height != height) {
-		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, width, height);
-	}
+	viewport_view_set_size(toplevel, width, height);
 
 	if (toplevel->mapped) {
 		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, true);
@@ -552,14 +538,14 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 void viewport_toplevel_focus(struct viewport_toplevel *toplevel)
 {
 	struct viewport_server *server = toplevel->server;
-	struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
+	struct wlr_surface *surface = viewport_view_surface(toplevel);
 
 	if (server->focused == toplevel) {
 		return;
 	}
 
 	if (server->focused != NULL) {
-		wlr_xdg_toplevel_set_activated(server->focused->xdg_toplevel, false);
+		viewport_view_set_activated(server->focused, false);
 	}
 
 	/* Keyboard focus leaves the shell. WebKit needs to be told explicitly or
@@ -569,7 +555,7 @@ void viewport_toplevel_focus(struct viewport_toplevel *toplevel)
 	}
 
 	wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
-	wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
+	viewport_view_set_activated(toplevel, true);
 
 	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
 	if (keyboard != NULL) {
@@ -690,5 +676,5 @@ void viewport_focus_direction(struct viewport_server *server,
 
 void viewport_toplevel_close(struct viewport_toplevel *toplevel)
 {
-	wlr_xdg_toplevel_send_close(toplevel->xdg_toplevel);
+	viewport_view_close(toplevel);
 }

@@ -23,6 +23,7 @@
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/box.h>
+#include <wlr/xwayland.h>
 #include <xkbcommon/xkbcommon.h>
 
 /* Scene nodes carry a back-pointer in wlr_scene_node.data so hit-testing can
@@ -34,6 +35,18 @@
 enum viewport_node_type {
 	VIEWPORT_NODE_TOPLEVEL,
 	VIEWPORT_NODE_LAYER,
+};
+
+/* Where a window's surface came from.
+ *
+ * An X11 window is not an xdg_toplevel: it has no xdg surface, its size and
+ * position are set through a different call, and it reports its title and
+ * class differently. Everything above this — tiling, workspaces, focus, the
+ * IPC view model — is identical, so the difference is confined to the few
+ * operations that actually touch the protocol. */
+enum viewport_view_kind {
+	VIEWPORT_VIEW_XDG,
+	VIEWPORT_VIEW_XWAYLAND,
 };
 
 struct viewport_node {
@@ -123,6 +136,10 @@ struct viewport_server {
 
 	struct wlr_xdg_shell *xdg_shell;
 
+	struct wlr_xwayland *xwayland;
+	struct wl_listener new_xwayland_surface;
+	struct wl_listener xwayland_ready;
+
 	struct wlr_seat *seat;
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *xcursor_mgr;
@@ -204,7 +221,11 @@ struct viewport_toplevel {
 	/* Stable identifier handed to JS; never reused within a session. */
 	uint32_t id;
 
+	enum viewport_view_kind kind;
+	/* Exactly one of these is set, according to `kind`. */
 	struct wlr_xdg_toplevel *xdg_toplevel;
+	struct wlr_xwayland_surface *xwayland_surface;
+
 	/* Container: holds the surface tree and any popups. Popups must live
 	 * outside the clipped surface tree or a menu that extends past the window
 	 * edge gets cropped. */
@@ -228,6 +249,10 @@ struct viewport_toplevel {
 	struct wl_listener set_title;
 	struct wl_listener set_app_id;
 	struct wl_listener request_fullscreen;
+	/* XWayland only. */
+	struct wl_listener associate;
+	struct wl_listener dissociate;
+	struct wl_listener request_configure;
 };
 
 struct viewport_decoration {
@@ -311,6 +336,31 @@ void viewport_toplevel_close(struct viewport_toplevel *toplevel);
  * stacking order. */
 void viewport_focus_direction(struct viewport_server *server,
 	const char *direction);
+
+/* Surface-kind-independent accessors, so tiling, focus and the IPC layer do
+ * not care whether a window is Wayland-native or X11. */
+const char *viewport_view_title(struct viewport_toplevel *toplevel);
+const char *viewport_view_app_id(struct viewport_toplevel *toplevel);
+struct wlr_surface *viewport_view_surface(struct viewport_toplevel *toplevel);
+void viewport_view_set_size(struct viewport_toplevel *toplevel, int width,
+	int height);
+void viewport_view_set_activated(struct viewport_toplevel *toplevel,
+	bool activated);
+void viewport_view_set_fullscreen(struct viewport_toplevel *toplevel, bool on);
+void viewport_view_close(struct viewport_toplevel *toplevel);
+struct wlr_box viewport_view_geometry(struct viewport_toplevel *toplevel);
+
+/* Shared lifecycle, used by both xdg_shell.c and xwayland.c. */
+void viewport_view_map(struct viewport_toplevel *toplevel);
+void viewport_view_unmap(struct viewport_toplevel *toplevel);
+
+/* -------------------------------------------------------------------------
+ * xwayland.c
+ * ---------------------------------------------------------------------- */
+
+void viewport_xwayland_init(struct viewport_server *server);
+void viewport_handle_new_xwayland_surface(struct wl_listener *listener,
+	void *data);
 
 /* -------------------------------------------------------------------------
  * layer_shell.c

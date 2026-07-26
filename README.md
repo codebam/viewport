@@ -397,9 +397,28 @@ CONSOLE INFO  outputs [object Object]
 CONSOLE ERROR TypeError: ...        # a shell exception, otherwise silent
 ```
 
-Still unimplemented: touch input, `xdg-decoration` (clients therefore all draw
-CSDs), XWayland, drag-and-drop between shell and clients, the
-`output.configure` confirm-timeout revert, and workspaces.
+### XWayland
+
+X11 clients are tiled like any other window. The difference is confined to
+`src/view.c`: an X11 window is not an `xdg_toplevel`, so title, class, sizing,
+activation and closing go through accessors, and everything above — tiling,
+workspaces, focus, the IPC view model — is unaware of which kind it has.
+
+Three things about X11 shape that file:
+
+- a surface exists before it has a `wl_surface`, so mapping is two-stage and
+  the scene tree is built on `associate` rather than at creation;
+- position and size are a single operation in absolute screen coordinates, so
+  placement is repeated on every resize;
+- override-redirect windows — X11 menus and tooltips — bypass the window
+  manager entirely. They are never tiled and appear exactly where the client
+  asks, on the overlay layer. Tiling them would break every X11 menu.
+
+Xwayland starts lazily: a session that never runs an X11 client pays nothing.
+
+Still unimplemented: touch input, tabbed and stacked containers, floating
+windows, drag-and-drop between shell and clients, layer-shell exclusive zones,
+and the `output.configure` confirm-timeout revert.
 
 Not yet implemented: touch input, `xdg-decoration` negotiation, XWayland,
 drag-and-drop between shell and clients, the `output.configure` confirm-timeout

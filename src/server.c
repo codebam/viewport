@@ -223,6 +223,9 @@ bool viewport_server_init(struct viewport_server *server,
 			&server->new_decoration);
 	}
 
+	/* Started lazily: no X server runs until an X11 client connects. */
+	viewport_xwayland_init(server);
+
 	server->seat = wlr_seat_create(server->wl_display, "seat0");
 	if (server->seat == NULL) {
 		wlr_log(WLR_ERROR, "wlr_seat_create failed");
@@ -376,6 +379,12 @@ void viewport_server_finish(struct viewport_server *server)
 	}
 	if (server->layer_shell != NULL) {
 		wl_list_remove(&server->new_layer_surface.link);
+	}
+	if (server->xwayland != NULL) {
+		wl_list_remove(&server->new_xwayland_surface.link);
+		wl_list_remove(&server->xwayland_ready.link);
+		wlr_xwayland_destroy(server->xwayland);
+		server->xwayland = NULL;
 	}
 	if (server->session != NULL) {
 		wl_list_remove(&server->session_active.link);
