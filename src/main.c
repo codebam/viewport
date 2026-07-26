@@ -159,9 +159,19 @@ int main(int argc, char *argv[])
 	 * sync (zwp_linux_drm_syncobj_v1) against Vulkan clients without the
 	 * implicit-fence round trips the GLES path needs. Honour an explicit
 	 * WLR_RENDERER from the environment so it stays debuggable. */
-	/* Portals route Settings requests to the backend matching the current
-	 * desktop, so ours has to be named before any client starts. */
-	setenv("XDG_CURRENT_DESKTOP", "viewport", 0);
+	/* Portals route requests to the backend matching the current desktop, so
+	 * ours has to be named before any client starts.
+	 *
+	 * Two names, colon-separated, which is how this variable is read.
+	 * "viewport" is what selects our own Settings backend. "wlroots" is what
+	 * xdg-desktop-portal-wlr lists in UseIn — along with sway, river and the
+	 * rest, but naturally not a compositor that did not exist when it was
+	 * written. Without it the portal finds no ScreenCast implementation at
+	 * all, and screen sharing fails everywhere it is offered: Firefox and
+	 * Chromium hand back an empty source list, OBS shows no capture, and
+	 * nothing logs anything that points at a desktop name. The protocols were
+	 * never the missing part — this string was. */
+	setenv("XDG_CURRENT_DESKTOP", "viewport:wlroots", 0);
 
 	if (getenv("WLR_RENDERER") == NULL) {
 		setenv("WLR_RENDERER", "vulkan", 1);
