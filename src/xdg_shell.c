@@ -179,6 +179,8 @@ static void handle_toplevel_destroy(struct wl_listener *listener, void *data)
 	 * disarms it first; this covers a window destroyed without one. */
 	viewport_watchdog_disarm(toplevel);
 
+	viewport_foreign_capture_finish(toplevel);
+
 	/* The surface tree goes with the xdg_surface, but the container tree around
 	 * it is ours and nothing else frees it. Without this every window ever
 	 * opened leaves an empty tree behind in layer_apps for the life of the

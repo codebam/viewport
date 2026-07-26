@@ -24,6 +24,7 @@
 
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 
 #include "viewport.h"
@@ -119,6 +120,11 @@ void viewport_foreign_view_map(struct viewport_toplevel *toplevel)
 
 void viewport_foreign_view_unmap(struct viewport_toplevel *toplevel)
 {
+	/* Before the early return: a window may have been captured without ever
+	 * getting a foreign handle, and the capture scene is ours to free either
+	 * way. */
+	viewport_foreign_capture_finish(toplevel);
+
 	struct viewport_foreign *foreign = toplevel->foreign;
 	if (foreign == NULL) {
 		return;
@@ -168,6 +174,41 @@ void viewport_foreign_view_state(struct viewport_toplevel *toplevel,
 	wlr_foreign_toplevel_handle_v1_set_fullscreen(foreign->handle, fullscreen);
 }
 
+static void handle_capture_source_destroy(struct wl_listener *listener,
+	void *data)
+{
+	struct viewport_toplevel *toplevel =
+		wl_container_of(listener, toplevel, capture_source_destroy);
+
+	/* wlroots owns the source and frees it when the scene node it was built
+	 * from goes away — which happens when the client destroys its surface,
+	 * before this window is unmapped. Forget it here or the teardown below
+	 * hands out a dangling pointer to the next picker. */
+	wl_list_remove(&toplevel->capture_source_destroy.link);
+	toplevel->capture_source = NULL;
+}
+
+/* Tear down the capture pipeline built by the request handler below. Called
+ * when the window goes away; the picker's session ends with it. */
+void viewport_foreign_capture_finish(struct viewport_toplevel *toplevel)
+{
+	if (toplevel->capture_scene == NULL) {
+		return;
+	}
+	struct wlr_scene *scene = toplevel->capture_scene;
+	toplevel->capture_scene = NULL;
+
+	/* Destroying the root takes the scene's capture output with it, then the
+	 * surface tree beneath it; that second step is what destroys the source
+	 * and fires the listener above. */
+	wlr_scene_node_destroy(&scene->tree.node);
+
+	if (toplevel->capture_source != NULL) {
+		wl_list_remove(&toplevel->capture_source_destroy.link);
+		toplevel->capture_source = NULL;
+	}
+}
+
 /* A screen-share picker asking to capture one window rather than a whole
  * output.
  *
@@ -181,10 +222,23 @@ void viewport_foreign_view_state(struct viewport_toplevel *toplevel,
  *
  * which reaches the browser as a bare NotAllowedError naming nothing.
  *
- * The source is the window's own scene node, so what gets captured is exactly
- * what is composited for that window and nothing behind it. It is made once
- * and kept: a picker that asks twice about the same window should not build a
- * second capture pipeline for it.
+ * The capture gets a scene of its own containing one thing: this window's
+ * surface. It cannot share the layout's tree, for two reasons, both of them
+ * in wlroots' scene.c:
+ *
+ *  - source_render() parks a scene output over the node's extents and renders
+ *    THE WHOLE SCENE through it. Aimed at the layout tree that means every
+ *    window stacked above this one, and the shell behind it, land in the
+ *    capture. A scene holding nothing else has nothing else to leak.
+ *  - the output's mode is set from those extents on every render, and the
+ *    scrolling layout re-clips and re-scales the window each frame, so the
+ *    extents move constantly. Each move reallocates the capture swapchain and
+ *    re-sends buffer constraints, and the client spends its time renegotiating
+ *    instead of receiving frames — the freeze. An unclipped, unscaled surface
+ *    tree only changes size when the client itself resizes.
+ *
+ * Made once and kept: a picker that asks twice about the same window should
+ * not build a second capture pipeline for it.
  *
  * The policy here is to say yes. The request has already been through the
  * portal, which ran its own chooser and got an answer from the person at the
@@ -203,27 +257,53 @@ static void handle_toplevel_capture_request(struct wl_listener *listener,
 				toplevel->foreign->ext_handle != request->toplevel_handle) {
 			continue;
 		}
+
+		struct wlr_surface *surface = viewport_view_surface(toplevel);
+		if (surface == NULL) {
+			/* Nothing to capture yet. Rejecting is the honest answer. */
+			return;
+		}
+
 		if (toplevel->capture_source == NULL) {
+			viewport_foreign_capture_finish(toplevel);
+
+			toplevel->capture_scene = wlr_scene_create();
+			if (toplevel->capture_scene == NULL) {
+				return;
+			}
+			struct wlr_scene_tree *tree = wlr_scene_subsurface_tree_create(
+				&toplevel->capture_scene->tree, surface);
+			if (tree == NULL) {
+				wlr_scene_node_destroy(&toplevel->capture_scene->tree.node);
+				toplevel->capture_scene = NULL;
+				return;
+			}
+
 			toplevel->capture_source =
 				wlr_ext_image_capture_source_v1_create_with_scene_node(
-					&toplevel->scene_tree->node, server->wl_event_loop,
-					server->allocator, server->renderer);
+					&tree->node, server->wl_event_loop, server->allocator,
+					server->renderer);
+			if (toplevel->capture_source == NULL) {
+				wlr_scene_node_destroy(&toplevel->capture_scene->tree.node);
+				toplevel->capture_scene = NULL;
+				return;
+			}
+			toplevel->capture_source_destroy.notify =
+				handle_capture_source_destroy;
+			wl_signal_add(&toplevel->capture_source->events.destroy,
+				&toplevel->capture_source_destroy);
 		}
-		/* What wlroots will capture is the scene region this node reports,
-		 * so report it: a window sharing the top left of the screen means
-		 * these coordinates came back as zero, and there is no other way to
-		 * tell that from the outside. */
-		int lx = 0, ly = 0;
-		bool on_screen = wlr_scene_node_coords(&toplevel->scene_tree->node,
-			&lx, &ly);
-		wlr_log(WLR_INFO,
-			"capture requested for view %u at %d,%d (enabled=%d, clipped=%d)",
-			toplevel->id, lx, ly, on_screen, toplevel->has_clip);
 
-		if (toplevel->capture_source != NULL) {
-			wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(
-				request, toplevel->capture_source);
-		}
+		/* The capture is aimed at the surface, not at the layout, so what
+		 * matters is the surface's own size — the one figure that decides the
+		 * stream's resolution and the one that is invisible from outside. */
+		wlr_log(WLR_INFO,
+			"capture requested for view %u: surface %dx%d (clipped=%d)",
+			toplevel->id, surface->current.width, surface->current.height,
+			toplevel->has_clip);
+
+		wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(
+			request, toplevel->capture_source);
 		return;
 	}
 }

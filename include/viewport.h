@@ -432,8 +432,12 @@ struct viewport_toplevel {
 	 * edge gets cropped. */
 	struct wlr_scene_tree *scene_tree;
 	/* Built the first time something asks to capture this window, and kept:
-	 * a picker that asks twice should not get two capture pipelines. */
+	 * a picker that asks twice should not get two capture pipelines. The scene
+	 * is private to the capture and holds nothing but this window's surface;
+	 * see foreign.c for why it cannot be the layout's own tree. */
+	struct wlr_scene *capture_scene;
 	struct wlr_ext_image_capture_source_v1 *capture_source;
+	struct wl_listener capture_source_destroy;
 	struct wlr_scene_tree *surface_tree;
 
 	/* Target rect most recently supplied by the shell over IPC. */
@@ -661,6 +665,7 @@ bool viewport_ime_handle_modifiers(struct viewport_ime *ime,
 void viewport_foreign_init(struct viewport_server *server);
 void viewport_foreign_view_map(struct viewport_toplevel *toplevel);
 void viewport_foreign_view_unmap(struct viewport_toplevel *toplevel);
+void viewport_foreign_capture_finish(struct viewport_toplevel *toplevel);
 void viewport_foreign_view_props(struct viewport_toplevel *toplevel);
 void viewport_foreign_view_state(struct viewport_toplevel *toplevel,
 	bool activated, bool fullscreen);

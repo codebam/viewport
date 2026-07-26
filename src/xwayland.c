@@ -219,6 +219,7 @@ static void handle_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&toplevel->destroy.link);
 
 	viewport_watchdog_disarm(toplevel);
+	viewport_foreign_capture_finish(toplevel);
 
 	free(toplevel);
 }
