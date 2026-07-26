@@ -42,12 +42,18 @@ DRM master from the compositor you are currently using does not end well. Pass
 `--build-only` to build the images and run nothing.
 
 TTY mode needs root. Taking DRM master and reading input devices is not
-something a rootless container can do, and there is no logind inside the
-container to ask — libseat's builtin backend opens the devices directly, which
-only works as root. That is also why it is `--privileged`: this is a throwaway
-container driving real hardware, and pinning down exactly which capabilities
-libinput and the GPU driver need across kernel versions is a worse trade than
-granting them.
+something a rootless container can do. That is also why it is `--privileged`:
+this is a throwaway container driving real hardware, and pinning down exactly
+which capabilities libinput and the GPU driver need across kernel versions is a
+worse trade than granting them.
+
+Seat management is the part with no obvious answer inside a container. logind is
+not running in there, and libseat's builtin backend — which would open the
+devices directly — is a build-time option Arch does not enable, so asking for it
+fails with `No backend matched name 'builtin'`. So the script starts a `seatd`
+inside the container and points libseat at it, waiting for its socket first:
+libseat gives up immediately if it is not there yet, and "started seatd" is not
+the same as "seatd is listening".
 
 Whichever of `run0`, `sudo` or `doas` is installed is used; `VIEWPORT_ELEVATE`
 names another. Not every system has sudo, and installing a shim to satisfy one

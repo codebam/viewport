@@ -14,10 +14,10 @@
 #   ./packaging/arch/run-in-container.sh --build-only # build the images, run nothing
 #
 # The TTY mode needs root, because taking DRM master and reading input devices
-# is not something a rootless container can do. Without logind inside the
-# container, libseat's builtin backend does that directly — which is exactly why
-# it needs the privileges. Whichever of run0, sudo or doas is installed is used;
-# set VIEWPORT_ELEVATE to name another.
+# is not something a rootless container can do. There is no logind in the
+# container to ask either, so a seatd is started inside it to hand out the
+# devices. Whichever of run0, sudo or doas is installed is used; set
+# VIEWPORT_ELEVATE to name another.
 #
 # Switch to a free console first (Ctrl+Alt+F3, say) and run it there. If it
 # fails to start, Ctrl+Alt+F1 gets you back to whatever you were in.
@@ -173,9 +173,13 @@ if [ "$mode" = build ]; then
 fi
 
 # Root, and with the devices: DRM master, every input device, and udev for
-# libinput to enumerate them by. LIBSEAT_BACKEND=builtin is what stands in for
-# logind, which is not running in here — it opens the devices directly, which
-# only works because this is root.
+# libinput to enumerate them by.
+#
+# Seat management is the part with no obvious answer inside a container. logind
+# is not running in here, and libseat's builtin backend — which would open the
+# devices directly — is a build-time option Arch does not enable, so asking for
+# it fails with "No backend matched name 'builtin'". What is left is to run a
+# seatd of our own inside the container and point libseat at that.
 #
 # --privileged rather than a list of capabilities: this is a throwaway container
 # driving real hardware, and enumerating exactly which capabilities libinput and
@@ -185,7 +189,7 @@ tty_args=(
 	--privileged
 	-v /dev:/dev
 	-v /run/udev:/run/udev:ro
-	-e LIBSEAT_BACKEND=builtin
+	-e LIBSEAT_BACKEND=seatd
 	-e XDG_RUNTIME_DIR=/tmp/xdg
 	-e HOME=/root
 )
@@ -206,9 +210,27 @@ if ! "${elevate[@]}" podman image exists "$runtime" 2>/dev/null; then
 	rm -f "$work/runtime.tar"
 fi
 
+# Started before the compositor and waited for: libseat gives up immediately if
+# the socket is not there yet, and "started seatd" is not the same as "seatd is
+# listening".
+start_seatd='
+	seatd >/tmp/seatd.log 2>&1 &
+	for _ in $(seq 50); do
+		[ -S /run/seatd.sock ] && break
+		sleep 0.1
+	done
+	if [ ! -S /run/seatd.sock ]; then
+		echo "seatd did not start:" >&2
+		cat /tmp/seatd.log >&2
+		exit 1
+	fi
+	mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
+'
+
 if [ "$mode" = shell ]; then
-	echo "==> root shell in the container; run 'viewport' when you are ready"
-	exec "${elevate[@]}" podman run "${tty_args[@]}" "$runtime" bash
+	echo "==> root shell in the container; seatd is running, so 'viewport' works"
+	exec "${elevate[@]}" podman run "${tty_args[@]}" "$runtime" \
+		bash -c "$start_seatd exec bash"
 fi
 
 echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
@@ -216,7 +238,7 @@ echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
 # The container inherits the stdout already being teed, so its output lands in
 # the same log as the build steps above it — one file describing the whole run.
 "${elevate[@]}" podman run "${tty_args[@]}" "$runtime" \
-	bash -c 'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg && exec viewport --debug --startup foot' \
+	bash -c "$start_seatd exec viewport --debug --startup foot" \
 	|| echo "==> viewport exited $?"
 
 echo
