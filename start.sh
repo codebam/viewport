@@ -123,7 +123,23 @@ echo "logging to $LOG (previous run: $LOG.1)"
 # handed to the compositor is absolute, so the chdir costs nothing.
 cd "$HOME"
 
-exec nix develop "$REPO" --command env SHELL="$LOGIN_SHELL" "$REPO/build/viewport" \
+# VIEWPORT_ASAN=1 runs the AddressSanitizer build instead.
+#
+# The teardown corruption does not reproduce headless or nested — it needs the
+# real DRM session — so catching it means running one ordinary session against
+# an instrumented binary. ASAN names the allocation and the free that clash,
+# which is what a backtrace taken at the point of death cannot.
+#
+# Leak reporting is off: a compositor exits with plenty of deliberately unfreed
+# state, and the interesting error is the corruption, not the noise.
+BINARY="$REPO/build/viewport"
+if [ -n "${VIEWPORT_ASAN:-}" ]; then
+	BINARY="$REPO/build-asan/viewport"
+	export ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:halt_on_error=0
+	echo "running the AddressSanitizer build"
+fi
+
+exec nix develop "$REPO" --command env SHELL="$LOGIN_SHELL" "$BINARY" \
 	--url      "file://$REPO/data/shell/index.html" \
 	--fallback "file://$REPO/data/fallback.html" \
 	--terminal rio \
