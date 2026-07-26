@@ -202,6 +202,16 @@ bool viewport_view_wants_floating(struct viewport_toplevel *toplevel)
 	return false;
 }
 
+/* An X11 window the window manager does not manage: a menu, a tooltip, a drag
+ * icon. They place themselves, they are never tiled, and they must never be
+ * treated as focusable windows — activating one is a request the client did not
+ * ask for and, for a menu, is enough to make it stop responding. */
+bool viewport_view_is_unmanaged(struct viewport_toplevel *toplevel)
+{
+	return toplevel->kind == VIEWPORT_VIEW_XWAYLAND &&
+		toplevel->xwayland_surface->override_redirect;
+}
+
 /* ------------------------------------------------------------------------
  * Shared lifecycle
  *

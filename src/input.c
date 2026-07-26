@@ -97,7 +97,17 @@ struct wlr_surface *viewport_surface_at(struct viewport_server *server,
 				continue;
 			}
 			if (tagged->type == VIEWPORT_NODE_TOPLEVEL) {
-				*toplevel_out = (struct viewport_toplevel *)tagged;
+				struct viewport_toplevel *found =
+					(struct viewport_toplevel *)tagged;
+				/* An X11 menu is not a window to focus. Reporting it as one
+				 * had a click on a menu item run the whole focus path against
+				 * it — including activating the surface, which a menu never
+				 * asked for and which is enough to stop it responding. Steam's
+				 * menus opened and then ignored everything. Left NULL, the
+				 * click is delivered to the surface and nothing else. */
+				if (!viewport_view_is_unmanaged(found)) {
+					*toplevel_out = found;
+				}
 			}
 			/* A layer surface is not focusable as a window: leave the output
 			 * NULL so callers route the event to the surface directly. */
@@ -404,6 +414,15 @@ static void handle_cursor_button(struct wl_listener *listener, void *data)
 
 	if (pressed && toplevel != NULL) {
 		viewport_toplevel_focus(toplevel);
+	}
+
+	/* One line per click, saying where it went. An X11 menu that ignores clicks
+	 * looks identical from the outside whether the click never arrived or
+	 * arrived and was discarded, and those are different bugs. */
+	if (server->config.trace && pressed) {
+		wlr_log(WLR_DEBUG, "click at %.0f,%.0f -> surface %p (window %s)",
+			server->cursor->x, server->cursor->y, (void *)surface,
+			toplevel != NULL ? "yes" : "no, delivered to the surface alone");
 	}
 
 	wlr_seat_pointer_notify_button(server->seat, event->time_msec,

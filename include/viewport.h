@@ -667,6 +667,8 @@ struct wlr_box viewport_view_geometry(struct viewport_toplevel *toplevel);
 void viewport_view_natural_size(struct viewport_toplevel *toplevel, int *width,
 	int *height);
 bool viewport_view_wants_floating(struct viewport_toplevel *toplevel);
+/* True for X11 windows that bypass the window manager entirely. */
+bool viewport_view_is_unmanaged(struct viewport_toplevel *toplevel);
 
 /* Shared lifecycle, used by both xdg_shell.c and xwayland.c. */
 void viewport_view_map(struct viewport_toplevel *toplevel);
