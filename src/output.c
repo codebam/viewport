@@ -27,7 +27,7 @@ static void handle_output_frame(struct wl_listener *listener, void *data)
 	if (server->overview) {
 		struct viewport_toplevel *toplevel;
 		wl_list_for_each(toplevel, &server->toplevels, link) {
-			viewport_toplevel_apply_scale(toplevel);
+			viewport_toplevel_apply_crop(toplevel);
 		}
 	}
 

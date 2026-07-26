@@ -881,6 +881,26 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 			json_object_get_boolean_member(object, "active");
 		if (server->overview) {
 			viewport_focus_web(server);
+		} else {
+			/* Clear every window's scale here rather than waiting for the shell
+			 * to send each one a new rect.
+			 *
+			 * A window whose rect is unchanged gets no message, and the
+			 * per-frame pass that maintains the scale stops the moment the
+			 * overview closes — so the shrunken destination size stayed on the
+			 * buffer until the client next painted. A terminal sitting idle
+			 * does not paint, so it kept whatever size the overview gave it and
+			 * came back magnified and cropped, righting itself only when
+			 * something made it repaint. */
+			int cleared = 0;
+			struct viewport_toplevel *toplevel;
+			wl_list_for_each(toplevel, &server->toplevels, link) {
+				toplevel->scale = 1.0;
+				viewport_toplevel_apply_crop(toplevel);
+				cleared++;
+			}
+			wlr_log(WLR_DEBUG, "overview closed; scale cleared on %d windows",
+				cleared);
 		}
 	} else if (strcmp(type, "view.opacity") == 0) {
 		handle_view_opacity(server, object);

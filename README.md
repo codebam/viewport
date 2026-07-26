@@ -384,6 +384,16 @@ listener for, so its content stayed full size while simpler windows shrank.
 Once a frame catches every case, and the write is skipped when the value already
 matches, so it does not damage the scene by itself.
 
+Crop and scale are applied together, in that order, every time. They are not
+independent — the scale is computed from what the crop left — so applying them
+at different moments lets a client commit land in between, leaving a
+destination that describes the whole window and a source that describes the
+strip which survived the crop. The strip is then stretched to fill it. The
+scale is also cleared on every window when the overview closes rather than
+waiting for the shell to send each one a new rect: a window whose rect has not
+changed gets no message, and an idle window never repaints, so it kept the
+overview's size until something made it draw again.
+
 The destination size is derived from the buffer's *source box* rather than the
 whole buffer, because clipping narrows that box: sizing from the full buffer
 stretches whatever survived the clip back out to the width the entire window

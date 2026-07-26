@@ -565,7 +565,7 @@ static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 	}
 }
 
-void viewport_toplevel_apply_scale(struct viewport_toplevel *toplevel)
+static void apply_scale(struct viewport_toplevel *toplevel)
 {
 	if (toplevel->surface_tree == NULL) {
 		return;
@@ -575,6 +575,22 @@ void viewport_toplevel_apply_scale(struct viewport_toplevel *toplevel)
 	wlr_scene_node_for_each_buffer(&toplevel->surface_tree->node,
 		scale_iterator, &scale);
 	debug_scale = false;
+}
+
+static void apply_clip(struct viewport_toplevel *toplevel);
+
+/* Crop and scale in one pass, always in that order.
+ *
+ * They are not independent: clipping narrows the buffer's source box and the
+ * scale is computed from it, so applying them at different moments lets a
+ * client commit land in between — the destination then describes the whole
+ * window while the source describes the strip that survived the clip, and the
+ * strip is stretched to fill it. Kept together, both always come from the same
+ * state. */
+void viewport_toplevel_apply_crop(struct viewport_toplevel *toplevel)
+{
+	apply_clip(toplevel);
+	apply_scale(toplevel);
 }
 
 static void apply_clip(struct viewport_toplevel *toplevel)
@@ -679,8 +695,7 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 	bool offscreen = toplevel->has_clip &&
 		(toplevel->clip.width <= 0 || toplevel->clip.height <= 0);
 
-	apply_clip(toplevel);
-	viewport_toplevel_apply_scale(toplevel);
+	viewport_toplevel_apply_crop(toplevel);
 
 	if (toplevel->mapped) {
 		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, !offscreen);
