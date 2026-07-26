@@ -411,6 +411,10 @@ struct viewport_toplevel {
 	struct wl_listener set_title;
 	struct wl_listener set_app_id;
 	struct wl_listener request_fullscreen;
+	struct wl_listener request_maximize;
+	struct wl_listener request_minimize;
+	struct wl_listener request_move;
+	struct wl_listener request_resize;
 	/* XWayland only. */
 	struct wl_listener associate;
 	struct wl_listener dissociate;
@@ -426,6 +430,8 @@ struct viewport_decoration {
 };
 
 struct viewport_lock {
+	/* Covers the whole layout beneath the locker's own surfaces. */
+	struct wlr_scene_rect *backdrop;
 	struct viewport_server *server;
 	struct wlr_session_lock_v1 *lock;
 	struct wl_listener new_surface;
@@ -731,6 +737,8 @@ void viewport_bindings_finish(struct viewport_server *server);
  * ---------------------------------------------------------------------- */
 
 void viewport_session_lock_init(struct viewport_server *server);
+/* Keeps the lock backdrop covering every output when the layout changes. */
+void viewport_session_lock_outputs_changed(struct viewport_server *server);
 
 /* -------------------------------------------------------------------------
  * pointer.c

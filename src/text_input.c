@@ -591,6 +591,22 @@ void viewport_ime_destroy(struct viewport_ime *ime)
 		return;
 	}
 
+	/* Every text input still registered holds listeners that point back here.
+	 * Freeing the relay without unhooking them left those handlers running
+	 * against freed memory the moment the clients were destroyed — which is
+	 * immediately afterwards, in the same teardown. A terminal with a text
+	 * input was enough to crash every shutdown. */
+	struct viewport_text_input *text_input, *tmp;
+	wl_list_for_each_safe(text_input, tmp, &ime->text_inputs, link) {
+		wl_list_remove(&text_input->enable.link);
+		wl_list_remove(&text_input->commit.link);
+		wl_list_remove(&text_input->disable.link);
+		wl_list_remove(&text_input->destroy.link);
+		wl_list_remove(&text_input->link);
+		free(text_input);
+	}
+	ime->active = NULL;
+
 	wl_list_remove(&ime->new_text_input.link);
 	wl_list_remove(&ime->new_input_method.link);
 	wl_list_remove(&ime->focus_change.link);

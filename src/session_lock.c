@@ -18,6 +18,7 @@
 
 #include <stdlib.h>
 
+#include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/util/log.h>
@@ -91,6 +92,50 @@ static void handle_new_lock_surface(struct wl_listener *listener, void *data)
 	wl_signal_add(&lock_surface->events.destroy, &surface->destroy);
 }
 
+/* A black rectangle under every lock surface, covering the whole layout.
+ *
+ * The locker draws one surface per output, but it only learns about an output
+ * once it exists — so a monitor plugged in while the session is locked would
+ * show the desktop until the locker caught up. Covering the entire layout means
+ * there is no such window, and it costs one rectangle.
+ *
+ * It also covers the case of a locker that simply never draws on some output,
+ * which the protocol allows and which would otherwise leave that screen
+ * readable. */
+static void update_backdrop(struct viewport_server *server)
+{
+	if (server->lock == NULL) {
+		return;
+	}
+
+	struct wlr_box layout;
+	wlr_output_layout_get_box(server->output_layout, NULL, &layout);
+
+	if (server->lock->backdrop == NULL) {
+		const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		server->lock->backdrop = wlr_scene_rect_create(server->layer_lock,
+			layout.width, layout.height, black);
+		if (server->lock->backdrop == NULL) {
+			return;
+		}
+		/* Below the lock surfaces, which are added to the same tree. */
+		wlr_scene_node_lower_to_bottom(&server->lock->backdrop->node);
+	} else {
+		wlr_scene_rect_set_size(server->lock->backdrop, layout.width,
+			layout.height);
+	}
+
+	wlr_scene_node_set_position(&server->lock->backdrop->node, layout.x,
+		layout.y);
+}
+
+/* Called when outputs change, so a screen that appears while locked is covered
+ * rather than revealing what is behind. */
+void viewport_session_lock_outputs_changed(struct viewport_server *server)
+{
+	update_backdrop(server);
+}
+
 static void handle_unlock(struct wl_listener *listener, void *data)
 {
 	struct viewport_lock *lock = wl_container_of(listener, lock, unlock);
@@ -119,6 +164,11 @@ static void handle_lock_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&lock->new_surface.link);
 	wl_list_remove(&lock->unlock.link);
 	wl_list_remove(&lock->destroy.link);
+
+	if (lock->backdrop != NULL) {
+		wlr_scene_node_destroy(&lock->backdrop->node);
+		lock->backdrop = NULL;
+	}
 
 	if (server->locked) {
 		/* The locker died without unlocking. Staying locked is the whole point
@@ -163,6 +213,7 @@ static void handle_new_lock(struct wl_listener *listener, void *data)
 	server->locked = true;
 	wlr_scene_node_set_enabled(&server->layer_lock->node, true);
 	wlr_scene_node_raise_to_top(&server->layer_lock->node);
+	update_backdrop(server);
 
 	/* Any pointer grab a game held must not survive the lock. */
 	viewport_pointer_deactivate_constraint(server);

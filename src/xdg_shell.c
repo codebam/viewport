@@ -52,6 +52,19 @@ static void handle_toplevel_commit(struct wl_listener *listener, void *data)
 	 * on the first commits it is not known at all. Re-apply the placement on
 	 * every commit so the window stays pinned to its rect instead of drifting
 	 * by whatever the margin happened to be when the shell last spoke. */
+	if (toplevel->xdg_toplevel->base->initial_commit) {
+		/* What this compositor will actually do on request, so a client can
+		 * stop drawing buttons for the rest — without it GTK draws a maximize
+		 * button that does nothing, since the default is to assume everything
+		 * is available.
+		 *
+		 * On the initial commit and not at creation: the surface is not
+		 * initialised until then, and wlroots asserts rather than ignoring a
+		 * configure scheduled before it. */
+		wlr_xdg_toplevel_set_wm_capabilities(toplevel->xdg_toplevel,
+			WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN);
+	}
+
 	if (toplevel->has_box && !toplevel->xdg_toplevel->base->initial_commit) {
 		/* Position the container directly at the assigned rect.
 		 *
@@ -79,6 +92,72 @@ static void handle_toplevel_commit(struct wl_listener *listener, void *data)
 	}
 }
 
+/* A client asking to be maximized or minimized.
+ *
+ * Neither is a concept here — the shell decides how much space a window gets —
+ * so both are declined. But declining still requires an answer: the protocol
+ * says a configure must follow the request, and a client that gets none waits
+ * for one. GTK applications ask on their own maximize button, and without this
+ * that button hangs the window rather than doing nothing. */
+static void handle_request_maximize(struct wl_listener *listener, void *data)
+{
+	struct viewport_toplevel *toplevel =
+		wl_container_of(listener, toplevel, request_maximize);
+
+	if (toplevel->xdg_toplevel->base->initialized &&
+			toplevel->xdg_toplevel->base->surface->mapped) {
+		wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
+	}
+}
+
+static void handle_request_minimize(struct wl_listener *listener, void *data)
+{
+	struct viewport_toplevel *toplevel =
+		wl_container_of(listener, toplevel, request_minimize);
+
+	if (toplevel->xdg_toplevel->base->initialized &&
+			toplevel->xdg_toplevel->base->surface->mapped) {
+		wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
+	}
+}
+
+/* A client dragging itself by its own titlebar.
+ *
+ * Only floating windows have a position of their own to drag, so that is the
+ * only case honoured — a tiled window's place belongs to the layout, and
+ * letting a client pull itself out of it by holding its titlebar would be a
+ * surprise. The drag then runs through exactly the machinery Mod4+drag uses,
+ * so there is one implementation of "the pointer is moving a window". */
+static void handle_request_move(struct wl_listener *listener, void *data)
+{
+	struct viewport_toplevel *toplevel =
+		wl_container_of(listener, toplevel, request_move);
+	struct viewport_server *server = toplevel->server;
+
+	if (server->focused != toplevel) {
+		return;
+	}
+
+	server->moving = toplevel;
+	server->resize_start_x = server->cursor->x;
+	server->resize_start_y = server->cursor->y;
+}
+
+static void handle_request_resize(struct wl_listener *listener, void *data)
+{
+	struct viewport_toplevel *toplevel =
+		wl_container_of(listener, toplevel, request_resize);
+	struct viewport_server *server = toplevel->server;
+
+	if (server->focused != toplevel) {
+		return;
+	}
+
+	server->resizing = toplevel;
+	server->resize_start_x = server->cursor->x;
+	server->resize_start_y = server->cursor->y;
+}
+
 static void handle_toplevel_destroy(struct wl_listener *listener, void *data)
 {
 	struct viewport_toplevel *toplevel =
@@ -91,6 +170,10 @@ static void handle_toplevel_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&toplevel->set_title.link);
 	wl_list_remove(&toplevel->set_app_id.link);
 	wl_list_remove(&toplevel->request_fullscreen.link);
+	wl_list_remove(&toplevel->request_maximize.link);
+	wl_list_remove(&toplevel->request_minimize.link);
+	wl_list_remove(&toplevel->request_move.link);
+	wl_list_remove(&toplevel->request_resize.link);
 
 	/* A timer holding a pointer to this must not outlive it. Unmap normally
 	 * disarms it first; this covers a window destroyed without one. */
@@ -190,6 +273,18 @@ void viewport_handle_new_xdg_toplevel(struct wl_listener *listener, void *data)
 	toplevel->commit.notify = handle_toplevel_commit;
 	wl_signal_add(&xdg_toplevel->base->surface->events.commit,
 		&toplevel->commit);
+	toplevel->request_maximize.notify = handle_request_maximize;
+	wl_signal_add(&xdg_toplevel->events.request_maximize,
+		&toplevel->request_maximize);
+	toplevel->request_minimize.notify = handle_request_minimize;
+	wl_signal_add(&xdg_toplevel->events.request_minimize,
+		&toplevel->request_minimize);
+	toplevel->request_move.notify = handle_request_move;
+	wl_signal_add(&xdg_toplevel->events.request_move, &toplevel->request_move);
+	toplevel->request_resize.notify = handle_request_resize;
+	wl_signal_add(&xdg_toplevel->events.request_resize,
+		&toplevel->request_resize);
+
 	toplevel->destroy.notify = handle_toplevel_destroy;
 	wl_signal_add(&xdg_toplevel->events.destroy, &toplevel->destroy);
 	toplevel->set_title.notify = handle_toplevel_set_title;

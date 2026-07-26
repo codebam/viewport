@@ -184,6 +184,9 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 	}
 	viewport_ipc_notify_output_layout(server);
 	viewport_output_manager_update(server);
+	/* A screen appearing while the session is locked must not show what is
+	 * behind the lock while the locker works out that it exists. */
+	viewport_session_lock_outputs_changed(server);
 
 	/* A frame may already be pending from before this output existed; without
 	 * a scheduled frame nothing would ever acknowledge it. */

@@ -58,6 +58,26 @@ struct wlr_surface *viewport_surface_at(struct viewport_server *server,
 		return NULL;
 	}
 
+	/* While the session is locked, only the locker may be pointed at.
+	 *
+	 * Keyboard focus was already being held by the lock surface, but nothing
+	 * was stopping the pointer: a click landed on whatever window happened to
+	 * be under it, behind the lock screen. Buttons were being pressed in
+	 * applications nobody could see. */
+	if (server->locked) {
+		bool under_lock = false;
+		for (struct wlr_scene_tree *tree = node->parent; tree != NULL;
+				tree = tree->node.parent) {
+			if (tree == server->layer_lock) {
+				under_lock = true;
+				break;
+			}
+		}
+		if (!under_lock) {
+			return NULL;
+		}
+	}
+
 	struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
 	struct wlr_scene_surface *scene_surface =
 		wlr_scene_surface_try_from_buffer(scene_buffer);

@@ -424,6 +424,22 @@ movement, through the same path the timer's blanking uses.
 `wlr-output-power-management-v1` is advertised too, so `wlopm` and settings
 panels can turn a monitor off on request rather than only on a timer.
 
+## What clients may ask for
+
+`maximize` and `minimize` are declined, but *answered*: the protocol requires a
+configure in response to the request, and a client that gets none waits for one
+— GTK's own maximize button hangs the window rather than doing nothing.
+`wm_capabilities` is set to fullscreen alone, so a client can stop drawing
+buttons for things this compositor will not do. It is sent on the initial
+commit rather than at creation, because the surface is not initialised before
+then and wlroots asserts rather than ignoring a configure scheduled too early.
+
+A client dragging itself by its own titlebar (`move`, `resize`) is honoured
+only for floating windows. A tiled window's place belongs to the layout, and
+letting a client pull itself out of it by holding its titlebar would be a
+surprise. The drag runs through the same machinery as Mod4+drag, so there is
+one implementation of "the pointer is moving a window".
+
 ## Keyboard shortcuts
 
 A virtual machine, a nested compositor or a remote desktop client needs the
