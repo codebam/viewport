@@ -742,6 +742,10 @@ function removeView(id) {
   const view = views.get(id);
   if (!view) return;
 
+  const wasFocused = focusedId === id;
+  const found = findLeaf(id);
+  const workspace = found ? found.workspace : null;
+
   resizeObserver.unobserve(view.viewport);
   view.el.remove();
   views.delete(id);
@@ -750,12 +754,37 @@ function removeView(id) {
   if (fullscreenId === id) fullscreenId = null;
 
   relayoutAll();
+
+  /* Keep something focused on the workspace the window left behind. Closing
+   * with Mod4+Shift+q, or a terminal exiting on Ctrl-D, would otherwise drop
+   * focus to the shell and leave the keyboard pointing at nothing. */
+  if (wasFocused) {
+    focusedId = null;
+    const survivors = workspace !== null ? leavesOf(workspace) : [];
+    send(survivors.length > 0
+      ? { type: 'view.focus', id: survivors[0].id }
+      : { type: 'shell.focus' });
+  }
+}
+
+function setFullscreen(id, on) {
+  const previous = fullscreenId;
+  fullscreenId = on ? id : null;
+
+  /* The client has to be told, not just resized: applications rearrange their
+   * own layout on the fullscreen state rather than on size alone. */
+  if (previous !== null && previous !== fullscreenId) {
+    send({ type: 'view.fullscreen', id: previous, fullscreen: false });
+  }
+  if (fullscreenId !== null) {
+    send({ type: 'view.fullscreen', id: fullscreenId, fullscreen: true });
+  }
+  relayoutAll();
 }
 
 function toggleFullscreen() {
   if (focusedId == null) return;
-  fullscreenId = fullscreenId === focusedId ? null : focusedId;
-  relayoutAll();
+  setFullscreen(focusedId, fullscreenId !== focusedId);
 }
 
 function toggleBar() {
@@ -887,6 +916,8 @@ function handleShellCommand(command, args) {
       const id = Number(args[0]);
       const on = args[1] === '1';
       if (Number.isFinite(id)) {
+        /* The client asked for this itself, so it already knows — just lay it
+         * out, without echoing the state back and starting a loop. */
         fullscreenId = on ? id : (fullscreenId === id ? null : fullscreenId);
         relayoutAll();
       }

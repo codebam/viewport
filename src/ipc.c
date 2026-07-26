@@ -580,6 +580,18 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		handle_view_layout(server, object);
 	} else if (strcmp(type, "view.visible") == 0) {
 		handle_view_visible(server, object);
+	} else if (strcmp(type, "view.fullscreen") == 0) {
+		/* Tell the client it is fullscreen. Resizing its hole is not enough:
+		 * an application rearranges its own layout on the fullscreen state —
+		 * hiding toolbars, switching a video to a fullscreen presentation —
+		 * and never learns about it from a configure alone. */
+		struct viewport_toplevel *toplevel = viewport_server_find_toplevel(
+			server, (uint32_t)object_int(object, "id", 0));
+		if (toplevel != NULL) {
+			bool on = json_object_has_member(object, "fullscreen")
+				? json_object_get_boolean_member(object, "fullscreen") : false;
+			wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, on);
+		}
 	} else if (strcmp(type, "view.focus") == 0) {
 		struct viewport_toplevel *toplevel = viewport_server_find_toplevel(
 			server, (uint32_t)object_int(object, "id", 0));
