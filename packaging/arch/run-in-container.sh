@@ -16,7 +16,8 @@
 # The TTY mode needs root, because taking DRM master and reading input devices
 # is not something a rootless container can do. Without logind inside the
 # container, libseat's builtin backend does that directly — which is exactly why
-# it needs the privileges.
+# it needs the privileges. Whichever of run0, sudo or doas is installed is used;
+# set VIEWPORT_ELEVATE to name another.
 #
 # Switch to a free console first (Ctrl+Alt+F3, say) and run it there. If it
 # fails to start, Ctrl+Alt+F1 gets you back to whatever you were in.
@@ -50,6 +51,23 @@ if [ "$mode" = tty ] && [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
 	echo "switch to a text console (Ctrl+Alt+F3) and run it there, or pass" >&2
 	echo "--nested to open it as a window here instead." >&2
 	exit 1
+fi
+
+# How to become root. Not everyone has sudo — a systemd machine may have only
+# run0, and installing a sudo shim to satisfy one script is a system-wide change
+# to work around a three-line problem.
+elevate=()
+if [ -n "${VIEWPORT_ELEVATE:-}" ]; then
+	read -r -a elevate <<< "$VIEWPORT_ELEVATE"
+elif [ "$(id -u)" = 0 ]; then
+	elevate=()
+else
+	for candidate in run0 sudo doas; do
+		if command -v "$candidate" >/dev/null; then
+			elevate=("$candidate")
+			break
+		fi
+	done
 fi
 
 mkdir -p "$work"
@@ -154,11 +172,27 @@ tty_args=(
 	-e HOME=/root
 )
 
+if [ ${#elevate[@]} -eq 0 ] && [ "$(id -u)" != 0 ]; then
+	echo "no way to become root: install one of run0, sudo or doas, or set" >&2
+	echo "VIEWPORT_ELEVATE to whatever this system uses." >&2
+	exit 1
+fi
+
+# Root's podman keeps its own image store, so an image built rootless is not
+# there. Copied across once rather than rebuilt, which would download every
+# package a second time; skipped when it is already present.
+if ! "${elevate[@]}" podman image exists "$runtime" 2>/dev/null; then
+	echo "==> copying $runtime into root's image store (once; it is not small)"
+	podman image save -o "$work/runtime.tar" "$runtime"
+	"${elevate[@]}" podman load -i "$work/runtime.tar"
+	rm -f "$work/runtime.tar"
+fi
+
 if [ "$mode" = shell ]; then
 	echo "==> root shell in the container; run 'viewport' when you are ready"
-	exec sudo podman run "${tty_args[@]}" "$runtime" bash
+	exec "${elevate[@]}" podman run "${tty_args[@]}" "$runtime" bash
 fi
 
 echo "==> starting viewport on this console (Mod4+Shift+e to quit)"
-exec sudo podman run "${tty_args[@]}" "$runtime" \
+exec "${elevate[@]}" podman run "${tty_args[@]}" "$runtime" \
 	bash -c 'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg && exec viewport --startup foot'

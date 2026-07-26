@@ -49,6 +49,14 @@ container driving real hardware, and pinning down exactly which capabilities
 libinput and the GPU driver need across kernel versions is a worse trade than
 granting them.
 
+Whichever of `run0`, `sudo` or `doas` is installed is used; `VIEWPORT_ELEVATE`
+names another. Not every system has sudo, and installing a shim to satisfy one
+script is a system-wide change to work around a three-line problem.
+
+Root's podman keeps its own image store, so the image built rootless is not
+visible to it. It is copied across once rather than rebuilt, which would
+download every package a second time, and skipped when it is already there.
+
 `--shell` gives a root shell in the container with the same devices, for when
 the interesting question is what the environment looks like rather than whether
 the compositor starts.
