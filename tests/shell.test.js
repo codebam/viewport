@@ -299,6 +299,37 @@ for (let id = 1; id <= 4; id++) {
 const layouts = sent.filter((m) => m.type === 'view.layout');
 check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
 
+/* A newly opened window takes focus, however it was launched. */
+{
+  const before = sent.length;
+  emit({ type: 'view.added', id: 60, title: 'new', app_id: 'new-app',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  check('opening a window focuses it',
+    sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 60));
+
+  /* A replayed one is not new: the shell reloads on every edit to it, and
+     focusing then would move focus to whatever came last in the list. */
+  const mark = sent.length;
+  emit({ type: 'view.added', id: 61, title: 'old', app_id: 'old-app',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600, replay: true });
+  check('a replayed window does not steal focus',
+    !sent.slice(mark).some((m) => m.type === 'view.focus' && m.id === 61));
+
+  /* A rule that puts a window on another workspace was an instruction to leave
+     it there, not to be taken there. */
+  const away = sent.length;
+  emit({ type: 'view.added', id: 62, title: 'pinned', app_id: 'pinned-app',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  check('a window a rule sent elsewhere does not pull focus with it',
+    !sent.slice(away).some((m) => m.type === 'view.focus' && m.id === 62));
+
+  for (const id of [60, 61, 62]) emit({ type: 'view.removed', id });
+  emit({ type: 'view.focused', id: 4 });
+}
+
 /* Notifications are the compositor's on D-Bus and the shell's on screen. */
 {
   emit({ type: 'notification.add', id: 7, app_name: 'test',

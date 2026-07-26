@@ -293,7 +293,7 @@ socat - UNIX:$VIEWPORT_SOCKET
 | Message | Payload |
 | --- | --- |
 | `config` | `layout` (`"tiling"` or `"scrolling"`) |
-| `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `floating`, `width`, `height`, `min_width`, `min_height` |
+| `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `replay`, `floating`, `width`, `height`, `min_width`, `min_height` |
 | `view.props` | `id`, `title`, `app_id` |
 | `view.removed` | `id` |
 | `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `hdr`, `hdr_capable`, `scale`, `transform`, `modes[]` |
@@ -632,6 +632,14 @@ toward a pointer lags it by the whole duration.
 Fading a window in cannot be done in CSS for the same reason, so it is tweened
 in the shell and sent as `view.opacity`, which the compositor applies to the
 surface itself. `prefers-reduced-motion` disables all of it.
+
+A window takes focus when it opens, however it was launched. `replay` marks the
+copies sent when the shell reloads or asks for the window list — those describe
+windows that have been open for a while, and focusing on every `view.added`
+would move focus to whichever window came last in the list every time the shell
+reloaded, which is every time it is edited. The other exception is a window a
+rule deliberately placed on another workspace: that was an instruction to leave
+it there, not to be taken there.
 
 ### Testing the shell
 

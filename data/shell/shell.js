@@ -2407,7 +2407,7 @@ function moveByDelta(id, dx, dy) {
 }
 
 function addView({ id, title, app_id, output: outputName, min_width, min_height,
-    floating, width, height }) {
+    floating, width, height, replay }) {
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
   if (views.has(id)) return;
@@ -2455,12 +2455,24 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   const target = rule && Number.isFinite(rule.workspace)
     ? rule.workspace : output.workspace;
 
+  /* A window you just opened should be the one you are typing into, however it
+     was started — a keybinding, a launcher, a link handler. The exceptions are
+     narrow: a replayed window is not new, and a rule that deliberately put this
+     one on another workspace was an instruction to leave it there, not to be
+     taken there. */
+  const focusIt = () => {
+    if (!replay && target === output.workspace) {
+      send({ type: 'view.focus', id });
+    }
+  };
+
   if (rule && rule.floating) {
     insertLeaf(target, id);
     setFloating(id, true, Number.isFinite(rule.width) && Number.isFinite(rule.height)
       ? { x: rule.x ?? 0, y: rule.y ?? 0, width: rule.width, height: rule.height }
       : null);
     fadeIn(id);
+    focusIt();
     saveSession();
     return;
   }
@@ -2473,6 +2485,7 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
     insertLeaf(floatSlot.workspace, id);
     setFloating(id, true, floatSlot);
     fadeIn(id);
+    focusIt();
     saveSession();
     return;
   }
@@ -2482,6 +2495,7 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
     treeGeneration++;
     relayoutAll();
     fadeIn(id);
+    focusIt();
     saveSession();
     return;
   }
@@ -2503,6 +2517,7 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   if (floating) {
     setFloating(id, true);
     fadeIn(id);
+    focusIt();
     saveSession();
     return;
   }
@@ -2510,6 +2525,7 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   treeGeneration++;
   relayoutAll();
   fadeIn(id);
+  focusIt();
   saveSession();
 }
 

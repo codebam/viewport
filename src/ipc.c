@@ -139,7 +139,12 @@ static const char *output_for_new_view(struct viewport_server *server)
 	return "";
 }
 
-void viewport_ipc_notify_view_added(struct viewport_toplevel *toplevel)
+/* `replay` marks the copies sent when the shell reloads or asks for the window
+ * list. They describe windows that have been open for a while, so the shell
+ * must not treat them as newly opened — focusing on every view.added would move
+ * focus to whichever window happened to be last in the list every time the
+ * shell reloaded, which happens on every edit to it. */
+static void notify_view_added(struct viewport_toplevel *toplevel, bool replay)
 {
 	JsonBuilder *builder = json_builder_new();
 	json_builder_begin_object(builder);
@@ -171,6 +176,8 @@ void viewport_ipc_notify_view_added(struct viewport_toplevel *toplevel)
 	 * window type — and the natural size is what to open them at. */
 	int natural_width, natural_height;
 	viewport_view_natural_size(toplevel, &natural_width, &natural_height);
+	json_builder_set_member_name(builder, "replay");
+	json_builder_add_boolean_value(builder, replay);
 	json_builder_set_member_name(builder, "floating");
 	json_builder_add_boolean_value(builder,
 		viewport_view_wants_floating(toplevel));
@@ -183,6 +190,11 @@ void viewport_ipc_notify_view_added(struct viewport_toplevel *toplevel)
 
 	broadcast_builder(toplevel->server, builder);
 	g_object_unref(builder);
+}
+
+void viewport_ipc_notify_view_added(struct viewport_toplevel *toplevel)
+{
+	notify_view_added(toplevel, false);
 }
 
 void viewport_ipc_notify_view_removed(struct viewport_toplevel *toplevel)
@@ -335,7 +347,7 @@ void viewport_ipc_notify_views(struct viewport_server *server)
 	struct viewport_toplevel *toplevel;
 	wl_list_for_each(toplevel, &server->toplevels, link) {
 		if (toplevel->mapped) {
-			viewport_ipc_notify_view_added(toplevel);
+			notify_view_added(toplevel, true);
 		}
 	}
 }
