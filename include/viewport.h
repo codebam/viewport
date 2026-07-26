@@ -249,6 +249,11 @@ struct viewport_server {
 	struct wl_listener pinch_end;
 	struct wl_listener hold_begin;
 	struct wl_listener hold_end;
+	/* Set once teardown begins. Handlers that would normally tell the shell
+	 * about a change must not run then: the objects they would consult are
+	 * being destroyed in a fixed order, and a monitor disappearing because the
+	 * backend is going away is not news anyone can act on. */
+	bool shutting_down;
 	/* True while the shell is showing the overview. Input goes to the shell
 	 * rather than to the shrunken windows it is drawing. */
 	bool overview;

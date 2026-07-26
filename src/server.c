@@ -401,6 +401,11 @@ void viewport_server_finish(struct viewport_server *server)
 		return;
 	}
 
+	/* Set first: from here the objects handlers rely on are destroyed in a
+	 * fixed order, and anything that reacts to a teardown by consulting them
+	 * reads freed memory. */
+	server->shutting_down = true;
+
 	/* WebKit holds wlr_buffers; tear it down before the renderer goes. */
 	if (server->web != NULL) {
 		viewport_web_destroy(server->web);

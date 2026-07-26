@@ -91,12 +91,26 @@ static void handle_output_destroy(struct wl_listener *listener, void *data)
 {
 	struct viewport_output *output = wl_container_of(listener, output, destroy);
 
+	struct viewport_server *server = output->server;
+
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
 	wl_list_remove(&output->link);
 
-	viewport_ipc_notify_output_layout(output->server);
+	/* Not while shutting down.
+	 *
+	 * Destroying the backend destroys every output, which lands here, which
+	 * republishes the output list, which asks each output whether it can do
+	 * HDR — and that reads the renderer, destroyed moments earlier in the same
+	 * function. A use-after-free on every clean exit, corrupting the heap on
+	 * the way out.
+	 *
+	 * There is nothing to publish anyway: the shell is already gone and a
+	 * monitor vanishing because the compositor is exiting is not news. */
+	if (!server->shutting_down) {
+		viewport_ipc_notify_output_layout(server);
+	}
 	free(output);
 }
 
