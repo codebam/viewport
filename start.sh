@@ -18,7 +18,17 @@
 #   pkill -TERM viewport   from another VT
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "$0")")"
+REPO="$(dirname "$(readlink -f "$0")")"
+cd "$REPO"
+
+# stdenv exports SHELL as an absolute path to the non-interactive bash, and
+# `nix develop` passes that through to the compositor and on to every terminal
+# it spawns. That bash is built --disable-readline --disable-progcomp, so
+# ~/.bashrc errors out and prompt escapes render literally. Read the real login
+# shell from passwd rather than $SHELL: this script may itself be started from
+# inside a nix shell, in which case $SHELL is already wrong.
+LOGIN_SHELL="$(getent passwd "$(id -un)" | cut -d: -f7)"
+: "${LOGIN_SHELL:=${SHELL:-/bin/sh}}"
 
 LOG="${VIEWPORT_LOG:-$HOME/viewport.log}"
 
@@ -108,9 +118,14 @@ echo "logging to $LOG (previous run: $LOG.1)"
 # animation is sixty a second and formatted I/O inside the layout path. Pass it
 # when chasing a geometry bug:  ./start.sh --trace
 
-exec nix develop --command ./build/viewport \
-	--url      "file://$PWD/data/shell/index.html" \
-	--fallback "file://$PWD/data/fallback.html" \
+# Spawned clients inherit the compositor's cwd, so a terminal opened from the
+# shell would otherwise land in the build tree rather than $HOME. Every path
+# handed to the compositor is absolute, so the chdir costs nothing.
+cd "$HOME"
+
+exec nix develop "$REPO" --command env SHELL="$LOGIN_SHELL" "$REPO/build/viewport" \
+	--url      "file://$REPO/data/shell/index.html" \
+	--fallback "file://$REPO/data/fallback.html" \
 	--terminal ghostty \
 	--menu     wmenu-run \
 	--startup  ghostty \

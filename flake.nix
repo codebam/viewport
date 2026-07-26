@@ -184,6 +184,11 @@
             wayland-utils
             weston # weston-terminal / weston-simple-egl as test clients
             foot
+            # start.sh runs the compositor under `nix develop`, so this PATH is
+            # inherited by every client it spawns, terminals included. The
+            # stdenv bash is built --disable-readline --disable-progcomp, which
+            # makes ~/.bashrc error out and leaks starship's PS1 escapes.
+            bashInteractive
           ]);
 
           shellHook = ''
