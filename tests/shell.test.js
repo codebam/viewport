@@ -265,6 +265,67 @@ if (mode === 'scrolling') {
   check('and back again', globalThis.__shell.activeOutput === start);
 }
 
+/* Fullscreen is per workspace. Two monitors each showing something fullscreen
+ * must not cancel each other — a single global made the second one silently
+ * un-fullscreen the first. */
+{
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-3', x: 1920, y: 0, width: 1920, height: 1080,
+      usable_x: 1920, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+
+  const outs = globalThis.__shell.outputs;
+  const [left, right] = [...outs.values()];
+  const [leftName, rightName] = [...outs.keys()];
+  outs.get(leftName).el.__rect = { left: 0, top: 0, width: 1920, height: 1080 };
+  outs.get(rightName).el.__rect =
+    { left: 1920, top: 0, width: 1920, height: 1080 };
+
+  /* One window on each monitor. addView places by the *active* output, not by
+     the hint, so the active one has to be moved between the two — the same way
+     it moves when the user looks at the other screen. */
+  const onLeft = 90, onRight = 91;
+
+  emit({ type: 'shell.command', command: 'output.focus', args: ['left'] });
+  emit({ type: 'view.added', id: onLeft, title: 'a', app_id: 'test',
+    output: leftName, min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+
+  emit({ type: 'shell.command', command: 'output.focus', args: ['right'] });
+  emit({ type: 'view.added', id: onRight, title: 'b', app_id: 'test',
+    output: rightName, min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+
+  check('the two windows landed on different workspaces',
+    left.workspace !== right.workspace);
+
+  emit({ type: 'view.focused', id: onLeft });
+  emit({ type: 'shell.command', command: 'window.fullscreen', args: [] });
+  emit({ type: 'view.focused', id: onRight });
+  emit({ type: 'shell.command', command: 'window.fullscreen', args: [] });
+
+  const unset = sent.filter((m) =>
+    m.type === 'view.fullscreen' && m.id === onLeft && !m.fullscreen);
+  check('fullscreen on one monitor leaves the other alone', unset.length === 0);
+
+  const set = sent.filter((m) => m.type === 'view.fullscreen' && m.fullscreen);
+  check('both monitors report fullscreen',
+    set.some((m) => m.id === onLeft) && set.some((m) => m.id === onRight));
+
+  /* Put the workspaces back: a fullscreen window hides everything else on its
+     workspace, which would silently starve any later test of a laid-out
+     window to measure. */
+  for (const id of [onLeft, onRight]) {
+    emit({ type: 'view.focused', id });
+    emit({ type: 'shell.command', command: 'window.fullscreen', args: [] });
+    emit({ type: 'view.removed', id });
+  }
+}
+
 /* Clipping: a window scrolled off the left of its output must be reported with
  * a clip rect covering only the part still on screen. Nothing stops the
  * compositor drawing the rest onto the monitor next door otherwise. */

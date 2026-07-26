@@ -64,7 +64,11 @@ let focusedId = null;
 let activeOutput = null;
 /* Direction the next new window splits in, like sway's splith/splitv. */
 let pendingSplit = 'horizontal';
-let fullscreenId = null;
+/* Fullscreen is per workspace, not per session: a workspace lives on one
+ * monitor at a time, so two monitors can each have something fullscreen and
+ * neither cancels the other. A single global here meant fullscreening on the
+ * second monitor silently un-fullscreened the first. */
+const fullscreens = new Map(); // workspace -> view id
 let lastStatus = {};
 let currentMode = 'default';
 /* 'tiling' (i3-style splits) or 'scrolling' (niri's strip of columns). Set by
@@ -124,6 +128,18 @@ function findLeaf(id) {
 function leavesOf(n) {
   const root = workspaces.get(n);
   return root ? [...walk(root)].map(([leaf]) => leaf) : [];
+}
+
+/* The fullscreen window on a workspace, if any. */
+function fullscreenOn(workspace) {
+  return workspace !== null && workspace !== undefined
+    ? fullscreens.get(workspace) ?? null : null;
+}
+
+/* Whether this window is the fullscreen one on its own workspace. */
+function isFullscreen(id) {
+  if (id == null) return false;
+  return fullscreenOn(workspaceOf(id)) === id;
 }
 
 /* Which workspace a window is on, tiled or floating. */
@@ -324,11 +340,9 @@ function renderTabbed(node) {
      tab has to bring that tab forward, or the focused window stays hidden. A
      fullscreen window wins outright — it covers the output, so it has to be in
      the DOM whatever the tab strip says. */
-  let active = fullscreenId !== null
-    ? children.findIndex((child) => child.type === 'leaf'
-      ? child.id === fullscreenId
-      : [...walk(child)].some(([leaf]) => leaf.id === fullscreenId))
-    : -1;
+  let active = children.findIndex((child) => child.type === 'leaf'
+    ? isFullscreen(child.id)
+    : [...walk(child)].some(([leaf]) => isFullscreen(leaf.id)));
   if (active < 0) active = children.findIndex(containsFocus);
   if (active < 0) active = Math.min(node.active ?? 0, children.length - 1);
   node.active = active;
@@ -998,7 +1012,7 @@ function relayoutAll() {
       view.el.classList.add('floating');
       output.windowsEl.append(view.el);
       renderedIds.add(id);
-      if (id === fullscreenId) continue; // covers the output; rect ignored
+      if (isFullscreen(id)) continue; // covers the output; rect ignored
       Object.assign(view.el.style, {
         left: `${floating.x}px`,
         top: `${floating.y}px`,
@@ -1013,8 +1027,7 @@ function relayoutAll() {
     /* A fullscreen window covers the whole output, bar included — that is what
      * fullscreen means, and a video with a status bar across the top is not
      * fullscreen. The bar also stays hidden while explicitly toggled off. */
-    const fullscreenHere = fullscreenId !== null &&
-      workspaceOf(fullscreenId) === output.workspace;
+    const fullscreenHere = fullscreenOn(output.workspace) !== null;
     output.el.classList.toggle('has-fullscreen', fullscreenHere);
     output.el.classList.toggle('bar-hidden', output.barHidden);
     renderBar(name);
@@ -1031,7 +1044,7 @@ function relayoutAll() {
       send({ type: 'view.visible', id, visible: false });
     }
     view.el.classList.toggle('focused', id === focusedId);
-    view.el.classList.toggle('fullscreen', id === fullscreenId);
+    view.el.classList.toggle('fullscreen', isFullscreen(id));
   }
 
   /* Measure after the browser has laid the new tree out. */
@@ -1416,7 +1429,9 @@ function removeView(id) {
   floats.delete(id);
   removeLeaf(id);
   treeGeneration++;
-  if (fullscreenId === id) fullscreenId = null;
+  const fullscreenWorkspace = workspace !== null && fullscreens.get(workspace) === id
+    ? workspace : null;
+  if (fullscreenWorkspace !== null) fullscreens.delete(fullscreenWorkspace);
 
   relayoutAll();
 
@@ -1433,23 +1448,33 @@ function removeView(id) {
 }
 
 function setFullscreen(id, on) {
-  const previous = fullscreenId;
-  fullscreenId = on ? id : null;
+  const workspace = workspaceOf(id);
+  if (workspace === null) return;
+
+  /* Only this workspace's fullscreen window is displaced. Whatever the other
+     monitor is showing is none of its business. */
+  const previous = fullscreens.get(workspace) ?? null;
+  if (on) {
+    fullscreens.set(workspace, id);
+  } else if (previous === id) {
+    fullscreens.delete(workspace);
+  }
+  const current = fullscreens.get(workspace) ?? null;
 
   /* The client has to be told, not just resized: applications rearrange their
    * own layout on the fullscreen state rather than on size alone. */
-  if (previous !== null && previous !== fullscreenId) {
+  if (previous !== null && previous !== current) {
     send({ type: 'view.fullscreen', id: previous, fullscreen: false });
   }
-  if (fullscreenId !== null) {
-    send({ type: 'view.fullscreen', id: fullscreenId, fullscreen: true });
+  if (current !== null && current !== previous) {
+    send({ type: 'view.fullscreen', id: current, fullscreen: true });
   }
   relayoutAll();
 }
 
 function toggleFullscreen() {
   if (focusedId == null) return;
-  setFullscreen(focusedId, fullscreenId !== focusedId);
+  setFullscreen(focusedId, !isFullscreen(focusedId));
 }
 
 function toggleBar() {
@@ -1602,7 +1627,14 @@ function handleShellCommand(command, args) {
       if (Number.isFinite(id)) {
         /* The client asked for this itself, so it already knows — just lay it
          * out, without echoing the state back and starting a loop. */
-        fullscreenId = on ? id : (fullscreenId === id ? null : fullscreenId);
+        const workspace = workspaceOf(id);
+        if (workspace !== null) {
+          if (on) {
+            fullscreens.set(workspace, id);
+          } else if (fullscreens.get(workspace) === id) {
+            fullscreens.delete(workspace);
+          }
+        }
         relayoutAll();
       }
       break;
