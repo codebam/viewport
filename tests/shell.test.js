@@ -393,8 +393,25 @@ if (mode === 'scrolling') {
  * is smaller than many windows' minimum size, so resizing would be refused as
  * often as it was honoured. The compositor is told the real size plus a scale. */
 {
+  /* Park a window on a workspace no output is displaying. Showing every
+     workspace at once is the point of the overview, so it must still be drawn
+     — visibility normally follows whether a monitor is showing the workspace,
+     and that rule has to be suspended here. */
+  const views = globalThis.__shell.views;
+  const parked = [...views.keys()][0];
+  emit({ type: 'view.focused', id: parked });
+  emit({ type: 'shell.command', command: 'workspace.move', args: ['7'] });
+
+  const onScreen = [...globalThis.__shell.outputs.values()]
+    .some((o) => o.workspace === 7);
+  check('the test parked a window off screen', !onScreen);
+  check('and it is hidden while parked', views.get(parked).el.hidden);
+
   const before = sent.length;
   emit({ type: 'shell.command', command: 'layout.overview', args: [] });
+
+  check('the overview draws a window from an off-screen workspace',
+    !views.get(parked).el.hidden);
 
   const announced = sent.slice(before)
     .find((m) => m.type === 'shell.overview');

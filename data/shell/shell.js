@@ -1572,8 +1572,16 @@ function relayoutAll() {
 
   for (const [id, view] of views) {
     const workspace = workspaceOf(id);
-    const visible = workspace !== null && shown.has(workspace) &&
-      renderedIds.has(id);
+    /* Normally a window is on screen only if its workspace is: `shown` maps
+       each displayed workspace to the output showing it. The overview breaks
+       that rule on purpose — it draws every workspace at once, including the
+       ones no monitor is displaying — so there the thumbnail's own render is
+       the whole answer. Without this exception a window on a workspace that
+       happened to be off screen stayed hidden, and its thumbnail came out
+       labelled empty. */
+    const visible = overviewActive
+      ? renderedIds.has(id)
+      : (workspace !== null && shown.has(workspace) && renderedIds.has(id));
 
     view.el.hidden = !visible;
     if (!visible && view.box !== null) {

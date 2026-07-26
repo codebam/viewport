@@ -352,6 +352,13 @@ moment the scale returns to 1. And input is routed to the shell for the duration
 (`shell.overview`), because a click on a miniature means "take me there" rather
 than reaching the client underneath.
 
+Visibility works differently while it is up. A window is normally on screen
+only if some monitor is displaying its workspace; the overview draws every
+workspace at once, including the ones no monitor is showing, so there the
+thumbnail's own render is the whole answer. Without that exception a window on
+an off-screen workspace stayed hidden and its thumbnail came out labelled
+empty.
+
 Every workspace is shown, not only the occupied ones — an overview is how you
 get somewhere, and an empty workspace has to be visible to be a target. They are
 dealt out across the monitors rather than crowded onto one: a window element
