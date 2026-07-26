@@ -140,6 +140,12 @@ spelling — `Mod4`/`Super`/`Logo`, `Shift`, `Ctrl`, `Alt` — and any key
 lock are masked out of matching. Bindings outrank both the focused client and
 the shell, and fire on press only.
 
+Asking for the workspace you are already on takes you back to the one before
+it, so `Mod4+2` pressed twice from workspace 1 goes to 2 and then back to 1 —
+sway's `workspace_auto_back_and_forth`, and the same toggle it gives you.
+`Mod4+grave` goes back without naming a workspace. The previous workspace is
+remembered per output and survives a restart along with the rest of the layout.
+
 `focus` takes `next`, `prev`, `left`, `right`, `up` or `down`. Directional
 moves compare window centres, so they follow what is on screen — including
 across monitors — rather than stacking order.

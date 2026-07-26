@@ -348,6 +348,10 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 
 	/* Workspaces are shell policy, so these are passthroughs. The shell
 	 * decides what "workspace 3" means; C only delivers the keystroke. */
+	/* sway's `workspace back_and_forth`. Repeating the switch for the workspace
+	 * you are on does the same thing; this is for reaching it directly. */
+	viewport_binding_add(server, "Mod4+grave=shell workspace.back");
+
 	for (int i = 1; i <= 9; i++) {
 		snprintf(spec, sizeof(spec), "Mod4+%d=shell workspace.switch %d", i, i);
 		viewport_binding_add(server, spec);

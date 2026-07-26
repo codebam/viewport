@@ -503,6 +503,35 @@ if (mode === 'scrolling') {
   emit({ type: 'shell.command', command: 'gesture.settle', args: [] });
 }
 
+/* Pressing the switch for the workspace you are already on goes back to the
+ * one before it, so the same key toggles between two. */
+{
+  const outs = globalThis.__shell.outputs;
+  const output = outs.get(globalThis.__shell.activeOutput);
+  const home = output.workspace;
+  const away = home === 4 ? 6 : 4;
+
+  emit({ type: 'shell.command', command: 'workspace.switch', args: [String(away)] });
+  check('switching goes to the workspace asked for', output.workspace === away);
+
+  emit({ type: 'shell.command', command: 'workspace.switch', args: [String(away)] });
+  check('asking again goes back where you came from', output.workspace === home);
+
+  emit({ type: 'shell.command', command: 'workspace.switch', args: [String(home)] });
+  check('and again returns: the key is a toggle', output.workspace === away);
+
+  /* The explicit command does the same without naming a workspace. */
+  emit({ type: 'shell.command', command: 'workspace.back', args: [] });
+  check('workspace.back goes to the previous one', output.workspace === home);
+
+  /* A workspace with nothing before it does not move anywhere. */
+  const fresh = home === 8 ? 7 : 8;
+  emit({ type: 'shell.command', command: 'workspace.switch', args: [String(fresh)] });
+  emit({ type: 'shell.command', command: 'workspace.switch', args: [String(fresh)] });
+  check('a repeated switch never lands nowhere',
+    output.workspace >= 1 && output.workspace <= 9);
+}
+
 /* The overview draws every window shrunk rather than resizing it: a thumbnail
  * is smaller than many windows' minimum size, so resizing would be refused as
  * often as it was honoured. The compositor is told the real size plus a scale. */

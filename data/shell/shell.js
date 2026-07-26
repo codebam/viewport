@@ -779,7 +779,10 @@ function serialiseSession() {
     if (tree !== null) saved.workspaces[n] = tree;
   }
   for (const [name, output] of outputs) {
-    saved.outputs[name] = { workspace: output.workspace };
+    saved.outputs[name] = {
+      workspace: output.workspace,
+      ...(output.previous != null ? { previous: output.previous } : {}),
+    };
   }
   return saved;
 }
@@ -839,6 +842,7 @@ function restoreSession(text) {
     const output = outputs.get(name);
     if (output && Number.isFinite(state.workspace)) {
       output.workspace = state.workspace;
+      if (Number.isFinite(state.previous)) output.previous = state.previous;
     }
   }
 
@@ -2008,6 +2012,16 @@ function switchWorkspace(name, n) {
   const output = outputs.get(name);
   if (!output || n < 1 || n > WORKSPACES) return;
 
+  /* Asking for the workspace you are already on takes you back to the one
+     before it — sway's workspace_auto_back_and_forth. The same key becomes a
+     toggle between two workspaces, which is most of what switching is: you
+     were somewhere, you looked at something else, you want to go back, and you
+     should not have to remember where you came from to do it. */
+  if (output.workspace === n && output.previous != null &&
+      output.previous !== n) {
+    n = output.previous;
+  }
+
   const host = hostOfWorkspace(n);
   if (host !== null && host !== name) {
     setActiveOutput(host);
@@ -2016,10 +2030,19 @@ function switchWorkspace(name, n) {
   }
   if (output.workspace === n) return;
 
+  output.previous = output.workspace;
   output.workspace = n;
   setActiveOutput(name);
   relayoutAll();
   focusFirstOn(name);
+}
+
+/* Straight to the previous workspace, whatever it was. The same thing the
+ * repeated switch does, for a binding of its own. */
+function workspaceBack(name) {
+  const output = outputs.get(name);
+  if (!output || output.previous == null) return;
+  switchWorkspace(name, output.previous);
 }
 
 function focusFirstOn(name) {
@@ -2436,6 +2459,9 @@ function handleShellCommand(command, args) {
   switch (command) {
     case 'workspace.switch':
       if (Number.isFinite(n)) switchWorkspace(activeOutputName(), n);
+      break;
+    case 'workspace.back':
+      workspaceBack(activeOutputName());
       break;
     case 'workspace.move':
       if (Number.isFinite(n)) moveToWorkspace(n);
