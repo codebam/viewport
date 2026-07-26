@@ -536,6 +536,14 @@ body {
 }
 .empty[hidden] { display: none; }
 
+/* Both parts of the empty state are switched off from the config file, on the
+   root element rather than per output: there is one answer for the whole
+   session, and putting it here means nothing has to be re-applied when an
+   output appears. With both off the desktop is genuinely empty, which on an
+   OLED panel is the point. */
+html.no-logo .empty .logo,
+html.no-tutorial .empty .tutorial { display: none; }
+
 .empty pre {
   margin-top: .75rem;
   padding: .6rem .9rem;

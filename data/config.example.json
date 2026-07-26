@@ -38,6 +38,15 @@
   ],
   "bar": "visible",
 
+  "_empty": [
+    "What the shell draws when a workspace has no windows: the mark, and the",
+    "note naming the keys that open something. Worth having the first time",
+    "and steadily less so after that. With both off the desktop is empty,",
+    "which on an OLED panel is one fewer thing sitting in fixed pixels."
+  ],
+  "logo": true,
+  "tutorial": true,
+
   "_theme": [
     "Colours for the shell, set as CSS custom properties. Any name the",
     "stylesheet reads works; the ones it defines are bg, text, muted, border,",

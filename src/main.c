@@ -60,6 +60,9 @@ int main(int argc, char *argv[])
 		/* Dark by default: the shell is dark, and a light Firefox next to it
 		 * looks like a bug. Override with "dark_mode": false in the config. */
 		.dark_mode = true,
+		/* The empty desktop explains itself until told not to. */
+		.logo = true,
+		.tutorial = true,
 	};
 	enum { OPT_TRACE = 1000 };
 	enum wlr_log_importance log_level = WLR_INFO;

@@ -130,6 +130,12 @@ struct viewport_config {
 	 * reveals it only while Mod4 is held. Anything else is left to the shell's
 	 * default. NULL when the config file said nothing. */
 	const char *bar;
+	/* What the shell draws on an empty desktop. The mark, and the note saying
+	 * which keys open something — worth having the first time and steadily
+	 * less so, and on an OLED panel they are two more things that sit in the
+	 * same pixels all day. Both default to on. */
+	bool logo;
+	bool tutorial;
 	/* Seconds of inactivity before the locker is run and before the outputs
 	 * are turned off. Zero disables each; with both zero there is no policy at
 	 * all and an external idle daemon can own it. */

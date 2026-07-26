@@ -242,6 +242,11 @@ void viewport_ipc_notify_config(struct viewport_server *server)
 	json_builder_add_string_value(builder,
 		server->config.layout != NULL ? server->config.layout : "tiling");
 
+	json_builder_set_member_name(builder, "logo");
+	json_builder_add_boolean_value(builder, server->config.logo);
+	json_builder_set_member_name(builder, "tutorial");
+	json_builder_add_boolean_value(builder, server->config.tutorial);
+
 	if (server->config.bar != NULL) {
 		json_builder_set_member_name(builder, "bar");
 		json_builder_add_string_value(builder, server->config.bar);

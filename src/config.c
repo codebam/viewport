@@ -200,6 +200,12 @@ bool viewport_config_load(struct viewport_server *server,
 		config->theme_json = keep(json_generator_to_data(generator, NULL));
 		g_object_unref(generator);
 	}
+	if (json_object_has_member(object, "logo")) {
+		config->logo = json_object_get_boolean_member(object, "logo");
+	}
+	if (json_object_has_member(object, "tutorial")) {
+		config->tutorial = json_object_get_boolean_member(object, "tutorial");
+	}
 	if (json_object_has_member(object, "bar")) {
 		config->bar = keep(g_strdup(
 			json_object_get_string_member(object, "bar")));

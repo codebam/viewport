@@ -858,6 +858,20 @@ if (mode === 'scrolling') {
 
   emit({ type: 'config', layout: mode, bar: 'visible' });
   check('switching back to visible shows the bar', !barHidden());
+
+  /* The empty desktop's two parts, switched from the config file. */
+  const root = document.documentElement.classList;
+  emit({ type: 'config', layout: mode, logo: false, tutorial: false });
+  check('logo: false hides the mark', root.contains('no-logo'));
+  check('tutorial: false hides the note', root.contains('no-tutorial'));
+
+  emit({ type: 'config', layout: mode, logo: true, tutorial: true });
+  check('turning them back on shows them again',
+    !root.contains('no-logo') && !root.contains('no-tutorial'));
+
+  emit({ type: 'config', layout: mode });
+  check('a config that says nothing leaves them on',
+    !root.contains('no-logo') && !root.contains('no-tutorial'));
 }
 
 emit({ type: 'view.removed', id: 1 });

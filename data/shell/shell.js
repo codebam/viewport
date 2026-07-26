@@ -2952,6 +2952,12 @@ window.addEventListener('viewport', (event) => {
       windowRules = Array.isArray(message.rules) ? message.rules : [];
       applyTheme(message.theme);
       applyBarMode(message.bar);
+      /* Absent means on: a config file that says nothing should get the
+         explanation, and only someone who has read it once turns it off. */
+      document.documentElement.classList.toggle('no-logo',
+        message.logo === false);
+      document.documentElement.classList.toggle('no-tutorial',
+        message.tutorial === false);
       if (message.layout === 'scrolling' || message.layout === 'tiling') {
         if (message.layout !== layoutMode) {
           layoutMode = message.layout;
