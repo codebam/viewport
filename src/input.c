@@ -222,6 +222,40 @@ static void process_cursor_motion(struct viewport_server *server,
 	viewport_pointer_check_constraint(server, surface);
 }
 
+/* Exposed so the tablet can move the cursor and have everything downstream —
+ * focus, enter and leave, the shell's idea of where the pointer is — brought up
+ * to date exactly as a mouse movement would. */
+void viewport_cursor_refresh(struct viewport_server *server, uint32_t time_msec)
+{
+	process_cursor_motion(server, time_msec);
+}
+
+/* Likewise for a button. The stylus falls back to a left click where nothing
+ * speaks tablet-v2, and this is the same delivery path a mouse click takes. */
+void viewport_pointer_button(struct viewport_server *server, uint32_t time_msec,
+	uint32_t button, bool pressed)
+{
+	double sx, sy;
+	struct viewport_toplevel *toplevel = NULL;
+	struct wlr_surface *surface = viewport_surface_at(server, server->cursor->x,
+		server->cursor->y, &sx, &sy, &toplevel);
+
+	if (surface == NULL) {
+		if (server->web != NULL) {
+			viewport_web_pointer_button(server->web, time_msec,
+				server->cursor->x, server->cursor->y, button, pressed);
+		}
+		return;
+	}
+
+	if (pressed && toplevel != NULL && server->focused != toplevel) {
+		viewport_toplevel_focus(toplevel);
+	}
+	wlr_seat_pointer_notify_button(server->seat, time_msec, button,
+		pressed ? WL_POINTER_BUTTON_STATE_PRESSED
+			: WL_POINTER_BUTTON_STATE_RELEASED);
+}
+
 static void handle_cursor_motion(struct wl_listener *listener, void *data)
 {
 	struct viewport_server *server =
@@ -1018,6 +1052,10 @@ void viewport_handle_new_input(struct wl_listener *listener, void *data)
 		break;
 	case WLR_INPUT_DEVICE_POINTER:
 		wlr_cursor_attach_input_device(server->cursor, device);
+		break;
+	case WLR_INPUT_DEVICE_TABLET:
+	case WLR_INPUT_DEVICE_TABLET_PAD:
+		viewport_tablet_add(server, device);
 		break;
 	case WLR_INPUT_DEVICE_TOUCH:
 		/* Attached to the cursor only for its output mapping — the events

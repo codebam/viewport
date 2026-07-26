@@ -102,6 +102,9 @@ struct viewport_config {
 	/* Cursor theme and size; NULL/0 use the defaults. */
 	const char *cursor_theme;
 	int cursor_size;
+	/* Window rules, as the JSON array the config file contained. Passed to the
+	 * shell untouched: what they mean is the shell's business. */
+	const char *rules_json;
 	/* Seconds of inactivity before the locker is run and before the outputs
 	 * are turned off. Zero disables each; with both zero there is no policy at
 	 * all and an external idle daemon can own it. */
@@ -211,6 +214,15 @@ struct viewport_server {
 	struct wlr_keyboard_shortcuts_inhibitor_v1 *active_inhibitor;
 	struct wl_listener inhibitor_destroy;
 
+	/* Graphics tablets: the richer protocol, plus a stylus that also drives the
+	 * cursor so it works in programs that only understand a pointer. */
+	struct wlr_tablet_manager_v2 *tablet_manager;
+	struct viewport_tablet_tool *tablet_tool;
+	struct wl_listener tablet_axis;
+	struct wl_listener tablet_proximity;
+	struct wl_listener tablet_tip;
+	struct wl_listener tablet_button;
+
 	struct wlr_pointer_gestures_v1 *pointer_gestures;
 	struct wl_listener swipe_begin;
 	struct wl_listener swipe_update;
@@ -230,7 +242,9 @@ struct viewport_server {
 	struct wl_listener output_manager_apply;
 	struct wl_listener output_manager_test;
 	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
+	struct wlr_ext_foreign_toplevel_list_v1 *ext_foreign_toplevel_list;
 	struct viewport_ime *ime;
+	struct viewport_notifications *notifications;
 	struct viewport_output_revert *output_revert;
 	struct viewport_lock *lock;
 	bool locked;
@@ -314,6 +328,8 @@ struct viewport_server {
 
 struct viewport_foreign;
 struct viewport_ime;
+struct viewport_tablet_tool;
+struct viewport_notifications;
 
 /* An output configuration applied but not yet confirmed.
  *
@@ -493,6 +509,10 @@ struct viewport_toplevel *viewport_server_find_toplevel(
 void viewport_handle_new_output(struct wl_listener *listener, void *data);
 
 /* Total layout extent, used to size the shell's viewport. */
+/* Tells a surface which scale to render at, over both scale protocols. */
+void viewport_surface_update_scale(struct viewport_server *server,
+	struct wlr_surface *surface);
+
 void viewport_layout_size(struct viewport_server *server,
 	int *width, int *height);
 
@@ -538,6 +558,40 @@ void viewport_idle_blank(struct viewport_server *server);
 void viewport_session_save(struct viewport_server *server, const char *state);
 char *viewport_session_load(struct viewport_server *server);
 void viewport_ipc_notify_session(struct viewport_server *server);
+
+/* Notifications: the compositor claims org.freedesktop.Notifications and the
+ * shell draws them, so their appearance is the stylesheet already in use. */
+struct viewport_notifications *viewport_notifications_create(
+	struct viewport_server *server);
+void viewport_notifications_destroy(
+	struct viewport_notifications *notifications);
+void viewport_notifications_closed(struct viewport_notifications *notifications,
+	uint32_t id, uint32_t reason);
+void viewport_notifications_dismissed(
+	struct viewport_notifications *notifications, uint32_t id);
+void viewport_notifications_expired(
+	struct viewport_notifications *notifications, uint32_t id);
+void viewport_notifications_action(struct viewport_notifications *notifications,
+	uint32_t id, const char *action);
+
+void viewport_ipc_notify_notification(struct viewport_server *server,
+	uint32_t id, const char *app_name, const char *icon, const char *summary,
+	const char *body, uint8_t urgency, int32_t timeout,
+	const char *const *action_keys, const char *const *action_labels,
+	size_t action_count);
+void viewport_ipc_notify_notification_closed(struct viewport_server *server,
+	uint32_t id);
+
+/* Graphics tablets. */
+void viewport_tablet_init(struct viewport_server *server);
+void viewport_tablet_add(struct viewport_server *server,
+	struct wlr_input_device *device);
+/* Re-runs the pointer's idea of what it is over, after it has been moved by
+ * something other than the pointer itself. */
+void viewport_cursor_refresh(struct viewport_server *server, uint32_t time_msec);
+/* Delivers a pointer button to whatever is under the cursor. */
+void viewport_pointer_button(struct viewport_server *server, uint32_t time_msec,
+	uint32_t button, bool pressed);
 
 /* Touchpad gestures: three fingers for the compositor, the rest forwarded. */
 void viewport_gestures_init(struct viewport_server *server);

@@ -229,6 +229,20 @@ void viewport_ipc_notify_config(struct viewport_server *server)
 	json_builder_set_member_name(builder, "layout");
 	json_builder_add_string_value(builder,
 		server->config.layout != NULL ? server->config.layout : "tiling");
+
+	/* Handed over as parsed JSON rather than a string, so the shell does not
+	 * have to parse a second time inside a message it already parsed. */
+	if (server->config.rules_json != NULL) {
+		JsonParser *parser = json_parser_new();
+		if (json_parser_load_from_data(parser, server->config.rules_json, -1,
+				NULL)) {
+			json_builder_set_member_name(builder, "rules");
+			json_builder_add_value(builder,
+				json_node_copy(json_parser_get_root(parser)));
+		}
+		g_object_unref(parser);
+	}
+
 	json_builder_end_object(builder);
 
 	broadcast_builder(server, builder);
@@ -253,6 +267,67 @@ void viewport_ipc_notify_session(struct viewport_server *server)
 	broadcast_builder(server, builder);
 	g_object_unref(builder);
 	g_free(state);
+}
+
+/* A notification, on its way to the shell that will draw it. */
+void viewport_ipc_notify_notification(struct viewport_server *server,
+	uint32_t id, const char *app_name, const char *icon, const char *summary,
+	const char *body, uint8_t urgency, int32_t timeout,
+	const char *const *action_keys, const char *const *action_labels,
+	size_t action_count)
+{
+	JsonBuilder *builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "notification.add");
+	json_builder_set_member_name(builder, "id");
+	json_builder_add_int_value(builder, id);
+	json_builder_set_member_name(builder, "app_name");
+	json_builder_add_string_value(builder, app_name ? app_name : "");
+	json_builder_set_member_name(builder, "icon");
+	json_builder_add_string_value(builder, icon ? icon : "");
+	json_builder_set_member_name(builder, "summary");
+	json_builder_add_string_value(builder, summary ? summary : "");
+	json_builder_set_member_name(builder, "body");
+	json_builder_add_string_value(builder, body ? body : "");
+	json_builder_set_member_name(builder, "urgency");
+	json_builder_add_int_value(builder, urgency);
+	/* Negative means "the server decides"; zero means "never expire". Passed
+	 * through as sent, because deciding is the shell's job. */
+	json_builder_set_member_name(builder, "timeout");
+	json_builder_add_int_value(builder, timeout);
+
+	json_builder_set_member_name(builder, "actions");
+	json_builder_begin_array(builder);
+	for (size_t i = 0; i < action_count; i++) {
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "key");
+		json_builder_add_string_value(builder, action_keys[i]);
+		json_builder_set_member_name(builder, "label");
+		json_builder_add_string_value(builder, action_labels[i]);
+		json_builder_end_object(builder);
+	}
+	json_builder_end_array(builder);
+
+	json_builder_end_object(builder);
+
+	broadcast_builder(server, builder);
+	g_object_unref(builder);
+}
+
+void viewport_ipc_notify_notification_closed(struct viewport_server *server,
+	uint32_t id)
+{
+	JsonBuilder *builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "notification.close");
+	json_builder_set_member_name(builder, "id");
+	json_builder_add_int_value(builder, id);
+	json_builder_end_object(builder);
+
+	broadcast_builder(server, builder);
+	g_object_unref(builder);
 }
 
 void viewport_ipc_notify_views(struct viewport_server *server)
@@ -881,6 +956,25 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		}
 	} else if (strcmp(type, "session.query") == 0) {
 		viewport_ipc_notify_session(server);
+	} else if (strcmp(type, "notification.action") == 0) {
+		/* The shell drew the buttons; the application is told which was
+		 * pressed, by the key it supplied rather than the label it showed. */
+		if (json_object_has_member(object, "id")) {
+			viewport_notifications_action(server->notifications,
+				(uint32_t)object_int(object, "id", 0),
+				json_object_has_member(object, "action")
+					? json_object_get_string_member(object, "action") : NULL);
+		}
+	} else if (strcmp(type, "notification.dismiss") == 0) {
+		if (json_object_has_member(object, "id")) {
+			viewport_notifications_dismissed(server->notifications,
+				(uint32_t)object_int(object, "id", 0));
+		}
+	} else if (strcmp(type, "notification.expire") == 0) {
+		if (json_object_has_member(object, "id")) {
+			viewport_notifications_expired(server->notifications,
+				(uint32_t)object_int(object, "id", 0));
+		}
 	} else if (strcmp(type, "shell.overview") == 0) {
 		/* While the overview is up the shell is drawing miniatures of every
 		 * window, and a click on one means "go there" rather than reaching the

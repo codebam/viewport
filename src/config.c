@@ -121,6 +121,18 @@ bool viewport_config_load(struct viewport_server *server,
 		config->terminal = keep(g_strdup(
 			json_object_get_string_member(object, "terminal")));
 	}
+	/* Window rules travel to the shell verbatim rather than being parsed here.
+	 * Which workspace a window opens on, whether it floats and how wide its
+	 * column is are all layout decisions, and the compositor has no opinion
+	 * about any of them — it would only be reassembling the JSON it was handed
+	 * in order to hand it on. */
+	if (json_object_has_member(object, "rules")) {
+		JsonNode *rules = json_object_get_member(object, "rules");
+		JsonGenerator *generator = json_generator_new();
+		json_generator_set_root(generator, rules);
+		config->rules_json = keep(json_generator_to_data(generator, NULL));
+		g_object_unref(generator);
+	}
 	if (json_object_has_member(object, "idle")) {
 		JsonObject *idle = json_object_get_object_member(object, "idle");
 		if (json_object_has_member(idle, "lock_after")) {

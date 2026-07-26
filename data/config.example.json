@@ -56,11 +56,11 @@
     "blank_after": 900
   },
 
-  "terminal": "ghostty",
+  "terminal": "rio",
   "menu": "wmenu-run -f 'Fira Code NerdFont 11' -i",
 
   "binds": {
-    "Mod4+Return": "exec ghostty",
+    "Mod4+Return": "exec rio",
     "Mod4+d": "exec wmenu-run -f 'Fira Code NerdFont 11' -i",
     "Mod4+Shift+q": "close",
     "Mod4+Shift+e": "exit",

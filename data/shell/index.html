@@ -19,6 +19,13 @@
 
 <div id="outputs"></div>
 
+<!--
+  Notifications. Outside the outputs because they are not part of any one
+  desktop: the compositor claims org.freedesktop.Notifications and forwards
+  them here, so they are ordinary DOM rather than another program's windows.
+-->
+<div id="notifications"></div>
+
 <template id="desktop-template">
   <main class="desktop">
     <nav class="bar">

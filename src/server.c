@@ -282,6 +282,7 @@ bool viewport_server_init(struct viewport_server *server,
 	 * focus_change signal. */
 	server->ime = viewport_ime_create(server);
 	viewport_gestures_init(server);
+	viewport_tablet_init(server);
 	viewport_hdr_init(server);
 
 	if (server->session != NULL) {
@@ -293,6 +294,7 @@ bool viewport_server_init(struct viewport_server *server,
 	server->appearance = viewport_appearance_create(server,
 		server->config.dark_mode);
 	server->status = viewport_status_create(server);
+	server->notifications = viewport_notifications_create(server);
 
 	server->ipc = viewport_ipc_create(server, server->config.ipc_path);
 	if (server->ipc == NULL) {
@@ -421,6 +423,10 @@ void viewport_server_finish(struct viewport_server *server)
 		viewport_output_revert_cancel(server);
 	}
 	viewport_idle_finish(server);
+	if (server->notifications != NULL) {
+		viewport_notifications_destroy(server->notifications);
+		server->notifications = NULL;
+	}
 	if (server->ime != NULL) {
 		/* Before the seat goes: its focus_change listener hangs off it. */
 		viewport_ime_destroy(server->ime);
@@ -506,6 +512,12 @@ void viewport_server_finish(struct viewport_server *server)
 		}
 		if (server->active_inhibitor != NULL) {
 			wl_list_remove(&server->inhibitor_destroy.link);
+		}
+		if (server->tablet_manager != NULL) {
+			wl_list_remove(&server->tablet_axis.link);
+			wl_list_remove(&server->tablet_proximity.link);
+			wl_list_remove(&server->tablet_tip.link);
+			wl_list_remove(&server->tablet_button.link);
 		}
 		if (server->pointer_gestures != NULL) {
 			wl_list_remove(&server->swipe_begin.link);

@@ -116,10 +116,10 @@ a TTY.
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
   "idle": { "lock_after": 600, "lock_command": "swaylock -f",
             "blank_after": 900 },
-  "terminal": "ghostty",
+  "terminal": "rio",
   "menu": "wmenu-run -i",
   "binds": {
-    "Mod4+Return":  "exec ghostty",
+    "Mod4+Return":  "exec rio",
     "Mod4+d":       "exec wmenu-run -i",
     "Mod4+Shift+q": "close",
     "Mod4+Shift+e": "exit",
@@ -391,6 +391,60 @@ machine and not whatever happens to be playing, and the brightness keys go to
 Missing tools fail quietly per keypress rather than at startup, which is the
 right trade for a binding nobody may ever press. As with every default, naming
 any `binds` in the config replaces the whole set.
+
+## Notifications
+
+The compositor claims `org.freedesktop.Notifications` itself and forwards each
+one to the shell, which draws it as part of the desktop. So notification styling
+is the stylesheet already open in the editor rather than a second configuration
+language in a second program, and it live-reloads with everything else.
+
+If mako or dunst is already running it keeps the bus name and this stands
+aside — the log says so rather than failing.
+
+Bodies are rendered as text, never as markup. A notification body is a string
+from an arbitrary program and the shell is a web page; rendering it as HTML
+would let anything that can send a notification run script in the desktop.
+Capabilities are reported as only what the shell honours, since claiming more
+has applications send content that is silently dropped.
+
+Critical notifications never expire on their own, which the specification
+requires and which applications rely on. Closing reports *why* — expired,
+dismissed or withdrawn — because a daemon that never reports closure leaves
+programs believing their notification is still on screen, and some wait for it
+before sending the next.
+
+## Window rules
+
+```jsonc
+"rules": [
+  { "app_id": "cs2", "workspace": 3 },
+  { "app_id": "pavucontrol", "floating": true, "width": 600, "height": 400 },
+  { "title": "Picture-in-Picture", "floating": true }
+]
+```
+
+Matched on `app_id`, or on `title` for applications that give every window the
+same `app_id` and differ only in what they show. Both are substring matches: an
+exact one would need the application's internal name known exactly. A rule is
+applied before the window is inserted anywhere, so it goes straight where it
+belongs rather than appearing in one place and jumping.
+
+The compositor passes these to the shell without reading them. Which workspace
+a window opens on and whether it floats are layout decisions, and the
+compositor has no opinion about either.
+
+## Tablets
+
+A stylus reports pressure, tilt, distance, its own buttons and whether it is
+hovering or touching. `tablet-v2` carries all of it, and a drawing program that
+gets only x and y has a pressure-sensitive brush reduced to one width of line.
+
+The stylus also drives the cursor, which is what makes it work in the many
+programs that only understand a pointer. Tablets are absolute devices, so the
+cursor jumps to where the pen lands rather than moving relative to where it was,
+and touching the tablet focuses what is under the pen — otherwise drawing in a
+window would mean clicking it with a mouse first.
 
 ## Idle
 
@@ -789,7 +843,12 @@ forwarded to the focused client through `pointer-gestures-v1`, so pinch-to-zoom
 in a browser keeps working. A gesture that starts as the compositor's stays
 that way until it ends.
 
-Still unimplemented: tablet and stylus input.
+Client scale is reported over both `fractional-scale-v1` and the `wl_surface`
+preferred buffer scale, taken from the largest scale among the outputs in the
+layout — a client renders at whatever it is told and the compositor stretches
+whatever it gets, so saying nothing means everything paints at 1x and is scaled
+up. Whole-number scales are rounded up, so a client that only understands those
+overshoots rather than blurs.
 
 ## When the shell breaks
 

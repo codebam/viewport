@@ -156,6 +156,8 @@ viewport_sources = files(
   'src/session.c',
   'src/idle.c',
   'src/hdr.c',
+  'src/tablet.c',
+  'src/notification.c',
   'src/gesture.c',
   'src/ipc.c',
   'src/glib_loop.c',

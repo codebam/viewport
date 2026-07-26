@@ -126,7 +126,7 @@ cd "$HOME"
 exec nix develop "$REPO" --command env SHELL="$LOGIN_SHELL" "$REPO/build/viewport" \
 	--url      "file://$REPO/data/shell/index.html" \
 	--fallback "file://$REPO/data/fallback.html" \
-	--terminal ghostty \
+	--terminal rio \
 	--menu     wmenu-run \
-	--startup  ghostty \
+	--startup  rio \
 	--debug "$@" >"$LOG" 2>&1

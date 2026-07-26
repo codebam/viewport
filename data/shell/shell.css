@@ -523,3 +523,110 @@ body {
   font-size: .85rem;
   text-align: left;
 }
+
+/* ---------------------------------------------------------------------
+ * Notifications
+ *
+ * The compositor claims org.freedesktop.Notifications and forwards each one
+ * here, so these are ordinary elements rather than another program's windows.
+ * Which means their appearance is this stylesheet, live-reloadable like the
+ * rest of the shell.
+ * ------------------------------------------------------------------ */
+
+#notifications {
+  position: fixed;
+  top: calc(var(--bar) + var(--gap));
+  right: var(--gap);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  width: 22rem;
+  max-width: 30vw;
+  pointer-events: none;
+}
+
+.notification {
+  pointer-events: auto;
+  padding: .6rem .7rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-focus);
+  border-radius: var(--radius);
+  background: #161a22f2;
+  box-shadow: 0 .5rem 1.5rem #0007;
+  cursor: pointer;
+  animation: notification-in 160ms cubic-bezier(.2, .8, .2, 1);
+}
+
+@keyframes notification-in {
+  from { opacity: 0; transform: translateX(1rem); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification { animation: none; }
+}
+
+/* Low urgency recedes; critical asks to be dealt with and, per the
+   specification, never expires on its own. */
+.notification.urgency-0 { border-left-color: #4a5165; opacity: .9; }
+.notification.urgency-2 { border-left-color: #f7768e; }
+
+.notification-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .5rem;
+  margin-bottom: .15rem;
+}
+
+.notification-app {
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+
+.notification-close {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 .15rem;
+}
+
+.notification-close:hover { color: var(--text); }
+
+.notification-summary { font-weight: 600; }
+
+.notification-body {
+  margin-top: .2rem;
+  font-size: .85rem;
+  color: #c3c8d4;
+  /* Notification bodies can be arbitrarily long; a wall of text pushes
+     everything else off the screen. */
+  max-height: 8rem;
+  overflow: hidden;
+}
+
+.notification-actions {
+  display: flex;
+  gap: .35rem;
+  margin-top: .5rem;
+}
+
+.notification-actions button {
+  flex: 1 1 auto;
+  padding: .25rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #1b1f28;
+  color: var(--text);
+  font: inherit;
+  font-size: .8rem;
+  cursor: pointer;
+}
+
+.notification-actions button:hover { border-color: var(--border-focus); }

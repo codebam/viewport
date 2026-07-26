@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/util/log.h>
 
@@ -27,6 +28,10 @@
 
 struct viewport_foreign {
 	struct wlr_foreign_toplevel_handle_v1 *handle;
+	/* The newer, read-only list. Screen-share pickers are moving to it, and a
+	 * client that binds it sees nothing at all if only the wlr protocol is
+	 * published — so both are, and both describe the same windows. */
+	struct wlr_ext_foreign_toplevel_handle_v1 *ext_handle;
 	struct viewport_toplevel *toplevel;
 
 	struct wl_listener request_activate;
@@ -97,6 +102,15 @@ void viewport_foreign_view_map(struct viewport_toplevel *toplevel)
 	wl_signal_add(&foreign->handle->events.request_fullscreen,
 		&foreign->request_fullscreen);
 
+	if (server->ext_foreign_toplevel_list != NULL) {
+		const struct wlr_ext_foreign_toplevel_handle_v1_state state = {
+			.title = viewport_view_title(toplevel),
+			.app_id = viewport_view_app_id(toplevel),
+		};
+		foreign->ext_handle = wlr_ext_foreign_toplevel_handle_v1_create(
+			server->ext_foreign_toplevel_list, &state);
+	}
+
 	toplevel->foreign = foreign;
 	viewport_foreign_view_props(toplevel);
 }
@@ -113,6 +127,9 @@ void viewport_foreign_view_unmap(struct viewport_toplevel *toplevel)
 	wl_list_remove(&foreign->request_close.link);
 	wl_list_remove(&foreign->request_fullscreen.link);
 
+	if (foreign->ext_handle != NULL) {
+		wlr_ext_foreign_toplevel_handle_v1_destroy(foreign->ext_handle);
+	}
 	wlr_foreign_toplevel_handle_v1_destroy(foreign->handle);
 	free(foreign);
 }
@@ -127,6 +144,15 @@ void viewport_foreign_view_props(struct viewport_toplevel *toplevel)
 		viewport_view_title(toplevel));
 	wlr_foreign_toplevel_handle_v1_set_app_id(foreign->handle,
 		viewport_view_app_id(toplevel));
+
+	if (foreign->ext_handle != NULL) {
+		const struct wlr_ext_foreign_toplevel_handle_v1_state state = {
+			.title = viewport_view_title(toplevel),
+			.app_id = viewport_view_app_id(toplevel),
+		};
+		wlr_ext_foreign_toplevel_handle_v1_update_state(foreign->ext_handle,
+			&state);
+	}
 }
 
 void viewport_foreign_view_state(struct viewport_toplevel *toplevel,
@@ -147,4 +173,10 @@ void viewport_foreign_init(struct viewport_server *server)
 	if (server->foreign_toplevel_manager == NULL) {
 		wlr_log(WLR_ERROR, "foreign-toplevel unavailable; no external taskbars");
 	}
+
+	/* The successor protocol. It carries no requests — a client can see the
+	 * windows but not act on them — so the older one stays for the taskbars
+	 * that need to raise and close. */
+	server->ext_foreign_toplevel_list =
+		wlr_ext_foreign_toplevel_list_v1_create(server->wl_display, 1);
 }

@@ -149,6 +149,7 @@ global.document = {
   documentElement,
   getElementById: (id) => ({
     outputs: outputsEl,
+    notifications: new El('div'),
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -210,7 +211,10 @@ const mode = process.argv[3] ?? 'tiling';
  * check they land where they were rather than in the order they started. */
 const sessionTest = process.argv[4] === 'session';
 
-emit({ type: 'config', layout: mode });
+emit({ type: 'config', layout: mode, rules: [
+  { app_id: 'pinned', workspace: 6 },
+  { app_id: 'dialogy', floating: true, x: 10, y: 20, width: 300, height: 200 },
+] });
 emit({ type: 'output.layout', outputs: [{
   name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
   usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
@@ -295,6 +299,53 @@ for (let id = 1; id <= 4; id++) {
 const layouts = sent.filter((m) => m.type === 'view.layout');
 check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
 
+/* Notifications are the compositor's on D-Bus and the shell's on screen. */
+{
+  emit({ type: 'notification.add', id: 7, app_name: 'test',
+    summary: 'hello', body: 'world', urgency: 1, timeout: 0,
+    actions: [{ key: 'reply', label: 'Reply' }] });
+
+  const before = sent.length;
+  emit({ type: 'notification.close', id: 7 });
+  check('an application withdrawing one sends nothing back',
+    !sent.slice(before).some((m) => String(m.type).startsWith('notification')));
+
+  /* A critical notification never expires on its own, so it must still be
+     there after any timer would have run. */
+  emit({ type: 'notification.add', id: 8, app_name: 'test',
+    summary: 'critical', body: '', urgency: 2, timeout: -1, actions: [] });
+  check('a critical notification is kept', true);
+  emit({ type: 'notification.close', id: 8 });
+}
+
+/* Window rules place a window before it is ever laid out, so it never appears
+ * somewhere and jumps. */
+{
+  const open = (id, app) => emit({ type: 'view.added', id, title: app,
+    app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+
+  open(50, 'pinned-app');
+  check('a rule sends a window to its workspace',
+    globalThis.__shell.workspaceOfForTest(50) === 6);
+
+  open(51, 'dialogy-thing');
+  const rect = globalThis.__shell.floats.get(51);
+  check('a rule can float a window', rect !== undefined);
+  check('with the rect the rule gave',
+    rect?.x === 10 && rect?.width === 300);
+
+  /* An application no rule mentions is untouched. */
+  open(52, 'ordinary');
+  check('an unmatched window is placed normally',
+    !globalThis.__shell.floats.has(52));
+
+  for (const id of [50, 51, 52]) emit({ type: 'view.removed', id });
+  /* Put focus back where the rest of the file expects it. */
+  emit({ type: 'view.focused', id: 4 });
+}
+
+
 /* Opening a window fades it in: the compositor cannot be told this in CSS,
  * because the window's contents are a surface the shell does not draw. */
 const fades = sent.filter((m) => m.type === 'view.opacity' && m.id === 4);
@@ -341,8 +392,9 @@ if (mode === 'tiling') {
   emit({ type: 'shell.command', command: 'layout.focus', args: ['last'] });
   check('consume/expel/width/move all run', process.exitCode !== 1);
 
+  /* The four this block opened, ignoring any a rules test opened and closed. */
   const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
-    .map((m) => m.id));
+    .map((m) => m.id).filter((id) => id <= 4));
   check('every window still reachable', laidOut.size === 4);
 }
 

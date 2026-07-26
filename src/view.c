@@ -212,12 +212,18 @@ bool viewport_view_wants_floating(struct viewport_toplevel *toplevel)
 
 void viewport_view_map(struct viewport_toplevel *toplevel)
 {
+	struct viewport_server *server = toplevel->server;
+
 	toplevel->mapped = true;
 	wl_list_insert(&toplevel->server->toplevels, &toplevel->link);
 
 	/* Stay invisible until the shell has placed us, or the window flashes at
 	 * 0,0 for a frame before the first layout message lands. */
 	wlr_scene_node_set_enabled(&toplevel->scene_tree->node, toplevel->has_box);
+
+	/* Before the first frame, so the client's very first buffer is already at
+	 * the right scale rather than being corrected after it is visible. */
+	viewport_surface_update_scale(server, viewport_view_surface(toplevel));
 
 	viewport_ipc_notify_view_added(toplevel);
 	viewport_foreign_view_map(toplevel);

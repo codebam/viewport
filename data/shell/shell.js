@@ -103,6 +103,12 @@ let currentMode = 'default';
 /* 'tiling' (i3-style splits) or 'scrolling' (niri's strip of columns). Set by
  * the compositor from the config file; the shell implements both. */
 let layoutMode = 'tiling';
+/* Rules from the config file, applied to a window when it opens. Matched on
+ * app_id, or on title where an application gives everything the same app_id. */
+let windowRules = [];
+/* Notifications on screen, newest last. The compositor owns the D-Bus side and
+ * hands them here; what they look like and how long they stay is the shell's. */
+const notifications = new Map(); // id -> { el, timer }
 /* Horizontal scroll offset per workspace, in pixels, for the scrolling layout.
  * Only ever adjusted to bring the focused column into view. */
 const scrollOffsets = new Map();
@@ -127,6 +133,7 @@ const overviewCells = new Map(); // view id -> thumbnail element
 const overviewThumbs = new Map(); // workspace -> thumbnail element
 
 const outputsEl = document.getElementById('outputs');
+const notificationsEl = document.getElementById('notifications');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
 
@@ -917,6 +924,137 @@ function claimSlot(id, app) {
     }
   }
   return false;
+}
+
+/* How long a notification stays when the sender does not say.
+ *
+ * The specification lets an application pass -1 for "you decide" and 0 for
+ * "never expire". Critical notifications are the case that matters: the
+ * specification says they must not expire on their own, and an application
+ * marking something critical has usually decided it needs an answer. */
+const NOTIFICATION_TIMEOUT_MS = 5000;
+
+function showNotification(message) {
+  dropNotification(message.id, false);
+
+  const el = document.createElement('div');
+  el.className = 'notification urgency-' + (message.urgency ?? 1);
+
+  const head = document.createElement('div');
+  head.className = 'notification-head';
+
+  const app = document.createElement('span');
+  app.className = 'notification-app';
+  app.textContent = message.app_name || 'notification';
+  head.append(app);
+
+  const close = document.createElement('button');
+  close.className = 'notification-close';
+  close.textContent = '×';
+  close.addEventListener('mousedown', (event) => {
+    event.stopPropagation();
+    send({ type: 'notification.dismiss', id: message.id });
+    dropNotification(message.id, false);
+  });
+  head.append(close);
+  el.append(head);
+
+  if (message.summary) {
+    const summary = document.createElement('div');
+    summary.className = 'notification-summary';
+    summary.textContent = message.summary;
+    el.append(summary);
+  }
+  if (message.body) {
+    const body = document.createElement('div');
+    body.className = 'notification-body';
+    /* textContent, not innerHTML: a notification body is text from an arbitrary
+       program, and the shell is a web page. Rendering it as markup would let
+       any application that can send a notification run script in the desktop. */
+    body.textContent = message.body;
+    el.append(body);
+  }
+
+  const actions = (message.actions ?? []).filter((a) => a.key !== 'default');
+  if (actions.length > 0) {
+    const row = document.createElement('div');
+    row.className = 'notification-actions';
+    for (const action of actions) {
+      const button = document.createElement('button');
+      button.textContent = action.label || action.key;
+      button.addEventListener('mousedown', (event) => {
+        event.stopPropagation();
+        send({ type: 'notification.action', id: message.id, action: action.key });
+        dropNotification(message.id, false);
+      });
+      row.append(button);
+    }
+    el.append(row);
+  }
+
+  /* Clicking the body invokes the default action if there is one, which is what
+     every notification daemon does and what applications expect. */
+  el.addEventListener('mousedown', () => {
+    const fallback = (message.actions ?? []).find((a) => a.key === 'default');
+    if (fallback) {
+      send({ type: 'notification.action', id: message.id, action: 'default' });
+    } else {
+      send({ type: 'notification.dismiss', id: message.id });
+    }
+    dropNotification(message.id, false);
+  });
+
+  notificationsEl.append(el);
+
+  const timeout = message.timeout;
+  const critical = (message.urgency ?? 1) >= 2;
+  const ms = timeout > 0 ? timeout
+    : (timeout === 0 || critical ? 0 : NOTIFICATION_TIMEOUT_MS);
+
+  notifications.set(message.id, {
+    el,
+    timer: ms > 0
+      ? setTimeout(() => dropNotification(message.id, true), ms)
+      : null,
+  });
+}
+
+/* Remove one from the screen. `expired` distinguishes a timer running out from
+ * a user acting, because the sending application is told which happened. */
+function dropNotification(id, expired) {
+  const entry = notifications.get(id);
+  if (!entry) return;
+
+  clearTimeout(entry.timer);
+  entry.el.remove();
+  notifications.delete(id);
+
+  if (expired) send({ type: 'notification.expire', id });
+}
+
+/* The first rule matching a window, or null.
+ *
+ * app_id is the identity worth matching: it is what the application calls
+ * itself rather than what it happens to be showing. Title is offered as well
+ * because some applications — a browser, a terminal multiplexer — give every
+ * window the same app_id and differ only in what they display. Both are
+ * substring matches, since an exact one would need the user to know the
+ * application's internal name exactly. */
+function ruleFor(appId, title) {
+  const haystackApp = (appId || '').toLowerCase();
+  const haystackTitle = (title || '').toLowerCase();
+
+  return windowRules.find((rule) => {
+    if (rule.app_id && !haystackApp.includes(String(rule.app_id).toLowerCase())) {
+      return false;
+    }
+    if (rule.title && !haystackTitle.includes(String(rule.title).toLowerCase())) {
+      return false;
+    }
+    /* A rule with neither would match everything, which is never what someone
+       meant to write. */
+    return Boolean(rule.app_id || rule.title);
+  }) ?? null;
 }
 
 /* The place a floating window left behind, if it had one. Returns the rect to
@@ -2309,6 +2447,24 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   });
   resizeObserver.observe(viewport);
 
+  /* A rule can send the window somewhere else entirely, float it, or set the
+     width of the column it opens in. Applied before anything is inserted, so
+     the window goes straight where it belongs rather than appearing in one
+     place and jumping to another. */
+  const rule = ruleFor(app_id, title);
+  const target = rule && Number.isFinite(rule.workspace)
+    ? rule.workspace : output.workspace;
+
+  if (rule && rule.floating) {
+    insertLeaf(target, id);
+    setFloating(id, true, Number.isFinite(rule.width) && Number.isFinite(rule.height)
+      ? { x: rule.x ?? 0, y: rule.y ?? 0, width: rule.width, height: rule.height }
+      : null);
+    fadeIn(id);
+    saveSession();
+    return;
+  }
+
   /* A window that was floating comes back floating, at the rect it had —
      including one the compositor would not have floated on its own, because
      the decision to float it was the user's and is worth keeping. */
@@ -2330,7 +2486,16 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
     return;
   }
 
-  insertLeaf(output.workspace, id);
+  insertLeaf(target, id);
+
+  if (rule && Number.isFinite(rule.width) && layoutMode === 'scrolling') {
+    /* In the strip a rule's width is the column's share of the screen, which
+       is the only width a tiled window has there. */
+    const found = findLeaf(id);
+    const column = found
+      ? workspaceRoot(target).children[columnIndexOf(target, id)] : null;
+    if (column) column.width = Math.max(0.1, Math.min(rule.width, 1));
+  }
 
   /* The compositor decides this from what the client says about itself — a
      parent toplevel, an X11 dialog type, a fixed size. Applied after the leaf
@@ -2661,6 +2826,7 @@ window.addEventListener('viewport', (event) => {
       /* Which layout model to run. Sent on connect and on reload, so switching
          it in the config file and reloading takes effect without a restart —
          the tree survives, it is only presented differently. */
+      windowRules = Array.isArray(message.rules) ? message.rules : [];
       if (message.layout === 'scrolling' || message.layout === 'tiling') {
         if (message.layout !== layoutMode) {
           layoutMode = message.layout;
@@ -2714,6 +2880,14 @@ window.addEventListener('viewport', (event) => {
     case 'status.update':
       lastStatus = message;
       renderBars();
+      break;
+
+    case 'notification.add':
+      showNotification(message);
+      break;
+    case 'notification.close':
+      /* The application withdrew it, so nothing is sent back. */
+      dropNotification(message.id, false);
       break;
 
     case 'session.restore':

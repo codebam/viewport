@@ -1,9 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 #define _POSIX_C_SOURCE 200809L
 
+#include <math.h>
 #include <stdlib.h>
 #include <time.h>
 
+#include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/util/log.h>
 
@@ -194,6 +197,40 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 
 	wlr_log(WLR_INFO, "output %s online at %dx%d", wlr_output->name,
 		wlr_output->width, wlr_output->height);
+}
+
+/* Tell a surface what scale to paint at.
+ *
+ * A client renders at whatever scale it is told and the compositor stretches
+ * whatever it gets, so saying nothing means every client paints at 1x and is
+ * scaled up on a HiDPI screen — sharp text becomes soft text. Two protocols
+ * carry it: fractional-scale-v1 for the exact value, and the wl_surface
+ * preferred buffer scale for clients that only understand whole numbers, which
+ * has to be rounded up so they overshoot rather than blur.
+ *
+ * The scale is the largest of the outputs the surface is actually on, so a
+ * window straddling a 1x and a 2x monitor is sharp on the better one rather
+ * than soft on it. */
+void viewport_surface_update_scale(struct viewport_server *server,
+	struct wlr_surface *surface)
+{
+	if (surface == NULL) {
+		return;
+	}
+
+	double scale = 0.0;
+	struct viewport_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (output->wlr_output->scale > scale) {
+			scale = output->wlr_output->scale;
+		}
+	}
+	if (scale <= 0.0) {
+		return;
+	}
+
+	wlr_fractional_scale_v1_notify_scale(surface, scale);
+	wlr_surface_set_preferred_buffer_scale(surface, (int32_t)ceil(scale));
 }
 
 void viewport_layout_size(struct viewport_server *server, int *width,
