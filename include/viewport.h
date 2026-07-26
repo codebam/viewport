@@ -471,6 +471,12 @@ void viewport_output_manager_init(struct viewport_server *server);
 void viewport_output_manager_update(struct viewport_server *server);
 void viewport_output_revert_cancel(struct viewport_server *server);
 
+/* The layout, remembered across restarts. The blob is the shell's own format;
+ * the compositor stores and returns it without interpreting it. */
+void viewport_session_save(struct viewport_server *server, const char *state);
+char *viewport_session_load(struct viewport_server *server);
+void viewport_ipc_notify_session(struct viewport_server *server);
+
 /* Touchpad gestures: three fingers for the compositor, the rest forwarded. */
 void viewport_gestures_init(struct viewport_server *server);
 

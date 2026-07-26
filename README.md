@@ -298,12 +298,15 @@ socat - UNIX:$VIEWPORT_SOCKET
 | `view.close` | `id` |
 | `view.opacity` | `id`, `opacity` (0–1) |
 | `shell.overview` | `active` |
+| `session.restore` | `state` (whatever was last saved, or empty) |
 | `view.query` | — |
 | `shell.focus` | — |
 | `bind.add` | `chord`, `action` |
 | `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |
 | `output.query` | — |
 | `output.confirm` | — |
+| `session.save` | `state` (opaque string) |
+| `session.query` | — |
 | `quit` | — |
 
 `output.configure` runs `wlr_output_test_state` before committing, so a mode the
@@ -318,6 +321,35 @@ CSS `overflow` bounds the shell's own painting and no more. `clip` on
 output, which is what keeps a column scrolled off the left of one monitor from
 being drawn on the monitor beside it. Only the surface is clipped, never the
 container: a popup is entitled to extend past the window it belongs to.
+
+## Remembering the layout
+
+Restarting the compositor kills every client with it — they are its clients,
+and nothing survives that. So what is preserved is not the session but the
+*places* in it: the tree is written down with each window replaced by the
+application that was in it, and as those applications come back they are put
+where they were rather than piling up in the order they happen to start. Which
+matters most when the compositor is the thing being worked on.
+
+A remembered place is an ordinary leaf whose id is negative. No real window has
+one, so every walk of the tree skips it and the renderers already drop leaves
+with no window — the structure, the column widths and the weights survive
+without a second representation to keep in step. A place nothing comes back for
+is dropped after 45 seconds, long enough for a browser restoring its own
+session and short enough that a workspace is not permanently shaped around
+something that is gone.
+
+The state is stored in `$XDG_STATE_HOME/viewport/session.json`, written through
+a temporary file and renamed so a compositor that dies mid-write leaves the
+previous layout intact rather than half of a new one. Its contents are the
+shell's own format: the compositor stores and returns the blob without
+interpreting it, because the layout model belongs to the shell and the
+compositor should not gain an opinion about workspaces just to store them.
+
+Restoring only happens into an empty session — restoring over windows that are
+already open would move them somewhere they were never asked to be — and the
+shell asks for it before replaying its windows, so the places exist before the
+windows that fill them arrive.
 
 ### Logging
 

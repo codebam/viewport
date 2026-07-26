@@ -205,12 +205,67 @@ function check(label, cond) {
 }
 
 const mode = process.argv[3] ?? 'tiling';
+/* A third mode drives the restart path instead of the layout ones: restore a
+ * saved layout into an empty session, then bring the applications back and
+ * check they land where they were rather than in the order they started. */
+const sessionTest = process.argv[4] === 'session';
+
 emit({ type: 'config', layout: mode });
 emit({ type: 'output.layout', outputs: [{
   name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
   usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
   scale: 1, transform: 'normal', modes: [], enabled: true,
 }] });
+
+if (sessionTest) {
+  const saved = JSON.stringify({
+    version: 1,
+    layout: mode,
+    workspaces: {
+      3: { type: 'leaf', app: 'firefox', weight: 1 },
+      5: { type: 'split', dir: 'horizontal', layout: 'split', weight: 1,
+        active: 0, children: [
+          { type: 'leaf', app: 'foot', weight: 1 },
+          { type: 'leaf', app: 'foot', weight: 2 },
+        ] },
+    },
+    outputs: { 'DP-1': { workspace: 5 } },
+  });
+
+  emit({ type: 'session.restore', state: saved });
+
+  const outs = globalThis.__shell.outputs;
+  check('the saved workspace is restored to its output',
+    [...outs.values()][0].workspace === 5);
+
+  /* Applications come back in an order that has nothing to do with the
+     layout — the browser last, as it usually is. */
+  const open = (id, app) => emit({ type: 'view.added', id, title: app,
+    app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+
+  open(11, 'foot');
+  open(12, 'foot');
+  open(13, 'firefox');
+
+  const ws = globalThis.__shell.workspaceOfForTest;
+  check('the browser went back to its own workspace', ws(13) === 3);
+  check('both terminals went back to theirs',
+    ws(11) === 5 && ws(12) === 5);
+
+  /* And into the shape they left, weights included. */
+  const pair = globalThis.__shell.workspaces.get(5).children;
+  check('they kept the sizes they had',
+    pair.length === 2 && pair[0].weight === 1 && pair[1].weight === 2);
+
+  /* An application with no slot is placed normally rather than refused. */
+  open(14, 'ghostty');
+  check('an application with no saved place still opens',
+    ws(14) !== null);
+
+  check('teardown clean', process.exitCode !== 1);
+  process.exit(process.exitCode ?? 0);
+}
 
 for (let id = 1; id <= 4; id++) {
   emit({ type: 'view.added', id, title: `win${id}`, app_id: 'test',

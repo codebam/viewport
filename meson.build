@@ -133,6 +133,7 @@ viewport_sources = files(
   'src/foreign.c',
   'src/text_input.c',
   'src/watchdog.c',
+  'src/session.c',
   'src/gesture.c',
   'src/ipc.c',
   'src/glib_loop.c',

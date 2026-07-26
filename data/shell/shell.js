@@ -39,6 +39,31 @@ function send(message) {
 
 const WORKSPACES = 9;
 
+/* ------------------------------------------------------------------------
+ * Session
+ *
+ * Restarting the compositor kills every client with it, so nothing here
+ * preserves processes — it preserves *places*. The tree is written down with
+ * each window replaced by the application that was in it, and as those
+ * applications come back they are put into the slot they left rather than
+ * appended wherever there is room.
+ *
+ * A slot is an ordinary leaf whose id is negative: no real view ever has one,
+ * so everything that walks the tree skips it (views.get returns undefined and
+ * the renderers already drop leaves with no view). That means the structure,
+ * the column widths and the weights all survive without a parallel
+ * representation to keep in step.
+ * --------------------------------------------------------------------- */
+
+/* How long an unclaimed slot is held before the layout gives up on it. Long
+ * enough for a slow application — a browser restoring its own session — and
+ * short enough that a workspace is not permanently shaped around something
+ * that is never coming back. */
+const SLOT_TIMEOUT_MS = 45_000;
+
+let nextSlotId = -1;
+let slotsPending = 0;
+
 /* Which workspace a monitor starts on, by output name. Anything unlisted gets
  * the lowest workspace not already on screen. */
 const OUTPUT_WORKSPACE = {
@@ -715,6 +740,155 @@ function renderOverview(output, list) {
   }
 
   return grid;
+}
+
+/* ------------------------------------------------------------------------
+ * Saving and restoring the layout
+ * --------------------------------------------------------------------- */
+
+/* Serialise a subtree, replacing each window with the application that was in
+ * it. A leaf whose application is unknown — a slot that was never claimed — is
+ * dropped rather than written back out, or an application that never returns
+ * would haunt the layout across every future restart. */
+function serialiseNode(node) {
+  if (node.type === 'leaf') {
+    const view = views.get(node.id);
+    const app = view ? (view.app_id || view.title) : node.app;
+    if (!app) return null;
+    return {
+      type: 'leaf', app,
+      weight: node.weight ?? 1,
+      ...(node.width !== undefined ? { width: node.width } : {}),
+    };
+  }
+
+  const children = node.children.map(serialiseNode).filter(Boolean);
+  if (children.length === 0) return null;
+  return {
+    type: 'split', dir: node.dir, layout: node.layout ?? 'split',
+    weight: node.weight ?? 1, active: node.active ?? 0, children,
+    ...(node.width !== undefined ? { width: node.width } : {}),
+  };
+}
+
+function serialiseSession() {
+  const saved = { version: 1, layout: layoutMode, workspaces: {}, outputs: {} };
+
+  for (const [n, root] of workspaces) {
+    const tree = serialiseNode(root);
+    if (tree !== null) saved.workspaces[n] = tree;
+  }
+  for (const [name, output] of outputs) {
+    saved.outputs[name] = { workspace: output.workspace };
+  }
+  return saved;
+}
+
+let saveTimer = null;
+
+/* Debounced: the layout changes many times a second while dragging, and the
+ * state only has to be right by the time the compositor next dies. */
+function saveSession() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    send({ type: 'session.save', state: JSON.stringify(serialiseSession()) });
+  }, 1000);
+}
+
+/* Rebuild the tree from a saved one, as slots waiting to be claimed. */
+function reviveNode(node) {
+  if (node.type === 'leaf') {
+    const leaf = newLeaf(nextSlotId--);
+    leaf.app = node.app;
+    leaf.weight = node.weight ?? 1;
+    if (node.width !== undefined) leaf.width = node.width;
+    slotsPending++;
+    return leaf;
+  }
+
+  const split = newSplit(node.dir === 'vertical' ? 'vertical' : 'horizontal');
+  split.layout = node.layout ?? 'split';
+  split.weight = node.weight ?? 1;
+  split.active = node.active ?? 0;
+  if (node.width !== undefined) split.width = node.width;
+  split.children = (node.children ?? []).map(reviveNode);
+  return split;
+}
+
+function restoreSession(text) {
+  if (!text) return;
+
+  let saved;
+  try {
+    saved = JSON.parse(text);
+  } catch (error) {
+    console.error('viewport: saved layout is not valid JSON, ignoring');
+    return;
+  }
+  if (!saved || saved.version !== 1) return;
+
+  /* Only into an empty session. Restoring over windows that are already open
+     would move them somewhere they were never asked to be. */
+  if (views.size > 0) return;
+
+  for (const [n, tree] of Object.entries(saved.workspaces ?? {})) {
+    const revived = reviveNode(tree);
+    if (revived) workspaces.set(Number(n), revived);
+  }
+  for (const [name, state] of Object.entries(saved.outputs ?? {})) {
+    const output = outputs.get(name);
+    if (output && Number.isFinite(state.workspace)) {
+      output.workspace = state.workspace;
+    }
+  }
+
+  /* Nothing is showing yet — every leaf is a slot — but the workspace
+     assignment and the shape are in place for the windows to arrive into. */
+  if (slotsPending > 0) {
+    setTimeout(dropUnclaimedSlots, SLOT_TIMEOUT_MS);
+  }
+  relayoutAll();
+}
+
+/* Give up on slots nothing came back for. */
+function dropUnclaimedSlots() {
+  if (slotsPending === 0) return;
+  slotsPending = 0;
+
+  for (const [n, root] of workspaces) {
+    let removed = false;
+    for (const [leaf] of walk(root)) {
+      if (leaf.id < 0) {
+        removeLeaf(leaf.id);
+        removed = true;
+      }
+    }
+    if (removed) collapse(root, true);
+  }
+  treeGeneration++;
+  relayoutAll();
+}
+
+/* The slot a newly opened window belongs in, if it left one behind.
+ *
+ * Matched on application, in tree order, preferring a workspace that is not
+ * currently occupied by another instance — three terminals reopening should
+ * land in the three places three terminals were, and which of them goes where
+ * is not something the layout can know or needs to. */
+function claimSlot(id, app) {
+  if (slotsPending === 0 || !app) return false;
+
+  for (const [n, root] of workspaces) {
+    for (const [leaf] of walk(root)) {
+      if (leaf.id < 0 && leaf.app === app) {
+        leaf.id = id;
+        delete leaf.app;
+        slotsPending--;
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /* Move one window to a workspace, without it having to be focused first. The
@@ -2072,6 +2246,18 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   });
   resizeObserver.observe(viewport);
 
+  /* If this application left a slot behind before the last restart, it goes
+     back into it. Floating windows are excluded: their place is a rectangle,
+     not a position in the tree, and a dialog reopening does not want the one
+     its predecessor had. */
+  if (!floating && claimSlot(id, app_id || title)) {
+    treeGeneration++;
+    relayoutAll();
+    fadeIn(id);
+    saveSession();
+    return;
+  }
+
   insertLeaf(output.workspace, id);
 
   /* The compositor decides this from what the client says about itself — a
@@ -2080,12 +2266,14 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   if (floating) {
     setFloating(id, true);
     fadeIn(id);
+    saveSession();
     return;
   }
 
   treeGeneration++;
   relayoutAll();
   fadeIn(id);
+  saveSession();
 }
 
 function removeView(id) {
@@ -2106,6 +2294,8 @@ function removeView(id) {
   if (fullscreenWorkspace !== null) fullscreens.delete(fullscreenWorkspace);
 
   relayoutAll();
+  /* A closed window means one fewer slot to restore next time. */
+  saveSession();
 
   /* Keep something focused on the workspace the window left behind. Closing
    * with Mod4+Shift+q, or a terminal exiting on Ctrl-D, would otherwise drop
@@ -2438,8 +2628,15 @@ window.addEventListener('viewport', (event) => {
       renderBars();
       break;
 
+    case 'session.restore':
+      restoreSession(message.state);
+      break;
+
     case 'shell.command':
       handleShellCommand(message.command, message.args ?? []);
+      /* Most commands rearrange something; saving is debounced, so asking on
+         every one of them costs a timer reset. */
+      saveSession();
       break;
 
     case 'error':
@@ -2451,4 +2648,8 @@ window.addEventListener('viewport', (event) => {
 window.addEventListener('resize', relayoutAll);
 
 send({ type: 'output.query' });
+/* Before view.query: the layout has to be in place as slots before the windows
+   that fill them are replayed, or every one of them lands in a default
+   position first and the restore has nothing left to do. */
+send({ type: 'session.query' });
 send({ type: 'view.query' });

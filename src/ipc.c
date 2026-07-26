@@ -235,6 +235,26 @@ void viewport_ipc_notify_config(struct viewport_server *server)
 	g_object_unref(builder);
 }
 
+/* Hand the stored layout back to the shell. Sent when the shell asks, which it
+ * does once it is ready to apply it — not on connect, because a shell that has
+ * not finished loading cannot do anything with it. */
+void viewport_ipc_notify_session(struct viewport_server *server)
+{
+	char *state = viewport_session_load(server);
+
+	JsonBuilder *builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, "session.restore");
+	json_builder_set_member_name(builder, "state");
+	json_builder_add_string_value(builder, state != NULL ? state : "");
+	json_builder_end_object(builder);
+
+	broadcast_builder(server, builder);
+	g_object_unref(builder);
+	g_free(state);
+}
+
 void viewport_ipc_notify_views(struct viewport_server *server)
 {
 	struct viewport_toplevel *toplevel;
@@ -845,6 +865,14 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		}
 	} else if (strcmp(type, "shell.focus") == 0) {
 		viewport_focus_web(server);
+	} else if (strcmp(type, "session.save") == 0) {
+		/* The shell's own serialisation, stored verbatim. */
+		if (json_object_has_member(object, "state")) {
+			viewport_session_save(server,
+				json_object_get_string_member(object, "state"));
+		}
+	} else if (strcmp(type, "session.query") == 0) {
+		viewport_ipc_notify_session(server);
 	} else if (strcmp(type, "shell.overview") == 0) {
 		/* While the overview is up the shell is drawing miniatures of every
 		 * window, and a click on one means "go there" rather than reaching the
