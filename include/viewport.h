@@ -282,6 +282,11 @@ struct viewport_server {
 	struct wl_listener output_manager_test;
 	struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
 	struct wlr_ext_foreign_toplevel_list_v1 *ext_foreign_toplevel_list;
+	/* Window capture, and the request the compositor has to answer for a
+	 * picker's choice of a single window to be allowed at all. */
+	struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1
+		*toplevel_capture;
+	struct wl_listener toplevel_capture_request;
 	struct viewport_ime *ime;
 	struct viewport_notifications *notifications;
 	struct viewport_output_revert *output_revert;
@@ -426,6 +431,9 @@ struct viewport_toplevel {
 	 * outside the clipped surface tree or a menu that extends past the window
 	 * edge gets cropped. */
 	struct wlr_scene_tree *scene_tree;
+	/* Built the first time something asks to capture this window, and kept:
+	 * a picker that asks twice should not get two capture pipelines. */
+	struct wlr_ext_image_capture_source_v1 *capture_source;
 	struct wlr_scene_tree *surface_tree;
 
 	/* Target rect most recently supplied by the shell over IPC. */

@@ -129,13 +129,9 @@ bool viewport_server_init(struct viewport_server *server,
 	 * this stays compatible with web_buffer.c refusing CPU access. */
 	wlr_ext_image_copy_capture_manager_v1_create(server->wl_display, 1);
 	wlr_ext_output_image_capture_source_manager_v1_create(server->wl_display, 1);
-	/* And single windows, not only whole outputs. This is what "share a
-	 * window" in a browser's picker asks for; with only the output source
-	 * available the choice silently degrades to sharing the entire screen,
-	 * which is a privacy answer as much as a feature one. Sources come from
-	 * the foreign-toplevel list, which is already published. */
-	wlr_ext_foreign_toplevel_image_capture_source_manager_v1_create(
-		server->wl_display, 1);
+	/* Single windows, rather than only whole outputs, are published from
+	 * foreign.c: the request has to be answered with a source looked up by
+	 * foreign-toplevel handle, and that lookup lives with the handles. */
 	wlr_screencopy_manager_v1_create(server->wl_display);
 
 	/* Explicit sync. Vulkan clients hand us drm_syncobj timeline points
@@ -533,6 +529,9 @@ void viewport_server_finish(struct viewport_server *server)
 	}
 	if (server->session != NULL) {
 		wl_list_remove(&server->session_active.link);
+	}
+	if (server->toplevel_capture != NULL) {
+		wl_list_remove(&server->toplevel_capture_request.link);
 	}
 	if (server->new_virtual_keyboard.notify != NULL) {
 		/* wlr_virtual_keyboard_manager asserts its signal list is empty when

@@ -18,6 +18,8 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
+
+#include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <stdlib.h>
 
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
@@ -166,6 +168,55 @@ void viewport_foreign_view_state(struct viewport_toplevel *toplevel,
 	wlr_foreign_toplevel_handle_v1_set_fullscreen(foreign->handle, fullscreen);
 }
 
+/* A screen-share picker asking to capture one window rather than a whole
+ * output.
+ *
+ * ext-image-copy-capture will not let a client capture a toplevel on its own
+ * say-so: the compositor is asked, and answers by handing back a capture
+ * source, or by ignoring the request, which rejects it. Publishing the source
+ * manager without answering is the worst of the three — the picker offers
+ * windows, the choice is made, and the session dies with
+ *
+ *   invalid arguments for ext_image_copy_capture_manager_v1.create_session
+ *
+ * which reaches the browser as a bare NotAllowedError naming nothing.
+ *
+ * The source is the window's own scene node, so what gets captured is exactly
+ * what is composited for that window and nothing behind it. It is made once
+ * and kept: a picker that asks twice about the same window should not build a
+ * second capture pipeline for it.
+ *
+ * The policy here is to say yes. The request has already been through the
+ * portal, which ran its own chooser and got an answer from the person at the
+ * keyboard; refusing afterwards would deny something already agreed to. */
+static void handle_toplevel_capture_request(struct wl_listener *listener,
+	void *data)
+{
+	struct viewport_server *server =
+		wl_container_of(listener, server, toplevel_capture_request);
+	struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request
+		*request = data;
+
+	struct viewport_toplevel *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (toplevel->foreign == NULL ||
+				toplevel->foreign->ext_handle != request->toplevel_handle) {
+			continue;
+		}
+		if (toplevel->capture_source == NULL) {
+			toplevel->capture_source =
+				wlr_ext_image_capture_source_v1_create_with_scene_node(
+					&toplevel->scene_tree->node, server->wl_event_loop,
+					server->allocator, server->renderer);
+		}
+		if (toplevel->capture_source != NULL) {
+			wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(
+				request, toplevel->capture_source);
+		}
+		return;
+	}
+}
+
 void viewport_foreign_init(struct viewport_server *server)
 {
 	server->foreign_toplevel_manager =
@@ -179,4 +230,17 @@ void viewport_foreign_init(struct viewport_server *server)
 	 * that need to raise and close. */
 	server->ext_foreign_toplevel_list =
 		wlr_ext_foreign_toplevel_list_v1_create(server->wl_display, 1);
+
+	/* Window capture. The manager is created here rather than beside the other
+	 * capture globals in server.c because answering its requests means looking
+	 * up a toplevel by its foreign handle, which is this file's business. */
+	server->toplevel_capture =
+		wlr_ext_foreign_toplevel_image_capture_source_manager_v1_create(
+			server->wl_display, 1);
+	if (server->toplevel_capture != NULL) {
+		server->toplevel_capture_request.notify =
+			handle_toplevel_capture_request;
+		wl_signal_add(&server->toplevel_capture->events.new_request,
+			&server->toplevel_capture_request);
+	}
 }
