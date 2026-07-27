@@ -129,7 +129,15 @@ static bool action_from_string(const char *text, enum viewport_action *action,
 	}
 
 	*argument = NULL;
-	if (strcmp(text, "close") == 0 || strcmp(text, "kill") == 0) {
+	/* "none" claims a chord without doing anything with it, which is how a
+	 * built-in default is removed rather than replaced: the defaults skip any
+	 * chord that is already spoken for, and a match here stops the search
+	 * without consuming the key, so it reaches the focused application. sway
+	 * spells this by simply not writing the bindsym, which works there because
+	 * sway has no built-in keymap to push back against. */
+	if (strcmp(text, "none") == 0 || strcmp(text, "unbind") == 0) {
+		*action = VIEWPORT_ACTION_NONE;
+	} else if (strcmp(text, "close") == 0 || strcmp(text, "kill") == 0) {
 		*action = VIEWPORT_ACTION_CLOSE;
 	} else if (strcmp(text, "exit") == 0) {
 		*action = VIEWPORT_ACTION_EXIT;
@@ -145,7 +153,29 @@ static bool action_from_string(const char *text, enum viewport_action *action,
 	return true;
 }
 
-bool viewport_binding_add(struct viewport_server *server, const char *spec)
+/* Is this chord already spoken for?
+ *
+ * Asked by the defaults, and only by them. Two user bindings for one chord are
+ * a user overriding themselves and the later one should win; a user binding and
+ * a built-in are a user overriding us, and there the user wins regardless of
+ * which was installed first. Those want opposite answers, so the question is
+ * asked at the point where the difference is known rather than resolved by
+ * insertion order — which is what used to be attempted, and got it backwards. */
+static bool binding_exists(struct viewport_server *server, const char *mode,
+	uint32_t modifiers, xkb_keysym_t keysym)
+{
+	struct viewport_binding *binding;
+	wl_list_for_each(binding, &server->bindings, link) {
+		if (binding->modifiers == modifiers && binding->keysym == keysym &&
+				strcmp(binding->mode, mode) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool binding_add(struct viewport_server *server, const char *spec,
+	bool yield_to_existing)
 {
 	const char *equals = strchr(spec, '=');
 	if (equals == NULL || equals == spec) {
@@ -221,6 +251,15 @@ bool viewport_binding_add(struct viewport_server *server, const char *spec)
 		return false;
 	}
 
+	/* A default stepping aside for something the user already asked for. This
+	 * is what makes overriding one chord cost only that chord: everything the
+	 * config did not mention still gets its built-in. */
+	if (yield_to_existing && binding_exists(server,
+			mode != NULL ? mode : "default", modifiers, keysym)) {
+		free(mode);
+		return true;
+	}
+
 	struct viewport_binding *binding = calloc(1, sizeof(*binding));
 	if (binding == NULL) {
 		free(mode);
@@ -243,10 +282,19 @@ bool viewport_binding_add(struct viewport_server *server, const char *spec)
 		}
 	}
 
-	/* Later definitions win: pushing to the front means a user-supplied bind
-	 * shadows the built-in default for the same chord. */
+	/* Front, so that of two bindings for one chord the later definition is the
+	 * one the matcher reaches. Between a user's two bindings that is what is
+	 * wanted; against a built-in it is not, and it used to be relied on for
+	 * both — the defaults are installed last, so this put every one of them in
+	 * front of the config that was supposed to override it. Now the defaults
+	 * yield above instead, and this ordering only decides between equals. */
 	wl_list_insert(&server->bindings, &binding->link);
 	return true;
+}
+
+bool viewport_binding_add(struct viewport_server *server, const char *spec)
+{
+	return binding_add(server, spec, false);
 }
 
 /* Something to open a terminal and a launcher with, when nothing said which.
@@ -277,6 +325,16 @@ static const char *first_installed(const char *const *candidates)
 		}
 	}
 	return NULL;
+}
+
+/* A built-in, installed only where the user has not already spoken.
+ *
+ * Every default goes through this rather than viewport_binding_add() so the
+ * rule lives in one place: the config file and --bind are the authority, and a
+ * built-in is what fills the silence. */
+static void add_default(struct viewport_server *server, const char *spec)
+{
+	binding_add(server, spec, true);
 }
 
 void viewport_bindings_add_defaults(struct viewport_server *server,
@@ -311,16 +369,16 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 
 	if (terminal != NULL) {
 		snprintf(spec, sizeof(spec), "Mod4+Return=exec %s", terminal);
-		viewport_binding_add(server, spec);
+		add_default(server, spec);
 	}
 	if (menu != NULL) {
 		snprintf(spec, sizeof(spec), "Mod4+d=exec %s", menu);
-		viewport_binding_add(server, spec);
+		add_default(server, spec);
 	}
 
-	viewport_binding_add(server, "Mod4+Shift+q=close");
-	viewport_binding_add(server, "Mod4+Shift+e=exit");
-	viewport_binding_add(server, "Mod4+Shift+c=reload");
+	add_default(server, "Mod4+Shift+q=close");
+	add_default(server, "Mod4+Shift+e=exit");
+	add_default(server, "Mod4+Shift+c=reload");
 
 	/* sway's movement keys, plus the arrows. */
 	static const char *const directions[] = { "left", "down", "up", "right" };
@@ -331,51 +389,51 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 		const char *action = scrolling ? "shell layout.focus" : "focus";
 		snprintf(spec, sizeof(spec), "Mod4+%s=%s %s", letters[i], action,
 			directions[i]);
-		viewport_binding_add(server, spec);
+		add_default(server, spec);
 		snprintf(spec, sizeof(spec), "Mod4+%s=%s %s", arrows[i], action,
 			directions[i]);
-		viewport_binding_add(server, spec);
+		add_default(server, spec);
 	}
-	viewport_binding_add(server, "Mod4+Tab=focus next");
-	viewport_binding_add(server, "Mod4+Shift+Tab=focus prev");
+	add_default(server, "Mod4+Tab=focus next");
+	add_default(server, "Mod4+Shift+Tab=focus prev");
 
 	/* Layout is shell policy, so all of these are passthroughs: the shell
 	 * decides what tiling, fullscreen and moving mean. */
-	viewport_binding_add(server, "Mod4+f=shell window.fullscreen");
+	add_default(server, "Mod4+f=shell window.fullscreen");
 	/* sway's floating toggle. Dialogs float on their own; this is for the rest,
 	 * and for dropping one back into the tiling layout. */
-	viewport_binding_add(server, "Mod4+Shift+space=shell layout.float.toggle");
-	viewport_binding_add(server, "Mod4+Shift+h=shell window.move left");
-	viewport_binding_add(server, "Mod4+Shift+j=shell window.move down");
-	viewport_binding_add(server, "Mod4+Shift+k=shell window.move up");
-	viewport_binding_add(server, "Mod4+Shift+l=shell window.move right");
-	viewport_binding_add(server, "Mod4+Shift+Left=shell window.move left");
-	viewport_binding_add(server, "Mod4+Shift+Down=shell window.move down");
-	viewport_binding_add(server, "Mod4+Shift+Up=shell window.move up");
-	viewport_binding_add(server, "Mod4+Shift+Right=shell window.move right");
-	viewport_binding_add(server, "Mod4+b=shell layout.split horizontal");
-	viewport_binding_add(server, "Mod4+v=shell layout.split vertical");
+	add_default(server, "Mod4+Shift+space=shell layout.float.toggle");
+	add_default(server, "Mod4+Shift+h=shell window.move left");
+	add_default(server, "Mod4+Shift+j=shell window.move down");
+	add_default(server, "Mod4+Shift+k=shell window.move up");
+	add_default(server, "Mod4+Shift+l=shell window.move right");
+	add_default(server, "Mod4+Shift+Left=shell window.move left");
+	add_default(server, "Mod4+Shift+Down=shell window.move down");
+	add_default(server, "Mod4+Shift+Up=shell window.move up");
+	add_default(server, "Mod4+Shift+Right=shell window.move right");
+	add_default(server, "Mod4+b=shell layout.split horizontal");
+	add_default(server, "Mod4+v=shell layout.split vertical");
 	/* sway's `layout toggle split`: flip the container the focused window is
 	 * in between side-by-side and stacked. */
-	viewport_binding_add(server, "Mod4+e=shell layout.toggle");
+	add_default(server, "Mod4+e=shell layout.toggle");
 	/* sway's tabbed and stacked containers. Both show one window at a time out
 	 * of a container, with a strip of titles to pick from — the one place this
 	 * shell draws titles, because without them a tab cannot be identified. */
-	viewport_binding_add(server, "Mod4+w=shell layout.tabbed");
-	viewport_binding_add(server, "Mod4+s=shell layout.stacked");
-	viewport_binding_add(server, "Mod4+n=shell bar.toggle");
+	add_default(server, "Mod4+w=shell layout.tabbed");
+	add_default(server, "Mod4+s=shell layout.stacked");
+	add_default(server, "Mod4+n=shell bar.toggle");
 	/* Every workspace at once, scaled down. The compositor shrinks the windows
 	 * themselves — no client is asked to resize. */
-	viewport_binding_add(server, "Mod4+o=shell layout.overview");
-	viewport_binding_add(server, "Mod4+Shift+d=appearance toggle");
+	add_default(server, "Mod4+o=shell layout.overview");
+	add_default(server, "Mod4+Shift+d=appearance toggle");
 	/* Lock now, and turn the screens off now — the same two things the idle
 	 * timer does, for when you are leaving rather than waiting to be noticed
 	 * leaving. The screens come back on the next keypress. */
-	viewport_binding_add(server, "Mod4+Shift+x=lock");
-	viewport_binding_add(server, "Mod4+Shift+b=blank");
+	add_default(server, "Mod4+Shift+x=lock");
+	add_default(server, "Mod4+Shift+b=blank");
 	/* HDR on the monitor you are looking at. Per output rather than global,
 	 * because a display that can do it usually sits next to one that cannot. */
-	viewport_binding_add(server, "Mod4+Shift+p=shell output.hdr");
+	add_default(server, "Mod4+Shift+p=shell output.hdr");
 
 	if (scrolling) {
 		/* niri's column keys. A column is the unit here: windows stack inside
@@ -384,36 +442,36 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 		 * Consume and expel are what make the model work — pulling the window
 		 * beside you into your column, or pushing one back out into its own —
 		 * and there is no equivalent in a tiling tree. */
-		viewport_binding_add(server, "Mod4+comma=shell layout.consume");
-		viewport_binding_add(server, "Mod4+period=shell layout.expel");
+		add_default(server, "Mod4+comma=shell layout.consume");
+		add_default(server, "Mod4+period=shell layout.expel");
 		/* Cycle the focused column through a few widths, as Mod+R does in
 		 * niri. Nothing else resizes: columns do not share space, so widening
 		 * one just pushes the rest along the strip. */
-		viewport_binding_add(server, "Mod4+r=shell layout.column.width");
-		viewport_binding_add(server,
+		add_default(server, "Mod4+r=shell layout.column.width");
+		add_default(server,
 			"Mod4+Shift+r=shell layout.column.height");
 		/* Jump to the ends of the strip. */
-		viewport_binding_add(server, "Mod4+Home=shell layout.focus first");
-		viewport_binding_add(server, "Mod4+End=shell layout.focus last");
+		add_default(server, "Mod4+Home=shell layout.focus first");
+		add_default(server, "Mod4+End=shell layout.focus last");
 	}
 
 	/* Resize mode, as in sway: Mod4+r enters it, hjkl and the arrows resize a
 	 * step at a time, Escape or Return leaves. Bindings are scoped to the mode
 	 * so h/j/k/l keep meaning "move focus" everywhere else. */
 	if (!scrolling) {
-		viewport_binding_add(server, "Mod4+r=mode resize");
+		add_default(server, "Mod4+r=mode resize");
 	}
-	viewport_binding_add(server, "resize/h=shell layout.resize left");
-	viewport_binding_add(server, "resize/j=shell layout.resize down");
-	viewport_binding_add(server, "resize/k=shell layout.resize up");
-	viewport_binding_add(server, "resize/l=shell layout.resize right");
-	viewport_binding_add(server, "resize/Left=shell layout.resize left");
-	viewport_binding_add(server, "resize/Down=shell layout.resize down");
-	viewport_binding_add(server, "resize/Up=shell layout.resize up");
-	viewport_binding_add(server, "resize/Right=shell layout.resize right");
-	viewport_binding_add(server, "resize/Escape=mode default");
-	viewport_binding_add(server, "resize/Return=mode default");
-	viewport_binding_add(server, "resize/Mod4+r=mode default");
+	add_default(server, "resize/h=shell layout.resize left");
+	add_default(server, "resize/j=shell layout.resize down");
+	add_default(server, "resize/k=shell layout.resize up");
+	add_default(server, "resize/l=shell layout.resize right");
+	add_default(server, "resize/Left=shell layout.resize left");
+	add_default(server, "resize/Down=shell layout.resize down");
+	add_default(server, "resize/Up=shell layout.resize up");
+	add_default(server, "resize/Right=shell layout.resize right");
+	add_default(server, "resize/Escape=mode default");
+	add_default(server, "resize/Return=mode default");
+	add_default(server, "resize/Mod4+r=mode default");
 
 	/* Media and hardware keys.
 	 *
@@ -429,42 +487,42 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 	 * the right trade for a binding nobody may ever press. Anything defined in
 	 * the config file replaces the lot, so a different mixer is a matter of
 	 * saying so there. */
-	viewport_binding_add(server,
+	add_default(server,
 		"XF86AudioPlay=exec playerctl play-pause");
-	viewport_binding_add(server, "XF86AudioPause=exec playerctl pause");
-	viewport_binding_add(server, "XF86AudioNext=exec playerctl next");
-	viewport_binding_add(server, "XF86AudioPrev=exec playerctl previous");
-	viewport_binding_add(server, "XF86AudioStop=exec playerctl stop");
+	add_default(server, "XF86AudioPause=exec playerctl pause");
+	add_default(server, "XF86AudioNext=exec playerctl next");
+	add_default(server, "XF86AudioPrev=exec playerctl previous");
+	add_default(server, "XF86AudioStop=exec playerctl stop");
 
 	/* Volume and mute go to the sink rather than to a player: turning the
 	 * volume down means the machine, not whatever happens to be playing. */
-	viewport_binding_add(server,
+	add_default(server,
 		"XF86AudioRaiseVolume=exec wpctl set-volume -l 1.5 "
 		"@DEFAULT_AUDIO_SINK@ 5%+");
-	viewport_binding_add(server,
+	add_default(server,
 		"XF86AudioLowerVolume=exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-");
-	viewport_binding_add(server,
+	add_default(server,
 		"XF86AudioMute=exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle");
-	viewport_binding_add(server,
+	add_default(server,
 		"XF86AudioMicMute=exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle");
 
-	viewport_binding_add(server,
+	add_default(server,
 		"XF86MonBrightnessUp=exec brightnessctl set 5%+");
-	viewport_binding_add(server,
+	add_default(server,
 		"XF86MonBrightnessDown=exec brightnessctl set 5%-");
 
 	/* Workspaces are shell policy, so these are passthroughs. The shell
 	 * decides what "workspace 3" means; C only delivers the keystroke. */
 	/* sway's `workspace back_and_forth`. Repeating the switch for the workspace
 	 * you are on does the same thing; this is for reaching it directly. */
-	viewport_binding_add(server, "Mod4+grave=shell workspace.back");
+	add_default(server, "Mod4+grave=shell workspace.back");
 
 	for (int i = 1; i <= 9; i++) {
 		snprintf(spec, sizeof(spec), "Mod4+%d=shell workspace.switch %d", i, i);
-		viewport_binding_add(server, spec);
+		add_default(server, spec);
 		snprintf(spec, sizeof(spec), "Mod4+Shift+%d=shell workspace.move %d",
 			i, i);
-		viewport_binding_add(server, spec);
+		add_default(server, spec);
 	}
 }
 
@@ -523,6 +581,11 @@ static void run_action(struct viewport_server *server,
 	struct viewport_binding *binding)
 {
 	switch (binding->action) {
+	/* Never reached: viewport_bindings_handle() answers an unbound chord and
+	 * returns before it gets here. Named anyway, because -Wswitch is what will
+	 * point at this function the next time an action is added. */
+	case VIEWPORT_ACTION_NONE:
+		break;
 	case VIEWPORT_ACTION_EXEC:
 		wlr_log(WLR_DEBUG, "exec: %s", binding->argument);
 		viewport_spawn(binding->argument);
@@ -597,6 +660,14 @@ bool viewport_bindings_handle(struct viewport_server *server,
 					binding->modifiers != modifiers ||
 					binding->keysym != keysyms[i]) {
 				continue;
+			}
+			/* Deliberately bound to nothing. Reporting the chord as unhandled
+			 * is the whole point — it is how the key gets past the compositor
+			 * and reaches the application — but the search still stops here,
+			 * because this entry is the answer for this chord. */
+			if (binding->action == VIEWPORT_ACTION_NONE) {
+				wlr_log(WLR_DEBUG, "chord is unbound (mods 0x%x)", modifiers);
+				return false;
 			}
 			wlr_log(WLR_DEBUG, "binding matched (mods 0x%x)", modifiers);
 			run_action(server, binding);

@@ -12,8 +12,21 @@
     "That layer is additive and expendable; keep exit and a terminal here.",
     "",
     "Precedence: command-line flags > this file > built-in defaults.",
-    "Defining any \"binds\" object at all suppresses the built-in defaults,",
-    "so an empty one means 'no keybindings'."
+    "",
+    "Two ways to write keybindings, and this file demonstrates the heavier",
+    "one. Defining any \"binds\" object at all suppresses the built-in",
+    "defaults, so an empty one means 'no keybindings' — that is what it is",
+    "for, and it is why everything below has to be spelled out.",
+    "",
+    "To change a few chords and keep the rest, use \"binds_override\"",
+    "instead. It is not shown here because there would be nothing to show:",
+    "",
+    "  \"binds_override\": { \"Mod4+Return\": \"exec foot\", \"Mod4+d\": null }",
+    "",
+    "opens foot instead of the built-in terminal, lets Mod4+d through to the",
+    "focused application, and leaves every other default alone. A null (or",
+    "the action \"none\") unbinds a chord, which is not the same as leaving",
+    "it out: leaving it out is what asks for the built-in."
   ],
 
   "url": "http://localhost:3000",

@@ -207,6 +207,25 @@ unit_test = executable(
 
 test('unit', unit_test, timeout: 30, protocol: 'exitcode')
 
+# Which binding wins when a chord is defined twice.
+#
+# Not reachable from the compositor tests: they drive Wayland, and a binding
+# that loses to a built-in default produces no protocol traffic at all. It is
+# also the tier that has to keep working when the shell does not, so "the
+# config file had no effect" is the expensive failure here.
+#
+# Links binding.c against stubs rather than the whole compositor — run_action()
+# is the only thing that reaches outward, and no test runs an action.
+binding_test = executable(
+  'viewport-test-binding',
+  files('tests/binding.c', 'src/binding.c', 'src/config.c', 'src/json_util.c'),
+  include_directories: include_directories('include'),
+  dependencies: viewport_deps,
+  install: false,
+)
+
+test('binding', binding_test, timeout: 30, protocol: 'exitcode')
+
 # ---------------------------------------------------------------------------
 # Hostile IPC input
 #

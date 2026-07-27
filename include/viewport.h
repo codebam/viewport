@@ -879,6 +879,13 @@ void viewport_keyboards_reconfigure(struct viewport_server *server);
  * ---------------------------------------------------------------------- */
 
 enum viewport_action {
+	/* Bound to nothing on purpose.
+	 *
+	 * Not the same as leaving a chord out of the config: the built-in defaults
+	 * fill in every chord nobody claimed, so the only way to say "Mod4+d must
+	 * reach the application" is to claim it and do nothing with it. A match on
+	 * one of these stops the search and does not consume the key. */
+	VIEWPORT_ACTION_NONE,
 	VIEWPORT_ACTION_EXEC,   /* run a shell command */
 	VIEWPORT_ACTION_CLOSE,  /* close the focused window */
 	VIEWPORT_ACTION_EXIT,   /* quit the compositor */

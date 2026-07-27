@@ -207,6 +207,7 @@
             # tests are still excluded — they need all three.
             "unit"
             "ipc-replay"
+            "binding"
           ];
         });
 
@@ -310,6 +311,8 @@
             // lib.optionalAttrs (cfg.terminal != null) { inherit (cfg) terminal; }
             // lib.optionalAttrs (cfg.menu != null) { inherit (cfg) menu; }
             // lib.optionalAttrs (cfg.binds != { }) { inherit (cfg) binds; }
+            // lib.optionalAttrs (cfg.bindsOverride != { })
+              { binds_override = cfg.bindsOverride; }
             // cfg.settings));
         in
         {
@@ -359,6 +362,28 @@
               description = "Command bound to Mod4+d.";
             };
 
+            bindsOverride = mkOption {
+              type = types.attrsOf (types.nullOr types.str);
+              default = { };
+              example = literalExpression ''
+                {
+                  "Mod4+Return" = "exec ghostty";
+                  "Mod4+d" = null;
+                }
+              '';
+              description = ''
+                Keybindings that change the built-in keymap rather than
+                replacing it. Every chord not named here keeps its default.
+
+                A null unbinds a chord, letting it reach the focused
+                application — which is not the same as leaving it out, since
+                leaving it out is what asks for the built-in.
+
+                This is the option you usually want. Use `binds` only to throw
+                the whole keymap away and start again.
+              '';
+            };
+
             binds = mkOption {
               type = types.attrsOf types.str;
               default = { };
@@ -370,12 +395,13 @@
                 }
               '';
               description = ''
-                Keybindings, as chord to action. Actions are
-                `exec COMMAND`, `close`, `exit` or `reload`.
+                The entire keymap, as chord to action. Actions are
+                `exec COMMAND`, `close`, `exit`, `reload` or `none`.
 
                 Setting this to a non-empty value replaces the built-in
                 defaults entirely, so include an exit binding — otherwise a
-                shell that fails to load leaves no way out but a TTY.
+                shell that fails to load leaves no way out but a TTY. To change
+                a few chords and keep the rest, use `bindsOverride`.
               '';
             };
 

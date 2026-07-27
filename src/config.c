@@ -19,14 +19,19 @@
  *     "timeout_ms": 5000,
  *     "terminal": "ghostty",
  *     "menu": "wmenu-run -f 'Fira Code NerdFont 11' -i",
- *     "binds": {
+ *
+ *     "binds_override": {
  *       "Mod4+Return":   "exec ghostty",
- *       "Mod4+d":        "exec wmenu-run",
- *       "Mod4+Shift+q":  "close",
- *       "Mod4+Shift+e":  "exit",
- *       "Mod4+Shift+c":  "reload"
+ *       "Mod4+d":        null
  *     }
  *   }
+ *
+ * Two keys carry bindings, and the difference is how much of the built-in
+ * keymap survives. "binds_override" changes the chords it names and leaves the
+ * rest standing, which is what almost every config wants; a null unbinds one
+ * outright, so the key reaches the application. "binds" is the whole keymap and
+ * suppresses the defaults entirely — an empty one means no bindings at all,
+ * which is the only reason it works that way.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -40,6 +45,7 @@
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/log.h>
 
+#include "json_util.h"
 #include "viewport.h"
 
 /* Strings handed to viewport_config are owned here and freed by
@@ -286,16 +292,63 @@ bool viewport_config_load(struct viewport_server *server,
 			json_object_get_string_member(object, "menu")));
 	}
 
+	/* Changes to the built-in keymap, rather than a replacement for it.
+	 *
+	 *   "binds_override": { "Mod4+Return": "exec foot", "Mod4+d": null }
+	 *
+	 * Rebinding one chord with "binds" costs all the others: presence of that
+	 * key means "this is the whole keymap", so overriding Mod4+Return meant
+	 * copying the entire default list into the config file and keeping it in
+	 * step with every later release. That is a lot to pay for one line, and the
+	 * copy goes stale silently.
+	 *
+	 * These are ordinary bindings — the defaults yield to any chord that is
+	 * already spoken for, so shadowing needs nothing special. A null, or the
+	 * "none" action, claims the chord and does nothing with it, which is how a
+	 * default is removed rather than replaced: without that there is no way to
+	 * say "Mod4+d must reach the application", because leaving it out is
+	 * exactly what asks for the built-in.
+	 *
+	 * Deliberately does not set binds_from_config: overriding some of the
+	 * defaults is the opposite of asking for none of them. */
+	if (json_object_has_member(object, "binds_override")) {
+		JsonObject *binds = viewport_json_object(object, "binds_override");
+		GList *chords = binds != NULL ? json_object_get_members(binds) : NULL;
+
+		for (GList *item = chords; item != NULL; item = item->next) {
+			const char *chord = item->data;
+			const char *action = viewport_json_string(binds, chord);
+			/* A null unbinds. Anything else that is not a string is a mistake
+			 * worth naming: silently ignoring it would leave the user with a
+			 * default still bound and nothing said about why. */
+			if (action == NULL) {
+				JsonNode *node = json_object_get_member(binds, chord);
+				if (node != NULL && !JSON_NODE_HOLDS_NULL(node)) {
+					wlr_log(WLR_ERROR,
+						"binds_override %s: expected a string action or null",
+						chord);
+					continue;
+				}
+				action = "none";
+			}
+			char *spec = g_strdup_printf("%s=%s", chord, action);
+			viewport_binding_add(server, spec);
+			g_free(spec);
+		}
+
+		g_list_free(chords);
+	}
+
 	/* Binds are applied against the live server, so this runs after
 	 * viewport_server_init(). An empty "binds": {} is meaningful — it means
 	 * "no defaults", which is why presence is what suppresses them. */
 	if (json_object_has_member(object, "binds")) {
-		JsonObject *binds = json_object_get_object_member(object, "binds");
-		GList *chords = json_object_get_members(binds);
+		JsonObject *binds = viewport_json_object(object, "binds");
+		GList *chords = binds != NULL ? json_object_get_members(binds) : NULL;
 
 		for (GList *item = chords; item != NULL; item = item->next) {
 			const char *chord = item->data;
-			const char *action = json_object_get_string_member(binds, chord);
+			const char *action = viewport_json_string(binds, chord);
 			if (action == NULL) {
 				continue;
 			}

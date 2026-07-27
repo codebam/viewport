@@ -126,9 +126,39 @@ gdbus call --session --dest org.freedesktop.portal.Desktop \
   org.freedesktop.appearance color-scheme     # (<uint32 1>,) means dark
 ```
 
-Defining *any* `binds` object replaces the built-in defaults, so an empty one
-means "no keybindings". Include an exit binding if you override them.
-`data/config.example.json` is a fuller starting point.
+### Changing some of the keymap, or all of it
+
+There are two keys, and which one you want depends on how much you are
+replacing.
+
+`binds_override` changes the chords it names and leaves every other built-in
+alone. This is almost always the one to reach for:
+
+```json
+{
+  "binds_override": {
+    "Mod4+Return": "exec foot",
+    "Mod4+d": null
+  }
+}
+```
+
+`Mod4+Return` now opens foot instead of the built-in terminal, `Mod4+d` reaches
+the focused application instead of opening a launcher, and the other hundred
+bindings are untouched. A `null` — or the action `"none"` — unbinds a chord.
+That is not the same as leaving it out: leaving a chord out is exactly what asks
+for its built-in, so removing one has to be said out loud.
+
+`binds` replaces the built-in keymap entirely. Defining *any* `binds` object
+suppresses the defaults, so an empty one means "no keybindings at all", which is
+the point of it — it is how you start from nothing. Include an exit binding if
+you use it, or the only way out of the session is a TTY.
+
+Both accept the same `CHORD: ACTION` entries, and a chord written twice takes
+its last definition. `data/config.example.json` is a fuller starting point.
+
+Anything you bind beats a built-in for the same chord regardless of which key it
+came from, and `--bind` on the command line beats both.
 
 Precedence is flags > config file > defaults.
 
@@ -170,9 +200,13 @@ programs.viewport = {
   url = "http://localhost:3000";
   terminal = "${pkgs.ghostty}/bin/ghostty";
   menu = "${pkgs.wmenu}/bin/wmenu-run -i";
-  binds."Mod4+Shift+e" = "exit";
+  bindsOverride."Mod4+Shift+e" = "exit";
 };
 ```
+
+`bindsOverride` rather than `binds`: the two behave as they do in the config
+file, so `binds."Mod4+Shift+e" = "exit"` would leave you with that one binding
+and nothing else.
 
 ## Media keys
 
