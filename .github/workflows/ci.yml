@@ -1,36 +1,93 @@
-# Build the compositor and run the whole test suite on every push.
+# Two jobs, because only one of them can run on a hosted runner.
 #
-# One job, not two: `nix build` and the dev shell share a store, and the
-# expensive part of both is the WPE WebKit derivation, which no binary cache
-# has — flake.nix builds it from the upstream tarball. Splitting the build and
-# the tests across jobs would compile WebKit twice.
+# The layout engine is plain JavaScript and needs nothing but node, so it is
+# tested on every push in about a minute. The compositor cannot be: linking it
+# needs WPE WebKit, flake.nix builds that from the upstream tarball with an
+# overridden src, and no binary cache has that derivation. A GitHub-hosted
+# ubuntu-latest runner has 4 vCPUs, 16 GB of RAM and 14 GB of disk — a WebKit
+# build tree is 20-40 GB, so the job does not run out of time, it runs out of
+# disk. See the compositor job below for the two ways to enable it.
 name: CI
 
 on:
   push:
   pull_request:
 
-# A push to a branch with an open pull request fires both events, and building
-# WebKit twice for the same commit costs an hour of runner time for nothing.
+# A push to a branch with an open pull request fires both events, and there is
+# no reason to run the same commit twice.
 #
 # Keyed on head_ref, not ref: for a pull_request event github.ref is the merge
 # ref, refs/pull/<n>/merge, while the push that triggered it carries
 # refs/heads/<branch>. Keying on github.ref alone puts the two in different
-# groups, so neither cancels the other and the duplicate build this block exists
-# to prevent happens anyway. github.head_ref is set only on pull_request, which
-# is exactly when the substitution is needed.
+# groups, so neither cancels the other. github.head_ref is set only on
+# pull_request, which is exactly when the substitution is needed.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  # The tiling tree, the scrolling layout, and the restore-a-saved-session
+  # path. Nothing here touches Wayland or the compositor binary — the tests
+  # stub the DOM and run the real data/shell/shell.js, so a broken layout tree
+  # is caught here rather than by looking at screenshots.
+  shell:
+    name: Shell logic
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Run the four combinations meson would, but directly. meson makes these
+      # optional so a checkout without node still gets the compositor tests;
+      # here that rule is backwards, and naming each one means a missing
+      # variant fails loudly instead of quietly not running.
+      - name: Layout tests
+        run: |
+          set -eux
+          node tests/shell.test.js data/shell/shell.js tiling
+          node tests/shell.test.js data/shell/shell.js scrolling
+          node tests/shell.test.js data/shell/shell.js tiling session
+          node tests/shell.test.js data/shell/shell.js scrolling session
+
+  # Builds the compositor and drives real Wayland clients against a headless
+  # instance: tests/capture.test.sh and tests/lock.test.sh.
+  #
+  # Disabled by default because it cannot pass on a stock hosted runner (see
+  # the note at the top of this file). Two ways to turn it on, in order of
+  # how much work they are:
+  #
+  #   1. Populate a binary cache with the wpewebkit derivation, so CI
+  #      substitutes it instead of building it. Build it once on a real
+  #      machine and push the closure:
+  #
+  #        nix build .#viewport
+  #        nix run nixpkgs#cachix -- push <cache-name> ./result
+  #
+  #      then set the repository variable COMPOSITOR_CI to "true" and add
+  #      CACHIX_CACHE plus the CACHIX_AUTH_TOKEN secret. A cache hit brings
+  #      the job in well under the disk and time limits; it only rebuilds
+  #      when flake.lock or the derivation actually changes.
+  #
+  #   2. Point it at a self-hosted runner with the disk to spare, by setting
+  #      COMPOSITOR_RUNNER to that runner's label.
+  compositor:
+    name: Compositor and Wayland tests
+    if: vars.COMPOSITOR_CI == 'true'
+    runs-on: ${{ vars.COMPOSITOR_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: DeterminateSystems/nix-installer-action@v4
       - uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - uses: cachix/cachix-action@v15
+        if: vars.CACHIX_CACHE != ''
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # tests/capture.test.sh and tests/lock.test.sh both do
       #   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
@@ -68,34 +125,14 @@ jobs:
       - name: Build
         run: nix build --print-build-logs .#viewport
 
-      # The dev shell carries no node, and meson makes the four shell tests
-      # optional precisely so a checkout without it still gets the compositor
-      # tests. In CI that rule is backwards: a runner without node would run 3
-      # of 7 tests and report success. Bring node in and refuse to test
-      # without it.
-      - name: Locate node
-        run: |
-          node=$(nix build --no-link --print-out-paths nixpkgs#nodejs)
-          echo "NODE_BIN=$node/bin" >> "$GITHUB_ENV"
-
-      # NODE_BIN survives into the dev shell because nothing in the shell
-      # derivation sets it; PATH does not, which is why it is prepended from
-      # inside rather than in the step environment.
+      # Only the Wayland tests here; the shell job already covered the rest,
+      # and running them twice would just make a node-less runner look green.
       - name: Test
         run: |
           nix develop --command bash -euo pipefail -c '
-            export PATH="$NODE_BIN:$PATH"
-            if ! command -v node > /dev/null; then
-              echo "node is not on PATH: meson would skip the shell tests" >&2
-              exit 1
-            fi
-
             meson setup build
-            # meson decides whether the shell tests exist at configure time,
-            # so this is the point at which a silent skip becomes visible.
-            meson test -C build --list | grep -q shell-session-scrolling
-
-            meson test -C build --print-errorlogs
+            meson test -C build --print-errorlogs \
+              session-lock-crash capture-tiling capture-scrolling
           '
 
       - name: Upload the test log
