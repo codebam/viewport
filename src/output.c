@@ -10,9 +10,56 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_tearing_control_v1.h>
 #include <wlr/util/log.h>
 
 #include "viewport.h"
+
+/* Whether this output should be flipped without waiting for vblank.
+ *
+ * Only for a fullscreen window that asked. Tearing is a deliberate trade — a
+ * visible seam where the old frame meets the new one, in exchange for the
+ * frame reaching the panel as soon as it is drawn — and it is only ever worth
+ * making for the thing filling the screen. A torn desktop is just a broken
+ * one, and a game in a window would tear the shell around it.
+ *
+ * The hint is per surface and set through tearing-control-v1, which Mesa's
+ * Wayland WSI requests for any VK_PRESENT_MODE_IMMEDIATE swapchain. */
+static bool output_wants_tearing(struct viewport_output *output)
+{
+	struct viewport_server *server = output->server;
+	if (server->tearing_control == NULL) {
+		return false;
+	}
+
+	struct wlr_box output_box;
+	wlr_output_layout_get_box(server->output_layout, output->wlr_output,
+		&output_box);
+
+	struct viewport_toplevel *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (!toplevel->mapped || !toplevel->visible || !toplevel->fullscreen) {
+			continue;
+		}
+		/* Fullscreen on *this* output, not merely fullscreen somewhere. */
+		struct wlr_box overlap;
+		if (!wlr_box_intersection(&overlap, &output_box, &toplevel->box) ||
+				overlap.width < output_box.width ||
+				overlap.height < output_box.height) {
+			continue;
+		}
+
+		struct wlr_surface *surface = viewport_view_surface(toplevel);
+		if (surface == NULL) {
+			continue;
+		}
+		return wlr_tearing_control_manager_v1_surface_hint_from_surface(
+			server->tearing_control, surface) ==
+			WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
+	}
+
+	return false;
+}
 
 static void handle_output_frame(struct wl_listener *listener, void *data)
 {
@@ -36,11 +83,44 @@ static void handle_output_frame(struct wl_listener *listener, void *data)
 		}
 	}
 
-	/* One call composites everything: the shell's dma-buf underneath, each
+	/* One pass composites everything: the shell's dma-buf underneath, each
 	 * client's dma-buf in the rect the shell asked for. The scene picks damage
 	 * regions, decides whether a surface can be scanned out directly, and
-	 * threads explicit-sync timeline points through. No pixel is read back. */
-	bool committed = wlr_scene_output_commit(output->scene_output, NULL);
+	 * threads explicit-sync timeline points through. No pixel is read back.
+	 *
+	 * Built and committed separately rather than through
+	 * wlr_scene_output_commit(), which takes no output state and so has no way
+	 * to ask for a tearing page-flip. That is the only reason for the longer
+	 * form; everything else is what that function would have done. */
+	bool committed = false;
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+
+	if (wlr_scene_output_build_state(output->scene_output, &state, NULL)) {
+		bool tearing = output_wants_tearing(output);
+		state.tearing_page_flip = tearing;
+
+		committed = wlr_output_commit_state(output->wlr_output, &state);
+
+		/* The backend is allowed to refuse an async flip — it needs the buffer
+		 * on a plane, and a compressed render target cannot go on one. Losing
+		 * the frame over it would be a worse trade than the tearing was, so
+		 * the same state goes again without the flag. */
+		if (!committed && tearing) {
+			state.tearing_page_flip = false;
+			committed = wlr_output_commit_state(output->wlr_output, &state);
+			if (committed) {
+				static bool warned;
+				if (!warned) {
+					warned = true;
+					wlr_log(WLR_INFO, "%s refused a tearing page-flip; "
+						"presenting on vblank instead",
+						output->wlr_output->name);
+				}
+			}
+		}
+	}
+	wlr_output_state_finish(&state);
 
 	/* One line per frame is sixty a second, so this is rate-limited rather than
 	 * unconditional — but by time, not by a count that is spent once and never

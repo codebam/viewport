@@ -227,6 +227,11 @@ struct viewport_server {
 	 * painted and what an output is showing, which is what makes HDR usable. */
 	struct wlr_color_manager_v1 *color_manager;
 
+	/* Kept rather than discarded: the hint a client sets through it is read on
+	 * every frame, and a manager nobody queries is a protocol advertised and
+	 * then ignored. */
+	struct wlr_tearing_control_manager_v1 *tearing_control;
+
 	struct wlr_idle_notifier_v1 *idle_notifier;
 	struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
 	struct wlr_output_power_manager_v1 *output_power;

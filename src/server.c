@@ -268,8 +268,15 @@ bool viewport_server_init(struct viewport_server *server,
 
 	/* Tearing control lets a game opt out of vsync for its own surface, which
 	 * is the difference between smooth input and a frame of added latency in a
-	 * competitive title. Advertising it does not force tearing on anything. */
-	wlr_tearing_control_manager_v1_create(server->wl_display, 1);
+	 * competitive title. Advertising it does not force tearing on anything.
+	 *
+	 * The manager is kept. It used to be created and the return value dropped,
+	 * which meant the global was advertised, Mesa's Wayland WSI duly requested
+	 * immediate presentation for every VK_PRESENT_MODE_IMMEDIATE swapchain, and
+	 * nothing ever read the hint — so a game asking for tearing got vsync and
+	 * no indication that its request had gone nowhere. output.c reads it now. */
+	server->tearing_control =
+		wlr_tearing_control_manager_v1_create(server->wl_display, 1);
 
 	/* Started lazily: no X server runs until an X11 client connects. */
 	viewport_xwayland_init(server);
