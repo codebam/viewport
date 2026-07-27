@@ -1,0 +1,97 @@
+# This file describes the style the tree is already written in; it does not
+# introduce a new one. Every value below was measured against src/ and
+# include/, not copied from a preset — a config that reformats the codebase it
+# claims to describe is worse than no config at all. Check any change with
+#
+#     clang-format --style=file --output-replacements-xml src/ipc.c
+#
+# and keep the replacement count where it is.
+#
+# clang-format has no built-in Linux kernel preset, so the kernel-ish parts
+# (brace placement, unindented case labels, right-aligned pointers) are spelled
+# out on top of LLVM.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# A tab is four columns here, not eight. The 80-column limit is real and was
+# clearly enforced by hand: expanding tabs to four gives a sharp cliff at
+# column 80, expanding them to eight puts a twelfth of the tree over the line.
+UseTab: Always
+IndentWidth: 4
+TabWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 80
+
+PointerAlignment: Right
+DerivePointerAlignment: false
+
+BreakBeforeBraces: Linux
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+
+# Every conditional in this tree is braced, including one-statement bodies.
+# That is deliberate: a brace-less `if` is how a later edit silently ends up
+# outside the branch it was meant to be in.
+InsertBraces: true
+
+IndentCaseLabels: false
+IndentGotoLabels: false
+
+# A wrapped line is indented one further tab, never aligned under the opening
+# paren. Aligning would push deeply nested calls past column 80 and make the
+# indentation of a line depend on the length of the name before it, so a rename
+# would reflow code it never touched.
+AlignAfterOpenBracket: DontAlign
+AlignOperands: DontAlign
+AlignEscapedNewlines: DontAlign
+AlignTrailingComments: false
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignConsecutiveMacros: false
+
+# Arguments fill the line and spill onto the next; they are not split one per
+# line, and the first one stays on the line that opens the call.
+BinPackArguments: true
+BinPackParameters: true
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+PenaltyReturnTypeOnItsOwnLine: 1000
+
+# `if (` and `for (` take a space; a call does not. The wl_list iteration
+# macros read as calls in this tree and are written without the space, so they
+# are declared as loop macros for the sake of the body indentation only.
+SpaceBeforeParens: Custom
+SpaceBeforeParensOptions:
+  AfterControlStatements: true
+  AfterForeachMacros: false
+  AfterFunctionDeclarationName: false
+  AfterFunctionDefinitionName: false
+SpaceAfterCStyleCast: false
+Cpp11BracedListStyle: false
+
+# The block comments carry the reasoning behind the code and are wrapped where
+# their author wanted the break; reflowing them destroys that. Long string
+# literals are split at meaningful points for the same reason.
+ReflowComments: false
+BreakStringLiterals: false
+
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# The include blocks are grouped system / json-glib / wlroots / local and
+# ordered by hand within each. Sorting them would merge the groups.
+SortIncludes: Never
+
+InsertNewlineAtEOF: true
+
+ForEachMacros:
+  - wl_list_for_each
+  - wl_list_for_each_safe
+  - wl_list_for_each_reverse
+  - wl_list_for_each_reverse_safe
+  - wl_array_for_each

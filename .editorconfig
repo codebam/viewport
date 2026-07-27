@@ -1,0 +1,73 @@
+# Editors read this without being asked, which is the point: the conventions
+# below were only ever enforced by whoever happened to be reviewing, and the
+# first patch from outside would otherwise arrive reformatted.
+#
+# The C rules restate what .clang-format already specifies. If one changes,
+# change both — an editor that silently retabs on save and a formatter that
+# disagrees with it is worse than either alone.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = tab
+indent_size = 4
+tab_width = 4
+
+# Tabs, four columns wide, wrapped at 80. Four rather than eight is not a
+# stylistic whim: the tree is written to fit in 80 columns with tabs expanded
+# to four, and an editor that renders them as eight will show hundreds of
+# lines running past the margin and invite someone to "fix" them.
+[*.{c,h}]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+max_line_length = 80
+
+# The shell, its stylesheet, and its markup — plus the tests that drive it.
+[*.{js,css,html}]
+indent_style = space
+indent_size = 2
+
+[*.json]
+indent_style = space
+indent_size = 2
+
+[*.nix]
+indent_style = space
+indent_size = 2
+
+[meson.build]
+indent_style = space
+indent_size = 2
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# The scripts follow the C files rather than the usual shell convention,
+# because they sit beside them and get edited in the same sitting.
+[*.sh]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+# Two trailing spaces are a hard line break in Markdown, so stripping them
+# silently reflows a paragraph.
+[*.md]
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = false
+
+# Generated from the upstream protocol definitions; not ours to restyle.
+[protocols/*.xml]
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = false

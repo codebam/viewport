@@ -1,0 +1,332 @@
+# IPC and writing a shell
+
+## IPC
+
+Two transports, one dispatch table.
+
+The page uses the script message handler, which works regardless of the shell's
+origin and is unaffected by CORS or mixed-content rules:
+
+```js
+window.webkit.messageHandlers.viewport.postMessage(JSON.stringify(msg));
+window.addEventListener('viewport', e => handle(e.detail));
+```
+
+External tooling uses a UNIX socket of newline-delimited JSON:
+
+```sh
+socat - UNIX:$VIEWPORT_SOCKET
+```
+
+### Compositor → shell
+
+| Message | Payload |
+| --- | --- |
+| `config` | `layout` (`"tiling"` or `"scrolling"`), `logo`, `tutorial`, optional `bar`, optional `rules[]`, optional `theme{}` |
+| `modifiers` | `logo` (whether Mod4 is held; only sent while `bar` is `"auto"`) |
+| `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `replay`, `floating`, `width`, `height`, `min_width`, `min_height` |
+| `view.props` | `id`, `title`, `app_id` |
+| `view.removed` | `id` |
+| `view.focused` | `id` (`0` means the shell itself holds focus) |
+| `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `hdr`, `hdr_capable`, `scale`, `transform`, `modes[]` |
+| `shell.command` | `command`, `args[]` — a keybinding forwarded for the shell to act on |
+| `session.restore` | `state` (whatever was last saved, or empty) |
+| `status.update` | `cpu`, `memory`, `load`, `net_rx`, `net_tx`, `disk_free`, `disk_total` |
+| `notification.add` | `id`, `app_name`, `icon`, `summary`, `body`, `urgency`, `timeout`, `actions[]` with `key` and `label` |
+| `notification.close` | `id` — the application withdrew it |
+| `error` | `context`, `message` |
+
+### Shell → compositor
+
+Also accepted on the UNIX socket, which speaks the same message set.
+
+| Message | Payload |
+| --- | --- |
+| `view.layout` | `id`, `x`, `y`, `width`, `height`, optional `clip{x,y,width,height}`, optional `scale` |
+| `view.visible` | `id`, `visible` |
+| `view.fullscreen` | `id`, `fullscreen` — tells the client, which rearranges itself on the state |
+| `view.focus` | `id` |
+| `view.close` | `id` |
+| `view.opacity` | `id`, `opacity` (0–1) |
+| `view.query` | — replays `config` and a `view.added` for every mapped window |
+| `shell.focus` | — |
+| `shell.overview` | `active` |
+| `session.save` | `state` (opaque string) |
+| `session.query` | — |
+| `notification.action` | `id`, `action` (the key the application supplied, not the label) |
+| `notification.dismiss` | `id` |
+| `notification.expire` | `id` |
+| `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |
+| `output.confirm` | — cancels the pending revert; see below |
+| `output.hdr` | optional `name` (default: active output), optional `enabled` (absent toggles) |
+| `output.active` | `name` — which output the shell considers active |
+| `output.query` | — |
+| `output.test_add` | — headless only; plugs in a virtual monitor for tests |
+| `output.test_remove` | optional `name` (default: the first output); headless only |
+| `bind.add` | `chord`, `action` |
+| `quit` | — |
+
+A member that is present but of the wrong type is treated as absent, so it
+takes the documented default rather than reaching the handler as a zero or a
+null. An unknown message type, or one whose `type` is missing or not a string,
+is answered with an `error` — to the socket client that sent it, or to the page
+when it came from there.
+
+`output.configure` runs `wlr_output_test_state` before committing, so a mode the
+hardware cannot drive is reported back as an `error` instead of blanking the
+screen you are configuring from. A configuration that *does* commit is still
+provisional: it reverts after twelve seconds unless an `output.confirm` arrives,
+because a wrong mode blanks the very screen you would need in order to undo it.
+
+A window is a real Wayland surface, so nothing the shell draws can crop it —
+CSS `overflow` bounds the shell's own painting and no more. `clip` on
+`view.layout` is how a window is cropped to the part of it that is on its
+output, which is what keeps a column scrolled off the left of one monitor from
+being drawn on the monitor beside it. Only the surface is clipped, never the
+container: a popup is entitled to extend past the window it belongs to.
+
+## Writing a shell
+
+Style the frame however you like; leave the hole alone.
+
+```css
+.viewport { background: transparent; }  /* the compositor paints here */
+```
+
+```js
+const rect = viewportEl.getBoundingClientRect();
+send({ type: 'view.layout', id,
+       x: Math.round(rect.left),  y: Math.round(rect.top),
+       width: Math.round(rect.width), height: Math.round(rect.height) });
+```
+
+Measure with a `ResizeObserver` rather than pushing rects when you think
+something moved — CSS transitions, font loading and ancestor reflows all change
+that rect without firing anything you can subscribe to. `data/shell/` is a
+working reference.
+
+## Remembering the layout
+
+Restarting the compositor kills every client with it — they are its clients,
+and nothing survives that. So what is preserved is not the session but the
+*places* in it: the tree is written down with each window replaced by the
+application that was in it, and as those applications come back they are put
+where they were rather than piling up in the order they happen to start. Which
+matters most when the compositor is the thing being worked on.
+
+A remembered place is an ordinary leaf whose id is negative. No real window has
+one, so every walk of the tree skips it and the renderers already drop leaves
+with no window — the structure, the column widths and the weights survive
+without a second representation to keep in step. A place nothing comes back for
+is dropped after 45 seconds, long enough for a browser restoring its own
+session and short enough that a workspace is not permanently shaped around
+something that is gone.
+
+The state is stored in `$XDG_STATE_HOME/viewport/session.json`, written through
+a temporary file and renamed so a compositor that dies mid-write leaves the
+previous layout intact rather than half of a new one. Its contents are the
+shell's own format: the compositor stores and returns the blob without
+interpreting it, because the layout model belongs to the shell and the
+compositor should not gain an opinion about workspaces just to store them.
+
+Restoring only happens into an empty session — restoring over windows that are
+already open would move them somewhere they were never asked to be — and the
+shell asks for it before replaying its windows, so the places exist before the
+windows that fill them arrive.
+
+### Logging
+
+`--debug` mirrors the shell's console into the compositor log and serves the
+shell uncached. Without it a JavaScript error in the shell is completely
+silent and an edited shell appears to have no effect, so it is worth leaving
+on — it costs a page fetch.
+
+`--trace` is the expensive tier: every placement, clip and scale, which during
+an animation is one line per window per frame. That is formatted I/O inside the
+layout path and a log that grows by megabytes a minute, so it is separate. Pass
+it when chasing a geometry bug and not otherwise.
+
+### Overview
+
+`Mod4+o` shows every workspace at once. Each thumbnail contains the workspace's
+real tree — the same renderer, at output size, scaled down — so a miniature *is*
+the layout rather than a picture of it.
+
+The windows inside are real surfaces, and they are drawn shrunk rather than
+resized: a thumbnail is smaller than many windows' minimum size, so asking
+clients to resize would be refused about as often as it was honoured, and
+slow when it wasn't. `view.layout` carries the window's real size plus a
+`scale`, and the compositor scales the buffers the client already produced.
+
+The scale has to be re-applied once per frame, before compositing.
+`wlr_scene_surface` recomputes each buffer's destination size from its surface
+on every commit, so a window with live content snaps back to full size the
+moment it paints. Doing it per commit is not enough either: a client that
+paints through subsurfaces — Firefox — commits on surfaces the toplevel has no
+listener for, so its content stayed full size while simpler windows shrank.
+Once a frame catches every case, and the write is skipped when the value already
+matches, so it does not damage the scene by itself.
+
+Crop and scale are applied together, in that order, every time. They are not
+independent — the scale is computed from what the crop left — so applying them
+at different moments lets a client commit land in between, leaving a
+destination that describes the whole window and a source that describes the
+strip which survived the crop. The strip is then stretched to fill it. The
+scale is also cleared on every window when the overview closes rather than
+waiting for the shell to send each one a new rect: a window whose rect has not
+changed gets no message, and an idle window never repaints, so it kept the
+overview's size until something made it draw again.
+
+What gets scaled is the buffer's *destination size*, because whatever wlroots
+last put there already accounts for the surface's buffer scale, its transform,
+any viewport it set, and the crop. Computing from the buffer's own dimensions
+gets all of that wrong — most visibly for a client that renders at 2x and says
+so, which then draws at double size.
+
+It cannot simply be read back each frame either: wlroots recomputes the
+destination only when the surface commits, so in between, reading it returns
+what this code last wrote and multiplying again shrinks the window a little
+further every frame. Each buffer's unscaled size is remembered alongside the
+value written from it — if the destination still matches what was written the
+remembered size still stands, and if it has changed then wlroots recomputed it
+and the new value is the unscaled one.
+
+Two consequences worth knowing. Only the offsets *between* buffers are left
+unscaled, so a client painting through subsurfaces — a browser compositing
+video, mostly — shows those parts misplaced while shrunk; it is exact again the
+moment the scale returns to 1. And input is routed to the shell for the duration
+(`shell.overview`), because a click on a miniature means "take me there" rather
+than reaching the client underneath. That routing is also what makes dragging
+possible: press a window and release it over another thumbnail to move it to
+that workspace, or release it where it started to go there. The overview stays
+open after a move, so several windows can be arranged in one visit.
+
+Visibility works differently while it is up. A window is normally on screen
+only if some monitor is displaying its workspace; the overview draws every
+workspace at once, including the ones no monitor is showing, so there the
+thumbnail's own render is the whole answer. Without that exception a window on
+an off-screen workspace stayed hidden and its thumbnail came out labelled
+empty.
+
+Every workspace is shown, not only the occupied ones — an overview is how you
+get somewhere, and an empty workspace has to be visible to be a target. They are
+dealt out across the monitors rather than crowded onto one: a window element
+exists once in the DOM, so a workspace can only be drawn on one screen, and
+rendering all of them everywhere would have each grid steal the windows from the
+last. Each output keeps the workspace it was already showing.
+
+### Animation
+
+Window frames are DOM, so moving and resizing them animates in CSS and costs
+the compositor nothing. What does not come free is the window's *contents*: a
+real surface drawn at whatever rect the compositor was last told. Sampling
+geometry once after a relayout would slide the frame smoothly and snap the
+contents straight to the destination — worse than not animating at all.
+
+So the shell resamples every window's rect each frame until the layout stops
+moving, self-terminating a few idle frames later rather than listening for
+`transitionend`, which is unreliable while dragging. Two things keep the cost
+down: the compositor skips the client reconfigure when only the position
+changed, so a window sliding across the screen never asks its client to resize;
+and drags set a class that disables the transition, because interpolating
+toward a pointer lags it by the whole duration.
+
+Fading a window in cannot be done in CSS for the same reason, so it is tweened
+in the shell and sent as `view.opacity`, which the compositor applies to the
+surface itself. `prefers-reduced-motion` disables all of it.
+
+Closing a window hands focus to its neighbour rather than to whatever is first
+on the workspace, and the two layouts want different neighbours. In the strip it
+is the column to the left — the strip has a direction, and being dropped at its
+start after closing something in the middle means scrolling back to where you
+were. In a tiling tree it is whatever shared a container with it: the split it
+was part of, which is what "the parent" amounts to. A window stacked in the
+same column comes before either, since closing one of a pair should not move you
+to a different column. The choice is made before the window is removed, because
+afterwards the tree has collapsed around the hole and nothing records where it
+was.
+
+A window takes focus when it opens, however it was launched. `replay` marks the
+copies sent when the shell reloads or asks for the window list — those describe
+windows that have been open for a while, and focusing on every `view.added`
+would move focus to whichever window came last in the list every time the shell
+reloaded, which is every time it is edited. The other exception is a window a
+rule deliberately placed on another workspace: that was an instruction to leave
+it there, not to be taken there.
+
+### Reporting a problem
+
+```sh
+./scripts/collect-report.sh
+```
+
+Writes one file with the log and the facts needed to read it: which commit,
+which renderer, which GPU and connectors, and what the config actually
+contained. A log on its own rarely settles anything, because the same line
+means different things on different hardware or against a different build —
+and "which binary was running" is usually the first question, since an
+installed copy and a checkout build diverge the moment one is ahead.
+
+Long logs are trimmed to their ends. A failure shows up either where it started
+or where everything stopped; the middle of a long run is frame timing. Nothing
+is uploaded — it is a plain file, worth reading before sending on.
+
+### Testing the shell
+
+The layout engine lives in `shell.js`, and running it under a headless
+compositor proves nothing: the web view renders, but nothing drives the layout,
+so a broken tree looks exactly like a working one. `tests/shell.test.js` stubs
+the DOM far enough to run the real file unmodified and checks structure — four
+windows make four columns, consume and expel are inverses, a tabbed container
+shows exactly one window and it is the focused one.
+
+```sh
+timeout 20 node tests/shell.test.js data/shell/shell.js tiling
+timeout 20 node tests/shell.test.js data/shell/shell.js scrolling
+```
+
+`timeout` because the shell sets a live-reload interval and so never exits.
+
+### Testing window capture
+
+Whether a shared window really is that window can only be answered from
+outside, by a client that asks for one and looks at what comes back. Every
+symptom of the broken version had to be reported by a person sharing a window
+in a browser, and every wrong guess cost them their session.
+
+```sh
+meson test -C build
+```
+
+That starts the compositor headless, opens a window painted one colour inside
+its window geometry and another in the decoration margin around it, captures
+it, and checks every pixel. Anything from a neighbouring window, the shell
+behind, or the margin outside shows up as a colour that does not belong, with
+coordinates. It runs in both layouts; the scrolling one crowds the window under
+test to the edge of a strip that is being laid out again on every frame.
+
+`tests/capture-client.c` says what each check is for, including the one that
+does not currently fail against the broken code and why it is still there.
+
+Outputs come up at whatever mode the display says it prefers. That is the right
+default — it is the timing the manufacturer chose — but it is not always the
+fastest, since plenty of high-refresh monitors nominate a 60Hz timing and
+running a 240Hz panel at a quarter of its rate is easy to miss. So it can be
+overridden per output:
+
+```jsonc
+"outputs": {
+  "*":    { "max_refresh": true },              // fastest at the preferred size
+  "DP-3": { "mode": "2560x1440@239.760" }       // or name one outright
+}
+```
+
+`max_refresh` only maximises the refresh rate: the highest refresh overall may
+belong to a lower resolution, and a sharper picture is worth more than a faster
+one. A named `mode` may leave the refresh off to match on resolution alone. An
+exact output name beats `"*"` whichever order they appear in.
+
+The chosen mode is logged at startup with its refresh rate, which the line used
+to omit — the omission is how a monitor sits at 60Hz unnoticed. Applied when an
+output appears; `output.configure` or any `wlr-output-management` client
+changes it afterwards.
