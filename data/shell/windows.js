@@ -126,6 +126,7 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   el.dataset.viewId = String(id);
   viewport.dataset.viewId = String(id);
   el.addEventListener('mousedown', (event) => {
+    if (!selectedIds.has(id)) clearSelection();
     if (overviewActive) {
       beginOverviewDrag(event, id);
       return;

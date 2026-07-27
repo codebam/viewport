@@ -254,9 +254,17 @@ function moveViewToOutput(id, direction) {
  * Two ways to move a window to a workspace, one of which handled half the
  * windows. Now there is one. */
 function moveToWorkspace(n) {
-  if (focusedId == null) return;
-  if (moveViewToWorkspace(focusedId, n)) {
-    relayoutAll();
+  if (selectedIds.size > 0) {
+    const ids = Array.from(selectedIds);
+    let moved = false;
+    for (const id of ids) {
+      if (moveViewToWorkspace(id, n)) moved = true;
+    }
+    if (moved) relayoutAll();
+  } else if (focusedId != null) {
+    if (moveViewToWorkspace(focusedId, n)) {
+      relayoutAll();
+    }
   }
 }
 

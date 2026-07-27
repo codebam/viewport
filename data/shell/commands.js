@@ -19,9 +19,11 @@ function handleShellCommand(command, args) {
 
   switch (command) {
     case 'workspace.switch':
+      clearSelection();
       if (Number.isFinite(n)) switchWorkspace(activeOutputName(), n);
       break;
     case 'workspace.back':
+      clearSelection();
       workspaceBack(activeOutputName());
       break;
     case 'workspace.move':
@@ -117,6 +119,7 @@ function handleShellCommand(command, args) {
     /* Scrolling layout. Bound only when the compositor is configured for it,
        but harmless to receive otherwise. */
     case 'layout.focus':
+      clearSelection();
       scrollFocus(arg);
       break;
     case 'layout.consume':
@@ -149,6 +152,7 @@ function handleShellCommand(command, args) {
       send({ type: 'output.hdr', name: activeOutputName() });
       break;
     case 'workspace.step':
+      clearSelection();
       stepWorkspace(Number(arg));
       break;
     case 'mode.changed':
@@ -221,11 +225,16 @@ window.addEventListener('viewport', (event) => {
     }
 
     case 'view.removed':
+      selectedIds.delete(message.id);
       removeView(message.id);
       break;
 
     case 'view.focused': {
-      focusedId = message.id || null;
+      const nextId = message.id || null;
+      if (nextId != null && !selectedIds.has(nextId)) {
+        clearSelection();
+      }
+      focusedId = nextId;
       const found = focusedId != null ? findLeaf(focusedId) : null;
       if (found) {
         /* Focusing a window on a hidden workspace brings that workspace to a
