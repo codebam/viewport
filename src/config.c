@@ -351,13 +351,27 @@ void viewport_config_reload(struct viewport_server *server)
 
 	viewport_keyboards_reconfigure(server);
 	viewport_appearance_set_dark(server->appearance, server->config.dark_mode);
-	if (server->xcursor_mgr != NULL && server->config.cursor_size > 0) {
+	if (server->xcursor_mgr != NULL) {
 		/* A new theme or size only reaches the pointer once a manager for it
-		 * exists; the old one stays alive because the cursor may still be
-		 * showing an image from it. */
+		 * exists. Size is not part of the condition: guarding on it meant a
+		 * config that changed only cursor.theme reloaded to no visible effect,
+		 * which reads as reload being broken. The unset size falls back to the
+		 * same 24 viewport_cursor_init() uses. */
+		int size = server->config.cursor_size > 0
+			? server->config.cursor_size : 24;
 		struct wlr_xcursor_manager *manager = wlr_xcursor_manager_create(
-			server->config.cursor_theme, server->config.cursor_size);
+			server->config.cursor_theme, size);
 		if (manager != NULL) {
+			/* The outgoing manager cannot be destroyed here: the cursor may
+			 * be displaying an image it owns at this instant. It is parked
+			 * instead, and the one parked by a previous reload is destroyed
+			 * now — a second reload is far enough away in wall-clock time
+			 * that the pointer has long since been redrawn from its
+			 * replacement. */
+			if (server->xcursor_mgr_prev != NULL) {
+				wlr_xcursor_manager_destroy(server->xcursor_mgr_prev);
+			}
+			server->xcursor_mgr_prev = server->xcursor_mgr;
 			server->xcursor_mgr = manager;
 		}
 	}

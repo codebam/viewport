@@ -660,7 +660,19 @@ void viewport_server_finish(struct viewport_server *server)
 	}
 	if (server->xcursor_mgr != NULL) {
 		wlr_xcursor_manager_destroy(server->xcursor_mgr);
+		server->xcursor_mgr = NULL;
 	}
+	/* A config reload parks the manager it replaced here rather than destroying
+	 * it under a cursor that may still be drawing from it, so shutdown is where
+	 * the last parked one is finally released. */
+	if (server->xcursor_mgr_prev != NULL) {
+		wlr_xcursor_manager_destroy(server->xcursor_mgr_prev);
+		server->xcursor_mgr_prev = NULL;
+	}
+	/* The overview keys its per-buffer scale state on scene buffers, so it has
+	 * to be dropped while those buffers still exist. Quitting with the overview
+	 * open otherwise left the whole table behind. */
+	viewport_scale_forget(server);
 	/* Before the renderer: the scene holds a texture for every surface that was
 	 * ever composited, and those are renderer allocations. Destroying the
 	 * renderer first leaves them behind — "shared_buffer_finish: N allocations
@@ -692,7 +704,12 @@ void viewport_server_finish(struct viewport_server *server)
 		wlr_backend_destroy(server->backend);
 	}
 
-	free(server->active_output);
+	/* Each of these has to be released by the allocator that produced it:
+	 * active_output is g_strdup'd in the IPC layer, mode is strdup'd in the
+	 * binding layer. They happen to coincide today because GLib's default
+	 * vtable is malloc, but that stops being true the moment anyone installs a
+	 * GMemVTable. */
+	g_free(server->active_output);
 	free(server->mode);
 	viewport_bindings_finish(server);
 

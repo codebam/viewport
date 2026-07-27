@@ -19,6 +19,7 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/util/addon.h>
 #include <wlr/util/log.h>
 
 #include "viewport.h"
@@ -631,41 +632,92 @@ void viewport_handle_new_xdg_popup(struct wl_listener *listener, void *data)
  * written, the remembered size is still the unscaled one; if it has changed,
  * wlroots recomputed it and the new value is the unscaled one.
  *
- * Keyed by buffer pointer, and dropped wholesale when nothing is scaled — the
- * entries are only meaningful while the overview is up. */
+ * The state lives in a wlr_addon on the buffer's scene node, so it is freed by
+ * the node that owns it. A table keyed by buffer pointer outlived the buffer
+ * instead: a window closed while the overview was up left its entry behind, and
+ * the next buffer allocated at that address inherited a stale natural/applied
+ * pair — suffering exactly the per-frame shrinking this mechanism exists to
+ * prevent. */
 struct scale_state {
+	struct wlr_addon addon;
 	int natural_width, natural_height;
 	int applied_width, applied_height;
 };
 
-static GHashTable *scale_states;
+/* The address is the whole point; nothing ever reads the value. wlr_addon_find
+ * matches on owner as well as interface, and this is the only owner we use. */
+static const int scale_state_owner;
 
-void viewport_scale_forget(void)
+static void scale_state_destroy(struct wlr_addon *addon)
 {
-	g_clear_pointer(&scale_states, g_hash_table_destroy);
+	struct scale_state *state = wl_container_of(addon, state, addon);
+	wlr_addon_finish(&state->addon);
+	free(state);
 }
 
-static bool debug_scale;
+static const struct wlr_addon_interface scale_state_impl = {
+	.name = "viewport_scale_state",
+	.destroy = scale_state_destroy,
+};
+
+static void forget_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
+	void *data)
+{
+	struct wlr_addon *addon = wlr_addon_find(&buffer->node.addons,
+		&scale_state_owner, &scale_state_impl);
+	if (addon != NULL) {
+		addon->impl->destroy(addon);
+	}
+}
+
+/* Called from teardown as well as from the shell, so neither the server nor a
+ * toplevel's surface tree can be assumed to still exist. */
+void viewport_scale_forget(struct viewport_server *server)
+{
+	if (server == NULL) {
+		return;
+	}
+
+	struct viewport_toplevel *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (toplevel->surface_tree == NULL) {
+			continue;
+		}
+		wlr_scene_node_for_each_buffer(&toplevel->surface_tree->node,
+			forget_iterator, NULL);
+	}
+}
+
+struct scale_pass {
+	double scale;
+	bool trace;
+};
 
 static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 	void *data)
 {
-	double scale = *(double *)data;
+	struct scale_pass *pass = data;
+	double scale = pass->scale;
 
 	if (buffer->buffer == NULL || buffer->dst_width <= 0 ||
 			buffer->dst_height <= 0) {
 		return;
 	}
 
-	if (scale_states == NULL) {
-		scale_states = g_hash_table_new_full(g_direct_hash, g_direct_equal,
-			NULL, g_free);
-	}
-
-	struct scale_state *state = g_hash_table_lookup(scale_states, buffer);
-	if (state == NULL) {
-		state = g_new0(struct scale_state, 1);
-		g_hash_table_insert(scale_states, buffer, state);
+	struct scale_state *state;
+	struct wlr_addon *addon = wlr_addon_find(&buffer->node.addons,
+		&scale_state_owner, &scale_state_impl);
+	if (addon != NULL) {
+		state = wl_container_of(addon, state, addon);
+	} else {
+		state = calloc(1, sizeof(*state));
+		if (state == NULL) {
+			return;
+		}
+		wlr_addon_init(&state->addon, &buffer->node.addons,
+			&scale_state_owner, &scale_state_impl);
+		/* No size has been written yet, so the first comparison below must
+		 * disagree with any destination wlroots could have computed. */
 		state->applied_width = -1;
 	}
 
@@ -685,7 +737,7 @@ static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 	/* Rate-limited by time rather than by a spent-once counter: the overview
 	 * runs this per buffer per frame, and a static count of twenty went in the
 	 * first frames of the first overview and left every later one silent. */
-	if (debug_scale &&
+	if (pass->trace &&
 			(width != state->applied_width || height != state->applied_height)) {
 		static gint64 last_traced;
 		gint64 now_us = g_get_monotonic_time();
@@ -714,10 +766,12 @@ static void apply_scale(struct viewport_toplevel *toplevel)
 		return;
 	}
 
-	debug_scale = toplevel->server->config.trace;
+	struct scale_pass pass = {
+		.scale = scale,
+		.trace = toplevel->server->config.trace,
+	};
 	wlr_scene_node_for_each_buffer(&toplevel->surface_tree->node,
-		scale_iterator, &scale);
-	debug_scale = false;
+		scale_iterator, &pass);
 }
 
 static void apply_clip(struct viewport_toplevel *toplevel);

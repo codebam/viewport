@@ -90,8 +90,14 @@ int main(int argc, char *argv[])
 	/* Binds are collected rather than applied, because they need a live
 	 * server to attach to and that does not exist until after init. */
 	const char *config_path = NULL;
-	const char *bind_specs[64];
-	size_t bind_count = 0;
+	/* Unbounded, and created here rather than after the parse so that every
+	 * return below has something to free. A fixed cap used to drop everything
+	 * past the sixty-fourth --bind without a word, which on a generated
+	 * command line hands the user a keymap missing its tail — the difference
+	 * config.c draws between the UI being broken and the machine being
+	 * bricked. The specs are borrowed from argv, which outlives this
+	 * function, so the array holds no free func and owns nothing. */
+	GPtrArray *bind_specs = g_ptr_array_new();
 
 	/* Which settings came from the command line.
 	 *
@@ -137,9 +143,7 @@ int main(int argc, char *argv[])
 			from_flag.menu = true;
 			break;
 		case 'b':
-			if (bind_count < sizeof(bind_specs) / sizeof(bind_specs[0])) {
-				bind_specs[bind_count++] = optarg;
-			}
+			g_ptr_array_add(bind_specs, optarg);
 			break;
 		case 'e':
 			config.startup_cmd = optarg;
@@ -160,15 +164,18 @@ int main(int argc, char *argv[])
 			break;
 		case 'h':
 			fputs(usage, stdout);
+			g_ptr_array_free(bind_specs, TRUE);
 			return EXIT_SUCCESS;
 		default:
 			fputs(usage, stderr);
+			g_ptr_array_free(bind_specs, TRUE);
 			return EXIT_FAILURE;
 		}
 	}
 
 	if (optind < argc) {
 		fputs(usage, stderr);
+		g_ptr_array_free(bind_specs, TRUE);
 		return EXIT_FAILURE;
 	}
 
@@ -247,8 +254,8 @@ int main(int argc, char *argv[])
 	 * chord that also has a default shadows it without the defaults having to
 	 * be suppressed. Suppressing them was the old behaviour, and it meant one
 	 * --bind silently took away Mod4+Return, exit, focus and the media keys. */
-	for (size_t i = 0; i < bind_count; i++) {
-		viewport_binding_add(&server, bind_specs[i]);
+	for (guint i = 0; i < bind_specs->len; i++) {
+		viewport_binding_add(&server, g_ptr_array_index(bind_specs, i));
 	}
 
 	/* Only an explicit "binds" object in the config file replaces the defaults
@@ -323,6 +330,7 @@ int main(int argc, char *argv[])
 	status = EXIT_SUCCESS;
 
 out:
+	g_ptr_array_free(bind_specs, TRUE);
 	viewport_server_finish(&server);
 	g_free(server.config.outputs);
 	viewport_config_finish();
