@@ -753,8 +753,15 @@ void viewport_handle_new_xwayland_surface(struct wl_listener *listener,
 void viewport_handle_new_layer_surface(struct wl_listener *listener,
 	void *data);
 
-/* Re-runs layer-surface layout for an output, e.g. after a mode change. */
+/* Re-runs layer-surface layout for an output, e.g. after a mode change.
+ * A NULL output is ignored, so callers holding a surface whose output has
+ * gone away need no guard of their own. */
 void viewport_layers_arrange(struct viewport_output *output);
+
+/* Destroys every layer surface homed on an output that is being torn down.
+ * Must be called while the output is still valid — see the commentary in
+ * layer_shell.c for the use-after-free it prevents. */
+void viewport_layers_output_destroyed(struct viewport_output *output);
 
 /* -------------------------------------------------------------------------
  * input.c

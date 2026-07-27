@@ -130,7 +130,23 @@ static void arrange_layer(struct wlr_scene_tree *tree,
  * gives them precedence in. */
 void viewport_layers_arrange(struct viewport_output *output)
 {
+	/* A surface outlives its output: viewport_layers_output_destroyed() clears
+	 * surface->output while the monitor is going away, and the destroy it then
+	 * issues unmaps the surface, which lands here through handle_unmap. Without
+	 * this the walk below — and the 16-byte store to output->usable_area —
+	 * would run against an output that is mid-teardown. */
+	if (output == NULL) {
+		return;
+	}
+
 	struct viewport_server *server = output->server;
+
+	/* Same window as viewport_layers_output_destroyed(): the backend is
+	 * destroyed after the scene, so an output event arriving from that teardown
+	 * would read the four layer trees below after they were freed. */
+	if (server->scene == NULL) {
+		return;
+	}
 
 	struct arrange_pass pass = { .output = output };
 	wlr_output_layout_get_box(server->output_layout, output->wlr_output,
@@ -158,6 +174,62 @@ void viewport_layers_arrange(struct viewport_output *output)
 	/* Windows are placed by the shell, so a changed usable area only takes
 	 * effect once the shell has been told and relaid out. */
 	viewport_ipc_notify_output_layout(server);
+}
+
+/* Every layer surface homed on an output that is going away.
+ *
+ * wlroots does not do this for us: types/wlr_layer_shell_v1.c registers no
+ * listener on wlr_output.events.destroy and the header states the compositor
+ * owns the output assignment. Without this walk, struct viewport_layer_surface
+ * keeps a raw pointer to the freed viewport_output, and the client's own
+ * reaction to the wl_output global vanishing — destroying its layer surface,
+ * which wlroots unmaps first — reaches handle_unmap and writes a wlr_box into
+ * freed memory. That is heap corruption that only aborts much later, in an
+ * unrelated free. sway's output_destroy does the same thing.
+ *
+ * Must be called while `output` is still valid. */
+void viewport_layers_output_destroyed(struct viewport_output *output)
+{
+	struct viewport_server *server = output->server;
+
+	/* Nothing to walk once the scene is gone, and walking anyway is a
+	 * use-after-free: viewport_server_finish() destroys the scene graph — which
+	 * frees these four trees — and only then destroys the backend, whose own
+	 * teardown fires a destroy signal for every output and lands right here.
+	 * ASan caught the read of &trees[i]->children on every clean exit. */
+	if (server->scene == NULL) {
+		return;
+	}
+
+	struct wlr_scene_tree *trees[] = {
+		server->layer_overlay, server->layer_top,
+		server->layer_bottom, server->layer_bg,
+	};
+
+	for (size_t i = 0; i < sizeof(trees) / sizeof(trees[0]); i++) {
+		/* Safe iteration, unlike arrange_layer's: destroying a layer surface
+		 * fires its destroy signal, and wlroots' scene helper removes the node
+		 * from this very list while handle_destroy() frees our struct. */
+		struct wlr_scene_node *node, *tmp;
+		wl_list_for_each_safe(node, tmp, &trees[i]->children, link) {
+			struct viewport_node *tagged = node->data;
+			if (tagged == NULL || tagged->type != VIEWPORT_NODE_LAYER) {
+				continue;
+			}
+
+			struct viewport_layer_surface *surface =
+				(struct viewport_layer_surface *)tagged;
+			if (surface->output != output) {
+				continue;
+			}
+
+			/* Cleared before the destroy, not after: the destroy unmaps the
+			 * surface first, and handle_unmap would otherwise rearrange an
+			 * output that is mid-teardown. */
+			surface->output = NULL;
+			wlr_layer_surface_v1_destroy(surface->layer_surface);
+		}
+	}
 }
 
 static void handle_commit(struct wl_listener *listener, void *data)

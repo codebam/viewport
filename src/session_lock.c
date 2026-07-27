@@ -66,6 +66,15 @@ static void handle_new_lock_surface(struct wl_listener *listener, void *data)
 	struct viewport_lock *lock = wl_container_of(listener, lock, new_surface);
 	struct wlr_session_lock_surface_v1 *lock_surface = data;
 	struct viewport_output *output = lock_surface->output->data;
+	if (output == NULL) {
+		/* The monitor is already going away: handle_output_destroy() clears
+		 * wlr_output->data before freeing the struct, so this downcast legally
+		 * yields NULL, and every line below dereferences it. wlroots listens on
+		 * the same output's destroy signal and will take this lock surface with
+		 * it, so dropping it here loses nothing. */
+		wlr_log(WLR_DEBUG, "lock surface for a dying output, ignoring");
+		return;
+	}
 
 	struct viewport_lock_surface *surface = calloc(1, sizeof(*surface));
 	if (surface == NULL) {

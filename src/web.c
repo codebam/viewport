@@ -196,10 +196,15 @@ static void handle_shell_changed(GFileMonitor *monitor, GFile *file,
 	if (web->watch_debounce_id != 0) {
 		g_source_remove(web->watch_debounce_id);
 	}
-	if (web->ack_watchdog_id != 0) {
-		g_source_remove(web->ack_watchdog_id);
-	}
 	web->watch_debounce_id = g_timeout_add(150, handle_watch_debounce, web);
+
+	/* The frame-ack watchdog is deliberately left alone. Cancelling it here
+	 * used to strand WebKit on an unacknowledged frame — it is the only thing
+	 * that unblocks the handshake when no vblank is coming (see the commentary
+	 * in wpe_view.c) — so a shell save could wedge the desktop until unrelated
+	 * input happened to damage the scene. It also left ack_watchdog_id holding
+	 * a dead source id for the next g_source_remove() to complain about. A file
+	 * changing on disk has no bearing on the frame in flight. */
 }
 
 static void watch_shell_directory(struct viewport_web *web, const char *url)

@@ -52,11 +52,65 @@ static void handle_renderer_lost(struct wl_listener *listener, void *data)
 	viewport_server_terminate(server);
 }
 
+/* Self-link every embedded listener up front.
+ *
+ * viewport_server_finish() unhooks these listeners under guards on the object
+ * each one is attached to, and those guards are not the same thing as "the
+ * listener was added": wlr_backend_autocreate() fills in both server->backend
+ * and server->session long before their listeners go on, and wlr_seat_create()
+ * runs well before viewport_cursor_init() adds the seat's. Any init failure in
+ * between left a link still zeroed from main.c's `= { 0 }`, and
+ * wl_list_remove() on that stores through a NULL prev — a segfault on the way
+ * out of an already-failing startup.
+ *
+ * wl_list_remove() on a self-initialised link unlinks nothing and is harmless,
+ * so this makes every block in viewport_server_finish() correct however far
+ * initialisation got. It covers that case only: wl_list_remove() leaves the
+ * link with next and prev NULL rather than re-self-linking it, so removing the
+ * same listener twice still stores through a NULL prev. The object guards in
+ * viewport_server_finish() stay load-bearing for that, and each removal there
+ * must run exactly once. Add new listeners here as well as to the struct. */
+static void init_listener_links(struct viewport_server *server)
+{
+	struct wl_listener *listeners[] = {
+		&server->new_layer_surface, &server->new_session_lock,
+		&server->request_activate, &server->request_set_shape,
+		&server->touch_down, &server->touch_up, &server->touch_motion,
+		&server->touch_frame, &server->touch_cancel,
+		&server->output_power_mode, &server->new_shortcuts_inhibitor,
+		&server->inhibitor_destroy,
+		&server->tablet_axis, &server->tablet_proximity, &server->tablet_tip,
+		&server->tablet_button,
+		&server->swipe_begin, &server->swipe_update, &server->swipe_end,
+		&server->pinch_begin, &server->pinch_update, &server->pinch_end,
+		&server->hold_begin, &server->hold_end,
+		&server->output_manager_apply, &server->output_manager_test,
+		&server->toplevel_capture_request,
+		&server->new_xwayland_surface, &server->xwayland_ready,
+		&server->new_constraint,
+		&server->new_output, &server->new_input,
+		&server->new_xdg_toplevel, &server->new_xdg_popup,
+		&server->new_decoration, &server->new_virtual_keyboard,
+		&server->session_active, &server->renderer_lost,
+		&server->cursor_motion, &server->cursor_motion_absolute,
+		&server->cursor_button, &server->cursor_axis, &server->cursor_frame,
+		&server->request_cursor, &server->request_set_selection,
+		&server->request_set_primary_selection, &server->request_start_drag,
+		&server->start_drag,
+	};
+
+	for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) {
+		wl_list_init(&listeners[i]->link);
+	}
+}
+
 bool viewport_server_init(struct viewport_server *server,
 	const struct viewport_config *config)
 {
 	server->config = *config;
 	server->next_view_id = 1;
+
+	init_listener_links(server);
 
 	wl_list_init(&server->outputs);
 	wl_list_init(&server->toplevels);
@@ -502,8 +556,11 @@ void viewport_server_finish(struct viewport_server *server)
 	 * destroyed: wlr_cursor_destroy() asserts its signal lists are empty, so
 	 * skipping this turns every clean shutdown into an abort. Each block is
 	 * guarded because initialisation may have failed partway through, leaving
-	 * the corresponding listeners never added — and wl_list_remove() on a
-	 * zeroed link dereferences NULL. */
+	 * the corresponding listeners never added, and the guards are what keeps
+	 * that safe. init_listener_links() self-linking every listener only covers
+	 * the never-added case: wl_list_remove() sets elm->next = elm->prev = NULL,
+	 * so a second removal of a listener that *was* added still stores through a
+	 * NULL prev. Each of these must run exactly once. */
 	if (server->xdg_shell != NULL) {
 		wl_list_remove(&server->new_xdg_toplevel.link);
 		wl_list_remove(&server->new_xdg_popup.link);
@@ -610,6 +667,17 @@ void viewport_server_finish(struct viewport_server *server)
 	if (server->scene != NULL) {
 		wlr_scene_node_destroy(&server->scene->tree.node);
 		server->scene = NULL;
+		/* The layer trees are children of the scene root, so that one destroy
+		 * freed all seven. Leaving the pointers set left the backend teardown
+		 * below — which fires a destroy for every output — walking freed scene
+		 * trees through viewport_layers_output_destroyed(). */
+		server->layer_web = NULL;
+		server->layer_bg = NULL;
+		server->layer_bottom = NULL;
+		server->layer_apps = NULL;
+		server->layer_top = NULL;
+		server->layer_overlay = NULL;
+		server->layer_lock = NULL;
 	}
 	if (server->allocator != NULL) {
 		wlr_allocator_destroy(server->allocator);

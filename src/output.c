@@ -186,6 +186,12 @@ static void handle_output_destroy(struct wl_listener *listener, void *data)
 
 	struct viewport_server *server = output->server;
 
+	/* First, while `output` is still a valid pointer: layer surfaces hold a raw
+	 * pointer to it and nothing in wlroots clears it. Leaving them behind means
+	 * the next commit, map or unmap from a panel or launcher on this monitor
+	 * writes its usable area into the freed struct. */
+	viewport_layers_output_destroyed(output);
+
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->destroy.link);
@@ -216,6 +222,11 @@ static void handle_output_destroy(struct wl_listener *listener, void *data)
 		 * has to grow when a monitor appears. */
 		viewport_session_lock_outputs_changed(server);
 	}
+
+	/* The back-pointer set at creation outlives the struct otherwise, and every
+	 * `wlr_output->data` downcast (layer_shell.c, output_management.c) would
+	 * hand out a pointer to freed memory. */
+	output->wlr_output->data = NULL;
 	free(output);
 }
 
