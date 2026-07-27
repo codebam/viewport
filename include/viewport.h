@@ -27,6 +27,8 @@
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
+#include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/util/box.h>
 #include <wlr/xwayland.h>
 #include <xkbcommon/xkbcommon.h>
@@ -231,6 +233,8 @@ struct viewport_server {
 	 * every frame, and a manager nobody queries is a protocol advertised and
 	 * then ignored. */
 	struct wlr_tearing_control_manager_v1 *tearing_control;
+	struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
+	struct wlr_single_pixel_buffer_manager_v1 *single_pixel_buffer_manager;
 
 	struct wlr_idle_notifier_v1 *idle_notifier;
 	struct wlr_idle_inhibit_manager_v1 *idle_inhibit;

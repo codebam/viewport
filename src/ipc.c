@@ -1118,6 +1118,7 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 
 	if (!json_parser_load_from_data(parser, json, (gssize)len, &error)) {
 		wlr_log(WLR_ERROR, "malformed IPC message: %s", error->message);
+		notify_error(server, "ipc", error->message);
 		g_error_free(error);
 		g_object_unref(parser);
 		return;
@@ -1125,12 +1126,14 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 
 	JsonNode *root = json_parser_get_root(parser);
 	if (root == NULL || json_node_get_node_type(root) != JSON_NODE_OBJECT) {
+		notify_error(server, "ipc", "JSON root is not an object");
 		g_object_unref(parser);
 		return;
 	}
 
 	JsonObject *object = json_node_get_object(root);
 	if (!json_object_has_member(object, "type")) {
+		notify_error(server, "ipc", "Missing 'type' field");
 		g_object_unref(parser);
 		return;
 	}
@@ -1290,6 +1293,9 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		viewport_server_terminate(server);
 	} else {
 		wlr_log(WLR_DEBUG, "unknown IPC message type '%s'", type);
+		char msg[256];
+		snprintf(msg, sizeof(msg), "unknown IPC message type '%s'", type);
+		notify_error(server, type, msg);
 	}
 
 	g_object_unref(parser);

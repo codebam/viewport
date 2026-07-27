@@ -261,8 +261,10 @@ bool viewport_server_init(struct viewport_server *server,
 	wlr_ext_data_control_manager_v1_create(server->wl_display, 1);
 	server->idle_notifier = wlr_idle_notifier_v1_create(server->wl_display);
 	server->idle_inhibit = wlr_idle_inhibit_v1_create(server->wl_display);
-	wlr_single_pixel_buffer_manager_v1_create(server->wl_display);
-	wlr_fractional_scale_manager_v1_create(server->wl_display, 1);
+	server->single_pixel_buffer_manager =
+		wlr_single_pixel_buffer_manager_v1_create(server->wl_display);
+	server->fractional_scale_manager =
+		wlr_fractional_scale_manager_v1_create(server->wl_display, 1);
 	wlr_content_type_manager_v1_create(server->wl_display, 1);
 	wlr_alpha_modifier_v1_create(server->wl_display);
 

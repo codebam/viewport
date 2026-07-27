@@ -66,11 +66,14 @@ static void handle_map(struct wl_listener *listener, void *data)
 	if (surface->override_redirect) {
 		/* Unmanaged: an X11 menu or tooltip. It goes above the tiled windows
 		 * at the coordinates the client chose, and is never told to move. */
-		wlr_scene_node_set_position(&toplevel->scene_tree->node, surface->x,
-			surface->y);
-		wlr_scene_node_reparent(&toplevel->scene_tree->node,
-			toplevel->server->layer_overlay);
-		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, true);
+		if (toplevel->scene_tree != NULL) {
+			wlr_scene_node_set_position(&toplevel->scene_tree->node, surface->x,
+				surface->y);
+			wlr_scene_node_reparent(&toplevel->scene_tree->node,
+				toplevel->server->layer_overlay);
+			wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
+			wlr_scene_node_set_enabled(&toplevel->scene_tree->node, true);
+		}
 
 		/* Menus need the keyboard, not just the pointer.
 		 *
@@ -153,6 +156,7 @@ static void handle_set_geometry(struct wl_listener *listener, void *data)
 	if (surface->override_redirect && toplevel->scene_tree != NULL) {
 		wlr_scene_node_set_position(&toplevel->scene_tree->node, surface->x,
 			surface->y);
+		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
 	}
 }
 
