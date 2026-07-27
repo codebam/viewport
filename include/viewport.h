@@ -64,6 +64,10 @@ struct viewport_node {
 
 struct viewport_web;
 struct viewport_ipc;
+/* One connected control-socket client. Opaque outside ipc.c: the only thing
+ * anyone else does with it is hand it back so a reply reaches the client that
+ * asked rather than every listener. */
+struct viewport_ipc_client;
 struct viewport_glib_loop;
 struct viewport_status;
 struct viewport_appearance;
@@ -318,6 +322,14 @@ struct viewport_server {
 	struct wlr_seat *seat;
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *xcursor_mgr;
+	/* The manager a config reload replaced, kept until shutdown.
+	 *
+	 * The cursor may still be showing an image owned by it at the moment the
+	 * new one is installed, so it cannot be destroyed there — but it was never
+	 * destroyed at all, which leaked a manager and its loaded theme on every
+	 * reload. One slot is enough: by the time a second reload happens the
+	 * pointer has long since been redrawn from the manager that replaced it. */
+	struct wlr_xcursor_manager *xcursor_mgr_prev;
 
 	struct wl_list outputs;    /* viewport_output.link */
 	struct wl_list toplevels;  /* viewport_toplevel.link */
@@ -364,6 +376,23 @@ struct viewport_server {
 	/* Mod4 + left drag on a floating window moves it. */
 	struct viewport_toplevel *moving;
 	double resize_start_x, resize_start_y;
+
+	/* Drag movement the shell has not been told about yet.
+	 *
+	 * A move or resize drag reports how far the pointer travelled, and it used
+	 * to report it from the motion handler — once per input event. A 1000Hz
+	 * mouse therefore built, generated, escaped and compiled a thousand
+	 * JavaScript programs a second to deliver three small integers, and the
+	 * shell could not act on them faster than one frame anyway: the layout it
+	 * feeds only repaints on the next animation frame.
+	 *
+	 * So the deltas accumulate here and are flushed once per output frame. The
+	 * target is held as an id rather than a pointer because the window can be
+	 * closed between the motion and the flush. */
+	uint32_t delta_id;
+	double delta_x, delta_y;
+	bool delta_is_resize;
+	bool delta_pending;
 
 	struct wl_list bindings; /* viewport_binding.link */
 
@@ -604,8 +633,12 @@ void viewport_handle_request_activate(struct wl_listener *listener, void *data);
  * any commit, because wlr_scene_surface resets both from the surface, and the
  * two must be applied together — the scale is derived from what the crop left. */
 void viewport_toplevel_apply_crop(struct viewport_toplevel *toplevel);
-/* Drops the remembered unscaled sizes. Called when nothing is scaled any more. */
-void viewport_scale_forget(void);
+/* Drops the remembered unscaled sizes. Called when nothing is scaled any more.
+ *
+ * Takes the server because the state lives on the scene buffers themselves,
+ * one wlr_addon per buffer, so forgetting means walking the windows rather
+ * than emptying a table off to the side. */
+void viewport_scale_forget(struct viewport_server *server);
 
 /* Display configuration, for wlr-randr and kanshi. */
 void viewport_output_manager_init(struct viewport_server *server);
@@ -927,9 +960,19 @@ struct viewport_ipc *viewport_ipc_create(struct viewport_server *server,
 void viewport_ipc_destroy(struct viewport_ipc *ipc);
 
 /* Handles one JSON message from either transport (UNIX socket or the page's
- * script message handler). `json` is a NUL-terminated UTF-8 document. */
+ * script message handler). `json` is a NUL-terminated UTF-8 document.
+ *
+ * `origin` is the socket client the message arrived on, or NULL for the page.
+ * It exists so an error caused by one client's message is answered to that
+ * client instead of broadcast: an unknown message type poked at the socket
+ * used to write a console.error into the shell, which is not the shell's
+ * problem and not something it can act on. */
 void viewport_ipc_handle(struct viewport_server *server, const char *json,
-	size_t len);
+	size_t len, struct viewport_ipc_client *origin);
+
+/* Sends any accumulated drag delta and clears it. Called once per output
+ * frame; see the delta_* fields on the server for why. */
+void viewport_ipc_flush_deltas(struct viewport_server *server);
 
 /* Pushes a JSON event to every listener: socket clients and the page. */
 void viewport_ipc_broadcast(struct viewport_server *server, const char *json);

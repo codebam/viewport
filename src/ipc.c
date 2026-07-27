@@ -15,7 +15,7 @@
  *                 shell without a browser attached:
  *                     socat - UNIX:$XDG_RUNTIME_DIR/viewport-wayland-1.sock
  *
- * Messages are documented in README.md.
+ * Messages are documented in docs/ipc.md.
  */
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
@@ -36,6 +36,7 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/util/log.h>
 
+#include "json_util.h"
 #include "viewport.h"
 
 struct viewport_ipc {
@@ -43,14 +44,14 @@ struct viewport_ipc {
 	int fd;
 	char *path;
 	struct wl_event_source *source;
-	struct wl_list clients; /* ipc_client.link */
+	struct wl_list clients; /* viewport_ipc_client.link */
 	/* Clients torn down while a dispatch was still in flight; see
 	 * ipc_client_close(). Freed from an idle callback. */
-	struct wl_list dead; /* ipc_client.link */
+	struct wl_list dead; /* viewport_ipc_client.link */
 	struct wl_event_source *reaper;
 };
 
-struct ipc_client {
+struct viewport_ipc_client {
 	struct wl_list link;
 	struct viewport_ipc *ipc;
 	int fd;
@@ -87,7 +88,7 @@ struct ipc_client {
 
 static void ipc_reap(struct viewport_ipc *ipc)
 {
-	struct ipc_client *client, *tmp;
+	struct viewport_ipc_client *client, *tmp;
 	wl_list_for_each_safe(client, tmp, &ipc->dead, link) {
 		wl_list_remove(&client->link);
 		free(client->buf);
@@ -116,7 +117,7 @@ static void handle_reap(void *data)
  * client is unlinked, its fd and event source released, and the struct itself
  * left alive until an idle callback runs — by which point no handler is still
  * holding a pointer to it. */
-static void ipc_client_close(struct ipc_client *client)
+static void ipc_client_close(struct viewport_ipc_client *client)
 {
 	if (client->dead) {
 		return;
@@ -149,7 +150,7 @@ static void ipc_client_close(struct ipc_client *client)
  * followed was appended to a truncated line: the client then parsed one corrupt
  * message and every message after it was offset by the remainder. Nothing
  * logged, because from the compositor's side nothing had failed. */
-static void ipc_client_flush(struct ipc_client *client)
+static void ipc_client_flush(struct viewport_ipc_client *client)
 {
 	while (client->out_len > 0) {
 		ssize_t n = write(client->fd, client->out, client->out_len);
@@ -179,8 +180,8 @@ static void ipc_client_flush(struct ipc_client *client)
 }
 
 /* Queue one newline-terminated message, then drain what we can. */
-static void ipc_client_send(struct ipc_client *client, const char *json,
-	size_t len)
+static void ipc_client_send(struct viewport_ipc_client *client,
+	const char *json, size_t len)
 {
 	if (client->dead) {
 		return;
@@ -225,25 +226,32 @@ void viewport_ipc_broadcast(struct viewport_server *server, const char *json)
 	}
 
 	size_t len = strlen(json);
-	struct ipc_client *client, *tmp;
+	struct viewport_ipc_client *client, *tmp;
 	wl_list_for_each_safe(client, tmp, &server->ipc->clients, link) {
 		ipc_client_send(client, json, len);
 	}
 }
 
-static void broadcast_builder(struct viewport_server *server,
-	JsonBuilder *builder)
+/* Serialise what has been built. The caller owns the result. */
+static char *builder_to_text(JsonBuilder *builder)
 {
 	JsonGenerator *generator = json_generator_new();
 	JsonNode *root = json_builder_get_root(builder);
 	json_generator_set_root(generator, root);
 
 	char *text = json_generator_to_data(generator, NULL);
-	viewport_ipc_broadcast(server, text);
 
-	g_free(text);
 	json_node_free(root);
 	g_object_unref(generator);
+	return text;
+}
+
+static void broadcast_builder(struct viewport_server *server,
+	JsonBuilder *builder)
+{
+	char *text = builder_to_text(builder);
+	viewport_ipc_broadcast(server, text);
+	g_free(text);
 }
 
 /* Name of the output a new window should open on.
@@ -573,6 +581,44 @@ void viewport_ipc_notify_fullscreen(struct viewport_toplevel *toplevel,
 	viewport_ipc_notify_shell_command(toplevel->server, command);
 }
 
+/* Hand the drag movement collected since the last frame to the shell.
+ *
+ * Called once per output frame rather than once per pointer event: the shell
+ * cannot act on a delta faster than the animation frame it lays out in, so a
+ * 1000Hz mouse reporting every motion separately built and evaluated a
+ * thousand JavaScript programs a second to deliver the same three integers a
+ * single message would have carried.
+ *
+ * The target is looked up by id because the window can be closed between the
+ * motion that moved it and the frame that reports it. */
+void viewport_ipc_flush_deltas(struct viewport_server *server)
+{
+	if (!server->delta_pending) {
+		return;
+	}
+	server->delta_pending = false;
+
+	int dx = (int)server->delta_x;
+	int dy = (int)server->delta_y;
+	server->delta_x = 0;
+	server->delta_y = 0;
+
+	/* Sub-pixel motion rounds to nothing; a message saying the window moved
+	 * zero pixels would make the shell relayout for no change. */
+	if (dx == 0 && dy == 0) {
+		return;
+	}
+	if (viewport_server_find_toplevel(server, server->delta_id) == NULL) {
+		return;
+	}
+
+	char command[96];
+	snprintf(command, sizeof(command), "%s %u %d %d",
+		server->delta_is_resize ? "layout.resize.delta" : "layout.move.delta",
+		server->delta_id, dx, dy);
+	viewport_ipc_notify_shell_command(server, command);
+}
+
 static const char *transform_name(enum wl_output_transform transform)
 {
 	switch (transform) {
@@ -605,13 +651,14 @@ static bool transform_from_name(const char *name,
 	};
 
 	/* The caller reads this out of a JSON object, where presence and type are
-	 * separate questions: json_object_get_string_member() hands back NULL for a
-	 * member that exists but holds a number, a null, an array or a bool. The
-	 * only call site gates on json_object_has_member() alone, so
+	 * separate questions: the call site used to gate on
+	 * json_object_has_member() alone, so
 	 * {"type":"output.configure","name":"eDP-1","transform":null} arrived here
 	 * as a NULL and died in the strcmp below — one postMessage() from any page,
-	 * the same way a non-string "type" used to be. Rejecting it here rather than
-	 * at the call site closes it for whoever adds the next caller.
+	 * the same way a non-string "type" used to be. viewport_json_string() now
+	 * answers both questions at once, but it still answers NULL, and rejecting
+	 * that here rather than at the call site closes it for whoever adds the
+	 * next caller.
 	 *
 	 * An unknown name already means "leave the transform alone", and a
 	 * wrong-typed one is not more meaningful than an unknown one. */
@@ -725,8 +772,17 @@ void viewport_ipc_notify_output_layout(struct viewport_server *server)
 	g_object_unref(builder);
 }
 
+/* Report a rejected message.
+ *
+ * `origin` is the client whose message caused this, where there is one. An
+ * error belongs to the sender: broadcasting it tells every other connected
+ * client — and the shell, which is drawing the desktop — about a mistake made
+ * by a debugging socat session it has no knowledge of, and a shell that
+ * surfaces errors to the user shows a stranger's typo as its own. A NULL
+ * origin is a compositor-side error with no one message to blame, and still
+ * goes to everybody. */
 static void notify_error(struct viewport_server *server, const char *context,
-	const char *message)
+	const char *message, struct viewport_ipc_client *origin)
 {
 	JsonBuilder *builder = json_builder_new();
 	json_builder_begin_object(builder);
@@ -738,7 +794,16 @@ static void notify_error(struct viewport_server *server, const char *context,
 	json_builder_add_string_value(builder, message);
 	json_builder_end_object(builder);
 
-	broadcast_builder(server, builder);
+	char *text = builder_to_text(builder);
+	/* A dead origin has had its fd closed already; sending is a no-op, but
+	 * falling back to a broadcast would leak the error to everyone else. */
+	if (origin != NULL) {
+		ipc_client_send(origin, text, strlen(text));
+	} else {
+		viewport_ipc_broadcast(server, text);
+	}
+
+	g_free(text);
 	g_object_unref(builder);
 }
 
@@ -748,14 +813,12 @@ static void notify_error(struct viewport_server *server, const char *context,
 
 static int object_int(JsonObject *object, const char *name, int fallback)
 {
-	if (!json_object_has_member(object, name)) {
-		return fallback;
-	}
-	return (int)json_object_get_int_member(object, name);
+	int value;
+	return viewport_json_int(object, name, &value) ? value : fallback;
 }
 
 static void handle_view_layout(struct viewport_server *server,
-	JsonObject *object)
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
 {
 	uint32_t id = (uint32_t)object_int(object, "id", 0);
 	struct viewport_toplevel *toplevel = viewport_server_find_toplevel(server, id);
@@ -781,16 +844,17 @@ static void handle_view_layout(struct viewport_server *server,
 	 * refused — plenty of windows have a minimum size larger than the thumbnail.
 	 * So the client keeps the size it has and the compositor scales the buffer
 	 * it produced. */
-	toplevel->scale = json_object_has_member(object, "scale")
-		? json_object_get_double_member(object, "scale") : 1.0;
+	double scale;
+	toplevel->scale = viewport_json_double(object, "scale", &scale)
+		? scale : 1.0;
 	if (toplevel->scale <= 0.0 || toplevel->scale > 1.0) {
 		toplevel->scale = 1.0;
 	}
 
 	/* Optional: the part of the window that is actually on its output. Absent
 	 * means all of it, which is the ordinary tiled case. */
-	if (json_object_has_member(object, "clip")) {
-		JsonObject *clip = json_object_get_object_member(object, "clip");
+	JsonObject *clip = viewport_json_object(object, "clip");
+	if (clip != NULL) {
 		toplevel->clip = (struct wlr_box){
 			.x = object_int(clip, "x", box.x),
 			.y = object_int(clip, "y", box.y),
@@ -817,7 +881,7 @@ static void opacity_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 }
 
 static void handle_view_opacity(struct viewport_server *server,
-	JsonObject *object)
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
 {
 	uint32_t id = (uint32_t)object_int(object, "id", 0);
 	struct viewport_toplevel *toplevel =
@@ -826,10 +890,9 @@ static void handle_view_opacity(struct viewport_server *server,
 		return;
 	}
 
-	float opacity = 1.0f;
-	if (json_object_has_member(object, "opacity")) {
-		opacity = (float)json_object_get_double_member(object, "opacity");
-	}
+	double value;
+	float opacity = viewport_json_double(object, "opacity", &value)
+		? (float)value : 1.0f;
 	if (opacity < 0.0f) {
 		opacity = 0.0f;
 	} else if (opacity > 1.0f) {
@@ -841,7 +904,7 @@ static void handle_view_opacity(struct viewport_server *server,
 }
 
 static void handle_view_visible(struct viewport_server *server,
-	JsonObject *object)
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
 {
 	uint32_t id = (uint32_t)object_int(object, "id", 0);
 	struct viewport_toplevel *toplevel = viewport_server_find_toplevel(server, id);
@@ -849,8 +912,10 @@ static void handle_view_visible(struct viewport_server *server,
 		return;
 	}
 
-	bool visible = json_object_has_member(object, "visible")
-		? json_object_get_boolean_member(object, "visible") : true;
+	bool visible;
+	if (!viewport_json_bool(object, "visible", &visible)) {
+		visible = true;
+	}
 
 	/* Recorded, not just applied: directional focus needs to know which
 	 * windows are actually on screen, or Mod4+l lands on something parked on
@@ -947,7 +1012,9 @@ static gboolean output_revert_fire(gpointer data)
 	}
 
 	wlr_log(WLR_INFO, "output %s not confirmed; reverted", revert->name);
-	notify_error(server, "output.configure", "not confirmed; reverted");
+	/* Nobody asked for this: it fires from a timer long after the message that
+	 * armed it was answered, so everyone hears about it. */
+	notify_error(server, "output.configure", "not confirmed; reverted", NULL);
 
 	viewport_output_revert_cancel(server);
 	return G_SOURCE_REMOVE;
@@ -987,12 +1054,11 @@ static void output_revert_arm(struct viewport_server *server,
 }
 
 static void handle_output_configure(struct viewport_server *server,
-	JsonObject *object)
+	JsonObject *object, struct viewport_ipc_client *origin)
 {
-	const char *name = json_object_has_member(object, "name")
-		? json_object_get_string_member(object, "name") : NULL;
+	const char *name = viewport_json_string(object, "name");
 	if (name == NULL) {
-		notify_error(server, "output.configure", "missing output name");
+		notify_error(server, "output.configure", "missing output name", origin);
 		return;
 	}
 
@@ -1004,7 +1070,7 @@ static void handle_output_configure(struct viewport_server *server,
 		}
 	}
 	if (output == NULL) {
-		notify_error(server, "output.configure", "no such output");
+		notify_error(server, "output.configure", "no such output", origin);
 		return;
 	}
 
@@ -1012,13 +1078,13 @@ static void handle_output_configure(struct viewport_server *server,
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 
-	if (json_object_has_member(object, "enabled")) {
-		wlr_output_state_set_enabled(&state,
-			json_object_get_boolean_member(object, "enabled"));
+	bool enabled;
+	if (viewport_json_bool(object, "enabled", &enabled)) {
+		wlr_output_state_set_enabled(&state, enabled);
 	}
 
-	if (json_object_has_member(object, "mode")) {
-		JsonObject *mode_object = json_object_get_object_member(object, "mode");
+	JsonObject *mode_object = viewport_json_object(object, "mode");
+	if (mode_object != NULL) {
 		int width = object_int(mode_object, "width", 0);
 		int height = object_int(mode_object, "height", 0);
 		int refresh = object_int(mode_object, "refresh", 0);
@@ -1040,31 +1106,28 @@ static void handle_output_configure(struct viewport_server *server,
 		}
 	}
 
-	if (json_object_has_member(object, "scale")) {
-		double scale = json_object_get_double_member(object, "scale");
-		if (scale > 0.0) {
-			wlr_output_state_set_scale(&state, (float)scale);
-		}
+	double scale;
+	if (viewport_json_double(object, "scale", &scale) && scale > 0.0) {
+		wlr_output_state_set_scale(&state, (float)scale);
 	}
 
-	if (json_object_has_member(object, "transform")) {
-		enum wl_output_transform transform;
-		if (transform_from_name(
-				json_object_get_string_member(object, "transform"), &transform)) {
-			wlr_output_state_set_transform(&state, transform);
-		}
+	enum wl_output_transform transform;
+	if (transform_from_name(viewport_json_string(object, "transform"),
+			&transform)) {
+		wlr_output_state_set_transform(&state, transform);
 	}
 
-	if (json_object_has_member(object, "adaptive_sync")) {
-		wlr_output_state_set_adaptive_sync_enabled(&state,
-			json_object_get_boolean_member(object, "adaptive_sync"));
+	bool adaptive_sync;
+	if (viewport_json_bool(object, "adaptive_sync", &adaptive_sync)) {
+		wlr_output_state_set_adaptive_sync_enabled(&state, adaptive_sync);
 	}
 
 	/* Test before committing. A mode the hardware cannot drive fails here
 	 * instead of blanking the screen the user is configuring it from. */
 	if (!wlr_output_test_state(wlr_output, &state)) {
 		wlr_output_state_finish(&state);
-		notify_error(server, "output.configure", "configuration rejected");
+		notify_error(server, "output.configure", "configuration rejected",
+			origin);
 		return;
 	}
 
@@ -1076,16 +1139,18 @@ static void handle_output_configure(struct viewport_server *server,
 	wlr_output_state_finish(&state);
 	if (!ok) {
 		viewport_output_revert_cancel(server);
-		notify_error(server, "output.configure", "commit failed");
+		notify_error(server, "output.configure", "commit failed", origin);
 		return;
 	}
 
-	if (json_object_has_member(object, "x") ||
-			json_object_has_member(object, "y")) {
+	int x, y;
+	bool have_x = viewport_json_int(object, "x", &x);
+	bool have_y = viewport_json_int(object, "y", &y);
+	if (have_x || have_y) {
 		struct wlr_box box;
 		wlr_output_layout_get_box(server->output_layout, wlr_output, &box);
 		wlr_output_layout_add(server->output_layout, wlr_output,
-			object_int(object, "x", box.x), object_int(object, "y", box.y));
+			have_x ? x : box.x, have_y ? y : box.y);
 	}
 
 	int width, height;
@@ -1097,8 +1162,280 @@ static void handle_output_configure(struct viewport_server *server,
 	viewport_output_manager_update(server);
 }
 
+static void handle_view_fullscreen(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	/* Tell the client it is fullscreen. Resizing its hole is not enough:
+	 * an application rearranges its own layout on the fullscreen state —
+	 * hiding toolbars, switching a video to a fullscreen presentation —
+	 * and never learns about it from a configure alone. */
+	struct viewport_toplevel *toplevel = viewport_server_find_toplevel(
+		server, (uint32_t)object_int(object, "id", 0));
+	if (toplevel == NULL) {
+		return;
+	}
+
+	bool on;
+	if (!viewport_json_bool(object, "fullscreen", &on)) {
+		on = false;
+	}
+	viewport_view_set_fullscreen(toplevel, on);
+}
+
+static void handle_view_focus(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	struct viewport_toplevel *toplevel = viewport_server_find_toplevel(
+		server, (uint32_t)object_int(object, "id", 0));
+	if (toplevel != NULL) {
+		viewport_toplevel_focus(toplevel);
+	}
+}
+
+static void handle_view_close(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	struct viewport_toplevel *toplevel = viewport_server_find_toplevel(
+		server, (uint32_t)object_int(object, "id", 0));
+	if (toplevel != NULL) {
+		viewport_toplevel_close(toplevel);
+	}
+}
+
+static void handle_view_query(struct viewport_server *server,
+	JsonObject *object G_GNUC_UNUSED,
+	struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	viewport_ipc_notify_config(server);
+	viewport_ipc_notify_views(server);
+}
+
+static void handle_shell_focus(struct viewport_server *server,
+	JsonObject *object G_GNUC_UNUSED,
+	struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	viewport_focus_web(server);
+}
+
+static void handle_shell_overview(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	/* While the overview is up the shell is drawing miniatures of every
+	 * window, and a click on one means "go there" rather than reaching the
+	 * client underneath. Input is routed to the shell for the duration. */
+	bool active;
+	server->overview = viewport_json_bool(object, "active", &active) && active;
+	if (server->overview) {
+		viewport_focus_web(server);
+		return;
+	}
+
+	/* Clear every window's scale here rather than waiting for the shell
+	 * to send each one a new rect.
+	 *
+	 * A window whose rect is unchanged gets no message, and the
+	 * per-frame pass that maintains the scale stops the moment the
+	 * overview closes — so the shrunken destination size stayed on the
+	 * buffer until the client next painted. A terminal sitting idle
+	 * does not paint, so it kept whatever size the overview gave it and
+	 * came back magnified and cropped, righting itself only when
+	 * something made it repaint. */
+	int cleared = 0;
+	struct viewport_toplevel *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		toplevel->scale = 1.0;
+		viewport_toplevel_apply_crop(toplevel);
+		cleared++;
+	}
+	viewport_scale_forget(server);
+	wlr_log(WLR_DEBUG, "overview closed; scale cleared on %d windows", cleared);
+}
+
+static void handle_session_save(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	/* The shell's own serialisation, stored verbatim. */
+	const char *state = viewport_json_string(object, "state");
+	if (state != NULL) {
+		viewport_session_save(server, state);
+	}
+}
+
+static void handle_session_query(struct viewport_server *server,
+	JsonObject *object G_GNUC_UNUSED,
+	struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	viewport_ipc_notify_session(server);
+}
+
+static void handle_notification_action(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	/* The shell drew the buttons; the application is told which was pressed,
+	 * by the key it supplied rather than the label it showed. */
+	int id;
+	if (viewport_json_int(object, "id", &id)) {
+		viewport_notifications_action(server->notifications, (uint32_t)id,
+			viewport_json_string(object, "action"));
+	}
+}
+
+static void handle_notification_dismiss(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	int id;
+	if (viewport_json_int(object, "id", &id)) {
+		viewport_notifications_dismissed(server->notifications, (uint32_t)id);
+	}
+}
+
+static void handle_notification_expire(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	int id;
+	if (viewport_json_int(object, "id", &id)) {
+		viewport_notifications_expired(server->notifications, (uint32_t)id);
+	}
+}
+
+static void handle_output_hdr(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin)
+{
+	/* Named output, or the active one. Absent "enabled" toggles, which is
+	 * what a keybinding wants and what a settings panel does not. */
+	const char *name = viewport_json_string(object, "name");
+	if (name == NULL) {
+		name = server->active_output;
+	}
+	struct viewport_output *output = name != NULL
+		? output_by_name(server, name) : NULL;
+	if (output == NULL) {
+		notify_error(server, "output.hdr", "no such output", origin);
+		return;
+	}
+
+	bool enabled;
+	if (!viewport_json_bool(object, "enabled", &enabled)) {
+		enabled = !output->hdr;
+	}
+	if (!viewport_output_set_hdr(output, enabled)) {
+		notify_error(server, "output.hdr",
+			enabled ? "the display would not take HDR"
+				: "could not leave HDR", origin);
+	}
+}
+
+static void handle_output_confirm(struct viewport_server *server,
+	JsonObject *object G_GNUC_UNUSED,
+	struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	/* The shell saw the change land and the user accepted it, so the
+	 * pending revert is called off. */
+	viewport_output_revert_cancel(server);
+}
+
+static void handle_output_active(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	const char *name = viewport_json_string(object, "name");
+	if (name != NULL) {
+		g_free(server->active_output);
+		server->active_output = g_strdup(name);
+	}
+}
+
+static void handle_output_query(struct viewport_server *server,
+	JsonObject *object G_GNUC_UNUSED,
+	struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	viewport_ipc_notify_output_layout(server);
+}
+
+static void handle_output_test_add(struct viewport_server *server,
+	JsonObject *object G_GNUC_UNUSED, struct viewport_ipc_client *origin)
+{
+	/* Headless-only, and the callee re-checks: nothing on a real session's
+	 * control socket should be able to plug or unplug a monitor. */
+	if (!viewport_output_test_add(server)) {
+		notify_error(server, "output.test_add",
+			"headless hotplug is only available under --headless", origin);
+	}
+}
+
+static void handle_output_test_remove(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin)
+{
+	/* Without a name, the first output in the list. */
+	if (!viewport_output_test_remove(server,
+			viewport_json_string(object, "name"))) {
+		notify_error(server, "output.test_remove",
+			"headless hotplug is only available under --headless", origin);
+	}
+}
+
+static void handle_bind_add(struct viewport_server *server,
+	JsonObject *object, struct viewport_ipc_client *origin)
+{
+	/* Runtime binds from the shell are additive and expendable; the ones
+	 * that must survive a broken shell belong in the config file. */
+	const char *chord = viewport_json_string(object, "chord");
+	const char *action = viewport_json_string(object, "action");
+	if (chord == NULL || action == NULL) {
+		return;
+	}
+
+	char *spec = g_strdup_printf("%s=%s", chord, action);
+	if (!viewport_binding_add(server, spec)) {
+		notify_error(server, "bind.add", spec, origin);
+	}
+	g_free(spec);
+}
+
+static void handle_quit(struct viewport_server *server,
+	JsonObject *object G_GNUC_UNUSED,
+	struct viewport_ipc_client *origin G_GNUC_UNUSED)
+{
+	viewport_server_terminate(server);
+}
+
+/* One row per message type.
+ *
+ * This was a chain of two dozen strcmp() branches, four of which carried their
+ * whole implementation inline — so the function that decided what a message
+ * was also resized windows and armed keybindings, and every new message made
+ * it longer. A table cannot be added to in the wrong place. */
+static const struct {
+	const char *type;
+	void (*handle)(struct viewport_server *server, JsonObject *object,
+		struct viewport_ipc_client *origin);
+} ipc_handlers[] = {
+	{ "view.layout", handle_view_layout },
+	{ "view.visible", handle_view_visible },
+	{ "view.fullscreen", handle_view_fullscreen },
+	{ "view.focus", handle_view_focus },
+	{ "view.close", handle_view_close },
+	{ "view.opacity", handle_view_opacity },
+	{ "view.query", handle_view_query },
+	{ "shell.focus", handle_shell_focus },
+	{ "shell.overview", handle_shell_overview },
+	{ "session.save", handle_session_save },
+	{ "session.query", handle_session_query },
+	{ "notification.action", handle_notification_action },
+	{ "notification.dismiss", handle_notification_dismiss },
+	{ "notification.expire", handle_notification_expire },
+	{ "output.configure", handle_output_configure },
+	{ "output.hdr", handle_output_hdr },
+	{ "output.confirm", handle_output_confirm },
+	{ "output.active", handle_output_active },
+	{ "output.query", handle_output_query },
+	{ "output.test_add", handle_output_test_add },
+	{ "output.test_remove", handle_output_test_remove },
+	{ "bind.add", handle_bind_add },
+	{ "quit", handle_quit },
+};
+
 void viewport_ipc_handle(struct viewport_server *server, const char *json,
-	size_t len)
+	size_t len, struct viewport_ipc_client *origin)
 {
 	/* The first message the shell sends, once.
 	 *
@@ -1118,7 +1455,7 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 
 	if (!json_parser_load_from_data(parser, json, (gssize)len, &error)) {
 		wlr_log(WLR_ERROR, "malformed IPC message: %s", error->message);
-		notify_error(server, "ipc", error->message);
+		notify_error(server, "ipc", error->message, origin);
 		g_error_free(error);
 		g_object_unref(parser);
 		return;
@@ -1126,191 +1463,42 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 
 	JsonNode *root = json_parser_get_root(parser);
 	if (root == NULL || json_node_get_node_type(root) != JSON_NODE_OBJECT) {
-		notify_error(server, "ipc", "JSON root is not an object");
+		notify_error(server, "ipc", "JSON root is not an object", origin);
 		g_object_unref(parser);
 		return;
 	}
 
 	JsonObject *object = json_node_get_object(root);
-	if (!json_object_has_member(object, "type")) {
-		notify_error(server, "ipc", "Missing 'type' field");
-		g_object_unref(parser);
-		return;
-	}
-
-	const char *type = json_object_get_string_member(object, "type");
+	const char *type = viewport_json_string(object, "type");
 	if (type == NULL) {
-		/* has_member() proved the member exists, not that it is a string. For
-		 * {"type":5}, {"type":null}, {"type":{}} or {"type":true} the getter
-		 * logs a Json-CRITICAL and hands back NULL, and the strcmp() below
-		 * would dereference it — a page one postMessage() away from killing
-		 * the compositor and every window it holds. */
+		/* Absent, or present and not a string; there is nothing to dispatch on
+		 * either way. {"type":5}, {"type":null}, {"type":{}} and {"type":true}
+		 * all used to satisfy the json_object_has_member() gate that stood
+		 * here and then reach a strcmp() on the NULL the getter handed back —
+		 * a page one postMessage() away from killing the compositor and every
+		 * window it holds. */
+		notify_error(server, "ipc", "missing or non-string 'type'", origin);
 		g_object_unref(parser);
 		return;
 	}
 
-	if (strcmp(type, "view.layout") == 0) {
-		handle_view_layout(server, object);
-	} else if (strcmp(type, "view.visible") == 0) {
-		handle_view_visible(server, object);
-	} else if (strcmp(type, "view.fullscreen") == 0) {
-		/* Tell the client it is fullscreen. Resizing its hole is not enough:
-		 * an application rearranges its own layout on the fullscreen state —
-		 * hiding toolbars, switching a video to a fullscreen presentation —
-		 * and never learns about it from a configure alone. */
-		struct viewport_toplevel *toplevel = viewport_server_find_toplevel(
-			server, (uint32_t)object_int(object, "id", 0));
-		if (toplevel != NULL) {
-			bool on = json_object_has_member(object, "fullscreen")
-				? json_object_get_boolean_member(object, "fullscreen") : false;
-			viewport_view_set_fullscreen(toplevel, on);
+	void (*handle)(struct viewport_server *, JsonObject *,
+		struct viewport_ipc_client *) = NULL;
+	for (size_t i = 0; i < sizeof(ipc_handlers) / sizeof(ipc_handlers[0]);
+			i++) {
+		if (strcmp(type, ipc_handlers[i].type) == 0) {
+			handle = ipc_handlers[i].handle;
+			break;
 		}
-	} else if (strcmp(type, "view.focus") == 0) {
-		struct viewport_toplevel *toplevel = viewport_server_find_toplevel(
-			server, (uint32_t)object_int(object, "id", 0));
-		if (toplevel != NULL) {
-			viewport_toplevel_focus(toplevel);
-		}
-	} else if (strcmp(type, "view.close") == 0) {
-		struct viewport_toplevel *toplevel = viewport_server_find_toplevel(
-			server, (uint32_t)object_int(object, "id", 0));
-		if (toplevel != NULL) {
-			viewport_toplevel_close(toplevel);
-		}
-	} else if (strcmp(type, "shell.focus") == 0) {
-		viewport_focus_web(server);
-	} else if (strcmp(type, "session.save") == 0) {
-		/* The shell's own serialisation, stored verbatim. */
-		if (json_object_has_member(object, "state")) {
-			viewport_session_save(server,
-				json_object_get_string_member(object, "state"));
-		}
-	} else if (strcmp(type, "session.query") == 0) {
-		viewport_ipc_notify_session(server);
-	} else if (strcmp(type, "notification.action") == 0) {
-		/* The shell drew the buttons; the application is told which was
-		 * pressed, by the key it supplied rather than the label it showed. */
-		if (json_object_has_member(object, "id")) {
-			viewport_notifications_action(server->notifications,
-				(uint32_t)object_int(object, "id", 0),
-				json_object_has_member(object, "action")
-					? json_object_get_string_member(object, "action") : NULL);
-		}
-	} else if (strcmp(type, "notification.dismiss") == 0) {
-		if (json_object_has_member(object, "id")) {
-			viewport_notifications_dismissed(server->notifications,
-				(uint32_t)object_int(object, "id", 0));
-		}
-	} else if (strcmp(type, "notification.expire") == 0) {
-		if (json_object_has_member(object, "id")) {
-			viewport_notifications_expired(server->notifications,
-				(uint32_t)object_int(object, "id", 0));
-		}
-	} else if (strcmp(type, "shell.overview") == 0) {
-		/* While the overview is up the shell is drawing miniatures of every
-		 * window, and a click on one means "go there" rather than reaching the
-		 * client underneath. Input is routed to the shell for the duration. */
-		server->overview = json_object_has_member(object, "active") &&
-			json_object_get_boolean_member(object, "active");
-		if (server->overview) {
-			viewport_focus_web(server);
-		} else {
-			/* Clear every window's scale here rather than waiting for the shell
-			 * to send each one a new rect.
-			 *
-			 * A window whose rect is unchanged gets no message, and the
-			 * per-frame pass that maintains the scale stops the moment the
-			 * overview closes — so the shrunken destination size stayed on the
-			 * buffer until the client next painted. A terminal sitting idle
-			 * does not paint, so it kept whatever size the overview gave it and
-			 * came back magnified and cropped, righting itself only when
-			 * something made it repaint. */
-			int cleared = 0;
-			struct viewport_toplevel *toplevel;
-			wl_list_for_each(toplevel, &server->toplevels, link) {
-				toplevel->scale = 1.0;
-				viewport_toplevel_apply_crop(toplevel);
-				cleared++;
-			}
-			viewport_scale_forget();
-			wlr_log(WLR_DEBUG, "overview closed; scale cleared on %d windows",
-				cleared);
-		}
-	} else if (strcmp(type, "view.opacity") == 0) {
-		handle_view_opacity(server, object);
-	} else if (strcmp(type, "output.configure") == 0) {
-		handle_output_configure(server, object);
-	} else if (strcmp(type, "output.hdr") == 0) {
-		/* Named output, or the active one. Absent "enabled" toggles, which is
-		 * what a keybinding wants and what a settings panel does not. */
-		const char *name = json_object_has_member(object, "name")
-			? json_object_get_string_member(object, "name")
-			: server->active_output;
-		struct viewport_output *output = name != NULL
-			? output_by_name(server, name) : NULL;
+	}
 
-		if (output == NULL) {
-			notify_error(server, "output.hdr", "no such output");
-		} else {
-			bool enabled = json_object_has_member(object, "enabled")
-				? json_object_get_boolean_member(object, "enabled")
-				: !output->hdr;
-			if (!viewport_output_set_hdr(output, enabled)) {
-				notify_error(server, "output.hdr",
-					enabled ? "the display would not take HDR"
-						: "could not leave HDR");
-			}
-		}
-	} else if (strcmp(type, "output.confirm") == 0) {
-		/* The shell saw the change land and the user accepted it, so the
-		 * pending revert is called off. */
-		viewport_output_revert_cancel(server);
-	} else if (strcmp(type, "output.active") == 0) {
-		if (json_object_has_member(object, "name")) {
-			free(server->active_output);
-			server->active_output = g_strdup(
-				json_object_get_string_member(object, "name"));
-		}
-	} else if (strcmp(type, "output.query") == 0) {
-		viewport_ipc_notify_output_layout(server);
-	} else if (strcmp(type, "output.test_add") == 0) {
-		/* Headless-only, and the callee re-checks: nothing on a real session's
-		 * control socket should be able to plug or unplug a monitor. */
-		if (!viewport_output_test_add(server)) {
-			notify_error(server, type,
-				"headless hotplug is only available under --headless");
-		}
-	} else if (strcmp(type, "output.test_remove") == 0) {
-		/* Without a name, the first output in the list. */
-		const char *name = json_object_has_member(object, "name")
-			? json_object_get_string_member(object, "name") : NULL;
-		if (!viewport_output_test_remove(server, name)) {
-			notify_error(server, type,
-				"headless hotplug is only available under --headless");
-		}
-	} else if (strcmp(type, "view.query") == 0) {
-		viewport_ipc_notify_config(server);
-		viewport_ipc_notify_views(server);
-	} else if (strcmp(type, "bind.add") == 0) {
-		/* Runtime binds from the shell are additive and expendable; the ones
-		 * that must survive a broken shell belong in the config file. */
-		if (json_object_has_member(object, "chord") &&
-				json_object_has_member(object, "action")) {
-			char *spec = g_strdup_printf("%s=%s",
-				json_object_get_string_member(object, "chord"),
-				json_object_get_string_member(object, "action"));
-			if (!viewport_binding_add(server, spec)) {
-				notify_error(server, "bind.add", spec);
-			}
-			g_free(spec);
-		}
-	} else if (strcmp(type, "quit") == 0) {
-		viewport_server_terminate(server);
+	if (handle != NULL) {
+		handle(server, object, origin);
 	} else {
 		wlr_log(WLR_DEBUG, "unknown IPC message type '%s'", type);
 		char msg[256];
 		snprintf(msg, sizeof(msg), "unknown IPC message type '%s'", type);
-		notify_error(server, type, msg);
+		notify_error(server, type, msg, origin);
 	}
 
 	g_object_unref(parser);
@@ -1322,7 +1510,7 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 
 static int handle_client_event(int fd, uint32_t mask, void *data)
 {
-	struct ipc_client *client = data;
+	struct viewport_ipc_client *client = data;
 
 	if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) {
 		ipc_client_close(client);
@@ -1389,7 +1577,7 @@ static int handle_client_event(int fd, uint32_t mask, void *data)
 		client->buf[i] = '\0';
 		if (i > start) {
 			viewport_ipc_handle(client->ipc->server, client->buf + start,
-				i - start);
+				i - start, client);
 			if (client->dead) {
 				return 0;
 			}
@@ -1431,7 +1619,7 @@ static int handle_socket_connection(int fd, uint32_t mask, void *data)
 	}
 #endif
 
-	struct ipc_client *client = calloc(1, sizeof(*client));
+	struct viewport_ipc_client *client = calloc(1, sizeof(*client));
 	if (client == NULL) {
 		close(client_fd);
 		return 0;
@@ -1474,7 +1662,7 @@ struct viewport_ipc *viewport_ipc_create(struct viewport_server *server,
 		 *
 		 * Both are unique per session, but only one is discoverable: a script
 		 * already has WAYLAND_DISPLAY and would have to go hunting for the
-		 * compositor's pid. It is also what this file, --help and the README
+		 * compositor's pid. It is also what this file, --help and the docs
 		 * all said the path was, while the code used the pid — so the
 		 * documented socat line named a socket that never existed.
 		 *
@@ -1551,7 +1739,7 @@ void viewport_ipc_destroy(struct viewport_ipc *ipc)
 		return;
 	}
 
-	struct ipc_client *client, *tmp;
+	struct viewport_ipc_client *client, *tmp;
 	wl_list_for_each_safe(client, tmp, &ipc->clients, link) {
 		ipc_client_close(client);
 	}

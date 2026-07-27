@@ -69,7 +69,10 @@ static void handle_script_message(WebKitUserContentManager *manager,
 		return;
 	}
 
-	viewport_ipc_handle(web->server, text, strlen(text));
+	/* No origin: the page is not one client among several, and an error it
+	 * caused is one the shell must see on the broadcast channel it already
+	 * listens to. */
+	viewport_ipc_handle(web->server, text, strlen(text), NULL);
 	g_free(text);
 }
 
