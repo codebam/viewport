@@ -1,4 +1,4 @@
-build/
+build*/
 result
 result-*
 .cache/

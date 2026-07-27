@@ -176,6 +176,40 @@
           default = viewport;
         };
 
+        # --------------------------------------------------------------------
+        # `nix flake check` runs the part of the meson suite a sandbox can
+        # actually run, which is the shell logic tests and nothing else.
+        #
+        # The compositor tests (session-lock-crash, output-order, capture-*)
+        # each start viewport on the headless backend with WLR_RENDERER=vulkan,
+        # and vulkan needs a device node that the build sandbox does not have —
+        # the pixman fallback does not come up at all, so there is no renderer
+        # left to try. They also want an XDG_RUNTIME_DIR to put a Wayland
+        # socket in, and WebKit's web process wants user namespaces for bwrap.
+        # Naming them here would only guarantee a red check.
+        #
+        # The shell tests need node and a file, which is why they are the ones
+        # that survive. node is not a build dependency, so meson only defines
+        # them when it finds one — hence adding it here rather than relying on
+        # whatever happened to be in the closure.
+        # --------------------------------------------------------------------
+        checks.viewport = viewport.overrideAttrs (old: {
+          doCheck = true;
+          nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.nodejs ];
+          mesonCheckFlags = [
+            "shell-tiling"
+            "shell-scrolling"
+            "shell-session-tiling"
+            "shell-session-scrolling"
+            # Neither of these needs a seat, a DRM device or a Wayland socket:
+            # the first links json-glib alone, and the second drives the IPC
+            # parser against a display with no backend attached. The compositor
+            # tests are still excluded — they need all three.
+            "unit"
+            "ipc-replay"
+          ];
+        });
+
         devShells.default = pkgs.mkShell {
           packages = nativeDeps ++ runtimeDeps ++ (with pkgs; [
             gdb
@@ -259,11 +293,20 @@
 
           # The compositor reads plain JSON, so the module's job is only to
           # render these options into a file and point --config at it.
+          #
+          # A key that is emitted unconditionally is a key that overrides the
+          # compositor's own default, so an option whose default is worse than
+          # the compositor's must be omitted rather than written. url is the
+          # case that bit: writing http://localhost:3000 for a user who set
+          # nothing pointed the shell at a port with nothing behind it, and the
+          # session came up on fallback.html after the first-paint timeout.
+          # timeout_ms is safe to write because 5000 is what src/main.c already
+          # uses.
           configFile = pkgs.writeText "viewport-config.json" (builtins.toJSON
             ({
-              inherit (cfg) url;
               timeout_ms = cfg.timeoutMs;
             }
+            // lib.optionalAttrs (cfg.url != null) { inherit (cfg) url; }
             // lib.optionalAttrs (cfg.terminal != null) { inherit (cfg) terminal; }
             // lib.optionalAttrs (cfg.menu != null) { inherit (cfg) menu; }
             // lib.optionalAttrs (cfg.binds != { }) { inherit (cfg) binds; }
@@ -282,9 +325,15 @@
             };
 
             url = mkOption {
-              type = types.str;
-              default = "http://localhost:3000";
-              description = "Web endpoint the shell UI is loaded from.";
+              type = types.nullOr types.str;
+              default = null;
+              example = "http://localhost:3000";
+              description = ''
+                Web endpoint the shell UI is loaded from. `null` writes no
+                url key at all, which leaves the compositor on its bundled
+                shell — the only endpoint guaranteed to answer on a machine
+                that has just been switched to this configuration.
+              '';
             };
 
             timeoutMs = mkOption {
