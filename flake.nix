@@ -15,6 +15,12 @@
       "https://codebam-nix-cache.storage.googleapis.com"
       "https://storage.googleapis.com/codebam-nix-cache"
     ];
+    # Signed by the key gcp-cache-fill pulls from GCP Secret Manager
+    # (secret: nix-cache-signing-key). Without this the bucket's narinfos are
+    # rejected as unsigned and the substituter is silently useless.
+    extra-trusted-public-keys = [
+      "codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0="
+    ];
   };
 
   outputs = { self, nixpkgs, flake-utils }:
