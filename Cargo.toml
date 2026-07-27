@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/viewport",
+    "crates/viewport-ipc",
+    "crates/viewport-web",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/codebam/viewport-smithay"
+
+# License is deliberately per-crate rather than inherited.
+#
+# `viewport` is GPL-3.0-or-later so that compositor internals can be adapted
+# from the existing GPL implementations — niri and cosmic-comp both have the
+# color-management-v1 and wlr-output-management work that Smithay lacks.
+#
+# `viewport-ipc` and `viewport-web` stay MIT. The protocol crate should be
+# reusable by anyone writing an alternative shell, and the DMA-BUF
+# RenderingContext in `viewport-web` is exactly the kind of thing Servo would
+# take upstream — Servo is MPL-2.0, which cannot absorb GPL-3.0 code.
+
+[workspace.dependencies]
+viewport-ipc = { path = "crates/viewport-ipc" }
+viewport-web = { path = "crates/viewport-web" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+debug = 1

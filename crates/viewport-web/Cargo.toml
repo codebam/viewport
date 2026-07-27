@@ -1,0 +1,18 @@
+[package]
+name = "viewport-web"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+description = "The web engine behind the Viewport shell, and the surface it renders into"
+
+[features]
+default = []
+# Servo is an enormous build. Keeping it behind a feature means the protocol
+# and compositor crates stay fast to compile and test on their own.
+servo = []
+
+[dependencies]
+viewport-ipc.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

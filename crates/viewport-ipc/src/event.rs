@@ -1,0 +1,387 @@
+// SPDX-License-Identifier: MIT
+//
+// Outbound messages: compositor to shell. Ports the viewport_ipc_notify_*
+// family in src/ipc.c.
+//
+// Key order does not matter here — the shell runs these through JSON.parse —
+// but key names, types and the empty-string-for-null convention do. The C build
+// never emits JSON null: an absent make/model/serial goes out as "" so the
+// shell can concatenate without guarding (`src/ipc.c:704`).
+
+use serde::{Deserialize, Serialize};
+
+use crate::geometry::Transform;
+
+/// A message from the compositor to the shell.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Event {
+    /// A window appeared. Also re-sent for every mapped window in reply to
+    /// `view.query`, with `replay` set — that is how a reloading shell rebuilds
+    /// its tree without the windows appearing to be new.
+    #[serde(rename = "view.added")]
+    ViewAdded(ViewAdded),
+
+    #[serde(rename = "view.removed")]
+    ViewRemoved { id: u32 },
+
+    #[serde(rename = "view.props")]
+    ViewProps {
+        id: u32,
+        title: String,
+        app_id: String,
+    },
+
+    #[serde(rename = "view.focused")]
+    ViewFocused { id: u32 },
+
+    #[serde(rename = "config")]
+    Config(Config),
+
+    /// The logo modifier went down or came up, so the shell can show its
+    /// overlay while it is held.
+    #[serde(rename = "modifiers")]
+    Modifiers { logo: bool },
+
+    /// The stored layout, handed back when the shell asks for it. Sent on
+    /// request rather than on connect: a shell that has not finished loading
+    /// cannot do anything with it.
+    #[serde(rename = "session.restore")]
+    SessionRestore { state: String },
+
+    #[serde(rename = "notification.add")]
+    NotificationAdd(Notification),
+
+    #[serde(rename = "notification.close")]
+    NotificationClose { id: u32 },
+
+    #[serde(rename = "output.layout")]
+    OutputLayout { outputs: Vec<OutputInfo> },
+
+    /// A keybinding fired. Split on whitespace so the shell does not have to
+    /// parse a free-form string (`src/ipc.c:553`).
+    #[serde(rename = "shell.command")]
+    ShellCommand { command: String, args: Vec<String> },
+
+    /// A rejected message. Delivered to the client that caused it where there
+    /// is one, and broadcast otherwise — an error the shell caused is one it
+    /// must see on the channel it already listens to.
+    #[serde(rename = "error")]
+    Error { context: String, message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViewAdded {
+    pub id: u32,
+    pub title: String,
+    pub app_id: String,
+    pub output: String,
+
+    /// So the shell can refuse to shrink a window past what its client accepts.
+    /// Zero for anything that is not an xdg-toplevel.
+    pub min_width: i32,
+    pub min_height: i32,
+
+    /// True when this is a replay in answer to `view.query` rather than a
+    /// window that just mapped.
+    pub replay: bool,
+
+    /// Dialogs and fixed-size windows want floating rather than tiling. The
+    /// compositor can see the signals — a parent toplevel, an X11 window type —
+    /// and the shell cannot.
+    pub floating: bool,
+
+    /// The window's natural size, which is what a floating window opens at.
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Config {
+    /// `"tiling"` when unset in the config file.
+    pub layout: String,
+    pub logo: bool,
+    pub tutorial: bool,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar: Option<String>,
+
+    /// Window rules, handed over as parsed JSON rather than a string so the
+    /// shell does not parse twice inside a message it already parsed. Omitted
+    /// entirely when unset, and also when the stored text fails to parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notification {
+    pub id: u32,
+    pub app_name: String,
+    pub icon: String,
+    pub summary: String,
+    pub body: String,
+    pub urgency: u8,
+
+    /// Negative means "the server decides", zero means "never expire". Passed
+    /// through as sent, because deciding is the shell's job.
+    pub timeout: i32,
+
+    pub actions: Vec<NotificationAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationAction {
+    /// What comes back on `notification.action`.
+    pub key: String,
+    /// What the shell draws on the button.
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutputInfo {
+    pub name: String,
+    /// Empty string, never null, when the display did not say.
+    pub make: String,
+    pub model: String,
+    pub serial: String,
+
+    pub enabled: bool,
+
+    /// Position and size in the output layout.
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+
+    /// The area panels have not reserved. The shell places windows inside this
+    /// rather than the full box, which is what keeps a bar from overlapping
+    /// them.
+    pub usable_x: i32,
+    pub usable_y: i32,
+    pub usable_width: i32,
+    pub usable_height: i32,
+
+    /// Whether this output is in HDR now, and whether it could be — so the
+    /// shell can offer the switch only where the display will take it.
+    pub hdr: bool,
+    pub hdr_capable: bool,
+
+    pub scale: f64,
+    pub transform: Transform,
+
+    pub modes: Vec<Mode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mode {
+    pub width: i32,
+    pub height: i32,
+    /// In mHz, as the kernel reports it.
+    pub refresh: i32,
+    pub preferred: bool,
+    pub current: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json(event: &Event) -> serde_json::Value {
+        serde_json::to_value(event).expect("should serialise")
+    }
+
+    #[test]
+    fn tag_is_a_type_member_not_a_wrapper() {
+        let value = json(&Event::ViewRemoved { id: 42 });
+        assert_eq!(value["type"], "view.removed");
+        assert_eq!(value["id"], 42);
+        assert_eq!(value.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn view_added_carries_every_field_the_shell_reads() {
+        let value = json(&Event::ViewAdded(ViewAdded {
+            id: 1,
+            title: "term".into(),
+            app_id: "foot".into(),
+            output: "DP-1".into(),
+            min_width: 0,
+            min_height: 0,
+            replay: false,
+            floating: false,
+            width: 800,
+            height: 600,
+        }));
+        for key in [
+            "type",
+            "id",
+            "title",
+            "app_id",
+            "output",
+            "min_width",
+            "min_height",
+            "replay",
+            "floating",
+            "width",
+            "height",
+        ] {
+            assert!(value.get(key).is_some(), "missing {key}");
+        }
+    }
+
+    #[test]
+    fn unset_config_members_are_omitted_not_null() {
+        let value = json(&Event::Config(Config {
+            layout: "tiling".into(),
+            logo: true,
+            tutorial: false,
+            bar: None,
+            rules: None,
+            theme: None,
+        }));
+        assert!(value.get("bar").is_none());
+        assert!(value.get("rules").is_none());
+        assert!(value.get("theme").is_none());
+        assert_eq!(value["layout"], "tiling");
+    }
+
+    #[test]
+    fn rules_go_over_as_parsed_json() {
+        let value = json(&Event::Config(Config {
+            layout: "scrolling".into(),
+            logo: false,
+            tutorial: false,
+            bar: Some("top".into()),
+            rules: Some(serde_json::json!([{"app_id": "mpv", "floating": true}])),
+            theme: None,
+        }));
+        assert!(value["rules"].is_array(), "rules must not be a string");
+        assert_eq!(value["rules"][0]["app_id"], "mpv");
+    }
+
+    #[test]
+    fn shell_command_splits_command_from_args() {
+        let value = json(&Event::ShellCommand {
+            command: "workspace.switch".into(),
+            args: vec!["3".into()],
+        });
+        assert_eq!(value["command"], "workspace.switch");
+        assert_eq!(value["args"][0], "3");
+    }
+
+    #[test]
+    fn output_layout_round_trips() {
+        let event = Event::OutputLayout {
+            outputs: vec![OutputInfo {
+                name: "DP-1".into(),
+                make: String::new(),
+                model: String::new(),
+                serial: String::new(),
+                enabled: true,
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                usable_x: 0,
+                usable_y: 32,
+                usable_width: 2560,
+                usable_height: 1408,
+                hdr: false,
+                hdr_capable: true,
+                scale: 1.0,
+                transform: Transform::Normal,
+                modes: vec![Mode {
+                    width: 2560,
+                    height: 1440,
+                    refresh: 143998,
+                    preferred: true,
+                    current: true,
+                }],
+            }],
+        };
+        let text = serde_json::to_string(&event).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), event);
+        // The empty-string convention, not null.
+        assert!(text.contains(r#""make":"""#));
+    }
+
+    #[test]
+    fn every_notify_function_has_a_variant() {
+        let events = [
+            json(&Event::ViewAdded(ViewAdded {
+                id: 1,
+                title: String::new(),
+                app_id: String::new(),
+                output: String::new(),
+                min_width: 0,
+                min_height: 0,
+                replay: true,
+                floating: false,
+                width: 0,
+                height: 0,
+            })),
+            json(&Event::ViewRemoved { id: 1 }),
+            json(&Event::ViewProps {
+                id: 1,
+                title: String::new(),
+                app_id: String::new(),
+            }),
+            json(&Event::ViewFocused { id: 1 }),
+            json(&Event::Config(Config {
+                layout: "tiling".into(),
+                logo: false,
+                tutorial: false,
+                bar: None,
+                rules: None,
+                theme: None,
+            })),
+            json(&Event::Modifiers { logo: true }),
+            json(&Event::SessionRestore {
+                state: String::new(),
+            }),
+            json(&Event::NotificationAdd(Notification {
+                id: 1,
+                app_name: String::new(),
+                icon: String::new(),
+                summary: String::new(),
+                body: String::new(),
+                urgency: 1,
+                timeout: -1,
+                actions: Vec::new(),
+            })),
+            json(&Event::NotificationClose { id: 1 }),
+            json(&Event::OutputLayout {
+                outputs: Vec::new(),
+            }),
+            json(&Event::ShellCommand {
+                command: String::new(),
+                args: Vec::new(),
+            }),
+            json(&Event::Error {
+                context: String::new(),
+                message: String::new(),
+            }),
+        ];
+
+        let names: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            [
+                "view.added",
+                "view.removed",
+                "view.props",
+                "view.focused",
+                "config",
+                "modifiers",
+                "session.restore",
+                "notification.add",
+                "notification.close",
+                "output.layout",
+                "shell.command",
+                "error",
+            ]
+        );
+    }
+}

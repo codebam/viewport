@@ -1,0 +1,12 @@
+[package]
+name = "viewport-ipc"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+description = "The JSON protocol spoken between the Viewport compositor and its web shell"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

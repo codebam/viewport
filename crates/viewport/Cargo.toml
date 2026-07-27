@@ -1,0 +1,22 @@
+[package]
+name = "viewport"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+repository.workspace = true
+description = "A Wayland compositor whose shell is a web page"
+
+[[bin]]
+name = "viewport"
+path = "src/main.rs"
+
+[features]
+default = []
+servo = ["viewport-web/servo"]
+
+[dependencies]
+viewport-ipc.workspace = true
+viewport-web.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -242,6 +242,15 @@
             # stdenv bash is built --disable-readline --disable-progcomp, which
             # makes ~/.bashrc error out and leaks starship's PS1 escapes.
             bashInteractive
+
+            # The Rust rewrite. nixpkgs ships a `cargo` on this system without a
+            # matching `rustc`, which fails at the first build rather than at
+            # setup, so both are named explicitly here.
+            rustc
+            cargo
+            rustfmt
+            clippy
+            rust-analyzer
           ]);
 
           shellHook = ''
@@ -249,8 +258,10 @@
             echo "  wlroots     : $(pkg-config --modversion wlroots-0.20 2>/dev/null || echo MISSING)"
             echo "  wpe-webkit  : $(pkg-config --modversion wpe-webkit-2.0 2>/dev/null || echo MISSING)"
             echo "  wpe-platform: $(pkg-config --modversion wpe-platform-2.0 2>/dev/null || echo MISSING)"
+            echo "  rustc       : $(rustc --version 2>/dev/null || echo MISSING)"
             echo
-            echo "  meson setup build && ninja -C build"
+            echo "  meson setup build && ninja -C build   # the C compositor"
+            echo "  cargo test --workspace                # the Rust rewrite"
           '';
         };
       }) // {
