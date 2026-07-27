@@ -15,6 +15,7 @@
 #include <linux/input-event-codes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_data_device.h>
@@ -116,6 +117,33 @@ struct wlr_surface *viewport_surface_at(struct viewport_server *server,
 	}
 
 	return scene_surface->surface;
+}
+
+/* Hand the keyboard back after something transient — a launcher, an X11 menu —
+ * has finished with it.
+ *
+ * Not simply to whatever server->focused points at. That is the last window to
+ * hold focus, and it may not be on screen any more: the shell parks windows on
+ * other workspaces and marks them invisible, so focusing one is a request for
+ * the shell to go to it. Switching to an empty workspace and dismissing a
+ * launcher there would drag the session back to whichever workspace the
+ * previously focused window happened to be on.
+ *
+ * The shell is the right answer in that case. It owns the notion of a current
+ * workspace, and giving it the keyboard changes nothing about where you are. */
+void viewport_focus_restore(struct viewport_server *server)
+{
+	struct viewport_toplevel *previous = server->focused;
+
+	if (previous == NULL || !previous->mapped || !previous->visible) {
+		viewport_focus_web(server);
+		return;
+	}
+
+	/* Cleared first, so viewport_toplevel_focus() does not take its early
+	 * return for a window it believes is already focused. */
+	server->focused = NULL;
+	viewport_toplevel_focus(previous);
 }
 
 void viewport_focus_web(struct viewport_server *server)
@@ -240,6 +268,28 @@ void viewport_cursor_refresh(struct viewport_server *server, uint32_t time_msec)
 	process_cursor_motion(server, time_msec);
 }
 
+/* Re-run hit-testing because the windows moved, not the pointer.
+ *
+ * A client only acts on a button if it believes the pointer is inside it, and
+ * it believes that because of wl_pointer.enter — which is only ever sent from
+ * the motion path. So a surface that appears underneath a cursor that is not
+ * moving never receives one, and every click on it is delivered and ignored.
+ *
+ * That is what an X11 menu is: it opens under the pointer, at the pointer,
+ * without the pointer having moved. The click reached the menu surface and
+ * Steam discarded it, which from the outside is indistinguishable from the
+ * click never arriving.
+ *
+ * Called when something maps or unmaps, which is when what is under the cursor
+ * can change without the cursor doing anything. */
+void viewport_cursor_rebase(struct viewport_server *server)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	uint32_t time_msec = (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000);
+	process_cursor_motion(server, time_msec);
+}
+
 /* Likewise for a button. The stylus falls back to a left click where nothing
  * speaks tablet-v2, and this is the same delivery path a mouse click takes. */
 void viewport_pointer_button(struct viewport_server *server, uint32_t time_msec,
@@ -346,22 +396,34 @@ static void handle_cursor_button(struct wl_listener *listener, void *data)
 	struct wlr_pointer_button_event *event = data;
 	bool pressed = event->state == WL_POINTER_BUTTON_STATE_PRESSED;
 
-	/* Releasing anything ends an interactive resize or a shell drag. */
-	if (!pressed && server->resizing != NULL) {
-		server->resizing = NULL;
-		return;
-	}
-	if (!pressed && server->moving != NULL) {
-		server->moving = NULL;
-		return;
-	}
-	if (!pressed && server->pointer_grab_web) {
-		server->pointer_grab_web = false;
-		if (server->web != NULL) {
-			viewport_web_pointer_button(server->web, event->time_msec,
-				server->cursor->x, server->cursor->y, event->button, false);
+	/* Releasing anything ends an interactive resize or a shell drag.
+	 *
+	 * All of it, not the first one that matches. These used to return early in
+	 * turn, so a release that ended a move while the shell also held the
+	 * pointer cleared the move and left pointer_grab_web set — and that grab
+	 * has no other way to end, so every click for the rest of the session went
+	 * to the shell instead of to whatever was under the cursor. */
+	if (!pressed) {
+		bool consumed = false;
+		if (server->resizing != NULL) {
+			server->resizing = NULL;
+			consumed = true;
 		}
-		return;
+		if (server->moving != NULL) {
+			server->moving = NULL;
+			consumed = true;
+		}
+		if (server->pointer_grab_web) {
+			server->pointer_grab_web = false;
+			if (server->web != NULL) {
+				viewport_web_pointer_button(server->web, event->time_msec,
+					server->cursor->x, server->cursor->y, event->button, false);
+			}
+			consumed = true;
+		}
+		if (consumed) {
+			return;
+		}
 	}
 
 	double sx, sy;
@@ -399,6 +461,10 @@ static void handle_cursor_button(struct wl_listener *listener, void *data)
 	if (surface == NULL) {
 		/* Clicking the shell — a titlebar, the dock, the desktop. Focus goes
 		 * to the web view so keyboard input follows the click. */
+		if (server->config.debug && pressed) {
+			wlr_log(WLR_DEBUG, "click at %.0f,%.0f -> the shell",
+				server->cursor->x, server->cursor->y);
+		}
 		if (pressed && server->focused != NULL) {
 			viewport_focus_web(server);
 		}
@@ -418,11 +484,17 @@ static void handle_cursor_button(struct wl_listener *listener, void *data)
 
 	/* One line per click, saying where it went. An X11 menu that ignores clicks
 	 * looks identical from the outside whether the click never arrived or
-	 * arrived and was discarded, and those are different bugs. */
-	if (server->config.trace && pressed) {
-		wlr_log(WLR_DEBUG, "click at %.0f,%.0f -> surface %p (window %s)",
+	 * arrived and was discarded, and those are different bugs.
+	 *
+	 * Under --debug rather than --trace: it is one line per press, not per
+	 * frame, and it is the first thing wanted when something will not take a
+	 * click. Behind --trace it was effectively unavailable, because nobody runs
+	 * a session that logs sixty lines a second on the chance of needing it. */
+	if (server->config.debug && pressed) {
+		wlr_log(WLR_DEBUG, "click at %.0f,%.0f -> surface %p (%s)%s",
 			server->cursor->x, server->cursor->y, (void *)surface,
-			toplevel != NULL ? "yes" : "no, delivered to the surface alone");
+			toplevel != NULL ? "a window" : "the surface alone",
+			server->pointer_grab_web ? " [shell holds the pointer]" : "");
 	}
 
 	wlr_seat_pointer_notify_button(server->seat, event->time_msec,

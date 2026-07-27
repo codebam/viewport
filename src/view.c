@@ -274,6 +274,9 @@ void viewport_view_map(struct viewport_toplevel *toplevel)
 
 	/* If the shell never answers this, the window is placed without it. */
 	viewport_watchdog_arm(toplevel);
+
+	/* What is under the pointer just changed without the pointer moving. */
+	viewport_cursor_rebase(server);
 }
 
 void viewport_view_unmap(struct viewport_toplevel *toplevel)
@@ -306,4 +309,8 @@ void viewport_view_unmap(struct viewport_toplevel *toplevel)
 
 	toplevel->mapped = false;
 	wl_list_remove(&toplevel->link);
+
+	/* And again on the way out: whatever was behind this window is under the
+	 * pointer now and has heard nothing about it. */
+	viewport_cursor_rebase(server);
 }

@@ -229,13 +229,7 @@ static void handle_unmap(struct wl_listener *listener, void *data)
 	 * no focus at all and typing goes nowhere. */
 	if (server->seat->keyboard_state.focused_surface ==
 			surface->layer_surface->surface) {
-		if (server->focused != NULL) {
-			struct viewport_toplevel *toplevel = server->focused;
-			server->focused = NULL;
-			viewport_toplevel_focus(toplevel);
-		} else {
-			viewport_focus_web(server);
-		}
+		viewport_focus_restore(server);
 	}
 
 	/* Its exclusive zone goes with it — a dismissed panel must give the space

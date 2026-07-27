@@ -28,6 +28,36 @@
 
 #include "viewport.h"
 
+/* Give the keyboard back after an unmanaged window that held it goes away.
+ *
+ * An X11 menu takes focus while it is up and has to hand it back, or the
+ * session is left focused on a surface that no longer exists and typing goes
+ * nowhere — which from the outside looks like the application has stopped
+ * responding, because for keyboard purposes it has.
+ *
+ * Called from every way one can leave, not just unmap. A menu that is
+ * destroyed or dissociated without unmapping first used to strand the focus:
+ * wlroots clears the seat's pointer to the dead surface, so nothing is
+ * dangling, but nothing hands the keyboard on either and the window underneath
+ * never gets it back. */
+static void restore_focus_from(struct viewport_toplevel *toplevel)
+{
+	struct viewport_server *server = toplevel->server;
+	struct wlr_xwayland_surface *surface = toplevel->xwayland_surface;
+
+	if (surface->surface == NULL ||
+			server->seat->keyboard_state.focused_surface != surface->surface) {
+		return;
+	}
+
+	if (server->config.debug) {
+		wlr_log(WLR_DEBUG, "unmanaged X11 window gave the keyboard back to %s",
+			server->focused != NULL ? "the focused window" : "the shell");
+	}
+
+	viewport_focus_restore(server);
+}
+
 static void handle_map(struct wl_listener *listener, void *data)
 {
 	struct viewport_toplevel *toplevel = wl_container_of(listener, toplevel, map);
@@ -57,6 +87,11 @@ static void handle_map(struct wl_listener *listener, void *data)
 				keyboard != NULL ? keyboard->num_keycodes : 0,
 				keyboard != NULL ? &keyboard->modifiers : NULL);
 		}
+
+		/* The keyboard is not the half that was missing. A menu opens under a
+		 * pointer that has not moved, so nothing had sent it wl_pointer.enter
+		 * and every click on it was delivered and then ignored. */
+		viewport_cursor_rebase(toplevel->server);
 		return;
 	}
 
@@ -69,21 +104,11 @@ static void handle_unmap(struct wl_listener *listener, void *data)
 		wl_container_of(listener, toplevel, unmap);
 
 	if (toplevel->xwayland_surface->override_redirect) {
-		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, false);
-
-		/* Hand the keyboard back, or dismissing a menu leaves the session with
-		 * focus on a surface that no longer exists and typing goes nowhere. */
-		struct viewport_server *server = toplevel->server;
-		if (server->seat->keyboard_state.focused_surface ==
-				toplevel->xwayland_surface->surface) {
-			if (server->focused != NULL) {
-				struct viewport_toplevel *previous = server->focused;
-				server->focused = NULL;
-				viewport_toplevel_focus(previous);
-			} else {
-				viewport_focus_web(server);
-			}
+		if (toplevel->scene_tree != NULL) {
+			wlr_scene_node_set_enabled(&toplevel->scene_tree->node, false);
 		}
+		restore_focus_from(toplevel);
+		viewport_cursor_rebase(toplevel->server);
 		return;
 	}
 
@@ -193,6 +218,13 @@ static void handle_dissociate(struct wl_listener *listener, void *data)
 {
 	struct viewport_toplevel *toplevel =
 		wl_container_of(listener, toplevel, dissociate);
+
+	/* Before the listeners go: unmap may never arrive for a window that is
+	 * torn down this way, and this is the last point at which the surface is
+	 * still known. */
+	if (toplevel->xwayland_surface->override_redirect) {
+		restore_focus_from(toplevel);
+	}
 
 	wl_list_remove(&toplevel->map.link);
 	wl_list_remove(&toplevel->unmap.link);

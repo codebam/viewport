@@ -657,6 +657,9 @@ void viewport_tablet_add(struct viewport_server *server,
 /* Re-runs the pointer's idea of what it is over, after it has been moved by
  * something other than the pointer itself. */
 void viewport_cursor_refresh(struct viewport_server *server, uint32_t time_msec);
+/* Re-runs it because the scene changed rather than the pointer, which is what
+ * gives a menu opening under a still cursor its wl_pointer.enter. */
+void viewport_cursor_rebase(struct viewport_server *server);
 /* Delivers a pointer button to whatever is under the cursor. */
 void viewport_pointer_button(struct viewport_server *server, uint32_t time_msec,
 	uint32_t button, bool pressed);
@@ -766,6 +769,9 @@ struct wlr_surface *viewport_surface_at(struct viewport_server *server,
 
 /* Moves keyboard focus to the shell (no client toplevel focused). */
 void viewport_focus_web(struct viewport_server *server);
+/* Hands the keyboard back after a launcher or menu closes, to the previously
+ * focused window if it is still on screen and to the shell if it is not. */
+void viewport_focus_restore(struct viewport_server *server);
 
 /* -------------------------------------------------------------------------
  * appearance.c
