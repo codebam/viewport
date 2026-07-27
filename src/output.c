@@ -69,6 +69,14 @@ static void handle_output_frame(struct wl_listener *listener, void *data)
 	struct viewport_output *output = wl_container_of(listener, output, frame);
 	struct viewport_server *server = output->server;
 
+	/* An interactive drag banks its pointer deltas rather than sending one per
+	 * motion event, and this is where they are handed over: the shell cannot
+	 * relayout faster than a frame, so once a frame is exactly as often as the
+	 * total is worth sending. It happens before the scene is built so the shell
+	 * has the delta in hand for the frame it is about to lay out rather than
+	 * always trailing one behind. */
+	viewport_ipc_flush_deltas(server);
+
 	/* Re-apply the overview's scaling before compositing.
 	 *
 	 * wlr_scene_surface recomputes a buffer's destination size from its surface

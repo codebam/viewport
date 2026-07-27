@@ -165,43 +165,63 @@ void viewport_focus_web(struct viewport_server *server)
  * Pointer
  * --------------------------------------------------------------------- */
 
+/* Bank how far the pointer travelled instead of telling the shell right away.
+ *
+ * A message to the shell is a JSON document escaped into a JavaScript string
+ * literal and compiled in the WebProcess, and a 1000Hz mouse produces a motion
+ * event every millisecond — a thousand compiled programs a second to carry
+ * three small integers. The shell could not act on them any faster than one
+ * frame anyway, since the layout it feeds only repaints on the next animation
+ * frame, so the accumulated total goes out once per frame instead.
+ *
+ * Accumulating in doubles also fixes the old resize path, which discarded any
+ * motion smaller than a whole pixel: slow drags now add up rather than
+ * vanishing. A pointer that has not moved still contributes nothing. */
+static void accumulate_drag_delta(struct viewport_server *server, uint32_t id,
+	bool is_resize)
+{
+	double dx = server->cursor->x - server->resize_start_x;
+	double dy = server->cursor->y - server->resize_start_y;
+	if (dx == 0.0 && dy == 0.0) {
+		return;
+	}
+
+	/* The origin follows the cursor so each delta measures only the distance
+	 * since the last one; leaving it behind would make every motion re-report
+	 * the whole drag and the window would run away from the pointer. */
+	server->resize_start_x = server->cursor->x;
+	server->resize_start_y = server->cursor->y;
+
+	/* Anything already banked belongs to the drag that was running when it was
+	 * banked. Send it before the target or the gesture changes underneath it,
+	 * or those pixels reach the shell labelled with the wrong window or as a
+	 * resize when they were a move. */
+	if (server->delta_pending && (server->delta_id != id ||
+			server->delta_is_resize != is_resize)) {
+		viewport_ipc_flush_deltas(server);
+	}
+
+	server->delta_id = id;
+	server->delta_is_resize = is_resize;
+	server->delta_x += dx;
+	server->delta_y += dy;
+	server->delta_pending = true;
+}
+
 static void process_cursor_motion(struct viewport_server *server,
 	uint32_t time_msec)
 {
 	/* Moving a floating window works the same way: the shell owns the position,
 	 * so the compositor only reports how far the pointer travelled. */
 	if (server->moving != NULL) {
-		double dx = server->cursor->x - server->resize_start_x;
-		double dy = server->cursor->y - server->resize_start_y;
-		if (dx != 0.0 || dy != 0.0) {
-			server->resize_start_x = server->cursor->x;
-			server->resize_start_y = server->cursor->y;
-
-			char command[96];
-			snprintf(command, sizeof(command), "layout.move.delta %u %d %d",
-				server->moving->id, (int)dx, (int)dy);
-			viewport_ipc_notify_shell_command(server, command);
-		}
+		accumulate_drag_delta(server, server->moving->id, false);
 		return;
 	}
 
 	/* An interactive resize owns the pointer: report the delta to the shell,
 	 * which turns it into split weights, and deliver nothing to clients. */
 	if (server->resizing != NULL) {
-		double dx = server->cursor->x - server->resize_start_x;
-		double dy = server->cursor->y - server->resize_start_y;
-
-		/* Only report whole pixels, and only when there is something to
-		 * report, so a still pointer does not spam the shell. */
-		if ((int)dx != 0 || (int)dy != 0) {
-			server->resize_start_x = server->cursor->x;
-			server->resize_start_y = server->cursor->y;
-
-			char command[96];
-			snprintf(command, sizeof(command), "layout.resize.delta %u %d %d",
-				server->resizing->id, (int)dx, (int)dy);
-			viewport_ipc_notify_shell_command(server, command);
-		}
+		accumulate_drag_delta(server, server->resizing->id, true);
 		return;
 	}
 
@@ -413,6 +433,13 @@ static void handle_cursor_button(struct wl_listener *listener, void *data)
 			server->moving = NULL;
 			consumed = true;
 		}
+
+		/* Once the drag is over no frame will collect what the pointer
+		 * travelled since the last one, so the final stretch — the pixels that
+		 * decide where the window actually lands — would be dropped on the
+		 * floor. Costs nothing when no delta is waiting. */
+		viewport_ipc_flush_deltas(server);
+
 		if (server->pointer_grab_web) {
 			server->pointer_grab_web = false;
 			if (server->web != NULL) {
