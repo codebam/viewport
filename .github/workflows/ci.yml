@@ -1,0 +1,107 @@
+# Build the compositor and run the whole test suite on every push.
+#
+# One job, not two: `nix build` and the dev shell share a store, and the
+# expensive part of both is the WPE WebKit derivation, which no binary cache
+# has — flake.nix builds it from the upstream tarball. Splitting the build and
+# the tests across jobs would compile WebKit twice.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A push to a branch with an open pull request fires both events, and building
+# WebKit twice for the same commit costs an hour of runner time for nothing.
+#
+# Keyed on head_ref, not ref: for a pull_request event github.ref is the merge
+# ref, refs/pull/<n>/merge, while the push that triggered it carries
+# refs/heads/<branch>. Keying on github.ref alone puts the two in different
+# groups, so neither cancels the other and the duplicate build this block exists
+# to prevent happens anyway. github.head_ref is set only on pull_request, which
+# is exactly when the substitution is needed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v4
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      # tests/capture.test.sh and tests/lock.test.sh both do
+      #   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+      # and a hosted runner never sets it, so without this the Wayland socket
+      # and its lock file land in a world-writable /tmp shared with every
+      # other process on the machine. Give them the private 0700 directory
+      # the spec describes instead.
+      - name: Provide a runtime directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/xdg-runtime"
+          chmod 700 "$RUNNER_TEMP/xdg-runtime"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
+
+      # A hosted runner has no GPU and no /dev/dri, and src/main.c defaults
+      # WLR_RENDERER to vulkan. With no ICD on disk the loader enumerates no
+      # device, the headless compositor dies before it publishes a socket, and
+      # every Wayland test fails on "the compositor did not come up". Mesa
+      # ships lavapipe, a software Vulkan device. Forcing pixman instead is
+      # not an option — it has no DRM fd and the web engine needs one, which
+      # is the reason tests/lock.test.sh leaves the renderer alone.
+      #
+      # VK_ICD_FILENAMES is the older spelling of VK_DRIVER_FILES; which one
+      # is read depends on the loader version, so set both.
+      - name: Point Vulkan at a software device
+        run: |
+          mesa=$(nix build --no-link --print-out-paths nixpkgs#mesa)
+          icd=$(find "$mesa" -name 'lvp_icd*.json' | head -1)
+          if [ -z "$icd" ]; then
+            echo "no lavapipe ICD in $mesa" >&2
+            exit 1
+          fi
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: nix build --print-build-logs .#viewport
+
+      # The dev shell carries no node, and meson makes the four shell tests
+      # optional precisely so a checkout without it still gets the compositor
+      # tests. In CI that rule is backwards: a runner without node would run 3
+      # of 7 tests and report success. Bring node in and refuse to test
+      # without it.
+      - name: Locate node
+        run: |
+          node=$(nix build --no-link --print-out-paths nixpkgs#nodejs)
+          echo "NODE_BIN=$node/bin" >> "$GITHUB_ENV"
+
+      # NODE_BIN survives into the dev shell because nothing in the shell
+      # derivation sets it; PATH does not, which is why it is prepended from
+      # inside rather than in the step environment.
+      - name: Test
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            export PATH="$NODE_BIN:$PATH"
+            if ! command -v node > /dev/null; then
+              echo "node is not on PATH: meson would skip the shell tests" >&2
+              exit 1
+            fi
+
+            meson setup build
+            # meson decides whether the shell tests exist at configure time,
+            # so this is the point at which a silent skip becomes visible.
+            meson test -C build --list | grep -q shell-session-scrolling
+
+            meson test -C build --print-errorlogs
+          '
+
+      - name: Upload the test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-testlog
+          path: build/meson-logs/testlog.txt
+          if-no-files-found: warn
