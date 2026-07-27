@@ -35,7 +35,8 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-output.h"
+#include "viewport-shell.h"
 
 /* What the compositor tells clients it can handle. Kept to the two curves and
  * two gamuts that matter — sRGB for everything that exists today, PQ and

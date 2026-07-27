@@ -25,7 +25,7 @@
 
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-shell.h"
 
 #define PORTAL_BUS_NAME "org.freedesktop.impl.portal.desktop.viewport"
 #define PORTAL_OBJECT_PATH "/org/freedesktop/portal/desktop"

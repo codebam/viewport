@@ -25,7 +25,7 @@
 #include <wayland-server-core.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-shell.h"
 
 struct viewport_glib_loop {
 	GMainLoop *main_loop;

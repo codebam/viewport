@@ -20,7 +20,10 @@
 #include <wlr/xwayland.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
+#include "viewport-output.h"
+#include "viewport-shell.h"
 
 const char *viewport_view_title(struct viewport_toplevel *toplevel)
 {

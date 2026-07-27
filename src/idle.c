@@ -34,7 +34,7 @@
 #include <wlr/types/wlr_output_power_management_v1.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
 
 /* How often the thresholds are checked. Idle timeouts are measured in minutes,
  * so a coarse tick costs nothing and keeps the compositor asleep between

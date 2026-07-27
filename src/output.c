@@ -16,7 +16,9 @@
 #include <wlr/types/wlr_tearing_control_v1.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-output.h"
+#include "viewport-shell.h"
 
 /* Whether this output should be flipped without waiting for vblank.
  *

@@ -26,7 +26,9 @@
 #include <wlr/util/log.h>
 #include <wlr/xwayland.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
+#include "viewport-shell.h"
 
 /* Give the keyboard back after an unmanaged window that held it goes away.
  *

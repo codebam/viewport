@@ -33,7 +33,8 @@
 #include <wlr/types/wlr_tablet_v2.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
 
 /* The stylus currently in proximity, and the tablet it belongs to. A tool is
  * created lazily, because a tablet may be plugged in long before a pen is

@@ -28,7 +28,8 @@
 #include <wlr/types/wlr_pointer_gestures_v1.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-input.h"
+#include "viewport-shell.h"
 
 /* The count the compositor claims. Two is pinch-to-zoom territory and four is
  * rare enough that clients which do use it should keep it. */

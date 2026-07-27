@@ -39,7 +39,8 @@
 #include <wlr/types/wlr_text_input_v3.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
 
 struct viewport_ime {
 	struct viewport_server *server;

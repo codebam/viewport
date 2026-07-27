@@ -31,7 +31,9 @@
 
 #include <wpe/wpe-platform.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
+#include "viewport-shell.h"
 
 /* ------------------------------------------------------------------------
  * Hit-testing

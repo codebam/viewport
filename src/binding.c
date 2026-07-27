@@ -31,7 +31,9 @@
 
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
+#include "viewport-shell.h"
 
 /* ------------------------------------------------------------------------
  * Parsing

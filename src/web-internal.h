@@ -12,7 +12,8 @@
 #include <wlr/types/wlr_scene.h>
 
 #include "viewport-wpe.h"
-#include "viewport.h"
+#include "viewport-output.h"
+#include "viewport-shell.h"
 
 struct viewport_web {
 	struct viewport_server *server;

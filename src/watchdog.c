@@ -28,7 +28,7 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
 
 /* Long enough that a shell fetching over the network is not cut off, short
  * enough that a broken one is not left on screen doing nothing. */

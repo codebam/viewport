@@ -26,7 +26,9 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
+#include "viewport-shell.h"
 
 struct viewport_layer_surface {
 	/* Must stay first: scene node data is downcast through this. */

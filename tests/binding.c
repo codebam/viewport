@@ -28,7 +28,9 @@
 
 #include <xkbcommon/xkbcommon.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
+#include "viewport-shell.h"
 
 static int failures;
 

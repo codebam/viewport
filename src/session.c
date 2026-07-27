@@ -29,7 +29,7 @@
 
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-shell.h"
 
 static char *session_path(void)
 {

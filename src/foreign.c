@@ -27,7 +27,8 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-shell.h"
 
 struct viewport_foreign {
 	struct wlr_foreign_toplevel_handle_v1 *handle;

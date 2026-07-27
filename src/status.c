@@ -24,7 +24,7 @@
 
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-shell.h"
 
 struct viewport_status {
 	struct viewport_server *server;

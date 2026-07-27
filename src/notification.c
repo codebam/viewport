@@ -29,7 +29,7 @@
 
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-shell.h"
 
 #define NOTIFICATION_BUS_NAME "org.freedesktop.Notifications"
 #define NOTIFICATION_OBJECT_PATH "/org/freedesktop/Notifications"

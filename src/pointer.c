@@ -32,7 +32,8 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
 
 static void constraint_destroy(struct wl_listener *listener, void *data)
 {

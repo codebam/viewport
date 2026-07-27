@@ -37,7 +37,10 @@
 #include <wlr/util/log.h>
 
 #include "json_util.h"
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
+#include "viewport-output.h"
+#include "viewport-shell.h"
 
 struct viewport_ipc {
 	struct viewport_server *server;

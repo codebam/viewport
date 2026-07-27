@@ -26,7 +26,9 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-output.h"
+#include "viewport-shell.h"
 
 /* Translate one head's requested state into an output state. The position is
  * not part of it: that lives in the output layout, and is applied separately

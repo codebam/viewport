@@ -12,7 +12,8 @@
 
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-input.h"
+#include "viewport-shell.h"
 
 static const char usage[] =
 	"usage: viewport [options]\n"

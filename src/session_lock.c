@@ -23,7 +23,9 @@
 #include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
+#include "viewport-output.h"
 
 struct viewport_lock_surface {
 	struct wlr_session_lock_surface_v1 *lock_surface;

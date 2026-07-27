@@ -46,7 +46,8 @@
 #include <wlr/util/log.h>
 
 #include "json_util.h"
-#include "viewport.h"
+#include "viewport-input.h"
+#include "viewport-shell.h"
 
 /* Strings handed to viewport_config are owned here and freed by
  * viewport_config_finish().

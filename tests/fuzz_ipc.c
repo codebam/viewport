@@ -53,7 +53,8 @@
 
 #include <wlr/types/wlr_seat.h>
 
-#include "viewport.h"
+#include "viewport-input.h"
+#include "viewport-shell.h"
 
 static struct viewport_server stub_server;
 static struct wl_display *stub_display;

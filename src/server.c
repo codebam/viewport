@@ -37,7 +37,10 @@
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-input.h"
+#include "viewport-output.h"
+#include "viewport-shell.h"
 
 static void handle_session_active(struct wl_listener *listener, void *data);
 

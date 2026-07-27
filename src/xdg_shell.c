@@ -22,7 +22,8 @@
 #include <wlr/util/addon.h>
 #include <wlr/util/log.h>
 
-#include "viewport.h"
+#include "viewport-view.h"
+#include "viewport-shell.h"
 
 static void handle_toplevel_map(struct wl_listener *listener, void *data)
 {
