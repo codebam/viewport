@@ -6,6 +6,17 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
+  nixConfig = {
+    extra-substituters = [
+      "https://codebam-nix-cache.storage.googleapis.com"
+      "https://storage.googleapis.com/codebam-nix-cache"
+    ];
+    extra-trusted-substituters = [
+      "https://codebam-nix-cache.storage.googleapis.com"
+      "https://storage.googleapis.com/codebam-nix-cache"
+    ];
+  };
+
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
@@ -451,6 +462,15 @@
 
           config = mkIf cfg.enable {
             environment.systemPackages = [ cfg.package ];
+
+            nix.settings.extra-substituters = [
+              "https://codebam-nix-cache.storage.googleapis.com"
+              "https://storage.googleapis.com/codebam-nix-cache"
+            ];
+            nix.settings.trusted-substituters = [
+              "https://codebam-nix-cache.storage.googleapis.com"
+              "https://storage.googleapis.com/codebam-nix-cache"
+            ];
 
             services.seatd.enable = true;
             security.polkit.enable = true;
