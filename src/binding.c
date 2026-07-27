@@ -165,11 +165,11 @@ bool viewport_binding_add(struct viewport_server *server, const char *spec)
 	if (slash != NULL) {
 		*slash = '\0';
 		mode = strdup(chord);
-		memmove(chord, slash + 1, strlen(slash + 1) + 1);
 		if (mode == NULL) {
 			free(chord);
 			return false;
 		}
+		memmove(chord, slash + 1, strlen(slash + 1) + 1);
 	}
 
 	uint32_t modifiers = 0;
@@ -207,6 +207,7 @@ bool viewport_binding_add(struct viewport_server *server, const char *spec)
 
 	free(chord);
 	if (!ok) {
+		free(mode);
 		return false;
 	}
 
@@ -215,6 +216,7 @@ bool viewport_binding_add(struct viewport_server *server, const char *spec)
 	if (!action_from_string(equals + 1, &action, &argument)) {
 		wlr_log(WLR_ERROR, "binding '%s': unknown action '%s'", spec,
 			equals + 1);
+		free(mode);
 		return false;
 	}
 
@@ -224,12 +226,17 @@ bool viewport_binding_add(struct viewport_server *server, const char *spec)
 		return false;
 	}
 	binding->mode = mode != NULL ? mode : strdup("default");
+	if (binding->mode == NULL) {
+		free(binding);
+		return false;
+	}
 	binding->modifiers = modifiers;
 	binding->keysym = keysym;
 	binding->action = action;
 	if (argument != NULL) {
 		binding->argument = strdup(argument);
 		if (binding->argument == NULL) {
+			free(binding->mode);
 			free(binding);
 			return false;
 		}
