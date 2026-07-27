@@ -62,7 +62,22 @@ struct ipc_client {
 	char *buf;
 	size_t len;
 	size_t cap;
+
+	/* Queued output. A message is appended here and the queue drained as far
+	 * as the socket will take it; whatever is left waits for the fd to become
+	 * writable again. */
+	char *out;
+	size_t out_len;
+	size_t out_cap;
 };
+
+/* How much unsent output a client may accumulate before it is dropped.
+ *
+ * Generous: replaying the view list to a client that has not read in a while
+ * is legitimately a few tens of kilobytes. Past this the client is not keeping
+ * up at all, and buffering for it without limit would let one stuck reader
+ * grow the compositor's heap until something dies. */
+#define IPC_MAX_QUEUED (4u << 20)
 
 /* ------------------------------------------------------------------------
  * Outbound
@@ -74,6 +89,7 @@ static void ipc_reap(struct viewport_ipc *ipc)
 	wl_list_for_each_safe(client, tmp, &ipc->dead, link) {
 		wl_list_remove(&client->link);
 		free(client->buf);
+		free(client->out);
 		free(client);
 	}
 }
@@ -123,6 +139,79 @@ static void ipc_client_close(struct ipc_client *client)
 	}
 }
 
+/* Push as much of the queue as the socket will take.
+ *
+ * A short write is not an error and not a rarity — it is what a stream socket
+ * does when its buffer is nearly full. The old code tested the return only for
+ * being negative, so a partial message was treated as sent and the newline that
+ * followed was appended to a truncated line: the client then parsed one corrupt
+ * message and every message after it was offset by the remainder. Nothing
+ * logged, because from the compositor's side nothing had failed. */
+static void ipc_client_flush(struct ipc_client *client)
+{
+	while (client->out_len > 0) {
+		ssize_t n = write(client->fd, client->out, client->out_len);
+		if (n > 0) {
+			client->out_len -= (size_t)n;
+			memmove(client->out, client->out + n, client->out_len);
+			continue;
+		}
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			break;
+		}
+		if (n < 0 && errno == EINTR) {
+			continue;
+		}
+		/* A client that will not take its output is one we drop, rather than
+		 * one that stalls the compositor. */
+		ipc_client_close(client);
+		return;
+	}
+
+	/* Only ask to be told about writability while there is something waiting;
+	 * an always-armed writable fd spins the event loop. */
+	if (client->source != NULL) {
+		wl_event_source_fd_update(client->source, client->out_len > 0
+			? (WL_EVENT_READABLE | WL_EVENT_WRITABLE) : WL_EVENT_READABLE);
+	}
+}
+
+/* Queue one newline-terminated message, then drain what we can. */
+static void ipc_client_send(struct ipc_client *client, const char *json,
+	size_t len)
+{
+	if (client->dead) {
+		return;
+	}
+
+	size_t need = client->out_len + len + 1;
+	if (need > IPC_MAX_QUEUED) {
+		wlr_log(WLR_ERROR, "IPC client is not draining; dropping it");
+		ipc_client_close(client);
+		return;
+	}
+
+	if (need > client->out_cap) {
+		size_t cap = client->out_cap ? client->out_cap : 8192;
+		while (cap < need) {
+			cap *= 2;
+		}
+		char *out = realloc(client->out, cap);
+		if (out == NULL) {
+			ipc_client_close(client);
+			return;
+		}
+		client->out = out;
+		client->out_cap = cap;
+	}
+
+	memcpy(client->out + client->out_len, json, len);
+	client->out_len += len;
+	client->out[client->out_len++] = '\n';
+
+	ipc_client_flush(client);
+}
+
 void viewport_ipc_broadcast(struct viewport_server *server, const char *json)
 {
 	if (server->web != NULL) {
@@ -136,14 +225,7 @@ void viewport_ipc_broadcast(struct viewport_server *server, const char *json)
 	size_t len = strlen(json);
 	struct ipc_client *client, *tmp;
 	wl_list_for_each_safe(client, tmp, &server->ipc->clients, link) {
-		/* Non-blocking: a client that will not drain is a client we drop,
-		 * rather than one that stalls the compositor. */
-		if (write(client->fd, json, len) < 0 ||
-				write(client->fd, "\n", 1) < 0) {
-			if (errno != EAGAIN && errno != EWOULDBLOCK) {
-				ipc_client_close(client);
-			}
-		}
+		ipc_client_send(client, json, len);
 	}
 }
 
@@ -1182,12 +1264,25 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
  * UNIX socket transport
  * --------------------------------------------------------------------- */
 
-static int handle_client_readable(int fd, uint32_t mask, void *data)
+static int handle_client_event(int fd, uint32_t mask, void *data)
 {
 	struct ipc_client *client = data;
 
 	if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) {
 		ipc_client_close(client);
+		return 0;
+	}
+
+	/* Drain the backlog first: the socket has just told us it has room, and
+	 * this is the only thing that will send what a short write left behind. */
+	if (mask & WL_EVENT_WRITABLE) {
+		ipc_client_flush(client);
+		if (client->dead) {
+			return 0;
+		}
+	}
+
+	if (!(mask & WL_EVENT_READABLE)) {
 		return 0;
 	}
 
@@ -1274,7 +1369,7 @@ static int handle_socket_connection(int fd, uint32_t mask, void *data)
 	client->ipc = ipc;
 	client->fd = client_fd;
 	client->source = wl_event_loop_add_fd(ipc->server->wl_event_loop, client_fd,
-		WL_EVENT_READABLE, handle_client_readable, client);
+		WL_EVENT_READABLE, handle_client_event, client);
 	wl_list_insert(&ipc->clients, &client->link);
 
 	/* Bring the newcomer up to date immediately: outputs, then every view
@@ -1305,9 +1400,26 @@ struct viewport_ipc *viewport_ipc_create(struct viewport_server *server,
 		if (runtime_dir == NULL) {
 			runtime_dir = "/tmp";
 		}
+		/* Named after the Wayland display, not the pid.
+		 *
+		 * Both are unique per session, but only one is discoverable: a script
+		 * already has WAYLAND_DISPLAY and would have to go hunting for the
+		 * compositor's pid. It is also what this file, --help and the README
+		 * all said the path was, while the code used the pid — so the
+		 * documented socat line named a socket that never existed.
+		 *
+		 * VIEWPORT_SOCKET is still exported for anything that would rather not
+		 * assemble the path at all. */
 		char buf[PATH_MAX];
-		snprintf(buf, sizeof(buf), "%s/viewport-%d.sock", runtime_dir,
-			(int)getpid());
+		const char *display = server->socket_name != NULL
+			? server->socket_name : getenv("WAYLAND_DISPLAY");
+		if (display != NULL) {
+			snprintf(buf, sizeof(buf), "%s/viewport-%s.sock", runtime_dir,
+				display);
+		} else {
+			snprintf(buf, sizeof(buf), "%s/viewport-%d.sock", runtime_dir,
+				(int)getpid());
+		}
 		ipc->path = strdup(buf);
 	}
 

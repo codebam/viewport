@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #define _POSIX_C_SOURCE 200809L
 
-#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -300,6 +299,19 @@ bool viewport_server_init(struct viewport_server *server,
 	server->status = viewport_status_create(server);
 	server->notifications = viewport_notifications_create(server);
 
+	/* Before the control socket, which is named after this.
+	 *
+	 * Adding the display socket only creates a listening fd — it needs neither
+	 * the backend nor the event loop to be running, so it is free to happen
+	 * here. Doing it in viewport_server_start() as before meant the control
+	 * socket was created while the display still had no name, and it had to
+	 * fall back to the pid. */
+	server->socket_name = wl_display_add_socket_auto(server->wl_display);
+	if (server->socket_name == NULL) {
+		wlr_log(WLR_ERROR, "wl_display_add_socket_auto failed");
+		return false;
+	}
+
 	server->ipc = viewport_ipc_create(server, server->config.ipc_path);
 	if (server->ipc == NULL) {
 		wlr_log(WLR_ERROR, "control socket setup failed");
@@ -387,14 +399,6 @@ static void handle_session_active(struct wl_listener *listener, void *data)
 	wlr_log(WLR_DEBUG, "session resumed, repainting outputs");
 }
 
-static int handle_signal(int signal_number, void *data)
-{
-	struct viewport_server *server = data;
-	wlr_log(WLR_INFO, "caught signal %d, shutting down", signal_number);
-	viewport_server_terminate(server);
-	return 0;
-}
-
 bool viewport_server_start(struct viewport_server *server)
 {
 	/* Here rather than in init: the config file is read between the two, and
@@ -402,23 +406,20 @@ bool viewport_server_start(struct viewport_server *server)
 	 * always see zeroes and never run. */
 	viewport_idle_init(server);
 
-	server->socket_name = wl_display_add_socket_auto(server->wl_display);
-	if (server->socket_name == NULL) {
-		wlr_log(WLR_ERROR, "wl_display_add_socket_auto failed");
-		return false;
-	}
-
+	/* The display socket already exists; viewport_server_init() added it so the
+	 * control socket could be named after it. */
 	if (!wlr_backend_start(server->backend)) {
 		wlr_log(WLR_ERROR, "wlr_backend_start failed");
 		return false;
 	}
 
-	/* Without these, Ctrl+C leaves the compositor running with a detached
-	 * terminal, because GLib's loop does not install any default handling. */
-	wl_event_loop_add_signal(server->wl_event_loop, SIGINT, handle_signal,
-		server);
-	wl_event_loop_add_signal(server->wl_event_loop, SIGTERM, handle_signal,
-		server);
+	/* Signals are handled in main.c, through g_unix_signal_add().
+	 *
+	 * Not here, and not both: GLib owns the outer loop, so a wl_event_loop
+	 * signal source only runs if the Wayland fd happens to be dispatched, and
+	 * registering the same two signals in both places meant whichever GLib saw
+	 * first did the work while the wlroots ones sat unreachable. One owner is
+	 * enough and the reachable one is the right one. */
 
 	setenv("WAYLAND_DISPLAY", server->socket_name, 1);
 	export_session_environment();
