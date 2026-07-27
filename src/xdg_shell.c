@@ -230,10 +230,7 @@ static void handle_request_fullscreen(struct wl_listener *listener, void *data)
 	/* The protocol requires a response whether or not we honour it. */
 	wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, wants);
 
-	char command[96];
-	snprintf(command, sizeof(command), "window.fullscreen.set %u %d",
-		toplevel->id, wants ? 1 : 0);
-	viewport_ipc_notify_shell_command(toplevel->server, command);
+	viewport_ipc_notify_fullscreen(toplevel, wants);
 }
 
 void viewport_handle_new_xdg_toplevel(struct wl_listener *listener, void *data)

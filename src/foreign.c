@@ -17,7 +17,6 @@
  */
 #define _POSIX_C_SOURCE 200809L
 
-#include <stdio.h>
 #include <string.h>
 
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
@@ -71,10 +70,7 @@ static void handle_request_fullscreen(struct wl_listener *listener, void *data)
 	/* Fullscreen is the shell's decision — it owns the tiling tree and the bar
 	 * — so the request is forwarded rather than applied here. The state comes
 	 * back through viewport_view_set_fullscreen. */
-	char command[96];
-	snprintf(command, sizeof(command), "window.fullscreen.set %u %d",
-		foreign->toplevel->id, event->fullscreen ? 1 : 0);
-	viewport_ipc_notify_shell_command(foreign->toplevel->server, command);
+	viewport_ipc_notify_fullscreen(foreign->toplevel, event->fullscreen);
 }
 
 void viewport_foreign_view_map(struct viewport_toplevel *toplevel)

@@ -14,7 +14,6 @@
  */
 #define _POSIX_C_SOURCE 200809L
 
-#include <stdio.h>
 #include <stdlib.h>
 
 #include <wlr/types/wlr_scene.h>
@@ -266,10 +265,7 @@ void viewport_view_map(struct viewport_toplevel *toplevel)
 	 * Re-sent here, after view.added, when the client still wants it. */
 	if (view_requested_fullscreen(toplevel)) {
 		toplevel->fullscreen = true;
-		char command[96];
-		snprintf(command, sizeof(command), "window.fullscreen.set %u 1",
-			toplevel->id);
-		viewport_ipc_notify_shell_command(server, command);
+		viewport_ipc_notify_fullscreen(toplevel, true);
 	}
 
 	/* If the shell never answers this, the window is placed without it. */

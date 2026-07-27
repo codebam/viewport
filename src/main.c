@@ -288,6 +288,15 @@ int main(int argc, char *argv[])
 	wlr_log(WLR_INFO, "WAYLAND_DISPLAY=%s  shell=%s",
 		server.socket_name, server.config.url);
 
+	/* Before the first spawn, not after it, so that the startup command and
+	 * every keybinding launch afterwards run in one signal environment
+	 * rather than two. Ignoring SIGCHLD is what keeps the compositor from
+	 * accumulating a zombie per launched program, since it never reaps;
+	 * viewport_spawn() puts SIG_DFL back in the child, because SIG_IGN is
+	 * inherited across execve() and would otherwise break wait() in
+	 * everything we start. */
+	signal(SIGCHLD, SIG_IGN);
+
 	/* Through the same spawner as every keybinding, rather than a bare fork.
 	 * A single fork leaves a zombie for the life of the session — the
 	 * compositor never reaps — and makes the startup command a child of the
@@ -306,7 +315,6 @@ int main(int argc, char *argv[])
 	 * context. */
 	guint sigterm = g_unix_signal_add(SIGTERM, handle_signal, &server);
 	guint sigint = g_unix_signal_add(SIGINT, handle_signal, &server);
-	signal(SIGCHLD, SIG_IGN);
 
 	viewport_server_run(&server);
 

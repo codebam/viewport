@@ -945,6 +945,14 @@ void viewport_ipc_notify_focus(struct viewport_server *server, uint32_t id);
 void viewport_ipc_notify_shell_command(struct viewport_server *server,
 	const char *command);
 
+/* Asks the shell to fullscreen a view, or to stop. Fullscreen is the shell's
+ * decision — it owns the tiling tree — so every path that learns a client
+ * wants it (xdg, Xwayland, foreign-toplevel, and the map-time replay for a
+ * request that arrived before view.added) forwards it through here rather
+ * than formatting the same shell.command by hand. */
+void viewport_ipc_notify_fullscreen(struct viewport_toplevel *toplevel,
+	bool on);
+
 /* -------------------------------------------------------------------------
  * glib_loop.c
  *

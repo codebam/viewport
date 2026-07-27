@@ -154,8 +154,14 @@ bool viewport_config_load(struct viewport_server *server,
 					json_object_get_string_member(entry, "mode");
 				double refresh = 0.0;
 				int width = 0, height = 0;
-				int fields = sscanf(text, "%dx%d@%lf", &width, &height,
-					&refresh);
+				/* Presence is not type: "mode": 5 reads back as NULL, and
+				 * handing that to sscanf() would turn a config typo into a
+				 * compositor that cannot start. A wrong type is reported the
+				 * same way an unparseable string is — the user's mistake is
+				 * the same shape either way. */
+				int fields = text != NULL
+					? sscanf(text, "%dx%d@%lf", &width, &height, &refresh)
+					: 0;
 				if (fields >= 2) {
 					parsed[at].width = width;
 					parsed[at].height = height;
@@ -163,7 +169,8 @@ bool viewport_config_load(struct viewport_server *server,
 				} else {
 					wlr_log(WLR_ERROR,
 						"output %s: cannot read mode '%s', expected "
-						"WIDTHxHEIGHT[@REFRESH]", name, text);
+						"WIDTHxHEIGHT[@REFRESH]", name,
+						text != NULL ? text : "(not a string)");
 				}
 			}
 			at++;

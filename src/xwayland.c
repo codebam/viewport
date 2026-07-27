@@ -182,10 +182,7 @@ static void handle_request_fullscreen(struct wl_listener *listener, void *data)
 
 	wlr_xwayland_surface_set_fullscreen(toplevel->xwayland_surface, wants);
 
-	char command[96];
-	snprintf(command, sizeof(command), "window.fullscreen.set %u %d",
-		toplevel->id, wants ? 1 : 0);
-	viewport_ipc_notify_shell_command(toplevel->server, command);
+	viewport_ipc_notify_fullscreen(toplevel, wants);
 }
 
 /* The wl_surface arrives after the X11 window. Only now can the surface be put

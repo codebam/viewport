@@ -19,6 +19,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <ctype.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -486,12 +487,35 @@ void viewport_spawn(const char *command)
 	if (pid == 0) {
 		setsid();
 		if (fork() == 0) {
+			/* execve() resets installed handlers but carries SIG_IGN
+			 * through untouched, so main.c's signal(SIGCHLD, SIG_IGN)
+			 * would otherwise become the launched program's problem —
+			 * and its children's, and theirs. A process that ignores
+			 * SIGCHLD has its children reaped out from under it, so
+			 * wait() and waitpid() fail with ECHILD and system()
+			 * returns -1: terminals lose the exit status of anything
+			 * they run, and anything that shells out misreads it as
+			 * failure. Reset it here, in the branch that actually
+			 * execs, because this is the only disposition that
+			 * survives the call.
+			 *
+			 * The process signal mask needs no such repair: GLib's
+			 * g_unix_signal_add() installs an ordinary sigaction
+			 * handler and blocks nothing, so main.c's SIGTERM and
+			 * SIGINT sources leave the mask empty for exec to
+			 * inherit. */
+			signal(SIGCHLD, SIG_DFL);
 			execl("/bin/sh", "/bin/sh", "-c", command, (void *)NULL);
 			_exit(127);
 		}
 		_exit(0);
 	}
 
+	/* Under SIG_IGN this returns -1/ECHILD rather than the pid, because the
+	 * kernel has already reaped the child. That is fine: the wait is only
+	 * here to keep the intermediate child from lingering, and it _exit(0)s
+	 * the moment the second fork returns, so either outcome gets us back
+	 * into the event loop without blocking on the launched program. */
 	waitpid(pid, NULL, 0);
 }
 

@@ -17,6 +17,7 @@
  *
  * Messages are documented in README.md.
  */
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
@@ -563,6 +564,15 @@ void viewport_ipc_notify_shell_command(struct viewport_server *server,
 	g_strfreev(parts);
 }
 
+void viewport_ipc_notify_fullscreen(struct viewport_toplevel *toplevel,
+	bool on)
+{
+	char command[96];
+	snprintf(command, sizeof(command), "window.fullscreen.set %u %d",
+		toplevel->id, on ? 1 : 0);
+	viewport_ipc_notify_shell_command(toplevel->server, command);
+}
+
 static const char *transform_name(enum wl_output_transform transform)
 {
 	switch (transform) {
@@ -593,6 +603,21 @@ static bool transform_from_name(const char *name,
 		{ "flipped-180", WL_OUTPUT_TRANSFORM_FLIPPED_180 },
 		{ "flipped-270", WL_OUTPUT_TRANSFORM_FLIPPED_270 },
 	};
+
+	/* The caller reads this out of a JSON object, where presence and type are
+	 * separate questions: json_object_get_string_member() hands back NULL for a
+	 * member that exists but holds a number, a null, an array or a bool. The
+	 * only call site gates on json_object_has_member() alone, so
+	 * {"type":"output.configure","name":"eDP-1","transform":null} arrived here
+	 * as a NULL and died in the strcmp below — one postMessage() from any page,
+	 * the same way a non-string "type" used to be. Rejecting it here rather than
+	 * at the call site closes it for whoever adds the next caller.
+	 *
+	 * An unknown name already means "leave the transform alone", and a
+	 * wrong-typed one is not more meaningful than an unknown one. */
+	if (name == NULL) {
+		return false;
+	}
 
 	for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
 		if (strcmp(name, table[i].name) == 0) {
@@ -1111,6 +1136,15 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 	}
 
 	const char *type = json_object_get_string_member(object, "type");
+	if (type == NULL) {
+		/* has_member() proved the member exists, not that it is a string. For
+		 * {"type":5}, {"type":null}, {"type":{}} or {"type":true} the getter
+		 * logs a Json-CRITICAL and hands back NULL, and the strcmp() below
+		 * would dereference it — a page one postMessage() away from killing
+		 * the compositor and every window it holds. */
+		g_object_unref(parser);
+		return;
+	}
 
 	if (strcmp(type, "view.layout") == 0) {
 		handle_view_layout(server, object);
@@ -1354,7 +1388,11 @@ static int handle_socket_connection(int fd, uint32_t mask, void *data)
 {
 	struct viewport_ipc *ipc = data;
 
-	int client_fd = accept(fd, NULL, NULL);
+	/* accept4(), not accept(): the listening socket's SOCK_CLOEXEC is not
+	 * inherited by the connection, so a plain accept() hands every program
+	 * launched from a keybinding a live IPC connection that already passed
+	 * somebody else's credential check. */
+	int client_fd = accept4(fd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
 	if (client_fd < 0) {
 		return 0;
 	}
@@ -1371,9 +1409,6 @@ static int handle_socket_connection(int fd, uint32_t mask, void *data)
 		}
 	}
 #endif
-
-	int flags = fcntl(client_fd, F_GETFL, 0);
-	fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
 
 	struct ipc_client *client = calloc(1, sizeof(*client));
 	if (client == NULL) {
@@ -1456,7 +1491,15 @@ struct viewport_ipc *viewport_ipc_create(struct viewport_server *server,
 	}
 
 	unlink(ipc->path);
-	if (bind(ipc->fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+	/* bind() creates the node at 0755 and the chmod() below only narrows it
+	 * afterwards, so without the umask there is a window in which anyone can
+	 * connect. XDG_RUNTIME_DIR is 0700 and hides it, but the fallback above is
+	 * /tmp, which everyone can walk into. The chmod() stays because some
+	 * filesystems ignore the umask when creating a socket node. */
+	mode_t old_umask = umask(0177);
+	int bind_result = bind(ipc->fd, (struct sockaddr *)&addr, sizeof(addr));
+	umask(old_umask);
+	if (bind_result < 0) {
 		wlr_log(WLR_ERROR, "bind %s: %s", ipc->path, strerror(errno));
 		goto error_fd;
 	}
