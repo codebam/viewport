@@ -275,11 +275,13 @@ int main(int argc, char *argv[])
 	wlr_log(WLR_INFO, "WAYLAND_DISPLAY=%s  shell=%s",
 		server.socket_name, server.config.url);
 
-	if (config.startup_cmd != NULL) {
-		if (fork() == 0) {
-			execl("/bin/sh", "/bin/sh", "-c", config.startup_cmd, (void *)NULL);
-			_exit(127);
-		}
+	/* Through the same spawner as every keybinding, rather than a bare fork.
+	 * A single fork leaves a zombie for the life of the session — the
+	 * compositor never reaps — and makes the startup command a child of the
+	 * compositor, so it also shares its session and its controlling terminal.
+	 * viewport_spawn() double-forks and setsid()s for exactly those reasons. */
+	if (server.config.startup_cmd != NULL) {
+		viewport_spawn(server.config.startup_cmd);
 	}
 
 	/* Without a handler SIGTERM kills the process where it stands: the web
