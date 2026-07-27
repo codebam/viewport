@@ -171,13 +171,83 @@ viewport_sources += layer_shell_protocol_h
 viewport_sources += output_power_protocol_h
 viewport_sources += color_management_protocol_h
 
-executable(
+viewport_exe = executable(
   'viewport',
   viewport_sources,
   include_directories: include_directories('include'),
   dependencies: viewport_deps,
   install: true,
 )
+
+# ---------------------------------------------------------------------------
+# Test clients
+#
+# Window capture can only be judged from outside the compositor, by a client
+# that asks for a window and looks at what comes back. These two build that
+# view: one window that is easy to recognise, and one capture that checks it.
+# Neither is installed — they exist for tests/capture.test.sh.
+# ---------------------------------------------------------------------------
+
+wayland_client = dependency('wayland-client', version: '>=1.24')
+protocol_dir = wayland_protocols.get_variable(pkgconfig: 'pkgdatadir')
+
+# Unlike the server headers above, these need the marshalling code as well:
+# nothing else in the build links a Wayland *client*.
+test_protocols = {
+  'xdg-shell': protocol_dir / 'stable/xdg-shell/xdg-shell.xml',
+  'ext-foreign-toplevel-list-v1': protocol_dir
+    / 'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
+  'ext-image-capture-source-v1': protocol_dir
+    / 'staging/ext-image-capture-source/ext-image-capture-source-v1.xml',
+  'ext-image-copy-capture-v1': protocol_dir
+    / 'staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml',
+}
+
+test_protocol_sources = []
+foreach name, xml : test_protocols
+  test_protocol_sources += custom_target(
+    name + '-client-protocol.h',
+    input: xml,
+    output: name + '-client-protocol.h',
+    command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+  )
+  test_protocol_sources += custom_target(
+    name + '-protocol.c',
+    input: xml,
+    output: name + '-protocol.c',
+    command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+  )
+endforeach
+
+paint_client = executable(
+  'viewport-test-paint-client',
+  files('tests/paint-client.c') + test_protocol_sources,
+  dependencies: [wayland_client],
+  install: false,
+)
+
+capture_client = executable(
+  'viewport-test-capture-client',
+  files('tests/capture-client.c') + test_protocol_sources,
+  dependencies: [wayland_client],
+  install: false,
+)
+
+foreach layout : ['tiling', 'scrolling']
+  test(
+    'capture-' + layout,
+    find_program('tests/capture.test.sh'),
+    args: [
+      viewport_exe.full_path(),
+      paint_client.full_path(),
+      capture_client.full_path(),
+      layout,
+    ],
+    depends: [viewport_exe, paint_client, capture_client],
+    timeout: 120,
+    protocol: 'exitcode',
+  )
+endforeach
 
 install_data('data/fallback.html', install_dir: pkgdatadir)
 install_data('data/config.example.json', install_dir: pkgdatadir)

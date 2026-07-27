@@ -685,6 +685,27 @@ timeout 20 node tests/shell.test.js data/shell/shell.js scrolling
 
 `timeout` because the shell sets a live-reload interval and so never exits.
 
+### Testing window capture
+
+Whether a shared window really is that window can only be answered from
+outside, by a client that asks for one and looks at what comes back. Every
+symptom of the broken version had to be reported by a person sharing a window
+in a browser, and every wrong guess cost them their session.
+
+```sh
+meson test -C build
+```
+
+That starts the compositor headless, opens a window painted one colour inside
+its window geometry and another in the decoration margin around it, captures
+it, and checks every pixel. Anything from a neighbouring window, the shell
+behind, or the margin outside shows up as a colour that does not belong, with
+coordinates. It runs in both layouts; the scrolling one crowds the window under
+test to the edge of a strip that is being laid out again on every frame.
+
+`tests/capture-client.c` says what each check is for, including the one that
+does not currently fail against the broken code and why it is still there.
+
 Outputs come up at whatever mode the display says it prefers. That is the right
 default — it is the timing the manufacturer chose — but it is not always the
 fastest, since plenty of high-refresh monitors nominate a 60Hz timing and
