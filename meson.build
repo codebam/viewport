@@ -421,6 +421,16 @@ if node.found()
       protocol: 'exitcode',
     )
   endforeach
+  # The kiosk example answers the same protocol in a couple of hundred lines,
+  # and an example nobody has run is a worked demonstration of something that
+  # may not work — anyone writing a minimal shell will copy this one.
+  test(
+    'kiosk',
+    node,
+    args: [files('tests/kiosk.test.js'), meson.current_source_dir() / 'examples/kiosk'],
+    timeout: 60,
+    protocol: 'exitcode',
+  )
 else
   message('node not found; shell logic tests will not run')
 endif
@@ -456,6 +466,10 @@ install_data(
   install_dir: get_option('sysconfdir') / 'xdg-desktop-portal',
 )
 install_subdir('data/shell', install_dir: pkgdatadir)
+
+# The kiosk shell, installed because its config.json points a URL at it: a
+# deployment copies that file and expects the path in it to exist.
+install_subdir('examples/kiosk', install_dir: pkgdatadir / 'examples')
 
 # So a display manager offers this as a session to log into, rather than it
 # only being startable from a TTY.

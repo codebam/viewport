@@ -160,6 +160,27 @@ its last definition. `data/config.example.json` is a fuller starting point.
 Anything you bind beats a built-in for the same chord regardless of which key it
 came from, and `--bind` on the command line beats both.
 
+### Running one application: kiosk mode
+
+`"startup": "COMMAND"` runs one command once the compositor is up, and is how a
+kiosk names the application it exists to run. Nothing restarts it if it exits —
+that belongs to a service manager, which can back off, log and give up.
+
+`"vt_switching": false` stops `Ctrl+Alt+F1..F12` leaving the session. **This is
+the escape hatch and it is the last thing to turn off.** It is checked before
+the config file, before the keymap and before the shell, so it is the one thing
+that still works when a shell never paints or the compositor wedges; without it
+the only ways back are SSH and the power button. A public kiosk usually does
+want it gone — a visitor reaching a login prompt is the threat — but disable the
+getty units on the other VTs too, since this stops the compositor handing over
+the keys rather than removing the consoles they would have reached. Only an
+explicit `false` turns it off: a missing file, a malformed value or a `null`
+all leave it on, and turning it off is logged at startup.
+
+`examples/kiosk/` is a complete worked example — a shell that draws one
+application fullscreen and ignores everything else, a config that locks the
+machine down, and a README about what that does and does not achieve.
+
 Precedence is flags > config file > defaults.
 
 ```

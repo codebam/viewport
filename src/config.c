@@ -128,6 +128,17 @@ bool viewport_config_load(struct viewport_server *server,
 		config->terminal = keep(g_strdup(
 			json_object_get_string_member(object, "terminal")));
 	}
+	/* The one command the compositor runs by itself, once it is up.
+	 *
+	 * Only --startup could set this, which is awkward for the case that wants
+	 * it most: a kiosk is defined by the application it runs, and everything
+	 * else about it lives in this file. It is not restarted if it exits — see
+	 * examples/kiosk/README.md for why that is a supervisor's job and not the
+	 * compositor's. */
+	if (json_object_has_member(object, "startup")) {
+		config->startup_cmd = keep(g_strdup(
+			viewport_json_string(object, "startup")));
+	}
 	/* Per-output mode preferences.
 	 *
 	 *   "outputs": { "DP-1": { "max_refresh": true },
@@ -279,6 +290,22 @@ bool viewport_config_load(struct viewport_server *server,
 		if (json_object_has_member(keyboard, "repeat_delay")) {
 			config->repeat_delay =
 				(int)json_object_get_int_member(keyboard, "repeat_delay");
+		}
+	}
+	/* Turning this off removes the only way back from a compositor that has
+	 * stopped responding, so it is logged at every startup that does it — a
+	 * machine nobody can reach should at least say why in its log. */
+	if (json_object_has_member(object, "vt_switching")) {
+		bool allowed = true;
+		if (!viewport_json_bool(object, "vt_switching", &allowed)) {
+			wlr_log(WLR_ERROR,
+				"vt_switching: expected true or false; leaving it enabled");
+		} else {
+			config->vt_switching = allowed;
+			if (!allowed) {
+				wlr_log(WLR_INFO, "VT switching is disabled by %s: "
+					"Ctrl+Alt+F1..F12 will not leave this session", path);
+			}
 		}
 	}
 	if (json_object_has_member(object, "dark_mode")) {

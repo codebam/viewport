@@ -107,6 +107,13 @@ The reference material lives in `docs/`:
 | [`docs/protocols.md`](docs/protocols.md) | HDR, notifications, tablets, idle and locking, what clients may ask for and what they are told, and what is verified on real hardware |
 | [`docs/debugging.md`](docs/debugging.md) | screenshotting the session from inside it, pointer capture, XWayland, and what happens when the shell stops answering |
 
+Two shells ship with it, at opposite ends of the same protocol:
+
+| | |
+| --- | --- |
+| [`data/shell/`](data/shell/shell.md) | the reference desktop — tiling and scrolling layouts, workspaces, an overview, a status bar |
+| [`examples/kiosk/`](examples/kiosk/README.md) | one application fullscreen and nothing else, in about two hundred lines, with a config that locks the machine down and a frank account of what that does not achieve |
+
 ## Installing
 
 On Arch or CachyOS, `packaging/arch/` has a PKGBUILD. Every dependency is

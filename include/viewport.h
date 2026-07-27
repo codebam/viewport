@@ -164,6 +164,17 @@ struct viewport_config {
 	/* Set when the config file supplied a "binds" object, which suppresses
 	 * the built-in defaults so a user can define an empty keymap. */
 	bool binds_from_config;
+	/* Whether Ctrl+Alt+F1..F12 may still switch virtual terminals.
+	 *
+	 * On by default, and it is the last thing anyone should turn off. This is
+	 * the escape hatch: it is checked before the config file, before the
+	 * keybinding table and before the shell, so it keeps working when a shell
+	 * never paints, a keymap is empty, or the compositor is wedged. Without it
+	 * the only ways back into a machine like that are SSH and the power button.
+	 *
+	 * It exists for kiosks, where a visitor reaching a console is the whole
+	 * threat and there is somebody else's plan for administering the box. */
+	bool vt_switching;
 	/* Prefer dark for client applications, served over the settings portal. */
 	bool dark_mode;
 	/* Ask clients to drop their own titlebars and let the shell draw the

@@ -989,16 +989,24 @@ static void handle_keyboard_key(struct wl_listener *listener, void *data)
 		}
 	}
 
-	/* VT switching, checked before anything else and never configurable.
+	/* VT switching, checked before anything else.
 	 *
 	 * This is the escape hatch. Running on a TTY, if the shell never paints or
 	 * the compositor wedges, Ctrl+Alt+F2 is the only way back to a console
-	 * short of a hard reset — so it must not depend on the config file being
-	 * valid, on a binding having been registered, or on the shell being alive.
-	 * The keysym already encodes the target VT, so no modifier check is
-	 * needed. Absent under the Wayland and headless backends, where there is
-	 * no session to switch. */
-	if (pressed) {
+	 * short of a hard reset — so it does not depend on the config file parsing,
+	 * on a binding having been registered, or on the shell being alive. The
+	 * keysym already encodes the target VT, so no modifier check is needed.
+	 * Absent under the Wayland and headless backends, where there is no session
+	 * to switch.
+	 *
+	 * The single exception is `"vt_switching": false`, which a kiosk sets when a
+	 * visitor reaching a console is the threat it is actually defending against.
+	 * That is the one configuration in which a wedged compositor cannot be
+	 * escaped from the keyboard at all, which is why it is opt-in, logged at
+	 * startup, and checked here rather than anywhere a malformed config could
+	 * reach: config.c leaves the default alone unless the file says false in so
+	 * many words. */
+	if (pressed && server->config.vt_switching) {
 		for (int i = 0; i < nsyms; i++) {
 			if (syms[i] < XKB_KEY_XF86Switch_VT_1 ||
 					syms[i] > XKB_KEY_XF86Switch_VT_12) {

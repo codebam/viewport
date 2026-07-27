@@ -55,6 +55,10 @@ int main(int argc, char *argv[])
 		.startup_cmd = NULL,
 		.ipc_path = NULL,
 		.headless = false,
+		/* The escape hatch is on unless a config file says otherwise in so
+		 * many words. A missing or malformed config must never be able to take
+		 * it away — see the commentary in input.c. */
+		.vt_switching = true,
 		/* Match sway: ask clients to let the compositor own the frame. The
 		 * shell already draws one, so a client titlebar is a duplicate. */
 		.server_decorations = true,
@@ -111,7 +115,7 @@ int main(int argc, char *argv[])
 	 * viewport_server_init(), before the config file is read, so it is already
 	 * whatever the flag said and there is nothing to re-apply. */
 	struct {
-		bool url, fallback, timeout, terminal, menu;
+		bool url, fallback, timeout, terminal, menu, startup;
 	} from_flag = { 0 };
 
 	while ((c = getopt_long(argc, argv, "u:f:t:s:e:c:T:M:b:Hdh", options,
@@ -148,6 +152,7 @@ int main(int argc, char *argv[])
 			break;
 		case 'e':
 			config.startup_cmd = optarg;
+			from_flag.startup = true;
 			break;
 		case 'H':
 			config.headless = true;
@@ -248,6 +253,9 @@ int main(int argc, char *argv[])
 	}
 	if (from_flag.menu) {
 		server.config.menu = config.menu;
+	}
+	if (from_flag.startup) {
+		server.config.startup_cmd = config.startup_cmd;
 	}
 
 	/* Command-line binds are additive, as --help says they are. They are added

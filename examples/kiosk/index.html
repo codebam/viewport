@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: MIT
+
+     A kiosk shell: one application, fullscreen, nothing else. See README.md,
+     which includes the part about what this does not lock down. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>viewport kiosk</title>
+<link rel="stylesheet" href="kiosk.css">
+</head>
+<body>
+
+<!-- One canvas across the whole output layout. Each screen is positioned
+     inside it at its output's own coordinates. -->
+<div id="screens"></div>
+
+<template id="screen-template">
+  <section class="screen">
+    <!-- The hole. The compositor draws the client's surface into whatever rect
+         this element ends up occupying, so it is left transparent and its size
+         is measured rather than assumed. -->
+    <div class="viewport"></div>
+    <p class="message"></p>
+  </section>
+</template>
+
+<template id="dialog-template">
+  <section class="dialog">
+    <div class="viewport"></div>
+  </section>
+</template>
+
+<script src="kiosk.js"></script>
+</body>
+</html>

@@ -345,6 +345,54 @@ static void test_override_rejects_a_non_string_action(void)
 	server_finish(&server);
 }
 
+/* The escape hatch, and the one setting that takes it away.
+ *
+ * Ctrl+Alt+F1..F12 is checked before the config file, the keymap and the shell,
+ * so it survives all three being broken. A kiosk can turn it off, and that is
+ * the only configuration where a wedged compositor cannot be escaped from the
+ * keyboard — so what these check is that nothing ELSE can turn it off: not a
+ * missing file, not a malformed value, not a config that never mentions it. */
+static void test_vt_switching_defaults_on(void)
+{
+	struct viewport_server server;
+	server_init(&server);
+	server.config.vt_switching = true;   /* as main.c initialises it */
+
+	load_config(&server, "{\"terminal\":\"foot\"}");
+	check("a config that says nothing leaves VT switching on",
+		server.config.vt_switching);
+
+	load_config(&server, "{\"vt_switching\":\"yes\"}");
+	check("a non-boolean is refused rather than believed",
+		server.config.vt_switching);
+
+	load_config(&server, "{\"vt_switching\":null}");
+	check("and so is a null", server.config.vt_switching);
+
+	load_config(&server, "{\"vt_switching\":true}");
+	check("an explicit true is honoured", server.config.vt_switching);
+
+	load_config(&server, "{\"vt_switching\":false}");
+	check("only an explicit false turns it off", !server.config.vt_switching);
+
+	server_finish(&server);
+}
+
+static void test_startup_command_comes_from_the_config(void)
+{
+	struct viewport_server server;
+	server_init(&server);
+
+	/* A kiosk is defined by the application it runs, and everything else about
+	 * it is in this file — so it must not be reachable only from a flag. */
+	load_config(&server, "{\"startup\":\"my-kiosk-app\"}");
+	check("startup is read from the config file",
+		server.config.startup_cmd != NULL &&
+		strcmp(server.config.startup_cmd, "my-kiosk-app") == 0);
+
+	server_finish(&server);
+}
+
 int main(void)
 {
 	test_user_bind_beats_default();
@@ -359,6 +407,9 @@ int main(void)
 	test_binds_still_replaces_wholesale();
 	test_empty_binds_means_no_keymap();
 	test_override_rejects_a_non_string_action();
+
+	test_vt_switching_defaults_on();
+	test_startup_command_comes_from_the_config();
 
 	viewport_config_finish();
 

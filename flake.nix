@@ -208,6 +208,7 @@
             "unit"
             "ipc-replay"
             "binding"
+            "kiosk"
           ];
         });
 
@@ -313,6 +314,8 @@
             // lib.optionalAttrs (cfg.binds != { }) { inherit (cfg) binds; }
             // lib.optionalAttrs (cfg.bindsOverride != { })
               { binds_override = cfg.bindsOverride; }
+            // lib.optionalAttrs (cfg.startup != null) { inherit (cfg) startup; }
+            // lib.optionalAttrs (!cfg.vtSwitching) { vt_switching = false; }
             // cfg.settings));
         in
         {
@@ -381,6 +384,37 @@
 
                 This is the option you usually want. Use `binds` only to throw
                 the whole keymap away and start again.
+              '';
+            };
+
+            startup = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              example = literalExpression ''"''${pkgs.firefox}/bin/firefox --kiosk https://example.com"'';
+              description = ''
+                Command run once, after the compositor is up. Nothing restarts
+                it if it exits — point this at a supervised unit if it matters.
+
+                This is how a kiosk names the application it exists to run; see
+                examples/kiosk in the source tree.
+              '';
+            };
+
+            vtSwitching = mkOption {
+              type = types.bool;
+              default = true;
+              description = ''
+                Whether Ctrl+Alt+F1..F12 may still switch virtual terminals.
+
+                Leave this alone unless you are building a kiosk. It is checked
+                before the config file, before the keymap and before the shell,
+                so it is the one thing that still works when a shell never
+                paints or the compositor wedges. With it off, a wedged
+                compositor cannot be escaped from the keyboard at all — make
+                sure you can reach the machine another way first, and disable
+                the getty units on the other VTs as well, since this stops the
+                compositor handing over the keys rather than removing the
+                consoles they would have reached.
               '';
             };
 

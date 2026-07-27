@@ -1,0 +1,96 @@
+{
+  "_comment": [
+    "A locked-down kiosk: one application, fullscreen, no way to leave it.",
+    "",
+    "Run it with:  viewport --config examples/kiosk/config.json",
+    "",
+    "Read README.md next to this file before deploying it. Three of the",
+    "settings below are load-bearing and one of them is dangerous.",
+    "",
+    "The keys marked _DANGER_ are commented out. Turn them on deliberately,",
+    "and only once you have another way into the machine."
+  ],
+
+  "_url": [
+    "The shell. Absolute path, because the compositor resolves it as a URL",
+    "and not against the working directory. Point it at wherever this",
+    "checkout lives, or at an installed copy."
+  ],
+  "url": "file:///usr/share/viewport/examples/kiosk/index.html",
+
+  "_startup": [
+    "The application. This is the only thing the compositor launches, and it",
+    "is launched exactly once — nothing restarts it if it exits.",
+    "",
+    "That is deliberate: a restart loop belongs to something that can back",
+    "off, log, and give up, which is a service manager and not a compositor.",
+    "In production make this a systemd user unit with Restart=always and put",
+    "the unit name here. The shell shows 'waiting for it to come back' while",
+    "no window exists, so a supervised restart looks like a brief message",
+    "rather than a black screen."
+  ],
+  "startup": "my-kiosk-application",
+
+  "_binds": [
+    "An empty binds object means NO KEYBINDINGS AT ALL. This is the whole",
+    "point of the key: presence replaces the built-in keymap, so this removes",
+    "every default — no terminal, no launcher, no exit, no workspaces.",
+    "",
+    "Note this is 'binds' and not 'binds_override'. Override changes the",
+    "chords it names and keeps the rest, which is the opposite of what a",
+    "kiosk wants.",
+    "",
+    "To keep one administrator escape, replace {} with a single entry:",
+    "  \"binds\": { \"Ctrl+Alt+Shift+x\": \"exit\" }",
+    "Something no visitor will press by accident and no application will",
+    "claim. Strongly recommended while you are still setting the machine up."
+  ],
+  "binds": {},
+
+  "_vt_switching": [
+    "_DANGER_ — the escape hatch.",
+    "",
+    "Ctrl+Alt+F1..F12 switches virtual terminals. It is checked before the",
+    "config file, before the keymap and before the shell, so it is the one",
+    "thing that still works when all three are broken. Setting this false is",
+    "the only configuration in which a wedged compositor cannot be escaped",
+    "from the keyboard at all.",
+    "",
+    "A kiosk in a public place usually does want it off: a visitor reaching a",
+    "login prompt is the threat being defended against. Turn it off only once",
+    "SSH works, and disable the getty units on the other VTs as well — this",
+    "stops the compositor handing over the keys, it does not remove the",
+    "consoles those keys would have reached.",
+    "",
+    "Uncomment by renaming this to \"vt_switching\"."
+  ],
+  "_vt_switching_disabled": false,
+
+  "_appearance": [
+    "Nothing to explain on an empty screen, and nothing to brand it with.",
+    "The mark and the tutorial note belong to the reference shell; the kiosk",
+    "shell draws neither, but the compositor still sends the settings."
+  ],
+  "logo": false,
+  "tutorial": false,
+
+  "_idle": [
+    "Blank the screen after twenty minutes of nobody touching it, and never",
+    "lock: a lock screen on an unattended kiosk is a password prompt in a",
+    "public place, which is worse than the screen it was protecting.",
+    "",
+    "Any input turns the screen back on. Set blank_after to 0 for a display",
+    "that must stay lit — a departures board, a menu screen — and accept what",
+    "a static image does to an OLED panel."
+  ],
+  "idle": {
+    "lock_after": 0,
+    "blank_after": 1200
+  },
+
+  "_decorations": [
+    "The kiosk shell draws no titlebars, so clients must not draw their own.",
+    "Without this a fullscreen application arrives wearing a close button."
+  ],
+  "decorations": "server"
+}

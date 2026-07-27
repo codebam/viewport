@@ -1,0 +1,90 @@
+/* SPDX-License-Identifier: MIT
+ *
+ * A kiosk has no chrome, so most of this is getting out of the way.
+ *
+ * The one rule that is not cosmetic: .viewport must stay transparent. It is a
+ * hole, not a surface — the compositor draws the client into the rect that
+ * element occupies, and anything painted there is painted underneath a real
+ * window and never seen. */
+
+:root {
+  --bg: #101014;
+  --fg: #b8b8c0;
+  --font: system-ui, sans-serif;
+
+  /* The compositor is what actually blanks the screen; this is only the colour
+   * behind everything while nothing is running. */
+  color-scheme: dark;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  /* Nothing here is a document. A kiosk that can be text-selected, dragged or
+   * long-pressed into a context menu is a kiosk with a way out of it. */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+#screens {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.screen {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+/* The hole the application is drawn into. Fills its screen: this is what
+ * "fullscreen" means here — no frame, no titlebar, no gap. */
+.screen .viewport {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+.message {
+  font-size: 1.1rem;
+  letter-spacing: 0.01em;
+  opacity: 0.75;
+  text-align: center;
+  padding: 2rem;
+  max-width: 40ch;
+}
+
+.screen.idle .message {
+  opacity: 0.35;
+}
+
+/* A window the application opened on top of itself — a print dialog, a file
+ * chooser. Positioned by kiosk.js, which centres it on the primary screen. */
+.dialog {
+  position: absolute;
+  overflow: hidden;
+  border-radius: 6px;
+  /* Enough of an edge to read as a separate window against a fullscreen
+   * application, without drawing a titlebar the user cannot use. */
+  box-shadow: 0 0 0 1px #ffffff1a, 0 24px 64px #000000a6;
+}
+
+.dialog .viewport {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}

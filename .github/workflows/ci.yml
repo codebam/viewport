@@ -84,6 +84,7 @@ jobs:
           node tests/shell.test.js data/shell scrolling
           node tests/shell.test.js data/shell tiling session
           node tests/shell.test.js data/shell scrolling session
+          node tests/kiosk.test.js examples/kiosk
 
       - name: Install json-glib
         run: |
