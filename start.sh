@@ -91,8 +91,21 @@ fi
 
 # The portal caches its backend list at startup, so one already running from a
 # previous session will not see ours until it restarts.
-systemctl --user restart xdg-desktop-portal.service 2>/dev/null \
-	|| systemctl --user stop xdg-desktop-portal.service 2>/dev/null || true
+#
+# Stopped rather than restarted, and started again after the compositor is up.
+# Restarting it here starts it against the session that is about to be
+# replaced: xdg-desktop-portal-wlr connects to WAYLAND_DISPLAY, which at this
+# point still names the previous compositor's socket or nothing at all, so it
+# fails, and systemd's restart limit puts it in a failed state within a second:
+#
+#   xdg-desktop-portal-wlr: wayland: failed to connect to display
+#   Start request repeated too quickly ... start-limit-hit
+#
+# Screen sharing is then unavailable for the whole session, with the portal
+# reporting no sources rather than an error anyone would connect to this.
+systemctl --user stop xdg-desktop-portal.service 2>/dev/null || true
+systemctl --user stop xdg-desktop-portal-wlr.service 2>/dev/null || true
+systemctl --user reset-failed xdg-desktop-portal-wlr.service 2>/dev/null || true
 fi
 
 if [ ! -x build/viewport ]; then
@@ -154,6 +167,29 @@ if [ -n "${VIEWPORT_ASAN:-}" ]; then
 	BINARY="$REPO/build-asan/viewport"
 	export ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:halt_on_error=0
 	echo "running the AddressSanitizer build"
+fi
+
+# Bring the portal back once the compositor exists to connect to.
+#
+# The compositor pushes WAYLAND_DISPLAY into the systemd user environment as it
+# starts (see export_session_environment in server.c), and the portal is
+# D-Bus activated, so it only has to not be in a failed state when something
+# first asks for it. Waiting for the socket rather than sleeping a fixed amount
+# keeps this correct on a slow start and quick on a fast one.
+if [ -z "${VIEWPORT_NO_PORTAL:-}" ]; then
+	(
+		for _ in $(seq 100); do
+			if systemctl --user show-environment 2>/dev/null \
+					| grep -q '^WAYLAND_DISPLAY='; then
+				systemctl --user reset-failed \
+					xdg-desktop-portal-wlr.service 2>/dev/null || true
+				systemctl --user start xdg-desktop-portal.service \
+					2>/dev/null || true
+				exit 0
+			fi
+			sleep 0.2
+		done
+	) &
 fi
 
 exec nix develop "$REPO" --command env SHELL="$LOGIN_SHELL" "$BINARY" \
