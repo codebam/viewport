@@ -30,30 +30,51 @@ function handleShellCommand(command, args) {
     case 'window.fullscreen':
       toggleFullscreen();
       break;
+    case 'window.focus_parent':
+      focusParent();
+      break;
     case 'window.move': {
-      if (focusedId == null) break;
-      /* The strip moves whole columns rather than rearranging a tree. At its
-       * ends the window carries over to the next monitor, exactly as it does
-       * when tiling — the strip is per workspace, not per session. */
-      if (layoutMode === 'scrolling' && !isFloating(focusedId)) {
-        if (!scrollMove(arg)) moveViewToOutput(focusedId, arg);
+      if (focusedId == null && selectedIds.size === 0) break;
+
+      if (layoutMode === 'scrolling') {
+        const idsToMove = selectedIds.size > 0 ? Array.from(selectedIds) : [focusedId];
+        let anyMoved = false;
+        for (const id of idsToMove) {
+          if (!isFloating(id)) {
+            if (scrollMove(arg, id)) anyMoved = true;
+          } else {
+            const step = 40;
+            moveByDelta(id,
+              arg === 'left' ? -step : arg === 'right' ? step : 0,
+              arg === 'up' ? -step : arg === 'down' ? step : 0);
+            anyMoved = true;
+          }
+        }
+        if (!anyMoved && focusedId != null) moveViewToOutput(focusedId, arg);
         break;
       }
-      /* A floating window has no place in the tree to move within, so the same
-       * keys nudge it instead — sway does this too. */
-      if (isFloating(focusedId)) {
-        const step = 40;
-        moveByDelta(focusedId,
-          arg === 'left' ? -step : arg === 'right' ? step : 0,
-          arg === 'up' ? -step : arg === 'down' ? step : 0);
-        break;
-      }
-      /* Try to move within the workspace first; at the edge, carry the window
-       * to the next monitor instead of stopping. */
-      if (moveLeaf(focusedId, arg)) {
-        relayoutAll();
+
+      if (selectedContainer != null && selectedContainer !== workspaces.get(activeWorkspace())) {
+        const leafIds = [...walk(selectedContainer)].map(([l]) => l.id);
+        let moved = false;
+        for (const id of leafIds) {
+          if (moveLeaf(id, arg)) moved = true;
+        }
+        if (moved) relayoutAll();
+        else if (focusedId != null) moveViewToOutput(focusedId, arg);
       } else {
-        moveViewToOutput(focusedId, arg);
+        if (isFloating(focusedId)) {
+          const step = 40;
+          moveByDelta(focusedId,
+            arg === 'left' ? -step : arg === 'right' ? step : 0,
+            arg === 'up' ? -step : arg === 'down' ? step : 0);
+          break;
+        }
+        if (moveLeaf(focusedId, arg)) {
+          relayoutAll();
+        } else {
+          moveViewToOutput(focusedId, arg);
+        }
       }
       break;
     }

@@ -397,3 +397,61 @@ function toggleBar() {
   relayoutAll();
 }
 
+function activeWorkspace() {
+  if (focusedId != null) return workspaceOf(focusedId);
+  const outputName = activeOutputName();
+  const output = outputs.get(outputName);
+  return output ? output.workspace : 1;
+}
+
+function nodeContains(node, id) {
+  if (!node) return false;
+  if (node.type === 'leaf') return node.id === id;
+  return [...walk(node)].some(([leaf]) => leaf.id === id);
+}
+
+function focusParent() {
+  const ws = activeWorkspace();
+
+  if (layoutMode === 'scrolling') {
+    const allIds = idsOf(ws);
+    if (allIds.length === 0) return;
+
+    const allSelected = allIds.length > 0 && allIds.every((id) => selectedIds.has(id));
+    if (allSelected) {
+      selectedIds.clear();
+      if (focusedId != null) selectedIds.add(focusedId);
+    } else {
+      selectedIds.clear();
+      allIds.forEach((id) => selectedIds.add(id));
+    }
+    relayoutAll();
+    return;
+  }
+
+  if (focusedId == null) return;
+  const root = workspaces.get(ws);
+  if (!root) return;
+
+  const found = findLeaf(focusedId);
+  if (!found) return;
+
+  if (selectedContainer == null || !nodeContains(selectedContainer, focusedId)) {
+    selectedContainer = found.parent;
+  } else {
+    const parentOfContainer = findParentOf(root, selectedContainer);
+    if (parentOfContainer != null) {
+      selectedContainer = parentOfContainer;
+    }
+  }
+
+  selectedIds.clear();
+  if (selectedContainer) {
+    for (const [leaf] of walk(selectedContainer)) {
+      selectedIds.add(leaf.id);
+    }
+  }
+  relayoutAll();
+}
+
+

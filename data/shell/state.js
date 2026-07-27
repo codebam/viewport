@@ -107,6 +107,8 @@ function* floatingEntries() {
 }
 
 let focusedId = null;
+let selectedContainer = null;
+const selectedIds = new Set();
 let activeOutput = null;
 /* Direction the next new window splits in, like sway's splith/splitv. */
 let pendingSplit = 'horizontal';

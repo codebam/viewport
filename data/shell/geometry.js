@@ -375,6 +375,7 @@ function relayoutAll() {
       send({ type: 'view.visible', id, visible: false });
     }
     view.el.classList.toggle('focused', id === focusedId);
+    view.el.classList.toggle('selected', selectedIds.has(id));
     view.el.classList.toggle('fullscreen', isFullscreen(id));
   }
 

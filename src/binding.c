@@ -402,6 +402,7 @@ void viewport_bindings_add_defaults(struct viewport_server *server,
 	/* Layout is shell policy, so all of these are passthroughs: the shell
 	 * decides what tiling, fullscreen and moving mean. */
 	add_default(server, "Mod4+f=shell window.fullscreen");
+	add_default(server, "Mod4+a=shell window.focus_parent");
 	/* sway's floating toggle. Dialogs float on their own; this is for the rest,
 	 * and for dropping one back into the tiling layout. */
 	add_default(server, "Mod4+Shift+space=shell layout.float.toggle");

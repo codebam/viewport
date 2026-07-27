@@ -470,6 +470,10 @@ body {
 .window.dragging { transition: none; }
 
 .window.focused { border-color: var(--border-focus); }
+.window.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
 
 /* Floating windows are marked in the taskbar so the list still reflects the
    layout when one is hidden behind another. */

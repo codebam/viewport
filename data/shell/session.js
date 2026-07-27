@@ -584,12 +584,13 @@ function scrollFocus(direction) {
 /* Move the focused window along the strip, or within its column. Moving left or
  * right carries the whole window into the neighbouring position as its own
  * column, which is what niri does. */
-function scrollMove(direction) {
-  const workspace = focusedWorkspace();
+function scrollMove(direction, targetId = focusedId) {
+  if (targetId == null) return false;
+  const workspace = workspaceOf(targetId);
   if (workspace === null) return false;
 
   const root = workspaceRoot(workspace);
-  const index = columnIndexOf(workspace, focusedId);
+  const index = columnIndexOf(workspace, targetId);
   if (index < 0) return false;
 
   if (direction === 'left' || direction === 'right') {
@@ -606,7 +607,7 @@ function scrollMove(direction) {
   if (column.type === 'leaf') return false;
 
   const at = column.children.findIndex((child) =>
-    child.type === 'leaf' && child.id === focusedId);
+    child.type === 'leaf' && child.id === targetId);
   const target = at + (direction === 'down' ? 1 : -1);
   if (at < 0 || target < 0 || target >= column.children.length) return false;
 
