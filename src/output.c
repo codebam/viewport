@@ -109,7 +109,19 @@ static void handle_output_destroy(struct wl_listener *listener, void *data)
 	 * There is nothing to publish anyway: the shell is already gone and a
 	 * monitor vanishing because the compositor is exiting is not news. */
 	if (!server->shutting_down) {
+		/* The layout is smaller than it was, and the shell's buffer is still
+		 * the old size — every other path that changes the layout resizes it,
+		 * and this one did not, so unplugging a monitor left the shell drawing
+		 * into a viewport larger than the screens that remained. */
+		int width, height;
+		viewport_layout_size(server, &width, &height);
+		if (server->web != NULL) {
+			viewport_web_resize(server->web, width, height);
+		}
 		viewport_ipc_notify_output_layout(server);
+		/* And the lock backdrop has to shrink with it, for the same reason it
+		 * has to grow when a monitor appears. */
+		viewport_session_lock_outputs_changed(server);
 	}
 	free(output);
 }
