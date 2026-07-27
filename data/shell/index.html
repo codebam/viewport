@@ -82,4 +82,18 @@ Mod4+d       launcher</pre>
   </section>
 </template>
 
-<script src="shell.js"></script>
+<!-- Ordered classic scripts, not modules: they share one global scope,
+     so a binding declared in state.js is the same binding everywhere.
+     This order is the shell's load order and the only place it is
+     defined — tests/shell.test.js reads these tags rather than keeping
+     a second list that could drift. See shell.md. -->
+<script src="state.js"></script>
+<script src="tiling.js"></script>
+<script src="scrolling.js"></script>
+<script src="session.js"></script>
+<script src="resize.js"></script>
+<script src="geometry.js"></script>
+<script src="outputs.js"></script>
+<script src="windows.js"></script>
+<script src="bar.js"></script>
+<script src="commands.js"></script>

@@ -273,7 +273,7 @@ is uploaded — it is a plain file, worth reading before sending on.
 
 ### Testing the shell
 
-The layout engine lives in `shell.js`, and running it under a headless
+The layout engine lives in `data/shell/`, and running it under a headless
 compositor proves nothing: the web view renders, but nothing drives the layout,
 so a broken tree looks exactly like a working one. `tests/shell.test.js` stubs
 the DOM far enough to run the real file unmodified and checks structure — four

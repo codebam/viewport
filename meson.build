@@ -388,7 +388,7 @@ test(
 # ---------------------------------------------------------------------------
 # Shell logic tests
 #
-# The layout engine lives in data/shell/shell.js, and nothing else in this build
+# The layout engine lives in data/shell/, and nothing else in this build
 # reaches it: the compositor tests drive Wayland, and running the shell under a
 # headless compositor only proves that it renders — a broken tiling tree renders
 # exactly as well as a working one. These stub the DOM and run the real file, so
@@ -401,13 +401,13 @@ test(
 node = find_program('node', 'nodejs', required: false)
 if node.found()
   shell_test = files('tests/shell.test.js')
-  shell_js = files('data/shell/shell.js')
+  shell_dir = meson.current_source_dir() / 'data/shell'
 
   foreach layout : ['tiling', 'scrolling']
     test(
       'shell-' + layout,
       node,
-      args: [shell_test, shell_js, layout],
+      args: [shell_test, shell_dir, layout],
       timeout: 60,
       protocol: 'exitcode',
     )
@@ -416,7 +416,7 @@ if node.found()
     test(
       'shell-session-' + layout,
       node,
-      args: [shell_test, shell_js, layout, 'session'],
+      args: [shell_test, shell_dir, layout, 'session'],
       timeout: 60,
       protocol: 'exitcode',
     )

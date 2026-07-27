@@ -64,7 +64,7 @@ across monitors — rather than stacking order.
 is the seam for everything that is layout policy: the defaults bind
 `Mod4+1..9` to `shell workspace.switch N` and `Mod4+Shift+1..9` to
 `shell workspace.move N`, and *what a workspace is* is defined entirely in
-`data/shell/shell.js`. Add your own commands by binding them and handling the
+`data/shell/commands.js`. Add your own commands by binding them and handling the
 name in `handleShellCommand()`; no compositor change is needed.
 
 A chord may be scoped to a mode by writing `mode/chord`, mirroring sway's
@@ -177,7 +177,7 @@ Precedence is flags > config file > defaults.
 ```
 
 `--debug` also disables WebKit's cache and, for a `file://` shell, watches its
-directory and reloads on change — so editing `shell.js` updates the running
+directory and reloads on change — so editing any of the shell scripts updates the running
 desktop without restarting the compositor. Saves are debounced, since editors
 write-then-rename and emit several events per save. A shell served over HTTP is
 left alone: that is a dev server's job, and watching it would mean polling.

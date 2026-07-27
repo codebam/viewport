@@ -339,7 +339,7 @@ struct viewport_web *viewport_web_create(struct viewport_server *server)
 			webkit_web_view_get_settings(web->web_view), TRUE);
 
 		/* Serve the shell from the network every time. WebKit will otherwise
-		 * happily reuse a cached shell.js across compositor restarts, so an
+		 * happily reuse a cached shell across compositor restarts, so an
 		 * edited shell appears to have no effect — and the stale line numbers
 		 * in console output send you hunting through code that is not running. */
 		webkit_web_context_set_cache_model(

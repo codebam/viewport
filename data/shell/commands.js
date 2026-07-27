@@ -1,0 +1,274 @@
+/* SPDX-License-Identifier: MIT
+ *
+ * Commands from the compositor, and the inbound message loop.
+ *
+ * Loaded last: the bottom of this file asks the compositor for the state the
+ * shell starts from, and everything that handles the answer has to exist by
+ * then.
+ *
+ * One of the ordered scripts that make up the shell; see index.html for the
+ * load order and shell.md for what the whole is meant to do.
+ */
+/* ------------------------------------------------------------------------
+ * Commands forwarded from the compositor
+ * --------------------------------------------------------------------- */
+
+function handleShellCommand(command, args) {
+  const arg = args[0];
+  const n = Number(arg);
+
+  switch (command) {
+    case 'workspace.switch':
+      if (Number.isFinite(n)) switchWorkspace(activeOutputName(), n);
+      break;
+    case 'workspace.back':
+      workspaceBack(activeOutputName());
+      break;
+    case 'workspace.move':
+      if (Number.isFinite(n)) moveToWorkspace(n);
+      break;
+    case 'window.fullscreen':
+      toggleFullscreen();
+      break;
+    case 'window.move': {
+      if (focusedId == null) break;
+      /* The strip moves whole columns rather than rearranging a tree. At its
+       * ends the window carries over to the next monitor, exactly as it does
+       * when tiling — the strip is per workspace, not per session. */
+      if (layoutMode === 'scrolling' && !isFloating(focusedId)) {
+        if (!scrollMove(arg)) moveViewToOutput(focusedId, arg);
+        break;
+      }
+      /* A floating window has no place in the tree to move within, so the same
+       * keys nudge it instead — sway does this too. */
+      if (isFloating(focusedId)) {
+        const step = 40;
+        moveByDelta(focusedId,
+          arg === 'left' ? -step : arg === 'right' ? step : 0,
+          arg === 'up' ? -step : arg === 'down' ? step : 0);
+        break;
+      }
+      /* Try to move within the workspace first; at the edge, carry the window
+       * to the next monitor instead of stopping. */
+      if (moveLeaf(focusedId, arg)) {
+        relayoutAll();
+      } else {
+        moveViewToOutput(focusedId, arg);
+      }
+      break;
+    }
+    case 'layout.split':
+      pendingSplit = arg === 'vertical' ? 'vertical' : 'horizontal';
+      break;
+    case 'bar.toggle':
+      toggleBar();
+      break;
+    case 'layout.toggle':
+      toggleLayout();
+      break;
+    case 'layout.resize':
+      resizeFocused(arg);
+      break;
+    case 'window.fullscreen.set': {
+      /* A client asked to go fullscreen itself, e.g. a video player. */
+      const id = Number(args[0]);
+      const on = args[1] === '1';
+      if (Number.isFinite(id)) {
+        /* The client asked for this itself, so it already knows — just lay it
+         * out, without echoing the state back and starting a loop. */
+        const workspace = workspaceOf(id);
+        if (workspace !== null) {
+          if (on) {
+            fullscreens.set(workspace, id);
+          } else if (fullscreens.get(workspace) === id) {
+            fullscreens.delete(workspace);
+          }
+        }
+        relayoutAll();
+      }
+      break;
+    }
+    case 'layout.resize.delta':
+      resizeByDelta(Number(args[0]), Number(args[1]), Number(args[2]));
+      break;
+    case 'layout.move.delta':
+      moveByDelta(Number(args[0]), Number(args[1]), Number(args[2]));
+      break;
+    case 'layout.float.toggle':
+      toggleFloating(focusedId);
+      break;
+    case 'layout.tabbed':
+      setContainerLayout('tabbed');
+      break;
+    case 'layout.stacked':
+      setContainerLayout('stacked');
+      break;
+
+    /* Scrolling layout. Bound only when the compositor is configured for it,
+       but harmless to receive otherwise. */
+    case 'layout.focus':
+      scrollFocus(arg);
+      break;
+    case 'layout.consume':
+      consumeWindow();
+      break;
+    case 'layout.expel':
+      expelWindow();
+      break;
+    case 'layout.column.width':
+      cycleColumnWidth();
+      break;
+    case 'layout.column.height':
+      cycleWindowHeight();
+      break;
+
+    /* Touchpad. The compositor keeps three-finger swipes for itself and sends
+       them here; everything else goes to the focused client. */
+    case 'gesture.scroll':
+      gestureScroll(Number(arg));
+      break;
+    case 'gesture.settle':
+      gestureSettle();
+      break;
+    case 'layout.overview':
+      setOverview(!overviewActive);
+      break;
+    case 'output.hdr':
+      /* No state of its own: the compositor owns whether an output is in HDR,
+         and toggling is asking it to flip whatever it currently has. */
+      send({ type: 'output.hdr', name: activeOutputName() });
+      break;
+    case 'workspace.step':
+      stepWorkspace(Number(arg));
+      break;
+    case 'mode.changed':
+      currentMode = arg || 'default';
+      renderBars();
+      break;
+    case 'output.focus':
+      focusOutputDirection(arg);
+      break;
+    default:
+      console.warn('unknown shell command:', command, args);
+  }
+}
+
+/* ------------------------------------------------------------------------
+ * Inbound
+ * --------------------------------------------------------------------- */
+
+window.addEventListener('viewport', (event) => {
+  const message = event.detail;
+
+  switch (message.type) {
+    case 'config':
+      /* Which layout model to run. Sent on connect and on reload, so switching
+         it in the config file and reloading takes effect without a restart —
+         the tree survives, it is only presented differently. */
+      windowRules = Array.isArray(message.rules) ? message.rules : [];
+      applyTheme(message.theme);
+      applyBarMode(message.bar);
+      /* Absent means on: a config file that says nothing should get the
+         explanation, and only someone who has read it once turns it off. */
+      document.documentElement.classList.toggle('no-logo',
+        message.logo === false);
+      document.documentElement.classList.toggle('no-tutorial',
+        message.tutorial === false);
+      if (message.layout === 'scrolling' || message.layout === 'tiling') {
+        if (message.layout !== layoutMode) {
+          layoutMode = message.layout;
+          normaliseForLayout();
+          relayoutAll();
+        }
+      }
+      break;
+
+    case 'modifiers':
+      /* Only sent while the bar is on 'auto'. */
+      if (logoHeld !== !!message.logo) {
+        logoHeld = !!message.logo;
+        relayoutAll();
+      }
+      break;
+
+    case 'output.layout':
+      syncOutputs(message.outputs);
+      send({ type: 'view.query' });
+      break;
+
+    case 'view.added':
+      addView(message);
+      break;
+
+    case 'view.props': {
+      const view = views.get(message.id);
+      if (view) {
+        view.title = message.title;
+        view.app_id = message.app_id;
+        renderBars();
+      }
+      break;
+    }
+
+    case 'view.removed':
+      removeView(message.id);
+      break;
+
+    case 'view.focused': {
+      focusedId = message.id || null;
+      const found = focusedId != null ? findLeaf(focusedId) : null;
+      if (found) {
+        /* Focusing a window on a hidden workspace brings that workspace to a
+         * monitor rather than leaving the user looking at nothing. */
+        let host = hostOfWorkspace(found.workspace);
+        if (host === null) {
+          host = activeOutputName();
+          const output = outputs.get(host);
+          if (output) output.workspace = found.workspace;
+        }
+        setActiveOutput(host);
+      }
+      relayoutAll();
+      break;
+    }
+
+    case 'status.update':
+      /* Nothing in a status sample can change the workspace set, the window
+         list or the focus, so the chrome is left exactly as it is. */
+      lastStatus = message;
+      renderBarsModules();
+      break;
+
+    case 'notification.add':
+      showNotification(message);
+      break;
+    case 'notification.close':
+      /* The application withdrew it, so nothing is sent back. */
+      dropNotification(message.id, false);
+      break;
+
+    case 'session.restore':
+      restoreSession(message.state);
+      break;
+
+    case 'shell.command':
+      handleShellCommand(message.command, message.args ?? []);
+      /* Most commands rearrange something; saving is debounced, so asking on
+         every one of them costs a timer reset. */
+      saveSession();
+      break;
+
+    case 'error':
+      console.error(`viewport: ${message.context}: ${message.message}`);
+      break;
+  }
+});
+
+window.addEventListener('resize', relayoutAll);
+
+send({ type: 'output.query' });
+/* Before view.query: the layout has to be in place as slots before the windows
+   that fill them are replayed, or every one of them lands in a default
+   position first and the restore has nothing left to do. */
+send({ type: 'session.query' });
+send({ type: 'view.query' });

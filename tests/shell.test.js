@@ -8,15 +8,15 @@
  * compositor does not help either — the web view renders, but nothing drives
  * the layout, so a broken tree looks exactly like a working one.
  *
- * So the DOM is stubbed just far enough to run the real file unmodified. This
+ * So the DOM is stubbed just far enough to run the real shell unmodified. This
  * is not a rendering engine: getBoundingClientRect returns fixed numbers and
  * the pixel results mean nothing. What it does check is structure — that four
  * windows make four columns, that consume and expel are inverses, that a
  * tabbed container shows exactly one window and it is the focused one.
  *
- *   node tests/shell.test.js data/shell/shell.js tiling
- *   node tests/shell.test.js data/shell/shell.js scrolling
- *   node tests/shell.test.js data/shell/shell.js tiling session
+ *   node tests/shell.test.js data/shell tiling
+ *   node tests/shell.test.js data/shell scrolling
+ *   node tests/shell.test.js data/shell tiling session
  *
  * Exits non-zero on failure. Registered with meson, so `meson test` runs all
  * of them; run one by hand with the lines above when a case fails.
@@ -189,7 +189,27 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   + ' fullscreenOnForTest: fullscreenOn,'
   + ' get activeOutput() { return activeOutput; } };';
-const src = fs.readFileSync(process.argv[2], 'utf8') + '\n' + EXPORTS;
+/* The shell is a set of ordered classic scripts sharing one global scope, so
+ * concatenating them in load order and evaluating the result is exactly what
+ * the browser does with the <script> tags — the same bindings end up in the
+ * same one scope either way.
+ *
+ * The order is read out of index.html rather than listed here. A second list
+ * would be a second thing to keep in step, and the failure when it drifted
+ * would be a ReferenceError deep in a test rather than anything naming the
+ * cause. index.html is where a browser gets the order, so it is the order. */
+const shellDir = process.argv[2];
+const document_html = fs.readFileSync(`${shellDir}/index.html`, 'utf8');
+const order = [...document_html.matchAll(/<script src="([^"]+)"><\/script>/g)]
+  .map((m) => m[1]);
+
+if (order.length === 0) {
+  console.error(`no <script src> tags found in ${shellDir}/index.html`);
+  process.exit(1);
+}
+
+const src = order.map((f) => fs.readFileSync(`${shellDir}/${f}`, 'utf8')).join('\n')
+  + '\n' + EXPORTS;
 (0, eval)(src);
 
 function emit(message) {

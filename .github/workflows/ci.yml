@@ -50,7 +50,7 @@ concurrency:
 jobs:
   # The tiling tree, the scrolling layout, and the restore-a-saved-session
   # path. Nothing here touches Wayland or the compositor binary — the tests
-  # stub the DOM and run the real data/shell/shell.js, so a broken layout tree
+  # stub the DOM and run the real data/shell scripts, so a broken layout tree
   # is caught here rather than by looking at screenshots.
   #
   # The JSON accessor tests ride along here for the same reason: they link
@@ -80,10 +80,10 @@ jobs:
       - name: Layout tests
         run: |
           set -eux
-          node tests/shell.test.js data/shell/shell.js tiling
-          node tests/shell.test.js data/shell/shell.js scrolling
-          node tests/shell.test.js data/shell/shell.js tiling session
-          node tests/shell.test.js data/shell/shell.js scrolling session
+          node tests/shell.test.js data/shell tiling
+          node tests/shell.test.js data/shell scrolling
+          node tests/shell.test.js data/shell tiling session
+          node tests/shell.test.js data/shell scrolling session
 
       - name: Install json-glib
         run: |
