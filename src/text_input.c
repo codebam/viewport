@@ -415,6 +415,18 @@ static void handle_grab_keyboard(struct wl_listener *listener, void *data)
 		wl_container_of(listener, ime, input_method_grab_keyboard);
 	struct wlr_input_method_keyboard_grab_v2 *grab = data;
 
+	/* A second grab while one is already held.
+	 *
+	 * keyboard_grab_destroy is one embedded listener, so adding it to the new
+	 * grab's destroy signal while it is still linked into the old one splices
+	 * the two lists together — every later traversal of either walks into the
+	 * other. An input method re-establishing its grab is enough to reach this,
+	 * so the old one is let go of first. */
+	if (ime->keyboard_grab != NULL) {
+		wl_list_remove(&ime->keyboard_grab_destroy.link);
+		ime->keyboard_grab = NULL;
+	}
+
 	/* The grab needs a keyboard to take its keymap and repeat rate from, or the
 	 * input method has no idea what the keys mean. */
 	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(ime->server->seat);
@@ -437,6 +449,18 @@ static void handle_input_method_destroy(struct wl_listener *listener,
 	wl_list_remove(&ime->input_method_new_popup.link);
 	wl_list_remove(&ime->input_method_grab_keyboard.link);
 	wl_list_remove(&ime->input_method_destroy.link);
+
+	/* The grab belongs to this input method, so it goes too.
+	 *
+	 * Not left to the grab's own destroy signal: whether that fires before or
+	 * after this handler is wlroots' teardown order rather than anything stated,
+	 * and every keystroke dereferences this pointer through
+	 * viewport_ime_handle_key(). Clearing it here does not depend on the
+	 * ordering being what it is today. */
+	if (ime->keyboard_grab != NULL) {
+		wl_list_remove(&ime->keyboard_grab_destroy.link);
+		ime->keyboard_grab = NULL;
+	}
 
 	ime->input_method = NULL;
 	ime->active = NULL;
