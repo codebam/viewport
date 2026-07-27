@@ -181,8 +181,12 @@ global.matchMedia = () => ({ matches: false });
 
 /* Top-level const/let inside an eval stay in that eval's own scope, so the
  * shell's state is unreachable from out here unless it hands it over. */
+/* overviewStateForTest is a function rather than the maps themselves so the
+ * test does not depend on where that state is kept. */
 const EXPORTS = ';globalThis.__shell = { views, workspaces, floats, outputs, scrollOffsets, overviewThumbs,'
   + ' workspaceOfForTest: workspaceOf,'
+  + ' overviewStateForTest: (id) =>'
+  + '   ({ scale: overviewScales.get(id), cell: overviewCells.get(id) }),'
   + ' get activeOutput() { return activeOutput; } };';
 const src = fs.readFileSync(process.argv[2], 'utf8') + '\n' + EXPORTS;
 (0, eval)(src);
@@ -721,6 +725,48 @@ if (mode === 'scrolling') {
         globalThis.__shell.workspaceOfForTest(dragged) === otherWs);
       check('and the overview stays open for more',
         sent.filter((m) => m.type === 'shell.overview').pop()?.active === true);
+    }
+  }
+
+  /* A window closing while the overview is up.
+   *
+   * The overview keeps per-window state — the scale each window is drawn at
+   * and the thumbnail bounding it — alongside the window record rather than
+   * inside it. Nothing enforces that the two agree, so this closes a window
+   * from under the overview and then makes the shell use that state again:
+   * every remaining window must still report a shrunken size and a clip, and
+   * the closed one must be gone from every structure rather than lingering in
+   * one of them. */
+  {
+    const views = globalThis.__shell.views;
+    const visible = [...views.keys()].filter((vid) => !views.get(vid).el.hidden);
+    const doomed = visible[visible.length - 1];
+    if (doomed !== undefined) {
+      const at = sent.length;
+      emit({ type: 'view.removed', id: doomed });
+
+      check('closing a window in the overview drops it from the view list',
+        !views.has(doomed));
+      check('and stops it being laid out',
+        !sent.slice(at).some((m) => m.type === 'view.layout' &&
+          m.id === doomed));
+
+      /* Structure, not pixels. The survivors are not re-measured here — the
+         stub's getBoundingClientRect never changes, so reportGeometry finds
+         nothing moved and sends nothing — which is a property of this harness
+         and not of the shell. What is worth asserting is that they are still
+         overview windows and that nothing of the closed one is left. */
+      check('and leaves no overview state behind for it',
+        globalThis.__shell.overviewStateForTest(doomed).scale === undefined &&
+        globalThis.__shell.overviewStateForTest(doomed).cell === undefined);
+      check('the windows left behind are still drawn in the overview',
+        visible.filter((vid) => vid !== doomed)
+          .every((vid) => !views.get(vid).el.hidden));
+      check('and keep the scale the overview gave them',
+        visible.filter((vid) => vid !== doomed).every((vid) => {
+          const scale = globalThis.__shell.overviewStateForTest(vid).scale;
+          return scale > 0 && scale < 1;
+        }));
     }
   }
 
