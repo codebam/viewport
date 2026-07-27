@@ -233,6 +233,46 @@ capture_client = executable(
   install: false,
 )
 
+# ---------------------------------------------------------------------------
+# Shell logic tests
+#
+# The layout engine lives in data/shell/shell.js, and nothing else in this build
+# reaches it: the compositor tests drive Wayland, and running the shell under a
+# headless compositor only proves that it renders — a broken tiling tree renders
+# exactly as well as a working one. These stub the DOM and run the real file, so
+# they check structure rather than pixels.
+#
+# Skipped rather than failed when node is absent: it is not a build dependency
+# and a checkout without it should still get the compositor tests.
+# ---------------------------------------------------------------------------
+
+node = find_program('node', 'nodejs', required: false)
+if node.found()
+  shell_test = files('tests/shell.test.js')
+  shell_js = files('data/shell/shell.js')
+
+  foreach layout : ['tiling', 'scrolling']
+    test(
+      'shell-' + layout,
+      node,
+      args: [shell_test, shell_js, layout],
+      timeout: 60,
+      protocol: 'exitcode',
+    )
+    # The restart path: restore a saved layout into an empty session, then check
+    # applications land where they were rather than where they started.
+    test(
+      'shell-session-' + layout,
+      node,
+      args: [shell_test, shell_js, layout, 'session'],
+      timeout: 60,
+      protocol: 'exitcode',
+    )
+  endforeach
+else
+  message('node not found; shell logic tests will not run')
+endif
+
 foreach layout : ['tiling', 'scrolling']
   test(
     'capture-' + layout,

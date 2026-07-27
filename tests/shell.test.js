@@ -16,9 +16,10 @@
  *
  *   node tests/shell.test.js data/shell/shell.js tiling
  *   node tests/shell.test.js data/shell/shell.js scrolling
+ *   node tests/shell.test.js data/shell/shell.js tiling session
  *
- * Exits non-zero on failure. The process does not exit on its own: the shell
- * sets a live-reload interval, so run it under `timeout`.
+ * Exits non-zero on failure. Registered with meson, so `meson test` runs all
+ * of them; run one by hand with the lines above when a case fails.
  */
 const fs = require('fs');
 
@@ -879,3 +880,8 @@ emit({ type: 'view.removed', id: 2 });
 emit({ type: 'view.removed', id: 3 });
 emit({ type: 'view.removed', id: 4 });
 check('teardown clean', process.exitCode !== 1);
+/* Exit rather than fall off the end. The shell installs a one-second interval
+ * to redraw its bar, which keeps the event loop alive for ever — so without
+ * this the tests pass and then hang, and a runner reports the timeout instead
+ * of the result. The session path above already does the same. */
+process.exit(process.exitCode ?? 0);
