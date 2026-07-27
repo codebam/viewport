@@ -258,14 +258,27 @@ int main(int argc, char *argv[])
 			server.config.menu);
 	}
 
-	server.web = viewport_web_create(&server);
-	if (server.web == NULL) {
-		wlr_log(WLR_ERROR, "web engine initialisation failed");
+	/* The backend starts before the web engine, not after.
+	 *
+	 * Starting it is what brings the outputs into existence, and WebKit asks
+	 * for its buffer formats once, while it is being created. Asked before any
+	 * output exists, the compositor has nothing to say about what the display
+	 * hardware can scan out, so the shell was offered rendering formats only —
+	 * and then allocated a buffer that has to be composited rather than
+	 * flipped, for the life of the session. The log line in wpe_display.c is
+	 * what made that visible; the ordering is what caused it.
+	 *
+	 * It also means the shell is sized to the real layout at once, rather than
+	 * to the 1920x1080 placeholder and then resized when the first output
+	 * arrives. */
+	if (!viewport_server_start(&server)) {
+		wlr_log(WLR_ERROR, "backend start failed");
 		goto out;
 	}
 
-	if (!viewport_server_start(&server)) {
-		wlr_log(WLR_ERROR, "backend start failed");
+	server.web = viewport_web_create(&server);
+	if (server.web == NULL) {
+		wlr_log(WLR_ERROR, "web engine initialisation failed");
 		goto out;
 	}
 

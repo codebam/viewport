@@ -28,6 +28,7 @@
 
 #include <wlr/render/drm_format_set.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/util/log.h>
 
@@ -149,8 +150,70 @@ static WPEBufferFormats *viewport_wpe_display_get_preferred_buffer_formats(
 		return NULL;
 	}
 
+	/* What the display hardware can put on a plane, as opposed to what the
+	 * renderer can sample from. The two are not the same set — a render target
+	 * may be tiled or colour-compressed in a way the display engine cannot read
+	 * — and WebKit picks its allocation from whichever group it is offered.
+	 *
+	 * Offered only rendering formats, it allocates a buffer the scanout test
+	 * then rejects, so the shell is composited on every output it appears on,
+	 * every frame. That is the whole desktop at full refresh while nothing is
+	 * happening, and a second monitor showing nothing but the shell repainting
+	 * at 240Hz beside a game that wants the GPU.
+	 *
+	 * VIEWPORT_NO_SCANOUT_FORMATS=1 turns this off without a rebuild. It is
+	 * here because an earlier version of this change was followed by a session
+	 * that froze — the compositor's event loop stayed responsive while the
+	 * screen stopped updating — and that was never pinned on it either way. A
+	 * switch that can be flipped from a TTY is worth more than being sure. */
+	const struct wlr_drm_format_set *scanout = NULL;
+	const char *why = NULL;
+	if (getenv("VIEWPORT_NO_SCANOUT_FORMATS") != NULL) {
+		why = "disabled by VIEWPORT_NO_SCANOUT_FORMATS";
+	} else if (wl_list_empty(&self->server->outputs)) {
+		/* Nothing to ask. This was the state for the whole session until the
+		 * backend was started before the web engine rather than after it. */
+		why = "no output exists yet";
+	} else {
+		struct viewport_output *first =
+			wl_container_of(self->server->outputs.next, first, link);
+		scanout = wlr_output_get_primary_formats(first->wlr_output,
+			WLR_BUFFER_CAP_DMABUF);
+		if (scanout == NULL) {
+			/* Documented to mean "no constraint, every format works" rather
+			 * than "none do" — which is what the headless backend reports, and
+			 * why this cannot be tested without real display hardware. */
+			why = "backend has no scanout format constraint";
+		} else if (scanout->len == 0) {
+			why = "backend supports no scanout formats";
+		}
+	}
+
 	WPEBufferFormatsBuilder *builder =
 		wpe_buffer_formats_builder_new(self->drm_device);
+
+	/* Scanout first: the order is the preference order, and a buffer that can
+	 * be flipped is worth more than one that can only be sampled. */
+	size_t offered = 0;
+	if (scanout != NULL && scanout->len > 0) {
+		wpe_buffer_formats_builder_append_group(builder, self->drm_device,
+			WPE_BUFFER_FORMAT_USAGE_SCANOUT);
+		for (size_t i = 0; i < scanout->len; i++) {
+			const struct wlr_drm_format *format = &scanout->formats[i];
+			/* Only formats the renderer can also sample: the shell is
+			 * composited rather than flipped whenever anything overlaps it,
+			 * which is most of the time, and a buffer we could not texture
+			 * from would be useless then. */
+			if (!wlr_drm_format_set_get(set, format->format)) {
+				continue;
+			}
+			for (size_t j = 0; j < format->len; j++) {
+				wpe_buffer_formats_builder_append_format(builder,
+					format->format, format->modifiers[j]);
+				offered++;
+			}
+		}
+	}
 
 	/* One rendering group on our own device. WebKit uses the usage hint to
 	 * decide whether a format is a candidate for direct scanout. */
@@ -165,8 +228,20 @@ static WPEBufferFormats *viewport_wpe_display_get_preferred_buffer_formats(
 		}
 	}
 
-	self->formats = wpe_buffer_formats_builder_end(builder);
-	return g_object_ref(self->formats);
+	WPEBufferFormats *formats = wpe_buffer_formats_builder_end(builder);
+
+	wlr_log(WLR_INFO, "shell buffer formats: %zu scanout, rendering always%s%s%s",
+		offered, why != NULL ? " (" : "", why != NULL ? why : "",
+		why != NULL ? ")" : "");
+
+	/* Only cached once an output existed to ask. This runs during startup, and
+	 * on the first call there may be no output yet — caching that answer would
+	 * pin the shell to rendering-only formats for the life of the session. */
+	if (scanout != NULL) {
+		self->formats = formats;
+		return g_object_ref(self->formats);
+	}
+	return formats;
 }
 
 static WPEKeymap *viewport_wpe_display_get_keymap(WPEDisplay *display)
