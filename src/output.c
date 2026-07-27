@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include <glib.h>
+
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_output.h>
@@ -40,11 +42,19 @@ static void handle_output_frame(struct wl_listener *listener, void *data)
 	 * threads explicit-sync timeline points through. No pixel is read back. */
 	bool committed = wlr_scene_output_commit(output->scene_output, NULL);
 
-	static int logged;
-	if (server->config.trace && logged < 40) {
-		logged++;
-		wlr_log(WLR_DEBUG, "output %s frame: committed=%d",
-			output->wlr_output->name, committed);
+	/* One line per frame is sixty a second, so this is rate-limited rather than
+	 * unconditional — but by time, not by a count that is spent once and never
+	 * refills. A static counter meant tracing went silent after the first
+	 * fraction of a second and stayed silent for the rest of the session,
+	 * which is exactly when you would have gone looking for it. */
+	if (server->config.trace) {
+		static gint64 last_traced;
+		gint64 now_us = g_get_monotonic_time();
+		if (now_us - last_traced > G_USEC_PER_SEC) {
+			last_traced = now_us;
+			wlr_log(WLR_DEBUG, "output %s frame: committed=%d",
+				output->wlr_output->name, committed);
+		}
 	}
 
 

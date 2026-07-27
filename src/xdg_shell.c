@@ -685,12 +685,18 @@ static void scale_iterator(struct wlr_scene_buffer *buffer, int sx, int sy,
 		return;
 	}
 
-	static int logged;
-	if (debug_scale && logged < 20 &&
+	/* Rate-limited by time rather than by a spent-once counter: the overview
+	 * runs this per buffer per frame, and a static count of twenty went in the
+	 * first frames of the first overview and left every later one silent. */
+	if (debug_scale &&
 			(width != state->applied_width || height != state->applied_height)) {
-		logged++;
-		wlr_log(WLR_DEBUG, "scale buffer dst %dx%d -> %dx%d",
-			state->natural_width, state->natural_height, width, height);
+		static gint64 last_traced;
+		gint64 now_us = g_get_monotonic_time();
+		if (now_us - last_traced > G_USEC_PER_SEC / 4) {
+			last_traced = now_us;
+			wlr_log(WLR_DEBUG, "scale buffer dst %dx%d -> %dx%d",
+				state->natural_width, state->natural_height, width, height);
+		}
 	}
 
 	state->applied_width = width;
