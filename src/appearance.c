@@ -106,17 +106,23 @@ static void add_gnome_settings(struct viewport_appearance *appearance,
 		g_variant_new_boolean(TRUE));
 }
 
-/* Returns a floating value, or NULL when the key is genuinely unknown. */
+/* Returns a value the caller owns a reference to, or NULL when the key is
+ * genuinely unknown. Always a strong reference, never a floating one: the two
+ * branches below produce different kinds, and g_variant_new("(v)", ...) only
+ * consumes a floating one — so returning the appearance branch's floating value
+ * and the gnome branch's referenced value through the same signature leaked one
+ * of them on every Read. */
 static GVariant *lookup_setting(struct viewport_appearance *appearance,
 	const char *namespace, const char *key)
 {
 	if (strcmp(namespace, APPEARANCE_NAMESPACE) == 0) {
 		if (strcmp(key, "color-scheme") == 0) {
-			return g_variant_new_uint32(appearance->color_scheme);
+			return g_variant_ref_sink(
+				g_variant_new_uint32(appearance->color_scheme));
 		}
 		/* Documented in the appearance namespace; clients read both. */
 		if (strcmp(key, "contrast") == 0) {
-			return g_variant_new_uint32(0);
+			return g_variant_ref_sink(g_variant_new_uint32(0));
 		}
 		return NULL;
 	}
@@ -172,6 +178,7 @@ static void handle_method(GDBusConnection *connection, const char *sender,
 		if (value != NULL) {
 			g_dbus_method_invocation_return_value(invocation,
 				g_variant_new("(v)", value));
+			g_variant_unref(value);
 			return;
 		}
 
@@ -288,9 +295,11 @@ struct viewport_appearance *viewport_appearance_create(
 		}
 	}
 
-	/* G_BUS_NAME_OWNER_FLAGS_REPLACE loses to a real desktop portal rather
-	 * than fighting it, which matters if this is ever run inside a session
-	 * that already provides one. */
+	/* No flags: the name is claimed if it is free and left alone if it is not,
+	 * so a real desktop portal already running keeps it and handle_name_lost()
+	 * says so. Not REPLACE, which would take the name from it — the comment
+	 * here used to name that flag while the code passed this one, and described
+	 * it as losing gracefully, which is the opposite of what it does. */
 	appearance->owner_id = g_bus_own_name(G_BUS_TYPE_SESSION, PORTAL_BUS_NAME,
 		G_BUS_NAME_OWNER_FLAGS_NONE, handle_bus_acquired, NULL,
 		handle_name_lost, appearance, NULL);
