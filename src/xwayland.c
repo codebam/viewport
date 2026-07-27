@@ -218,6 +218,23 @@ static void handle_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&toplevel->request_fullscreen.link);
 	wl_list_remove(&toplevel->destroy.link);
 
+	/* Leaving while still mapped.
+	 *
+	 * viewport_view_map() puts a managed window into server->toplevels and only
+	 * viewport_view_unmap() takes it out again, so freeing here without that
+	 * having run leaves a freed entry in the list — and server->focused, the
+	 * foreign handle and any interactive drag all still pointing at it.
+	 *
+	 * wlroots does send unmap before destroy, so this is a guard rather than a
+	 * fix for anything observed. It is here because the cost of being wrong is
+	 * a use-after-free on the next window switch, and the check is one branch.
+	 * Unmanaged windows never entered the list and never set `mapped`. */
+	if (toplevel->mapped) {
+		wlr_log(WLR_ERROR, "X11 window %u destroyed while still mapped",
+			toplevel->id);
+		viewport_view_unmap(toplevel);
+	}
+
 	viewport_watchdog_disarm(toplevel);
 	viewport_foreign_capture_finish(toplevel);
 

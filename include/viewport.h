@@ -985,15 +985,8 @@ void viewport_web_keyboard_key(struct viewport_web *web, uint32_t time_msec,
 	uint32_t keycode, uint32_t keysym, bool pressed, uint32_t modifiers);
 void viewport_web_focus(struct viewport_web *web, bool focused);
 
-/* -------------------------------------------------------------------------
- * web_buffer.c
- * ---------------------------------------------------------------------- */
-
-struct wpe_buffer_dma_buf;
-
-/* Wraps a WPEBufferDMABuf in a wlr_buffer without copying. The returned
- * buffer owns one reference; drop it after handing it to the scene. */
-struct wlr_buffer *viewport_web_buffer_wrap(struct viewport_web *web,
-	void *wpe_buffer_dma_buf);
+/* web_buffer.c wraps a WPEBufferDMABuf in a wlr_buffer without copying. It is
+ * declared in src/web-internal.h rather than here: nothing outside the web
+ * engine has any business making one, and the signature needs WPE types. */
 
 #endif /* VIEWPORT_H */
