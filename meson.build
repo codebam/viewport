@@ -134,8 +134,10 @@ add_project_arguments(
 # Targets
 # ---------------------------------------------------------------------------
 
+# main.c is deliberately not in here. Everything else is linked twice — once
+# into the compositor, once into the fuzz harness — and libFuzzer supplies the
+# main() of its own binary, so a list that carried ours could not be reused.
 viewport_sources = files(
-  'src/main.c',
   'src/binding.c',
   'src/config.c',
   'src/status.c',
@@ -160,6 +162,7 @@ viewport_sources = files(
   'src/notification.c',
   'src/gesture.c',
   'src/ipc.c',
+  'src/json_util.c',
   'src/glib_loop.c',
   'src/wpe_display.c',
   'src/wpe_view.c',
@@ -173,11 +176,93 @@ viewport_sources += color_management_protocol_h
 
 viewport_exe = executable(
   'viewport',
-  viewport_sources,
+  viewport_sources + files('src/main.c'),
   include_directories: include_directories('include'),
   dependencies: viewport_deps,
   install: true,
 )
+
+# ---------------------------------------------------------------------------
+# Unit tests
+#
+# The four compositor tests below each start a headless server and drive a
+# Wayland client against it. That is the only honest way to judge presentation,
+# and it is also why none of them can reach the type checks that every field of
+# every IPC message passes through: those are pure functions, and a test that
+# needs a seat and a renderer to call one cannot run on a hosted runner at all.
+#
+# This binary links src/json_util.c and json-glib and nothing else, so it needs
+# no wlroots, no WebKit and no display, and finishes in milliseconds. What it
+# proves is the part the other tests structurally cannot: that a malformed
+# message is refused rather than misread.
+# ---------------------------------------------------------------------------
+
+unit_test = executable(
+  'viewport-test-unit',
+  files('tests/unit.c', 'src/json_util.c'),
+  include_directories: include_directories('include'),
+  dependencies: [glib, gobject, json_glib],
+  install: false,
+)
+
+test('unit', unit_test, timeout: 30, protocol: 'exitcode')
+
+# ---------------------------------------------------------------------------
+# Hostile IPC input
+#
+# IPC is the only input the compositor takes from something it cannot vouch
+# for, and both of the crashes fixed in it so far were reachable from a single
+# message. tests/fuzz_ipc.c drives that entry point from two front-ends over
+# one stub, and both are built here for a reason.
+#
+# The replay build is an ordinary test. It needs no special compiler, so it
+# runs everywhere — including a gcc-only CI runner, which is what this project
+# has — and it replays a corpus containing both of the fixed crashes. Without
+# it the harness would ship as source that nobody had ever executed, which is
+# the same amount of confidence as no harness at all.
+#
+# The libFuzzer build is the one that finds new things, and it is off unless
+# asked for: it needs clang's -fsanitize=fuzzer, which a normal build must
+# never be made to require, and it is not registered as a test because a fuzzer
+# has no natural end. A reproducer it emits is replayed by the binary above.
+# ---------------------------------------------------------------------------
+
+ipc_replay = executable(
+  'viewport-test-ipc-replay',
+  files('tests/fuzz_ipc.c') + viewport_sources,
+  include_directories: include_directories('include'),
+  dependencies: viewport_deps,
+  install: false,
+)
+
+# XDG_STATE_HOME is redirected because session.save is one of the messages
+# replayed, and it writes the saved layout to disk. Left alone, a corpus entry
+# carrying a well-formed state string would overwrite the layout of whoever ran
+# the test suite. Nothing reads it back — the point is only that the write
+# lands somewhere disposable.
+test(
+  'ipc-replay',
+  ipc_replay,
+  env: {'XDG_STATE_HOME': meson.current_build_dir() / 'ipc-replay-state'},
+  timeout: 30,
+  protocol: 'exitcode',
+)
+
+if get_option('fuzz')
+  if not cc.has_argument('-fsanitize=fuzzer-no-link')
+    error('-Dfuzz=true needs a compiler with -fsanitize=fuzzer, i.e. clang')
+  endif
+
+  executable(
+    'viewport-fuzz-ipc',
+    files('tests/fuzz_ipc.c') + viewport_sources,
+    include_directories: include_directories('include'),
+    dependencies: viewport_deps,
+    c_args: ['-DVIEWPORT_FUZZ', '-fsanitize=fuzzer-no-link'],
+    link_args: ['-fsanitize=fuzzer'],
+    install: false,
+  )
+endif
 
 # ---------------------------------------------------------------------------
 # Test clients
