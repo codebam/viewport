@@ -164,10 +164,13 @@ static void handle_method(GDBusConnection *connection, const char *sender,
 	/* A replacement keeps the identifier it is replacing, which is how an
 	 * application updates a progress notification in place instead of leaving a
 	 * trail of them. */
-	guint32 id = replaces_id != 0 ? replaces_id : notifications->next_id++;
+	/* Wrap before handing the identifier out, not after. Zero means "a new
+	 * notification" in the Notify call, so an id of zero is one an application
+	 * can never use to replace or close what it just sent. */
 	if (notifications->next_id == 0) {
 		notifications->next_id = 1;
 	}
+	guint32 id = replaces_id != 0 ? replaces_id : notifications->next_id++;
 
 	/* Actions arrive as a flat list of key, label, key, label. The pairs are
 	 * what the shell shows as buttons; the key is what gets sent back. */
