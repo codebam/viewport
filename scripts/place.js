@@ -8,18 +8,27 @@
  * cannot do for itself: decide where windows go. Windows are tiled left to
  * right in the order they appear.
  *
- *   node scripts/place.js [socket-path]
+ *   node scripts/place.js <socket-path>
  *
- * Without an argument it uses $VIEWPORT_SOCKET, then
- * $XDG_RUNTIME_DIR/viewport-$WAYLAND_DISPLAY.sock.
+ * The path is required unless $VIEWPORT_SOCKET is set. It deliberately does
+ * *not* fall back to $XDG_RUNTIME_DIR/viewport-$WAYLAND_DISPLAY.sock: run from
+ * a terminal in an existing Viewport session, that resolves to the compositor
+ * drawing the desktop you are sitting in front of, and this script would
+ * cheerfully start relaying layout to it.
  */
 
 const net = require('node:net');
 
-const path =
-  process.argv[2] ||
-  process.env.VIEWPORT_SOCKET ||
-  `${process.env.XDG_RUNTIME_DIR}/viewport-${process.env.WAYLAND_DISPLAY}.sock`;
+const path = process.argv[2] || process.env.VIEWPORT_SOCKET;
+if (!path) {
+  console.error(
+    'usage: node scripts/place.js <socket-path>\n' +
+      '\n' +
+      'The compositor logs its path on startup:\n' +
+      '  INFO viewport::ipc: control socket at /run/user/1000/viewport-wayland-1.sock',
+  );
+  process.exit(2);
+}
 
 const GAP = 12;
 

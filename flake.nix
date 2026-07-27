@@ -260,13 +260,31 @@
             libglvnd
           ]);
 
-          # `cargo test -p viewport-web` links against libgbm and dlopens
-          # libEGL.so.1 at runtime. Without these the GPU tests skip rather
-          # than fail, which looks exactly like them passing.
+          # viewport-web links against libgbm at build time.
           LIBRARY_PATH = "${pkgs.libgbm}/lib";
-          LD_LIBRARY_PATH = "${pkgs.libglvnd}/lib:${pkgs.libgbm}/lib:/run/opengl-driver/lib";
 
           shellHook = ''
+            # Everything the Rust build dlopens rather than links.
+            #
+            # winit is built with `wayland-dlopen`, so it looks for
+            # libwayland-client.so.0 at runtime and reports nothing more useful
+            # than "Failed to initialize an event loop" when it cannot find it.
+            # khronos-egl dlopens libEGL.so.1, which lives in libglvnd —
+            # /run/opengl-driver only provides the mesa vendor driver.
+            #
+            # Appended, not assigned: replacing this variable is what broke the
+            # winit backend the first time.
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+              pkgs.wayland
+              pkgs.libxkbcommon
+              pkgs.libglvnd
+              pkgs.libgbm
+              pkgs.xorg.libX11
+              pkgs.xorg.libXcursor
+              pkgs.xorg.libXi
+              pkgs.xorg.libXrandr
+            ]}:/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
             echo "viewport devshell"
             echo "  wlroots     : $(pkg-config --modversion wlroots-0.20 2>/dev/null || echo MISSING)"
             echo "  wpe-webkit  : $(pkg-config --modversion wpe-webkit-2.0 2>/dev/null || echo MISSING)"
