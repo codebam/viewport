@@ -291,6 +291,11 @@ struct viewport_server {
 	struct viewport_notifications *notifications;
 	struct viewport_output_revert *output_revert;
 	struct viewport_lock *lock;
+	/* Black rectangle covering the whole layout, under the locker's own
+	 * surfaces. Owned by the server rather than by the lock, because it has to
+	 * outlive a locker that dies: the lock layer occludes nothing once it is
+	 * empty, so a crashed locker would otherwise reveal the desktop. */
+	struct wlr_scene_rect *lock_backdrop;
 	bool locked;
 
 	struct wlr_xwayland *xwayland;
@@ -502,8 +507,6 @@ struct viewport_decoration {
 };
 
 struct viewport_lock {
-	/* Covers the whole layout beneath the locker's own surfaces. */
-	struct wlr_scene_rect *backdrop;
 	struct viewport_server *server;
 	struct wlr_session_lock_v1 *lock;
 	struct wl_listener new_surface;

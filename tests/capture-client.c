@@ -66,6 +66,10 @@ struct capture_client {
 	struct ext_foreign_toplevel_list_v1 *toplevel_list;
 	struct ext_foreign_toplevel_image_capture_source_manager_v1 *source_manager;
 	struct ext_image_copy_capture_manager_v1 *capture_manager;
+	/* For --output: capturing a whole screen rather than one window, which is
+	 * how "what is actually on screen" gets asked from outside. */
+	struct ext_output_image_capture_source_manager_v1 *output_source_manager;
+	struct wl_output *output;
 
 	struct toplevel_entry toplevels[MAX_TOPLEVELS];
 	size_t toplevels_len;
@@ -380,6 +384,16 @@ static void handle_global(void *data, struct wl_registry *registry,
 			ext_image_copy_capture_manager_v1_interface.name) == 0) {
 		client->capture_manager = wl_registry_bind(registry, name,
 			&ext_image_copy_capture_manager_v1_interface, 1);
+	} else if (strcmp(interface,
+			ext_output_image_capture_source_manager_v1_interface.name) == 0) {
+		client->output_source_manager = wl_registry_bind(registry, name,
+			&ext_output_image_capture_source_manager_v1_interface, 1);
+	} else if (strcmp(interface, wl_output_interface.name) == 0) {
+		/* The first output is enough: the tests run headless with one. */
+		if (client->output == NULL) {
+			client->output = wl_registry_bind(registry, name,
+				&wl_output_interface, 1);
+		}
 	}
 }
 
@@ -478,23 +492,37 @@ static bool capture_one_frame(struct capture_client *client,
 
 int main(int argc, char *argv[])
 {
-	if (argc != 6) {
+	bool output_mode = argc >= 2 && strcmp(argv[1], "--output") == 0;
+
+	if (!output_mode && argc != 6) {
 		fprintf(stderr,
 			"usage: %s APP_ID EXPECT_ARGB EXPECT_WIDTH EXPECT_HEIGHT "
 			"WATCH_MS\n"
+			"       %s --output EXPECT_ARGB\n"
 			"\n"
 			"Captures the window with APP_ID and checks that the frame is\n"
 			"EXPECT_WIDTH x EXPECT_HEIGHT and every pixel EXPECT_ARGB, then\n"
-			"watches the session for WATCH_MS for buffer-constraint churn.\n",
-			argv[0]);
+			"watches the session for WATCH_MS for buffer-constraint churn.\n"
+			"\n"
+			"--output captures a whole screen instead and checks every pixel\n"
+			"is EXPECT_ARGB. That is how the screen-lock tests ask what is\n"
+			"actually being displayed, which is the only place the answer\n"
+			"lives: a compositor whose lock layer has been emptied still\n"
+			"reports itself locked.\n",
+			argv[0], argv[0]);
+		return 2;
+	}
+	if (output_mode && argc != 3) {
+		fprintf(stderr, "usage: %s --output EXPECT_ARGB\n", argv[0]);
 		return 2;
 	}
 
-	const char *want_app_id = argv[1];
-	uint32_t want_colour = (uint32_t)strtoul(argv[2], NULL, 16) & 0x00FFFFFF;
-	int32_t want_width = atoi(argv[3]);
-	int32_t want_height = atoi(argv[4]);
-	int watch_ms = atoi(argv[5]);
+	const char *want_app_id = output_mode ? NULL : argv[1];
+	uint32_t want_colour = (uint32_t)strtoul(
+		output_mode ? argv[2] : argv[2], NULL, 16) & 0x00FFFFFF;
+	int32_t want_width = output_mode ? 0 : atoi(argv[3]);
+	int32_t want_height = output_mode ? 0 : atoi(argv[4]);
+	int watch_ms = output_mode ? 0 : atoi(argv[5]);
 
 	struct capture_client client = {0};
 
@@ -511,7 +539,19 @@ int main(int argc, char *argv[])
 	wl_display_roundtrip(display);
 	wl_display_roundtrip(display);
 
-	if (client.shm == NULL || client.toplevel_list == NULL ||
+	if (output_mode) {
+		if (client.shm == NULL || client.output == NULL ||
+				client.output_source_manager == NULL ||
+				client.capture_manager == NULL) {
+			fprintf(stderr, "compositor is missing wl_shm (%p), wl_output (%p), "
+				"ext_output_image_capture_source_manager_v1 (%p) or "
+				"ext_image_copy_capture_manager_v1 (%p)\n",
+				(void *)client.shm, (void *)client.output,
+				(void *)client.output_source_manager,
+				(void *)client.capture_manager);
+			return 2;
+		}
+	} else if (client.shm == NULL || client.toplevel_list == NULL ||
 			client.source_manager == NULL || client.capture_manager == NULL) {
 		fprintf(stderr, "compositor is missing wl_shm (%p), "
 			"ext_foreign_toplevel_list_v1 (%p), "
@@ -520,6 +560,13 @@ int main(int argc, char *argv[])
 			(void *)client.shm, (void *)client.toplevel_list,
 			(void *)client.source_manager, (void *)client.capture_manager);
 		return 2;
+	}
+
+	struct ext_image_capture_source_v1 *source;
+	if (output_mode) {
+		source = ext_output_image_capture_source_manager_v1_create_source(
+			client.output_source_manager, client.output);
+		goto have_source;
 	}
 
 	struct ext_foreign_toplevel_handle_v1 *target = NULL;
@@ -537,10 +584,10 @@ int main(int argc, char *argv[])
 		return 2;
 	}
 
-	struct ext_image_capture_source_v1 *source =
-		ext_foreign_toplevel_image_capture_source_manager_v1_create_source(
-			client.source_manager, target);
+	source = ext_foreign_toplevel_image_capture_source_manager_v1_create_source(
+		client.source_manager, target);
 
+have_source:;
 	struct ext_image_copy_capture_session_v1 *session =
 		ext_image_copy_capture_manager_v1_create_session(
 			client.capture_manager, source, 0);
@@ -567,10 +614,12 @@ int main(int argc, char *argv[])
 		return 2;
 	}
 
-	check(client.buffer_width == want_width &&
-			client.buffer_height == want_height,
-		"the capture is the window, not the surface: got %dx%d, want %dx%d",
-		client.buffer_width, client.buffer_height, want_width, want_height);
+	if (!output_mode) {
+		check(client.buffer_width == want_width &&
+				client.buffer_height == want_height,
+			"the capture is the window, not the surface: got %dx%d, want %dx%d",
+			client.buffer_width, client.buffer_height, want_width, want_height);
+	}
 
 	check(client.have_shm_format, "the capture offers a shm format we can read");
 	if (!client.have_shm_format) {
@@ -611,13 +660,24 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	const char *what = output_mode
+		? "every pixel of the screen is the colour it should be"
+		: "every pixel is the window's own colour";
 	if (wrong == 0) {
-		check(true, "every pixel is the window's own colour");
+		check(true, "%s", what);
 	} else {
-		check(false, "every pixel is the window's own colour: %lld of %lld "
-			"wrong, first at %d,%d is %06x not %06x",
-			(long long)wrong, (long long)buffer.width * buffer.height,
+		check(false, "%s: %lld of %lld wrong, first at %d,%d is %06x not %06x",
+			what, (long long)wrong, (long long)buffer.width * buffer.height,
 			first_x, first_y, first_value, want_colour);
+	}
+
+	if (output_mode) {
+		ext_image_copy_capture_session_v1_destroy(session);
+		ext_image_capture_source_v1_destroy(source);
+		wl_display_roundtrip(display);
+		wl_display_disconnect(display);
+		printf("\n%s\n", failures == 0 ? "all checks passed" : "checks FAILED");
+		return failures == 0 ? 0 : 1;
 	}
 
 	/* Now leave the session running against a window that is redrawing but

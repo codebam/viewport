@@ -201,6 +201,8 @@ test_protocols = {
     / 'staging/ext-image-capture-source/ext-image-capture-source-v1.xml',
   'ext-image-copy-capture-v1': protocol_dir
     / 'staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml',
+  'ext-session-lock-v1': protocol_dir
+    / 'staging/ext-session-lock/ext-session-lock-v1.xml',
 }
 
 test_protocol_sources = []
@@ -231,6 +233,29 @@ capture_client = executable(
   files('tests/capture-client.c') + test_protocol_sources,
   dependencies: [wayland_client],
   install: false,
+)
+
+# A locker that dies without unlocking. What the screen looks like afterwards is
+# the one part of ext-session-lock the compositor cannot check about itself.
+lock_client = executable(
+  'viewport-test-lock-client',
+  files('tests/lock-client.c') + test_protocol_sources,
+  dependencies: [wayland_client],
+  install: false,
+)
+
+test(
+  'session-lock-crash',
+  find_program('tests/lock.test.sh'),
+  args: [
+    viewport_exe.full_path(),
+    lock_client.full_path(),
+    capture_client.full_path(),
+    paint_client.full_path(),
+  ],
+  depends: [viewport_exe, lock_client, capture_client, paint_client],
+  timeout: 120,
+  protocol: 'exitcode',
 )
 
 # ---------------------------------------------------------------------------

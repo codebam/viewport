@@ -104,28 +104,31 @@ static void handle_new_lock_surface(struct wl_listener *listener, void *data)
  * readable. */
 static void update_backdrop(struct viewport_server *server)
 {
-	if (server->lock == NULL) {
+	/* Keyed on the session being locked rather than on a lock object existing:
+	 * after a locker dies there is no lock object and the screen still has to
+	 * stay covered. */
+	if (!server->locked && server->lock == NULL) {
 		return;
 	}
 
 	struct wlr_box layout;
 	wlr_output_layout_get_box(server->output_layout, NULL, &layout);
 
-	if (server->lock->backdrop == NULL) {
+	if (server->lock_backdrop == NULL) {
 		const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-		server->lock->backdrop = wlr_scene_rect_create(server->layer_lock,
+		server->lock_backdrop = wlr_scene_rect_create(server->layer_lock,
 			layout.width, layout.height, black);
-		if (server->lock->backdrop == NULL) {
+		if (server->lock_backdrop == NULL) {
 			return;
 		}
 		/* Below the lock surfaces, which are added to the same tree. */
-		wlr_scene_node_lower_to_bottom(&server->lock->backdrop->node);
+		wlr_scene_node_lower_to_bottom(&server->lock_backdrop->node);
 	} else {
-		wlr_scene_rect_set_size(server->lock->backdrop, layout.width,
+		wlr_scene_rect_set_size(server->lock_backdrop, layout.width,
 			layout.height);
 	}
 
-	wlr_scene_node_set_position(&server->lock->backdrop->node, layout.x,
+	wlr_scene_node_set_position(&server->lock_backdrop->node, layout.x,
 		layout.y);
 }
 
@@ -143,6 +146,12 @@ static void handle_unlock(struct wl_listener *listener, void *data)
 
 	server->locked = false;
 	wlr_scene_node_set_enabled(&server->layer_lock->node, false);
+
+	/* Unlocking is the one path that ends the cover. */
+	if (server->lock_backdrop != NULL) {
+		wlr_scene_node_destroy(&server->lock_backdrop->node);
+		server->lock_backdrop = NULL;
+	}
 
 	/* Hand the keyboard back to whatever was focused before. */
 	if (server->focused != NULL) {
@@ -165,17 +174,28 @@ static void handle_lock_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&lock->unlock.link);
 	wl_list_remove(&lock->destroy.link);
 
-	if (lock->backdrop != NULL) {
-		wlr_scene_node_destroy(&lock->backdrop->node);
-		lock->backdrop = NULL;
-	}
-
 	if (server->locked) {
 		/* The locker died without unlocking. Staying locked is the whole point
-		 * of the protocol: a crash must not expose the desktop, so the lock
-		 * layer keeps covering the screen with nothing on it. */
+		 * of the protocol: a crash must not expose the desktop.
+		 *
+		 * The lock layer does not do that by itself. It is a scene tree, and an
+		 * empty one draws nothing and occludes nothing — the locker's surfaces
+		 * went with the client, so leaving the layer enabled and empty showed
+		 * the desktop straight through it, with every window readable and the
+		 * shell taking input, while `locked` stayed true and no client could be
+		 * clicked again. The backdrop is the only thing actually covering the
+		 * screen, so it is what must survive, and update_backdrop() keeps
+		 * resizing it for outputs that arrive later.
+		 *
+		 * It is left deliberately blank. Drawing anything here would be a
+		 * password prompt the compositor cannot honour. */
+		update_backdrop(server);
 		wlr_log(WLR_ERROR,
-			"lock client vanished while locked; session stays locked");
+			"lock client vanished while locked; session stays locked "
+			"(screen stays covered; switch VT to recover)");
+	} else if (server->lock_backdrop != NULL) {
+		wlr_scene_node_destroy(&server->lock_backdrop->node);
+		server->lock_backdrop = NULL;
 	}
 
 	free(lock);
