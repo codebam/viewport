@@ -471,8 +471,8 @@ body {
 
 .window.focused { border-color: var(--border-focus); }
 .window.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 10px var(--accent);
+  border-color: #bb9af7;
+  box-shadow: 0 0 12px #bb9af788;
 }
 
 /* Floating windows are marked in the taskbar so the list still reflects the

@@ -37,43 +37,32 @@ function handleShellCommand(command, args) {
       if (focusedId == null && selectedIds.size === 0) break;
 
       if (layoutMode === 'scrolling') {
-        const idsToMove = selectedIds.size > 0 ? Array.from(selectedIds) : [focusedId];
-        let anyMoved = false;
-        for (const id of idsToMove) {
-          if (!isFloating(id)) {
-            if (scrollMove(arg, id)) anyMoved = true;
-          } else {
-            const step = 40;
-            moveByDelta(id,
-              arg === 'left' ? -step : arg === 'right' ? step : 0,
-              arg === 'up' ? -step : arg === 'down' ? step : 0);
-            anyMoved = true;
+        if (selectedIds.size > 0) {
+          if (!scrollMoveSelected(arg) && focusedId != null) {
+            moveViewToOutput(focusedId, arg);
+          }
+        } else if (focusedId != null) {
+          if (!scrollMove(arg, focusedId)) {
+            moveViewToOutput(focusedId, arg);
           }
         }
-        if (!anyMoved && focusedId != null) moveViewToOutput(focusedId, arg);
         break;
       }
 
       if (selectedContainer != null && selectedContainer !== workspaces.get(activeWorkspace())) {
-        const leafIds = [...walk(selectedContainer)].map(([l]) => l.id);
-        let moved = false;
-        for (const id of leafIds) {
-          if (moveLeaf(id, arg)) moved = true;
+        if (!moveContainer(selectedContainer, arg) && focusedId != null) {
+          moveViewToOutput(focusedId, arg);
         }
-        if (moved) relayoutAll();
-        else if (focusedId != null) moveViewToOutput(focusedId, arg);
-      } else {
+      } else if (focusedId != null) {
         if (isFloating(focusedId)) {
           const step = 40;
           moveByDelta(focusedId,
             arg === 'left' ? -step : arg === 'right' ? step : 0,
             arg === 'up' ? -step : arg === 'down' ? step : 0);
-          break;
-        }
-        if (moveLeaf(focusedId, arg)) {
-          relayoutAll();
-        } else {
+        } else if (!moveLeaf(focusedId, arg)) {
           moveViewToOutput(focusedId, arg);
+        } else {
+          relayoutAll();
         }
       }
       break;

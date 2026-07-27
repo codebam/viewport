@@ -618,6 +618,107 @@ function scrollMove(direction, targetId = focusedId) {
   return true;
 }
 
+function colContainsAnySelected(column) {
+  if (!column) return false;
+  if (column.type === 'leaf') return selectedIds.has(column.id);
+  return [...walk(column)].some(([leaf]) => selectedIds.has(leaf.id));
+}
+
+function scrollMoveSelected(direction) {
+  const ws = activeWorkspace();
+  if (ws === null) return false;
+
+  const root = workspaceRoot(ws);
+  if (!root || root.children.length === 0) return false;
+
+  const columns = root.children;
+  const selectedIndices = [];
+  columns.forEach((col, idx) => {
+    if (colContainsAnySelected(col)) selectedIndices.push(idx);
+  });
+
+  if (selectedIndices.length === 0) {
+    if (focusedId != null) return scrollMove(direction, focusedId);
+    return false;
+  }
+
+  if (direction === 'left' || direction === 'right') {
+    if (direction === 'right') {
+      const lastIdx = selectedIndices[selectedIndices.length - 1];
+      if (lastIdx < columns.length - 1) {
+        const targetCol = columns[lastIdx + 1];
+        const selectedCols = columns.filter((_, idx) => selectedIndices.includes(idx));
+        const remainingCols = columns.filter((_, idx) => !selectedIndices.includes(idx));
+        
+        const insertPos = remainingCols.indexOf(targetCol) + 1;
+        remainingCols.splice(insertPos, 0, ...selectedCols);
+        root.children = remainingCols;
+        treeGeneration++;
+        relayoutAll();
+        return true;
+      } else {
+        let moved = false;
+        for (const id of Array.from(selectedIds)) {
+          if (moveViewToOutput(id, 'right')) moved = true;
+        }
+        return moved;
+      }
+    } else if (direction === 'left') {
+      const firstIdx = selectedIndices[0];
+      if (firstIdx > 0) {
+        const targetCol = columns[firstIdx - 1];
+        const selectedCols = columns.filter((_, idx) => selectedIndices.includes(idx));
+        const remainingCols = columns.filter((_, idx) => !selectedIndices.includes(idx));
+
+        const insertPos = remainingCols.indexOf(targetCol);
+        remainingCols.splice(insertPos, 0, ...selectedCols);
+        root.children = remainingCols;
+        treeGeneration++;
+        relayoutAll();
+        return true;
+      } else {
+        let moved = false;
+        for (const id of Array.from(selectedIds)) {
+          if (moveViewToOutput(id, 'left')) moved = true;
+        }
+        return moved;
+      }
+    }
+  }
+
+  if (direction === 'up' || direction === 'down') {
+    let moved = false;
+    for (const col of columns) {
+      if (col.type === 'split' && colContainsAnySelected(col)) {
+        const leaves = col.children;
+        const selInCol = leaves.map((c, i) => (c.type === 'leaf' && selectedIds.has(c.id)) ? i : -1).filter(i => i >= 0);
+        if (selInCol.length > 0) {
+          if (direction === 'down') {
+            const last = selInCol[selInCol.length - 1];
+            if (last < leaves.length - 1) {
+              [leaves[last], leaves[last + 1]] = [leaves[last + 1], leaves[last]];
+              moved = true;
+            }
+          } else if (direction === 'up') {
+            const first = selInCol[0];
+            if (first > 0) {
+              [leaves[first], leaves[first - 1]] = [leaves[first - 1], leaves[first]];
+              moved = true;
+            }
+          }
+        }
+      }
+    }
+    if (moved) {
+      treeGeneration++;
+      relayoutAll();
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /* Pull the first window of the next column into this one, stacking it below the
  * focused window. The inverse of expel, and the pair is how columns are built
  * up and taken apart without a tree to split. */

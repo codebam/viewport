@@ -220,6 +220,43 @@ function moveLeaf(id, direction) {
   return false;
 }
 
+function moveContainer(container, direction) {
+  if (!container) return false;
+  const ws = activeWorkspace();
+  const root = workspaces.get(ws);
+  if (!root || container === root) return false;
+
+  const parent = findParentOf(root, container);
+  if (!parent) return false;
+
+  const axis = (direction === 'left' || direction === 'right') ? 'horizontal' : 'vertical';
+  const forward = (direction === 'right' || direction === 'down');
+  const index = parent.children.indexOf(container);
+
+  if (parent.dir === axis) {
+    const target = index + (forward ? 1 : -1);
+    if (target >= 0 && target < parent.children.length) {
+      [parent.children[index], parent.children[target]] =
+        [parent.children[target], parent.children[index]];
+      collapse(root, true);
+      relayoutAll();
+      return true;
+    }
+  }
+
+  const grandparent = findParentOf(root, parent);
+  if (grandparent) {
+    const parentIndex = grandparent.children.indexOf(parent);
+    parent.children.splice(index, 1);
+    grandparent.children.splice(parentIndex + (forward ? 1 : 0), 0, container);
+    collapse(root, true);
+    relayoutAll();
+    return true;
+  }
+
+  return false;
+}
+
 /* ------------------------------------------------------------------------
  * Rendering
  * --------------------------------------------------------------------- */
