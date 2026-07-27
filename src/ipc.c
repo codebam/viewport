@@ -42,6 +42,10 @@ struct viewport_ipc {
 	char *path;
 	struct wl_event_source *source;
 	struct wl_list clients; /* ipc_client.link */
+	/* Clients torn down while a dispatch was still in flight; see
+	 * ipc_client_close(). Freed from an idle callback. */
+	struct wl_list dead; /* ipc_client.link */
+	struct wl_event_source *reaper;
 };
 
 struct ipc_client {
@@ -49,6 +53,10 @@ struct ipc_client {
 	struct viewport_ipc *ipc;
 	int fd;
 	struct wl_event_source *source;
+	/* Set once the client has been torn down. The struct outlives that until
+	 * the reaper runs, so a handler part-way through dispatching this client's
+	 * own message can notice and stop. */
+	bool dead;
 
 	/* Accumulates a partial line across reads. */
 	char *buf;
@@ -60,15 +68,59 @@ struct ipc_client {
  * Outbound
  * --------------------------------------------------------------------- */
 
-static void ipc_client_destroy(struct ipc_client *client)
+static void ipc_reap(struct viewport_ipc *ipc)
 {
+	struct ipc_client *client, *tmp;
+	wl_list_for_each_safe(client, tmp, &ipc->dead, link) {
+		wl_list_remove(&client->link);
+		free(client->buf);
+		free(client);
+	}
+}
+
+static void handle_reap(void *data)
+{
+	struct viewport_ipc *ipc = data;
+	/* Idle sources remove themselves once dispatched. */
+	ipc->reaper = NULL;
+	ipc_reap(ipc);
+}
+
+/* Drop a client, without freeing it yet.
+ *
+ * A message from a socket client is dispatched from that client's own read
+ * handler, and almost every message broadcasts a reply — so the write below can
+ * fail on the very client whose handler is still on the stack. That is not an
+ * exotic case: `socat` sending one command and exiting does exactly it, and the
+ * reply then fails with EPIPE.
+ *
+ * Freeing here would have the read handler return into freed memory. So the
+ * client is unlinked, its fd and event source released, and the struct itself
+ * left alive until an idle callback runs — by which point no handler is still
+ * holding a pointer to it. */
+static void ipc_client_close(struct ipc_client *client)
+{
+	if (client->dead) {
+		return;
+	}
+	client->dead = true;
+
 	wl_list_remove(&client->link);
 	if (client->source != NULL) {
 		wl_event_source_remove(client->source);
+		client->source = NULL;
 	}
-	close(client->fd);
-	free(client->buf);
-	free(client);
+	if (client->fd >= 0) {
+		close(client->fd);
+		client->fd = -1;
+	}
+
+	struct viewport_ipc *ipc = client->ipc;
+	wl_list_insert(&ipc->dead, &client->link);
+	if (ipc->reaper == NULL) {
+		ipc->reaper = wl_event_loop_add_idle(ipc->server->wl_event_loop,
+			handle_reap, ipc);
+	}
 }
 
 void viewport_ipc_broadcast(struct viewport_server *server, const char *json)
@@ -89,7 +141,7 @@ void viewport_ipc_broadcast(struct viewport_server *server, const char *json)
 		if (write(client->fd, json, len) < 0 ||
 				write(client->fd, "\n", 1) < 0) {
 			if (errno != EAGAIN && errno != EWOULDBLOCK) {
-				ipc_client_destroy(client);
+				ipc_client_close(client);
 			}
 		}
 	}
@@ -1135,7 +1187,7 @@ static int handle_client_readable(int fd, uint32_t mask, void *data)
 	struct ipc_client *client = data;
 
 	if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) {
-		ipc_client_destroy(client);
+		ipc_client_close(client);
 		return 0;
 	}
 
@@ -1145,7 +1197,7 @@ static int handle_client_readable(int fd, uint32_t mask, void *data)
 		if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
 			return 0;
 		}
-		ipc_client_destroy(client);
+		ipc_client_close(client);
 		return 0;
 	}
 
@@ -1157,12 +1209,12 @@ static int handle_client_readable(int fd, uint32_t mask, void *data)
 		/* Cap the accumulator so a client that never sends a newline cannot
 		 * grow the compositor's heap without bound. */
 		if (cap > 1u << 20) {
-			ipc_client_destroy(client);
+			ipc_client_close(client);
 			return 0;
 		}
 		char *buf = realloc(client->buf, cap);
 		if (buf == NULL) {
-			ipc_client_destroy(client);
+			ipc_client_close(client);
 			return 0;
 		}
 		client->buf = buf;
@@ -1172,7 +1224,12 @@ static int handle_client_readable(int fd, uint32_t mask, void *data)
 	memcpy(client->buf + client->len, chunk, (size_t)n);
 	client->len += (size_t)n;
 
-	/* Dispatch each complete line, keeping any trailing partial. */
+	/* Dispatch each complete line, keeping any trailing partial.
+	 *
+	 * Handling a message can drop this very client — the reply is broadcast,
+	 * and a client that has already gone away fails the write. Its buffer must
+	 * not be touched again after that, neither for the next line nor for the
+	 * compaction below. */
 	size_t start = 0;
 	for (size_t i = 0; i < client->len; i++) {
 		if (client->buf[i] != '\n') {
@@ -1182,6 +1239,9 @@ static int handle_client_readable(int fd, uint32_t mask, void *data)
 		if (i > start) {
 			viewport_ipc_handle(client->ipc->server, client->buf + start,
 				i - start);
+			if (client->dead) {
+				return 0;
+			}
 		}
 		start = i + 1;
 	}
@@ -1218,7 +1278,9 @@ static int handle_socket_connection(int fd, uint32_t mask, void *data)
 	wl_list_insert(&ipc->clients, &client->link);
 
 	/* Bring the newcomer up to date immediately: outputs, then every view
-	 * that mapped before it connected. */
+	 * that mapped before it connected. Each of these broadcasts, so the client
+	 * may be gone by the last one — harmless, but nothing below may assume it
+	 * is still there. */
 	viewport_ipc_notify_output_layout(ipc->server);
 	viewport_ipc_notify_config(ipc->server);
 	viewport_ipc_notify_views(ipc->server);
@@ -1234,6 +1296,7 @@ struct viewport_ipc *viewport_ipc_create(struct viewport_server *server,
 	}
 	ipc->server = server;
 	wl_list_init(&ipc->clients);
+	wl_list_init(&ipc->dead);
 
 	if (path != NULL) {
 		ipc->path = strdup(path);
@@ -1299,8 +1362,16 @@ void viewport_ipc_destroy(struct viewport_ipc *ipc)
 
 	struct ipc_client *client, *tmp;
 	wl_list_for_each_safe(client, tmp, &ipc->clients, link) {
-		ipc_client_destroy(client);
+		ipc_client_close(client);
 	}
+	/* Now rather than from the idle callback: that callback would fire after
+	 * this struct is freed, and there is no dispatch left in flight to protect
+	 * the clients from. */
+	if (ipc->reaper != NULL) {
+		wl_event_source_remove(ipc->reaper);
+		ipc->reaper = NULL;
+	}
+	ipc_reap(ipc);
 
 	if (ipc->source != NULL) {
 		wl_event_source_remove(ipc->source);
