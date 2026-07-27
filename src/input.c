@@ -1007,7 +1007,7 @@ static void handle_keyboard_key(struct wl_listener *listener, void *data)
 	 *
 	 * Unless the focused client has asked for the keyboard, in which case they
 	 * are its chords for as long as it holds focus. */
-	if (pressed && !shortcuts_inhibited(server) &&
+	if (pressed && !server->locked && !shortcuts_inhibited(server) &&
 			(viewport_bindings_handle(server, modifiers, raw_syms, n_raw) ||
 			 viewport_bindings_handle(server, modifiers, syms, nsyms))) {
 		return;

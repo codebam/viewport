@@ -185,6 +185,10 @@ static void handle_commit(struct wl_listener *listener, void *data)
 static void focus_layer_surface(struct viewport_layer_surface *surface)
 {
 	struct viewport_server *server = surface->server;
+	if (server->locked) {
+		return;
+	}
+
 	struct wlr_layer_surface_v1 *layer_surface = surface->layer_surface;
 
 	if (layer_surface->current.keyboard_interactive ==

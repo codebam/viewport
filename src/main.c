@@ -306,6 +306,7 @@ int main(int argc, char *argv[])
 	 * context. */
 	guint sigterm = g_unix_signal_add(SIGTERM, handle_signal, &server);
 	guint sigint = g_unix_signal_add(SIGINT, handle_signal, &server);
+	signal(SIGCHLD, SIG_IGN);
 
 	viewport_server_run(&server);
 

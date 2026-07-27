@@ -865,6 +865,10 @@ void viewport_toplevel_set_box(struct viewport_toplevel *toplevel,
 void viewport_toplevel_focus(struct viewport_toplevel *toplevel)
 {
 	struct viewport_server *server = toplevel->server;
+	if (server->locked) {
+		return;
+	}
+
 	struct wlr_surface *surface = viewport_view_surface(toplevel);
 
 	if (server->focused == toplevel) {

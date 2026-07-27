@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -1358,6 +1359,19 @@ static int handle_socket_connection(int fd, uint32_t mask, void *data)
 		return 0;
 	}
 
+#ifdef SO_PEERCRED
+	struct ucred cred;
+	socklen_t len = sizeof(cred);
+	if (getsockopt(client_fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) == 0) {
+		if (cred.uid != getuid() && cred.uid != 0) {
+			wlr_log(WLR_ERROR, "IPC client connection refused: UID %u != %u",
+				(unsigned)cred.uid, (unsigned)getuid());
+			close(client_fd);
+			return 0;
+		}
+	}
+#endif
+
 	int flags = fcntl(client_fd, F_GETFL, 0);
 	fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
 
@@ -1446,6 +1460,7 @@ struct viewport_ipc *viewport_ipc_create(struct viewport_server *server,
 		wlr_log(WLR_ERROR, "bind %s: %s", ipc->path, strerror(errno));
 		goto error_fd;
 	}
+	chmod(ipc->path, 0600);
 	if (listen(ipc->fd, 8) < 0) {
 		wlr_log(WLR_ERROR, "listen %s: %s", ipc->path, strerror(errno));
 		goto error_fd;

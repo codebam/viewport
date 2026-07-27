@@ -126,36 +126,36 @@ static void handle_tablet_axis(struct wl_listener *listener, void *data)
 
 	double sx, sy;
 	struct wlr_surface *surface = tablet_surface_at(server, &sx, &sy, NULL);
-	if (surface != NULL) {
+	if (surface != NULL && !server->locked) {
 		wlr_tablet_v2_tablet_tool_notify_motion(tool->tool_v2, sx, sy);
-	}
 
-	/* Everything a drawing program actually wants. Sent only when the event
-	 * says it changed, because a tablet reports what moved and inventing the
-	 * rest would be noise. */
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_PRESSURE) {
-		wlr_tablet_v2_tablet_tool_notify_pressure(tool->tool_v2,
-			event->pressure);
-	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_DISTANCE) {
-		wlr_tablet_v2_tablet_tool_notify_distance(tool->tool_v2,
-			event->distance);
-	}
-	if (event->updated_axes &
-			(WLR_TABLET_TOOL_AXIS_TILT_X | WLR_TABLET_TOOL_AXIS_TILT_Y)) {
-		wlr_tablet_v2_tablet_tool_notify_tilt(tool->tool_v2, event->tilt_x,
-			event->tilt_y);
-	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_ROTATION) {
-		wlr_tablet_v2_tablet_tool_notify_rotation(tool->tool_v2,
-			event->rotation);
-	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_SLIDER) {
-		wlr_tablet_v2_tablet_tool_notify_slider(tool->tool_v2, event->slider);
-	}
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_WHEEL) {
-		wlr_tablet_v2_tablet_tool_notify_wheel(tool->tool_v2, event->wheel_delta,
-			0);
+		/* Everything a drawing program actually wants. Sent only when the event
+		 * says it changed, because a tablet reports what moved and inventing the
+		 * rest would be noise. */
+		if (event->updated_axes & WLR_TABLET_TOOL_AXIS_PRESSURE) {
+			wlr_tablet_v2_tablet_tool_notify_pressure(tool->tool_v2,
+				event->pressure);
+		}
+		if (event->updated_axes & WLR_TABLET_TOOL_AXIS_DISTANCE) {
+			wlr_tablet_v2_tablet_tool_notify_distance(tool->tool_v2,
+				event->distance);
+		}
+		if (event->updated_axes &
+				(WLR_TABLET_TOOL_AXIS_TILT_X | WLR_TABLET_TOOL_AXIS_TILT_Y)) {
+			wlr_tablet_v2_tablet_tool_notify_tilt(tool->tool_v2, event->tilt_x,
+				event->tilt_y);
+		}
+		if (event->updated_axes & WLR_TABLET_TOOL_AXIS_ROTATION) {
+			wlr_tablet_v2_tablet_tool_notify_rotation(tool->tool_v2,
+				event->rotation);
+		}
+		if (event->updated_axes & WLR_TABLET_TOOL_AXIS_SLIDER) {
+			wlr_tablet_v2_tablet_tool_notify_slider(tool->tool_v2, event->slider);
+		}
+		if (event->updated_axes & WLR_TABLET_TOOL_AXIS_WHEEL) {
+			wlr_tablet_v2_tablet_tool_notify_wheel(tool->tool_v2, event->wheel_delta,
+				0);
+		}
 	}
 }
 
