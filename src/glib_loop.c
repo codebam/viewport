@@ -132,8 +132,38 @@ struct viewport_glib_loop *viewport_glib_loop_create(struct wl_display *display)
 		wl_event_loop_get_fd(loop->event_loop), G_IO_IN | G_IO_ERR | G_IO_HUP);
 
 	g_source_set_name(source, "wayland-event-loop");
-	/* Ahead of WebKit's default-priority work: input latency beats layout. */
-	g_source_set_priority(source, G_PRIORITY_DEFAULT - 10);
+
+	/* The same priority as WebKit's own sources, deliberately.
+	 *
+	 * This used to sit at G_PRIORITY_DEFAULT - 10, on the reasoning that input
+	 * latency beats layout. GLib does not share between priorities, though: an
+	 * iteration dispatches the ready sources at the highest priority it finds
+	 * and nothing below them. So the moment this source is *always* ready, the
+	 * sources beneath it never run again.
+	 *
+	 * Which is what happens under load. Two 1440p outputs at 240Hz is a page
+	 * flip every four milliseconds, and a full composite takes most of that —
+	 * so by the time one finishes another event is already waiting and the fd
+	 * is never quiet. WebKit is a default-priority source, so it stopped being
+	 * dispatched at all, and the shell that draws the entire desktop went with
+	 * it: no layout, no focus, no placement, until the watchdog started tiling
+	 * windows by itself.
+	 *
+	 * It also feeds itself. The fallback layout puts every window on screen at
+	 * once, which is more to composite, which keeps the fd busier still. A
+	 * session that began as an occasional stutter ended as one that had to be
+	 * killed.
+	 *
+	 * The symptom that made this hard to place: the compositor stays perfectly
+	 * responsive throughout. Input is dispatched, the control socket answers a
+	 * round trip in a fifth of a millisecond, frames keep being presented — all
+	 * of that is this source. Only the half that was starved looked broken, and
+	 * it is in another process.
+	 *
+	 * At equal priority GLib dispatches both in the same iteration, so the
+	 * Wayland fd is still serviced every time round without WebKit being locked
+	 * out. Input latency was never the thing worth protecting here. */
+	g_source_set_priority(source, G_PRIORITY_DEFAULT);
 	g_source_attach(source, loop->context);
 
 	loop->source = source;
