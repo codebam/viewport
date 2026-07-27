@@ -93,17 +93,34 @@ int main(int argc, char *argv[])
 	const char *bind_specs[64];
 	size_t bind_count = 0;
 
+	/* Which settings came from the command line.
+	 *
+	 * Needed because a flag and the config file write to the same fields, and
+	 * the file is read after the flags are parsed. Comparing the value against
+	 * the built-in default cannot tell the two apart — it did once, against a
+	 * URL that has since changed, which silently made "url" in the config file
+	 * do nothing at all for every user who set it. */
+	/* --socket is absent: the control socket is opened inside
+	 * viewport_server_init(), before the config file is read, so it is already
+	 * whatever the flag said and there is nothing to re-apply. */
+	struct {
+		bool url, fallback, timeout, terminal, menu;
+	} from_flag = { 0 };
+
 	while ((c = getopt_long(argc, argv, "u:f:t:s:e:c:T:M:b:Hdh", options,
 			NULL)) != -1) {
 		switch (c) {
 		case 'u':
 			config.url = optarg;
+			from_flag.url = true;
 			break;
 		case 'f':
 			config.fallback_url = optarg;
+			from_flag.fallback = true;
 			break;
 		case 't':
 			config.load_timeout_ms = (unsigned)strtoul(optarg, NULL, 10);
+			from_flag.timeout = true;
 			break;
 		case 's':
 			config.ipc_path = optarg;
@@ -113,9 +130,11 @@ int main(int argc, char *argv[])
 			break;
 		case 'T':
 			config.terminal = optarg;
+			from_flag.terminal = true;
 			break;
 		case 'M':
 			config.menu = optarg;
+			from_flag.menu = true;
 			break;
 		case 'b':
 			if (bind_count < sizeof(bind_specs) / sizeof(bind_specs[0])) {
@@ -204,22 +223,37 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	/* Re-apply flags: the config file must not override an explicit flag. */
-	if (config.url != NULL && strcmp(config.url, "http://localhost:3000") != 0) {
+	/* Re-apply flags: the config file must not override an explicit flag.
+	 * Every flag that shares a field with a config key belongs here, or the
+	 * documented precedence only holds for whichever ones were remembered. */
+	if (from_flag.url) {
 		server.config.url = config.url;
 	}
-	if (config.terminal != NULL) {
+	if (from_flag.fallback) {
+		server.config.fallback_url = config.fallback_url;
+	}
+	if (from_flag.timeout) {
+		server.config.load_timeout_ms = config.load_timeout_ms;
+	}
+	if (from_flag.terminal) {
 		server.config.terminal = config.terminal;
 	}
-	if (config.menu != NULL) {
+	if (from_flag.menu) {
 		server.config.menu = config.menu;
 	}
 
+	/* Command-line binds are additive, as --help says they are. They are added
+	 * before the defaults and bindings match front-to-back, so a --bind for a
+	 * chord that also has a default shadows it without the defaults having to
+	 * be suppressed. Suppressing them was the old behaviour, and it meant one
+	 * --bind silently took away Mod4+Return, exit, focus and the media keys. */
 	for (size_t i = 0; i < bind_count; i++) {
 		viewport_binding_add(&server, bind_specs[i]);
 	}
 
-	if (!server.config.binds_from_config && bind_count == 0) {
+	/* Only an explicit "binds" object in the config file replaces the defaults
+	 * wholesale — that is what makes an empty one mean "no keymap at all". */
+	if (!server.config.binds_from_config) {
 		viewport_bindings_add_defaults(&server, server.config.terminal,
 			server.config.menu);
 	}
@@ -235,8 +269,11 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
+	/* The URL actually in force, not the one the flag carried: the config file
+	 * may have supplied it, and a log line naming the wrong shell is worse
+	 * than none when the desktop comes up empty. */
 	wlr_log(WLR_INFO, "WAYLAND_DISPLAY=%s  shell=%s",
-		server.socket_name, config.url);
+		server.socket_name, server.config.url);
 
 	if (config.startup_cmd != NULL) {
 		if (fork() == 0) {
