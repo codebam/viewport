@@ -2783,12 +2783,7 @@ function renderBar(name) {
   output.modeEl.hidden = labels.length === 0;
 
   const m = output.modules;
-  const now = new Date();
-  const date = now.toLocaleDateString('en-US',
-    { weekday: 'short', month: 'short', day: '2-digit' });
-  const time = `${String(now.getHours()).padStart(2, '0')}:` +
-    `${String(now.getMinutes()).padStart(2, '0')}`;
-  m.clock.textContent = `󰥔 ${date}, ${time}`;
+  m.clock.textContent = clockText();
 
   const s = lastStatus;
   m.cpu.textContent = s.cpu >= 0 ? ` ${Math.round(s.cpu)}%` : '';
@@ -2803,10 +2798,40 @@ function renderBars() {
   for (const name of outputs.keys()) renderBar(name);
 }
 
-/* The clock changes once a minute, but a second's granularity keeps it from
- * lagging visibly after a resume. Redrawing the bar is cheap; note that every
- * shell repaint is a composited frame, so do not make this faster. */
-setInterval(renderBars, 1000);
+function clockText() {
+  const now = new Date();
+  const date = now.toLocaleDateString('en-US',
+    { weekday: 'short', month: 'short', day: '2-digit' });
+  const time = `${String(now.getHours()).padStart(2, '0')}:` +
+    `${String(now.getMinutes()).padStart(2, '0')}`;
+  return `󰥔 ${date}, ${time}`;
+}
+
+/* The tick redraws the clock and nothing else.
+ *
+ * It used to call renderBars(), which is not cheap: renderBar() rebuilds the
+ * workspace buttons and the taskbar with replaceChildren(), allocating every
+ * element and rebinding every click listener. Once a second, on every output,
+ * whether or not the bar was even on screen — and since every shell repaint is
+ * a composited frame, an idle machine with the bar hidden was still painting
+ * the desktop 86,400 times a day to redraw a string that changes hourly.
+ *
+ * A hidden bar is skipped outright, and the text is only assigned when it
+ * differs, so the common tick touches no DOM at all. The clock is sampled at a
+ * second's granularity rather than a minute's so it does not lag visibly after
+ * a resume; nothing else here needs the tick, because everything else is
+ * redrawn by whatever changed it. */
+function renderClocks() {
+  const text = clockText();
+  for (const output of outputs.values()) {
+    if (output.el.classList.contains('bar-hidden')) continue;
+    if (output.modules.clock.textContent !== text) {
+      output.modules.clock.textContent = text;
+    }
+  }
+}
+
+setInterval(renderClocks, 1000);
 
 /* ------------------------------------------------------------------------
  * Commands forwarded from the compositor
