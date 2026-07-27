@@ -203,6 +203,10 @@ test_protocols = {
     / 'staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml',
   'ext-session-lock-v1': protocol_dir
     / 'staging/ext-session-lock/ext-session-lock-v1.xml',
+  # Vendored, as for the server side: the frame probe has to stay visible on a
+  # chosen output even while a game is fullscreen on another, and the overlay
+  # layer is the only way to ask for that.
+  'wlr-layer-shell-unstable-v1': 'protocols/wlr-layer-shell-unstable-v1.xml',
 }
 
 test_protocol_sources = []
@@ -231,6 +235,16 @@ paint_client = executable(
 capture_client = executable(
   'viewport-test-capture-client',
   files('tests/capture-client.c') + test_protocol_sources,
+  dependencies: [wayland_client],
+  install: false,
+)
+
+# Reports when the compositor stops presenting. The event loop can stay
+# responsive while the screen does not update, and a frame callback is the only
+# thing that measures the difference from outside.
+frame_client = executable(
+  'viewport-test-frame-client',
+  files('tests/frame-client.c') + test_protocol_sources,
   dependencies: [wayland_client],
   install: false,
 )
