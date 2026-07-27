@@ -86,14 +86,38 @@ const outputs = new Map(); // name -> desktop elements + workspace + barHidden
    panels, where a bar in the same pixels for hours is the thing that burns in. */
 let barMode = 'visible';
 let logoHeld = false;
-const views = new Map();   // id -> { el, viewport, title, app_id, box }
+/* Every open window. This is the only structure keyed by view id: anything
+ * else a window needs is a field on its record, so dropping the record drops
+ * the window entirely and there is nothing to keep in step by hand. */
+const views = new Map();
+// id -> { el, viewport, title, app_id, box, naturalWidth, naturalHeight,
+//         floating, overview }
 const workspaces = new Map(); // number -> tiling tree root
 
 /* Floating windows sit outside the tiling tree entirely: they keep their own
  * position and size and overlap whatever is tiled underneath. Dialogs land here
  * automatically because tiling them squeezes the window they belong to, and the
- * dialog itself usually cannot be resized to fill the slot it was given. */
-const floats = new Map(); // id -> { workspace, x, y, width, height }
+ * dialog itself usually cannot be resized to fill the slot it was given.
+ *
+ * That rect lives on the window's own record as `view.floating`, null when the
+ * window is tiled. It was a second Map keyed by view id, which meant every
+ * place a window went away had to remember to delete from both. */
+
+function floatingOf(id) {
+  return views.get(id)?.floating ?? null;
+}
+
+function isFloating(id) {
+  return floatingOf(id) !== null;
+}
+
+/* Every floating window, as [id, rect, view]. Yields nothing for a window that
+ * has no record, so callers do not have to check for one. */
+function* floatingEntries() {
+  for (const [id, view] of views) {
+    if (view.floating) yield [id, view.floating, view];
+  }
+}
 
 let focusedId = null;
 let activeOutput = null;
@@ -128,15 +152,24 @@ let gestureWorkspace = null;
  * itself into a thumbnail — which many would refuse anyway, having a minimum
  * size larger than one. */
 let overviewActive = false;
-/* Scale currently applied to each window, so reportGeometry can undo it: the
- * compositor wants the window's real size plus a factor, not the size it
- * appears at. */
-const overviewScales = new Map(); // view id -> scale
-/* The thumbnail each window is drawn in, so its clip can be taken from that
- * rather than from the whole output. */
-const overviewCells = new Map(); // view id -> thumbnail element
-/* Thumbnails by workspace, so a drag can find what it was released over. */
+/* What the overview does to a window — the scale it is drawn at, so
+ * reportGeometry can undo it, and the thumbnail bounding it, so the clip comes
+ * from that rather than from the whole output — lives on the window's own
+ * record as `view.overview`, set by renderOverview and cleared by
+ * clearOverviewState(). It was two Maps keyed by view id, which worked but had
+ * to be kept in step with the view list by hand at three separate sites. */
+
+/* Thumbnails by workspace, so a drag can find what it was released over. This
+ * one stays a Map: it is keyed by workspace, not by window, so there is no view
+ * record for it to live on. */
 const overviewThumbs = new Map(); // workspace -> thumbnail element
+
+/* Forget every window's overview state. Called when the overview closes and at
+ * the top of each relayout that rebuilds it. */
+function clearOverviewState() {
+  for (const view of views.values()) view.overview = null;
+  overviewThumbs.clear();
+}
 
 const outputsEl = document.getElementById('outputs');
 const notificationsEl = document.getElementById('notifications');
@@ -205,7 +238,7 @@ function isFullscreen(id) {
 
 /* Which workspace a window is on, tiled or floating. */
 function workspaceOf(id) {
-  const floating = floats.get(id);
+  const floating = floatingOf(id);
   if (floating) return floating.workspace;
   return findLeaf(id)?.workspace ?? null;
 }
@@ -215,7 +248,7 @@ function workspaceOf(id) {
  * than "where does it sit in the tree". */
 function idsOf(n) {
   const ids = leavesOf(n).map((leaf) => leaf.id);
-  for (const [id, floating] of floats) {
+  for (const [id, floating] of floatingEntries()) {
     if (floating.workspace === n) ids.push(id);
   }
   return ids;
@@ -721,10 +754,8 @@ function renderOverview(output, list) {
     if (rendered) inner.append(rendered);
 
     /* Floating windows belong to the thumbnail of their own workspace too. */
-    for (const [id, floating] of floats) {
+    for (const [id, floating, view] of floatingEntries()) {
       if (floating.workspace !== n) continue;
-      const view = views.get(id);
-      if (!view) continue;
       view.el.classList.add('floating');
       Object.assign(view.el.style, {
         left: `${floating.x}px`, top: `${floating.y}px`,
@@ -739,8 +770,10 @@ function renderOverview(output, list) {
        layout overflows spills across its neighbours, since the surfaces the
        compositor draws are not bounded by the thumbnail's `overflow: hidden`. */
     for (const id of idsOf(n)) {
-      overviewScales.set(id, scale);
-      overviewCells.set(id, cell);
+      /* Not every leaf has a window: a restored session leaves slots in the
+         tree for applications that have not come back yet. */
+      const view = views.get(id);
+      if (view) view.overview = { scale, cell };
     }
 
     overviewThumbs.set(n, cell);
@@ -801,9 +834,8 @@ function serialiseSession() {
   /* Floating windows live outside the tree, so walking it misses them
      entirely — they came back tiled, in whatever order they happened to open.
      Their rect is the whole of their layout, so it is what gets written. */
-  for (const [id, floating] of floats) {
-    const view = views.get(id);
-    const app = view ? (view.app_id || view.title) : null;
+  for (const [id, floating, view] of floatingEntries()) {
+    const app = view.app_id || view.title;
     if (!app) continue;
     saved.floating.push({
       app,
@@ -1096,7 +1128,7 @@ function moveViewToWorkspace(id, n) {
   if (n < 1 || n > WORKSPACES) return false;
   if (workspaceOf(id) === n) return false;
 
-  const floating = floats.get(id);
+  const floating = floatingOf(id);
   if (floating) {
     floating.workspace = n;
   } else {
@@ -1128,8 +1160,8 @@ function beginOverviewDrag(event, id) {
   event.preventDefault();
   event.stopPropagation();
 
-  const from = overviewCells.get(id);
   const view = views.get(id);
+  const from = view?.overview?.cell;
   view?.el.classList.add('dragging-overview');
 
   const thumbAt = (x, y) => {
@@ -1176,9 +1208,7 @@ function setOverview(active) {
   overviewActive = active;
 
   if (!active) {
-    overviewScales.clear();
-    overviewCells.clear();
-    overviewThumbs.clear();
+    clearOverviewState();
   }
 
   /* The compositor routes input to the shell while this is up: the windows on
@@ -1653,7 +1683,7 @@ function resizeByDelta(id, dx, dy) {
   /* A floating window resizes by simply becoming that much bigger — there are
      no siblings to take the space from. Clamped so a drag cannot shrink it to
      nothing and leave a window that can no longer be grabbed. */
-  const floating = floats.get(id);
+  const floating = floatingOf(id);
   if (floating) {
     const view = views.get(id);
     const minWidth = parseInt(view?.el?.style?.minWidth, 10) || 80;
@@ -1739,7 +1769,7 @@ function reportGeometry(id) {
   /* In the overview the element is inside a scaled container, so the measured
      rect is where it appears but not the size the client should be. The
      compositor is told the real size and the factor to draw it at. */
-  const scale = overviewScales.get(id) ?? 1;
+  const scale = view.overview?.scale ?? 1;
   const box = {
     x: Math.round(rect.left),
     y: Math.round(rect.top),
@@ -1760,7 +1790,7 @@ function reportGeometry(id) {
    * scrolled off the left of one monitor appears on the monitor beside it. The
    * compositor crops the surface to this rect. */
   /* In the overview a window is bounded by its thumbnail, not by the output. */
-  const cell = overviewCells.get(id);
+  const cell = view.overview?.cell;
   const area = cell
     ? (() => {
       const r = cell.getBoundingClientRect();
@@ -1991,9 +2021,7 @@ function relayoutAll() {
   renderedIds = new Set();
 
   if (overviewActive) {
-    overviewScales.clear();
-    overviewCells.clear();
-    overviewThumbs.clear();
+    clearOverviewState();
   }
   const assignment = overviewActive ? overviewAssignment() : null;
 
@@ -2018,11 +2046,9 @@ function relayoutAll() {
        appended after the tree and take their rect from their own record. CSS
        lifts them above the tiled windows; the compositor stacks the real
        surfaces to match when it is told their new rects. */
-    for (const [id, floating] of floats) {
+    for (const [id, floating, view] of floatingEntries()) {
       if (overviewActive) break; // thumbnails place their own
       if (floating.workspace !== output.workspace) continue;
-      const view = views.get(id);
-      if (!view) continue;
       view.el.classList.add('floating');
       output.windowsEl.append(view.el);
       renderedIds.add(id);
@@ -2352,7 +2378,7 @@ function setFloating(id, floating, rect = null) {
   if (workspace === null) return;
 
   if (floating) {
-    if (floats.has(id)) return;
+    if (isFloating(id)) return;
     removeLeaf(id);
 
     const output = outputs.get(hostOfWorkspace(workspace) ?? activeOutputName());
@@ -2368,7 +2394,7 @@ function setFloating(id, floating, rect = null) {
     const height = Math.min(rect?.height ?? view.naturalHeight ?? 480,
       area.height);
 
-    floats.set(id, {
+    view.floating = {
       workspace,
       /* Centred. A dialog that opens in a corner reads as a glitch, and the
          client never says where it wants to be. */
@@ -2376,10 +2402,10 @@ function setFloating(id, floating, rect = null) {
       y: rect?.y ?? Math.round((area.height - height) / 2),
       width: Math.round(width),
       height: Math.round(height),
-    });
+    };
   } else {
-    if (!floats.has(id)) return;
-    floats.delete(id);
+    if (!isFloating(id)) return;
+    view.floating = null;
 
     /* Inline geometry would otherwise fight flexbox once it is back in the
        tree. */
@@ -2395,14 +2421,14 @@ function setFloating(id, floating, rect = null) {
 
 function toggleFloating(id) {
   if (id == null) return;
-  setFloating(id, !floats.has(id));
+  setFloating(id, !isFloating(id));
 }
 
 /* Drag a floating window, in response to Mod4 + left drag reported by the
  * compositor. Tiled windows have no position of their own, so this is a no-op
  * for them rather than an error. */
 function moveByDelta(id, dx, dy) {
-  const floating = floats.get(id);
+  const floating = floatingOf(id);
   if (!floating) return;
 
   /* Follow the pointer exactly for the duration of the drag; the class is
@@ -2471,6 +2497,10 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   views.set(id, {
     el, viewport, title, app_id, box: null,
     naturalWidth: width, naturalHeight: height,
+    /* Rect while floating, null while tiled; see floatingOf(). */
+    floating: null,
+    /* Set while the overview is up; see clearOverviewState(). */
+    overview: null,
   });
   resizeObserver.observe(viewport);
 
@@ -2630,8 +2660,9 @@ function removeView(id) {
 
   resizeObserver.unobserve(view.viewport);
   view.el.remove();
+  /* The floating rect and the overview state live on the record, so they go
+     with it — there is no second structure left to forget. */
   views.delete(id);
-  floats.delete(id);
   removeLeaf(id);
   treeGeneration++;
   const fullscreenWorkspace = workspace !== null && fullscreens.get(workspace) === id
@@ -2743,7 +2774,7 @@ function renderBar(name) {
     if (leavesOf(n).length > 0) occupied.add(n);
   }
   /* A workspace holding only floating windows is still occupied. */
-  for (const floating of floats.values()) occupied.add(floating.workspace);
+  for (const [, floating] of floatingEntries()) occupied.add(floating.workspace);
 
   output.workspacesEl.replaceChildren();
   for (const n of [...occupied].sort((a, b) => a - b)) {
@@ -2762,7 +2793,7 @@ function renderBar(name) {
     if (!view) continue;
     const button = document.createElement('button');
     button.className = (id === focusedId ? 'focused' : '')
-      + (floats.has(id) ? ' floating' : '');
+      + (isFloating(id) ? ' floating' : '');
     button.textContent = view.title || view.app_id || `view ${id}`;
     button.addEventListener('click', () => send({ type: 'view.focus', id }));
     output.taskbarEl.append(button);
@@ -2859,13 +2890,13 @@ function handleShellCommand(command, args) {
       /* The strip moves whole columns rather than rearranging a tree. At its
        * ends the window carries over to the next monitor, exactly as it does
        * when tiling — the strip is per workspace, not per session. */
-      if (layoutMode === 'scrolling' && !floats.has(focusedId)) {
+      if (layoutMode === 'scrolling' && !isFloating(focusedId)) {
         if (!scrollMove(arg)) moveViewToOutput(focusedId, arg);
         break;
       }
       /* A floating window has no place in the tree to move within, so the same
        * keys nudge it instead — sway does this too. */
-      if (floats.has(focusedId)) {
+      if (isFloating(focusedId)) {
         const step = 40;
         moveByDelta(focusedId,
           arg === 'left' ? -step : arg === 'right' ? step : 0,

@@ -183,10 +183,10 @@ global.matchMedia = () => ({ matches: false });
  * shell's state is unreachable from out here unless it hands it over. */
 /* overviewStateForTest is a function rather than the maps themselves so the
  * test does not depend on where that state is kept. */
-const EXPORTS = ';globalThis.__shell = { views, workspaces, floats, outputs, scrollOffsets, overviewThumbs,'
+const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffsets, overviewThumbs,'
   + ' workspaceOfForTest: workspaceOf,'
-  + ' overviewStateForTest: (id) =>'
-  + '   ({ scale: overviewScales.get(id), cell: overviewCells.get(id) }),'
+  + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
+  + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   + ' get activeOutput() { return activeOutput; } };';
 const src = fs.readFileSync(process.argv[2], 'utf8') + '\n' + EXPORTS;
 (0, eval)(src);
@@ -279,8 +279,8 @@ if (sessionTest) {
   emit({ type: 'session.restore', state: floatState });
   open(20, 'pavucontrol');
 
-  const record = globalThis.__shell.floats.get(20);
-  check('a floating window comes back floating', record !== undefined);
+  const record = globalThis.__shell.floatingForTest(20);
+  check('a floating window comes back floating', record !== null);
   check('on the workspace it was on', record?.workspace === 4);
   check('at the rect it had',
     record?.x === 111 && record?.y === 222 &&
@@ -389,15 +389,15 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     globalThis.__shell.workspaceOfForTest(50) === 6);
 
   open(51, 'dialogy-thing');
-  const rect = globalThis.__shell.floats.get(51);
-  check('a rule can float a window', rect !== undefined);
+  const rect = globalThis.__shell.floatingForTest(51);
+  check('a rule can float a window', rect !== null);
   check('with the rect the rule gave',
     rect?.x === 10 && rect?.width === 300);
 
   /* An application no rule mentions is untouched. */
   open(52, 'ordinary');
   check('an unmatched window is placed normally',
-    !globalThis.__shell.floats.has(52));
+    globalThis.__shell.floatingForTest(52) === null);
 
   for (const id of [50, 51, 52]) emit({ type: 'view.removed', id });
   /* Put focus back where the rest of the file expects it. */
