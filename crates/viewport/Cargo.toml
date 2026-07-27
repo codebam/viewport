@@ -20,3 +20,21 @@ viewport-web.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+# Pinned to a revision rather than the 0.7.0 release: the release predates the
+# dispatch2 rework, and the API this code is written against is the one in the
+# tree — `delegate_dispatch2!`, `backend.bind()` returning a framebuffer, and
+# `render_output` taking one. Bump deliberately, not automatically.
+[dependencies.smithay]
+git = "https://github.com/Smithay/smithay.git"
+rev = "39cd5f19d0d17f0dbb9cdf2639fc114cb00c3738"
+default-features = false
+features = [
+    "backend_winit",
+    "wayland_frontend",
+    "desktop",
+    "renderer_gl",
+]

@@ -147,12 +147,42 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 
 ## Order of work
 
-1. `viewport-ipc` — full protocol, round-trip tested against captures from the
-   C build. No compositor needed.
-2. `viewport` — Smithay winit backend, `Space`, xdg-shell, IPC socket. Windows
-   placeable by a script before any web engine exists.
+1. **Done.** `viewport-ipc` — the protocol, ported field by field.
+2. **Done.** `viewport` — winit and headless backends, `Space`, xdg-shell, the
+   control socket. Windows are placeable by a script before any web engine
+   exists; see below.
 3. `viewport-web` — Servo behind the custom DMA-BUF `RenderingContext`, the
    preload shim, and the real shell rendering.
 4. udev/DRM backend, explicit sync, colour transforms.
 5. layer-shell, session-lock, foreign-toplevel, text-input, tablet.
 6. `color-management-v1`, `wlr-output-management`, Xwayland.
+
+## Running it now
+
+```
+cargo run -p viewport -- --headless --socket /tmp/vp.sock   # no GPU, no display
+cargo run -p viewport                                       # nested, in a window
+node scripts/place.js /tmp/vp.sock                          # a stand-in shell
+```
+
+`scripts/place.js` speaks the same protocol `data/shell/*.js` speaks and does
+the one thing the compositor cannot do for itself: decide where windows go. It
+tiles them left to right. Point a client at the compositor's Wayland socket
+(`WAYLAND_DISPLAY=wayland-N foot`) and it gets placed.
+
+The headless backend is a virtual output and a timer standing in for vblank, no
+renderer. It is what makes the whole window lifecycle and the entire IPC
+protocol testable in CI, and what `output.test_add` is gated on.
+
+### What step 2 deliberately does not do
+
+- **No layout policy, at all.** A window is created but not mapped into the
+  `Space` until a `view.layout` arrives for it. There is nowhere a window could
+  legitimately be drawn before the shell has said where.
+- **No move or resize grabs.** A client asking the compositor to move or resize
+  it has asked the wrong party — the frame is DOM and dragging an edge is the
+  browser resizing a flex container. Those requests are ignored, not implemented.
+- **Per-window opacity is stored but not applied.** It needs a render element
+  that can carry alpha, which arrives with the shell render path in step 3.
+- Notifications, keybindings, config parsing and HDR answer with an `error`
+  naming what is missing rather than failing silently.
