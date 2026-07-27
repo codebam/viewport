@@ -18,6 +18,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
+#include <string.h>
 
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <stdlib.h>
@@ -188,10 +189,54 @@ static void handle_capture_source_destroy(struct wl_listener *listener,
 	toplevel->capture_source = NULL;
 }
 
+/* Trim the capture to the window, not the surface.
+ *
+ * A client drawing its own decorations paints shadows and resize handles
+ * outside the window it appears to be, and the capture is aimed at the whole
+ * surface, so without this the viewer gets the window adrift in a transparent
+ * margin — 26x23 of it for Firefox — and a stream larger than the window in
+ * both dimensions. xdg_surface.geometry marks the real window inside that
+ * larger surface, and it is already in root-surface coordinates, which is what
+ * the clip wants.
+ *
+ * Only for xdg: an X11 window's geometry is its surface, so there is nothing
+ * to trim and clipping it would only be a way to get it wrong.
+ *
+ * Called on every commit, because the margin is not fixed — it changes as the
+ * client resizes. The comparison matters: re-clipping damages the capture
+ * scene, and doing that per commit for a clip that has not moved would have
+ * the capture re-rendering for no reason. */
+void viewport_foreign_capture_update(struct viewport_toplevel *toplevel)
+{
+	if (toplevel->capture_tree == NULL ||
+			toplevel->kind != VIEWPORT_VIEW_XDG) {
+		return;
+	}
+
+	struct wlr_box geo = viewport_view_geometry(toplevel);
+	if (geo.width <= 0 || geo.height <= 0) {
+		/* Nothing committed yet. A zero-sized clip disables clipping rather
+		 * than hiding everything, so it would show the margin instead — but it
+		 * would also be recorded as applied, and the real geometry that
+		 * follows might compare equal to it. Wait for a real one. */
+		return;
+	}
+
+	if (memcmp(&geo, &toplevel->capture_clip, sizeof(geo)) == 0) {
+		return;
+	}
+	toplevel->capture_clip = geo;
+
+	wlr_scene_subsurface_tree_set_clip(&toplevel->capture_tree->node, &geo);
+}
+
 /* Tear down the capture pipeline built by the request handler below. Called
  * when the window goes away; the picker's session ends with it. */
 void viewport_foreign_capture_finish(struct viewport_toplevel *toplevel)
 {
+	toplevel->capture_tree = NULL;
+	toplevel->capture_clip = (struct wlr_box){0};
+
 	if (toplevel->capture_scene == NULL) {
 		return;
 	}
@@ -292,15 +337,20 @@ static void handle_toplevel_capture_request(struct wl_listener *listener,
 				handle_capture_source_destroy;
 			wl_signal_add(&toplevel->capture_source->events.destroy,
 				&toplevel->capture_source_destroy);
+
+			toplevel->capture_tree = tree;
+			viewport_foreign_capture_update(toplevel);
 		}
 
 		/* The capture is aimed at the surface, not at the layout, so what
-		 * matters is the surface's own size — the one figure that decides the
-		 * stream's resolution and the one that is invisible from outside. */
+		 * matters is the surface and the window inside it — between them they
+		 * decide the stream's resolution, and neither is visible from outside.
+		 * A window narrower than its surface is a client drawing its own
+		 * shadows; the two being equal is server-side decorations or X11. */
 		wlr_log(WLR_INFO,
-			"capture requested for view %u: surface %dx%d (clipped=%d)",
+			"capture requested for view %u: surface %dx%d, window %dx%d",
 			toplevel->id, surface->current.width, surface->current.height,
-			toplevel->has_clip);
+			toplevel->capture_clip.width, toplevel->capture_clip.height);
 
 		wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(
 			request, toplevel->capture_source);

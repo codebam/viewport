@@ -79,6 +79,10 @@ static void handle_toplevel_commit(struct wl_listener *listener, void *data)
 			toplevel->box.x, toplevel->box.y);
 	}
 
+	/* The decoration margin the capture has to trim off moves with the client,
+	 * so it is re-checked here for the same reason the placement above is. */
+	viewport_foreign_capture_update(toplevel);
+
 	if (toplevel->xdg_toplevel->base->initial_commit) {
 		/* The protocol requires a configure in response to the first commit.
 		 * Send the shell's rect if we already have one; otherwise 0x0 lets the

@@ -436,6 +436,10 @@ struct viewport_toplevel {
 	 * is private to the capture and holds nothing but this window's surface;
 	 * see foreign.c for why it cannot be the layout's own tree. */
 	struct wlr_scene *capture_scene;
+	struct wlr_scene_tree *capture_tree;
+	/* Last clip applied to capture_tree, so a commit that did not move the
+	 * window geometry does not disturb the capture. */
+	struct wlr_box capture_clip;
 	struct wlr_ext_image_capture_source_v1 *capture_source;
 	struct wl_listener capture_source_destroy;
 	struct wlr_scene_tree *surface_tree;
@@ -666,6 +670,7 @@ void viewport_foreign_init(struct viewport_server *server);
 void viewport_foreign_view_map(struct viewport_toplevel *toplevel);
 void viewport_foreign_view_unmap(struct viewport_toplevel *toplevel);
 void viewport_foreign_capture_finish(struct viewport_toplevel *toplevel);
+void viewport_foreign_capture_update(struct viewport_toplevel *toplevel);
 void viewport_foreign_view_props(struct viewport_toplevel *toplevel);
 void viewport_foreign_view_state(struct viewport_toplevel *toplevel,
 	bool activated, bool fullscreen);
