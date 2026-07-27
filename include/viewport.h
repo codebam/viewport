@@ -416,6 +416,10 @@ struct viewport_output {
 	/* Whether this output is currently in an HDR mode. Per output, because a
 	 * monitor that can do it sits next to one that cannot. */
 	bool hdr;
+	/* Set once the backend has refused a tearing page-flip, so it is not asked
+	 * again every frame. Cleared on a mode change, which is the point at which
+	 * the answer could differ. */
+	bool tearing_refused;
 
 	struct wl_listener frame;
 	struct wl_listener request_state;

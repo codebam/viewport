@@ -28,7 +28,7 @@
 static bool output_wants_tearing(struct viewport_output *output)
 {
 	struct viewport_server *server = output->server;
-	if (server->tearing_control == NULL) {
+	if (server->tearing_control == NULL || output->tearing_refused) {
 		return false;
 	}
 
@@ -102,22 +102,23 @@ static void handle_output_frame(struct wl_listener *listener, void *data)
 
 		committed = wlr_output_commit_state(output->wlr_output, &state);
 
-		/* The backend is allowed to refuse an async flip — it needs the buffer
-		 * on a plane, and a compressed render target cannot go on one. Losing
-		 * the frame over it would be a worse trade than the tearing was, so
-		 * the same state goes again without the flag. */
+		/* The backend is allowed to refuse an async flip. Losing the frame over
+		 * it would be a worse trade than the tearing was, so the same state
+		 * goes again without the flag.
+		 *
+		 * And then it is not asked again. Retrying every frame costs a failed
+		 * atomic commit before each real one — measured at 21 a second against
+		 * a fullscreen game, which is a cost paid in exactly the case the flag
+		 * was meant to help. The answer does not vary frame to frame: this
+		 * hardware refuses async flips while adaptive sync is on, and that is a
+		 * property of the mode, not of the frame. Cleared on a mode change. */
 		if (!committed && tearing) {
 			state.tearing_page_flip = false;
 			committed = wlr_output_commit_state(output->wlr_output, &state);
-			if (committed) {
-				static bool warned;
-				if (!warned) {
-					warned = true;
-					wlr_log(WLR_INFO, "%s refused a tearing page-flip; "
-						"presenting on vblank instead",
-						output->wlr_output->name);
-				}
-			}
+			output->tearing_refused = true;
+			wlr_log(WLR_INFO, "%s refused a tearing page-flip; presenting on "
+				"vblank instead and not asking again until the mode changes",
+				output->wlr_output->name);
 		}
 	}
 	wlr_output_state_finish(&state);
@@ -167,6 +168,8 @@ static void handle_output_request_state(struct wl_listener *listener,
 	const struct wlr_output_event_request_state *event = data;
 
 	if (wlr_output_commit_state(output->wlr_output, event->state)) {
+		/* A new mode may answer differently. */
+		output->tearing_refused = false;
 		viewport_layers_arrange(output);
 		int width, height;
 		viewport_layout_size(output->server, &width, &height);
