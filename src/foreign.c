@@ -113,6 +113,23 @@ void viewport_foreign_view_map(struct viewport_toplevel *toplevel)
 
 	toplevel->foreign = foreign;
 	viewport_foreign_view_props(toplevel);
+
+	struct viewport_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (!toplevel->has_box) {
+			wlr_foreign_toplevel_handle_v1_output_enter(foreign->handle,
+				output->wlr_output);
+			continue;
+		}
+		struct wlr_box output_box;
+		wlr_output_layout_get_box(server->output_layout, output->wlr_output,
+			&output_box);
+		struct wlr_box intersection;
+		if (wlr_box_intersection(&intersection, &output_box, &toplevel->box)) {
+			wlr_foreign_toplevel_handle_v1_output_enter(foreign->handle,
+				output->wlr_output);
+		}
+	}
 }
 
 void viewport_foreign_view_unmap(struct viewport_toplevel *toplevel)
@@ -127,6 +144,12 @@ void viewport_foreign_view_unmap(struct viewport_toplevel *toplevel)
 		return;
 	}
 	toplevel->foreign = NULL;
+
+	struct viewport_output *output;
+	wl_list_for_each(output, &toplevel->server->outputs, link) {
+		wlr_foreign_toplevel_handle_v1_output_leave(foreign->handle,
+			output->wlr_output);
+	}
 
 	wl_list_remove(&foreign->request_activate.link);
 	wl_list_remove(&foreign->request_close.link);

@@ -201,7 +201,8 @@ bool viewport_server_init(struct viewport_server *server,
 	}
 
 	server->output_layout = wlr_output_layout_create(server->wl_display);
-	wlr_xdg_output_manager_v1_create(server->wl_display, server->output_layout);
+	server->xdg_output_manager =
+		wlr_xdg_output_manager_v1_create(server->wl_display, server->output_layout);
 
 	server->scene = wlr_scene_create();
 	server->scene_layout = wlr_scene_attach_output_layout(server->scene,
@@ -319,7 +320,8 @@ bool viewport_server_init(struct viewport_server *server,
 		wlr_single_pixel_buffer_manager_v1_create(server->wl_display);
 	server->fractional_scale_manager =
 		wlr_fractional_scale_manager_v1_create(server->wl_display, 1);
-	wlr_content_type_manager_v1_create(server->wl_display, 1);
+	server->content_type_manager =
+		wlr_content_type_manager_v1_create(server->wl_display, 1);
 	wlr_alpha_modifier_v1_create(server->wl_display);
 
 	/* Tearing control lets a game opt out of vsync for its own surface, which

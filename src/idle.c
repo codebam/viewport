@@ -26,8 +26,10 @@
 
 #include <glib.h>
 
+#include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_power_management_v1.h>
 #include <wlr/util/log.h>
@@ -50,6 +52,34 @@
  * feels like the screen is refusing to wake. */
 #define BLANK_GRACE_USEC (G_USEC_PER_SEC / 2)
 
+static bool surface_is_visible(struct viewport_server *server,
+	struct wlr_surface *surface)
+{
+	if (surface == NULL || !surface->mapped) {
+		return false;
+	}
+
+	struct wlr_surface *root = wlr_surface_get_root_surface(surface);
+	if (root == NULL || !root->mapped) {
+		return false;
+	}
+
+	struct viewport_toplevel *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (viewport_view_surface(toplevel) == root) {
+			return toplevel->mapped && toplevel->visible;
+		}
+	}
+
+	struct wlr_layer_surface_v1 *layer_surface =
+		wlr_layer_surface_v1_try_from_wlr_surface(root);
+	if (layer_surface != NULL) {
+		return layer_surface->surface != NULL && layer_surface->surface->mapped;
+	}
+
+	return true;
+}
+
 static bool inhibited(struct viewport_server *server)
 {
 	if (server->idle_inhibit == NULL) {
@@ -60,7 +90,7 @@ static bool inhibited(struct viewport_server *server)
 	wl_list_for_each(inhibitor, &server->idle_inhibit->inhibitors, link) {
 		/* An inhibitor only counts while its surface is actually being shown;
 		 * a paused video on a hidden workspace is not keeping anyone awake. */
-		if (inhibitor->surface != NULL && inhibitor->surface->mapped) {
+		if (surface_is_visible(server, inhibitor->surface)) {
 			return true;
 		}
 	}

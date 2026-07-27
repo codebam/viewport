@@ -26,7 +26,9 @@
 #include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_content_type_v1.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/util/box.h>
@@ -235,6 +237,8 @@ struct viewport_server {
 	struct wlr_tearing_control_manager_v1 *tearing_control;
 	struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
 	struct wlr_single_pixel_buffer_manager_v1 *single_pixel_buffer_manager;
+	struct wlr_xdg_output_manager_v1 *xdg_output_manager;
+	struct wlr_content_type_manager_v1 *content_type_manager;
 
 	struct wlr_idle_notifier_v1 *idle_notifier;
 	struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
