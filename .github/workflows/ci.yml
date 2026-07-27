@@ -1,4 +1,4 @@
-# Two jobs, because only one of them can run on a hosted runner.
+# Four jobs, because only one of them can run on a hosted runner unassisted.
 #
 # The layout engine is plain JavaScript and needs nothing but node, so it is
 # tested on every push in about a minute. The compositor cannot be: linking it
@@ -6,12 +6,26 @@
 # overridden src, and no binary cache has that derivation. A GitHub-hosted
 # ubuntu-latest runner has 4 vCPUs, 16 GB of RAM and 14 GB of disk — a WebKit
 # build tree is 20-40 GB, so the job does not run out of time, it runs out of
-# disk. See the compositor job below for the two ways to enable it.
+# disk. See the compositor job below for the three ways to enable it.
+#
+# The wpewebkit-cache job is what makes the cheapest of those three routes
+# cheap: flake.nix exposes the engine as its own package output, so it can be
+# built once, on demand, into a binary cache that every other job then
+# substitutes from. It is never triggered by a push.
 name: CI
 
 on:
   push:
   pull_request:
+  # For the cache job only. Nothing else in this file reads these events; the
+  # job that does checks github.event_name so a push cannot start a four-hour
+  # WebKit build by accident.
+  workflow_dispatch:
+  schedule:
+    # Weekly, because the derivation is pinned in flake.lock and only changes
+    # when that input moves. This is a refresh against cache garbage
+    # collection, not a rebuild.
+    - cron: '17 4 * * 1'
 
 # A push to a branch with an open pull request fires both events, and there is
 # no reason to run the same commit twice.
@@ -21,8 +35,16 @@ on:
 # refs/heads/<branch>. Keying on github.ref alone puts the two in different
 # groups, so neither cancels the other. github.head_ref is set only on
 # pull_request, which is exactly when the substitution is needed.
+#
+# Scheduled and dispatched runs get a group of their own. They carry
+# github.ref of the default branch, so without the suffix any push to main
+# would cancel-in-progress a WebKit build that has been running for hours and
+# is minutes from populating the cache.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: >-
+    ${{ github.workflow }}-${{ github.head_ref || github.ref }}-${{
+    (github.event_name == 'schedule' ||
+    github.event_name == 'workflow_dispatch') && github.event_name || 'ci' }}
   cancel-in-progress: true
 
 jobs:
@@ -30,6 +52,17 @@ jobs:
   # path. Nothing here touches Wayland or the compositor binary — the tests
   # stub the DOM and run the real data/shell/shell.js, so a broken layout tree
   # is caught here rather than by looking at screenshots.
+  #
+  # The JSON accessor tests ride along here for the same reason: they link
+  # nothing but json-glib, so they need neither WebKit nor a Wayland socket and
+  # there is no reason to make them wait on the cache.
+  #
+  # They are compiled directly rather than through meson, which is the part
+  # worth explaining. meson.build declares wlroots and wpe-webkit at the top
+  # level, so `meson setup` fails on a runner that has neither — even for a
+  # target that uses neither. Two files and a pkg-config call reach the same
+  # binary without configuring the project at all. `meson test` still runs it
+  # locally and in the compositor job; this is the same code, checked earlier.
   shell:
     name: Shell logic
     runs-on: ubuntu-latest
@@ -52,14 +85,118 @@ jobs:
           node tests/shell.test.js data/shell/shell.js tiling session
           node tests/shell.test.js data/shell/shell.js scrolling session
 
+      - name: Install json-glib
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libjson-glib-dev
+
+      # The type-checked accessors that stand between a page's postMessage and
+      # the dispatch table. Both of the crashes fixed in the IPC parser were a
+      # member that was present but not of the type the reader assumed, so this
+      # is the one piece of C where a wrong answer is a remote crash.
+      - name: JSON accessor tests
+        run: |
+          set -eux
+          cc -std=c11 -Wall -Wextra -Wno-unused-parameter -Iinclude \
+            -o unit-test tests/unit.c src/json_util.c \
+            $(pkg-config --cflags --libs json-glib-1.0)
+          ./unit-test
+
+  # Builds .#wpewebkit on its own and pushes the closure to Cachix, so that the
+  # compositor and sanitizer jobs have something to substitute. Never runs on a
+  # push: it is workflow_dispatch, plus a weekly refresh.
+  #
+  # A fork has neither the variable nor the secret. Both are checked rather
+  # than assumed — the job is skipped outright without CACHIX_CACHE, and the
+  # steps that need write access are gated on the token being non-empty, so a
+  # fork sees a green no-op instead of a cachix push failing on nothing to
+  # authenticate with. The secrets context is not available in a job-level
+  # if:, which is why the token test is a step and not part of the guard.
+  wpewebkit-cache:
+    name: Build and cache WPE WebKit
+    if: |
+      (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'schedule') && vars.CACHIX_CACHE != ''
+    runs-on: >-
+      ${{ vars.WEBKIT_RUNNER || vars.COMPOSITOR_RUNNER
+      || 'ubuntu-latest' }}
+    # WebKit on four cores is hours, not minutes, and the default 360 is the
+    # hosted ceiling anyway; this only makes the failure legible.
+    timeout-minutes: 350
+    steps:
+      - name: Check for a cache token
+        id: token
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -n "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no CACHIX_AUTH_TOKEN; nothing to push to" >&2
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.present == 'true'
+
+      # This is the step that decides whether the job can work at all on a
+      # hosted runner. The root volume has around 14 GB free and the build
+      # tree wants 20-40; /mnt is a separate ~65 GB scratch disk that nothing
+      # uses. Bind-mounting /nix onto it before Nix is installed puts the
+      # store, and every unpacked source tree under it, on the large volume.
+      # The preinstalled Android and .NET toolchains go too, since the daemon
+      # still builds under /tmp on the root volume.
+      #
+      # It is close even so. If WebKit still fills the disk, point
+      # WEBKIT_RUNNER at a machine with room rather than trimming more here.
+      - name: Make room for a WebKit build tree
+        if: steps.token.outputs.present == 'true' && !vars.WEBKIT_RUNNER
+        run: |
+          set -eux
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
+            /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          df -h / /mnt
+
+      - uses: cachix/install-nix-action@v27
+        if: steps.token.outputs.present == 'true'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # With a token this both substitutes and pushes: everything the job adds
+      # to the store lands in the cache when the job ends.
+      - uses: cachix/cachix-action@v15
+        if: steps.token.outputs.present == 'true'
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # The engine alone, not .#viewport: the compositor is 8k lines of C that
+      # every other job can compile in a minute, and building it here would
+      # cache an output invalidated by the next commit.
+      - name: Build WPE WebKit
+        if: steps.token.outputs.present == 'true'
+        run: nix build --print-build-logs .#wpewebkit
+
   # Builds the compositor and drives real Wayland clients against a headless
   # instance: tests/capture.test.sh and tests/lock.test.sh.
   #
   # Disabled by default because it cannot pass on a stock hosted runner (see
-  # the note at the top of this file). Two ways to turn it on, in order of
+  # the note at the top of this file). Three ways to turn it on, in order of
   # how much work they are:
   #
-  #   1. Populate a binary cache with the wpewebkit derivation, so CI
+  #   1. Set the repository variable CACHIX_CACHE and the CACHIX_AUTH_TOKEN
+  #      secret, then run the "Build and cache WPE WebKit" job above by hand
+  #      once. It builds .#wpewebkit and pushes the closure; from then on this
+  #      job substitutes the engine and compiles only the C. The derivation is
+  #      pinned in flake.lock, so it is rebuilt only when that input moves and
+  #      the weekly schedule keeps it alive against garbage collection.
+  #      Finally set COMPOSITOR_CI to "true".
+  #
+  #   2. Populate a binary cache with the wpewebkit derivation, so CI
   #      substitutes it instead of building it. Build it once on a real
   #      machine and push the closure:
   #
@@ -71,7 +208,7 @@ jobs:
   #      the job in well under the disk and time limits; it only rebuilds
   #      when flake.lock or the derivation actually changes.
   #
-  #   2. Point it at a self-hosted runner with the disk to spare, by setting
+  #   3. Point it at a self-hosted runner with the disk to spare, by setting
   #      COMPOSITOR_RUNNER to that runner's label.
   compositor:
     name: Compositor and Wayland tests
@@ -83,11 +220,15 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v4
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
+      # Read-only: this job wants the engine out of the cache, it has nothing
+      # worth putting in. skipPush also means a public cache works here with
+      # no secret at all, which is what makes the job survive a fork.
       - uses: cachix/cachix-action@v15
         if: vars.CACHIX_CACHE != ''
         with:
           name: ${{ vars.CACHIX_CACHE }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
       # tests/capture.test.sh and tests/lock.test.sh both do
       #   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
@@ -141,4 +282,85 @@ jobs:
         with:
           name: meson-testlog
           path: build/meson-logs/testlog.txt
+          if-no-files-found: warn
+
+  # The same Wayland tests again, against a binary built with ASan and UBSan.
+  #
+  # Worth the second run because of what this compositor gets wrong: outputs
+  # and views outlive the structures that point at them. A monitor that
+  # disconnects mid-frame corrupted the heap and was only found by running the
+  # hotplug churn in scripts/asan-hotplug.sh under a sanitizer; the same
+  # family of bug has been fixed several times. Unsanitized, those failures
+  # look like a test that passed, or a crash somewhere unrelated hours later.
+  #
+  # Gated on the same variable as the compositor job because it links the same
+  # WebKit and needs the same populated cache to be affordable.
+  sanitizers:
+    name: Compositor under ASan and UBSan
+    if: vars.COMPOSITOR_CI == 'true'
+    runs-on: ${{ vars.COMPOSITOR_RUNNER || 'ubuntu-latest' }}
+    env:
+      # Leak checking is off for the same reason scripts/asan-hotplug.sh turns
+      # it off: WebKit and the Wayland libraries hold one-time allocations at
+      # exit and every run would be red for reasons that are not this
+      # project's. Use-after-free and out-of-bounds, the bugs actually being
+      # hunted, are unaffected.
+      ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0:abort_on_error=1
+      # UBSan only warns by default, and a warning in a log nobody reads is
+      # not a test result. Make it fatal so the meson test fails.
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v4
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - uses: cachix/cachix-action@v15
+        if: vars.CACHIX_CACHE != ''
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
+      - name: Provide a runtime directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/xdg-runtime"
+          chmod 700 "$RUNNER_TEMP/xdg-runtime"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
+
+      # See the compositor job for why this is vulkan and not pixman. It
+      # matters more here: pixman cannot bring the compositor up at all, so a
+      # sanitizer job that fell back to it would report nothing forever.
+      - name: Point Vulkan at a software device
+        run: |
+          mesa=$(nix build --no-link --print-out-paths nixpkgs#mesa)
+          icd=$(find "$mesa" -name 'lvp_icd*.json' | head -1)
+          if [ -z "$icd" ]; then
+            echo "no lavapipe ICD in $mesa" >&2
+            exit 1
+          fi
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+
+      # build-asan is the directory scripts/asan-hotplug.sh expects, so the
+      # tree CI produces is the tree a maintainer already knows how to drive.
+      #
+      # b_lundef=false is not optional: meson passes -Wl,--no-undefined by
+      # default, and the sanitizer runtimes leave interposed symbols to be
+      # resolved at load time, so the link fails without it.
+      - name: Test
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            meson setup build-asan \
+              -Db_sanitize=address,undefined -Db_lundef=false
+            meson test -C build-asan --print-errorlogs \
+              session-lock-crash capture-tiling capture-scrolling
+          '
+
+      - name: Upload the test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-testlog-asan
+          path: build-asan/meson-logs/testlog.txt
           if-no-files-found: warn
