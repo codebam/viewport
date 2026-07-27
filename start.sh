@@ -123,6 +123,24 @@ echo "logging to $LOG (previous run: $LOG.1)"
 # handed to the compositor is absolute, so the chdir costs nothing.
 cd "$HOME"
 
+# VIEWPORT_RELEASE=1 runs the optimised build instead.
+#
+# ./build is -O0. That is the right default for developing — a debug build is
+# what a backtrace is worth reading from — but it is the wrong thing to measure:
+# comparing it against the packaged compositor, which nixpkgs builds -O3, says
+# nothing about a change and makes every change look like a regression.
+#
+# So benchmarks go through here, which is the same optimisation level as the
+# package plus --debug, and --debug is what makes wlroots log its direct
+# scan-out decisions. Set it up once with:
+#
+#   nix develop --command meson setup build-release --buildtype=release
+#
+BINARY="$REPO/build/viewport"
+if [ -n "${VIEWPORT_RELEASE:-}" ]; then
+	BINARY="$REPO/build-release/viewport"
+	echo "running the optimised build"
+fi
 # VIEWPORT_ASAN=1 runs the AddressSanitizer build instead.
 #
 # The teardown corruption does not reproduce headless or nested — it needs the
@@ -132,7 +150,6 @@ cd "$HOME"
 #
 # Leak reporting is off: a compositor exits with plenty of deliberately unfreed
 # state, and the interesting error is the corruption, not the noise.
-BINARY="$REPO/build/viewport"
 if [ -n "${VIEWPORT_ASAN:-}" ]; then
 	BINARY="$REPO/build-asan/viewport"
 	export ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:halt_on_error=0

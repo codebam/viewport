@@ -187,6 +187,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' workspaceOfForTest: workspaceOf,'
   + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
+  + ' fullscreenOnForTest: fullscreenOn,'
   + ' get activeOutput() { return activeOutput; } };';
 const src = fs.readFileSync(process.argv[2], 'utf8') + '\n' + EXPORTS;
 (0, eval)(src);
@@ -919,6 +920,61 @@ if (mode === 'scrolling') {
   emit({ type: 'config', layout: mode });
   check('a config that says nothing leaves them on',
     !root.contains('no-logo') && !root.contains('no-tutorial'));
+}
+
+/* Moving a window to another workspace, for both kinds of window.
+ *
+ * There were two implementations of this — the Mod4+Shift+N binding and the
+ * overview drag — and only the second one knew that floating windows exist.
+ * The binding looked the window up in the tiling tree, did not find it, and
+ * returned, so a floating window could be dragged between thumbnails but not
+ * sent anywhere with the keyboard.
+ *
+ * Fullscreen is recorded per workspace rather than per window, so it is the
+ * other thing a move has to carry: left behind, the workspace the window came
+ * from goes on claiming a fullscreen window it no longer has.
+ */
+{
+  const views = globalThis.__shell.views;
+  const ws = globalThis.__shell.workspaceOfForTest;
+  const open = (id, app, floating = false) => emit({ type: 'view.added', id,
+    title: app, app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
+    floating, width: 800, height: 600 });
+
+  /* Floated by the compositor's own signal rather than by a config rule: the
+     rules declared at the top of this file are gone by now, replaced by the
+     later `config` messages the bar tests send. */
+  open(90, 'floaty-mover', true);
+  check('the test opened a floating window',
+    globalThis.__shell.floatingForTest(90) !== null);
+
+  emit({ type: 'view.focused', id: 90 });
+  const floatFrom = ws(90);
+  const floatTo = floatFrom === 4 ? 5 : 4;
+  emit({ type: 'shell.command', command: 'workspace.move',
+    args: [String(floatTo)] });
+  check('the keybinding moves a floating window between workspaces',
+    ws(90) === floatTo);
+
+  /* And a tiled one, fullscreen, which must take that state with it. */
+  open(91, 'tiled-mover');
+  emit({ type: 'view.focused', id: 91 });
+  const from = ws(91);
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['91', '1'] });
+  check('the window is fullscreen where it started',
+    globalThis.__shell.fullscreenOnForTest(from) === 91);
+
+  const to = from === 8 ? 9 : 8;
+  emit({ type: 'shell.command', command: 'workspace.move', args: [String(to)] });
+  check('a tiled window moves too', ws(91) === to);
+  check('fullscreen follows it',
+    globalThis.__shell.fullscreenOnForTest(to) === 91);
+  check('and is not left behind on the workspace it came from',
+    globalThis.__shell.fullscreenOnForTest(from) === null);
+
+  emit({ type: 'view.removed', id: 90 });
+  emit({ type: 'view.removed', id: 91 });
 }
 
 emit({ type: 'view.removed', id: 1 });

@@ -1126,7 +1126,8 @@ function claimFloatSlot(id, app) {
  * overview can act on any window on screen, not just the current one. */
 function moveViewToWorkspace(id, n) {
   if (n < 1 || n > WORKSPACES) return false;
-  if (workspaceOf(id) === n) return false;
+  const from = workspaceOf(id);
+  if (from === n) return false;
 
   const floating = floatingOf(id);
   if (floating) {
@@ -1142,6 +1143,16 @@ function moveViewToWorkspace(id, n) {
     } else {
       workspaceRoot(n).children.push(newLeaf(id));
     }
+  }
+
+  /* Fullscreen is recorded per workspace, so it has to travel with the window.
+     Left behind, the workspace it came from goes on claiming a fullscreen
+     window that is no longer there — bar hidden, and a layout drawn around a
+     view it cannot find — while the window arrives on the new workspace as an
+     ordinary one. */
+  if (from !== null && fullscreens.get(from) === id) {
+    fullscreens.delete(from);
+    fullscreens.set(n, id);
   }
 
   treeGeneration++;
@@ -2350,14 +2361,20 @@ function moveViewToOutput(id, direction) {
   return true;
 }
 
+/* Mod4+Shift+N. Defers to moveViewToWorkspace() rather than moving the leaf
+ * itself.
+ *
+ * It used to find the window with findLeaf(), which only walks the tiling tree
+ * — so for a floating window it found nothing and returned, and the binding
+ * did nothing at all. Dragging the same window between thumbnails in the
+ * overview worked, because that path already called moveViewToWorkspace().
+ * Two ways to move a window to a workspace, one of which handled half the
+ * windows. Now there is one. */
 function moveToWorkspace(n) {
-  if (focusedId == null || n < 1 || n > WORKSPACES) return;
-  const found = findLeaf(focusedId);
-  if (!found || found.workspace === n) return;
-
-  removeLeaf(focusedId);
-  workspaceRoot(n).children.push(newLeaf(focusedId));
-  relayoutAll();
+  if (focusedId == null) return;
+  if (moveViewToWorkspace(focusedId, n)) {
+    relayoutAll();
+  }
 }
 
 /* ------------------------------------------------------------------------

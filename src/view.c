@@ -14,6 +14,7 @@
  */
 #define _POSIX_C_SOURCE 200809L
 
+#include <stdio.h>
 #include <stdlib.h>
 
 #include <wlr/types/wlr_scene.h>
@@ -220,6 +221,15 @@ bool viewport_view_is_unmanaged(struct viewport_toplevel *toplevel)
  * announcing focus before removal — lives in one place.
  * --------------------------------------------------------------------- */
 
+/* Whether the client has asked to be fullscreen, however it asked. */
+static bool view_requested_fullscreen(struct viewport_toplevel *toplevel)
+{
+	if (toplevel->kind == VIEWPORT_VIEW_XDG) {
+		return toplevel->xdg_toplevel->requested.fullscreen;
+	}
+	return toplevel->xwayland_surface->fullscreen;
+}
+
 void viewport_view_map(struct viewport_toplevel *toplevel)
 {
 	struct viewport_server *server = toplevel->server;
@@ -237,6 +247,30 @@ void viewport_view_map(struct viewport_toplevel *toplevel)
 
 	viewport_ipc_notify_view_added(toplevel);
 	viewport_foreign_view_map(toplevel);
+
+	/* A client that asked to be fullscreen before it had a window.
+	 *
+	 * xdg_toplevel.set_fullscreen is answered the moment it arrives, and it
+	 * usually arrives before the first commit — SDL sets it while creating the
+	 * surface, so every game does this. The compositor duly forwarded
+	 * window.fullscreen.set to the shell, which looked the view up, had never
+	 * heard of it, and dropped it: view.added is not sent until the surface
+	 * maps, which is later. The request was acknowledged and then lost, and the
+	 * game opened windowed.
+	 *
+	 * That is not only a cosmetic problem. A window that is not fullscreen
+	 * cannot be scanned out directly — wlroots only tries when the whole render
+	 * list is one entry — so the compositor was compositing every frame of a
+	 * game that had asked for the fast path.
+	 *
+	 * Re-sent here, after view.added, when the client still wants it. */
+	if (view_requested_fullscreen(toplevel)) {
+		toplevel->fullscreen = true;
+		char command[96];
+		snprintf(command, sizeof(command), "window.fullscreen.set %u 1",
+			toplevel->id);
+		viewport_ipc_notify_shell_command(server, command);
+	}
 
 	/* If the shell never answers this, the window is placed without it. */
 	viewport_watchdog_arm(toplevel);
