@@ -869,7 +869,22 @@ function restoreSession(text) {
   if (views.size > 0) return;
 
   for (const [n, tree] of Object.entries(saved.workspaces ?? {})) {
-    const revived = reviveNode(tree);
+    if (!tree || typeof tree !== 'object') continue;
+
+    /* A workspace root is always a split — every function that touches the
+       tree reads root.children without checking, because workspaceRoot() only
+       ever creates splits. This file does not: session.json is state on disk,
+       editable by hand and written by whichever version ran last, and a
+       workspace that holds one window is a plausible thing to write as a bare
+       leaf. Restoring that put a leaf where a split was assumed, and the shell
+       threw on the next window opened there — a crash on startup, which is
+       when nothing is left to recover it. */
+    let revived = reviveNode(tree);
+    if (revived && revived.type !== 'split') {
+      const root = newSplit('horizontal');
+      root.children = [revived];
+      revived = root;
+    }
     if (revived) workspaces.set(Number(n), revived);
   }
   floatSlots = (saved.floating ?? []).filter((slot) => slot && slot.app);
