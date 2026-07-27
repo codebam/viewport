@@ -533,3 +533,42 @@ Debugging into `docs/`. Nothing needs rewriting — only the file boundaries mov
 7. §1.3, §5.2, §5.3 — remove the file-scope scale state, then add unit tests and
    the fuzz harness that it unblocks.
 8. §4.x, §6.x — structure and hygiene, as they stop being convenient.
+
+---
+
+## 7. Deep Audit & Protocol Enhancements (2026 Audit Update)
+
+Following a comprehensive audit of `src/` and `include/viewport.h` against `wlroots 0.20` and Sway standards, the following security, protocol, and architectural items were identified, implemented, and verified:
+
+### 7.1 Session Lock Input Isolation & Focus Leaks (Implemented)
+- **Problem**: Hotkeys (`Mod4+Return`, `Mod4+d`, `Mod4+Shift+e`) executed while `server->locked` was true (`src/input.c:L1010`). Mapping new layer-shell surfaces (`src/layer_shell.c:L185`) or activation requests (`src/xdg_shell.c:L865`) transferred keyboard focus away from `server->layer_lock` to client surfaces during lock. Tablet tool axis events (`src/tablet.c:L136`) continued notifying background applications while locked.
+- **Fix Implemented**: Enforced `!server->locked` checks across hotkey handling, `focus_layer_surface()`, `viewport_toplevel_focus()`, and `handle_tablet_axis()`.
+
+### 7.2 IPC Unix Socket Peer Credential Validation & File Mode (Implemented)
+- **Problem**: IPC sockets created without `SO_PEERCRED` checks or explicit file permission modes (`src/ipc.c:L1356, L1446`). Fallback to `/tmp` left control socket accessible to other local system users.
+- **Fix Implemented**: Added `SO_PEERCRED` validation (`cred.uid == getuid() || cred.uid == 0`) on `accept()` and set `chmod(0600)` on socket creation.
+
+### 7.3 Zombie Process Prevention for Subprocesses (Implemented)
+- **Problem**: Only `SIGTERM` and `SIGINT` had handlers registered (`src/main.c:L307`); child processes spawned without double-forking (or Xwayland helpers) left zombie entries upon termination.
+- **Fix Implemented**: Added `signal(SIGCHLD, SIG_IGN)` to automatically reap child processes.
+
+### 7.4 Protocol Expansions & Enhancements (Implemented)
+- **Wayland Fractional Scaling (`wp_fractional_scale_v1`)**: Added `wlr_fractional_scale_manager_v1` in `include/viewport.h` and `src/server.c`. Allows modern client applications (Firefox, GTK4, Qt6, Foot) to render natively at fractional scale factors without blurry integer scaling.
+- **Single-Pixel Buffer Protocol (`wp_single_pixel_buffer_v1`)**: Added `wlr_single_pixel_buffer_manager_v1` in `include/viewport.h` and `src/server.c`. Eliminates full buffer allocations for 1x1 solid color client surfaces.
+- **XDG Output Manager Protocol (`zxdg_output_manager_v1`)**: Added `wlr_xdg_output_manager_v1` in `include/viewport.h` and `src/server.c`. Exposes output logical dimensions, positions, and names to Waybar, OBS Studio, and Gamescope.
+- **Content Type Protocol (`wp_content_type_v1`)**: Added `wlr_content_type_manager_v1` in `include/viewport.h` and `src/server.c`. Delivers surface content type hints (video, game, photo) for direct DRM scan-out optimization.
+- **Xwayland Override-Redirect Z-Stacking**: Added `wlr_scene_node_raise_to_top()` in `src/xwayland.c` to prevent multi-level X11 context menus (GIMP, Steam) from opening behind parent menus.
+- **Idle Inhibitor Visibility Filtering**: Added `surface_is_visible()` in `src/idle.c` so background windows or invisible workspaces cannot prevent system idle lock/blanking.
+- **Foreign Toplevel Output Enter/Leave Events**: Added output mapping state notifications (`output_enter`/`output_leave`) in `src/foreign.c`.
+
+### 7.5 Additional Future Roadmap Candidates
+
+#### 7.5.1 Pointer Constraint Multi-Output Edge Warp (Future Candidate)
+- **Location**: `src/pointer.c:L158-L230`
+- **Behaviour**: When `wlr_pointer_constraint_v1` is active (e.g. locked/confined in games), moving cursor past output boundary can trigger relative motion anomalies on multi-monitor layouts.
+- **Recommendation**: Restrict `wlr_cursor_warp_closest` to the active constraint output box when locked or confined.
+
+#### 7.5.2 GLib Main Loop Event Source Priority Balancing (Future Candidate)
+- **Location**: `src/glib_loop.c:L160-L180`
+- **Behaviour**: Wayland event source priority relative to WebKit render dispatch.
+- **Recommendation**: Maintain equal priority (`G_PRIORITY_DEFAULT`) between Wayland FD source and WebKit engine dispatch loop to prevent frame presentation starvation under heavy compositor load.
