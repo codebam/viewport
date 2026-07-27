@@ -180,12 +180,22 @@ static void handle_output_power_mode(struct wl_listener *listener, void *data)
 
 void viewport_idle_init(struct viewport_server *server)
 {
-	server->output_power = wlr_output_power_manager_v1_create(
-		server->wl_display);
-	if (server->output_power != NULL) {
-		server->output_power_mode.notify = handle_output_power_mode;
-		wl_signal_add(&server->output_power->events.set_mode,
-			&server->output_power_mode);
+	/* Once per session, not once per call.
+	 *
+	 * A config reload tears the idle policy down and builds it again, because
+	 * the thresholds may have changed — but the output-power global is not part
+	 * of the policy, and creating it each time advertised a second
+	 * zwlr_output_power_manager_v1 in the registry for every reload, each with
+	 * its own listener. Nothing destroys them, so Mod4+Shift+c held the count
+	 * up on its own. */
+	if (server->output_power == NULL) {
+		server->output_power = wlr_output_power_manager_v1_create(
+			server->wl_display);
+		if (server->output_power != NULL) {
+			server->output_power_mode.notify = handle_output_power_mode;
+			wl_signal_add(&server->output_power->events.set_mode,
+				&server->output_power_mode);
+		}
 	}
 
 	server->idle_since = g_get_monotonic_time();
@@ -209,7 +219,14 @@ void viewport_idle_finish(struct viewport_server *server)
 		g_source_remove(server->idle_timer);
 		server->idle_timer = 0;
 	}
-	if (server->output_power != NULL) {
+
+	/* The timer is the policy and is rebuilt on every config reload; the
+	 * output-power global is not, and outlives one. Taking its listener off
+	 * here unconditionally would detach it on the first reload and never put
+	 * it back, since init now only creates the manager once — wlopm and every
+	 * settings panel would stop being able to turn a monitor off. */
+	if (server->shutting_down && server->output_power != NULL) {
 		wl_list_remove(&server->output_power_mode.link);
+		server->output_power = NULL;
 	}
 }
