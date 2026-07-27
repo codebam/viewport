@@ -5,3 +5,4 @@ result-*
 compile_commands.json
 *.o
 *.so
+__pycache__/
