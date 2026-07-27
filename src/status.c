@@ -135,8 +135,14 @@ static void sample_network(struct viewport_status *status, double *rx_rate,
 	}
 	fclose(file);
 
+	/* Both counters have to be checked, not just the receive one. They are
+	 * sums over the interfaces that exist right now, so an interface going
+	 * away — a VPN dropping, a dock unplugged — makes the total go backwards.
+	 * Unsigned subtraction then wraps, and the bar showed a transmit rate of
+	 * some exabytes per second for one sample. */
 	gint64 now = g_get_monotonic_time();
-	if (status->last_sample_us != 0 && rx_total >= status->last_rx) {
+	if (status->last_sample_us != 0 && rx_total >= status->last_rx &&
+			tx_total >= status->last_tx) {
 		double seconds = (double)(now - status->last_sample_us) / 1e6;
 		if (seconds > 0) {
 			*rx_rate = (double)(rx_total - status->last_rx) / seconds;
