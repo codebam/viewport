@@ -251,7 +251,20 @@
             rustfmt
             clippy
             rust-analyzer
+
+            # The shell's buffer is allocated with GBM and imported through
+            # EGL. nixpkgs splits libgbm out of mesa, and the EGL dispatch
+            # library lives in libglvnd — the vendor driver under
+            # /run/opengl-driver only provides libEGL_mesa.
+            libgbm
+            libglvnd
           ]);
+
+          # `cargo test -p viewport-web` links against libgbm and dlopens
+          # libEGL.so.1 at runtime. Without these the GPU tests skip rather
+          # than fail, which looks exactly like them passing.
+          LIBRARY_PATH = "${pkgs.libgbm}/lib";
+          LD_LIBRARY_PATH = "${pkgs.libglvnd}/lib:${pkgs.libgbm}/lib:/run/opengl-driver/lib";
 
           shellHook = ''
             echo "viewport devshell"
@@ -262,6 +275,7 @@
             echo
             echo "  meson setup build && ninja -C build   # the C compositor"
             echo "  cargo test --workspace                # the Rust rewrite"
+            echo "  VIEWPORT_REQUIRE_GPU=1 cargo test -p viewport-web   # dma-buf, for real"
           '';
         };
       }) // {

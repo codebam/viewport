@@ -97,11 +97,39 @@ Two gaps between WPE WebKit and Servo have to be bridged. Neither is fatal.
 **1. There is no `WPEBufferDMABuf` equivalent.** Servo's built-in
 `RenderingContext` implementations (`WindowRenderingContext`,
 `OffscreenRenderingContext`, `SoftwareRenderingContext`) are all surfman-backed
-and none exports a DMA-BUF. Servo does accept a custom `RenderingContext`, so
-we implement one that renders into a GBM buffer object imported as an
-`EGLImage` and exported with `EGL_MESA_image_dma_buf_export`. The per-frame
-fence WPE attached to each buffer becomes an `EGL_KHR_fence_sync` created after
-the GL flush, imported into the same `drm_syncobj` timeline the C build used.
+and none exports a DMA-BUF.
+
+**This was the one unproven assumption in the plan, and it has been spiked.**
+See `crates/viewport-web/src/dmabuf.rs`. Verified against Servo `954690b`
+(2026-07-27) and run on real hardware:
+
+- The trait (`components/shared/paint/rendering_context.rs`) is implementable
+  from outside Servo. Its required methods are `size`, `resize`, `present`,
+  `make_current`, `read_to_image`, `gleam_gl_api` and `glow_gl_api`. Nothing
+  forces surfman on an implementor: `connection()` defaults to `None`, which
+  costs only WebGL surface sharing.
+- `prepare_for_rendering` exists precisely to let an embedder bind its own
+  framebuffer. So we allocate with GBM, import as an `EGLImage`, hang it off an
+  FBO, and Servo draws into the buffer the compositor will scan out.
+- `refresh_driver()` returning our own `RefreshDriver` gives back the frame
+  pacing WPE had. `observe_next_frame(callback)` is called when Servo wants the
+  next frame; calling it from the output's frame handler pins the shell's paint
+  rate to real vblank rather than a free-running timer.
+- The fence is `EGL_ANDROID_native_fence_sync`: `eglCreateSyncKHR` after the
+  draw calls, `eglDupNativeFenceFDANDROID` for an fd that a `drm_syncobj`
+  timeline takes. The test polls it as a `sync_file` to prove it is one.
+
+The decisive test renders on one EGL display and reads the pixels back on a
+second, entirely separate one, through the exported fd alone — which is exactly
+the Servo-to-compositor handoff. Note that the GPU tests *skip* on a machine
+with no render node, so `VIEWPORT_REQUIRE_GPU=1` turns every skip into a
+failure; without it a machine where EGL will not even load reports a pass, which
+is indistinguishable from the buffer sharing working.
+
+One correction to an earlier assumption: the export path is not
+`EGL_MESA_image_dma_buf_export`. The buffer is allocated by GBM, so the fd comes
+from `gbm_bo_get_fd` and EGL is only used to *import* it. That is simpler and
+avoids depending on a Mesa-specific extension.
 
 **2. There is no `window.webkit.messageHandlers`.** The shell's entire bridge
 to the compositor is two call sites:

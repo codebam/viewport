@@ -16,3 +16,15 @@ servo = []
 viewport-ipc.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+
+# The buffer the shell is painted into. Servo has no DMA-BUF rendering
+# context, so we allocate one ourselves and hand Servo a framebuffer over it.
+gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
+drm-fourcc = "2.2"
+khronos-egl = { version = "6", features = ["dynamic"] }
+libloading = "0.8"
+glow = "0.16"
+
+[dev-dependencies]
+# Polling the exported fence fd, to prove it is a real sync_file.
+libc = "0.2"

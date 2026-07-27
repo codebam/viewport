@@ -13,6 +13,8 @@
 
 use std::os::unix::io::OwnedFd;
 
+pub mod dmabuf;
+
 use viewport_ipc::{Event, Request};
 
 /// A frame the engine has finished painting.
