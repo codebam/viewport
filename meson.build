@@ -272,6 +272,15 @@ test(
   protocol: 'exitcode',
 )
 
+test(
+  'output-order',
+  find_program('tests/output-order.test.sh'),
+  args: [viewport_exe.full_path()],
+  depends: [viewport_exe],
+  timeout: 120,
+  protocol: 'exitcode',
+)
+
 # ---------------------------------------------------------------------------
 # Shell logic tests
 #

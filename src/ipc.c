@@ -1273,6 +1273,21 @@ void viewport_ipc_handle(struct viewport_server *server, const char *json,
 		}
 	} else if (strcmp(type, "output.query") == 0) {
 		viewport_ipc_notify_output_layout(server);
+	} else if (strcmp(type, "output.test_add") == 0) {
+		/* Headless-only, and the callee re-checks: nothing on a real session's
+		 * control socket should be able to plug or unplug a monitor. */
+		if (!viewport_output_test_add(server)) {
+			notify_error(server, type,
+				"headless hotplug is only available under --headless");
+		}
+	} else if (strcmp(type, "output.test_remove") == 0) {
+		/* Without a name, the first output in the list. */
+		const char *name = json_object_has_member(object, "name")
+			? json_object_get_string_member(object, "name") : NULL;
+		if (!viewport_output_test_remove(server, name)) {
+			notify_error(server, type,
+				"headless hotplug is only available under --headless");
+		}
 	} else if (strcmp(type, "view.query") == 0) {
 		viewport_ipc_notify_config(server);
 		viewport_ipc_notify_views(server);

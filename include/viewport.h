@@ -621,6 +621,11 @@ void viewport_hdr_init(struct viewport_server *server);
 bool viewport_output_hdr_capable(struct viewport_output *output);
 bool viewport_output_set_hdr(struct viewport_output *output, bool enabled);
 
+/* Drive the hotplug path from a test. Both refuse unless --headless. */
+bool viewport_output_test_add(struct viewport_server *server);
+bool viewport_output_test_remove(struct viewport_server *server,
+	const char *name);
+
 /* Idle policy: lock and blank when nobody is there. */
 void viewport_idle_init(struct viewport_server *server);
 void viewport_idle_finish(struct viewport_server *server);
