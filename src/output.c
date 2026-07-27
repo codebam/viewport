@@ -3,10 +3,13 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include <glib.h>
 
+#include <wlr/backend/headless.h>
+#include <wlr/backend/multi.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_output.h>
@@ -334,7 +337,18 @@ void viewport_handle_new_output(struct wl_listener *listener, void *data)
 	output->destroy.notify = handle_output_destroy;
 	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
 
-	wl_list_insert(&server->outputs, &output->link);
+	/* At the tail, not the head.
+	 *
+	 * wl_list_insert() puts the element straight after the sentinel, so the
+	 * obvious spelling builds the list in reverse connection order while
+	 * wlr_output_layout_add_auto() below arranges the monitors left to right in
+	 * forward connection order. Every consumer that walks server->outputs then
+	 * disagrees with the geometry: the output.layout array the shell renders
+	 * its display panel from, the wlr-output-management head list wlr-randr
+	 * prints, and the three places that take outputs.next and call it the first
+	 * output — which was in fact the most recently connected one, so a new
+	 * window opened on the newest monitor rather than the leftmost. */
+	wl_list_insert(server->outputs.prev, &output->link);
 
 	/* Auto-arrange left to right in connection order. A real deployment would
 	 * take this from the shell over IPC; the shell already learns the result
@@ -416,4 +430,64 @@ void viewport_layout_size(struct viewport_server *server, int *width,
 	 * size so WebKit has something to lay out against. */
 	*width = box.width > 0 ? box.width : 1920;
 	*height = box.height > 0 ? box.height : 1080;
+}
+
+/* ------------------------------------------------------------------------
+ * Headless hotplug hooks, for tests only
+ *
+ * A DisplayPort monitor powering off drops the connector, so wlroots destroys
+ * the wlr_output and creates a fresh one when it comes back. That cycle is the
+ * one path through this file that no test could reach: the DRM backend needs
+ * real hardware and the headless backend never plugs anything in by itself.
+ * These two let the IPC test hooks drive it under AddressSanitizer.
+ *
+ * Refused unless the compositor was started with --headless, so a real session
+ * cannot be told over its control socket to drop a monitor.
+ * --------------------------------------------------------------------- */
+
+static void find_headless_backend(struct wlr_backend *backend, void *data)
+{
+	struct wlr_backend **found = data;
+	if (*found == NULL && wlr_backend_is_headless(backend)) {
+		*found = backend;
+	}
+}
+
+bool viewport_output_test_add(struct viewport_server *server)
+{
+	if (!server->config.headless || server->backend == NULL) {
+		return false;
+	}
+
+	struct wlr_backend *headless = NULL;
+	wlr_multi_for_each_backend(server->backend, find_headless_backend,
+		&headless);
+	if (headless == NULL) {
+		return false;
+	}
+
+	/* Arrives on the new_output signal, so it goes through exactly the same
+	 * viewport_handle_new_output() a real hotplug does. */
+	return wlr_headless_add_output(headless, 1920, 1080) != NULL;
+}
+
+bool viewport_output_test_remove(struct viewport_server *server,
+	const char *name)
+{
+	if (!server->config.headless) {
+		return false;
+	}
+
+	struct viewport_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		if (name != NULL &&
+				strcmp(output->wlr_output->name, name) != 0) {
+			continue;
+		}
+		/* Fires wlr_output.events.destroy, which is handle_output_destroy() —
+		 * the same teardown an unplug takes. */
+		wlr_output_destroy(output->wlr_output);
+		return true;
+	}
+	return false;
 }
