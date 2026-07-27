@@ -202,6 +202,8 @@ bool viewport_output_set_hdr(struct viewport_output *output, bool enabled)
 	output->hdr = enabled;
 	wlr_log(WLR_INFO, "%s HDR %s", wlr_output->name, enabled ? "on" : "off");
 
+	wlr_output_schedule_frame(output->wlr_output);
+
 	viewport_ipc_notify_output_layout(output->server);
 	return true;
 }

@@ -109,6 +109,11 @@ static void handle_output_frame(struct wl_listener *listener, void *data)
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 
+	if (output->wlr_output->image_description != NULL) {
+		wlr_output_state_set_image_description(&state,
+			output->wlr_output->image_description);
+	}
+
 	if (wlr_scene_output_build_state(output->scene_output, &state, NULL)) {
 		bool tearing = output_wants_tearing(output);
 		state.tearing_page_flip = tearing;
