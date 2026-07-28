@@ -41,7 +41,7 @@ use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::drm::control::{connector, crtc, Device as _, ModeTypeFlags};
 use smithay::reexports::rustix::fs::OFlags;
-use smithay::utils::{DeviceFd, Physical, Point};
+use smithay::utils::{DeviceFd, Physical, Point, Rectangle};
 
 use viewport_vulkan::{Device as VulkanDevice, VulkanRenderer};
 
@@ -67,6 +67,13 @@ smithay::backend::renderer::element::render_elements! {
     /// surface but the renderer it is sampled by.
     pub OutputElement<=VulkanRenderer>;
     Surface=WaylandSurfaceRenderElement<VulkanRenderer>,
+    /// A window cropped to the hole the shell drew for it. The shell measures
+    /// that hole in its own DOM and it is not always the window's rectangle —
+    /// during an open animation the window slides up from under the bar, and
+    /// in a scrolling layout a column is half off the screen.
+    CroppedSurface=smithay::backend::renderer::element::utils::CropRenderElement<
+        WaylandSurfaceRenderElement<VulkanRenderer>,
+    >,
     Shell=TextureRenderElement<viewport_vulkan::VulkanTexture>,
     Cursor=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<VulkanRenderer>,
 }
@@ -607,10 +614,7 @@ impl ViewportState {
         let shell_element_id = self.shell_element_id.clone();
         #[cfg(feature = "wpe")]
         let shell_damage = self.shell_damage.snapshot();
-        #[cfg(feature = "wpe")]
-        let shell_frames = self.shell_frames;
-        #[cfg(not(feature = "wpe"))]
-        let shell_frames = 0u64;
+        let settled_for = self.last_layout.map(|at| at.elapsed());
         let output_geometry = self
             .udev
             .as_ref()
@@ -629,7 +633,9 @@ impl ViewportState {
             .and_then(|udev| udev.surfaces.get(&crtc))
             .map(|surface| surface.output.current_scale().fractional_scale())
             .unwrap_or(1.0);
-        let windows: Vec<(Window, Point<i32, Physical>)> = match output_geometry {
+        // The window, where to draw it, and the hole it is cropped to.
+        let windows: Vec<(Window, Point<i32, Physical>, Option<Rectangle<i32, Physical>>)> =
+            match output_geometry {
             Some(output_geometry) => self
                 .space
                 .elements()
@@ -656,7 +662,22 @@ impl ViewportState {
                         .to_f64()
                         .to_physical(scale)
                         .to_i32_round();
-                    Some((window.clone(), location))
+                    // The clip arrives in layout coordinates, like the box.
+                    let clip = self
+                        .views
+                        .find_by_surface(&window.toplevel()?.wl_surface().clone())
+                        .and_then(|view| view.clip)
+                        .map(|clip| {
+                            Rectangle::<i32, smithay::utils::Logical>::new(
+                                (clip.x - output_geometry.loc.x, clip.y - output_geometry.loc.y)
+                                    .into(),
+                                (clip.width, clip.height).into(),
+                            )
+                            .to_f64()
+                            .to_physical(scale)
+                            .to_i32_round()
+                        });
+                    Some((window.clone(), location, clip))
                 })
                 .collect(),
             None => Vec::new(),
@@ -689,18 +710,25 @@ impl ViewportState {
         // Every mapped window, at the rectangle the shell put it in. Without
         // this the list held the shell alone, so a client could map, be laid
         // out, and paint — and still never appear on screen.
-        for (window, location) in &windows {
-            elements.extend(
-                window
-                    .render_elements::<WaylandSurfaceRenderElement<VulkanRenderer>>(
-                        &mut udev.renderer,
-                        *location,
-                        scale.into(),
-                        1.0,
-                    )
-                    .into_iter()
-                    .map(OutputElement::from),
+        for (window, location, clip) in &windows {
+            let surfaces = window.render_elements::<WaylandSurfaceRenderElement<VulkanRenderer>>(
+                &mut udev.renderer,
+                *location,
+                scale.into(),
+                1.0,
             );
+            match clip {
+                // Cropped to the hole the shell drew. Without this a window
+                // mid-animation, or one scrolled half off its column, covers
+                // the bar and the wallpaper with its own background.
+                Some(clip) => elements.extend(surfaces.into_iter().filter_map(|surface| {
+                    smithay::backend::renderer::element::utils::CropRenderElement::from_element(
+                        surface, scale, *clip,
+                    )
+                    .map(OutputElement::from)
+                })),
+                None => elements.extend(surfaces.into_iter().map(OutputElement::from)),
+            }
         }
 
         // The shell, imported from whatever WebKit last painted. Behind every
@@ -736,11 +764,16 @@ impl ViewportState {
         // disagree. Once per output, and only with a window up — the question
         // it answers is about what a window does to everything behind it.
         if let Some(path) = crate::dump::output_target() {
-            // Late enough to be steady state. The first attempt fired on the
-            // opening frame of the window animation, where the client was
+            // Once the layout has stopped moving. The first attempt fired on
+            // the opening frame of the window animation, where the client was
             // still at its own size and had not processed the configure — a
-            // transient that says nothing about how it settles.
-            if !surface.dumped && !windows.is_empty() && shell_frames >= 5 {
+            // transient that says nothing about how it settles. The shell
+            // resends the rectangle on every frame of that animation, so its
+            // going quiet is the signal.
+            let settled = settled_for
+                .map(|d| d >= std::time::Duration::from_secs(2))
+                .unwrap_or(false);
+            if !surface.dumped && !windows.is_empty() && settled {
                 surface.dumped = true;
                 let size = output
                     .current_mode()

@@ -115,6 +115,11 @@ pub struct ViewportState {
     /// every frame is a flood.
     pub cursor_warned: bool,
 
+    /// When the shell last moved a window, so a diagnostic capture can wait
+    /// for the open animation to finish. Five shell frames is the middle of
+    /// it, where the client has not yet processed its configure.
+    pub last_layout: Option<std::time::Instant>,
+
     /// An output whose contents changed but which has no frame in flight.
     ///
     /// Rendering is driven by vblank and vblank stops when nothing is
@@ -216,6 +221,7 @@ impl ViewportState {
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             cursor_theme: crate::cursor::Theme::new(),
             cursor_warned: false,
+            last_layout: None,
             needs_render: false,
 
             color_management,

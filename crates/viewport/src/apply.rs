@@ -210,6 +210,7 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
     let (width, height) =
         configure_size((resolved.box_.width, resolved.box_.height), view.min_size());
 
+    state.last_layout = Some(std::time::Instant::now());
     let view = state.views.get_mut(layout.id).expect("just looked it up");
     view.box_ = resolved.box_;
     view.scale = resolved.scale;
