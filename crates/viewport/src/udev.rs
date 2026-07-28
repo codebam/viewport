@@ -537,6 +537,9 @@ impl ViewportState {
         match result {
             Ok(frame) if !frame.is_empty => {
                 if let Err(e) = surface.drm_output.queue_frame(()) {
+                    // The vblank that would have driven the next frame never
+                    // arrives, so a failure here stops the output for good
+                    // rather than dropping one frame.
                     tracing::warn!("queue_frame: {e}");
                 } else if !surface.drawn {
                     surface.drawn = true;
