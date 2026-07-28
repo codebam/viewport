@@ -189,8 +189,10 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 5. **Done.** Config file, layer-shell (bars and launchers), xdg-activation,
    linux-dmabuf, xdg-decoration, Xwayland, the cursor, and directional focus.
 6. **Done.** session-lock, verified against swaylock.
-7. **Next.** foreign-toplevel, notifications, text-input, tablet,
-   `wlr-output-management`, and the X11 half of the clipboard.
+7. **Done.** The layout watchdog, and system statistics for the bar.
+8. **Next.** foreign-toplevel, notifications, pointer capture, text-input,
+   tablet, `wlr-output-management`, primary selection, screencopy, and the X11
+   half of the clipboard.
 
 ## What the config file does, and does not
 

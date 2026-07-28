@@ -28,6 +28,7 @@ mod session;
 #[cfg(feature = "wpe")]
 mod shell;
 mod state;
+mod status;
 mod udev;
 mod views;
 mod watchdog;
@@ -168,6 +169,21 @@ fn main() -> Result<()> {
                 )
             })
             .map_err(|e| anyhow::anyhow!("inserting the housekeeping timer: {e}"))?;
+    }
+
+    // System statistics for the bar. Every two seconds, as in C
+    // (`src/status.c:236`): the numbers are rates and averages, and sampling
+    // faster only makes them noisier.
+    {
+        let period = std::time::Duration::from_secs(2);
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(period);
+        event_loop
+            .handle()
+            .insert_source(timer, move |_, _, state| {
+                state.status_tick();
+                smithay::reexports::calloop::timer::TimeoutAction::ToDuration(period)
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the status timer: {e}"))?;
     }
 
     // Whatever the config file asked to be run, once everything it needs is

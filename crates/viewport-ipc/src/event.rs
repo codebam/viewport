@@ -55,6 +55,24 @@ pub enum Event {
     #[serde(rename = "notification.close")]
     NotificationClose { id: u32 },
 
+    /// System statistics for the bar.
+    ///
+    /// `cpu` and `memory` are `-1.0` when unavailable rather than absent: the
+    /// shell tests `s.cpu >= 0` (`data/shell/bar.js:113`), and an absent field
+    /// would read as `undefined >= 0`, which is false but for the wrong
+    /// reason. `load` is the one minute average alone, which is the only one
+    /// the bar shows.
+    #[serde(rename = "status.update")]
+    StatusUpdate {
+        cpu: f64,
+        memory: f64,
+        load: f64,
+        net_rx: f64,
+        net_tx: f64,
+        disk_free: f64,
+        disk_total: f64,
+    },
+
     #[serde(rename = "output.layout")]
     OutputLayout { outputs: Vec<OutputInfo> },
 

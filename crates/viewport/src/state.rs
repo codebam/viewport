@@ -59,6 +59,8 @@ pub struct ViewportState {
     pub output_config: std::collections::HashMap<String, crate::config::OutputConfig>,
     /// What to run once the compositor is up.
     pub startup: Option<String>,
+    /// System statistics for the bar, sampled here because the page cannot.
+    pub status: crate::status::Status,
     /// Locking and blanking after a while, off unless the file asks.
     pub idle: crate::idle::Idle,
     pub idle_settings: crate::idle::Settings,
@@ -292,6 +294,7 @@ impl ViewportState {
             shell_url: None,
             output_config: std::collections::HashMap::new(),
             startup: None,
+            status: crate::status::Status::default(),
             idle: crate::idle::Idle::default(),
             idle_settings: crate::idle::Settings::default(),
             vt_switching: true,
@@ -666,6 +669,26 @@ impl ViewportState {
             }
         });
         (size.0.max(0) as u32, size.1.max(0) as u32)
+    }
+
+    /// Sample the machine and tell the shell.
+    ///
+    /// The page cannot do this for itself: it is loaded from file:// or
+    /// http://, and neither origin can read /proc. How the numbers are
+    /// *displayed* is still entirely the shell's business.
+    pub fn status_tick(&mut self) {
+        let sample = self.status.sample();
+        let event = viewport_ipc::Event::StatusUpdate {
+            // -1 rather than absent, which is what the bar tests for.
+            cpu: sample.cpu.unwrap_or(-1.0),
+            memory: sample.memory.unwrap_or(-1.0),
+            load: sample.load[0],
+            net_rx: sample.net_rx,
+            net_tx: sample.net_tx,
+            disk_free: sample.disk_free,
+            disk_total: sample.disk_total,
+        };
+        self.notify(&event);
     }
 
     /// One idle tick: lock and blank when their deadlines pass.

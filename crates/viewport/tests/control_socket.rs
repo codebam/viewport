@@ -341,6 +341,34 @@ fn an_unanswered_window_is_laid_out_anyway() {
     );
 }
 
+/// The bar's numbers arrive without anyone asking.
+///
+/// The shell cannot read /proc — it is a page loaded from file:// — so a bar
+/// with no compositor sampling behind it shows nothing at all.
+#[test]
+fn status_updates_arrive_on_their_own() {
+    let compositor = Compositor::start("status");
+    let mut client = compositor.connect();
+
+    // Unprompted: this is a broadcast on a timer, not a reply.
+    let status = client.wait_for("status.update");
+
+    // -1 means "could not read", which is what the bar tests for. On a Linux
+    // machine running this test, /proc is there.
+    let memory = status["memory"].as_f64().expect("memory is a number");
+    assert!(
+        (0.0..=100.0).contains(&memory),
+        "memory should be a percentage, got {memory}"
+    );
+    assert!(
+        status["disk_total"].as_f64().unwrap_or(0.0) > 0.0,
+        "the root filesystem has a size"
+    );
+    // A single number, not an array: the bar calls s.load.toFixed(2).
+    assert!(status["load"].is_number(), "load must be one number");
+    assert!(status["net_rx"].is_number());
+}
+
 #[test]
 fn a_malformed_message_comes_back_as_an_error() {
     let compositor = Compositor::start("malformed");
