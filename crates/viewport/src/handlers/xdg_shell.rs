@@ -313,10 +313,24 @@ impl ViewportState {
         let Some(view) = self.views.find_by_surface(&root) else {
             return;
         };
-        let Some(output) = self.space.outputs().next() else {
+        // The output this window is on, not the first one there is.
+        //
+        // The positioner slides a menu until it fits the rectangle it is
+        // given. Handing it the first output's rectangle while the window sits
+        // on the second describes a screen that ends thousands of pixels to
+        // the left of the window, so the menu was pushed off the left edge to
+        // "fit" — configured at -320,32 and invisible, which is a menu that
+        // does not open.
+        let output = self
+            .space
+            .outputs_for_element(&view.window)
+            .into_iter()
+            .next()
+            .or_else(|| self.space.outputs().next().cloned());
+        let Some(output) = output else {
             return;
         };
-        let Some(output_geo) = self.space.output_geometry(output) else {
+        let Some(output_geo) = self.space.output_geometry(&output) else {
             return;
         };
         let Some(window_geo) = self.space.element_geometry(&view.window) else {

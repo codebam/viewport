@@ -91,7 +91,7 @@ pub struct ViewportState {
     pub dark_mode: bool,
     /// How many popups the last frame drew, so a change is said once rather
     /// than per frame.
-    pub popups_drawn: usize,
+    pub popups_drawn: std::collections::HashMap<String, usize>,
     /// The binding mode in force — sway's resize mode, or anything a config
     /// file invents. Empty is the ordinary keymap.
     pub binding_mode: String,
@@ -577,7 +577,7 @@ impl ViewportState {
             vt_switching: true,
             server_decorations: true,
             dark_mode: true,
-            popups_drawn: 0,
+            popups_drawn: std::collections::HashMap::new(),
             binding_mode: String::new(),
             adaptive_sync: false,
             fallback_url: None,
@@ -2176,9 +2176,13 @@ impl ViewportState {
                 .filter_map(|(window, _, _)| window.wl_surface())
                 .map(|surface| PopupManager::popups_for_surface(&surface).count())
                 .sum();
-            if popups != self.popups_drawn {
-                self.popups_drawn = popups;
-                tracing::debug!("popup: {popups} being drawn");
+            // Per output: one monitor drawing a menu and the other not is the
+            // ordinary case, and a single counter flapped between them once a
+            // frame.
+            let seen = self.popups_drawn.entry(output.name()).or_default();
+            if popups != *seen {
+                *seen = popups;
+                tracing::debug!("popup: {popups} being drawn on {}", output.name());
             }
         }
 
