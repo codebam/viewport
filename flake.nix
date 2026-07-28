@@ -178,6 +178,74 @@
           wpewebkit
         ];
 
+        # The Rust rewrite. Built from the same tree, beside the C compositor
+        # rather than instead of it: both produce a binary called `viewport`,
+        # so a system installs one or the other.
+        #
+        # The web engine is behind a feature flag, and this build turns it on:
+        # without it there is no shell at all — grey where the wallpaper and
+        # the bar should be — and nothing in the log says so.
+        viewport-smithay = pkgs.rustPlatform.buildRustPackage {
+          pname = "viewport-smithay";
+          version = "0.1.0";
+          src = self;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            # A fork of smithay, for the tearing-control patch. A git
+            # dependency has no crates.io hash to check against, so its
+            # contents are pinned here instead.
+            outputHashes = {
+              "smithay-0.7.0" = "sha256-nUTQ/4oqC+0/F/FiuSCIq/ykVFuQ8NnMhO5q4Vf+ab8=";
+            };
+          };
+
+          buildAndTestSubdir = "crates/viewport";
+          buildFeatures = [ "wpe" ];
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            rustPlatform.bindgenHook
+            makeWrapper
+            wayland-scanner
+          ];
+
+          buildInputs = runtimeDeps ++ (with pkgs; [
+            vulkan-loader
+            vulkan-headers
+            libgbm
+          ]);
+
+          # The renderer, gbm and EGL are opened by name at run time rather
+          # than linked, so the closure has to carry them and the loader has to
+          # be told where they are. Getting this wrong produces "Failed to load
+          # the Vulkan library", which says nothing about the cause.
+          postInstall = ''
+            wrapProgram $out/bin/viewport \
+              --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (with pkgs; [
+                vulkan-loader
+                libgbm
+                libglvnd
+                libxkbcommon
+                wayland
+                seatd
+                libinput
+                udev
+              ])}
+          '';
+
+          # The suite needs a GPU for the renderer tests and a socket for the
+          # compositor ones; the sandbox has neither. `cargo test` on a machine
+          # with both is what covers this.
+          doCheck = false;
+
+          meta = with pkgs.lib; {
+            description = "The Smithay rewrite of the Viewport compositor";
+            platforms = platforms.linux;
+            mainProgram = "viewport";
+          };
+        };
+
         viewport = pkgs.stdenv.mkDerivation {
           pname = "viewport";
           version = "0.1.0";
@@ -193,7 +261,7 @@
       in
       {
         packages = {
-          inherit viewport wpewebkit;
+          inherit viewport viewport-smithay wpewebkit;
           default = viewport;
         };
 
