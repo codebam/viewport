@@ -384,6 +384,7 @@ impl ViewportState {
                     shell.view.reload();
                 }
             }
+            Bound::Focus(target) => self.focus_direction(&target),
             Bound::Shell(command) => {
                 // Split on whitespace so the shell gets a verb and arguments
                 // rather than a string it has to parse again.
@@ -461,5 +462,61 @@ mod tests {
         ] {
             assert_eq!(shortcut(&modifiers(true, true), Keysym::new(raw)), None);
         }
+    }
+}
+
+impl ViewportState {
+    /// Move focus to the neighbouring window, or step through them.
+    ///
+    /// Falls back to the shell when there is no window that way: in sway a
+    /// directional focus with nothing there moves to the monitor in that
+    /// direction even when it is empty, and only the shell knows which output
+    /// is active (`src/xdg_shell.c:1052`).
+    fn focus_direction(&mut self, target: &str) {
+        use crate::focus::{self, Candidate, Direction};
+
+        if target == "next" || target == "prev" {
+            let ids: Vec<u32> = self
+                .views
+                .iter()
+                .filter(|v| v.mapped && v.visible)
+                .map(|v| v.id)
+                .collect();
+            let current = (self.focused != crate::views::NO_VIEW).then_some(self.focused);
+            if let Some(id) = focus::step(&ids, current, target == "next") {
+                crate::apply::focus_view(self, id);
+            }
+            return;
+        }
+
+        let Some(direction) = Direction::parse(target) else {
+            tracing::warn!("unknown focus direction {target:?}");
+            return;
+        };
+
+        let candidates: Vec<Candidate> = self
+            .views
+            .iter()
+            .filter(|v| v.mapped && v.visible && v.placed)
+            .filter_map(|v| {
+                self.space
+                    .element_geometry(&v.window)
+                    .map(|rect| Candidate { id: v.id, rect })
+            })
+            .collect();
+        let from = candidates.iter().find(|c| c.id == self.focused).copied();
+
+        if let Some(id) = focus::nearest(&candidates, from, direction) {
+            crate::apply::focus_view(self, id);
+            return;
+        }
+
+        // Nothing that way. Hand the direction to the shell rather than doing
+        // nothing, so the focus moves to the next monitor even if it is empty.
+        let event = viewport_ipc::Event::ShellCommand {
+            command: "output.focus".to_owned(),
+            args: vec![target.to_owned()],
+        };
+        self.notify(&event);
     }
 }

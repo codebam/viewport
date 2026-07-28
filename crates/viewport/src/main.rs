@@ -12,6 +12,7 @@ mod binding;
 mod dump;
 mod color_management;
 mod cursor;
+mod focus;
 mod framing;
 #[cfg(feature = "wpe")]
 mod glib_loop;

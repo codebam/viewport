@@ -239,7 +239,7 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
     }
 }
 
-fn focus_view(state: &mut ViewportState, id: u32) {
+pub fn focus_view(state: &mut ViewportState, id: u32) {
     let Some(surface) = state.views.get(id).and_then(|v| v.surface()) else {
         return;
     };

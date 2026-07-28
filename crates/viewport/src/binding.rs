@@ -18,6 +18,13 @@ pub enum Action {
     Close,
     /// Stop the compositor.
     Exit,
+    /// Move focus to the neighbouring window, or step through them.
+    ///
+    /// A compositor action rather than a passthrough, as in `src/binding.c:88`
+    /// — "the window to the left of this one" is about where things are on
+    /// screen, which the compositor already knows, and it has to work across
+    /// monitors where the shell's tree does not reach.
+    Focus(String),
     /// Reload the shell, bypassing the HTTP cache.
     Reload,
     /// Hand the rest to the shell as a `shell.command`.
@@ -113,6 +120,9 @@ fn parse_action(action: &str) -> Action {
     match action.split_once(' ') {
         Some(("exec", rest)) => Action::Exec(rest.trim().to_owned()),
         Some(("shell", rest)) => Action::Shell(rest.trim().to_owned()),
+        Some(("focus", rest)) if !rest.trim().is_empty() => {
+            Action::Focus(rest.trim().to_owned())
+        }
         _ => match action {
             "close" => Action::Close,
             "exit" => Action::Exit,
@@ -150,8 +160,8 @@ pub fn defaults(terminal: &str, menu: &str, scrolling: bool) -> Vec<Binding> {
         "Mod4+Shift+q=close".to_owned(),
         "Mod4+Shift+e=exit".to_owned(),
         "Mod4+Shift+c=reload".to_owned(),
-        "Mod4+Tab=shell focus next".to_owned(),
-        "Mod4+Shift+Tab=shell focus prev".to_owned(),
+        "Mod4+Tab=focus next".to_owned(),
+        "Mod4+Shift+Tab=focus prev".to_owned(),
         "Mod4+f=shell window.fullscreen".to_owned(),
         "Mod4+a=shell window.focus_parent".to_owned(),
         "Mod4+Shift+space=shell layout.float.toggle".to_owned(),
@@ -167,9 +177,12 @@ pub fn defaults(terminal: &str, menu: &str, scrolling: bool) -> Vec<Binding> {
         // Directional focus in a scrolling layout is not a geometry question:
         // the column you want is usually scrolled off the screen, so only the
         // shell can answer it. Sending both there keeps one implementation.
-        let focus = if scrolling { "layout.focus" } else { "focus" };
-        specs.push(format!("Mod4+{}=shell {focus} {}", letters[i], directions[i]));
-        specs.push(format!("Mod4+{}=shell {focus} {}", arrows[i], directions[i]));
+        // Tiling: the compositor answers it geometrically. Scrolling: the
+        // column you want is usually scrolled off the screen, so only the
+        // shell can (`src/binding.c:391`).
+        let focus = if scrolling { "shell layout.focus" } else { "focus" };
+        specs.push(format!("Mod4+{}={focus} {}", letters[i], directions[i]));
+        specs.push(format!("Mod4+{}={focus} {}", arrows[i], directions[i]));
         specs.push(format!(
             "Mod4+Shift+{}=shell window.move {}",
             letters[i], directions[i]
@@ -267,6 +280,31 @@ mod tests {
     }
 
     #[test]
+    fn directional_focus_is_the_compositors_own() {
+        // `src/binding.c:88` parses "focus <direction>" into an action rather
+        // than a passthrough. The shell has no "focus" command at all, so a
+        // passthrough is silently dropped with a console warning.
+        assert_eq!(
+            parse("Mod4+h=focus left").unwrap().action,
+            Action::Focus("left".to_owned())
+        );
+        assert_eq!(
+            parse("Mod4+Tab=focus next").unwrap().action,
+            Action::Focus("next".to_owned())
+        );
+        // Still a passthrough when the shell owns it.
+        assert_eq!(
+            parse("Mod4+h=shell layout.focus left").unwrap().action,
+            Action::Shell("layout.focus left".to_owned())
+        );
+        // A bare "focus" is not a direction.
+        assert_eq!(
+            parse("Mod4+h=focus").unwrap().action,
+            Action::Shell("focus".to_owned())
+        );
+    }
+
+    #[test]
     fn an_unknown_verb_goes_to_the_shell() {
         // The shell owns layout, so a command this does not implement is not
         // an error — swallowing it here would look like a dead key.
@@ -306,7 +344,11 @@ mod tests {
                 .find(|b| b.keysym == keysyms::KEY_h && !b.modifiers.shift)
                 .map(|b| b.action.clone())
         };
-        assert_eq!(find(&tiling), Some(Action::Shell("focus left".to_owned())));
+        // Tiling: the compositor answers it, because it is a question about
+        // where windows are on screen. Sending "focus left" to the shell is
+        // what the port did at first and the shell rejects it — there is no
+        // such command, only layout.focus.
+        assert_eq!(find(&tiling), Some(Action::Focus("left".to_owned())));
         assert_eq!(
             find(&scrolling),
             Some(Action::Shell("layout.focus left".to_owned()))
