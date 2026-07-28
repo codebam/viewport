@@ -252,6 +252,18 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         }
     }
 
+    // Now that there is a renderer, clients can be told which formats they may
+    // allocate — and on which GPU.
+    {
+        use smithay::backend::renderer::ImportDma as _;
+        let formats = state
+            .udev
+            .as_ref()
+            .map(|udev| udev.renderer.dmabuf_formats().iter().copied().collect())
+            .unwrap_or_default();
+        state.advertise_dmabuf(Some(render.dev_id()), formats);
+    }
+
     state.on_connectors_changed();
 
     #[cfg(feature = "wpe")]

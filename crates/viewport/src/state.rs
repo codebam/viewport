@@ -52,6 +52,9 @@ pub struct ViewportState {
     pub config: Config,
     /// Where the shell is loaded from, when the config names somewhere.
     pub shell_url: Option<String>,
+    /// Whether the logo key was down last time it was looked at, so the shell
+    /// hears about a change rather than about every keystroke.
+    pub logo_held: bool,
 
     /// While the overview is up the shell draws miniatures of every window and
     /// a click means "go there" rather than reaching the client underneath.
@@ -151,6 +154,10 @@ pub struct ViewportState {
     /// xdg-activation. A launcher needs the global to exist before it will
     /// draw at all, quite apart from what activation is for.
     pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
+    /// linux-dmabuf. Created without a global here: the formats a client may
+    /// use are the renderer's, and there is no renderer until a backend has
+    /// started. See `advertise_dmabuf`.
+    pub dmabuf_state: smithay::wayland::dmabuf::DmabufState,
     /// zxdg_decoration_manager_v1. Held only so the global outlives the
     /// display; every decision it drives is in the handler.
     pub xdg_decoration_state:
@@ -179,6 +186,7 @@ impl ViewportState {
             smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
         let xdg_activation_state =
             smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
+        let dmabuf_state = smithay::wayland::dmabuf::DmabufState::new();
         let xdg_decoration_state =
             smithay::wayland::shell::xdg::decoration::XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
@@ -226,6 +234,7 @@ impl ViewportState {
                 theme: None,
             },
             shell_url: None,
+            logo_held: false,
             overview: false,
             active_output: None,
             udev: None,
@@ -263,6 +272,7 @@ impl ViewportState {
             xdg_shell_state,
             layer_shell_state,
             xdg_activation_state,
+            dmabuf_state,
             xdg_decoration_state,
             shm_state,
             output_manager_state,
@@ -365,6 +375,41 @@ impl ViewportState {
             .or(below)
     }
 
+    /// Advertise linux-dmabuf, with the formats this renderer can import.
+    ///
+    /// After the backend, not before: the format list is the renderer's, and a
+    /// global advertising formats nobody can import is worse than none — the
+    /// client picks one, hands over a buffer, and finds out at the first frame.
+    ///
+    /// The feedback names the render node, which is how a client knows which
+    /// GPU to allocate on when there is more than one.
+    pub fn advertise_dmabuf(
+        &mut self,
+        render_node: Option<u64>,
+        formats: Vec<smithay::backend::allocator::Format>,
+    ) {
+        use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
+
+        if formats.is_empty() {
+            tracing::warn!("the renderer imports no dmabuf format; not advertising linux-dmabuf");
+            return;
+        }
+        let Some(node) = render_node else {
+            tracing::warn!("no render node; not advertising linux-dmabuf");
+            return;
+        };
+
+        let count = formats.len();
+        match DmabufFeedbackBuilder::new(node, formats).build() {
+            Ok(feedback) => {
+                self.dmabuf_state
+                    .create_global_with_default_feedback::<Self>(&self.display_handle, &feedback);
+                tracing::info!("linux-dmabuf: {count} format/modifier pair(s)");
+            }
+            Err(e) => tracing::error!("could not build dmabuf feedback: {e}"),
+        }
+    }
+
     /// The output a new window should be told it is on.
     pub fn output_for_new_view(&self) -> String {
         self.active_output
@@ -435,6 +480,53 @@ impl ViewportState {
         }
         if let Some(url) = file.url {
             self.shell_url = Some(url);
+        }
+
+        // The cursor theme. The xcursor loader reads the environment, which is
+        // also how every toolkit resolves it — so setting it here is what makes
+        // the compositor's pointer and a GTK application's agree.
+        if let Some(theme) = file.cursor.theme.as_deref() {
+            unsafe { std::env::set_var("XCURSOR_THEME", theme) };
+        }
+        if let Some(size) = file.cursor.size {
+            unsafe { std::env::set_var("XCURSOR_SIZE", size.to_string()) };
+        }
+        if file.cursor != crate::config::CursorConfig::default() {
+            self.cursor_theme = crate::cursor::Theme::new();
+        }
+
+        // The keymap, if the file names one. Replacing the keyboard is how
+        // this is set — there is no way to change the layout of one that
+        // already exists — so it happens before any client has seen a seat.
+        let keyboard = &file.keyboard;
+        if keyboard != &crate::config::KeyboardConfig::default() {
+            let xkb = smithay::input::keyboard::XkbConfig {
+                layout: keyboard.layout.as_deref().unwrap_or(""),
+                variant: keyboard.variant.as_deref().unwrap_or(""),
+                options: keyboard.options.clone(),
+                ..Default::default()
+            };
+            // C's defaults, which are sway's (`src/main.c`): 25 a second after
+            // 200ms.
+            let delay = keyboard.repeat_delay.unwrap_or(200);
+            let rate = keyboard.repeat_rate.unwrap_or(25);
+            match self.seat.add_keyboard(xkb, delay, rate) {
+                Ok(_) => tracing::info!(
+                    "keymap {:?}{}, repeat {rate}/s after {delay}ms",
+                    keyboard.layout.as_deref().unwrap_or("(default)"),
+                    keyboard
+                        .variant
+                        .as_deref()
+                        .map(|v| format!(" {v}"))
+                        .unwrap_or_default(),
+                ),
+                // Naming it matters: an unknown layout otherwise leaves the
+                // built-in one in place and looks like the config was ignored.
+                Err(e) => tracing::error!(
+                    "keymap {:?} was refused, keeping the current one: {e}",
+                    keyboard.layout.as_deref().unwrap_or("(default)")
+                ),
+            }
         }
 
         // Bindings last, because whether the defaults are there at all depends

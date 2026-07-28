@@ -53,6 +53,21 @@ pub fn init(
     state.space.map_output(&output, (0, 0));
     state.active_output = Some(output.name());
 
+    // A GPU client cannot present without this, whatever the backend. Nested
+    // is where most development happens, so it is worth as much here as on
+    // real hardware.
+    {
+        use smithay::backend::renderer::ImportDma as _;
+        let formats: Vec<_> = backend.renderer().dmabuf_formats().iter().copied().collect();
+        let node = smithay::backend::egl::EGLDevice::device_for_display(
+            backend.renderer().egl_context().display(),
+        )
+        .ok()
+        .and_then(|device| device.try_get_render_node().ok().flatten())
+        .map(|node| node.dev_id());
+        state.advertise_dmabuf(node, formats);
+    }
+
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
     event_loop

@@ -94,6 +94,43 @@ impl WaylandDndGrabHandler for ViewportState {
 
 impl OutputHandler for ViewportState {}
 
+/// linux-dmabuf: how a client that renders on the GPU hands over its frames.
+///
+/// Without the global there is no way to present a GPU buffer at all. A Vulkan
+/// client does not fall back to shared memory — its WSI has nothing to attach
+/// to, and rio dies inside
+/// vkGetPhysicalDeviceSurfaceCapabilitiesKHR with ERROR_SURFACE_LOST_KHR
+/// rather than saying what is missing. Every hardware-accelerated client is in
+/// the same position, so this is not one application's requirement.
+impl smithay::wayland::dmabuf::DmabufHandler for ViewportState {
+    fn dmabuf_state(&mut self) -> &mut smithay::wayland::dmabuf::DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        _global: &smithay::wayland::dmabuf::DmabufGlobal,
+        dmabuf: smithay::backend::allocator::dmabuf::Dmabuf,
+        notifier: smithay::wayland::dmabuf::ImportNotifier,
+    ) {
+        use smithay::backend::renderer::ImportDma as _;
+
+        // Imported now rather than at first use, because the answer the client
+        // is waiting for is whether this buffer is usable at all — and a
+        // failure discovered mid-frame has nowhere to go.
+        let imported = self
+            .udev
+            .as_mut()
+            .map(|udev| udev.renderer.import_dmabuf(&dmabuf, None).is_ok());
+        match imported {
+            Some(true) | None => {
+                let _ = notifier.successful::<ViewportState>();
+            }
+            Some(false) => notifier.failed(),
+        }
+    }
+}
+
 /// xdg-activation: "focus this, a token says it was asked for".
 ///
 /// A launcher asks for a token before it starts a program, hands it over in the

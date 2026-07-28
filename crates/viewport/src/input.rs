@@ -157,6 +157,26 @@ impl ViewportState {
                 if let Some(action) = action.flatten() {
                     self.handle_action(action);
                 }
+
+                // Whether the logo key is held, which is what the bar rides on
+                // when it is set to appear only while Mod4 is down.
+                //
+                // After the key has been processed, or the state read is the
+                // one before it. Only on a change, and only while the bar is
+                // on "auto": this runs for every Shift and Ctrl of ordinary
+                // typing, and a message per keystroke saying Mod4 is still not
+                // held would be pure noise (`src/input.c:922`).
+                if self.config.bar.as_deref() == Some("auto") {
+                    let logo = self
+                        .seat
+                        .get_keyboard()
+                        .map(|keyboard| keyboard.modifier_state().logo)
+                        .unwrap_or(false);
+                    if logo != self.logo_held {
+                        self.logo_held = logo;
+                        self.notify(&viewport_ipc::Event::Modifiers { logo });
+                    }
+                }
             }
 
             // A mouse sends relative motion; absolute is for tablets and
