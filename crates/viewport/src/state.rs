@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use smithay::desktop::{PopupManager, Space, Window, WindowSurfaceType};
 use smithay::input::{Seat, SeatState};
+use smithay::backend::renderer::{Bind, ExportMem, Offscreen, Renderer};
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{
@@ -14,7 +15,7 @@ use smithay::reexports::calloop::{
 };
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Display, DisplayHandle};
+use smithay::reexports::wayland_server::{Display, DisplayHandle, Resource as _};
 use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::output::OutputManagerState;
@@ -30,6 +31,19 @@ use smithay::xwayland::X11Wm;
 
 use crate::ipc::Ipc;
 use crate::views::{Views, NO_VIEW};
+
+/// A screenshot a client asked for and has not been given yet.
+#[derive(Clone)]
+pub struct PendingCopy {
+    pub frame: smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
+    pub buffer: smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+    pub output: Output,
+    pub region: Rectangle<i32, smithay::utils::Physical>,
+    pub overlay_cursor: bool,
+    /// Whether the client used `copy_with_damage`, and so expects a damage
+    /// event before `ready`.
+    pub with_damage: bool,
+}
 
 pub struct ViewportState {
     pub start_time: std::time::Instant,
@@ -225,6 +239,12 @@ pub struct ViewportState {
     /// them; a taskbar or a switcher written as an ordinary client does not.
     pub foreign_toplevel_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
+    /// wlr-screencopy: screenshots and recording. Smithay implements it
+    /// nowhere, so the dispatch is in `screencopy.rs`.
+    pub screencopy_state: crate::screencopy::ScreencopyState,
+    /// Copies asked for and not yet made. Served the next time the output
+    /// they name is drawn, because that is where its renderer is.
+    pub pending_copies: Vec<PendingCopy>,
     /// ext-session-lock-v1: the screen locker.
     pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
     /// Whether the session is locked. Stays true if the locker dies, because
@@ -277,6 +297,7 @@ impl ViewportState {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let layer_shell_state =
             smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
+        let screencopy_state = crate::screencopy::ScreencopyState::new::<Self>(&dh);
         let primary_selection_state =
             smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<Self>(&dh);
         let data_control_state =
@@ -419,6 +440,8 @@ impl ViewportState {
             compositor_state,
             xdg_shell_state,
             layer_shell_state,
+            screencopy_state,
+            pending_copies: Vec::new(),
             primary_selection_state,
             data_control_state,
             idle_inhibit_state,
@@ -582,6 +605,168 @@ impl ViewportState {
             }
             Err(e) => tracing::error!("could not build dmabuf feedback: {e}"),
         }
+    }
+
+    /// Copy every frame waiting on `output`, and answer its client.
+    ///
+    /// Generic over the renderer because the two backends have different ones
+    /// and neither is reachable from where the request arrives: the nested
+    /// backend's lives inside its event loop. A backend calls this while it
+    /// holds its renderer, right after it has drawn.
+    ///
+    /// Composited fresh rather than read back from the scanout buffer: the
+    /// front buffer holds whatever was last flipped, which for an idle screen
+    /// is a frame of unknown age — for a screenshot that is the difference
+    /// between the current desktop and one from a minute ago.
+    pub fn service_screencopy<R, B>(&mut self, output: &Output, renderer: &mut R)
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        if self.pending_copies.is_empty() {
+            return;
+        }
+        // Only this output's. A second monitor's copies wait for that monitor
+        // to draw, which is where its renderer will be.
+        let mut mine = Vec::new();
+        self.pending_copies.retain(|copy| {
+            if copy.output == *output {
+                mine.push(copy.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        for copy in mine {
+            // The client went away between asking and being served, which is
+            // ordinary: a screenshot tool that was killed mid-copy.
+            if !copy.frame.is_alive() {
+                continue;
+            }
+            match self.copy_one(output, &copy, renderer) {
+                Ok(()) => crate::screencopy::finish(&copy.frame, copy.region, copy.with_damage),
+                Err(e) => {
+                    tracing::warn!("screencopy failed: {e}");
+                    copy.frame.failed();
+                }
+            }
+        }
+    }
+
+    fn copy_one<R, B>(
+        &mut self,
+        output: &Output,
+        copy: &PendingCopy,
+        renderer: &mut R,
+    ) -> Result<(), String>
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        let region = copy.region;
+        let mut frame = self.frame_for(output);
+        if !copy.overlay_cursor {
+            // A screenshot with a pointer in it is rarely what was asked for,
+            // and the client says which it wants.
+            frame.cursor = crate::render::Cursor::Hidden;
+        }
+
+        let size = output
+            .current_mode()
+            .map(|mode| mode.size)
+            .ok_or_else(|| "the output has no mode".to_owned())?;
+
+        let elements = crate::render::build(&frame, renderer);
+
+        let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
+            (size.w, size.h).into();
+        let mut target = renderer
+            .create_buffer(smithay::backend::allocator::Fourcc::Argb8888, buffer_size)
+            .map_err(|e| format!("allocating a copy target: {e}"))?;
+
+        let mapping = {
+            let mut framebuffer = renderer
+                .bind(&mut target)
+                .map_err(|e| format!("binding the copy target: {e}"))?;
+            let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+                size,
+                1.0,
+                smithay::utils::Transform::Normal,
+            );
+            tracker
+                .render_output(
+                    renderer,
+                    &mut framebuffer,
+                    0,
+                    &elements,
+                    smithay::backend::renderer::Color32F::from([0.0, 0.0, 0.0, 1.0]),
+                )
+                .map_err(|e| format!("compositing the copy: {e:?}"))?;
+
+            renderer
+                .copy_framebuffer(
+                    &framebuffer,
+                    smithay::utils::Rectangle::new(
+                        (region.loc.x, region.loc.y).into(),
+                        (region.size.w, region.size.h).into(),
+                    ),
+                    smithay::backend::allocator::Fourcc::Xrgb8888,
+                )
+                .map_err(|e| format!("reading the copy back: {e}"))?
+        };
+        let pixels = renderer
+            .map_texture(&mapping)
+            .map_err(|e| format!("mapping the copy: {e}"))?
+            .to_vec();
+
+        // Into the client's own memory. The shm path is the only one a client
+        // can read without having allocated the buffer itself.
+        smithay::wayland::shm::with_buffer_contents_mut(&copy.buffer, |ptr, len, data| {
+            let want = (region.size.w * region.size.h * 4) as usize;
+            if len < want || data.width < region.size.w || data.height < region.size.h {
+                return Err(format!(
+                    "the client's buffer is {}x{} and the copy is {}x{}",
+                    data.width, data.height, region.size.w, region.size.h
+                ));
+            }
+            // Row by row, because the client's stride need not be the packed
+            // width — and writing as though it were shears the image.
+            let stride = data.stride as usize;
+            let row = (region.size.w * 4) as usize;
+            for y in 0..region.size.h as usize {
+                let from = &pixels[y * row..(y + 1) * row];
+                // SAFETY: the length was checked above, and shm guarantees the
+                // mapping is valid for the duration of this closure.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        from.as_ptr(),
+                        ptr.add(data.offset as usize + y * stride),
+                        row,
+                    );
+                }
+            }
+            Ok(())
+        })
+        .map_err(|e| format!("the client did not give shared memory: {e}"))??;
+
+        Ok(())
     }
 
     /// Whether an output is currently in HDR.

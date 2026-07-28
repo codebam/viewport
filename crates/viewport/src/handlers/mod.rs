@@ -96,6 +96,34 @@ impl WaylandDndGrabHandler for ViewportState {
 
 impl OutputHandler for ViewportState {}
 
+impl crate::screencopy::ScreencopyHandler for ViewportState {
+    fn screencopy_state(&mut self) -> &mut crate::screencopy::ScreencopyState {
+        &mut self.screencopy_state
+    }
+
+    fn queue_copy(
+        &mut self,
+        frame: &smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
+        state: &crate::screencopy::FrameState,
+        buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+        with_damage: bool,
+    ) -> Result<(), String> {
+        self.pending_copies.push(crate::state::PendingCopy {
+            frame: frame.clone(),
+            buffer: buffer.clone(),
+            output: state.output.clone(),
+            region: state.region,
+            overlay_cursor: state.overlay_cursor,
+            with_damage,
+        });
+        // The copy happens when the output is next drawn, so something has to
+        // ask for a draw. An idle desktop draws nothing, and a screenshot of
+        // an idle desktop is the ordinary case.
+        self.needs_render = true;
+        Ok(())
+    }
+}
+
 /// Middle-click paste: a second clipboard, separate from the ordinary one.
 impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler
     for ViewportState
@@ -327,5 +355,7 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for ViewportState {
         crate::apply::focus_view(self, id);
     }
 }
+
+crate::delegate_screencopy!(ViewportState);
 
 smithay::delegate_dispatch2!(ViewportState);

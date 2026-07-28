@@ -27,6 +27,7 @@ mod ipc;
 mod notification;
 mod pointer;
 mod render;
+mod screencopy;
 mod session;
 #[cfg(feature = "wpe")]
 mod shell;

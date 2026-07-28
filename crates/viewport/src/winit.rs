@@ -176,6 +176,13 @@ pub fn init(
                     if let Err(e) = result {
                         tracing::error!("render failed: {e}");
                     }
+
+                    // Screenshots, while the renderer is in hand. After the
+                    // draw so a client that asked during this frame is served
+                    // with what the frame shows rather than the one before it.
+                    state.service_screencopy::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                        &output, renderer,
+                    );
                 }
                 if let Err(e) = backend.submit(Some(&[damage])) {
                     tracing::error!("submit failed: {e}");

@@ -800,6 +800,20 @@ impl ViewportState {
             self.needs_render = true;
         }
 
+        // Screenshots, now that the frame this output shows has been drawn.
+        // The renderer is moved out and put back because servicing needs the
+        // whole compositor as well as the renderer, and the renderer lives
+        // inside it — a copy composites the desktop, which is everything.
+        if !self.pending_copies.is_empty() {
+            if let Some(mut udev) = self.udev.take() {
+                self.service_screencopy::<_, smithay::backend::allocator::dmabuf::Dmabuf>(
+                    &output,
+                    &mut udev.renderer,
+                );
+                self.udev = Some(udev);
+            }
+        }
+
         // Frame callbacks: a client will not paint again until it gets one.
         for window in self.space.elements() {
             window.send_frame(&output, start, Some(Duration::ZERO), |_, _| {
