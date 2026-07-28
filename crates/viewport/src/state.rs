@@ -420,6 +420,11 @@ impl ViewportState {
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "viewport");
         seat.add_keyboard(Default::default(), 200, 25)?;
         seat.add_pointer();
+        // A touchscreen. Added unconditionally, as the pointer and keyboard
+        // are: the seat's capabilities are what a client checks before it
+        // listens for anything, and a device appearing later cannot make a
+        // client that has already decided start listening.
+        seat.add_touch();
 
         let socket_name = Self::init_wayland_listener(display, event_loop);
 

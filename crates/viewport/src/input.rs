@@ -12,12 +12,12 @@
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
 };
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::SERIAL_COUNTER;
+use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::state::ViewportState;
 use crate::views::NO_VIEW;
@@ -412,8 +412,111 @@ impl ViewportState {
                 pointer.frame(self);
             }
 
+            // Touch. A tap is not a click: the pointer is not moved and no
+            // button is sent, because a client that supports touch expects
+            // touch — and one that does not is better served by nothing than
+            // by a pointer that teleports to wherever a finger landed.
+            InputEvent::TouchDown { event, .. } => {
+                let Some(touch) = self.seat.get_touch() else {
+                    return;
+                };
+                let Some(position) = self.touch_position(&event) else {
+                    return;
+                };
+                let serial = SERIAL_COUNTER.next_serial();
+                let under = self.surface_under(position);
+
+                // The window under the finger takes the keyboard too. There is
+                // no other way to focus something on a touchscreen: there is no
+                // pointer to click with and no way to reach a chord.
+                if let Some((surface, _)) = under.as_ref() {
+                    if let Some(keyboard) = self.seat.get_keyboard() {
+                        keyboard.set_focus(self, Some(surface.clone()), serial);
+                    }
+                }
+
+                touch.down(
+                    self,
+                    under,
+                    &smithay::input::touch::DownEvent {
+                        slot: event.slot(),
+                        location: position,
+                        serial,
+                        time: event.time_msec(),
+                    },
+                );
+                self.needs_render = true;
+            }
+
+            InputEvent::TouchMotion { event, .. } => {
+                let Some(touch) = self.seat.get_touch() else {
+                    return;
+                };
+                let Some(position) = self.touch_position(&event) else {
+                    return;
+                };
+                let under = self.surface_under(position);
+                touch.motion(
+                    self,
+                    under,
+                    &smithay::input::touch::MotionEvent {
+                        slot: event.slot(),
+                        location: position,
+                        time: event.time_msec(),
+                    },
+                );
+            }
+
+            InputEvent::TouchUp { event, .. } => {
+                let Some(touch) = self.seat.get_touch() else {
+                    return;
+                };
+                touch.up(
+                    self,
+                    &smithay::input::touch::UpEvent {
+                        slot: event.slot(),
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                    },
+                );
+            }
+
+            // The end of one set of simultaneous touches, which is how a
+            // client knows a two-finger gesture was two fingers rather than
+            // two taps.
+            InputEvent::TouchFrame { .. } => {
+                if let Some(touch) = self.seat.get_touch() {
+                    touch.frame(self);
+                }
+            }
+
+            // The compositor has taken the sequence over — a gesture, or a
+            // device going away mid-touch. A client that is not told this is
+            // left with a finger down that never lifts.
+            InputEvent::TouchCancel { .. } => {
+                if let Some(touch) = self.seat.get_touch() {
+                    touch.cancel(self);
+                }
+            }
+
             _ => {}
         }
+    }
+
+    /// Where a touch event landed, in the layout's own coordinates.
+    ///
+    /// Touch positions arrive as a fraction of the screen, so they mean
+    /// nothing without an output to scale them against — and the output has to
+    /// be the one the touchscreen is attached to, which for now is the first
+    /// one. A tablet with a second monitor plugged in would want the mapping
+    /// libinput reports, and that is a device property this does not read yet.
+    fn touch_position<E: smithay::backend::input::AbsolutePositionEvent<I>, I: InputBackend>(
+        &self,
+        event: &E,
+    ) -> Option<Point<f64, Logical>> {
+        let output = self.space.outputs().next()?;
+        let geometry = self.space.output_geometry(output)?;
+        Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
     }
 
     /// Carry out one of the compositor's own chords.
