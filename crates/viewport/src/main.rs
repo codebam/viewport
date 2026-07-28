@@ -16,6 +16,7 @@ mod color_management;
 mod config;
 mod cursor;
 mod focus;
+mod gamma;
 mod framing;
 #[cfg(feature = "wpe")]
 mod glib_loop;
@@ -117,6 +118,22 @@ fn main() -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         state.socket_name.to_string_lossy()
     );
+    // Whether there is a shell in this binary at all.
+    //
+    // The feature is not the default, so `cargo test` and a plain
+    // `cargo build` both leave a binary with no web engine in
+    // target/release — and run-drm.sh runs whatever is there. A session with
+    // no shell looks exactly like a shell that failed to paint: grey where
+    // the wallpaper and the bar should be, and nothing in the log to say
+    // which, because the code that would have logged is not compiled in.
+    if cfg!(feature = "wpe") {
+        tracing::info!("the shell is compiled in");
+    } else {
+        tracing::warn!(
+            "no shell in this binary: rebuild with \
+             `cargo build --release -p viewport --features wpe`"
+        );
+    }
 
     // A self-imposed deadline, for trying things on a real TTY.
     //

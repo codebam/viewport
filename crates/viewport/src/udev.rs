@@ -893,6 +893,9 @@ impl ViewportState {
         tracing::info!("session resumed");
 
         let crtcs: Vec<crtc::Handle> = udev.surfaces.keys().copied().collect();
+        // The kernel reset every gamma ramp when the session was handed over,
+        // and the client that set one has no way to know.
+        self.restore_gamma();
         for crtc in crtcs {
             self.render(crtc);
         }

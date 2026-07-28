@@ -255,6 +255,13 @@ pub struct ViewportState {
     /// Smithay's surface element — so neither is touched again after this.
     pub _content_type_state: smithay::wayland::content_type::ContentTypeState,
     pub _alpha_modifier_state: smithay::wayland::alpha_modifier::AlphaModifierState,
+    /// wlr-gamma-control: what wlsunset and gammastep speak. Smithay
+    /// implements it nowhere, so the dispatch is in `gamma.rs`.
+    pub gamma_state: crate::gamma::GammaControlState,
+    /// The ramp each output is wearing, so a VT switch back can put it on
+    /// again: the kernel resets gamma when the session is handed over, and a
+    /// night-light client has no way to know it happened.
+    pub gamma_ramps: std::collections::HashMap<String, crate::gamma::Ramp>,
     /// wlr-output-management: what kanshi, wlr-randr and wdisplays speak.
     /// Smithay implements it nowhere, so the dispatch is in
     /// `output_management.rs`.
@@ -317,6 +324,7 @@ impl ViewportState {
         let screencopy_state = crate::screencopy::ScreencopyState::new::<Self>(&dh);
         let output_management_state =
             crate::output_management::OutputManagementState::new::<Self>(&dh);
+        let gamma_state = crate::gamma::GammaControlState::new::<Self>(&dh);
         // A client that names its cursor rather than drawing one. Without it a
         // GTK application shows the pointer it inherited from whatever it last
         // hovered, because it has no other way to ask for a text caret.
@@ -475,6 +483,8 @@ impl ViewportState {
             xdg_shell_state,
             layer_shell_state,
             screencopy_state,
+            gamma_state,
+            gamma_ramps: std::collections::HashMap::new(),
             _cursor_shape_state: cursor_shape_state,
             _content_type_state: content_type_state,
             _alpha_modifier_state: alpha_modifier_state,
@@ -1102,6 +1112,110 @@ impl ViewportState {
             ),
             // Most panels cannot, and asking is how you find out.
             Err(e) => tracing::debug!("adaptive sync unavailable on {}: {e}", output.name()),
+        }
+    }
+
+    /// How many gamma entries this output's CRTC takes.
+    ///
+    /// `None` where there is no CRTC to ask — the nested backend, or a driver
+    /// that offers no ramp — which tells a night-light client to skip this
+    /// monitor rather than wait for a ramp that will never take.
+    pub fn output_gamma_size(&mut self, output: &Output) -> Option<u32> {
+        use smithay::reexports::drm::control::Device as _;
+
+        let udev = self.udev.as_ref()?;
+        let crtc = udev
+            .surfaces
+            .iter()
+            .find(|(_, surface)| surface.output == *output)
+            .map(|(crtc, _)| *crtc)?;
+        let length = udev.manager.device().get_crtc(crtc).ok()?.gamma_length();
+        (length > 0).then_some(length)
+    }
+
+    /// Put a ramp on an output, or take one off.
+    ///
+    /// The legacy ioctl rather than the atomic GAMMA_LUT property: it is one
+    /// call that does not have to join the commit putting a frame on screen,
+    /// and a gamma change that waited for a page flip would be a colour shift
+    /// that only lands when something moves.
+    pub fn set_output_gamma(
+        &mut self,
+        output: &Output,
+        ramp: Option<&crate::gamma::Ramp>,
+    ) -> bool {
+        let name = output.name();
+        match ramp {
+            Some(ramp) => {
+                self.gamma_ramps.insert(name.clone(), ramp.clone());
+            }
+            None => {
+                self.gamma_ramps.remove(&name);
+            }
+        }
+
+        let Some(size) = self.output_gamma_size(output) else {
+            return false;
+        };
+        let identity;
+        let ramp = match ramp {
+            Some(ramp) => ramp,
+            None => {
+                // Straight through, which is what a display with no client
+                // looking after it should show. Leaving the last ramp in place
+                // means a night-light client that was killed leaves the screen
+                // orange until the next reboot.
+                identity = crate::gamma::identity(size as usize);
+                &identity
+            }
+        };
+        self.apply_gamma(output, ramp)
+    }
+
+    fn apply_gamma(&mut self, output: &Output, ramp: &crate::gamma::Ramp) -> bool {
+        use smithay::reexports::drm::control::Device as _;
+
+        let Some(udev) = self.udev.as_ref() else {
+            return false;
+        };
+        let Some(crtc) = udev
+            .surfaces
+            .iter()
+            .find(|(_, surface)| surface.output == *output)
+            .map(|(crtc, _)| *crtc)
+        else {
+            return false;
+        };
+        match udev
+            .manager
+            .device()
+            .set_gamma(crtc, &ramp.red, &ramp.green, &ramp.blue)
+        {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("{}: the gamma ramp was refused: {e}", output.name());
+                false
+            }
+        }
+    }
+
+    /// Put every ramp back after a VT switch.
+    ///
+    /// The kernel resets gamma when the session is handed over, and the client
+    /// that set it has no way to know that happened — so coming back from
+    /// another VT would drop the screen out of night mode until the next time
+    /// wlsunset happened to recalculate.
+    pub fn restore_gamma(&mut self) {
+        let ramps: Vec<(String, crate::gamma::Ramp)> = self
+            .gamma_ramps
+            .iter()
+            .map(|(name, ramp)| (name.clone(), ramp.clone()))
+            .collect();
+        for (name, ramp) in ramps {
+            let Some(output) = self.output_by_name(&name) else {
+                continue;
+            };
+            self.apply_gamma(&output, &ramp);
         }
     }
 

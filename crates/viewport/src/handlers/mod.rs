@@ -135,6 +135,24 @@ impl crate::screencopy::ScreencopyHandler for ViewportState {
     }
 }
 
+impl crate::gamma::GammaControlHandler for ViewportState {
+    fn gamma_control_state(&mut self) -> &mut crate::gamma::GammaControlState {
+        &mut self.gamma_state
+    }
+
+    fn gamma_size(&mut self, output: &smithay::output::Output) -> Option<u32> {
+        self.output_gamma_size(output)
+    }
+
+    fn set_gamma(
+        &mut self,
+        output: &smithay::output::Output,
+        ramp: Option<&crate::gamma::Ramp>,
+    ) -> bool {
+        self.set_output_gamma(output, ramp)
+    }
+}
+
 impl crate::output_management::OutputManagementHandler for ViewportState {
     fn output_management_state(
         &mut self,
@@ -389,5 +407,6 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for ViewportState {
 
 crate::delegate_screencopy!(ViewportState);
 crate::delegate_output_management!(ViewportState);
+crate::delegate_gamma_control!(ViewportState);
 
 smithay::delegate_dispatch2!(ViewportState);
