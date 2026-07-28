@@ -8,9 +8,14 @@ description = "The web engine behind the Viewport shell, and the surface it rend
 
 [features]
 default = []
-# Servo is an enormous build. Keeping it behind a feature means the protocol
-# and compositor crates stay fast to compile and test on their own.
-servo = []
+# Servo is an enormous build — SpiderMonkey included. Keeping it behind a
+# feature means the protocol and compositor crates stay fast to compile and
+# test on their own, and that everything else keeps working while this is
+# being brought up.
+# WPE WebKit. Off by default so this crate still builds and tests on a
+# machine without a browser engine — the dma-buf and protocol work does not
+# need one.
+wpe = []
 
 [dependencies]
 viewport-ipc.workspace = true
@@ -24,6 +29,10 @@ drm-fourcc = "2.2"
 khronos-egl = { version = "6", features = ["dynamic"] }
 libloading = "0.8"
 glow = "0.16"
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
 
 [dev-dependencies]
 # Polling the exported fence fd, to prove it is a real sync_file.

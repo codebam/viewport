@@ -252,6 +252,38 @@
             clippy
             rust-analyzer
 
+            # ------------------------------------------------------------
+            # Servo.
+            #
+            # Taken from nixpkgs' own servo derivation
+            # (pkgs/by-name/se/servo/package.nix) rather than worked out by
+            # trial and error. Servo is a Cargo source dependency, not an
+            # installable package: it is an rlib, and Rust has no stable ABI,
+            # so it has to be compiled inside our build. The nixpkgs
+            # derivation is therefore useful for its recipe and not its
+            # output.
+            # ------------------------------------------------------------
+            cmake
+            llvm
+            llvmPackages.libstdcxxClang
+            m4
+            perl
+            yasm
+            python311
+            rustPlatform.bindgenHook
+
+            fontconfig
+            freetype
+            harfbuzz
+            libunwind
+            libGL
+            zlib
+            udev
+            gst_all_1.gstreamer
+            gst_all_1.gst-plugins-base
+            gst_all_1.gst-plugins-good
+            gst_all_1.gst-plugins-bad
+
             # The shell's buffer is allocated with GBM and imported through
             # EGL. nixpkgs splits libgbm out of mesa, and the EGL dispatch
             # library lives in libglvnd — the vendor driver under
@@ -282,6 +314,14 @@
               pkgs.libgbm
               # ash dlopens libvulkan.so.1.
               pkgs.vulkan-loader
+              # Servo dlopens these at runtime.
+              pkgs.fontconfig
+              pkgs.freetype
+              pkgs.harfbuzz
+              pkgs.libunwind
+              pkgs.libGL
+              pkgs.zlib
+              pkgs.udev
               pkgs.xorg.libX11
               pkgs.xorg.libXcursor
               pkgs.xorg.libXi

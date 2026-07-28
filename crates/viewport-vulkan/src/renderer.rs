@@ -1386,7 +1386,6 @@ mod tests {
     use smithay::backend::allocator::dmabuf::{AsDmabuf, DmabufMappingMode, DmabufSyncFlags};
     use smithay::backend::allocator::{Allocator, Modifier};
     use smithay::utils::Point;
-    use std::os::fd::AsRawFd;
 
     #[test]
     fn errors_carry_their_cause() {

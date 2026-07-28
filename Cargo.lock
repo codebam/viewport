@@ -1676,12 +1676,14 @@ name = "viewport-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cc",
  "drm-fourcc",
  "gbm",
  "glow",
  "khronos-egl",
  "libc",
  "libloading",
+ "pkg-config",
  "tracing",
  "viewport-ipc",
 ]

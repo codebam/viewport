@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-servo = ["viewport-web/servo"]
+wpe = ["viewport-web/wpe"]
 
 [dependencies]
 viewport-ipc.workspace = true
