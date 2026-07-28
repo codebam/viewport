@@ -102,6 +102,12 @@ pub struct Surface {
     /// Whether this output's frames are currently allowed to tear, so the
     /// compositor is only told when it changes rather than once a frame.
     pub tearing: bool,
+    /// Set when a tearing flip was refused by the display. The capability says
+    /// the hardware can flip asynchronously, not that it can in whatever state
+    /// this output is in — adaptive sync being the combination that goes wrong
+    /// — and asking again every frame would be a screen that stops once per
+    /// frame for the rest of the session.
+    pub refuses_tearing: bool,
     /// Whether this output is switched on.
     ///
     /// A client can turn a monitor off through wlr-output-management — kanshi
@@ -575,6 +581,7 @@ impl ViewportState {
                             dumped: false,
                             hdr: false,
                             tearing: false,
+                            refuses_tearing: false,
                             enabled: true,
                             pending: false,
                         },
@@ -808,6 +815,7 @@ impl ViewportState {
         // Tearing, if one window covers this output and asked for it. Set
         // before the frame is built, because it changes how the frame that is
         // about to be queued reaches the screen.
+        let wants_tearing = wants_tearing && !surface.refuses_tearing;
         if surface.tearing != wants_tearing {
             surface.tearing = wants_tearing;
             let honoured = surface
@@ -875,6 +883,29 @@ impl ViewportState {
                     // arrives, so a failure here stops the output for good
                     // rather than dropping one frame.
                     tracing::warn!("queue_frame: {e}");
+
+                    // A tearing flip is the one thing here a driver may refuse
+                    // for a frame it would otherwise have taken — the
+                    // capability says the hardware can flip asynchronously,
+                    // not that it can do so in whatever state this output is
+                    // in, and adaptive sync is the combination that goes wrong
+                    // in practice. Giving the frame up and going back to whole
+                    // ones costs a game its latency; not doing so costs the
+                    // user their screen, because nothing will ask for another
+                    // frame.
+                    if surface.tearing {
+                        surface.tearing = false;
+                        let _ = surface
+                            .drm_output
+                            .with_compositor(|compositor| compositor.set_allow_tearing(false));
+                        tracing::warn!(
+                            "{}: the display would not take a tearing flip, so it will \
+                             not be asked again",
+                            output.name()
+                        );
+                        surface.refuses_tearing = true;
+                        self.needs_render = true;
+                    }
                 } else {
                     surface.pending = true;
                     if !surface.drawn {
