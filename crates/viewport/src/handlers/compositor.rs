@@ -76,6 +76,26 @@ impl ViewportState {
         view.mapped = true;
         let added = view.added(output, false);
 
+        // What the client actually handed over. Whether a window is opaque is
+        // a property of its buffer format, and guessing at that is what the
+        // last two attempts at "the window is transparent" did.
+        let kind = with_renderer_surface_state(surface, |state| {
+            let Some(buffer) = state.buffer() else {
+                return "no buffer".to_owned();
+            };
+            if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer) {
+                use smithay::backend::allocator::Buffer as _;
+                let format = dmabuf.format();
+                return format!("dmabuf {:?} modifier {:?}", format.code, format.modifier);
+            }
+            match smithay::wayland::shm::with_buffer_contents(buffer, |_, _, data| data.format) {
+                Ok(format) => format!("shm {format:?}"),
+                Err(e) => format!("neither dmabuf nor shm: {e:?}"),
+            }
+        })
+        .unwrap_or_else(|| "no surface state".to_owned());
+        tracing::info!("view {}: {kind}", added.id);
+
         self.notify(&Event::ViewAdded(added));
     }
 }

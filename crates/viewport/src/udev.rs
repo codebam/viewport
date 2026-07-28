@@ -615,6 +615,7 @@ impl ViewportState {
         #[cfg(feature = "wpe")]
         let shell_damage = self.shell_damage.snapshot();
         let settled_for = self.last_layout.map(|at| at.elapsed());
+        let mut pending_dump = false;
         let output_geometry = self
             .udev
             .as_ref()
@@ -773,6 +774,12 @@ impl ViewportState {
             let settled = settled_for
                 .map(|d| d >= std::time::Duration::from_secs(2))
                 .unwrap_or(false);
+            // Keep drawing until it fires. The capture needs a frame after the
+            // layout has settled, and settling is precisely when nothing is
+            // asking for one — so waiting for it means waiting forever.
+            if !surface.dumped && !windows.is_empty() {
+                pending_dump = true;
+            }
             if !surface.dumped && !windows.is_empty() && settled {
                 surface.dumped = true;
                 let size = output
@@ -872,6 +879,10 @@ impl ViewportState {
             // saying out loud because it looks identical to being stuck.
             Ok(_) => tracing::debug!("{}: nothing to draw", output.name()),
             Err(e) => tracing::warn!("render_frame: {e}"),
+        }
+
+        if pending_dump {
+            self.needs_render = true;
         }
 
         // Frame callbacks: a client will not paint again until it gets one.
