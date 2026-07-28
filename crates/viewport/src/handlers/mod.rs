@@ -96,6 +96,82 @@ impl WaylandDndGrabHandler for ViewportState {
 
 impl OutputHandler for ViewportState {}
 
+/// Pointer capture: a game asking for the cursor to stop moving.
+///
+/// Activated the moment it is created if the pointer is already over the
+/// surface, because that is when a game asks — mid-frame, with the cursor
+/// where the click was.
+impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for ViewportState {
+    fn new_constraint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+    ) {
+        use smithay::wayland::pointer_constraints::with_pointer_constraint;
+
+        let over = self
+            .surface_under(pointer.current_location())
+            .map(|(under, _)| &under == surface)
+            .unwrap_or(false);
+        if !over {
+            return;
+        }
+        with_pointer_constraint(surface, pointer, |constraint| {
+            if let Some(constraint) = constraint {
+                constraint.activate();
+            }
+        });
+    }
+
+    fn remove_constraint(
+        &mut self,
+        _surface: &WlSurface,
+        _pointer: &smithay::input::pointer::PointerHandle<Self>,
+    ) {
+        // Nothing to undo: the cursor was never moved while locked, so it is
+        // already where the client left it.
+    }
+
+    fn cursor_position_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+        location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+        // Where the cursor should reappear when the grab ends. A game usually
+        // wants it back under the crosshair rather than wherever it happened
+        // to be when the lock started (`src/pointer.c:104`).
+        use smithay::wayland::seat::WaylandFocus as _;
+        let Some(origin) = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .map(|s| &*s == surface)
+                    .unwrap_or(false)
+            })
+            .and_then(|window| self.space.element_geometry(window))
+            .map(|geometry| geometry.loc)
+        else {
+            return;
+        };
+        let at = location + origin.to_f64();
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let under = self.surface_under(at);
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location: at,
+                serial,
+                time: 0,
+            },
+        );
+        self.needs_render = true;
+    }
+}
+
 /// linux-dmabuf: how a client that renders on the GPU hands over its frames.
 ///
 /// Without the global there is no way to present a GPU buffer at all. A Vulkan

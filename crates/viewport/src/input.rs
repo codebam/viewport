@@ -217,31 +217,60 @@ impl ViewportState {
                     return;
                 };
                 let from = pointer.current_location();
+                let under = self.surface_under(from);
+
+                // What the client under the pointer has asked for, if
+                // anything. Read before the pointer moves, because a
+                // constraint applies to where it is now.
+                let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
+
+                // Relative motion first, and always. It is what a game reads,
+                // and a locked pointer has nothing else to go on — an absolute
+                // position saturates at the screen edge, which is a game that
+                // can only turn so far.
+                pointer.relative_motion(
+                    self,
+                    under.clone(),
+                    &smithay::input::pointer::RelativeMotionEvent {
+                        delta: event.delta(),
+                        delta_unaccel: event.delta_unaccel(),
+                        utime: event.time(),
+                    },
+                );
+
+                if locked {
+                    // The cursor does not move at all. That is the point: it
+                    // neither escapes onto the other monitor mid-fight nor
+                    // generates absolute motion the game would misread.
+                    pointer.frame(self);
+                    return;
+                }
+
                 let outputs: Vec<_> = self
                     .space
                     .outputs()
                     .filter_map(|o| self.space.output_geometry(o))
                     .collect();
-                let pos = crate::cursor::clamp(&outputs, from, from + event.delta());
+                let mut pos = crate::cursor::clamp(&outputs, from, from + event.delta());
+
+                // Confinement: still moves, but may not leave the region the
+                // client nominated — a windowed game, or a map widget.
+                if let Some((region, origin)) = confine_to {
+                    let local = pos - origin.to_f64();
+                    if let Some(snapped) = crate::pointer::confine(&region, local) {
+                        pos = snapped + origin.to_f64();
+                    }
+                }
 
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self.surface_under(pos);
                 pointer.motion(
                     self,
-                    under.clone(),
+                    under,
                     &MotionEvent {
                         location: pos,
                         serial,
                         time: event.time_msec(),
-                    },
-                );
-                pointer.relative_motion(
-                    self,
-                    under,
-                    &smithay::input::pointer::RelativeMotionEvent {
-                        delta: event.delta(),
-                        delta_unaccel: event.delta_unaccel(),
-                        utime: event.time(),
                     },
                 );
                 pointer.frame(self);
@@ -576,5 +605,71 @@ impl ViewportState {
             args: vec![target.to_owned()],
         };
         self.notify(&event);
+    }
+}
+
+impl ViewportState {
+    /// Whether the surface under the pointer has captured it, and to what.
+    ///
+    /// Returns whether the pointer is locked, and the region it is confined to
+    /// with the surface's origin in layout coordinates — the region is
+    /// surface-local and the pointer is not.
+    fn pointer_constraint(
+        &self,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+        under: Option<&(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)>,
+    ) -> (
+        bool,
+        Option<(
+            Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
+            smithay::utils::Point<i32, smithay::utils::Logical>,
+        )>,
+    ) {
+        use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
+
+        let Some((surface, origin)) = under else {
+            return (false, None);
+        };
+        let origin = origin.to_i32_round();
+
+        let mut locked = false;
+        let mut confine = None;
+        with_pointer_constraint(surface, pointer, |constraint| {
+            let Some(constraint) = constraint else {
+                return;
+            };
+            // A constraint that exists but has not been activated does not
+            // apply: activation is what the client is told about, and acting
+            // before it would capture a pointer the client is not expecting.
+            if !constraint.is_active() {
+                return;
+            }
+            match &*constraint {
+                PointerConstraint::Locked(_) => locked = true,
+                PointerConstraint::Confined(confined) => {
+                    // The additive rectangles only. A region may also
+                    // subtract, but a hole in a confinement region has no
+                    // sensible edge to snap a cursor to — and no client asks
+                    // for one. Ignoring the subtractions confines to slightly
+                    // more than was asked, which is the safe direction: the
+                    // cursor stays inside the surface either way.
+                    use smithay::wayland::compositor::RectangleKind;
+                    confine = Some(
+                        confined
+                            .region()
+                            .map(|region| {
+                                region
+                                    .rects
+                                    .iter()
+                                    .filter(|(kind, _)| matches!(kind, RectangleKind::Add))
+                                    .map(|(_, rect)| *rect)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    );
+                }
+            }
+        });
+        (locked, confine.map(|region| (region, origin)))
     }
 }

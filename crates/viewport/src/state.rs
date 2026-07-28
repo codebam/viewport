@@ -180,6 +180,13 @@ pub struct ViewportState {
     /// wlr-layer-shell: bars, launchers, notification daemons. Not the
     /// shell's business — a layer surface asks for an edge, not a layout.
     pub layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState,
+    /// Pointer capture, and the relative motion a game reads instead of a
+    /// position. Both are needed together: a lock with no relative motion
+    /// leaves a game unable to turn at all.
+    pub pointer_constraints_state:
+        smithay::wayland::pointer_constraints::PointerConstraintsState,
+    pub relative_pointer_state:
+        smithay::wayland::relative_pointer::RelativePointerManagerState,
     /// ext-session-lock-v1: the screen locker.
     pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
     /// Whether the session is locked. Stays true if the locker dies, because
@@ -232,6 +239,10 @@ impl ViewportState {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let layer_shell_state =
             smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
+        let pointer_constraints_state =
+            smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(&dh);
+        let relative_pointer_state =
+            smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(&dh);
         let session_lock_state =
             smithay::wayland::session_lock::SessionLockManagerState::new::<Self, _>(
                 &dh,
@@ -344,6 +355,8 @@ impl ViewportState {
             compositor_state,
             xdg_shell_state,
             layer_shell_state,
+            pointer_constraints_state,
+            relative_pointer_state,
             session_lock_state,
             locked: false,
             locked_at: None,

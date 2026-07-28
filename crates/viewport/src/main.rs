@@ -23,6 +23,7 @@ mod headless;
 mod idle;
 mod input;
 mod ipc;
+mod pointer;
 mod render;
 mod session;
 #[cfg(feature = "wpe")]
