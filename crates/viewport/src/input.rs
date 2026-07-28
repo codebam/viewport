@@ -22,6 +22,33 @@ use smithay::utils::SERIAL_COUNTER;
 use crate::state::ViewportState;
 use crate::views::NO_VIEW;
 
+/// Run a command, detached.
+///
+/// Double-forked through a shell so the compositor does not accumulate
+/// zombies and a launched application outlives the key that started it.
+fn spawn(command: &str) {
+    use std::process::{Command, Stdio};
+
+    tracing::info!("exec: {command}");
+    let result = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    match result {
+        Ok(mut child) => {
+            // Reaped immediately: sh exits as soon as it has exec'd, and
+            // waiting for the application itself would block the compositor.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => tracing::error!("could not run {command}: {e}"),
+    }
+}
+
 /// A chord the compositor keeps for itself.
 ///
 /// Deliberately tiny. Everything else a compositor binds belongs to the shell,
@@ -29,7 +56,7 @@ use crate::views::NO_VIEW;
 /// when the shell is broken or absent. Without them a compositor on a real
 /// TTY is inescapable: VT switching needs the compositor to act on the chord,
 /// and there is otherwise no way to stop it from the machine it is running on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Ctrl+Alt+F1 through F12.
     SwitchVt(i32),
@@ -37,6 +64,8 @@ pub enum Action {
     Quit,
     /// The release half of an intercepted chord.
     Swallow,
+    /// A binding fired.
+    Bound(crate::binding::Action),
 }
 
 /// Match a key against the compositor's own chords.
@@ -82,13 +111,35 @@ impl ViewportState {
                     |state, modifiers, handle| {
                         let keysym = handle.modified_sym();
                         if pressed {
-                            match shortcut(modifiers, keysym) {
-                                Some(action) => {
-                                    // Remember it so the release is swallowed
-                                    // too; a client that saw only the release
-                                    // would think the key was stuck.
+                            // The compositor's own chords first: those have to
+                            // work even when a binding table is broken.
+                            if let Some(action) = shortcut(modifiers, keysym) {
+                                // Remembered so the release is swallowed too;
+                                // a client that saw only the release would
+                                // think the key was stuck.
+                                state.suppressed_keys.push(keysym);
+                                return FilterResult::Intercept(Some(action));
+                            }
+                            // The *unmodified* keysym. A chord is written
+                            // "Mod4+Shift+q" — the shift is in the modifiers,
+                            // and the key is still q. Matching the modified
+                            // symbol would look for Q and never find it, so
+                            // every shifted binding would be dead.
+                            let unmodified = handle
+                                .raw_latin_sym_or_raw_current_sym()
+                                .map(|sym| sym.raw())
+                                .unwrap_or_else(|| keysym.raw());
+
+                            match crate::binding::match_binding(
+                                &state.bindings,
+                                modifiers,
+                                unmodified,
+                            ) {
+                                Some(bound) => {
                                     state.suppressed_keys.push(keysym);
-                                    FilterResult::Intercept(Some(action))
+                                    FilterResult::Intercept(Some(Action::Bound(
+                                        bound.clone(),
+                                    )))
                                 }
                                 None => FilterResult::Forward,
                             }
@@ -265,7 +316,43 @@ impl ViewportState {
                 tracing::info!("quit chord pressed");
                 self.shutdown();
             }
+            Action::Bound(bound) => self.run_binding(bound),
             Action::Swallow => {}
+        }
+    }
+
+    /// Carry out a binding.
+    fn run_binding(&mut self, action: crate::binding::Action) {
+        use crate::binding::Action as Bound;
+
+        match action {
+            Bound::Exec(command) => spawn(&command),
+            Bound::Exit => self.shutdown(),
+            Bound::Close => {
+                if let Some(toplevel) = self
+                    .views
+                    .get(self.focused)
+                    .and_then(|view| view.window.toplevel())
+                {
+                    toplevel.send_close();
+                }
+            }
+            Bound::Reload => {
+                #[cfg(feature = "wpe")]
+                if let Some(shell) = self.shell.as_ref() {
+                    shell.view.reload();
+                }
+            }
+            Bound::Shell(command) => {
+                // Split on whitespace so the shell gets a verb and arguments
+                // rather than a string it has to parse again.
+                let mut parts = command.split_whitespace();
+                let event = viewport_ipc::Event::ShellCommand {
+                    command: parts.next().unwrap_or_default().to_owned(),
+                    args: parts.map(str::to_owned).collect(),
+                };
+                self.notify(&event);
+            }
         }
     }
 

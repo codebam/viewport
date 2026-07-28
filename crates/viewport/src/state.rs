@@ -58,6 +58,9 @@ pub struct ViewportState {
     /// Keys whose press was intercepted, so the matching release can be too.
     pub suppressed_keys: Vec<smithay::input::keyboard::Keysym>,
 
+    /// Keybindings. Almost all of them are passthroughs to the shell.
+    pub bindings: Vec<crate::binding::Binding>,
+
     /// Stops the outer GLib loop. calloop's own signal only ends the inner
     /// dispatch, so quitting has to go through this when the web engine is
     /// running.
@@ -142,6 +145,11 @@ impl ViewportState {
             active_output: None,
             udev: None,
             suppressed_keys: Vec::new(),
+            bindings: crate::binding::defaults(
+                &std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
+                &std::env::var("VIEWPORT_MENU").unwrap_or_else(|_| "wmenu-run".to_owned()),
+                false,
+            ),
             #[cfg(feature = "wpe")]
             glib: None,
             #[cfg(feature = "wpe")]

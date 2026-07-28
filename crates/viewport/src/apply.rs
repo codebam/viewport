@@ -154,8 +154,23 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             reject(state, "notification", "notifications are not ported yet");
         }
 
-        Request::BindAdd { chord, .. } => {
-            reject(state, "bind.add", &format!("{chord}: bindings are not ported yet"));
+        Request::BindAdd { chord, action } => {
+            // Runtime binds from the shell are additive and expendable; the
+            // ones that must survive a broken shell are the defaults.
+            match crate::binding::parse(&format!("{chord}={action}")) {
+                Some(binding) => {
+                    // Replaced rather than appended, so re-registering a chord
+                    // does not leave the older one shadowing it.
+                    state
+                        .bindings
+                        .retain(|existing| {
+                            existing.modifiers != binding.modifiers
+                                || existing.keysym != binding.keysym
+                        });
+                    state.bindings.push(binding);
+                }
+                None => reject(state, "bind.add", &format!("{chord}={action}")),
+            }
         }
 
         Request::Quit => state.shutdown(),
