@@ -112,6 +112,10 @@ pub struct ViewportState {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    /// zxdg_decoration_manager_v1. Held only so the global outlives the
+    /// display; every decision it drives is in the handler.
+    pub xdg_decoration_state:
+        smithay::wayland::shell::xdg::decoration::XdgDecorationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Self>,
@@ -132,6 +136,8 @@ impl ViewportState {
         let color_management =
             crate::color_management::ColorManagementState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_decoration_state =
+            smithay::wayland::shell::xdg::decoration::XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -193,6 +199,7 @@ impl ViewportState {
             color_management,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             output_manager_state,
             seat_state,

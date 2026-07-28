@@ -49,7 +49,11 @@ if [ -z "${XDG_VTNR:-}" ]; then
 fi
 
 # Default to arguments that make the first run diagnosable rather than silent.
-: "${VIEWPORT_LOG:=info}"
+# Debug by default. Every bring-up question so far has been "what did the shell
+# and the compositor actually say to each other", and an info-level log cannot
+# answer it — three runs were spent re-running to get one. Override with
+# VIEWPORT_LOG=info for a quiet run.
+: "${VIEWPORT_LOG:=debug}"
 export VIEWPORT_LOG
 
 log="${VIEWPORT_LOG_FILE:-/tmp/viewport-drm.log}"

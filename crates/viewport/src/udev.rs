@@ -534,7 +534,19 @@ impl ViewportState {
                     if !output_geometry.overlaps(geometry) {
                         return None;
                     }
-                    let location = (geometry.loc - output_geometry.loc)
+                    // Minus the window's own geometry origin, which is what
+                    // Smithay's Space renders at (`space/mod.rs:605`).
+                    //
+                    // A client drawing its own decorations puts shadows and
+                    // resize handles outside its logical window, and
+                    // xdg_surface.geometry marks the real window inside that
+                    // larger surface — its origin is usually negative (foot
+                    // reports 0,-26). Rendering at the geometry origin puts
+                    // the surface below where the shell asked for it and lets
+                    // it overflow the slot.
+                    let location = (geometry.loc
+                        - output_geometry.loc
+                        - window.geometry().loc)
                         .to_f64()
                         .to_physical(scale)
                         .to_i32_round();

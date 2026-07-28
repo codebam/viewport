@@ -15,10 +15,12 @@ use smithay::reexports::wayland_server::protocol::wl_seat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Serial;
 use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 
 use viewport_ipc::Event;
 
@@ -92,6 +94,40 @@ impl XdgShellHandler for ViewportState {
 
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
         // Popup grabs are not ported yet.
+    }
+}
+
+/// Server-side decorations, always.
+///
+/// The shell draws every window frame in DOM, so a client titlebar is a
+/// duplicate — and a client that draws its own frame reports a surface taller
+/// than the rectangle the shell asked for, which overflows the slot rather
+/// than filling it. C asks for the same thing (`src/main.c:64`, matching
+/// sway).
+///
+/// A client is free to insist on drawing its own; the protocol allows it and
+/// nothing here can stop it. Asking is all the protocol offers.
+impl XdgDecorationHandler for ViewportState {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
+        // The answer does not depend on what was asked for.
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+        toplevel.send_configure();
     }
 }
 
