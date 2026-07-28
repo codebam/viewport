@@ -65,7 +65,17 @@ pub fn init(
         .ok()
         .and_then(|device| device.try_get_render_node().ok().flatten())
         .map(|node| node.dev_id());
-        state.advertise_dmabuf(node, formats);
+        state.advertise_dmabuf(node, formats.clone());
+
+        // And the same GPU for capture, so a recorder works nested too —
+        // which is the only place this can be tested without a second
+        // machine.
+        state.capture_gpu = smithay::backend::egl::EGLDevice::device_for_display(
+            backend.renderer().egl_context().display(),
+        )
+        .ok()
+        .and_then(|device| device.try_get_render_node().ok().flatten())
+        .map(|node| (node, formats));
     }
 
     // The shell, nested. It needs DRM nodes to allocate on — the same GPU the
@@ -182,6 +192,9 @@ pub fn init(
                     // draw so a client that asked during this frame is served
                     // with what the frame shows rather than the one before it.
                     state.service_screencopy::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                        &output, renderer,
+                    );
+                    state.service_image_capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
                         &output, renderer,
                     );
                 }

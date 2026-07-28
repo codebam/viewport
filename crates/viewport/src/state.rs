@@ -278,6 +278,36 @@ pub struct ViewportState {
     pub _input_method_state: smithay::wayland::input_method::InputMethodManagerState,
     pub _virtual_keyboard_state:
         smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState,
+    /// ext-image-capture-source-v1 and ext-image-copy-capture-v1: the
+    /// standardised replacement for wlr-screencopy, and what a current
+    /// xdg-desktop-portal reaches for first.
+    pub image_capture_source_state:
+        smithay::wayland::image_capture_source::ImageCaptureSourceState,
+    pub output_capture_source_state:
+        smithay::wayland::image_capture_source::OutputCaptureSourceState,
+    pub image_copy_capture_state:
+        smithay::wayland::image_copy_capture::ImageCopyCaptureState,
+    /// The capture sessions, held for the same reason as the sources: a
+    /// dropped session sends `stopped` to its client, so letting one go is
+    /// telling a recorder the compositor has stopped capturing.
+    pub capture_sessions: Vec<smithay::wayland::image_copy_capture::Session>,
+    /// The capture sources handed out, held so they outlive the client's own
+    /// object. A client destroys the source as soon as it has a session — the
+    /// protocol allows exactly that — and the source is reference counted, so
+    /// dropping the compositor's copy stops the session the moment the client
+    /// tidies up after itself.
+    pub capture_sources: Vec<smithay::wayland::image_capture_source::ImageCaptureSource>,
+    /// The GPU a client may allocate a capture buffer on, and the formats it
+    /// may use — whichever backend is running fills this in, because they know
+    /// different renderers and different nodes.
+    pub capture_gpu: Option<(
+        smithay::backend::drm::DrmNode,
+        Vec<smithay::backend::allocator::Format>,
+    )>,
+    /// Capture frames waiting for the renderer, exactly as screencopy's are:
+    /// the copy happens where the renderer is, which is inside a backend.
+    pub pending_capture_frames:
+        Vec<(Output, smithay::wayland::image_copy_capture::Frame)>,
     /// linux-drm-syncobj-v1: a client saying when its buffer is ready rather
     /// than the kernel guessing. Absent on a GPU that cannot do it, and on
     /// the nested backend, which has no DRM device of its own.
@@ -358,6 +388,15 @@ impl ViewportState {
         let gamma_state = crate::gamma::GammaControlState::new::<Self>(&dh);
         let foreign_management_state =
             crate::foreign_toplevel::ForeignToplevelState::new::<Self>(&dh);
+        // The standardised capture protocols. wlr-screencopy stays beside
+        // them: grim and wf-recorder speak that one and nothing else, while a
+        // current xdg-desktop-portal looks for these first.
+        let image_capture_source_state =
+            smithay::wayland::image_capture_source::ImageCaptureSourceState::new();
+        let output_capture_source_state =
+            smithay::wayland::image_capture_source::OutputCaptureSourceState::new::<Self>(&dh);
+        let image_copy_capture_state =
+            smithay::wayland::image_copy_capture::ImageCopyCaptureState::new::<Self>(&dh);
         // Input methods. Three protocols that only work together: the
         // application says where its text is going through text-input, the
         // input method reads that and sends back what was composed, and
@@ -572,6 +611,13 @@ impl ViewportState {
             _virtual_keyboard_state: virtual_keyboard_state,
             gamma_state,
             foreign_management_state,
+            image_capture_source_state,
+            output_capture_source_state,
+            image_copy_capture_state,
+            capture_sessions: Vec::new(),
+            capture_sources: Vec::new(),
+            capture_gpu: None,
+            pending_capture_frames: Vec::new(),
             syncobj_state: None,
             gamma_ramps: std::collections::HashMap::new(),
             _cursor_shape_state: cursor_shape_state,
@@ -800,6 +846,135 @@ impl ViewportState {
         }
     }
 
+    /// Serve every capture frame waiting on `output`.
+    ///
+    /// The same arrangement as screencopy: the copy happens where the renderer
+    /// is, which is inside a backend, so the request only queues.
+    pub fn service_image_capture<R, B>(&mut self, output: &Output, renderer: &mut R)
+    where
+        R: Renderer
+            + Bind<B>
+            + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        if self.pending_capture_frames.is_empty() {
+            return;
+        }
+        let mut mine = Vec::new();
+        let mut rest = Vec::new();
+        for (frame_output, frame) in std::mem::take(&mut self.pending_capture_frames) {
+            if frame_output == *output {
+                mine.push((frame_output, frame));
+            } else {
+                rest.push((frame_output, frame));
+            }
+        }
+        self.pending_capture_frames = rest;
+
+        for (frame_output, frame) in mine {
+            let size = frame_output
+                .current_mode()
+                .map(|mode| mode.size)
+                .unwrap_or_default();
+            let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
+            let buffer = frame.buffer();
+            // The cursor is a separate session in this protocol — a client
+            // that wants it asks for it — so the copy of the output has none
+            // in it.
+            //
+            // A dmabuf is drawn into directly. That is the whole reason a
+            // recorder wants this protocol: the shared-memory path reads every
+            // pixel back across the bus for each frame, which is affordable
+            // once for a screenshot and not sixty times a second for a video.
+            let result = match smithay::wayland::dmabuf::get_dmabuf(&buffer) {
+                Ok(dmabuf) => {
+                    self.render_output_into(&frame_output, dmabuf.clone(), renderer)
+                }
+                Err(_) => self
+                    .copy_output_into::<R, B>(&frame_output, region, false, &buffer, renderer),
+            };
+            match result {
+                Ok(()) => {
+                    // Debug, not info: a recorder asks sixty times a second.
+                    tracing::debug!("image capture: a frame of {}", frame_output.name());
+                    let now = self.start_time.elapsed();
+                    // The output's own transform, not Normal. The copy is
+                    // composited the way the output is composited, so a client
+                    // that is told Normal on a rotated or flipped monitor
+                    // writes out an upside-down picture — which is exactly
+                    // what the nested backend, whose output is flipped,
+                    // produced.
+                    //
+                    // No damage: composited fresh, so the whole thing is new.
+                    frame.success(frame_output.current_transform(), None, now);
+                }
+                Err(e) => {
+                    tracing::warn!("image capture failed: {e}");
+                    frame.fail(
+                        smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::FailureReason::Unknown,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Composite an output straight into a buffer the client allocated.
+    ///
+    /// No readback: the frame is rendered where it is going to be read from,
+    /// which is what makes recording at a screen's refresh rate possible at
+    /// all.
+    fn render_output_into<R>(
+        &mut self,
+        output: &Output,
+        mut target: smithay::backend::allocator::dmabuf::Dmabuf,
+        renderer: &mut R,
+    ) -> Result<(), String>
+    where
+        R: Renderer
+            + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        let mut frame = self.frame_for(output);
+        frame.cursor = crate::render::Cursor::Hidden;
+
+        let size = output
+            .current_mode()
+            .map(|mode| mode.size)
+            .ok_or_else(|| "the output has no mode".to_owned())?;
+        let elements = crate::render::build(&frame, renderer);
+
+        let mut framebuffer = renderer
+            .bind(&mut target)
+            .map_err(|e| format!("binding the client's buffer: {e}"))?;
+        let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+            size,
+            1.0,
+            smithay::utils::Transform::Normal,
+        );
+        tracker
+            .render_output(
+                renderer,
+                &mut framebuffer,
+                0,
+                &elements,
+                smithay::backend::renderer::Color32F::from([0.0, 0.0, 0.0, 1.0]),
+            )
+            .map_err(|e| format!("compositing into the client's buffer: {e:?}"))?;
+        Ok(())
+    }
+
     fn copy_one<R, B>(
         &mut self,
         output: &Output,
@@ -818,9 +993,42 @@ impl ViewportState {
             Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
-        let region = copy.region;
+        self.copy_output_into::<R, B>(
+            output,
+            copy.region,
+            copy.overlay_cursor,
+            &copy.buffer,
+            renderer,
+        )
+    }
+
+    /// Composite `output` and write `region` of it into a client's shared
+    /// memory buffer.
+    ///
+    /// Shared by both capture protocols. They disagree about how a client asks
+    /// and how it is told, and not at all about what a screenshot is.
+    pub fn copy_output_into<R, B>(
+        &mut self,
+        output: &Output,
+        region: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+        overlay_cursor: bool,
+        buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+        renderer: &mut R,
+    ) -> Result<(), String>
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
         let mut frame = self.frame_for(output);
-        if !copy.overlay_cursor {
+        if !overlay_cursor {
             // A screenshot with a pointer in it is rarely what was asked for,
             // and the client says which it wants.
             frame.cursor = crate::render::Cursor::Hidden;
@@ -876,7 +1084,7 @@ impl ViewportState {
 
         // Into the client's own memory. The shm path is the only one a client
         // can read without having allocated the buffer itself.
-        smithay::wayland::shm::with_buffer_contents_mut(&copy.buffer, |ptr, len, data| {
+        smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
             let want = (region.size.w * region.size.h * 4) as usize;
             if len < want || data.width < region.size.w || data.height < region.size.h {
                 return Err(format!(
@@ -1370,6 +1578,39 @@ impl ViewportState {
             inhibitor.wl_surface().alive()
                 && *inhibitor.wl_surface() == focus
                 && inhibitor.is_active()
+        })
+    }
+
+    /// What a client may allocate a capture buffer as.
+    ///
+    /// `None` on the nested backend: there is no DRM node of this
+    /// compositor's to name, and a client cannot allocate against one it
+    /// cannot open.
+    pub fn capture_dmabuf_constraints(
+        &self,
+    ) -> Option<smithay::wayland::image_copy_capture::DmabufConstraints> {
+        use smithay::backend::allocator::Fourcc;
+
+        let (node, formats_in) = self.capture_gpu.as_ref()?;
+        let node = *node;
+
+        let mut formats: std::collections::HashMap<Fourcc, Vec<_>> =
+            std::collections::HashMap::new();
+        for format in formats_in {
+            // The two a capture is ever asked for. Offering everything the
+            // renderer can import would have a client allocate a format the
+            // compositor cannot then draw into.
+            if !matches!(format.code, Fourcc::Xrgb8888 | Fourcc::Argb8888) {
+                continue;
+            }
+            formats.entry(format.code).or_default().push(format.modifier);
+        }
+        if formats.is_empty() {
+            return None;
+        }
+        Some(smithay::wayland::image_copy_capture::DmabufConstraints {
+            node,
+            formats: formats.into_iter().collect(),
         })
     }
 

@@ -285,6 +285,23 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         state.set_adaptive_sync(true);
     }
 
+    // What a capture client may allocate on: the render node, not the card.
+    // Allocation happens there, and it is the node a client may open without
+    // being the session's master.
+    {
+        use smithay::backend::renderer::ImportDma as _;
+        let formats: Vec<_> = state
+            .udev
+            .as_ref()
+            .map(|udev| udev.renderer.dmabuf_formats().iter().copied().collect())
+            .unwrap_or_default();
+        state.capture_gpu = render
+            .node_with_type(NodeType::Render)
+            .and_then(|node| node.ok())
+            .or(Some(render))
+            .map(|node| (node, formats));
+    }
+
     // Explicit synchronisation, if this GPU can do it.
     //
     // Without it a client hands over a buffer and the compositor has to guess
@@ -861,9 +878,13 @@ impl ViewportState {
         // The renderer is moved out and put back because servicing needs the
         // whole compositor as well as the renderer, and the renderer lives
         // inside it — a copy composites the desktop, which is everything.
-        if !self.pending_copies.is_empty() {
+        if !self.pending_copies.is_empty() || !self.pending_capture_frames.is_empty() {
             if let Some(mut udev) = self.udev.take() {
                 self.service_screencopy::<_, smithay::backend::allocator::dmabuf::Dmabuf>(
+                    &output,
+                    &mut udev.renderer,
+                );
+                self.service_image_capture::<_, smithay::backend::allocator::dmabuf::Dmabuf>(
                     &output,
                     &mut udev.renderer,
                 );

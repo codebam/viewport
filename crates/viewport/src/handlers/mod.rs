@@ -253,6 +253,127 @@ impl smithay::wayland::drm_syncobj::DrmSyncobjHandler for ViewportState {
     }
 }
 
+/// The standardised capture protocols, which is what a current
+/// xdg-desktop-portal reaches for before wlr-screencopy.
+///
+/// A source is a thing that can be captured; this compositor offers outputs
+/// and nothing else. Toplevel capture would need a window's own contents
+/// composited apart from the desktop, and the shell draws window frames
+/// around them — a captured window without its frame is not what the picker
+/// showed.
+impl smithay::wayland::image_capture_source::ImageCaptureSourceHandler for ViewportState {
+    fn source_destroyed(
+        &mut self,
+        source: smithay::wayland::image_capture_source::ImageCaptureSource,
+    ) {
+        self.capture_sources.retain(|held| held != &source);
+    }
+}
+
+impl smithay::wayland::image_capture_source::OutputCaptureSourceHandler for ViewportState {
+    fn output_capture_source_state(
+        &mut self,
+    ) -> &mut smithay::wayland::image_capture_source::OutputCaptureSourceState {
+        &mut self.output_capture_source_state
+    }
+
+    fn output_source_created(
+        &mut self,
+        source: smithay::wayland::image_capture_source::ImageCaptureSource,
+        output: &smithay::output::Output,
+    ) {
+        // Weakly: a source outliving its monitor must not keep the output
+        // alive, and a capture of a monitor that has been unplugged has
+        // nothing to copy.
+        source.user_data().insert_if_missing(|| output.downgrade());
+        // Held, because the client destroys its own object as soon as it has
+        // a session and the source is reference counted: letting it go here
+        // stops the session out from under a capture that is already running.
+        self.capture_sources.push(source);
+    }
+}
+
+impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for ViewportState {
+    fn image_copy_capture_state(
+        &mut self,
+    ) -> &mut smithay::wayland::image_copy_capture::ImageCopyCaptureState {
+        &mut self.image_copy_capture_state
+    }
+
+    fn capture_constraints(
+        &mut self,
+        source: &smithay::wayland::image_capture_source::ImageCaptureSource,
+    ) -> Option<smithay::wayland::image_copy_capture::BufferConstraints> {
+        let output = output_of(source)?;
+        let size = output.current_mode()?.size;
+        tracing::debug!(
+            "capture constraints for {}: {}x{}, dmabuf {}",
+            output.name(),
+            size.w,
+            size.h,
+            if self.capture_dmabuf_constraints().is_some() { "yes" } else { "no" }
+        );
+        Some(smithay::wayland::image_copy_capture::BufferConstraints {
+            size: (size.w, size.h).into(),
+            // Shared memory only, as with screencopy: a client asking for a
+            // picture has to be able to read the pixels, and XRGB rather than
+            // ARGB because a screenshot has no transparency to carry.
+            shm: vec![
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb8888,
+            ],
+            // And a dmabuf where there is a GPU to allocate on. A recorder
+            // needs this one: shared memory means reading every pixel back
+            // across the bus per frame, which is affordable for a screenshot
+            // and not for a video.
+            dma: self.capture_dmabuf_constraints(),
+        })
+    }
+
+    fn new_session(&mut self, session: smithay::wayland::image_copy_capture::Session) {
+        tracing::debug!("a capture session was created");
+        // Held. Dropping a session sends `stopped` to the client, so letting
+        // this one go is telling a recorder the compositor has stopped
+        // capturing before it has begun — which it did, and the client's own
+        // first `capture` came back failed.
+        self.capture_sessions.push(session);
+    }
+
+    fn session_destroyed(
+        &mut self,
+        session: smithay::wayland::image_copy_capture::SessionRef,
+    ) {
+        self.capture_sessions.retain(|held| **held != session);
+    }
+
+    fn frame(
+        &mut self,
+        session: &smithay::wayland::image_copy_capture::SessionRef,
+        frame: smithay::wayland::image_copy_capture::Frame,
+    ) {
+        tracing::debug!("a capture frame was asked for");
+        let Some(output) = output_of(&session.source()) else {
+            frame.fail(
+                smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::FailureReason::Stopped,
+            );
+            return;
+        };
+        self.pending_capture_frames.push((output, frame));
+        // An idle desktop draws nothing, and a screenshot of an idle desktop
+        // is the ordinary case.
+        self.needs_render = true;
+    }
+}
+
+/// The output a capture source names, if it still exists.
+fn output_of(
+    source: &smithay::wayland::image_capture_source::ImageCaptureSource,
+) -> Option<smithay::output::Output> {
+    source
+        .user_data()
+        .get::<smithay::output::WeakOutput>()
+        .and_then(|weak| weak.upgrade())
+}
+
 impl crate::gamma::GammaControlHandler for ViewportState {
     fn gamma_control_state(&mut self) -> &mut crate::gamma::GammaControlState {
         &mut self.gamma_state
