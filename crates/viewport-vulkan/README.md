@@ -16,17 +16,19 @@ have one too.
 
 ## Status
 
-Early. Device selection and format handling work and are tested against real
-hardware. The renderer traits are not implemented yet.
+Early, but it renders. `smithay::desktop::space::render_output` can drive it.
+Everything below is tested against real hardware, reading results back through
+a CPU mapping of the rendered buffer rather than trusting the GPU.
 
 - [x] Device selection by DRM node
 - [x] DRM fourcc ↔ Vulkan format mapping, modifier queries
 - [x] Images from imported DMA-BUFs, with foreign-queue acquire barriers
 - [x] Command submission and clears, via dynamic rendering
 - [x] Pipelines and shaders — textured and solid quads, premultiplied blending
-- [ ] `Renderer`, `Frame`, `Bind`
-- [ ] `ImportDma`, `ImportMem`
-- [ ] Explicit sync via timeline semaphores
+- [x] `Renderer`, `Frame`, `Bind`, `ImportDma`
+- [ ] `ImportMem` — shm clients
+- [ ] Output and surface transforms (currently refused, not ignored)
+- [ ] Explicit sync: export a fence instead of waiting on the CPU
 - [ ] Colour management
 
 ## Why Vulkan

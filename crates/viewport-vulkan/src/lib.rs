@@ -30,6 +30,7 @@ pub mod format;
 pub mod image;
 pub mod pipeline;
 pub mod render;
+pub mod renderer;
 
 #[cfg(test)]
 mod test_support;
@@ -39,6 +40,7 @@ pub use device::Device;
 pub use image::{Image, Purpose};
 pub use pipeline::Pipelines;
 pub use render::{Color, Frame, Rect};
+pub use renderer::{VulkanFramebuffer, VulkanRenderer, VulkanTexture};
 
 use anyhow::{Context as _, Result};
 use smithay::backend::drm::DrmNode;

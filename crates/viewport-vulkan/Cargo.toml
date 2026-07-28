@@ -29,6 +29,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
 ash = "0.38"
 
 [dependencies.smithay]

@@ -55,6 +55,10 @@ pub struct Image {
     width: u32,
     height: u32,
     format: vk::Format,
+    /// The DRM format it was imported as. Kept because `vk::Format` cannot
+    /// distinguish XRGB from ARGB, and Smithay's `Texture` trait asks for the
+    /// fourcc rather than the Vulkan format.
+    fourcc: smithay::backend::allocator::Fourcc,
     has_alpha: bool,
     purpose: Purpose,
 
@@ -237,6 +241,7 @@ impl Image {
             width,
             height,
             format: vk_format,
+            fourcc,
             has_alpha: format::has_alpha(fourcc),
             purpose,
             foreign: std::cell::Cell::new(true),
@@ -261,6 +266,10 @@ impl Image {
 
     pub fn format(&self) -> vk::Format {
         self.format
+    }
+
+    pub fn fourcc(&self) -> smithay::backend::allocator::Fourcc {
+        self.fourcc
     }
 
     pub fn has_alpha(&self) -> bool {
