@@ -2642,6 +2642,71 @@ mod tests {
         let _ = frame.finish().expect("finish");
     }
 
+    /// The path a screenshot takes: render into an offscreen and read it back
+    /// as the same format.
+    ///
+    /// Asked to read back a format other than the one the target holds, this
+    /// renderer refuses — "cannot convert DrmFourcc(AR24) to DrmFourcc(XR24)
+    /// while copying" — and every capture on real hardware failed with it,
+    /// while the nested GLES renderer converted quietly and hid the mistake.
+    #[test]
+    fn a_capture_reads_back_the_format_it_rendered() {
+        use smithay::backend::renderer::{ExportMem, Offscreen};
+
+        let Some(TestGpu { device, node }) = require_gpu() else {
+            return;
+        };
+        let Some(allocator) = gbm_allocator(&node) else {
+            return;
+        };
+        let mut renderer =
+            VulkanRenderer::with_allocator(&device, allocator).expect("renderer");
+
+        let size: smithay::utils::Size<i32, smithay::utils::Buffer> = (32, 16).into();
+        let mut target =
+            match Offscreen::<Dmabuf>::create_buffer(&mut renderer, Fourcc::Xrgb8888, size) {
+                Ok(target) => target,
+                Err(_) => {
+                    skip("this gpu cannot allocate an XRGB8888 render target");
+                    return;
+                }
+            };
+
+        let mut framebuffer = renderer.bind(&mut target).expect("bind");
+        {
+            let mut frame = renderer
+                .render(&mut framebuffer, (32, 16).into(), Transform::Normal)
+                .expect("render");
+            frame
+                .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &all(32, 16))
+                .expect("clear");
+            let _ = frame.finish().expect("finish");
+        }
+
+        let mapping = renderer
+            .copy_framebuffer(
+                &framebuffer,
+                Rectangle::from_size(size),
+                Fourcc::Xrgb8888,
+            )
+            .expect("reading back the same format it was rendered in");
+        let pixels = renderer.map_texture(&mapping).expect("map");
+        assert_eq!(pixels.len(), 32 * 16 * 4);
+        // Blue, as it was cleared: BGRA in memory, so the first byte.
+        assert_eq!(pixels[0], 255, "blue channel");
+        assert_eq!(pixels[1], 0);
+        assert_eq!(pixels[2], 0);
+
+        // And the mistake itself, so it cannot come back quietly: asking for a
+        // different format is refused rather than converted.
+        assert!(
+            renderer
+                .copy_framebuffer(&framebuffer, Rectangle::from_size(size), Fourcc::Argb8888)
+                .is_err(),
+            "a conversion this renderer cannot do was accepted"
+        );
+    }
+
     /// Blitting one framebuffer into another, which is what a screencopy that
     /// hands back a dmabuf does.
     #[test]

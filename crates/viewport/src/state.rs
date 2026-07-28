@@ -1052,8 +1052,18 @@ impl ViewportState {
 
         let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
             (size.w, size.h).into();
+        // Allocated in the format it will be read back as, because a renderer
+        // is entitled to refuse to convert while copying and the Vulkan one
+        // does: "cannot convert DrmFourcc(AR24) to DrmFourcc(XR24) while
+        // copying" is what every capture on real hardware said, while the
+        // nested GLES renderer converted quietly and hid it.
+        //
+        // XRGB either way, which is what a client is offered: a screenshot has
+        // no transparency to carry, and a client that read the fourth byte as
+        // alpha would show the whole image as see-through.
+        let format = smithay::backend::allocator::Fourcc::Xrgb8888;
         let mut target = renderer
-            .create_buffer(smithay::backend::allocator::Fourcc::Argb8888, buffer_size)
+            .create_buffer(format, buffer_size)
             .map_err(|e| format!("allocating a copy target: {e}"))?;
 
         let mapping = {
@@ -1082,7 +1092,7 @@ impl ViewportState {
                         (region.loc.x, region.loc.y).into(),
                         (region.size.w, region.size.h).into(),
                     ),
-                    smithay::backend::allocator::Fourcc::Xrgb8888,
+                    format,
                 )
                 .map_err(|e| format!("reading the copy back: {e}"))?
         };
