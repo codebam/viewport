@@ -4,6 +4,7 @@ members = [
     "crates/viewport",
     "crates/viewport-ipc",
     "crates/viewport-web",
+    "crates/viewport-vulkan",
 ]
 
 [workspace.package]

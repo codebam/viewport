@@ -279,6 +279,8 @@
               pkgs.libxkbcommon
               pkgs.libglvnd
               pkgs.libgbm
+              # ash dlopens libvulkan.so.1.
+              pkgs.vulkan-loader
               pkgs.xorg.libX11
               pkgs.xorg.libXcursor
               pkgs.xorg.libXi

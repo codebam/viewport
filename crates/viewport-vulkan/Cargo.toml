@@ -1,0 +1,38 @@
+[package]
+name = "viewport-vulkan"
+version.workspace = true
+edition.workspace = true
+# MIT, not GPL-3.0 like the compositor crate.
+#
+# Not for upstreaming: Smithay's AI.md asks that AI-generated contributions be
+# disclosed and advises against them outright, so this will not be going into
+# Smithay whatever its licence.
+#
+# MIT because the reference implementation worth reading here is wlroots'
+# Vulkan renderer, which is MIT, and because a renderer is the most reusable
+# thing in this repository — another compositor could vendor it, or someone
+# could rewrite it by hand for upstream. GPL would buy nothing in return:
+# there is no GPL Vulkan renderer to adapt from.
+license = "MIT"
+repository.workspace = true
+description = "A Vulkan renderer for Smithay-based Wayland compositors"
+readme = "README.md"
+keywords = ["wayland", "vulkan", "compositor", "smithay", "renderer"]
+categories = ["graphics", "rendering", "gui"]
+
+# Publishing is blocked until Smithay cuts a release with the dispatch2 API
+# this is written against — a crates.io package cannot depend on a git
+# revision. The crate is otherwise self-contained: it depends on no other
+# Viewport crate and exposes no Viewport type.
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+ash = "0.38"
+
+[dependencies.smithay]
+git = "https://github.com/Smithay/smithay.git"
+rev = "39cd5f19d0d17f0dbb9cdf2639fc114cb00c3738"
+default-features = false
+features = ["backend_vulkan", "backend_drm", "backend_gbm", "wayland_frontend"]
