@@ -219,7 +219,6 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
     };
 
     let window = view.window.clone();
-    let visible = view.visible;
 
     // Never ask a client for less than it says it can handle.
     //
@@ -237,6 +236,15 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
     view.scale = resolved.scale;
     view.clip = resolved.clip;
     view.placed = true;
+    // A rectangle un-hides a window, as in C (`src/xdg_shell.c:832`).
+    //
+    // The shell hides a window by sending `view.visible false` — that is what
+    // a workspace switch is — and shows it again by laying it out, without
+    // sending `visible` a second time. Treating those as independent left a
+    // window hidden for the rest of the session: the shell kept drawing its
+    // frame, because as far as the shell is concerned it is on screen, and
+    // the compositor drew nothing inside it.
+    view.visible = true;
     let resize = view.configured != Some((width, height));
     if resize {
         view.configured = Some((width, height));
@@ -268,11 +276,9 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
         }
     }
 
-    if visible {
-        state
-            .space
-            .map_element(window, (resolved.box_.x, resolved.box_.y), false);
-    }
+    state
+        .space
+        .map_element(window, (resolved.box_.x, resolved.box_.y), false);
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {
