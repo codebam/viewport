@@ -1126,6 +1126,56 @@ impl<'frame, 'buffer> VulkanFrame<'frame, 'buffer> {
     /// Smithay passes damage per draw call rather than per frame, so scissor
     /// is set immediately before each draw and covers the whole target again
     /// afterwards.
+    /// Scissor a draw to its damage.
+    ///
+    /// The damage rectangles handed to `draw_solid` and
+    /// `render_texture_from_to` are relative to `dst`, not to the
+    /// framebuffer — Smithay's own GLES renderer translates by `dst.loc` and
+    /// constrains to `dst.size` before using them (`gles/mod.rs:2756`).
+    /// Treating them as framebuffer coordinates is right only while `dst.loc`
+    /// is zero, which it is for every element that starts at the output's own
+    /// origin. The shell does not: it is one buffer across the whole layout,
+    /// so on the second monitor it is drawn at minus that monitor's position
+    /// and every damage rectangle lands a screen's width outside the
+    /// framebuffer. Nothing is drawn and the output shows the clear colour.
+    fn set_scissor_within(
+        &self,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+    ) {
+        // No damage means the whole destination. Smithay's GLES renderer draws
+        // nothing here instead; erring towards drawing too much costs a
+        // redraw, and erring the other way blanks the screen.
+        let clipped: Vec<Rectangle<i32, Physical>> = if damage.is_empty() {
+            vec![dst]
+        } else {
+            damage
+                .iter()
+                .filter_map(|rect| {
+                    Rectangle::new(rect.loc + dst.loc, rect.size).intersection(dst)
+                })
+                .collect()
+        };
+
+        // Still output space at this point. The scissor is in framebuffer
+        // coordinates, and the two differ whenever the transform swaps axes —
+        // scissoring a rotated output with its own rectangle leaves most of
+        // the framebuffer untouched.
+        let rects: Vec<Rectangle<i32, Physical>> = clipped
+            .into_iter()
+            .map(|rect| self.transform.transform_rect_in(rect, &self.output_size))
+            .collect();
+
+        // Every rectangle fell outside the destination, so there is nothing to
+        // draw. An empty list would scissor to the whole framebuffer and draw
+        // everywhere instead.
+        if rects.is_empty() {
+            self.set_scissor(&[Rectangle::default()]);
+            return;
+        }
+        self.set_scissor(&rects);
+    }
+
     fn set_scissor(&self, rects: &[Rectangle<i32, Physical>]) {
         let target = &self.framebuffer.image;
         let scissors: Vec<vk::Rect2D> = if rects.is_empty() {
@@ -1196,7 +1246,7 @@ impl Frame for VulkanFrame<'_, '_> {
         damage: &[Rectangle<i32, Physical>],
         color: Color32F,
     ) -> Result<(), Self::Error> {
-        self.set_scissor(damage);
+        self.set_scissor_within(dst, damage);
 
         let target_format = self.framebuffer.image.format();
         let pipeline = self
@@ -1245,7 +1295,7 @@ impl Frame for VulkanFrame<'_, '_> {
         src_transform: Transform,
         alpha: f32,
     ) -> Result<(), Self::Error> {
-        self.set_scissor(damage);
+        self.set_scissor_within(dst, damage);
 
         let position = crate::transform::position(dst, self.output_size, self.transform);
         let texcoord = crate::transform::texture(
@@ -1533,6 +1583,153 @@ mod tests {
 
         assert_eq!(pixel(&target, 32, 32), [255, 0, 0, 255], "middle of texture");
         assert_eq!(pixel(&target, 8, 8), [0, 0, 0, 255], "outside it");
+    }
+
+    /// The second monitor's geometry: one buffer spanning every output, drawn
+    /// at minus the output's position so each shows its own part.
+    ///
+    /// An output at x=2560 draws a 5120-wide shell at dst.x = -2560, and the
+    /// only difference from the output at x=0 is that sign. If a negative
+    /// destination is mishandled the first monitor is perfect and the second
+    /// shows the clear colour, which reads as a dead output rather than as a
+    /// rendering bug.
+    #[test]
+    fn a_texture_at_a_negative_offset_shows_its_far_side() {
+        let Some(mut h) = harness() else { return };
+
+        // Two halves, so which part landed on screen is visible in the pixel
+        // and not just whether anything did.
+        let source = buffer(&mut h.allocator, 64, 32);
+        fill(&source, [255, 0, 0, 255], 64, 32);
+        {
+            source
+                .sync_plane(0, DmabufSyncFlags::START | DmabufSyncFlags::WRITE)
+                .expect("sync");
+            let map = source.map_plane(0, DmabufMappingMode::WRITE).expect("map");
+            let stride = source.strides().next().expect("stride") as usize;
+            let bytes =
+                unsafe { std::slice::from_raw_parts_mut(map.ptr() as *mut u8, map.length()) };
+            for y in 0..32 {
+                for x in 32..64 {
+                    // Green: the right half.
+                    bytes[y * stride + x * 4..y * stride + x * 4 + 4]
+                        .copy_from_slice(&[0, 255, 0, 255]);
+                }
+            }
+            drop(map);
+            let _ = source.sync_plane(0, DmabufSyncFlags::END | DmabufSyncFlags::WRITE);
+        }
+        let texture = h.renderer.import_dmabuf(&source, None).expect("import");
+
+        // A 32-wide "output" showing the second half of a 64-wide buffer.
+        let mut target = buffer(&mut h.allocator, 32, 32);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &[])
+            .expect("clear");
+        frame
+            .render_texture_from_to(
+                &texture,
+                Rectangle::from_size(Size::from((64.0, 32.0))),
+                Rectangle::new(Point::from((-32, 0)), Size::from((64, 32))),
+                &[],
+                &[],
+                Transform::Normal,
+                1.0,
+            )
+            .expect("render_texture_from_to");
+        let _ = frame.finish().expect("finish");
+        drop(framebuffer);
+
+        // Green everywhere: this output shows the buffer's right half only.
+        for x in [1usize, 16, 30] {
+            assert_eq!(
+                pixel(&target, x, 16),
+                [0, 255, 0, 255],
+                "x={x} should be the texture's right half, not the clear colour"
+            );
+        }
+    }
+
+    /// The same geometry again, but through the damage tracker the compositor
+    /// actually renders with rather than a bare frame.
+    ///
+    /// render_frame takes elements positioned relative to the output, so the
+    /// shell — one buffer spanning every monitor — is handed to the second
+    /// output at a negative x. The bare-frame test above proves the renderer
+    /// draws that; this proves the tracker does not discard it on the way,
+    /// which is the other way the second monitor ends up showing nothing but
+    /// the clear colour.
+    #[test]
+    fn the_damage_tracker_keeps_an_element_that_starts_off_screen() {
+        use smithay::backend::renderer::damage::OutputDamageTracker;
+        use smithay::backend::renderer::element::texture::TextureRenderElement;
+        use smithay::backend::renderer::element::{Id, Kind};
+        use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
+
+        let Some(mut h) = harness() else { return };
+
+        let source = buffer(&mut h.allocator, 64, 32);
+        fill(&source, [0, 255, 0, 255], 64, 32);
+        let texture = h.renderer.import_dmabuf(&source, None).expect("import");
+
+        let output = Output::new(
+            "DP-3".to_owned(),
+            PhysicalProperties {
+                size: (600, 340).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".to_owned(),
+                model: "test".to_owned(),
+                serial_number: "test".to_owned(),
+            },
+        );
+        let mode = OutputMode {
+            size: (32, 32).into(),
+            refresh: 60_000,
+        };
+        output.change_current_state(Some(mode), None, None, Some((32, 0).into()));
+        output.set_preferred(mode);
+        let mut tracker = OutputDamageTracker::from_output(&output);
+
+        let element = TextureRenderElement::from_static_texture(
+            Id::new(),
+            h.renderer.context_id(),
+            // Minus the output's position in the layout, as udev.rs does.
+            (-32.0, 0.0),
+            texture.clone(),
+            1,
+            Transform::Normal,
+            None,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        );
+
+        let mut target = buffer(&mut h.allocator, 32, 32);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        tracker
+            .render_output(
+                &mut h.renderer,
+                &mut framebuffer,
+                0,
+                &[element],
+                Color32F::from([0.0, 0.0, 1.0, 1.0]),
+            )
+            .expect("render_output");
+        drop(framebuffer);
+
+        for x in [1usize, 16, 30] {
+            assert_eq!(
+                pixel(&target, x, 16),
+                [0, 255, 0, 255],
+                "x={x} should be the shell, not the clear colour"
+            );
+        }
     }
 
     #[test]
