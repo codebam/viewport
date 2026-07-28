@@ -86,6 +86,8 @@ extern "C" {
     ) -> GBool;
     fn webkit_web_view_load_uri(view: *mut c_void, uri: *const c_char);
     fn webkit_web_view_reload_bypass_cache(view: *mut c_void);
+    fn webkit_web_view_get_wpe_view(view: *mut c_void) -> *mut c_void;
+    fn wpe_view_buffer_released(view: *mut c_void, buffer: *mut c_void);
     fn webkit_web_view_get_settings(view: *mut c_void) -> *mut c_void;
     fn webkit_settings_set_enable_write_console_messages_to_stdout(
         settings: *mut c_void,
@@ -279,6 +281,30 @@ impl WebView {
     pub fn reload(&self) {
         // SAFETY: `view` is valid.
         unsafe { webkit_web_view_reload_bypass_cache(self.view) };
+    }
+
+    /// Give a frame's buffer back to WebKit's pool.
+    ///
+    /// Distinct from acknowledging it, which the shim's `frame_done` does:
+    /// acknowledging says the frame reached the screen and lets the frame
+    /// clock schedule the next paint, this says nothing samples the memory
+    /// any more. A compositor that only ever acknowledges never returns a
+    /// buffer, so the pool drains and WebKit stops painting — with the last
+    /// frame still on screen, which reads as a frozen display rather than a
+    /// stalled engine.
+    ///
+    /// Goes through `webkit_web_view_get_wpe_view` rather than the shim
+    /// because the shim is only there for the GObject subclassing that cannot
+    /// be done safely from Rust, and this is a plain call.
+    pub fn frame_release(&self, token: &crate::wpe::FrameToken) {
+        // SAFETY: `view` is valid, and the buffer came from this view's own
+        // render_buffer. Both calls are on the thread that drives GLib.
+        unsafe {
+            let wpe_view = webkit_web_view_get_wpe_view(self.view);
+            if !wpe_view.is_null() {
+                wpe_view_buffer_released(wpe_view, token.as_ptr());
+            }
+        }
     }
 }
 

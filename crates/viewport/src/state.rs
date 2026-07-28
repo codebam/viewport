@@ -82,6 +82,10 @@ pub struct ViewportState {
     /// The buffer behind that texture, held so it outlives it.
     #[cfg(feature = "wpe")]
     pub shell_buffer: Option<smithay::backend::allocator::dmabuf::Dmabuf>,
+    /// The buffer currently on screen, still on loan from WebKit. Handed back
+    /// when the frame after it lands.
+    #[cfg(feature = "wpe")]
+    pub shell_token: Option<viewport_web::wpe::FrameToken>,
     /// The shell element's identity, stable for the life of the compositor.
     ///
     /// A fresh `Id` per frame would make every damage tracker treat the shell
@@ -167,6 +171,8 @@ impl ViewportState {
             shell_texture: None,
             #[cfg(feature = "wpe")]
             shell_buffer: None,
+            #[cfg(feature = "wpe")]
+            shell_token: None,
             #[cfg(feature = "wpe")]
             shell_element_id: smithay::backend::renderer::element::Id::new(),
 
@@ -457,6 +463,9 @@ impl ViewportState {
         use smithay::backend::allocator::Buffer as _;
         use smithay::backend::renderer::ImportDma as _;
 
+        // Buffers nothing samples any more, handed back below.
+        let mut superseded: Vec<viewport_web::wpe::FrameToken> = Vec::new();
+
         if let Some(pending) = self.shell.as_ref().and_then(|shell| shell.take_frame()) {
             let imported = self
                 .udev
@@ -475,16 +484,33 @@ impl ViewportState {
                             pending.buffer.height()
                         );
                     }
+                    if let Some(shell) = self.shell.as_ref() {
+                        // Acknowledge straight away: this is what advances
+                        // WebKit's frame clock and lets it paint again. The
+                        // buffer itself stays on loan, because the texture
+                        // about to be installed samples it.
+                        shell.frame_done(&pending.token);
+                    }
                     self.shell_texture = Some(texture);
                     // Held so the buffer outlives the texture that samples it.
                     self.shell_buffer = Some(pending.buffer);
+                    // Whatever the last frame was, nothing samples it now.
+                    superseded.extend(self.shell_token.replace(pending.token));
                 }
-                Some(Err(e)) => tracing::error!("could not import the shell's frame: {e}"),
-                None => {}
+                Some(Err(e)) => {
+                    tracing::error!("could not import the shell's frame: {e}");
+                    // Never drawn, so it goes straight back.
+                    superseded.push(pending.token);
+                }
+                None => superseded.push(pending.token),
             }
+        }
 
-            if let Some(shell) = self.shell.as_ref() {
-                shell.frame_done(pending.token);
+        if let Some(shell) = self.shell.as_ref() {
+            // Frames the mailbox threw away before anything drew them.
+            superseded.extend(shell.take_stale());
+            for token in superseded {
+                shell.frame_release(token);
             }
         }
 

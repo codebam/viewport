@@ -82,6 +82,14 @@ pub trait FrameSink: Send {
 #[derive(Debug)]
 pub struct FrameToken(*mut c_void);
 
+impl FrameToken {
+    /// The underlying `WPEBuffer`, for the release call in
+    /// [`crate::webkit::WebView::frame_release`].
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.0
+    }
+}
+
 // SAFETY: the pointer is an opaque WPEBuffer handle that is only ever passed
 // back to the shim on the same thread that produced it.
 unsafe impl Send for FrameToken {}
@@ -168,11 +176,16 @@ impl Display {
         unsafe { viewport_shim_display_handle(self.inner) }
     }
 
-    /// Release a frame, letting WebKit paint the next one.
-    pub fn frame_done(&self, token: FrameToken) {
+    /// Acknowledge a frame: it reached the screen, so the frame clock may
+    /// schedule the next paint.
+    ///
+    /// Does not give the buffer back — see [`Display::frame_release`]. The
+    /// texture sampling it is usually still on screen at this point.
+    pub fn frame_done(&self, token: &FrameToken) {
         // SAFETY: the token came from this display's own callback.
         unsafe { viewport_shim_frame_done(self.inner, token.0) };
     }
+
 
     pub fn resize(&self, width: u32, height: u32) {
         // SAFETY: as above.

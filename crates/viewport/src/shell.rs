@@ -51,6 +51,11 @@ pub struct Mailbox {
     /// Messages from the page, in order. Order matters here — the shell's
     /// layout messages are a sequence, not a state.
     pub messages: Vec<String>,
+    /// Frames superseded before anything drew them. Their buffers are not in
+    /// use by anyone, so they go straight back to WebKit's pool — but the
+    /// callback that dropped them cannot reach the display, which is why they
+    /// are queued rather than released on the spot.
+    pub stale: Vec<FrameToken>,
 }
 
 /// The shell, once it is running.
@@ -79,11 +84,12 @@ impl FrameSink for Frames {
             }
         };
 
-        // Replacing an undrawn frame releases it, which is what lets WebKit
-        // carry on if the compositor is behind.
+        // Replacing an undrawn frame hands its buffer back, which is what lets
+        // WebKit carry on if the compositor is behind. Dropping the token
+        // instead loses the buffer for good.
         if let Some(previous) = mailbox.frame.replace(Pending { buffer, token }) {
             tracing::trace!("dropped an undrawn shell frame");
-            drop(previous);
+            mailbox.stale.push(previous.token);
         }
         if let Some(ping) = mailbox.ping.as_ref() {
             ping.ping();
@@ -176,9 +182,23 @@ impl Shell {
             .unwrap_or(None)
     }
 
-    /// Release a frame, letting WebKit paint the next one.
-    pub fn frame_done(&self, token: FrameToken) {
+    /// Acknowledge a frame: it reached the screen, so WebKit's frame clock
+    /// may schedule the next paint. The buffer stays on loan.
+    pub fn frame_done(&self, token: &FrameToken) {
         self.display.frame_done(token);
+    }
+
+    /// Give a frame's buffer back to WebKit's pool, once nothing samples it.
+    pub fn frame_release(&self, token: FrameToken) {
+        self.view.frame_release(&token);
+    }
+
+    /// Frames that were superseded before anything drew them.
+    pub fn take_stale(&self) -> Vec<FrameToken> {
+        self.mailbox
+            .try_borrow_mut()
+            .map(|mut mailbox| std::mem::take(&mut mailbox.stale))
+            .unwrap_or_default()
     }
 
     /// Send an event to the page.

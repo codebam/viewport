@@ -44,10 +44,15 @@ typedef struct {
 	 * the engine could not produce a fence. Borrowed, like the plane fds. */
 	int32_t fence_fd;
 
-	/* The WPEBuffer this describes. Hand it back to
-	 * viewport_shim_frame_done() once the frame has been presented; WebKit
-	 * will not paint the next one until then, which is what keeps the shell
-	 * on vblank rather than free-running. */
+	/* The WPEBuffer this describes.
+	 *
+	 * Two separate things have to happen to it, and doing only the first
+	 * stalls the engine. Hand it to viewport_shim_frame_done() once the frame
+	 * has been presented — that advances WebKit's frame clock, which is what
+	 * keeps the shell on vblank rather than free-running. Then, once nothing
+	 * samples the memory any more, give the buffer itself back with
+	 * WebView::frame_release(); acknowledging alone drains the pool and WebKit
+	 * stops painting with the last frame still on screen. */
 	void *token;
 } ViewportShimFrame;
 
