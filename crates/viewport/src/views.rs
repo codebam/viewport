@@ -85,8 +85,22 @@ impl View {
         }
     }
 
+    /// The surface this window paints into.
+    ///
+    /// An X11 window has no xdg toplevel — its surface arrives later, when
+    /// Xwayland associates the X11 window with a wl_surface — so reading only
+    /// the toplevel means an X11 window is never found by surface. Everything
+    /// that announces a window to the shell starts with that lookup, so Steam
+    /// and every other X11 client mapped, painted, and were never placed:
+    /// present in the window list, invisible on screen.
     pub fn surface(&self) -> Option<WlSurface> {
-        self.window.toplevel().map(|t| t.wl_surface().clone())
+        if let Some(toplevel) = self.window.toplevel() {
+            return Some(toplevel.wl_surface().clone());
+        }
+        self.window
+            .x11_surface()
+            .and_then(|x11| x11.wl_surface())
+            .map(|surface| surface.clone())
     }
 
     pub fn title(&self) -> String {

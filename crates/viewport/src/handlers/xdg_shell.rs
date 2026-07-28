@@ -9,8 +9,11 @@
 // rather than implemented.
 
 use smithay::desktop::{
-    find_popup_root_surface, get_popup_toplevel_coords, PopupKind, Window,
+    find_popup_root_surface, get_popup_toplevel_coords, PopupKeyboardGrab, PopupKind,
+    PopupPointerGrab, PopupUngrabStrategy, Window,
 };
+use smithay::input::pointer::Focus;
+use smithay::input::Seat;
 use smithay::reexports::wayland_server::protocol::wl_seat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Serial;
@@ -100,8 +103,54 @@ impl XdgShellHandler for ViewportState {
         surface.send_repositioned(token);
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        // Popup grabs are not ported yet.
+    /// A menu taking the pointer and the keyboard while it is open.
+    ///
+    /// Without this a menu opens and the click that would have chosen an entry
+    /// goes to whatever is underneath, which dismisses it: a Firefox menu that
+    /// appears and cannot be used. The grab is also what closes a menu when
+    /// something else is clicked, and what makes Escape reach it.
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
+            return;
+        };
+        let kind = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&kind) else {
+            return;
+        };
+
+        let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else {
+            return;
+        };
+
+        // A grab is only allowed to follow the one it was asked for. A client
+        // grabbing from a serial that belongs to somebody else's grab would
+        // take the pointer away from a menu that is already open — which is
+        // how a misbehaving client freezes a desktop.
+        if let Some(keyboard) = seat.get_keyboard() {
+            if keyboard.is_grabbed()
+                && !(keyboard.has_grab(serial)
+                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            keyboard.set_focus(self, grab.current_grab(), serial);
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+
+        if let Some(pointer) = seat.get_pointer() {
+            if pointer.is_grabbed()
+                && !(pointer.has_grab(serial)
+                    || pointer.has_grab(grab.previous_serial().unwrap_or(grab.serial())))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            // Focus kept: the pointer stays on whatever it was over, because a
+            // menu grabbing focus to itself would send a leave to the window
+            // that opened it and some clients close the menu on that.
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        }
     }
 }
 
