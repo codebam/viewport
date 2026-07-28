@@ -189,6 +189,37 @@ where
     }
 
     for (window, location, clip) in &frame.windows {
+        // Popups first and unclipped, drawn over everything below.
+        //
+        // A menu overflows the window that opened it — that is what a menu is
+        // — and the crop describes the hole the shell drew for the *window*.
+        // Cropping the popup to it cuts a Firefox menu off at the window edge,
+        // or removes it entirely when it opens past one.
+        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+        use smithay::desktop::PopupManager;
+        use smithay::wayland::seat::WaylandFocus as _;
+        if let Some(surface) = window.wl_surface() {
+            for (popup, offset) in PopupManager::popups_for_surface(&surface) {
+                let at = *location
+                    + (offset - popup.geometry().loc)
+                        .to_f64()
+                        .to_physical(scale)
+                        .to_i32_round();
+                elements.extend(
+                    render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+                        renderer,
+                        popup.wl_surface(),
+                        at,
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    )
+                    .into_iter()
+                    .map(OutputElement::from),
+                );
+            }
+        }
+
         let surfaces = window.render_elements::<WaylandSurfaceRenderElement<R>>(
             renderer,
             *location,

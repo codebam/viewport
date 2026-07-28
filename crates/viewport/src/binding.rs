@@ -27,6 +27,12 @@ pub enum Action {
     Focus(String),
     /// Reload the shell, bypassing the HTTP cache.
     Reload,
+    /// Enter a binding mode — sway's resize mode and anything a config file
+    /// invents.
+    ///
+    /// A mode is a second keymap: while one is active only its own bindings
+    /// match, so `h` can resize there and still move focus everywhere else.
+    Mode(String),
     /// Switch the session between dark and light.
     ///
     /// Not the shell's: a client's colour scheme is answered over D-Bus by the
@@ -47,6 +53,9 @@ pub struct Binding {
     pub modifiers: Modifiers,
     pub keysym: u32,
     pub action: Action,
+    /// The mode this binding belongs to, empty for the ordinary keymap.
+    /// Written `resize/h=...` in a config file.
+    pub mode: String,
 }
 
 /// The modifiers a chord requires.
@@ -84,9 +93,21 @@ pub fn parse(spec: &str) -> Option<Binding> {
         return None;
     }
 
+    // A mode prefix, if there is one: `resize/h=...`. Split before the action
+    // rather than on the whole line, because an action may contain a slash —
+    // `exec /usr/bin/thing` is a binding people write.
+    let (mode, chord) = match chord.trim().split_once('/') {
+        Some((mode, chord)) => (mode.trim().to_owned(), chord),
+        None => (String::new(), chord.trim()),
+    };
+    if chord.is_empty() {
+        return None;
+    }
+
     let binding = parse_chord(chord.trim())?;
     Some(Binding {
         action: parse_action(action),
+        mode,
         ..binding
     })
 }
@@ -118,6 +139,7 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         modifiers,
         keysym,
         action: Action::Shell(String::new()),
+        mode: String::new(),
     })
 }
 
@@ -127,6 +149,16 @@ fn parse_action(action: &str) -> Action {
         Some(("shell", rest)) => Action::Shell(rest.trim().to_owned()),
         Some(("focus", rest)) if !rest.trim().is_empty() => {
             Action::Focus(rest.trim().to_owned())
+        }
+        Some(("mode", rest)) if !rest.trim().is_empty() => {
+            let name = rest.trim();
+            // "mode default" leaves whatever mode is active, which is what
+            // Escape is bound to inside one.
+            Action::Mode(if name == "default" {
+                String::new()
+            } else {
+                name.to_owned()
+            })
         }
         _ => match action {
             "close" => Action::Close,
@@ -174,7 +206,66 @@ pub fn defaults(terminal: &str, menu: &str, scrolling: bool) -> Vec<Binding> {
         "Mod4+Shift+space=shell layout.float.toggle".to_owned(),
         "Mod4+b=shell layout.split horizontal".to_owned(),
         "Mod4+v=shell layout.split vertical".to_owned(),
+        "Mod4+e=shell layout.toggle".to_owned(),
+        "Mod4+w=shell layout.tabbed".to_owned(),
+        "Mod4+s=shell layout.stacked".to_owned(),
+        "Mod4+n=shell bar.toggle".to_owned(),
+        "Mod4+o=shell layout.overview".to_owned(),
+        "Mod4+grave=shell workspace.back".to_owned(),
+        "Mod4+Shift+x=lock".to_owned(),
+        "Mod4+Shift+b=blank".to_owned(),
+        // HDR on the monitor you are looking at rather than all of them: a
+        // display that can do it usually sits next to one that cannot.
+        "Mod4+Shift+p=shell output.hdr".to_owned(),
+        // Media keys, which have no modifier and belong to whatever is
+        // playing.
+        "XF86AudioPause=exec playerctl pause".to_owned(),
+        "XF86AudioNext=exec playerctl next".to_owned(),
+        "XF86AudioPrev=exec playerctl previous".to_owned(),
+        "XF86AudioStop=exec playerctl stop".to_owned(),
     ];
+
+    if scrolling {
+        // niri's column keys. A column is the unit: windows stack inside one
+        // and the strip scrolls between them. Consume and expel are what make
+        // the model work — pulling the window beside you into your column, or
+        // pushing one back out into its own — and a tiling tree has no
+        // equivalent.
+        specs.push("Mod4+comma=shell layout.consume".to_owned());
+        specs.push("Mod4+period=shell layout.expel".to_owned());
+        // Cycle the focused column through a few widths, as Mod+R does in
+        // niri. Nothing else resizes: columns do not share space, so widening
+        // one pushes the rest along the strip rather than taking from a
+        // neighbour — which is why this is a cycle and not a mode
+        // (`src/binding.c:450`).
+        specs.push("Mod4+r=shell layout.column.width".to_owned());
+        specs.push("Mod4+Shift+r=shell layout.column.height".to_owned());
+        specs.push("Mod4+Home=shell layout.focus first".to_owned());
+        specs.push("Mod4+End=shell layout.focus last".to_owned());
+    } else {
+        // Resize mode, as in sway: Mod4+r enters it, hjkl and the arrows
+        // resize a step at a time, Escape or Return leaves. Scoped to the mode
+        // so h/j/k/l keep meaning "move focus" everywhere else.
+        specs.push("Mod4+r=mode resize".to_owned());
+    }
+
+    // The mode's own keymap, which exists whichever layout is running: a
+    // config file may bind `mode resize` itself.
+    for (key, direction) in [
+        ("h", "left"),
+        ("j", "down"),
+        ("k", "up"),
+        ("l", "right"),
+        ("Left", "left"),
+        ("Down", "down"),
+        ("Up", "up"),
+        ("Right", "right"),
+    ] {
+        specs.push(format!("resize/{key}=shell layout.resize {direction}"));
+    }
+    specs.push("resize/Escape=mode default".to_owned());
+    specs.push("resize/Return=mode default".to_owned());
+    specs.push("resize/Mod4+r=mode default".to_owned());
 
     // sway's movement keys, and the arrows beside them.
     let directions = ["left", "down", "up", "right"];
@@ -216,11 +307,18 @@ pub fn match_binding<'a>(
     bindings: &'a [Binding],
     modifiers: &ModifiersState,
     keysym: u32,
+    mode: &str,
 ) -> Option<&'a Action> {
     let wanted = Modifiers::from_state(modifiers);
     bindings
         .iter()
-        .find(|binding| binding.modifiers == wanted && binding.keysym == keysym)
+        .find(|binding| {
+            // Only this mode's bindings. A mode is a second keymap rather than
+            // an addition to the first: `h` resizes in resize mode and moves
+            // focus outside it, and matching both would do whichever came
+            // first in the table.
+            binding.mode == mode && binding.modifiers == wanted && binding.keysym == keysym
+        })
         .map(|binding| &binding.action)
 }
 
@@ -276,8 +374,8 @@ mod tests {
             shift: true,
             ..Default::default()
         };
-        assert!(match_binding(&bindings, &plain, keysyms::KEY_q).is_some());
-        assert!(match_binding(&bindings, &shifted, keysyms::KEY_q).is_none());
+        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "").is_some());
+        assert!(match_binding(&bindings, &shifted, keysyms::KEY_q, "").is_none());
     }
 
     #[test]
@@ -331,14 +429,66 @@ mod tests {
     }
 
     #[test]
+    fn a_mode_scopes_a_binding() {
+        // `h` resizes inside resize mode and moves focus outside it. Matching
+        // both would do whichever came first in the table.
+        let bindings = vec![
+            parse("h=shell layout.focus left").expect("plain"),
+            parse("resize/h=shell layout.resize left").expect("scoped"),
+        ];
+        let plain = ModifiersState::default();
+
+        let outside = match_binding(&bindings, &plain, keysyms::KEY_h, "").expect("outside");
+        assert_eq!(outside, &Action::Shell("layout.focus left".to_owned()));
+
+        let inside =
+            match_binding(&bindings, &plain, keysyms::KEY_h, "resize").expect("inside");
+        assert_eq!(inside, &Action::Shell("layout.resize left".to_owned()));
+
+        // And a mode with nothing bound in it swallows nothing: the key
+        // simply does not match, rather than falling back to the default
+        // keymap, which is what makes a mode a mode.
+        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "resize").is_none());
+    }
+
+    #[test]
+    fn mode_default_leaves_whatever_is_active() {
+        // Escape inside a mode is bound to "mode default", and the empty name
+        // is what the matcher treats as the ordinary keymap.
+        assert_eq!(
+            parse("resize/Escape=mode default").expect("parses").action,
+            Action::Mode(String::new())
+        );
+        assert_eq!(
+            parse("Mod4+r=mode resize").expect("parses").action,
+            Action::Mode("resize".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_action_may_contain_a_slash() {
+        // The mode prefix is split off the chord, not the line: `exec
+        // /usr/bin/thing` is a binding people write, and splitting the whole
+        // line would make "Mod4+t=exec " a binding in a mode called
+        // "Mod4+t=exec /usr".
+        let binding = parse("Mod4+t=exec /usr/bin/foot").expect("parses");
+        assert_eq!(binding.mode, "");
+        assert_eq!(binding.action, Action::Exec("/usr/bin/foot".to_owned()));
+    }
+
+    #[test]
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
+        // 26 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // more that enters it.
         let bindings = defaults("foot", "wmenu-run", false);
-        assert_eq!(bindings.len(), 13 + 16 + 18, "a default failed to parse");
+        assert_eq!(bindings.len(), 26 + 16 + 18 + 11 + 1, "a default failed to parse");
 
+        // Scrolling has no resize mode to enter — a column does not share
+        // space with its neighbours — and six column bindings instead.
         let scrolling = defaults("foot", "wmenu-run", true);
-        assert_eq!(scrolling.len(), bindings.len());
+        assert_eq!(scrolling.len(), bindings.len() - 1 + 6);
     }
 
     #[test]
@@ -348,7 +498,11 @@ mod tests {
         let find = |bindings: &[Binding]| {
             bindings
                 .iter()
-                .find(|b| b.keysym == keysyms::KEY_h && !b.modifiers.shift)
+                // The ordinary keymap: resize mode binds h as well, and it is
+                // a different question with a different answer.
+                .find(|b| {
+                    b.mode.is_empty() && b.keysym == keysyms::KEY_h && !b.modifiers.shift
+                })
                 .map(|b| b.action.clone())
         };
         // Tiling: the compositor answers it, because it is a question about

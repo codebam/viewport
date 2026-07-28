@@ -89,6 +89,9 @@ pub struct ViewportState {
     pub server_decorations: bool,
     /// What the shell is told the system appearance is.
     pub dark_mode: bool,
+    /// The binding mode in force — sway's resize mode, or anything a config
+    /// file invents. Empty is the ordinary keymap.
+    pub binding_mode: String,
     /// Variable refresh, where the display does it.
     pub adaptive_sync: bool,
     /// Where to go if the shell will not load, and how long to wait for its
@@ -571,6 +574,7 @@ impl ViewportState {
             vt_switching: true,
             server_decorations: true,
             dark_mode: true,
+            binding_mode: String::new(),
             adaptive_sync: false,
             fallback_url: None,
             // C's default (`src/main.c:54`). The deadline is on the first
@@ -761,14 +765,33 @@ impl ViewportState {
         if above.is_some() {
             return above;
         }
-        self.space
-            .element_under(pos)
-            .and_then(|(window, location)| {
-                window
-                    .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                    .map(|(s, p)| (s, (p + location).to_f64()))
+        // Every window, topmost first, asked directly rather than through
+        // `Space::element_under`.
+        //
+        // That helper finds a window whose own rectangle contains the point,
+        // and a menu overflows the window that opened it — so a click on the
+        // part of a Firefox menu hanging past the window edge found nothing
+        // and went to whatever was behind, which is a menu that cannot be
+        // used. `Window::surface_under` looks through the popups as well.
+        let mut windows: Vec<(smithay::desktop::Window, Point<i32, Logical>)> = self
+            .space
+            .elements()
+            .filter_map(|window| {
+                self.space
+                    .element_location(window)
+                    .map(|location| (window.clone(), location))
             })
-            .or(below)
+            .collect();
+        windows.reverse();
+
+        for (window, location) in windows {
+            if let Some((surface, at)) =
+                window.surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+            {
+                return Some((surface, (at + location).to_f64()));
+            }
+        }
+        below
     }
 
     /// Advertise linux-dmabuf, with the formats this renderer can import.
@@ -1307,6 +1330,10 @@ impl ViewportState {
         let count = placed.len();
         for (window, location) in placed {
             self.space.map_element(window, location, false);
+        }
+        // Same as a layout: mapping restacks, so focus decides what is on top.
+        if let Some(window) = self.views.get(self.focused).map(|view| view.window.clone()) {
+            self.space.raise_element(&window, false);
         }
         // Said out loud because "the windows did not come back" and "the
         // windows came back somewhere off screen" look identical from a chair

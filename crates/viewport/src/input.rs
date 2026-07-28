@@ -193,6 +193,7 @@ impl ViewportState {
                                 &state.bindings,
                                 modifiers,
                                 unmodified,
+                                &state.binding_mode,
                             ) {
                                 Some(bound) => {
                                     state.suppressed_keys.push(keysym);
@@ -883,6 +884,13 @@ impl ViewportState {
                 if let Some(shell) = self.shell.as_ref() {
                     shell.view.reload();
                 }
+            }
+            Bound::Mode(mode) => {
+                tracing::info!(
+                    "binding mode: {}",
+                    if mode.is_empty() { "default" } else { &mode }
+                );
+                self.binding_mode = mode;
             }
             Bound::Focus(target) => self.focus_direction(&target),
             Bound::Appearance => {

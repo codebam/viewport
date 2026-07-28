@@ -285,6 +285,18 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
     state
         .space
         .map_element(window, (resolved.box_.x, resolved.box_.y), false);
+
+    // Mapping puts a window on top of the stack, and the shell lays every
+    // window out on every frame of an animation — so the last one it happened
+    // to send ended up in front, which is a floating window disappearing
+    // behind the tiled ones it is supposed to sit over. Stacking follows
+    // focus, as it does in C (`src/xdg_shell.c:940`), so the focused window
+    // goes back on top.
+    if state.focused != layout.id {
+        if let Some(window) = state.views.get(state.focused).map(|view| view.window.clone()) {
+            state.space.raise_element(&window, false);
+        }
+    }
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {
