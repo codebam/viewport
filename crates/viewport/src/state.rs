@@ -481,6 +481,21 @@ impl ViewportState {
                             pending.buffer.height()
                         );
                     }
+                    // Once, before anything else can have touched it. What
+                    // WebKit actually painted is the one thing the log cannot
+                    // say, and it is the difference between an empty right
+                    // half and a right half put on screen wrongly.
+                    if let (Some(path), Some(udev)) =
+                        (crate::dump::target(), self.udev.as_mut())
+                    {
+                        if self.shell_texture.is_none() {
+                            if let Err(e) =
+                                crate::dump::shell_frame(&mut udev.renderer, &texture, &path)
+                            {
+                                tracing::error!("could not dump the shell's frame: {e:#}");
+                            }
+                        }
+                    }
                     self.shell_texture = Some(texture);
                     // Held so the buffer outlives the texture that samples it.
                     self.shell_buffer = Some(pending.buffer);

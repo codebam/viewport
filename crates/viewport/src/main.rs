@@ -8,6 +8,8 @@
 
 mod apply;
 mod binding;
+#[cfg(feature = "wpe")]
+mod dump;
 mod color_management;
 mod framing;
 #[cfg(feature = "wpe")]
