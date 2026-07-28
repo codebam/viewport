@@ -9,11 +9,13 @@
 #version 450
 
 layout(push_constant) uniform Push {
-    vec4 dst;
-    vec4 src;
+    vec4 pos_a;
+    vec4 pos_b;
+    vec4 tex_a;
+    vec4 tex_b;
     vec4 color;
-    vec2 target;
-    float alpha;
+    // x is alpha.
+    vec4 misc;
 } push;
 
 layout(location = 0) in vec2 in_uv;
@@ -23,5 +25,5 @@ void main() {
     // Premultiplied throughout: Wayland buffers are premultiplied, and mixing
     // conventions inside one pass is how edges end up with dark fringes.
     // Scaling all four components keeps it premultiplied.
-    out_color = push.color * push.alpha;
+    out_color = push.color * push.misc.x;
 }

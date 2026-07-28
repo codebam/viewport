@@ -161,14 +161,33 @@ impl<'a> Frame<'a> {
         self.buffer
     }
 
+    /// A [`Push`] for a rectangle in target pixels.
+    ///
+    /// This is the untransformed path: the standalone API draws into an
+    /// unrotated target. The trait implementation in `renderer.rs` is the one
+    /// that has to deal with output and surface transforms.
     fn push(&self, dst: Rect, src: Rect, color: Color, alpha: f32) -> Push {
-        Push {
-            dst,
-            src,
-            color,
-            target: [self.target.width() as f32, self.target.height() as f32],
-            alpha,
-        }
+        use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
+
+        let size = Size::<i32, Physical>::from((
+            self.target.width() as i32,
+            self.target.height() as i32,
+        ));
+        let position = crate::transform::position(
+            Rectangle::new(
+                Point::from((dst[0] as i32, dst[1] as i32)),
+                Size::from((dst[2] as i32, dst[3] as i32)),
+            ),
+            size,
+            Transform::Normal,
+        );
+        // src arrives already normalised here, so it maps straight onto the
+        // unit square.
+        let texture = crate::transform::Affine {
+            a: [src[2], 0.0, 0.0, src[3]],
+            b: [src[0], src[1], 0.0, 0.0],
+        };
+        Push::new(position, texture, color, alpha)
     }
 
     /// Fill a rectangle with a flat colour.

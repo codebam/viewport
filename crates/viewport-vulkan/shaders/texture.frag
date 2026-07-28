@@ -13,11 +13,13 @@
 #version 450
 
 layout(push_constant) uniform Push {
-    vec4 dst;
-    vec4 src;
+    vec4 pos_a;
+    vec4 pos_b;
+    vec4 tex_a;
+    vec4 tex_b;
     vec4 color;
-    vec2 target;
-    float alpha;
+    // x is alpha.
+    vec4 misc;
 } push;
 
 layout(set = 0, binding = 0) uniform sampler2D surface;
@@ -31,5 +33,5 @@ void main() {
     // `color` is a tint, defaulting to white. Multiplying a premultiplied
     // texel by a scalar alpha keeps it premultiplied, which is what the
     // ONE / ONE_MINUS_SRC_ALPHA blend this is drawn with expects.
-    out_color = texel * push.color * push.alpha;
+    out_color = texel * push.color * push.misc.x;
 }

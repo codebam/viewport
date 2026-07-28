@@ -27,25 +27,43 @@ const TEXTURE_FRAG: &[u8] = include_bytes!("../shaders/texture.frag.spv");
 
 /// The push constant block, laid out to match `shaders/quad.vert`.
 ///
-/// 60 bytes, comfortably inside the 128 every Vulkan implementation must
-/// provide. Field order and padding have to match the GLSL exactly: nothing
-/// checks this at runtime, and a mismatch shows up as geometry in the wrong
-/// place rather than an error.
+/// 96 bytes, inside the 128 every Vulkan implementation must provide. Six
+/// `vec4`s rather than a mixture of sizes: a `mat3x2` or a trailing `vec2`
+/// have std430 alignment rules that are easy to get subtly wrong, and the
+/// symptom is geometry in the wrong place rather than an error.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Push {
-    /// Destination rectangle in target pixels: x, y, width, height.
-    pub dst: [f32; 4],
-    /// Source rectangle in normalised texture coordinates.
-    pub src: [f32; 4],
+    /// Unit quad corner to clip space; see [`crate::transform::Affine`].
+    pub pos_a: [f32; 4],
+    pub pos_b: [f32; 4],
+    /// The same, for texture coordinates.
+    pub tex_a: [f32; 4],
+    pub tex_b: [f32; 4],
     /// Premultiplied colour, or a tint for the textured pipeline.
     pub color: [f32; 4],
-    /// Render target size in pixels.
-    pub target: [f32; 2],
-    pub alpha: f32,
+    /// `x` is alpha. The rest is padding.
+    pub misc: [f32; 4],
 }
 
 impl Push {
+    /// Build from the two maps, a colour and an alpha.
+    pub fn new(
+        position: crate::transform::Affine,
+        texture: crate::transform::Affine,
+        color: [f32; 4],
+        alpha: f32,
+    ) -> Self {
+        Self {
+            pos_a: position.a,
+            pos_b: position.b,
+            tex_a: texture.a,
+            tex_b: texture.b,
+            color,
+            misc: [alpha, 0.0, 0.0, 0.0],
+        }
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         // SAFETY: `Push` is repr(C) and entirely f32, so it has no padding
         // holes and no invalid bit patterns.
@@ -290,15 +308,16 @@ mod tests {
 
     #[test]
     fn the_push_block_matches_the_shader_layout() {
-        // std430 in the GLSL: vec4 at 0, vec4 at 16, vec4 at 32, vec2 at 48,
-        // float at 56. If this drifts, geometry lands in the wrong place and
-        // nothing reports an error.
-        assert_eq!(std::mem::offset_of!(Push, dst), 0);
-        assert_eq!(std::mem::offset_of!(Push, src), 16);
-        assert_eq!(std::mem::offset_of!(Push, color), 32);
-        assert_eq!(std::mem::offset_of!(Push, target), 48);
-        assert_eq!(std::mem::offset_of!(Push, alpha), 56);
-        assert_eq!(std::mem::size_of::<Push>(), 60);
+        // Six vec4s at 16-byte intervals, as the GLSL declares them. If this
+        // drifts, geometry lands in the wrong place and nothing reports an
+        // error.
+        assert_eq!(std::mem::offset_of!(Push, pos_a), 0);
+        assert_eq!(std::mem::offset_of!(Push, pos_b), 16);
+        assert_eq!(std::mem::offset_of!(Push, tex_a), 32);
+        assert_eq!(std::mem::offset_of!(Push, tex_b), 48);
+        assert_eq!(std::mem::offset_of!(Push, color), 64);
+        assert_eq!(std::mem::offset_of!(Push, misc), 80);
+        assert_eq!(std::mem::size_of::<Push>(), 96);
         // Every implementation guarantees at least 128 bytes.
         assert!(std::mem::size_of::<Push>() <= 128);
     }

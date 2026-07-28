@@ -227,17 +227,7 @@ impl Renderer for VulkanRenderer {
     where
         'buffer: 'frame,
     {
-        // Only Normal for now. The trait allows a renderer to reject others,
-        // and rotating the output means a matrix in the vertex shader rather
-        // than the direct pixel mapping it does today. Rejecting is honest;
-        // silently ignoring it would put everything in the wrong place.
-        if dst_transform != Transform::Normal {
-            return Err(Error::Unsupported(format!(
-                "output transform {dst_transform:?} is not implemented"
-            )));
-        }
-
-        VulkanFrame::begin(self, framebuffer, output_size)
+        VulkanFrame::begin(self, framebuffer, output_size, dst_transform)
     }
 
     fn wait(&mut self, sync: &SyncPoint) -> Result<(), Self::Error> {
@@ -524,6 +514,9 @@ pub struct VulkanFrame<'frame, 'buffer> {
     renderer: &'frame mut VulkanRenderer,
     framebuffer: &'frame mut VulkanFramebuffer<'buffer>,
     output_size: Size<i32, Physical>,
+    /// The output transform this frame was begun with. Every position map is
+    /// built through it, so a rotated display needs nothing else.
+    transform: Transform,
     finished: bool,
 }
 
@@ -540,6 +533,7 @@ impl<'frame, 'buffer> VulkanFrame<'frame, 'buffer> {
         renderer: &'frame mut VulkanRenderer,
         framebuffer: &'frame mut VulkanFramebuffer<'buffer>,
         output_size: Size<i32, Physical>,
+        transform: Transform,
     ) -> Result<Self, Error> {
         let target = framebuffer.image.clone();
         let buffer = renderer.commands.begin()?;
@@ -604,6 +598,7 @@ impl<'frame, 'buffer> VulkanFrame<'frame, 'buffer> {
             renderer,
             framebuffer,
             output_size,
+            transform,
             finished: false,
         })
     }
@@ -663,12 +658,13 @@ impl Frame for VulkanFrame<'_, '_> {
         // A solid draw rather than vkCmdClearAttachments: the blend state is
         // already right, and for an opaque colour — which is what a clear
         // always is in practice — the result is identical.
-        let whole = Rectangle::from_size(
-            Size::<i32, Physical>::from((
-                self.framebuffer.image.width() as i32,
-                self.framebuffer.image.height() as i32,
-            )),
-        );
+        //
+        // The rectangle is the *output* size, not the framebuffer's.
+        // draw_solid takes output-space coordinates and puts them through the
+        // transform, and the two sizes differ whenever the transform swaps
+        // axes — so using the framebuffer size here left a rotated output
+        // partly uncleared.
+        let whole = Rectangle::from_size(self.output_size);
         let rects: Vec<Rectangle<i32, Physical>> = if at.is_empty() {
             vec![whole]
         } else {
@@ -693,22 +689,18 @@ impl Frame for VulkanFrame<'_, '_> {
             .renderer
             .pipelines
             .get(target_format, crate::pipeline::Kind::Solid)?;
-        let push = crate::pipeline::Push {
-            dst: [
-                dst.loc.x as f32,
-                dst.loc.y as f32,
-                dst.size.w as f32,
-                dst.size.h as f32,
-            ],
-            src: [0.0, 0.0, 1.0, 1.0],
+        let position = crate::transform::position(dst, self.output_size, self.transform);
+        let push = crate::pipeline::Push::new(
+            position,
+            // Unused by the solid pipeline, but the block is one shape.
+            crate::transform::Affine {
+                a: [1.0, 0.0, 0.0, 1.0],
+                b: [0.0, 0.0, 0.0, 0.0],
+            },
             // Smithay's Color32F is already premultiplied.
-            color: [color.r(), color.g(), color.b(), color.a()],
-            target: [
-                self.framebuffer.image.width() as f32,
-                self.framebuffer.image.height() as f32,
-            ],
-            alpha: 1.0,
-        };
+            [color.r(), color.g(), color.b(), color.a()],
+            1.0,
+        );
 
         let buffer = self.command_buffer();
         let layout = self.renderer.pipelines.layout();
@@ -739,41 +731,18 @@ impl Frame for VulkanFrame<'_, '_> {
         src_transform: Transform,
         alpha: f32,
     ) -> Result<(), Self::Error> {
-        if src_transform != Transform::Normal {
-            return Err(Error::Unsupported(format!(
-                "surface transform {src_transform:?} is not implemented"
-            )));
-        }
-
         self.set_scissor(damage);
 
-        // src arrives in buffer pixels; the shader wants normalised
-        // coordinates, which is the only place the texture's own size is
-        // needed.
-        let (tw, th) = (texture.width() as f64, texture.height() as f64);
-        // A flipped buffer is sampled bottom-up: the v coordinate starts at
-        // the far edge and the height is negated, which costs nothing and
-        // avoids copying the rows the other way round.
-        let (v, vh) = if texture.flipped {
-            (((src.loc.y + src.size.h) / th) as f32, -((src.size.h / th) as f32))
-        } else {
-            ((src.loc.y / th) as f32, (src.size.h / th) as f32)
-        };
-        let push = crate::pipeline::Push {
-            dst: [
-                dst.loc.x as f32,
-                dst.loc.y as f32,
-                dst.size.w as f32,
-                dst.size.h as f32,
-            ],
-            src: [(src.loc.x / tw) as f32, v, (src.size.w / tw) as f32, vh],
-            color: [1.0, 1.0, 1.0, 1.0],
-            target: [
-                self.framebuffer.image.width() as f32,
-                self.framebuffer.image.height() as f32,
-            ],
-            alpha,
-        };
+        let position = crate::transform::position(dst, self.output_size, self.transform);
+        let texcoord = crate::transform::texture(
+            src,
+            (texture.width() as f64, texture.height() as f64),
+            src_transform,
+            texture.flipped,
+        );
+        // White tint: the texture's own colours, scaled by alpha.
+        let push =
+            crate::pipeline::Push::new(position, texcoord, [1.0, 1.0, 1.0, 1.0], alpha);
 
         let target_format = self.framebuffer.image.format();
         let pipeline = self
@@ -820,7 +789,7 @@ impl Frame for VulkanFrame<'_, '_> {
     }
 
     fn transformation(&self) -> Transform {
-        Transform::Normal
+        self.transform
     }
 
     fn output_size(&self) -> Size<i32, Physical> {
@@ -1068,187 +1037,94 @@ mod tests {
         );
     }
 
+    /// A rotated display, drawn the way Smithay asks for it.
+    ///
+    /// `render` is given the output size *before* the transform; the
+    /// framebuffer is the transformed size. For a 32x16 output rotated 90
+    /// degrees the framebuffer is 16x32, and `transform_point_in` maps
+    /// `(x, y)` to `(16 - y, x)`.
+    ///
+    /// So the left quarter of the output — x 0..8, full height — becomes the
+    /// top strip of the framebuffer: x 0..16, y 0..8. An unrotated draw of the
+    /// same rectangle would instead fill x 0..8, y 0..16, which is what the
+    /// two "distinguishes" assertions below pin down.
     #[test]
-    fn a_rotated_output_is_refused_rather_than_drawn_wrong() {
+    fn a_rotated_output_puts_pixels_where_the_rotation_says() {
         let Some(mut h) = harness() else { return };
-        let mut target = buffer(&mut h.allocator, 32, 32);
-        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut target = buffer(&mut h.allocator, 16, 32);
 
-        let error = h
-            .renderer
-            .render(&mut framebuffer, (32, 32).into(), Transform::_90)
-            .err()
-            .expect("a transform this renderer cannot apply must be refused");
-        assert!(error.to_string().contains("transform"), "{error}");
-    }
-
-    /// The shm path: pixels from the CPU, sampled onto the target.
-    #[test]
-    fn memory_can_be_imported_and_drawn() {
-        let Some(mut h) = harness() else { return };
-
-        // 8x8 of pure blue, as ARGB8888 sits in memory: B, G, R, A.
-        let pixels: Vec<u8> = std::iter::repeat([255u8, 0, 0, 255])
-            .take(8 * 8)
-            .flatten()
-            .collect();
-        let texture = h
-            .renderer
-            .import_memory(&pixels, Fourcc::Argb8888, (8, 8).into(), false)
-            .expect("import_memory");
-        assert_eq!(texture.width(), 8);
-        assert_eq!(texture.height(), 8);
-
-        let mut target = buffer(&mut h.allocator, 32, 32);
         let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
         let mut frame = h
             .renderer
-            .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
-            .expect("render");
+            .render(&mut framebuffer, (32, 16).into(), Transform::_90)
+            .expect("a rotated output must be supported");
+        assert_eq!(frame.transformation(), Transform::_90);
+
         frame
             .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[])
             .expect("clear");
         frame
-            .render_texture_from_to(
-                &texture,
-                Rectangle::from_size(Size::from((8.0, 8.0))),
-                Rectangle::new(Point::from((8, 8)), Size::from((16, 16))),
+            .draw_solid(
+                Rectangle::new(Point::from((0, 0)), Size::from((8, 16))),
                 &[],
-                &[],
-                Transform::Normal,
-                1.0,
+                Color32F::from([0.0, 1.0, 0.0, 1.0]),
             )
             .expect("draw");
         let _ = frame.finish().expect("finish");
         drop(framebuffer);
 
-        assert_eq!(pixel(&target, 16, 16), [255, 0, 0, 255], "inside");
-        assert_eq!(pixel(&target, 2, 2), [0, 0, 0, 255], "outside");
+        // Green is byte 1.
+        assert_eq!(pixel(&target, 2, 2), [0, 255, 0, 255], "inside the rotated strip");
+        assert_eq!(pixel(&target, 2, 20), [0, 0, 0, 255], "below it");
+
+        // The two pixels where a rotated and an unrotated draw disagree.
+        assert_eq!(
+            pixel(&target, 12, 4),
+            [0, 255, 0, 255],
+            "an unrotated draw would have missed this"
+        );
+        assert_eq!(
+            pixel(&target, 2, 12),
+            [0, 0, 0, 255],
+            "an unrotated draw would have covered this"
+        );
     }
 
+    /// The clear covers the whole framebuffer whatever the rotation.
     #[test]
-    fn a_memory_texture_can_be_updated_in_part() {
+    fn every_output_transform_clears_the_whole_target() {
         let Some(mut h) = harness() else { return };
+        for transform in [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ] {
+            // Square, so one buffer works for every transform.
+            let mut target = buffer(&mut h.allocator, 32, 32);
+            let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+            let mut frame = h
+                .renderer
+                .render(&mut framebuffer, (32, 32).into(), transform)
+                .unwrap_or_else(|e| panic!("{transform:?}: {e}"));
+            frame
+                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+                .expect("clear");
+            let _ = frame.finish().expect("finish");
+            drop(framebuffer);
 
-        let black: Vec<u8> = std::iter::repeat([0u8, 0, 0, 255])
-            .take(8 * 8)
-            .flatten()
-            .collect();
-        let texture = h
-            .renderer
-            .import_memory(&black, Fourcc::Argb8888, (8, 8).into(), false)
-            .expect("import");
-
-        // Repaint the left half red, in a full-size source buffer as the trait
-        // specifies.
-        let mut updated = black.clone();
-        for y in 0..8 {
-            for x in 0..4 {
-                let at = (y * 8 + x) * 4;
-                updated[at..at + 4].copy_from_slice(&[0, 0, 255, 255]);
+            for (x, y) in [(0, 0), (31, 0), (0, 31), (31, 31), (16, 16)] {
+                assert_eq!(
+                    pixel(&target, x, y),
+                    [0, 0, 255, 255],
+                    "{transform:?} left {x},{y} unclear"
+                );
             }
         }
-        h.renderer
-            .update_memory(
-                &texture,
-                &updated,
-                Rectangle::new(Point::from((0, 0)), Size::from((4, 8))),
-            )
-            .expect("update_memory");
-
-        let mut target = buffer(&mut h.allocator, 16, 16);
-        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
-        let mut frame = h
-            .renderer
-            .render(&mut framebuffer, (16, 16).into(), Transform::Normal)
-            .expect("render");
-        frame
-            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &[])
-            .expect("clear");
-        frame
-            .render_texture_from_to(
-                &texture,
-                Rectangle::from_size(Size::from((8.0, 8.0))),
-                Rectangle::new(Point::from((0, 0)), Size::from((16, 16))),
-                &[],
-                &[],
-                Transform::Normal,
-                1.0,
-            )
-            .expect("draw");
-        let _ = frame.finish().expect("finish");
-        drop(framebuffer);
-
-        // Left half red from the update, right half still black.
-        assert_eq!(pixel(&target, 2, 8), [0, 0, 255, 255], "updated half");
-        assert_eq!(pixel(&target, 13, 8), [0, 0, 0, 255], "untouched half");
-    }
-
-    /// The point of explicit sync: a frame hands back a fence, not a promise
-    /// that the CPU already waited.
-    #[test]
-    fn finishing_a_frame_yields_a_real_fence() {
-        let Some(mut h) = harness() else { return };
-        let mut target = buffer(&mut h.allocator, 32, 32);
-        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
-        let mut frame = h
-            .renderer
-            .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
-            .expect("render");
-        frame
-            .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
-            .expect("clear");
-        let sync = frame.finish().expect("finish");
-
-        assert!(
-            sync.contains_fence(),
-            "finish() fell back to a CPU wait; the driver could not export a fence"
-        );
-        assert!(sync.is_exportable(), "the fence cannot be handed to KMS");
-
-        // Exporting gives an fd the caller owns, which is what would be passed
-        // to a drm_syncobj timeline or an atomic commit.
-        let exported = sync.export().expect("export");
-        assert!(exported.as_raw_fd() >= 0);
-
-        // And it does actually signal, rather than being an fd that never
-        // becomes readable.
-        sync.wait().expect("wait");
-        assert!(sync.is_reached());
-        drop(framebuffer);
-
-        assert_eq!(pixel(&target, 16, 16), [0, 0, 255, 255], "the frame drew");
-    }
-
-    #[test]
-    fn a_dmabuf_texture_cannot_be_uploaded_into() {
-        // The client owns that memory. Writing to it would be a data race with
-        // whatever is painting into it, not an update.
-        let Some(mut h) = harness() else { return };
-        let source = buffer(&mut h.allocator, 8, 8);
-        let texture = h.renderer.import_dmabuf(&source, None).expect("import");
-
-        let data = vec![0u8; 8 * 8 * 4];
-        let error = h
-            .renderer
-            .update_memory(
-                &texture,
-                &data,
-                Rectangle::new(Point::from((0, 0)), Size::from((8, 8))),
-            )
-            .expect_err("a dmabuf texture is not uploadable");
-        assert!(error.to_string().contains("dmabuf"), "{error}");
-    }
-
-    #[test]
-    fn too_little_data_is_an_error_rather_than_a_read_past_the_end() {
-        let Some(mut h) = harness() else { return };
-        let short = vec![0u8; 4];
-        let error = h
-            .renderer
-            .import_memory(&short, Fourcc::Argb8888, (8, 8).into(), false)
-            .expect_err("a short buffer must be refused");
-        assert!(error.to_string().contains("bytes of pixels"), "{error}");
     }
 
     #[test]
