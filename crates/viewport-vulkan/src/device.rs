@@ -30,6 +30,11 @@ pub const REQUIRED_EXTENSIONS: &[&CStr] = &[
     vk::KHR_IMAGE_FORMAT_LIST_NAME,
     vk::EXT_QUEUE_FAMILY_FOREIGN_NAME,
     vk::KHR_EXTERNAL_SEMAPHORE_FD_NAME,
+    // Core in 1.3. Rendering without VkRenderPass and VkFramebuffer objects,
+    // which for a compositor is pure subtraction: every frame targets a
+    // different imported image, so a cache of render passes keyed by format
+    // would be rebuilt constantly and buy nothing.
+    vk::KHR_DYNAMIC_RENDERING_NAME,
 ];
 
 /// Wanted, but the renderer degrades rather than fails without them.
@@ -61,6 +66,7 @@ struct Inner {
     /// Loaded once. Each of these is a table of function pointers fetched with
     /// vkGetDeviceProcAddr, so building one per import would be pure overhead.
     external_memory_fd: ash::khr::external_memory_fd::Device,
+    dynamic_rendering: ash::khr::dynamic_rendering::Device,
 }
 
 impl Device {
@@ -140,20 +146,24 @@ impl Device {
             .queue_family_index(queue_family)
             .queue_priorities(&priorities);
 
-        // Core in 1.2, but still has to be asked for.
+        // Core in 1.2 and 1.3 respectively, but both still have to be asked for.
         let mut timeline =
             vk::PhysicalDeviceTimelineSemaphoreFeatures::default().timeline_semaphore(true);
+        let mut dynamic_rendering =
+            vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
 
         let queue_infos = [queue_info];
         let create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&enabled_ptrs)
-            .push_next(&mut timeline);
+            .push_next(&mut timeline)
+            .push_next(&mut dynamic_rendering);
 
         let device = unsafe { instance.create_device(handle, &create_info, None) }
             .context("vkCreateDevice")?;
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
         let external_memory_fd = ash::khr::external_memory_fd::Device::new(instance, &device);
+        let dynamic_rendering = ash::khr::dynamic_rendering::Device::new(instance, &device);
 
         let has_timeline_semaphores = enabled.contains(&vk::KHR_TIMELINE_SEMAPHORE_NAME)
             || physical.api_version() >= Version::VERSION_1_2;
@@ -171,11 +181,16 @@ impl Device {
             queue_family,
             has_timeline_semaphores,
             external_memory_fd,
+            dynamic_rendering,
         })))
     }
 
     pub fn external_memory_fd(&self) -> &ash::khr::external_memory_fd::Device {
         &self.0.external_memory_fd
+    }
+
+    pub fn dynamic_rendering(&self) -> &ash::khr::dynamic_rendering::Device {
+        &self.0.dynamic_rendering
     }
 
     /// The index of a memory type satisfying `requirements` and allowed by

@@ -271,6 +271,30 @@ impl Image {
         self.purpose
     }
 
+    /// A barrier handing the image back to whoever will consume it next.
+    ///
+    /// After rendering, the image goes to KMS, to another API, or to a CPU
+    /// mapping — none of which are this queue family. Releasing it to
+    /// `VK_QUEUE_FAMILY_FOREIGN_EXT` in `GENERAL` layout is what makes the
+    /// contents defined for all of them.
+    pub fn release_barrier(&self, from: vk::ImageLayout) -> vk::ImageMemoryBarrier<'static> {
+        vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .dst_access_mask(vk::AccessFlags::empty())
+            .old_layout(from)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_queue_family_index(self.device.queue_family())
+            .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
+            .image(self.image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+    }
+
     /// A barrier taking ownership of the image from whoever produced it.
     ///
     /// An imported buffer belongs to `VK_QUEUE_FAMILY_FOREIGN_EXT` until this
@@ -388,7 +412,7 @@ mod tests {
             .map(|s| s.modifier)
             .collect();
         if supported.is_empty() {
-            eprintln!("no renderable XRGB8888 modifier; skipping");
+            crate::test_support::skip("no renderable XRGB8888 modifier");
             return;
         }
 
@@ -419,6 +443,7 @@ mod tests {
             .map(|s| s.modifier)
             .collect();
         if supported.is_empty() {
+            crate::test_support::skip("no sampleable ARGB8888 modifier");
             return;
         }
         let dmabuf = allocator

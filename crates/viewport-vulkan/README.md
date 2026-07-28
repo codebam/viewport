@@ -22,6 +22,8 @@ hardware. The renderer traits are not implemented yet.
 - [x] Device selection by DRM node
 - [x] DRM fourcc ↔ Vulkan format mapping, modifier queries
 - [x] Images from imported DMA-BUFs, with foreign-queue acquire barriers
+- [x] Command submission and clears, via dynamic rendering
+- [ ] Pipelines and shaders — textured and solid quads
 - [ ] `Renderer`, `Frame`, `Bind`
 - [ ] `ImportDma`, `ImportMem`
 - [ ] Explicit sync via timeline semaphores
