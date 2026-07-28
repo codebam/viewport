@@ -319,6 +319,22 @@ void viewport_shim_display_resize(ViewportShimDisplay *display,
 	}
 }
 
+void viewport_shim_display_show(ViewportShimDisplay *display)
+{
+	if (display == NULL || display->display == NULL) {
+		return;
+	}
+	WPEView *view = display->display->view;
+	if (view == NULL) {
+		return;
+	}
+	/* Both are required before WebKit paints: an unmapped view produces no
+	 * frames at all, and an unfocused one behaves as though the desktop is in
+	 * the background. */
+	wpe_view_map(view);
+	wpe_view_focus_in(view);
+}
+
 void viewport_shim_string_free(char *string)
 {
 	g_free(string);

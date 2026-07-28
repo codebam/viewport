@@ -106,6 +106,12 @@ void viewport_shim_frame_done(ViewportShimDisplay *display, void *token);
 void viewport_shim_display_resize(ViewportShimDisplay *display,
 	uint32_t width, uint32_t height);
 
+/* Map the view and give it focus.
+ *
+ * An unmapped view is never painted into, so without this the page loads, its
+ * scripts run, it talks to the compositor — and no frame ever arrives. */
+void viewport_shim_display_show(ViewportShimDisplay *display);
+
 void viewport_shim_string_free(char *string);
 
 #ifdef __cplusplus

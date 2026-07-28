@@ -121,6 +121,7 @@ impl Shell {
         primary_node: &std::path::Path,
         render_node: &std::path::Path,
         formats: &[(u32, u64)],
+        size: (u32, u32),
         url: &str,
         console: bool,
     ) -> Result<Self> {
@@ -138,6 +139,11 @@ impl Shell {
             Box::new(Messages(mailbox.clone())),
             console,
         )?;
+        // Size, map, focus, then load — the order the C build settled on.
+        // Loading into an unmapped view of no size means the page runs and
+        // never produces a frame.
+        display.resize(size.0, size.1);
+        display.show();
         view.load(url)?;
 
         Ok(Self {

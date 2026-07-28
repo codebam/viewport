@@ -400,11 +400,18 @@ impl ViewportState {
             .map(|level| level.contains("debug") || level.contains("trace"))
             .unwrap_or(false);
 
-        tracing::info!("starting the shell at {url}");
+        let size = self.layout_size();
+        anyhow::ensure!(
+            size.0 > 0 && size.1 > 0,
+            "the shell needs an output to size itself against"
+        );
+
+        tracing::info!("starting the shell at {url}, {}x{}", size.0, size.1);
         let shell = crate::shell::Shell::start(
             &card_path,
             &render_path,
             &formats,
+            size,
             &url,
             console,
         )?;
@@ -456,11 +463,8 @@ impl ViewportState {
         self.shell_texture.clone()
     }
 
-    /// Tell the shell how big it is.
-    ///
-    /// WebKit paints nothing into a view with no size, so without this the
-    /// page loads, runs, talks to the compositor — and never produces a frame.
-    pub fn resize_shell(&mut self) {
+    /// The size of everything, which is what the shell spans.
+    pub fn layout_size(&self) -> (u32, u32) {
         let size = self.space.outputs().fold((0i32, 0i32), |acc, output| {
             match self.space.output_geometry(output) {
                 Some(geometry) => (
@@ -470,12 +474,21 @@ impl ViewportState {
                 None => acc,
             }
         });
-        if size.0 <= 0 || size.1 <= 0 {
+        (size.0.max(0) as u32, size.1.max(0) as u32)
+    }
+
+    /// Tell the shell how big it is.
+    ///
+    /// WebKit paints nothing into a view with no size, so without this the
+    /// page loads, runs, talks to the compositor — and never produces a frame.
+    pub fn resize_shell(&mut self) {
+        let size = self.layout_size();
+        if size.0 == 0 || size.1 == 0 {
             return;
         }
         if let Some(shell) = self.shell.as_ref() {
             tracing::info!("shell size {}x{}", size.0, size.1);
-            shell.display.resize(size.0 as u32, size.1 as u32);
+            shell.display.resize(size.0, size.1);
         }
     }
 }

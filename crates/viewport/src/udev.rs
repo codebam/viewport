@@ -204,11 +204,9 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
     state.on_connectors_changed();
 
     #[cfg(feature = "wpe")]
-    {
-        state.start_shell(&card, &render)?;
-        // WebKit paints nothing into a view with no size.
-        state.resize_shell();
-    }
+    // Sizes, maps and focuses the view itself — WebKit paints nothing into an
+    // unmapped view of no size.
+    state.start_shell(&card, &render)?;
 
     Ok(())
 }

@@ -58,6 +58,7 @@ extern "C" {
     fn viewport_shim_display_handle(display: *mut ShimDisplay) -> *mut c_void;
     fn viewport_shim_frame_done(display: *mut ShimDisplay, token: *mut c_void);
     fn viewport_shim_display_resize(display: *mut ShimDisplay, width: u32, height: u32);
+    fn viewport_shim_display_show(display: *mut ShimDisplay);
     fn viewport_shim_string_free(string: *mut c_char);
 }
 
@@ -176,6 +177,15 @@ impl Display {
     pub fn resize(&self, width: u32, height: u32) {
         // SAFETY: as above.
         unsafe { viewport_shim_display_resize(self.inner, width, height) };
+    }
+
+    /// Map the view and focus it.
+    ///
+    /// Required before WebKit paints anything. An unmapped view produces no
+    /// frames, which looks exactly like a page that loaded and did nothing.
+    pub fn show(&self) {
+        // SAFETY: as above.
+        unsafe { viewport_shim_display_show(self.inner) };
     }
 }
 
