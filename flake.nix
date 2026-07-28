@@ -260,8 +260,9 @@
             libglvnd
           ]);
 
-          # viewport-web links against libgbm at build time.
-          LIBRARY_PATH = "${pkgs.libgbm}/lib";
+          # viewport-web links against libgbm, and smithay's wayland_frontend
+          # pulls in xkbcommon, both at build time.
+          LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [ pkgs.libgbm pkgs.libxkbcommon ]}";
 
           shellHook = ''
             # Everything the Rust build dlopens rather than links.

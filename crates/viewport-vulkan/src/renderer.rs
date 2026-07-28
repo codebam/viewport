@@ -170,6 +170,12 @@ pub struct VulkanRenderer {
     /// arrive from clients or from the compositor's own swapchain. It is
     /// required only for `Offscreen`, which has to create its own targets.
     allocator: Option<Box<dyn DmabufAllocator>>,
+
+    /// Textures for shm `wl_buffer`s, so a surface that commits every frame is
+    /// updated in place rather than reallocated. Keyed by object id; see
+    /// `VulkanRenderer::forget_shm_buffer`.
+    #[cfg(feature = "wayland")]
+    pub(crate) shm: crate::wayland::ShmCache,
 }
 
 impl std::fmt::Debug for VulkanRenderer {
@@ -192,6 +198,8 @@ impl VulkanRenderer {
             imported: Vec::new(),
             targets: Vec::new(),
             allocator: None,
+            #[cfg(feature = "wayland")]
+            shm: Vec::new(),
         })
     }
 

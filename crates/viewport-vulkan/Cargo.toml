@@ -37,7 +37,11 @@ libc = "0.2"
 git = "https://github.com/Smithay/smithay.git"
 rev = "39cd5f19d0d17f0dbb9cdf2639fc114cb00c3738"
 default-features = false
-# wayland_frontend is deliberately absent: it drags in xkbcommon and the
-# wayland-server stack, and nothing here needs them until ImportDmaWl and
-# ImportMemWl arrive. A renderer should be usable without a Wayland display.
+# wayland_frontend is what ImportDmaWl and ImportMemWl need — they take a
+# wl_buffer. It is behind a feature so the renderer stays usable without a
+# Wayland display, which is also what lets the tests run headless.
 features = ["backend_vulkan", "backend_drm", "backend_gbm"]
+
+[features]
+default = ["wayland"]
+wayland = ["smithay/wayland_frontend"]

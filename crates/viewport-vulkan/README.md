@@ -32,7 +32,7 @@ a CPU mapping of the rendered buffer rather than trusting the GPU.
 - [x] Explicit sync: `finish()` returns an exported `sync_file` fence
 - [x] Waiting on an imported fence in the queue rather than on the CPU
 - [x] `Offscreen` (with an allocator) and `Blit`
-- [ ] `ImportDmaWl` / `ImportMemWl` — the `wl_buffer` wrappers
+- [x] `ImportDmaWl` / `ImportMemWl` — the `wl_buffer` wrappers
 - [ ] Colour management
 
 ## Why Vulkan
@@ -59,6 +59,13 @@ println!("{} on queue family {}", device.name(), device.queue_family());
 ```
 
 `Device::for_node` takes an existing `Instance` where one is already owned.
+
+## Features
+
+`wayland` (default) adds `ImportDmaWl` and `ImportMemWl`, which take a
+`wl_buffer`. Turning it off drops Smithay's `wayland_frontend` and the
+wayland-server and xkbcommon stack with it, which is what lets the renderer be
+built and tested without a display.
 
 ## Requirements
 
