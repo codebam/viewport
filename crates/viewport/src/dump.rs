@@ -84,6 +84,52 @@ where
     Ok(())
 }
 
+/// Copy `texture` into an image the compositor owns.
+///
+/// The shell's buffer belongs to WebKit, and WebKit will not paint the next
+/// frame until it has been given back — so it cannot be both handed back and
+/// sampled from. Dup'ing the buffer's fds does not help: a dup'd fd is the
+/// same memory, so the engine would be painting into the picture on screen.
+///
+/// A full-screen copy per shell frame is the price. The shell paints when the
+/// desktop changes rather than continuously, so it is not a per-frame cost.
+pub fn copy_texture(
+    renderer: &mut VulkanRenderer,
+    texture: &VulkanTexture,
+    into: &mut smithay::backend::allocator::dmabuf::Dmabuf,
+    size: Size<i32, Physical>,
+) -> Result<()> {
+    let mut framebuffer = renderer.bind(into).context("binding the shell copy")?;
+    let mut frame = renderer
+        .render(&mut framebuffer, size, Transform::Normal)
+        .context("starting the copy")?;
+    frame
+        .render_texture_at(
+            texture,
+            Point::from((0, 0)),
+            1,
+            1.0,
+            Transform::Normal,
+            &[Rectangle::from_size(size)],
+            &[],
+            1.0,
+        )
+        .context("copying the shell")?;
+    let _ = frame.finish().context("finishing the copy")?;
+    Ok(())
+}
+
+/// Allocate an image the compositor owns, for [`copy_texture`].
+pub fn owned_image(
+    renderer: &mut VulkanRenderer,
+    size: Size<i32, Physical>,
+) -> Result<smithay::backend::allocator::dmabuf::Dmabuf> {
+    let buffer_size: Size<i32, BufferCoord> = (size.w, size.h).into();
+    renderer
+        .create_buffer(Fourcc::Argb8888, buffer_size)
+        .context("allocating an image for the shell")
+}
+
 /// Draw `texture` on its own and write the result as a binary PPM.
 ///
 /// Deliberately not a copy of the texture: an imported dma-buf is created

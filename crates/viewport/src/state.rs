@@ -79,9 +79,14 @@ pub struct ViewportState {
     /// only paints when something changed.
     #[cfg(feature = "wpe")]
     pub shell_texture: Option<viewport_vulkan::VulkanTexture>,
-    /// The buffer behind that texture, held so it outlives it.
+    /// The compositor's own copy of the shell's newest frame, and its size.
+    ///
+    /// Reused between frames; reallocated only when the layout changes size.
     #[cfg(feature = "wpe")]
-    pub shell_buffer: Option<smithay::backend::allocator::dmabuf::Dmabuf>,
+    pub shell_owned: Option<(
+        smithay::backend::allocator::dmabuf::Dmabuf,
+        smithay::utils::Size<i32, smithay::utils::Physical>,
+    )>,
     /// How many frames the shell has painted. Only for the log: "one frame
     /// and then nothing" and "painting normally" are the same still picture.
     #[cfg(feature = "wpe")]
@@ -210,7 +215,7 @@ impl ViewportState {
             #[cfg(feature = "wpe")]
             shell_texture: None,
             #[cfg(feature = "wpe")]
-            shell_buffer: None,
+            shell_owned: None,
             #[cfg(feature = "wpe")]
             shell_frames: 0,
             #[cfg(feature = "wpe")]
@@ -582,9 +587,52 @@ impl ViewportState {
                     self.shell_damage.add([smithay::utils::Rectangle::from_size(
                         (pending.buffer.width() as i32, pending.buffer.height() as i32).into(),
                     )]);
-                    self.shell_texture = Some(texture);
-                    // Held so the buffer outlives the texture that samples it.
-                    self.shell_buffer = Some(pending.buffer);
+                    // Into an image of our own, because the buffer goes back
+                    // to WebKit below and WebKit will paint into it again.
+                    // Sampling it after that is reading the frame the engine
+                    // is drawing, which alternates with whatever it drew last
+                    // — a picture that changes without the compositor asking,
+                    // which is what flicker is.
+                    let size: smithay::utils::Size<i32, smithay::utils::Physical> =
+                        (pending.buffer.width() as i32, pending.buffer.height() as i32).into();
+                    let owned = match self.shell_owned.take() {
+                        Some((buffer, at)) if at == size => Some((buffer, at)),
+                        // First frame, or the layout changed under it.
+                        _ => self
+                            .udev
+                            .as_mut()
+                            .and_then(|udev| crate::dump::owned_image(&mut udev.renderer, size).ok())
+                            .map(|buffer| (buffer, size)),
+                    };
+                    match owned {
+                        Some((mut buffer, at)) => {
+                            let copied = self.udev.as_mut().map(|udev| {
+                                crate::dump::copy_texture(
+                                    &mut udev.renderer,
+                                    &texture,
+                                    &mut buffer,
+                                    at,
+                                )
+                            });
+                            match copied {
+                                Some(Ok(())) => {
+                                    let imported = self
+                                        .udev
+                                        .as_mut()
+                                        .map(|udev| udev.renderer.import_dmabuf(&buffer, None));
+                                    if let Some(Ok(owned_texture)) = imported {
+                                        self.shell_texture = Some(owned_texture);
+                                    }
+                                }
+                                Some(Err(e)) => {
+                                    tracing::error!("could not copy the shell's frame: {e:#}")
+                                }
+                                None => {}
+                            }
+                            self.shell_owned = Some((buffer, at));
+                        }
+                        None => tracing::error!("no image to copy the shell's frame into"),
+                    }
                 }
                 Some(Err(e)) => tracing::error!("could not import the shell's frame: {e}"),
                 None => {}
