@@ -111,6 +111,26 @@ fn main() -> Result<()> {
     // Child processes should reach this compositor rather than the host one.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
+    // What the desktop calls itself, which is how xdg-desktop-portal decides
+    // whose implementation to use (`src/main.c:206`).
+    //
+    // The wlroots portal keys its configuration on this name, and without it
+    // the portal finds no ScreenCast implementation at all: screen sharing
+    // then fails everywhere it is offered — Firefox and Chromium hand back an
+    // empty source list, OBS shows no capture — and nothing logs anything
+    // that points at a desktop name. The capture protocols were never the
+    // missing part; this string is.
+    //
+    // Not overwritten: a session that set it already has said what it wants to
+    // be called.
+    if std::env::var_os("XDG_CURRENT_DESKTOP").is_none() {
+        unsafe { std::env::set_var("XDG_CURRENT_DESKTOP", "viewport:wlroots") };
+    }
+    // Applications ask this before they ask anything else about the display.
+    if std::env::var_os("XDG_SESSION_TYPE").is_none() {
+        unsafe { std::env::set_var("XDG_SESSION_TYPE", "wayland") };
+    }
+
     // Before anything is spawned, so an X program started from a menu finds a
     // DISPLAY. It arrives asynchronously; the variable is set when it does.
     state.start_xwayland(&event_loop.handle());
