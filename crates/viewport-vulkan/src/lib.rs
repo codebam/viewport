@@ -26,8 +26,13 @@
 
 pub mod device;
 pub mod format;
+pub mod image;
+
+#[cfg(test)]
+mod test_support;
 
 pub use device::Device;
+pub use image::{Image, Purpose};
 
 use anyhow::{Context as _, Result};
 use smithay::backend::drm::DrmNode;

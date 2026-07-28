@@ -35,4 +35,7 @@ ash = "0.38"
 git = "https://github.com/Smithay/smithay.git"
 rev = "39cd5f19d0d17f0dbb9cdf2639fc114cb00c3738"
 default-features = false
-features = ["backend_vulkan", "backend_drm", "backend_gbm", "wayland_frontend"]
+# wayland_frontend is deliberately absent: it drags in xkbcommon and the
+# wayland-server stack, and nothing here needs them until ImportDmaWl and
+# ImportMemWl arrive. A renderer should be usable without a Wayland display.
+features = ["backend_vulkan", "backend_drm", "backend_gbm"]

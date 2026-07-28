@@ -44,12 +44,23 @@ pub const OPTIONAL_EXTENSIONS: &[&CStr] = &[
 pub const MINIMUM_VERSION: Version = Version::VERSION_1_2;
 
 /// An open Vulkan device on a specific GPU.
-pub struct Device {
+///
+/// Cheap to clone: every image, framebuffer and command buffer holds one so it
+/// can clean itself up, and the underlying device is destroyed when the last
+/// of them goes.
+#[derive(Clone)]
+pub struct Device(Arc<Inner>);
+
+struct Inner {
     physical: PhysicalDevice,
-    device: Arc<ash::Device>,
+    device: ash::Device,
     queue: vk::Queue,
     queue_family: u32,
     has_timeline_semaphores: bool,
+
+    /// Loaded once. Each of these is a table of function pointers fetched with
+    /// vkGetDeviceProcAddr, so building one per import would be pure overhead.
+    external_memory_fd: ash::khr::external_memory_fd::Device,
 }
 
 impl Device {
@@ -142,6 +153,7 @@ impl Device {
         let device = unsafe { instance.create_device(handle, &create_info, None) }
             .context("vkCreateDevice")?;
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
+        let external_memory_fd = ash::khr::external_memory_fd::Device::new(instance, &device);
 
         let has_timeline_semaphores = enabled.contains(&vk::KHR_TIMELINE_SEMAPHORE_NAME)
             || physical.api_version() >= Version::VERSION_1_2;
@@ -152,51 +164,78 @@ impl Device {
             physical.ty()
         );
 
-        Ok(Self {
+        Ok(Self(Arc::new(Inner {
             physical,
-            device: Arc::new(device),
+            device,
             queue,
             queue_family,
             has_timeline_semaphores,
-        })
+            external_memory_fd,
+        })))
     }
 
-    pub fn handle(&self) -> &Arc<ash::Device> {
-        &self.device
+    pub fn external_memory_fd(&self) -> &ash::khr::external_memory_fd::Device {
+        &self.0.external_memory_fd
+    }
+
+    /// The index of a memory type satisfying `requirements` and allowed by
+    /// `allowed`, preferring device-local memory.
+    ///
+    /// `allowed` comes from `vkGetMemoryFdPropertiesKHR` when importing: the
+    /// driver decides which memory types an imported fd is compatible with,
+    /// and intersecting that with the image's own requirements is what stops
+    /// an import binding memory the GPU cannot actually read.
+    pub fn memory_type(&self, requirements: u32, allowed: u32) -> Option<u32> {
+        let instance = self.0.physical.instance().handle();
+        let properties =
+            unsafe { instance.get_physical_device_memory_properties(self.0.physical.handle()) };
+        let candidates = requirements & allowed;
+
+        (0..properties.memory_type_count)
+            .filter(|index| candidates & (1 << index) != 0)
+            .max_by_key(|index| {
+                properties.memory_types[*index as usize]
+                    .property_flags
+                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+            })
+    }
+
+    pub fn handle(&self) -> &ash::Device {
+        &self.0.device
     }
 
     pub fn physical(&self) -> &PhysicalDevice {
-        &self.physical
+        &self.0.physical
     }
 
     pub fn queue(&self) -> vk::Queue {
-        self.queue
+        self.0.queue
     }
 
     pub fn queue_family(&self) -> u32 {
-        self.queue_family
+        self.0.queue_family
     }
 
     pub fn supports_timeline_semaphores(&self) -> bool {
-        self.has_timeline_semaphores
+        self.0.has_timeline_semaphores
     }
 
     pub fn name(&self) -> &str {
-        self.physical.name()
+        self.0.physical.name()
     }
 }
 
 impl std::fmt::Debug for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Device")
-            .field("name", &self.physical.name())
-            .field("queue_family", &self.queue_family)
-            .field("timeline_semaphores", &self.has_timeline_semaphores)
+            .field("name", &self.0.physical.name())
+            .field("queue_family", &self.0.queue_family)
+            .field("timeline_semaphores", &self.0.has_timeline_semaphores)
             .finish()
     }
 }
 
-impl Drop for Device {
+impl Drop for Inner {
     fn drop(&mut self) {
         unsafe {
             // Everything submitted has to have finished before the device goes
