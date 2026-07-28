@@ -94,11 +94,16 @@ unsafe fn bridge(source: *mut c_void) -> *mut Bridge {
 
 /// Runs before GLib polls.
 ///
-/// The idle queue is drained here, and that placement is the subtle part.
-/// calloop's idles only run inside a dispatch, and a dispatch only happens
-/// when its epoll fd signals — so an idle queued while nothing else is
-/// happening would sit there until unrelated input arrived. That looks exactly
-/// like "the window only appears when you move the mouse".
+/// Two things happen here and both are about work that would otherwise sit
+/// until something unrelated woke the loop.
+///
+/// The idle queue is drained, because calloop's idles only run inside a
+/// dispatch and a dispatch only happens when its epoll fd signals — so an idle
+/// queued while nothing else is happening would wait for unrelated input.
+///
+/// Then pending events go out to the clients, because a reply sitting in an
+/// outgoing buffer has not been sent. Both look the same from the outside:
+/// "it only appears when you press a key".
 unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
     let bridge = &*bridge(source);
     if !bridge.event_loop.is_null() && !bridge.state.is_null() {
@@ -106,6 +111,20 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         let event_loop = &mut *bridge.event_loop;
         let state = &mut *bridge.state;
         let _ = event_loop.dispatch(Some(Duration::ZERO), state);
+
+        // Push pending events out to clients before GLib blocks
+        // (`src/glib_loop.c:71`).
+        //
+        // A reply written into a client's outgoing buffer is not sent until
+        // something flushes it, and the only other flush is at the end of a
+        // render — which does not happen while the screen is static. So a
+        // client that connects to an idle compositor is answered, and then
+        // never hears the answer: it blocks on a read that has nothing behind
+        // it until unrelated input causes a frame. The first client of a
+        // session hits this every time, because it asks for the registry
+        // before anything is moving. It looks exactly like a program that
+        // takes seconds to start and then appears the moment you press a key.
+        let _ = state.display_handle.flush_clients();
     }
     if !timeout.is_null() {
         // Nothing here needs waking on a timer; the fd does that.
@@ -137,6 +156,11 @@ unsafe extern "C" fn dispatch(
     if let Err(e) = event_loop.dispatch(Some(Duration::ZERO), state) {
         tracing::error!("calloop dispatch failed: {e}");
     }
+
+    // Whatever that produced, out to the clients. GLib may block before
+    // prepare runs again, and a reply left in a buffer is a client left
+    // waiting.
+    let _ = state.display_handle.flush_clients();
 
     // G_SOURCE_CONTINUE
     1
