@@ -20,8 +20,8 @@ use smithay::backend::allocator::dmabuf::{Dmabuf, WeakDmabuf};
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::{
-    Bind, Color32F, ContextId, DebugFlags, Frame, ImportDma, ImportMem, Renderer, RendererSuper,
-    Texture, TextureFilter,
+    Bind, Color32F, ContextId, DebugFlags, ExportMem, Frame, ImportDma, ImportMem, Renderer,
+    RendererSuper, Texture, TextureFilter,
 };
 use smithay::utils::{Buffer as BufferCoord, Physical, Rectangle, Size, Transform};
 
@@ -463,6 +463,218 @@ impl VulkanRenderer {
         self.commands.submit()?;
         self.commands.wait(std::time::Duration::from_secs(5))?;
         Ok(())
+    }
+}
+
+/// Pixels downloaded from the GPU, still in the buffer they landed in.
+///
+/// Held rather than copied out: the memory is host-visible and already
+/// mapped, so `map_texture` hands back a slice of it directly.
+pub struct VulkanMapping {
+    buffer: crate::staging::Staging,
+    width: u32,
+    height: u32,
+    fourcc: Fourcc,
+    /// Bytes actually occupied, which is less than the buffer where the
+    /// allocator rounded the size up.
+    len: usize,
+}
+
+impl std::fmt::Debug for VulkanMapping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VulkanMapping")
+            .field("size", &(self.width, self.height))
+            .field("format", &self.fourcc)
+            .finish()
+    }
+}
+
+impl Texture for VulkanMapping {
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn format(&self) -> Option<Fourcc> {
+        Some(self.fourcc)
+    }
+}
+
+impl smithay::backend::renderer::TextureMapping for VulkanMapping {
+    fn flipped(&self) -> bool {
+        // The copy reads rows in image order, so what comes out is the same
+        // way up as what went in.
+        false
+    }
+}
+
+impl ExportMem for VulkanRenderer {
+    type TextureMapping = VulkanMapping;
+
+    fn copy_framebuffer(
+        &mut self,
+        target: &Self::Framebuffer<'_>,
+        region: Rectangle<i32, BufferCoord>,
+        format: Fourcc,
+    ) -> Result<Self::TextureMapping, Self::Error> {
+        let image = target.image.clone();
+        self.download(&image, region, format, vk::ImageLayout::GENERAL)
+    }
+
+    fn copy_texture(
+        &mut self,
+        texture: &Self::TextureId,
+        region: Rectangle<i32, BufferCoord>,
+        format: Fourcc,
+    ) -> Result<Self::TextureMapping, Self::Error> {
+        let image = texture.image.clone();
+        self.download(
+            &image,
+            region,
+            format,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        )
+    }
+
+    fn can_read_texture(&mut self, texture: &Self::TextureId) -> Result<bool, Self::Error> {
+        // An imported dmabuf is created without TRANSFER_SRC, because asking
+        // for it can make a modifier that would otherwise work be refused.
+        Ok(texture.image.is_readable())
+    }
+
+    fn map_texture<'a>(
+        &mut self,
+        texture_mapping: &'a Self::TextureMapping,
+    ) -> Result<&'a [u8], Self::Error> {
+        Ok(&texture_mapping.buffer.read()[..texture_mapping.len])
+    }
+}
+
+impl VulkanRenderer {
+    /// Copy part of an image back into host memory.
+    ///
+    /// Waits for the copy: the caller is handed a slice, so there is nowhere
+    /// to put a fence. Read-back is a screenshot or a screencopy request
+    /// rather than something on the frame path, so the stall is in the right
+    /// place.
+    fn download(
+        &mut self,
+        image: &Image,
+        region: Rectangle<i32, BufferCoord>,
+        format: Fourcc,
+        from_layout: vk::ImageLayout,
+    ) -> Result<VulkanMapping, Error> {
+        if !image.is_readable() {
+            return Err(Error::Unsupported(
+                "this image was imported without transfer support and cannot be read back"
+                    .to_owned(),
+            ));
+        }
+        // Converting formats during the copy would mean a shader pass. The
+        // trait permits refusing, and a caller asking for the format the
+        // texture already has is the case that matters.
+        if format != image.fourcc() {
+            return Err(Error::Unsupported(format!(
+                "cannot convert {:?} to {format:?} while copying",
+                image.fourcc()
+            )));
+        }
+
+        let (x, y) = (region.loc.x.max(0), region.loc.y.max(0));
+        let (w, h) = (region.size.w.max(0) as u32, region.size.h.max(0) as u32);
+        if w == 0 || h == 0 {
+            return Err(Error::Unsupported("an empty copy region".to_owned()));
+        }
+        if x as u32 + w > image.width() || y as u32 + h > image.height() {
+            return Err(Error::Unsupported(format!(
+                "region {region:?} is outside the {}x{} image",
+                image.width(),
+                image.height()
+            )));
+        }
+
+        // Tightly packed: the mapping's stride is its width, which is what
+        // `map_texture`'s caller assumes.
+        let len = (w as usize) * (h as usize) * 4;
+        let buffer = crate::staging::Staging::new(&self.device, len as vk::DeviceSize)?;
+
+        let command = self.commands.begin()?;
+        let handle = self.device.handle();
+
+        let to_src = image.transition(
+            from_layout,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::AccessFlags::empty(),
+            vk::AccessFlags::TRANSFER_READ,
+        );
+        // Put it back, because a copy must not be destructive: the framebuffer
+        // may be scanned out and the texture may be drawn again.
+        let restore = image.transition(
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            from_layout,
+            vk::AccessFlags::TRANSFER_READ,
+            vk::AccessFlags::empty(),
+        );
+
+        let copy = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            // Zero means tightly packed to the image extent.
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_offset(vk::Offset3D { x, y, z: 0 })
+            .image_extent(vk::Extent3D {
+                width: w,
+                height: h,
+                depth: 1,
+            });
+
+        unsafe {
+            handle.cmd_pipeline_barrier(
+                command,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_src],
+            );
+            handle.cmd_copy_image_to_buffer(
+                command,
+                image.handle(),
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                buffer.handle(),
+                &[copy],
+            );
+            handle.cmd_pipeline_barrier(
+                command,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[restore],
+            );
+        }
+
+        self.commands.submit()?;
+        self.commands.wait(std::time::Duration::from_secs(5))?;
+
+        Ok(VulkanMapping {
+            buffer,
+            width: w,
+            height: h,
+            fourcc: format,
+            len,
+        })
     }
 }
 
@@ -1125,6 +1337,147 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// What a screenshot does: render, then read the framebuffer back.
+    #[test]
+    fn a_framebuffer_can_be_copied_back_into_memory() {
+        use smithay::backend::renderer::TextureMapping as _;
+
+        let Some(mut h) = harness() else { return };
+        let mut target = buffer(&mut h.allocator, 32, 32);
+
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[])
+            .expect("clear");
+        frame
+            .draw_solid(
+                Rectangle::new(Point::from((0, 0)), Size::from((16, 32))),
+                &[],
+                Color32F::from([1.0, 0.0, 0.0, 1.0]),
+            )
+            .expect("draw");
+        let _ = frame.finish().expect("finish");
+
+        let mapping = h
+            .renderer
+            .copy_framebuffer(
+                &framebuffer,
+                Rectangle::new(Point::from((0, 0)), Size::from((32, 32))),
+                Fourcc::Argb8888,
+            )
+            .expect("copy_framebuffer");
+        assert_eq!(mapping.width(), 32);
+        assert_eq!(mapping.height(), 32);
+        assert!(!mapping.flipped());
+
+        let pixels = h.renderer.map_texture(&mapping).expect("map_texture");
+        // Tightly packed, so the stride is the width.
+        assert_eq!(pixels.len(), 32 * 32 * 4);
+        let at = |x: usize, y: usize| {
+            let i = (y * 32 + x) * 4;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+        // Red is byte 2 in ARGB8888.
+        assert_eq!(at(4, 4), [0, 0, 255, 255], "the drawn half");
+        assert_eq!(at(24, 4), [0, 0, 0, 255], "the cleared half");
+        drop(framebuffer);
+
+        // Not destructive: the framebuffer still holds what was drawn.
+        assert_eq!(pixel(&target, 4, 4), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_sub_region_copies_only_that_region() {
+        let Some(mut h) = harness() else { return };
+        let mut target = buffer(&mut h.allocator, 32, 32);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &[])
+            .expect("clear");
+        let _ = frame.finish().expect("finish");
+
+        let mapping = h
+            .renderer
+            .copy_framebuffer(
+                &framebuffer,
+                Rectangle::new(Point::from((8, 8)), Size::from((4, 4))),
+                Fourcc::Argb8888,
+            )
+            .expect("copy");
+        let pixels = h.renderer.map_texture(&mapping).expect("map");
+        assert_eq!(pixels.len(), 4 * 4 * 4, "only the region is copied");
+        // Blue is byte 0.
+        assert_eq!(&pixels[0..4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn an_shm_texture_can_be_read_back_but_a_dmabuf_one_cannot() {
+        let Some(mut h) = harness() else { return };
+
+        // Allocated by this renderer, so it has transfer support.
+        let pixels: Vec<u8> = std::iter::repeat([0u8, 255, 0, 255])
+            .take(8 * 8)
+            .flatten()
+            .collect();
+        let shm = h
+            .renderer
+            .import_memory(&pixels, Fourcc::Argb8888, (8, 8).into(), false)
+            .expect("import_memory");
+        assert!(h.renderer.can_read_texture(&shm).expect("can_read"));
+
+        let mapping = h
+            .renderer
+            .copy_texture(
+                &shm,
+                Rectangle::new(Point::from((0, 0)), Size::from((8, 8))),
+                Fourcc::Argb8888,
+            )
+            .expect("copy_texture");
+        let out = h.renderer.map_texture(&mapping).expect("map");
+        assert_eq!(&out[0..4], &[0, 255, 0, 255], "green survived the round trip");
+
+        // An imported dmabuf is created without TRANSFER_SRC, because asking
+        // for it can make a modifier that would otherwise work be refused.
+        let source = buffer(&mut h.allocator, 8, 8);
+        let dma = h.renderer.import_dmabuf(&source, None).expect("import");
+        assert!(!h.renderer.can_read_texture(&dma).expect("can_read"));
+        let error = h
+            .renderer
+            .copy_texture(
+                &dma,
+                Rectangle::new(Point::from((0, 0)), Size::from((8, 8))),
+                Fourcc::Argb8888,
+            )
+            .expect_err("an unreadable texture must be refused");
+        assert!(error.to_string().contains("transfer"), "{error}");
+    }
+
+    #[test]
+    fn a_format_conversion_is_refused_rather_than_producing_wrong_bytes() {
+        let Some(mut h) = harness() else { return };
+        let mut target = buffer(&mut h.allocator, 16, 16);
+        let framebuffer = h.renderer.bind(&mut target).expect("bind");
+
+        let error = h
+            .renderer
+            .copy_framebuffer(
+                &framebuffer,
+                Rectangle::new(Point::from((0, 0)), Size::from((16, 16))),
+                // The buffer is Argb8888; this would need a shader pass.
+                Fourcc::Abgr8888,
+            )
+            .expect_err("a conversion this renderer cannot do must be refused");
+        assert!(error.to_string().contains("convert"), "{error}");
     }
 
     #[test]

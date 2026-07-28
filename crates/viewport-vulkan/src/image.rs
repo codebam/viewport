@@ -19,6 +19,17 @@ use smithay::backend::allocator::Buffer as _;
 use crate::format;
 use crate::Device;
 
+/// What an image this renderer allocates is used for.
+///
+/// TRANSFER_SRC as well as TRANSFER_DST, because unlike an imported buffer
+/// there is no modifier to negotiate — so it may as well be readable, which is
+/// what a screenshot of an shm surface needs.
+const ALLOCATED_USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::from_raw(
+    vk::ImageUsageFlags::SAMPLED.as_raw()
+        | vk::ImageUsageFlags::TRANSFER_DST.as_raw()
+        | vk::ImageUsageFlags::TRANSFER_SRC.as_raw(),
+);
+
 /// The external memory handle type every DMA-BUF import uses.
 const HANDLE_TYPE: vk::ExternalMemoryHandleTypeFlags =
     vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT;
@@ -35,6 +46,10 @@ pub enum Purpose {
 impl Purpose {
     fn usage(self) -> vk::ImageUsageFlags {
         match self {
+            // No TRANSFER_SRC: an imported buffer's modifier is only checked
+            // for sampling and rendering support, and asking for transfer as
+            // well can make vkCreateImage refuse a modifier that would
+            // otherwise have worked. Images this renderer allocates get it.
             Self::Sample => vk::ImageUsageFlags::SAMPLED,
             // TRANSFER_SRC so a screenshot or a copy-capture request can read
             // the output back without a second render.
@@ -61,6 +76,7 @@ pub struct Image {
     fourcc: smithay::backend::allocator::Fourcc,
     has_alpha: bool,
     purpose: Purpose,
+    usage: vk::ImageUsageFlags,
 
     /// Images arrive from outside this device's queue family, and the first
     /// barrier has to say so. Tracked because it is only true once: after the
@@ -244,6 +260,7 @@ impl Image {
             fourcc,
             has_alpha: format::has_alpha(fourcc),
             purpose,
+            usage: purpose.usage(),
             foreign: std::cell::Cell::new(true),
         })
     }
@@ -276,7 +293,7 @@ impl Image {
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+            .usage(ALLOCATED_USAGE)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
 
@@ -341,6 +358,7 @@ impl Image {
             fourcc,
             has_alpha: format::has_alpha(fourcc),
             purpose: Purpose::Sample,
+            usage: ALLOCATED_USAGE,
             // Ours from the moment it is created: there is no other queue
             // family that could have owned it.
             foreign: std::cell::Cell::new(false),
@@ -377,6 +395,12 @@ impl Image {
 
     pub fn purpose(&self) -> Purpose {
         self.purpose
+    }
+
+    /// Whether this image can be the source of a copy — that is, whether it
+    /// can be read back into memory at all.
+    pub fn is_readable(&self) -> bool {
+        self.usage.contains(vk::ImageUsageFlags::TRANSFER_SRC)
     }
 
     /// A barrier handing the image back to whoever will consume it next.

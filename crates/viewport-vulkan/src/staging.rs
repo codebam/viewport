@@ -33,7 +33,9 @@ impl Staging {
 
         let info = vk::BufferCreateInfo::default()
             .size(size)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            // Both directions: the same buffer type stages uploads and
+            // receives downloads.
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         let buffer = unsafe { handle.create_buffer(&info, None) }.context("vkCreateBuffer")?;
 
@@ -91,6 +93,17 @@ impl Staging {
 
     pub fn handle(&self) -> vk::Buffer {
         self.buffer
+    }
+
+    /// The mapped bytes, for a buffer that was the destination of a copy.
+    ///
+    /// The caller is responsible for having waited on the copy; nothing here
+    /// can tell whether the GPU has finished writing.
+    pub fn read(&self) -> &[u8] {
+        // SAFETY: mapped for the lifetime of this struct, host-coherent so the
+        // GPU's writes are visible without an explicit invalidate, and the
+        // length is the allocation's.
+        unsafe { std::slice::from_raw_parts(self.mapped as *const u8, self.size as usize) }
     }
 
     pub fn size(&self) -> vk::DeviceSize {
