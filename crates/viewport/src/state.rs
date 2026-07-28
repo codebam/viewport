@@ -255,6 +255,14 @@ pub struct ViewportState {
     /// Smithay's surface element — so neither is touched again after this.
     pub _content_type_state: smithay::wayland::content_type::ContentTypeState,
     pub _alpha_modifier_state: smithay::wayland::alpha_modifier::AlphaModifierState,
+    /// text-input-v3, input-method-v2 and virtual-keyboard-v1: the three
+    /// halves of an input method. Kept because the globals have to outlive the
+    /// display; the conversation itself is Smithay's, and reaches the
+    /// compositor only as a popup to place.
+    pub _text_input_state: smithay::wayland::text_input::TextInputManagerState,
+    pub _input_method_state: smithay::wayland::input_method::InputMethodManagerState,
+    pub _virtual_keyboard_state:
+        smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState,
     /// wlr-gamma-control: what wlsunset and gammastep speak. Smithay
     /// implements it nowhere, so the dispatch is in `gamma.rs`.
     pub gamma_state: crate::gamma::GammaControlState,
@@ -325,6 +333,27 @@ impl ViewportState {
         let output_management_state =
             crate::output_management::OutputManagementState::new::<Self>(&dh);
         let gamma_state = crate::gamma::GammaControlState::new::<Self>(&dh);
+        // Input methods. Three protocols that only work together: the
+        // application says where its text is going through text-input, the
+        // input method reads that and sends back what was composed, and
+        // virtual-keyboard is how an on-screen keyboard turns a tap into a key.
+        //
+        // Any client may be an input method here. Restricting it needs a
+        // notion of a privileged client, which this compositor does not have —
+        // and a filter that everything passes is worse than none, because it
+        // reads as though it were deciding something.
+        let text_input_state =
+            smithay::wayland::text_input::TextInputManagerState::new::<Self>(&dh);
+        let input_method_state =
+            smithay::wayland::input_method::InputMethodManagerState::new::<Self, _>(
+                &dh,
+                |_client| true,
+            );
+        let virtual_keyboard_state =
+            smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState::new::<Self, _>(
+                &dh,
+                |_client| true,
+            );
         // A client that names its cursor rather than drawing one. Without it a
         // GTK application shows the pointer it inherited from whatever it last
         // hovered, because it has no other way to ask for a text caret.
@@ -483,6 +512,9 @@ impl ViewportState {
             xdg_shell_state,
             layer_shell_state,
             screencopy_state,
+            _text_input_state: text_input_state,
+            _input_method_state: input_method_state,
+            _virtual_keyboard_state: virtual_keyboard_state,
             gamma_state,
             gamma_ramps: std::collections::HashMap::new(),
             _cursor_shape_state: cursor_shape_state,
@@ -1434,6 +1466,15 @@ impl ViewportState {
                     scale: None,
                 }),
             );
+        }
+
+        // And focus the window that was waiting, because nothing else will.
+        // Focus is the shell's to give — `view.focus` over IPC — so a shell
+        // that never placed the window never focuses it either, and what the
+        // fallback produced without this was a window on screen that no key
+        // reached: visible, laid out, and unusable.
+        if self.focused == crate::views::NO_VIEW || self.views.get(self.focused).is_none() {
+            crate::apply::focus_view(self, id);
         }
     }
 

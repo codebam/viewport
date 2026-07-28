@@ -135,6 +135,50 @@ impl crate::screencopy::ScreencopyHandler for ViewportState {
     }
 }
 
+/// An input method's own surfaces: the candidate list a Japanese or Chinese
+/// method draws while a word is being composed.
+///
+/// They are popups, tracked in the same manager as an application's menus,
+/// which is what puts them on screen — `Window::render_elements` draws the
+/// popups belonging to a surface along with it.
+impl smithay::wayland::input_method::InputMethodHandler for ViewportState {
+    fn new_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+        if let Err(e) = self
+            .popups
+            .track_popup(smithay::desktop::PopupKind::from(surface))
+        {
+            tracing::warn!("could not track an input method popup: {e}");
+        }
+    }
+
+    fn popup_repositioned(&mut self, _surface: smithay::wayland::input_method::PopupSurface) {}
+
+    fn dismiss_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+        let Some(parent) = surface.get_parent().map(|parent| parent.surface.clone()) else {
+            return;
+        };
+        let _ = smithay::desktop::PopupManager::dismiss_popup(
+            &parent,
+            &smithay::desktop::PopupKind::from(surface),
+        );
+    }
+
+    /// Where the text being composed is, so the candidate list can sit under
+    /// it rather than at the corner of the screen.
+    fn parent_geometry(
+        &self,
+        parent: &WlSurface,
+    ) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+        use smithay::wayland::seat::WaylandFocus as _;
+        self.space
+            .elements()
+            .find_map(|window| {
+                (window.wl_surface().as_deref() == Some(parent)).then(|| window.geometry())
+            })
+            .unwrap_or_default()
+    }
+}
+
 impl crate::gamma::GammaControlHandler for ViewportState {
     fn gamma_control_state(&mut self) -> &mut crate::gamma::GammaControlState {
         &mut self.gamma_state
