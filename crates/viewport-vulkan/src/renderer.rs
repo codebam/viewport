@@ -1143,19 +1143,17 @@ impl<'frame, 'buffer> VulkanFrame<'frame, 'buffer> {
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
     ) -> Vec<Rectangle<i32, Physical>> {
-        // No damage means the whole destination. Smithay's GLES renderer draws
-        // nothing here instead; erring towards drawing too much costs a
-        // redraw, and erring the other way blanks the screen.
-        let clipped: Vec<Rectangle<i32, Physical>> = if damage.is_empty() {
-            vec![dst]
-        } else {
-            damage
-                .iter()
-                .filter_map(|rect| {
-                    Rectangle::new(rect.loc + dst.loc, rect.size).intersection(dst)
-                })
-                .collect()
-        };
+        // No damage means nothing to draw, which is how Smithay's own renderer
+        // reads it (`gles/mod.rs:2452`). Treating it as "the whole
+        // destination" instead is not the safe direction it looks: the clear
+        // goes through here too, and a clear with no damage then wipes the
+        // output every frame. With a nearly fullscreen opaque window there is
+        // frequently nothing to clear, so the desktop is erased and only what
+        // was damaged that frame is drawn back.
+        let clipped: Vec<Rectangle<i32, Physical>> = damage
+            .iter()
+            .filter_map(|rect| Rectangle::new(rect.loc + dst.loc, rect.size).intersection(dst))
+            .collect();
 
         // Still output space at this point. The scissor is in framebuffer
         // coordinates, and the two differ whenever the transform swaps axes —
@@ -1230,14 +1228,17 @@ impl Frame for VulkanFrame<'_, '_> {
         // transform, and the two sizes differ whenever the transform swaps
         // axes — so using the framebuffer size here left a rotated output
         // partly uncleared.
+        // Nothing to clear. Not the same as "clear everything" — see
+        // `scissors_within`.
+        if at.is_empty() {
+            return Ok(());
+        }
         let whole = Rectangle::from_size(self.output_size);
-        let rects: Vec<Rectangle<i32, Physical>> = if at.is_empty() {
-            vec![whole]
-        } else {
-            at.to_vec()
-        };
-        for rect in rects {
-            self.draw_solid(rect, &[], color)?;
+        for rect in at {
+            // The destination is the whole output and the rectangle is the
+            // damage, so a clear of several regions is several draws of the
+            // same quad rather than several quads.
+            self.draw_solid(whole, std::slice::from_ref(rect), color)?;
         }
         Ok(())
     }
@@ -1502,6 +1503,17 @@ mod tests {
             .expect("export")
     }
 
+    /// The whole of a rectangle, as damage.
+    ///
+    /// Damage is stated explicitly in every test rather than left empty. An
+    /// empty damage list means "draw nothing" — that is what Smithay's own
+    /// renderer does with it — and these tests previously relied on it meaning
+    /// the opposite, which is how the compositor came to wipe its own output
+    /// on every frame that had nothing to clear.
+    fn all(w: i32, h: i32) -> [Rectangle<i32, Physical>; 1] {
+        [Rectangle::from_size(Size::from((w, h)))]
+    }
+
     /// One pixel as it sits in memory: B, G, R, A.
     fn pixel(buf: &Dmabuf, x: usize, y: usize) -> [u8; 4] {
         buf.sync_plane(0, DmabufSyncFlags::START | DmabufSyncFlags::READ)
@@ -1545,12 +1557,12 @@ mod tests {
             .expect("render");
 
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         frame
             .draw_solid(
                 Rectangle::new(Point::from((0, 0)), Size::from((32, 32))),
-                &[],
+                &all(32, 32),
                 Color32F::from([0.0, 1.0, 0.0, 1.0]),
             )
             .expect("draw_solid");
@@ -1584,14 +1596,14 @@ mod tests {
             .expect("render");
 
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         frame
             .render_texture_from_to(
                 &texture,
                 Rectangle::from_size(Size::from((32.0, 32.0))),
                 Rectangle::new(Point::from((16, 16)), Size::from((32, 32))),
-                &[],
+                &all(32, 32),
                 &[],
                 Transform::Normal,
                 1.0,
@@ -1648,14 +1660,14 @@ mod tests {
             .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         frame
             .render_texture_from_to(
                 &texture,
                 Rectangle::from_size(Size::from((64.0, 32.0))),
                 Rectangle::new(Point::from((-32, 0)), Size::from((64, 32))),
-                &[],
+                &all(64, 32),
                 &[],
                 Transform::Normal,
                 1.0,
@@ -1993,14 +2005,14 @@ mod tests {
             .expect("render");
         // Red underneath, so a transparent draw is obvious rather than black.
         frame
-            .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+            .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         frame
             .render_texture_from_to(
                 &texture,
                 Rectangle::from_size(Size::from((32.0, 32.0))),
                 Rectangle::new(Point::from((0, 0)), Size::from((32, 32))),
-                &[],
+                &all(32, 32),
                 &[],
                 Transform::Normal,
                 1.0,
@@ -2041,7 +2053,7 @@ mod tests {
             .render(&mut framebuffer, (64, 64).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
 
         // A frame around a hole, as the visible part of the shell is when a
@@ -2081,6 +2093,52 @@ mod tests {
         }
         // The hole is not damaged, so it keeps the clear colour.
         assert_eq!(pixel(&target, 32, 32), [255, 0, 0, 255], "undamaged middle");
+    }
+
+    /// No damage means nothing to draw, and for the clear that is the whole
+    /// difference between a desktop and a blank screen.
+    ///
+    /// Smithay clears only what it has worked out needs clearing, and with a
+    /// nearly fullscreen opaque window in front of everything that is
+    /// frequently nothing at all. Reading an empty list as "the whole output"
+    /// erases the frame that was already there, and only what happened to be
+    /// damaged that frame is drawn back — a terminal's text, and nothing else.
+    #[test]
+    fn a_clear_with_no_damage_leaves_the_frame_alone() {
+        let Some(mut h) = harness() else { return };
+        let mut target = buffer(&mut h.allocator, 32, 32);
+
+        // A frame worth keeping.
+        {
+            let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+            let mut frame = h
+                .renderer
+                .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+                .expect("render");
+            frame
+                .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &all(32, 32))
+                .expect("clear");
+            let _ = frame.finish().expect("finish");
+        }
+        assert_eq!(pixel(&target, 16, 16), [0, 255, 0, 255], "the frame before");
+
+        // A frame with nothing to clear must not touch it.
+        {
+            let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+            let mut frame = h
+                .renderer
+                .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+                .expect("render");
+            frame
+                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+                .expect("clear");
+            let _ = frame.finish().expect("finish");
+        }
+        assert_eq!(
+            pixel(&target, 16, 16),
+            [0, 255, 0, 255],
+            "an empty clear wiped the frame"
+        );
     }
 
     #[test]
@@ -2123,12 +2181,12 @@ mod tests {
         assert_eq!(frame.transformation(), Transform::_90);
 
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         frame
             .draw_solid(
                 Rectangle::new(Point::from((0, 0)), Size::from((8, 16))),
-                &[],
+                &all(8, 16),
                 Color32F::from([0.0, 1.0, 0.0, 1.0]),
             )
             .expect("draw");
@@ -2174,7 +2232,7 @@ mod tests {
                 .render(&mut framebuffer, (32, 32).into(), transform)
                 .unwrap_or_else(|e| panic!("{transform:?}: {e}"));
             frame
-                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
                 .expect("clear");
             let _ = frame.finish().expect("finish");
             drop(framebuffer);
@@ -2203,12 +2261,12 @@ mod tests {
             .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         frame
             .draw_solid(
                 Rectangle::new(Point::from((0, 0)), Size::from((16, 32))),
-                &[],
+                &all(16, 32),
                 Color32F::from([1.0, 0.0, 0.0, 1.0]),
             )
             .expect("draw");
@@ -2252,7 +2310,7 @@ mod tests {
             .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         let _ = frame.finish().expect("finish");
 
@@ -2350,7 +2408,7 @@ mod tests {
                 .render(&mut framebuffer, (64, 64).into(), Transform::Normal)
                 .expect("render");
             frame
-                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
                 .expect("clear");
             frame.finish().expect("finish")
         };
@@ -2373,7 +2431,7 @@ mod tests {
             .render(&mut framebuffer, (64, 64).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         let after = frame.finish().expect("finish");
         after.wait().expect("wait");
@@ -2429,14 +2487,14 @@ mod tests {
             .render(&mut framebuffer, (16, 16).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         frame
             .render_texture_from_to(
                 &texture,
                 Rectangle::from_size(Size::from((8.0, 8.0))),
                 Rectangle::new(Point::from((0, 0)), Size::from((16, 16))),
-                &[],
+                &all(16, 16),
                 &[],
                 Transform::Normal,
                 1.0,
@@ -2579,7 +2637,7 @@ mod tests {
             .render(&mut framebuffer, (32, 16).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &[])
+            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         let _ = frame.finish().expect("finish");
     }
@@ -2612,7 +2670,7 @@ mod tests {
                 .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
                 .expect("render");
             frame
-                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
                 .expect("clear");
             let _ = frame.finish().expect("finish");
         }
@@ -2625,7 +2683,7 @@ mod tests {
                 .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
                 .expect("render");
             frame
-                .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &[])
+                .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
                 .expect("clear");
             let _ = frame.finish().expect("finish");
         }
