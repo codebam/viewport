@@ -15,6 +15,7 @@
 // announced, and are drawn where they say.
 
 use smithay::desktop::Window;
+use smithay::wayland::seat::WaylandFocus as _;
 use smithay::utils::{Logical, Rectangle};
 use smithay::wayland::selection::SelectionTarget;
 use smithay::xwayland::xwm::{Reorder, XwmId};
@@ -188,20 +189,96 @@ impl XwmHandler for ViewportState {
 
     fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
 
+    /// Whether an X client may read the Wayland clipboard.
+    ///
+    /// Only while an X window holds the keyboard. Any client being able to
+    /// read the clipboard whenever it likes is how a clipboard becomes a
+    /// side channel, and focus is the only evidence the compositor has that
+    /// the user meant this application to have it.
     fn allow_selection_access(&mut self, _xwm: XwmId, _selection: SelectionTarget) -> bool {
-        // Only while something this compositor focused holds the keyboard,
-        // which is the same rule the Wayland side applies.
-        self.seat.get_keyboard().map(|k| k.current_focus().is_some()).unwrap_or(false)
+        let Some(focus) = self.seat.get_keyboard().and_then(|k| k.current_focus()) else {
+            return false;
+        };
+        self.space.elements().any(|window| {
+            window.x11_surface().is_some()
+                && window
+                    .wl_surface()
+                    .map(|surface| *surface == focus)
+                    .unwrap_or(false)
+        })
     }
 
+    /// An X client is pasting: hand it the Wayland selection.
     fn send_selection(
         &mut self,
         _xwm: XwmId,
-        _selection: SelectionTarget,
-        _mime_type: String,
-        _fd: std::os::unix::io::OwnedFd,
+        selection: SelectionTarget,
+        mime_type: String,
+        fd: std::os::unix::io::OwnedFd,
     ) {
-        // Clipboard bridging is not ported yet. Refusing by doing nothing
-        // leaves the paste empty rather than hanging the X client.
+        use smithay::wayland::selection::data_device::request_data_device_client_selection;
+        use smithay::wayland::selection::primary_selection::request_primary_client_selection;
+
+        // The two return different error types, so each is reported where it
+        // happens rather than unified into something less specific.
+        match selection {
+            SelectionTarget::Clipboard => {
+                if let Err(e) = request_data_device_client_selection(&self.seat, mime_type, fd) {
+                    tracing::warn!("could not hand the clipboard to Xwayland: {e}");
+                }
+            }
+            SelectionTarget::Primary => {
+                if let Err(e) = request_primary_client_selection(&self.seat, mime_type, fd) {
+                    tracing::warn!("could not hand the primary selection to Xwayland: {e}");
+                }
+            }
+        }
+    }
+
+    /// An X client copied something: offer it to Wayland clients.
+    fn new_selection(
+        &mut self,
+        _xwm: XwmId,
+        selection: SelectionTarget,
+        mime_types: Vec<String>,
+    ) {
+        use smithay::wayland::selection::data_device::set_data_device_selection;
+        use smithay::wayland::selection::primary_selection::set_primary_selection;
+
+        let dh = self.display_handle.clone();
+        match selection {
+            SelectionTarget::Clipboard => {
+                set_data_device_selection(&dh, &self.seat, mime_types, ())
+            }
+            SelectionTarget::Primary => set_primary_selection(&dh, &self.seat, mime_types, ()),
+        }
+    }
+
+    /// The X client that owned the selection has gone.
+    ///
+    /// Only cleared if it is still ours: a Wayland client may have taken the
+    /// selection since, and clearing then would throw away something the X
+    /// side never owned.
+    fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
+        use smithay::wayland::selection::data_device::{
+            clear_data_device_selection, current_data_device_selection_userdata,
+        };
+        use smithay::wayland::selection::primary_selection::{
+            clear_primary_selection, current_primary_selection_userdata,
+        };
+
+        let dh = self.display_handle.clone();
+        match selection {
+            SelectionTarget::Clipboard => {
+                if current_data_device_selection_userdata(&self.seat).is_some() {
+                    clear_data_device_selection(&dh, &self.seat);
+                }
+            }
+            SelectionTarget::Primary => {
+                if current_primary_selection_userdata(&self.seat).is_some() {
+                    clear_primary_selection(&dh, &self.seat);
+                }
+            }
+        }
     }
 }
