@@ -27,6 +27,12 @@ use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType}
 use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+#[cfg(feature = "wpe")]
+use smithay::backend::renderer::element::texture::TextureRenderElement;
+#[cfg(feature = "wpe")]
+use smithay::backend::renderer::element::{Id, Kind};
+#[cfg(feature = "wpe")]
+use smithay::backend::renderer::Renderer as _;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent};
@@ -51,6 +57,9 @@ const SCANOUT_FORMATS: &[Fourcc] = &[
     Fourcc::Argb8888,
     Fourcc::Xrgb8888,
 ];
+
+#[cfg(feature = "wpe")]
+type ShellElement = TextureRenderElement<viewport_vulkan::VulkanTexture>;
 
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 
@@ -195,7 +204,11 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
     state.on_connectors_changed();
 
     #[cfg(feature = "wpe")]
-    state.start_shell(&card, &render)?;
+    {
+        state.start_shell(&card, &render)?;
+        // WebKit paints nothing into a view with no size.
+        state.resize_shell();
+    }
 
     Ok(())
 }
@@ -461,6 +474,19 @@ impl ViewportState {
     /// Draw one output.
     pub fn render(&mut self, crtc: crtc::Handle) {
         let start = self.start_time.elapsed();
+
+        // Both taken before the renderer is borrowed.
+        #[cfg(feature = "wpe")]
+        let shell_texture = self.import_shell_frame();
+        #[cfg(feature = "wpe")]
+        let output_location = self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.surfaces.get(&crtc))
+            .and_then(|surface| self.space.output_geometry(&surface.output))
+            .map(|geometry| (geometry.loc.x, geometry.loc.y))
+            .unwrap_or((0, 0));
+
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
@@ -472,6 +498,33 @@ impl ViewportState {
         };
         let output = surface.output.clone();
 
+        // The shell, imported from whatever WebKit last painted. Behind every
+        // window, spanning the whole output layout — which is what makes
+        // hit-testing fall out of the layering rather than being computed.
+        #[cfg(feature = "wpe")]
+        let elements: Vec<ShellElement> = {
+            let mut elements = Vec::new();
+            if let Some(texture) = shell_texture.as_ref() {
+                elements.push(TextureRenderElement::from_static_texture(
+                    Id::new(),
+                    udev.renderer.context_id(),
+                    // Negative of the output's position: the shell is one
+                    // buffer across the whole layout, so an output at x=2560
+                    // shows the part of it starting there.
+                    (-output_location.0 as f64, -output_location.1 as f64),
+                    texture.clone(),
+                    1,
+                    smithay::utils::Transform::Normal,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Kind::Unspecified,
+                ));
+            }
+            elements
+        };
+        #[cfg(not(feature = "wpe"))]
         let elements: Vec<WaylandSurfaceRenderElement<VulkanRenderer>> = Vec::new();
 
         let result = surface.drm_output.render_frame(

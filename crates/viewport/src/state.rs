@@ -72,6 +72,14 @@ pub struct ViewportState {
     #[cfg(feature = "wpe")]
     pub shell_ping: Option<smithay::reexports::calloop::ping::Ping>,
 
+    /// The shell's newest frame, imported. Kept between frames because WebKit
+    /// only paints when something changed.
+    #[cfg(feature = "wpe")]
+    pub shell_texture: Option<viewport_vulkan::VulkanTexture>,
+    /// The buffer behind that texture, held so it outlives it.
+    #[cfg(feature = "wpe")]
+    pub shell_buffer: Option<smithay::backend::allocator::dmabuf::Dmabuf>,
+
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
     pub color_management: crate::color_management::ColorManagementState,
@@ -140,6 +148,10 @@ impl ViewportState {
             shell: None,
             #[cfg(feature = "wpe")]
             shell_ping: None,
+            #[cfg(feature = "wpe")]
+            shell_texture: None,
+            #[cfg(feature = "wpe")]
+            shell_buffer: None,
 
             color_management,
             compositor_state,
@@ -401,5 +413,69 @@ impl ViewportState {
         }
         self.shell = Some(shell);
         Ok(())
+    }
+}
+
+#[cfg(feature = "wpe")]
+impl ViewportState {
+    /// Import whatever the shell last painted, as a texture.
+    ///
+    /// The imported texture is cached: WebKit paints only when something
+    /// changed, so most frames reuse the previous one, and re-importing a
+    /// buffer that has not changed would mean a vkCreateImage per output per
+    /// frame.
+    ///
+    /// The presented frame is acknowledged here rather than after the commit.
+    /// That is a simplification — strictly WebKit should be released once the
+    /// pixels are on screen — and it means the engine may run one frame ahead
+    /// of the display.
+    pub fn import_shell_frame(&mut self) -> Option<viewport_vulkan::VulkanTexture> {
+        use smithay::backend::renderer::ImportDma as _;
+
+        if let Some(pending) = self.shell.as_ref().and_then(|shell| shell.take_frame()) {
+            let imported = self
+                .udev
+                .as_mut()
+                .map(|udev| udev.renderer.import_dmabuf(&pending.buffer, None));
+
+            match imported {
+                Some(Ok(texture)) => {
+                    self.shell_texture = Some(texture);
+                    // Held so the buffer outlives the texture that samples it.
+                    self.shell_buffer = Some(pending.buffer);
+                }
+                Some(Err(e)) => tracing::error!("could not import the shell's frame: {e}"),
+                None => {}
+            }
+
+            if let Some(shell) = self.shell.as_ref() {
+                shell.frame_done(pending.token);
+            }
+        }
+
+        self.shell_texture.clone()
+    }
+
+    /// Tell the shell how big it is.
+    ///
+    /// WebKit paints nothing into a view with no size, so without this the
+    /// page loads, runs, talks to the compositor — and never produces a frame.
+    pub fn resize_shell(&mut self) {
+        let size = self.space.outputs().fold((0i32, 0i32), |acc, output| {
+            match self.space.output_geometry(output) {
+                Some(geometry) => (
+                    acc.0.max(geometry.loc.x + geometry.size.w),
+                    acc.1.max(geometry.loc.y + geometry.size.h),
+                ),
+                None => acc,
+            }
+        });
+        if size.0 <= 0 || size.1 <= 0 {
+            return;
+        }
+        if let Some(shell) = self.shell.as_ref() {
+            tracing::info!("shell size {}x{}", size.0, size.1);
+            shell.display.resize(size.0 as u32, size.1 as u32);
+        }
     }
 }

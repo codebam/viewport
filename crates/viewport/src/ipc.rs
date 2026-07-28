@@ -298,14 +298,34 @@ impl ViewportState {
     /// callback runs underneath a dispatch that already holds this state.
     #[cfg(feature = "wpe")]
     pub fn drain_shell(&mut self) {
-        let Some(shell) = self.shell.as_ref() else {
+        if self.shell.is_none() {
             return;
-        };
-        for message in shell.take_messages() {
+        }
+
+        // Taken up front so nothing holds a borrow of `self` across the
+        // dispatch, which needs it mutably.
+        let messages = self
+            .shell
+            .as_ref()
+            .map(|shell| shell.take_messages())
+            .unwrap_or_default();
+
+        for message in messages {
             // Client id 0: the shell is not one of the socket clients, and an
             // error it caused goes to the broadcast channel it already
             // listens to rather than to a connection that does not exist.
             self.ipc_dispatch(0, message.as_bytes());
+        }
+
+        // A new frame is a reason to draw, and nothing else will ask: the
+        // vblank loop stops when there is nothing left to submit.
+        let crtcs: Vec<_> = self
+            .udev
+            .as_ref()
+            .map(|udev| udev.surfaces.keys().copied().collect())
+            .unwrap_or_default();
+        for crtc in crtcs {
+            self.render(crtc);
         }
     }
 
