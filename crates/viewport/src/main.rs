@@ -23,6 +23,7 @@ mod headless;
 mod idle;
 mod input;
 mod ipc;
+mod notification;
 mod pointer;
 mod render;
 mod session;
@@ -170,6 +171,38 @@ fn main() -> Result<()> {
                 )
             })
             .map_err(|e| anyhow::anyhow!("inserting the housekeeping timer: {e}"))?;
+    }
+
+    // Notifications, over D-Bus, forwarded to the shell.
+    //
+    // On a thread of its own with a channel back: zbus wants an async runtime
+    // and this loop is GLib with calloop inside it, and making three schedulers
+    // agree is worse than one channel.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(message) = event else {
+                    return;
+                };
+                match message {
+                    crate::notification::Message::Add(notification) => {
+                        state.notify(&viewport_ipc::Event::NotificationAdd(*notification));
+                    }
+                    crate::notification::Message::Close(id) => {
+                        state.notify(&viewport_ipc::Event::NotificationClose { id });
+                    }
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the notification source: {e}"))?;
+
+        // Not fatal: a session with no D-Bus, or one where mako already holds
+        // the name, still has a working compositor.
+        if let Err(e) = state.notifications.start(sender) {
+            tracing::warn!("notifications are unavailable: {e}");
+        }
     }
 
     // System statistics for the bar. Every two seconds, as in C

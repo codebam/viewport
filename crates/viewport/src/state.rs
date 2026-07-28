@@ -59,6 +59,8 @@ pub struct ViewportState {
     pub output_config: std::collections::HashMap<String, crate::config::OutputConfig>,
     /// What to run once the compositor is up.
     pub startup: Option<String>,
+    /// The D-Bus notification service, forwarding to the shell.
+    pub notifications: crate::notification::Notifications,
     /// System statistics for the bar, sampled here because the page cannot.
     pub status: crate::status::Status,
     /// Locking and blanking after a while, off unless the file asks.
@@ -187,6 +189,11 @@ pub struct ViewportState {
         smithay::wayland::pointer_constraints::PointerConstraintsState,
     pub relative_pointer_state:
         smithay::wayland::relative_pointer::RelativePointerManagerState,
+    /// ext-foreign-toplevel-list-v1: the window list, for anything outside the
+    /// compositor. The shell already knows every window because it is drawing
+    /// them; a taskbar or a switcher written as an ordinary client does not.
+    pub foreign_toplevel_state:
+        smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     /// ext-session-lock-v1: the screen locker.
     pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
     /// Whether the session is locked. Stays true if the locker dies, because
@@ -239,6 +246,8 @@ impl ViewportState {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let layer_shell_state =
             smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
+        let foreign_toplevel_state =
+            smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
         let pointer_constraints_state =
             smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(&dh);
         let relative_pointer_state =
@@ -305,6 +314,7 @@ impl ViewportState {
             shell_url: None,
             output_config: std::collections::HashMap::new(),
             startup: None,
+            notifications: crate::notification::Notifications::default(),
             status: crate::status::Status::default(),
             idle: crate::idle::Idle::default(),
             idle_settings: crate::idle::Settings::default(),
@@ -355,6 +365,7 @@ impl ViewportState {
             compositor_state,
             xdg_shell_state,
             layer_shell_state,
+            foreign_toplevel_state,
             pointer_constraints_state,
             relative_pointer_state,
             session_lock_state,

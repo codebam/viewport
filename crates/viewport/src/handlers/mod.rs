@@ -96,6 +96,19 @@ impl WaylandDndGrabHandler for ViewportState {
 
 impl OutputHandler for ViewportState {}
 
+/// The window list, for anything outside the compositor.
+///
+/// The shell already knows every window — it is drawing them — but nothing
+/// outside does, and that is what a taskbar or an alt-tab replacement written
+/// as an ordinary client needs.
+impl smithay::wayland::foreign_toplevel_list::ForeignToplevelListHandler for ViewportState {
+    fn foreign_toplevel_list_state(
+        &mut self,
+    ) -> &mut smithay::wayland::foreign_toplevel_list::ForeignToplevelListState {
+        &mut self.foreign_toplevel_state
+    }
+}
+
 /// Pointer capture: a game asking for the cursor to stop moving.
 ///
 /// Activated the moment it is created if the pointer is already over the

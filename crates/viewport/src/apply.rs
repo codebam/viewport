@@ -148,10 +148,27 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             "headless hotplug is only available under --headless",
         ),
 
-        Request::NotificationAction { .. }
-        | Request::NotificationDismiss { .. }
-        | Request::NotificationExpire { .. } => {
-            reject(state, "notification", "notifications are not ported yet");
+        // The shell drew the notification, so the shell is what knows the user
+        // pressed a button or dismissed it. All three end the notification;
+        // they differ in what the sender is told, and a sender does act on
+        // that — one that sees Dismissed knows the user saw it.
+        Request::NotificationAction { id, action } => {
+            if let Some(action) = action.as_deref() {
+                state.notifications.invoke_action(id, action);
+            }
+            state
+                .notifications
+                .closed(id, crate::notification::CloseReason::Dismissed);
+        }
+        Request::NotificationDismiss { id } => {
+            state
+                .notifications
+                .closed(id, crate::notification::CloseReason::Dismissed);
+        }
+        Request::NotificationExpire { id } => {
+            state
+                .notifications
+                .closed(id, crate::notification::CloseReason::Expired);
         }
 
         Request::BindAdd { chord, action } => {

@@ -52,6 +52,11 @@ impl XdgShellHandler for ViewportState {
         let id = view.id;
         let window = view.window.clone();
         let announced = view.mapped;
+        // Or a taskbar keeps the entry for ever: nothing else tells it the
+        // window is gone.
+        if let Some(foreign) = view.foreign.as_ref() {
+            foreign.send_closed();
+        }
 
         self.space.unmap_elem(&window);
         self.views.remove(id);
@@ -150,10 +155,18 @@ impl ViewportState {
         if !view.mapped {
             return;
         }
+        let (title, app_id) = (view.title(), view.app_id());
+        // The outside list carries the same change; a taskbar showing a stale
+        // title is the same bug as a dock showing one.
+        if let Some(foreign) = view.foreign.as_ref() {
+            foreign.send_title(&title);
+            foreign.send_app_id(&app_id);
+            foreign.send_done();
+        }
         let event = Event::ViewProps {
             id: view.id,
-            title: view.title(),
-            app_id: view.app_id(),
+            title,
+            app_id,
         };
         self.notify(&event);
     }

@@ -96,6 +96,9 @@ impl XwmHandler for ViewportState {
             return;
         };
         let (id, element, announced) = (view.id, view.window.clone(), view.mapped);
+        if let Some(foreign) = view.foreign.as_ref() {
+            foreign.send_closed();
+        }
 
         self.space.unmap_elem(&element);
         self.views.remove(id);

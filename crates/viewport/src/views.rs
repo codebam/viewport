@@ -48,6 +48,11 @@ pub struct View {
     /// compositor draws.
     pub opacity: f32,
 
+    /// This window's entry in the foreign toplevel list, so anything outside
+    /// the compositor can see it. Absent until the window is announced: a
+    /// window with no title and no app id is not worth listing.
+    pub foreign: Option<smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle>,
+
     /// The size the client was last configured with, clamped.
     ///
     /// Kept so a move does not cost a resize. Every configure is a round trip,
@@ -186,6 +191,7 @@ impl Views {
             clip: None,
             opacity: 1.0,
             configured: None,
+            foreign: None,
         });
         id
     }

@@ -111,7 +111,17 @@ impl ViewportState {
         tracing::info!("view {}: {kind}", added.id);
 
         let id = added.id;
+        let (title, app_id) = (added.title.clone(), added.app_id.clone());
         self.notify(&Event::ViewAdded(added));
+
+        // Announce it outside the compositor too, now that it has a title and
+        // an app id — before that there is nothing worth listing.
+        let handle = self
+            .foreign_toplevel_state
+            .new_toplevel::<Self>(&title, &app_id);
+        if let Some(view) = self.views.get_mut(id) {
+            view.foreign = Some(handle);
+        }
 
         // Watch for the shell answering. A window that maps and is never given
         // a rectangle is invisible for ever, and a shell that has stopped

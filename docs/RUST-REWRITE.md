@@ -190,9 +190,37 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
    linux-dmabuf, xdg-decoration, Xwayland, the cursor, and directional focus.
 6. **Done.** session-lock, verified against swaylock.
 7. **Done.** The layout watchdog, and system statistics for the bar.
-8. **Next.** foreign-toplevel, notifications, pointer capture, text-input,
-   tablet, `wlr-output-management`, primary selection, screencopy, and the X11
-   half of the clipboard.
+8. **Done.** Pointer capture, the foreign toplevel list, and notifications.
+9. **Next.** text-input, tablet, `wlr-output-management`, gestures, HDR,
+   primary selection, screencopy, the appearance portal, and the X11 half of
+   the clipboard. `zwlr_foreign_toplevel_management_v1` too — see below.
+
+## Notifications, and where they come from
+
+Nothing on a Linux desktop sends a notification to the compositor: they go over
+D-Bus to whichever program has claimed `org.freedesktop.Notifications`. This
+compositor claims it and forwards each one to the shell, so a notification is
+part of the desktop rather than a separate client floating over it, and its
+styling is the stylesheet already open in the editor.
+
+That service runs on a thread of its own with a channel back into the event
+loop. zbus wants an async runtime and this loop is GLib with calloop nested
+inside it; making three schedulers agree is worse than one channel.
+
+Failing to claim the name is not fatal. A session where mako or dunst already
+holds it still has a working compositor — it just has no notifications, which
+is what it had a moment earlier.
+
+## The window list
+
+`ext_foreign_toplevel_list_v1` is implemented: a taskbar or switcher written as
+an ordinary client can see every window, its title and its app id, and hears
+when one closes.
+
+`zwlr_foreign_toplevel_management_v1` is not, and that is the one most existing
+taskbars use — it carries activate, close and fullscreen requests as well as
+the list. Smithay has no implementation, so it means writing the protocol
+dispatch by hand rather than wiring one up.
 
 ## What the config file does, and does not
 
