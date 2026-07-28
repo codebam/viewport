@@ -179,22 +179,45 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 2. **Done.** `viewport` — winit and headless backends, `Space`, xdg-shell, the
    control socket. Windows are placeable by a script before any web engine
    exists; see below.
-3. `viewport-web` — Servo behind the custom DMA-BUF `RenderingContext`, the
-   preload shim, and the real shell rendering.
-4. **In progress.** udev/DRM backend. Compiles and selects the right devices;
-   the DRM path itself needs a TTY where the compositor owns the seat, so it is
-   unverified. Explicit sync and colour transforms are done, in
-   `crates/viewport-vulkan`.
+3. **Next.** `viewport-web` — Servo behind the custom DMA-BUF
+   `RenderingContext`, the preload shim, and the real shell rendering. The
+   buffer half is spiked and tested; what remains is the engine itself.
+4. **Done.** udev/DRM backend, verified on hardware: two 2560x1440 displays
+   brought up side by side on an RX 7900 XTX, the Vulkan renderer drawing to
+   both, VT switching and the quit chord working. Explicit sync and colour
+   transforms are in `crates/viewport-vulkan`.
 5. layer-shell, session-lock, foreign-toplevel, text-input, tablet.
 6. `color-management-v1`, `wlr-output-management`, Xwayland.
+
+## Known rough edges on real hardware
+
+Three things the log says on every run. None stops it working, and all three
+are recorded here rather than left to be rediscovered:
+
+- `Unable to become drm master, assuming unprivileged mode`, early. Master is
+  evidently acquired later through the session, because the atomic modeset
+  succeeds — but it is the first thing to look at if a modeset ever fails.
+- `Failed to restore previous state. Error: Invalid argument` on exit. Smithay
+  restores the pre-compositor DRM state when the device drops, and that commit
+  is rejected. The session comes back regardless.
+- `Failed to destroy old mode property blob: No such file or directory`, once
+  per output during modeset. Harmless; there was no old blob to destroy.
 
 ## Running it now
 
 ```
+./scripts/run-drm.sh                    # real hardware, from a TTY
+./scripts/run-drm.sh --exit-after 120   # ... stopping by itself
+./scripts/quit.sh                       # stop one from another TTY
 cargo run -p viewport -- --headless --socket /tmp/vp.sock   # no GPU, no display
 cargo run -p viewport                                       # nested, in a window
 node scripts/place.js /tmp/vp.sock                          # a stand-in shell
 ```
+
+`run-drm.sh` re-enters the dev shell itself: the binary dlopens libvulkan,
+libgbm, libEGL and libwayland rather than linking them, so it needs that
+library path at run time and not only at build time. Ctrl+Alt+F1 through F12
+switch VT and Ctrl+Alt+Backspace quits.
 
 `scripts/place.js` speaks the same protocol `data/shell/*.js` speaks and does
 the one thing the compositor cannot do for itself: decide where windows go. It
