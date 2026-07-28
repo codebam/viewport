@@ -338,12 +338,40 @@ impl ViewportState {
         };
 
         // The positioner's target is relative to the parent's geometry.
+        let parent_offset = get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
         let mut target = output_geo;
-        target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+        target.loc -= parent_offset;
         target.loc -= window_geo.loc;
 
         popup.with_pending_state(|state| {
+            let asked = state.positioner.get_geometry();
             state.geometry = state.positioner.get_unconstrained_geometry(target);
+            // Everything the placement is decided from, because "the menu is
+            // in the wrong place" has three possible authors: the client's
+            // positioner, the rectangle handed to it, or the sliding done to
+            // fit.
+            tracing::debug!(
+                "popup: anchor {:?} {:?} gravity {:?} asked {},{} {}x{} \
+                 in target {},{} {}x{} (window at {},{}, parent offset {},{}) \
+                 becomes {},{}",
+                state.positioner.anchor_rect,
+                state.positioner.anchor_edges,
+                state.positioner.gravity,
+                asked.loc.x,
+                asked.loc.y,
+                asked.size.w,
+                asked.size.h,
+                target.loc.x,
+                target.loc.y,
+                target.size.w,
+                target.size.h,
+                window_geo.loc.x,
+                window_geo.loc.y,
+                parent_offset.x,
+                parent_offset.y,
+                state.geometry.loc.x,
+                state.geometry.loc.y,
+            );
         });
     }
 }
