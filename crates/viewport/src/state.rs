@@ -918,7 +918,7 @@ impl ViewportState {
             .collect();
 
         for change in changes {
-            let Some(output) = self.output_by_name(&change.name) else {
+            let Some(output) = self.any_output_by_name(&change.name) else {
                 tracing::warn!("output configuration names {}, which is gone", change.name);
                 return false;
             };
@@ -966,7 +966,7 @@ impl ViewportState {
         }
 
         for change in changes {
-            let Some(output) = self.output_by_name(&change.name) else {
+            let Some(output) = self.any_output_by_name(&change.name) else {
                 continue;
             };
             if !change.enabled {
@@ -1249,7 +1249,7 @@ impl ViewportState {
             .map(|(name, ramp)| (name.clone(), ramp.clone()))
             .collect();
         for (name, ramp) in ramps {
-            let Some(output) = self.output_by_name(&name) else {
+            let Some(output) = self.any_output_by_name(&name) else {
                 continue;
             };
             self.apply_gamma(&output, &ramp);
@@ -1841,6 +1841,25 @@ impl ViewportState {
 
     pub fn output_by_name(&self, name: &str) -> Option<Output> {
         self.space.outputs().find(|o| o.name() == name).cloned()
+    }
+
+    /// The same, including outputs that are switched off.
+    ///
+    /// A disabled output is unmapped from the space — the shell places windows
+    /// from the layout, and a monitor that is off has no place in it — so it
+    /// cannot be found by looking there. Everything that configures an output
+    /// has to use this instead, or turning one back on names a monitor the
+    /// compositor insists is gone.
+    pub fn any_output_by_name(&self, name: &str) -> Option<Output> {
+        if let Some(output) = self.output_by_name(name) {
+            return Some(output);
+        }
+        self.udev.as_ref().and_then(|udev| {
+            udev.surfaces
+                .values()
+                .find(|surface| surface.output.name() == name)
+                .map(|surface| surface.output.clone())
+        })
     }
 
     /// Announce every mapped window, as a replay.
