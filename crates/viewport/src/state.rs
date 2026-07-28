@@ -275,6 +275,10 @@ pub struct ViewportState {
     pub _input_method_state: smithay::wayland::input_method::InputMethodManagerState,
     pub _virtual_keyboard_state:
         smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState,
+    /// wlr-foreign-toplevel-management: the window list a taskbar or a
+    /// switcher can act on. The read-only ext protocol is beside it and
+    /// describes the same windows.
+    pub foreign_management_state: crate::foreign_toplevel::ForeignToplevelState,
     /// wlr-gamma-control: what wlsunset and gammastep speak. Smithay
     /// implements it nowhere, so the dispatch is in `gamma.rs`.
     pub gamma_state: crate::gamma::GammaControlState,
@@ -345,6 +349,8 @@ impl ViewportState {
         let output_management_state =
             crate::output_management::OutputManagementState::new::<Self>(&dh);
         let gamma_state = crate::gamma::GammaControlState::new::<Self>(&dh);
+        let foreign_management_state =
+            crate::foreign_toplevel::ForeignToplevelState::new::<Self>(&dh);
         // Input methods. Three protocols that only work together: the
         // application says where its text is going through text-input, the
         // input method reads that and sends back what was composed, and
@@ -548,6 +554,7 @@ impl ViewportState {
             _input_method_state: input_method_state,
             _virtual_keyboard_state: virtual_keyboard_state,
             gamma_state,
+            foreign_management_state,
             gamma_ramps: std::collections::HashMap::new(),
             _cursor_shape_state: cursor_shape_state,
             _content_type_state: content_type_state,
@@ -2241,9 +2248,38 @@ impl ViewportState {
     }
 
     pub fn notify_focus(&mut self, id: u32) {
+        let previous = self.focused;
         self.focused = id;
+
+        // Outside the compositor too: a taskbar draws the focused window
+        // differently, and one that is never told keeps highlighting the
+        // window that had focus when it started.
+        if previous != id {
+            let fullscreen = self.view_is_fullscreen(previous);
+            self.foreign_management_state
+                .set_state(previous, false, fullscreen);
+        }
+        let fullscreen = self.view_is_fullscreen(id);
+        self.foreign_management_state.set_state(id, true, fullscreen);
+
         let event = Event::ViewFocused { id };
         self.notify(&event);
+    }
+
+    /// Whether a window is fullscreen, as the state it was configured with
+    /// says — the shell decides it, and this is where it landed.
+    fn view_is_fullscreen(&self, id: u32) -> bool {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+
+        self.views
+            .get(id)
+            .and_then(|view| view.window.toplevel())
+            .map(|toplevel| {
+                toplevel.with_pending_state(|pending| {
+                    pending.states.contains(xdg_toplevel::State::Fullscreen)
+                })
+            })
+            .unwrap_or(false)
     }
 }
 

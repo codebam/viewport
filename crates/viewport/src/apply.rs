@@ -55,6 +55,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 }
             });
             toplevel.send_pending_configure();
+            // The outside list carries the state a taskbar draws from, and
+            // fullscreen is one of the two it knows about.
+            let activated = state.focused == id;
+            state
+                .foreign_management_state
+                .set_state(id, activated, fullscreen);
         }
 
         Request::ViewFocus { id } => focus_view(state, id),

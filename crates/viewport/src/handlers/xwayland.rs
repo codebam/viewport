@@ -100,6 +100,7 @@ impl XwmHandler for ViewportState {
         if let Some(foreign) = view.foreign.as_ref() {
             foreign.send_closed();
         }
+        self.foreign_management_state.remove(view.id);
 
         self.space.unmap_elem(&element);
         self.views.remove(id);

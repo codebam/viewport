@@ -57,6 +57,9 @@ impl XdgShellHandler for ViewportState {
         if let Some(foreign) = view.foreign.as_ref() {
             foreign.send_closed();
         }
+        // The same on the older protocol, or a taskbar keeps a window that is
+        // gone and clicking it does nothing.
+        self.foreign_management_state.remove(id);
 
         self.space.unmap_elem(&window);
         self.views.remove(id);
@@ -163,8 +166,10 @@ impl ViewportState {
             foreign.send_app_id(&app_id);
             foreign.send_done();
         }
+        let id = view.id;
+        self.foreign_management_state.update(id, &title, &app_id);
         let event = Event::ViewProps {
-            id: view.id,
+            id,
             title,
             app_id,
         };

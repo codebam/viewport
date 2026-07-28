@@ -211,6 +211,40 @@ impl smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitHandl
     }
 }
 
+/// Acting on the window list from outside: `rofi -show window`, wlrctl, a
+/// taskbar with a click-to-focus list.
+impl crate::foreign_toplevel::ForeignToplevelHandler for ViewportState {
+    fn foreign_toplevel_state(&mut self) -> &mut crate::foreign_toplevel::ForeignToplevelState {
+        &mut self.foreign_management_state
+    }
+
+    fn activate_toplevel(&mut self, id: u32) {
+        // Only a window that is actually on screen, as in `src/foreign.c:53`:
+        // focusing one the shell has parked on another workspace would move
+        // the keyboard somewhere the user cannot see.
+        if self.views.get(id).map(|view| view.mapped).unwrap_or(false) {
+            crate::apply::focus_view(self, id);
+        }
+    }
+
+    fn close_toplevel(&mut self, id: u32) {
+        if let Some(toplevel) = self.views.get(id).and_then(|view| view.window.toplevel()) {
+            toplevel.send_close();
+        }
+    }
+
+    fn fullscreen_toplevel(&mut self, id: u32, fullscreen: bool) {
+        // The shell owns the layout, so this goes there and comes back as an
+        // ordinary state change (`src/foreign.c:71`). The same command C
+        // sends, argument for argument (`src/ipc.c:582`), because it is the
+        // shell's own vocabulary on the other end.
+        self.notify(&viewport_ipc::Event::ShellCommand {
+            command: "window.fullscreen.set".to_owned(),
+            args: vec![id.to_string(), u8::from(fullscreen).to_string()],
+        });
+    }
+}
+
 impl crate::gamma::GammaControlHandler for ViewportState {
     fn gamma_control_state(&mut self) -> &mut crate::gamma::GammaControlState {
         &mut self.gamma_state
@@ -484,5 +518,6 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for ViewportState {
 crate::delegate_screencopy!(ViewportState);
 crate::delegate_output_management!(ViewportState);
 crate::delegate_gamma_control!(ViewportState);
+crate::delegate_foreign_toplevel!(ViewportState);
 
 smithay::delegate_dispatch2!(ViewportState);

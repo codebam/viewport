@@ -122,6 +122,13 @@ impl ViewportState {
         if let Some(view) = self.views.get_mut(id) {
             view.foreign = Some(handle);
         }
+        // And on the older protocol, which is the one a taskbar can act
+        // through. Both describe the same windows: a client that binds one of
+        // them must not see a different desktop from a client that binds the
+        // other.
+        let dh = self.display_handle.clone();
+        self.foreign_management_state
+            .add::<Self>(&dh, id, &title, &app_id);
 
         // Watch for the shell answering. A window that maps and is never given
         // a rectangle is invisible for ever, and a shell that has stopped

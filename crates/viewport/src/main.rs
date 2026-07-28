@@ -16,6 +16,7 @@ mod color_management;
 mod config;
 mod cursor;
 mod focus;
+mod foreign_toplevel;
 mod gamma;
 mod framing;
 #[cfg(feature = "wpe")]
