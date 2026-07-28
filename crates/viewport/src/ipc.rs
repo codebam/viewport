@@ -292,6 +292,23 @@ impl ViewportState {
         }
     }
 
+    /// Drain everything the page has posted and act on it.
+    ///
+    /// Called from the event loop rather than from the callback, because the
+    /// callback runs underneath a dispatch that already holds this state.
+    #[cfg(feature = "wpe")]
+    pub fn drain_shell(&mut self) {
+        let Some(shell) = self.shell.as_ref() else {
+            return;
+        };
+        for message in shell.take_messages() {
+            // Client id 0: the shell is not one of the socket clients, and an
+            // error it caused goes to the broadcast channel it already
+            // listens to rather than to a connection that does not exist.
+            self.ipc_dispatch(0, message.as_bytes());
+        }
+    }
+
     /// Parse one message and act on it.
     pub fn ipc_dispatch(&mut self, client_id: u64, bytes: &[u8]) {
         // The first message the shell sends, once.
@@ -316,8 +333,14 @@ impl ViewportState {
     fn ipc_reject(&mut self, client_id: u64, error: &ParseError) {
         let event = error.to_event();
         // An error belongs to its sender. Broadcasting would tell every other
-        // client about a mistake it did not make.
-        self.ipc.send_to(client_id, &event);
+        // client about a mistake it did not make — except for the shell,
+        // which has no connection of its own and must hear about its own
+        // mistakes on the channel it does listen to.
+        if client_id == 0 {
+            self.notify(&event);
+        } else {
+            self.ipc.send_to(client_id, &event);
+        }
     }
 
     /// Act on a parsed message. Split out so tests can drive the compositor

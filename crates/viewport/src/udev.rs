@@ -171,6 +171,19 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         })
         .map_err(|e| anyhow!("inserting the udev source: {e}"))?;
 
+    // The ping the shell uses to wake the loop, so a posted message is acted
+    // on now rather than whenever unrelated input next arrives.
+    #[cfg(feature = "wpe")]
+    {
+        let (ping, source) = smithay::reexports::calloop::ping::make_ping()
+            .map_err(|e| anyhow!("creating the shell ping: {e}"))?;
+        event_loop
+            .handle()
+            .insert_source(source, |_, _, state| state.drain_shell())
+            .map_err(|e| anyhow!("inserting the shell ping: {e}"))?;
+        state.shell_ping = Some(ping);
+    }
+
     state.udev = Some(Udev {
         session,
         renderer,
@@ -180,6 +193,9 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         active: true,
     });
     state.on_connectors_changed();
+
+    #[cfg(feature = "wpe")]
+    state.start_shell(&card, &render)?;
 
     Ok(())
 }
@@ -461,7 +477,8 @@ impl ViewportState {
         let result = surface.drm_output.render_frame(
             &mut udev.renderer,
             &elements,
-            // The backdrop, until the shell is drawing.
+            // Behind everything, and behind the shell too — visible only
+            // where nothing else covers it.
             [0.1, 0.1, 0.1, 1.0],
             FrameFlags::DEFAULT,
         );

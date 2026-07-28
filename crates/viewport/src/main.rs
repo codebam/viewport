@@ -9,11 +9,15 @@
 mod apply;
 mod color_management;
 mod framing;
+#[cfg(feature = "wpe")]
+mod glib_loop;
 mod handlers;
 mod headless;
 mod input;
 mod ipc;
 mod session;
+#[cfg(feature = "wpe")]
+mod shell;
 mod state;
 mod udev;
 mod views;
@@ -86,7 +90,20 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("inserting the exit timer: {e}"))?;
     }
 
-    event_loop.run(None, &mut state, |_| {})?;
+    // With the web engine, GLib owns the outer loop and calloop nests inside
+    // it — see glib_loop.rs for why round that way.
+    #[cfg(feature = "wpe")]
+    {
+        let mut glib = glib_loop::GlibLoop::new(&event_loop)?;
+        state.glib = Some(glib.signal());
+        glib.run(&mut event_loop, &mut state);
+        return Ok(());
+    }
+
+    #[cfg(not(feature = "wpe"))]
+    {
+        event_loop.run(None, &mut state, |_| {})?;
+    }
     Ok(())
 }
 

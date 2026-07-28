@@ -113,7 +113,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             let event = Event::SessionRestore {
                 state: session::load(),
             };
-            state.ipc.broadcast(&event);
+            state.notify(&event);
         }
 
         Request::OutputConfigure(config) => output_configure(state, config),
@@ -158,7 +158,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             reject(state, "bind.add", &format!("{chord}: bindings are not ported yet"));
         }
 
-        Request::Quit => state.loop_signal.stop(),
+        Request::Quit => state.shutdown(),
     }
 }
 
@@ -266,5 +266,5 @@ fn reject(state: &mut ViewportState, context: &str, message: &str) {
         context: context.to_owned(),
         message: message.to_owned(),
     };
-    state.ipc.broadcast(&event);
+    state.notify(&event);
 }

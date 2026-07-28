@@ -31,6 +31,8 @@ if [ "$(id -u)" = 0 ]; then
     exit 1
 fi
 
+# --features wpe is not the default: the shell needs WebKit, and everything
+# else builds and tests without it.
 binary="$here/target/release/viewport"
 [ -x "$binary" ] || binary="$here/target/debug/viewport"
 if [ ! -x "$binary" ]; then

@@ -70,7 +70,7 @@ impl ViewportState {
         view.mapped = true;
         let added = view.added(output, false);
 
-        self.ipc.broadcast(&Event::ViewAdded(added));
+        self.notify(&Event::ViewAdded(added));
     }
 }
 

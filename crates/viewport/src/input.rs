@@ -263,7 +263,7 @@ impl ViewportState {
             }
             Action::Quit => {
                 tracing::info!("quit chord pressed");
-                self.loop_signal.stop();
+                self.shutdown();
             }
             Action::Swallow => {}
         }

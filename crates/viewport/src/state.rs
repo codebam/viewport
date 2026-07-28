@@ -58,6 +58,20 @@ pub struct ViewportState {
     /// Keys whose press was intercepted, so the matching release can be too.
     pub suppressed_keys: Vec<smithay::input::keyboard::Keysym>,
 
+    /// Stops the outer GLib loop. calloop's own signal only ends the inner
+    /// dispatch, so quitting has to go through this when the web engine is
+    /// running.
+    #[cfg(feature = "wpe")]
+    pub glib: Option<crate::glib_loop::GlibSignal>,
+
+    /// The web engine drawing the desktop, once it has started.
+    #[cfg(feature = "wpe")]
+    pub shell: Option<crate::shell::Shell>,
+
+    /// Wakes the loop when the shell posts something.
+    #[cfg(feature = "wpe")]
+    pub shell_ping: Option<smithay::reexports::calloop::ping::Ping>,
+
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
     pub color_management: crate::color_management::ColorManagementState,
@@ -120,6 +134,12 @@ impl ViewportState {
             active_output: None,
             udev: None,
             suppressed_keys: Vec::new(),
+            #[cfg(feature = "wpe")]
+            glib: None,
+            #[cfg(feature = "wpe")]
+            shell: None,
+            #[cfg(feature = "wpe")]
+            shell_ping: None,
 
             color_management,
             compositor_state,
@@ -212,7 +232,7 @@ impl ViewportState {
             .map(|v| Event::ViewAdded(v.added(output.clone(), true)))
             .collect();
         for event in events {
-            self.ipc.broadcast(&event);
+            self.notify(&event);
         }
     }
 
@@ -227,7 +247,7 @@ impl ViewportState {
             rules: None,
             theme: None,
         });
-        self.ipc.broadcast(&event);
+        self.notify(&event);
     }
 
     pub fn notify_output_layout(&mut self) {
@@ -276,13 +296,29 @@ impl ViewportState {
             .collect();
 
         let event = Event::OutputLayout { outputs };
-        self.ipc.broadcast(&event);
+        self.notify(&event);
+    }
+
+    /// Send an event to everything listening: the socket clients and the
+    /// shell.
+    ///
+    /// The shell is not a socket client — it is spoken to through JavaScript —
+    /// so anything that only broadcasts on the socket is invisible to the one
+    /// thing that draws the desktop.
+    pub fn notify(&mut self, event: &Event) {
+        self.ipc.broadcast(event);
+        #[cfg(feature = "wpe")]
+        if let Some(shell) = self.shell.as_ref() {
+            if let Err(e) = shell.post(event) {
+                tracing::warn!("could not post to the shell: {e:#}");
+            }
+        }
     }
 
     pub fn notify_focus(&mut self, id: u32) {
         self.focused = id;
         let event = Event::ViewFocused { id };
-        self.ipc.broadcast(&event);
+        self.notify(&event);
     }
 }
 
@@ -294,4 +330,76 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+impl ViewportState {
+    /// Stop the compositor.
+    ///
+    /// calloop's signal ends its own dispatch, which under the web engine is
+    /// only the inner loop — so the outer GLib loop has to be told as well or
+    /// quitting does nothing visible.
+    pub fn shutdown(&mut self) {
+        self.loop_signal.stop();
+        #[cfg(feature = "wpe")]
+        if let Some(glib) = self.glib {
+            glib.quit();
+        }
+    }
+}
+
+#[cfg(feature = "wpe")]
+impl ViewportState {
+    /// Start the shell on the same GPU the renderer uses.
+    ///
+    /// The formats offered to WebKit are the renderer's own importable set. A
+    /// format the compositor cannot import produces a shell that never
+    /// appears rather than an error, so asking the renderer is the only
+    /// honest way to build that list.
+    pub fn start_shell(
+        &mut self,
+        card: &smithay::backend::drm::DrmNode,
+        render: &smithay::backend::drm::DrmNode,
+    ) -> anyhow::Result<()> {
+        use smithay::backend::renderer::ImportDma as _;
+
+        let Some(udev) = self.udev.as_ref() else {
+            anyhow::bail!("the shell needs a renderer, which means the drm backend");
+        };
+
+        let formats: Vec<(u32, u64)> = udev
+            .renderer
+            .dmabuf_formats()
+            .iter()
+            .map(|format| (format.code as u32, u64::from(format.modifier)))
+            .collect();
+        anyhow::ensure!(!formats.is_empty(), "the renderer imports no dmabuf format");
+
+        let (Some(card_path), Some(render_path)) = (card.dev_path(), render.dev_path()) else {
+            anyhow::bail!("the drm nodes have no device paths");
+        };
+
+        // Where the shell lives. The C build takes this from its config; until
+        // that is ported, the environment is the way to point it somewhere.
+        let url = std::env::var("VIEWPORT_SHELL_URL").unwrap_or_else(|_| {
+            let here = std::env::current_dir().unwrap_or_default();
+            format!("file://{}/data/shell/index.html", here.display())
+        });
+        let console = std::env::var("VIEWPORT_LOG")
+            .map(|level| level.contains("debug") || level.contains("trace"))
+            .unwrap_or(false);
+
+        tracing::info!("starting the shell at {url}");
+        let shell = crate::shell::Shell::start(
+            &card_path,
+            &render_path,
+            &formats,
+            &url,
+            console,
+        )?;
+        if let Some(ping) = self.shell_ping.clone() {
+            shell.wake_with(ping);
+        }
+        self.shell = Some(shell);
+        Ok(())
+    }
 }

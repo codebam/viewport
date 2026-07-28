@@ -1641,6 +1641,7 @@ name = "viewport"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "pkg-config",
  "serde_json",
  "smithay",
  "tracing",

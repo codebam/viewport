@@ -16,7 +16,7 @@ the Rust compositor must satisfy.
 |---|---|
 | Compositor framework | Smithay 0.7 |
 | Scene graph | `smithay::desktop::Space` + a custom `RenderElement` for the shell |
-| Web engine | Servo (`libservo`), replacing WPE WebKit |
+| Web engine | WPE WebKit, as the C build uses |
 | IPC | Byte-compatible with the C protocol; `data/shell/*.js` unchanged |
 | Colour | Colour-managed render path from day one, `color-management-v1` wire protocol deferred |
 | Explicit sync | `linux-drm-syncobj-v1` from day one (Smithay ships it) |
@@ -179,9 +179,9 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 2. **Done.** `viewport` — winit and headless backends, `Space`, xdg-shell, the
    control socket. Windows are placeable by a script before any web engine
    exists; see below.
-3. **Next.** `viewport-web` — Servo behind the custom DMA-BUF
-   `RenderingContext`, the preload shim, and the real shell rendering. The
-   buffer half is spiked and tested; what remains is the engine itself.
+3. **Built, unverified on screen.** `viewport-web` — WPE WebKit, not Servo.
+   The engine, the GLib loop inversion, and the frame and message paths are
+   wired; whether the shell actually appears has not been seen yet.
 4. **Done.** udev/DRM backend, verified on hardware: two 2560x1440 displays
    brought up side by side on an RX 7900 XTX, the Vulkan renderer drawing to
    both, VT switching and the quit chord working. Explicit sync and colour

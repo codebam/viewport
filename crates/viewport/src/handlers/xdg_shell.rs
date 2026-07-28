@@ -56,7 +56,7 @@ impl XdgShellHandler for ViewportState {
 
         // A window the shell was never told about does not need removing.
         if announced {
-            self.ipc.broadcast(&Event::ViewRemoved { id });
+            self.notify(&Event::ViewRemoved { id });
         }
         if self.focused == id {
             self.notify_focus(NO_VIEW);
@@ -109,7 +109,7 @@ impl ViewportState {
             title: view.title(),
             app_id: view.app_id(),
         };
-        self.ipc.broadcast(&event);
+        self.notify(&event);
     }
 
     fn unconstrain_popup(&self, popup: &PopupSurface) {
