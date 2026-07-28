@@ -100,7 +100,7 @@ pub fn init(
     backend.window().request_redraw();
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
-    let mut dumped = false;
+    let mut dumped: Option<std::time::Instant> = None;
 
     event_loop
         .handle()
@@ -135,17 +135,22 @@ pub fn init(
                     // shell painted nothing" from "the shell never reached the
                     // screen".
                     if let Some(path) = crate::dump::output_target() {
-                        // Not the first frame after a resize: that one catches
-                        // a buffer WebKit has not painted into yet, which
-                        // comes out black and says nothing. A static desktop
-                        // paints twice and then stops, so this cannot wait for
-                        // many.
+                        // Repeatedly, overwriting: whatever is on screen when
+                        // someone looks at the file is what it holds. A single
+                        // capture has to guess when the interesting thing
+                        // happens, and it is usually wrong — the first attempt
+                        // caught a buffer WebKit had not painted into yet.
                         #[cfg(feature = "wpe")]
                         let painted = state.shell_frames >= 2;
                         #[cfg(not(feature = "wpe"))]
                         let painted = false;
-                        if !dumped && (painted || !frame.windows.is_empty()) {
-                            dumped = true;
+                        let due = dumped
+                            .map(|at: std::time::Instant| {
+                                at.elapsed() >= std::time::Duration::from_secs(2)
+                            })
+                            .unwrap_or(true);
+                        if due && (painted || !frame.windows.is_empty() || frame.locked_blank) {
+                            dumped = Some(std::time::Instant::now());
                             if let Err(e) = crate::dump::output_frame::<
                                 _,
                                 smithay::backend::renderer::gles::GlesRenderbuffer,

@@ -127,12 +127,13 @@ impl ViewportState {
                                 // is the session's, not this seat's, and a
                                 // locked session on another VT is still
                                 // locked. Quitting does not: it would drop the
-                                // lock along with the compositor.
+                                // lock along with the compositor. Forwarded
+                                // rather than swallowed, so Ctrl+Alt+Backspace
+                                // still reaches the lock screen as keys.
                                 if state.locked
                                     && !matches!(action, Action::SwitchVt(_))
                                 {
-                                    state.suppressed_keys.push(keysym);
-                                    return FilterResult::Intercept(Some(Action::Swallow));
+                                    return FilterResult::Forward;
                                 }
                                 // Remembered so the release is swallowed too;
                                 // a client that saw only the release would
@@ -150,12 +151,13 @@ impl ViewportState {
                                 .map(|sym| sym.raw())
                                 .unwrap_or_else(|| keysym.raw());
 
-                            // Nothing configurable reaches anything while
-                            // locked: a binding that spawns a terminal would
-                            // put it on top of the lock screen.
+                            // No binding fires while locked — one that
+                            // spawns a terminal would put it on top of the
+                            // lock screen — but the key still goes to the
+                            // client, because the client is the lock screen
+                            // and the key is the password.
                             if state.locked {
-                                state.suppressed_keys.push(keysym);
-                                return FilterResult::Intercept(Some(Action::Swallow));
+                                return FilterResult::Forward;
                             }
 
                             match crate::binding::match_binding(
