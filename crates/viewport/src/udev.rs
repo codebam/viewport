@@ -200,15 +200,31 @@ fn open_device(
 
     // The Vulkan device has to be the same GPU, or every imported buffer is a
     // copy over PCIe. Selecting by node is what viewport_vulkan::open does.
-    let vulkan = VulkanDevice::for_node(
-        &smithay::backend::vulkan::Instance::new(
-            smithay::backend::vulkan::version::Version::VERSION_1_3,
-            None,
-        )
-        .context("creating a vulkan instance")?,
-        render,
+    let instance = smithay::backend::vulkan::Instance::new(
+        smithay::backend::vulkan::version::Version::VERSION_1_3,
+        None,
     )
-    .context("opening a vulkan device on the primary GPU")?;
+    .map_err(|e| {
+        // The bare message is "Failed to load the Vulkan library", which names
+        // the symptom and not the cause. It is almost always the library path:
+        // the binary dlopens libvulkan rather than linking it, so it needs the
+        // dev shell at run time and not only at build time.
+        anyhow!(
+            "{e}\n\
+             \n\
+             libvulkan.so.1 could not be loaded. It is dlopened, not linked, so \n\
+             it has to be on the library path when the compositor runs:\n\
+             \n\
+             \x20   ./scripts/run-drm.sh\n\
+             \n\
+             which re-enters the dev shell for you. Running the binary directly \n\
+             from a plain shell, or under sudo (which strips LD_LIBRARY_PATH), \n\
+             gets exactly this error."
+        )
+    })?;
+
+    let vulkan = VulkanDevice::for_node(&instance, render)
+        .context("opening a vulkan device on the primary GPU")?;
 
     // SCANOUT as well as RENDERING: these buffers go to the display
     // controller, and a buffer allocated without it may not be scannable.
