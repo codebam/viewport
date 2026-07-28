@@ -181,7 +181,10 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
    exists; see below.
 3. `viewport-web` — Servo behind the custom DMA-BUF `RenderingContext`, the
    preload shim, and the real shell rendering.
-4. udev/DRM backend, explicit sync, colour transforms.
+4. **In progress.** udev/DRM backend. Compiles and selects the right devices;
+   the DRM path itself needs a TTY where the compositor owns the seat, so it is
+   unverified. Explicit sync and colour transforms are done, in
+   `crates/viewport-vulkan`.
 5. layer-shell, session-lock, foreign-toplevel, text-input, tablet.
 6. `color-management-v1`, `wlr-output-management`, Xwayland.
 

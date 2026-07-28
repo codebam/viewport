@@ -52,6 +52,9 @@ pub struct ViewportState {
     pub overview: bool,
     pub active_output: Option<String>,
 
+    /// The DRM backend, when running on real hardware rather than nested.
+    pub udev: Option<crate::udev::Udev>,
+
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
     pub color_management: crate::color_management::ColorManagementState,
@@ -112,6 +115,7 @@ impl ViewportState {
             shell_announced: false,
             overview: false,
             active_output: None,
+            udev: None,
 
             color_management,
             compositor_state,

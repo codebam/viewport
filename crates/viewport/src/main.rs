@@ -15,6 +15,7 @@ mod input;
 mod ipc;
 mod session;
 mod state;
+mod udev;
 mod views;
 mod winit;
 
@@ -37,12 +38,17 @@ fn main() -> Result<()> {
     let socket_path = flag(&args, "--socket").map(std::path::PathBuf::from);
     // No renderer and no window: everything but drawing, for tests and CI.
     let headless = args.iter().any(|a| a == "--headless");
+    // The real backend. Without it the compositor runs nested under whatever
+    // is already displaying, which is what development wants.
+    let drm = args.iter().any(|a| a == "--drm");
 
     let mut event_loop: EventLoop<ViewportState> = EventLoop::try_new()?;
     let display: Display<ViewportState> = Display::new()?;
 
     let mut state = ViewportState::new(&mut event_loop, display, socket_path)?;
-    if headless {
+    if drm {
+        udev::init(&mut event_loop, &mut state)?;
+    } else if headless {
         let width = flag(&args, "--width").and_then(|v| v.parse().ok()).unwrap_or(1920);
         let height = flag(&args, "--height").and_then(|v| v.parse().ok()).unwrap_or(1080);
         headless::init(&mut event_loop, &mut state, width, height)?;

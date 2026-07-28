@@ -38,4 +38,11 @@ features = [
     "wayland_frontend",
     "desktop",
     "renderer_gl",
+    # The real backend: DRM/KMS for output, libinput for input, udev to find
+    # the devices, and libseat so none of it needs to be root.
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
 ]
