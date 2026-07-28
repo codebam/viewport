@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 struct Compositor {
     child: Child,
     socket: PathBuf,
+    /// Kept because the Wayland display name is only ever announced there.
+    log: PathBuf,
 }
 
 impl Drop for Compositor {
@@ -24,6 +26,7 @@ impl Drop for Compositor {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_file(&self.log);
     }
 }
 
@@ -39,12 +42,16 @@ impl Compositor {
         let socket = PathBuf::from(format!("/tmp/viewport-test-{}-{tag}.sock", std::process::id()));
         let _ = std::fs::remove_file(&socket);
 
+        let log = PathBuf::from(format!("/tmp/viewport-test-{}-{tag}.log", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let stderr = std::fs::File::create(&log).expect("could not create the log");
+
         let mut command = Command::new(env!("CARGO_BIN_EXE_viewport"));
         command
             .args(["--headless", "--socket"])
             .arg(&socket)
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::from(stderr));
         for (key, value) in env {
             command.env(key, value);
         }
@@ -56,7 +63,7 @@ impl Compositor {
 
         let child = command.spawn().expect("could not start the compositor");
 
-        let compositor = Self { child, socket };
+        let compositor = Self { child, socket, log };
         compositor.wait_for_socket();
         compositor
     }
@@ -70,6 +77,27 @@ impl Compositor {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("the compositor never created {}", self.socket.display());
+    }
+
+    /// The Wayland display this compositor created, from its own log.
+    ///
+    /// Waits for it: the line is written during startup and a client pointed
+    /// at a display that does not exist yet fails for a reason that has
+    /// nothing to do with what is being tested.
+    fn wayland_display(&self) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Ok(log) = std::fs::read_to_string(&self.log) {
+                if let Some(name) = log
+                    .split_whitespace()
+                    .find(|word| word.starts_with("wayland-"))
+                {
+                    return Some(name.trim_end_matches(|c: char| !c.is_alphanumeric()).to_owned());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
     }
 
     fn connect(&self) -> Client {
@@ -196,6 +224,64 @@ fn a_config_file_reaches_the_shell() {
     assert_eq!(config["tutorial"], true);
 
     let _ = std::fs::remove_file(&path);
+}
+
+/// A real layer-shell client, run against a real compositor.
+///
+/// wmenu is the reason layer-shell was ported and it exercises the whole path:
+/// the global has to exist, the surface has to be arranged, and the initial
+/// configure has to carry a width — it asks for zero, meaning "the compositor
+/// decides", and allocates a buffer from whatever it is told. Every one of
+/// those was wrong at some point and each failed differently: no global was an
+/// assertion inside wmenu, no configure was an invalid shm pool.
+#[test]
+fn a_layer_shell_client_is_configured_with_a_real_size() {
+    use std::io::Read;
+
+    let compositor = Compositor::start("layer");
+    let display = compositor
+        .wayland_display()
+        .expect("the compositor never announced a wayland display");
+
+    let mut child = match Command::new("wmenu")
+        .env("WAYLAND_DISPLAY", &display)
+        .env("WAYLAND_DEBUG", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        // Not installed. Skipping is right; failing would make the suite
+        // depend on what happens to be on the machine.
+        Err(_) => return,
+    };
+    use std::io::Write as _;
+    let _ = child.stdin.take().unwrap().write_all(b"alpha\n");
+
+    std::thread::sleep(Duration::from_secs(2));
+    let _ = child.kill();
+    let mut trace = String::new();
+    let _ = child.stderr.take().unwrap().read_to_string(&mut trace);
+    let _ = child.wait();
+
+    assert!(
+        trace.contains("zwlr_layer_surface_v1"),
+        "wmenu never got a layer surface: {trace}"
+    );
+    // The width it was told, not the zero it asked for.
+    let configured = trace
+        .lines()
+        .find(|line| line.contains("zwlr_layer_surface_v1") && line.contains(".configure("));
+    let configured = configured.unwrap_or_else(|| panic!("no configure in: {trace}"));
+    assert!(
+        configured.contains(", 1920, "),
+        "configured with no width, so the client allocates nothing: {configured}"
+    );
+    assert!(
+        !trace.contains("invalid wl_shm_pool size"),
+        "the client was configured into an impossible buffer: {trace}"
+    );
 }
 
 #[test]

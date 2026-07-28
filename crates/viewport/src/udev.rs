@@ -503,6 +503,47 @@ impl ViewportState {
         }
     }
 
+    /// Layer surfaces for one output, split above and below the windows.
+    ///
+    /// Overlay and top go in front — a lock screen, a launcher, a bar — and
+    /// background and bottom go behind. Both are returned in output-local
+    /// physical coordinates, which is the space every element is drawn in.
+    fn layers_for(
+        &self,
+        crtc: &crtc::Handle,
+        scale: f64,
+    ) -> (
+        Vec<(smithay::desktop::LayerSurface, Point<i32, Physical>)>,
+        Vec<(smithay::desktop::LayerSurface, Point<i32, Physical>)>,
+    ) {
+        use smithay::wayland::shell::wlr_layer::Layer;
+
+        let Some(output) = self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.surfaces.get(crtc))
+            .map(|surface| surface.output.clone())
+        else {
+            return (Vec::new(), Vec::new());
+        };
+
+        let map = smithay::desktop::layer_map_for_output(&output);
+        let mut above = Vec::new();
+        let mut below = Vec::new();
+        for layer in map.layers() {
+            let Some(geometry) = map.layer_geometry(layer) else {
+                continue;
+            };
+            let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
+            let entry = (layer.clone(), location);
+            match layer.layer() {
+                Layer::Overlay | Layer::Top => above.push(entry),
+                Layer::Background | Layer::Bottom => below.push(entry),
+            }
+        }
+        (above, below)
+    }
+
     /// The pointer, as elements for one output.
     ///
     /// Empty when the pointer is elsewhere, or when the client asked for it to
@@ -703,9 +744,10 @@ impl ViewportState {
             None => Vec::new(),
         };
 
-        // The pointer, in front of everything including the shell. Built
-        // before the renderer is borrowed, like the windows.
-        let cursor = self.cursor_element(output_geometry, scale);
+        // Layer surfaces, split by whether they sit above the windows or
+        // below them. Collected before the renderer is borrowed, like the
+        // windows, and in output-local physical coordinates.
+        let (layers_above, layers_below) = self.layers_for(&crtc, scale);
 
         // The pointer, in front of everything including the shell. Built
         // before the renderer is borrowed, like the windows.
@@ -756,6 +798,39 @@ impl ViewportState {
                 })),
                 None => elements.extend(surfaces.into_iter().map(OutputElement::from)),
             }
+        }
+
+        // Layer surfaces above the windows: an overlay is a lock screen or a
+        // launcher, and top is where a bar goes.
+        for (layer, location) in &layers_above {
+            elements.extend(
+                layer
+                    .render_elements::<WaylandSurfaceRenderElement<VulkanRenderer>>(
+                        &mut udev.renderer,
+                        *location,
+                        scale.into(),
+                        1.0,
+                    )
+                    .into_iter()
+                    .map(OutputElement::from),
+            );
+        }
+
+        // Background and bottom: behind the windows, in front of the shell.
+        // The shell draws the wallpaper, so a client that asked for the
+        // background layer sits between the two rather than under both.
+        for (layer, location) in &layers_below {
+            elements.extend(
+                layer
+                    .render_elements::<WaylandSurfaceRenderElement<VulkanRenderer>>(
+                        &mut udev.renderer,
+                        *location,
+                        scale.into(),
+                        1.0,
+                    )
+                    .into_iter()
+                    .map(OutputElement::from),
+            );
         }
 
         // The shell, imported from whatever WebKit last painted. Behind every

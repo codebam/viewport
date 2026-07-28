@@ -145,6 +145,12 @@ pub struct ViewportState {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    /// wlr-layer-shell: bars, launchers, notification daemons. Not the
+    /// shell's business — a layer surface asks for an edge, not a layout.
+    pub layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState,
+    /// xdg-activation. A launcher needs the global to exist before it will
+    /// draw at all, quite apart from what activation is for.
+    pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
     /// zxdg_decoration_manager_v1. Held only so the global outlives the
     /// display; every decision it drives is in the handler.
     pub xdg_decoration_state:
@@ -169,6 +175,10 @@ impl ViewportState {
         let color_management =
             crate::color_management::ColorManagementState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let layer_shell_state =
+            smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
+        let xdg_activation_state =
+            smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
         let xdg_decoration_state =
             smithay::wayland::shell::xdg::decoration::XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
@@ -251,6 +261,8 @@ impl ViewportState {
             color_management,
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
+            xdg_activation_state,
             xdg_decoration_state,
             shm_state,
             output_manager_state,
@@ -307,11 +319,50 @@ impl ViewportState {
             // Every click belongs to the shell while it is drawing miniatures.
             return None;
         }
-        self.space.element_under(pos).and_then(|(window, location)| {
-            window
-                .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                .map(|(s, p)| (s, (p + location).to_f64()))
-        })
+
+        // Layer surfaces first where they are in front, and last where they
+        // are behind, so a launcher over a window takes the click and a
+        // wallpaper client under one does not.
+        let output = self
+            .space
+            .output_under(pos)
+            .next()
+            .cloned()
+            .or_else(|| self.space.outputs().next().cloned());
+        let (above, below) = match output.as_ref() {
+            Some(output) => {
+                let geometry = self.space.output_geometry(output).unwrap_or_default();
+                let local = pos - geometry.loc.to_f64();
+                let map = smithay::desktop::layer_map_for_output(output);
+                let hit = |layer: Option<&smithay::desktop::LayerSurface>| {
+                    let layer = layer?;
+                    let at = map.layer_geometry(layer)?.loc.to_f64() + geometry.loc.to_f64();
+                    layer
+                        .surface_under(pos - at, WindowSurfaceType::ALL)
+                        .map(|(s, p)| (s, p.to_f64() + at))
+                };
+                use smithay::wayland::shell::wlr_layer::Layer;
+                (
+                    hit(map.layer_under(Layer::Overlay, local))
+                        .or_else(|| hit(map.layer_under(Layer::Top, local))),
+                    hit(map.layer_under(Layer::Bottom, local))
+                        .or_else(|| hit(map.layer_under(Layer::Background, local))),
+                )
+            }
+            None => (None, None),
+        };
+
+        if above.is_some() {
+            return above;
+        }
+        self.space
+            .element_under(pos)
+            .and_then(|(window, location)| {
+                window
+                    .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                    .map(|(s, p)| (s, (p + location).to_f64()))
+            })
+            .or(below)
     }
 
     /// The output a new window should be told it is on.
@@ -427,6 +478,7 @@ impl ViewportState {
             .outputs()
             .map(|output| {
                 let geometry = self.space.output_geometry(output).unwrap_or_default();
+                let usable = self.usable_area(output);
                 let props = output.physical_properties();
                 let current = output.current_mode();
                 OutputInfo {
@@ -441,12 +493,13 @@ impl ViewportState {
                     y: geometry.loc.y,
                     width: geometry.size.w,
                     height: geometry.size.h,
-                    // Layer-shell is not ported yet, so nothing has reserved
-                    // anything and the usable area is the whole output.
-                    usable_x: geometry.loc.x,
-                    usable_y: geometry.loc.y,
-                    usable_width: geometry.size.w,
-                    usable_height: geometry.size.h,
+                    // What is left after exclusive zones. A bar that reserved
+                    // the top of the screen has taken that space away from the
+                    // shell, which is the only thing that places windows.
+                    usable_x: usable.loc.x,
+                    usable_y: usable.loc.y,
+                    usable_width: usable.size.w,
+                    usable_height: usable.size.h,
                     hdr: false,
                     hdr_capable: false,
                     scale: output.current_scale().fractional_scale(),

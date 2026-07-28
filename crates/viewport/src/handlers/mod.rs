@@ -8,6 +8,8 @@
 mod compositor;
 mod xdg_shell;
 
+pub mod layer_shell;
+
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
 use smithay::input::pointer::Focus;
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -91,5 +93,39 @@ impl WaylandDndGrabHandler for ViewportState {
 }
 
 impl OutputHandler for ViewportState {}
+
+/// xdg-activation: "focus this, a token says it was asked for".
+///
+/// A launcher asks for a token before it starts a program, hands it over in the
+/// environment, and the program presents it when its window appears — which is
+/// how the window opens focused rather than behind whatever the user moved on
+/// to. Without the global at all, wmenu aborts on an assertion before it draws.
+///
+/// The token is validated by smithay; all that is left is to honour it, and
+/// only for a window the shell has been told about (`src/xdg_shell.c:546`).
+impl smithay::wayland::xdg_activation::XdgActivationHandler for ViewportState {
+    fn activation_state(&mut self) -> &mut smithay::wayland::xdg_activation::XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    fn request_activation(
+        &mut self,
+        _token: smithay::wayland::xdg_activation::XdgActivationToken,
+        _data: smithay::wayland::xdg_activation::XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        let Some(view) = self.views.find_by_surface(&surface) else {
+            return;
+        };
+        // A window that has not been announced has no rectangle to be focused
+        // into, and the shell would be told to focus something it has never
+        // heard of.
+        if !view.mapped {
+            return;
+        }
+        let id = view.id;
+        crate::apply::focus_view(self, id);
+    }
+}
 
 smithay::delegate_dispatch2!(ViewportState);

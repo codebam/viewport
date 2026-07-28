@@ -38,6 +38,10 @@ impl CompositorHandler for ViewportState {
         }
 
         xdg_shell::handle_commit(self, surface);
+        // A layer surface has no size until it is arranged, and will not paint
+        // until it has been configured.
+        self.layer_commit(surface);
+        self.focus_layer_if_exclusive(surface);
 
         self.announce_if_newly_mapped(surface);
 
