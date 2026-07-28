@@ -841,7 +841,7 @@ impl ViewportState {
             // Behind everything, and behind the shell too — visible only
             // where nothing else covers it.
             [0.1, 0.1, 0.1, 1.0],
-            FrameFlags::DEFAULT,
+            frame_flags(),
         );
 
         match result {
@@ -922,6 +922,24 @@ impl ViewportState {
         for crtc in crtcs {
             self.render(crtc);
         }
+    }
+}
+
+/// Whether elements may be put on DRM planes instead of being composited.
+///
+/// On by default: it is what makes a fullscreen video cost nothing to display.
+/// Whether a given element can stay on a plane is decided per frame, though —
+/// a buffer whose format or modifier the plane will not take falls back to
+/// composition — so an element that qualifies on one frame and not the next
+/// alternates between two paths, which is visible as flicker.
+///
+/// VIEWPORT_SCANOUT=0 composites everything, which is slower and always
+/// correct. It is a diagnostic: it tells "the planes are wrong" apart from
+/// "the renderer is wrong" in one run, and those look identical on screen.
+fn frame_flags() -> FrameFlags {
+    match std::env::var("VIEWPORT_SCANOUT").as_deref() {
+        Ok("0") => FrameFlags::empty(),
+        _ => FrameFlags::DEFAULT,
     }
 }
 
