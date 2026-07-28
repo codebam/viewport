@@ -990,10 +990,45 @@ impl ViewportState {
             }
         }
 
+        // Put every window that should be on screen back in the space.
+        //
+        // A window is in the space because the shell placed it there, and the
+        // shell places from the layout — so a monitor coming back leaves any
+        // window that was on it in whatever state it was left in, and nothing
+        // re-sends a rectangle for a window whose rectangle has not changed.
+        // The shell keeps drawing its frame either way, which is what a
+        // re-enabled output showing borders and no windows was.
+        self.remap_placed_views();
+
         self.notify_output_layout();
         self.advertise_outputs();
         self.needs_render = true;
         true
+    }
+
+    /// Every view the shell has placed and not hidden belongs in the space.
+    ///
+    /// Idempotent: mapping an element that is already mapped at the same
+    /// position is what `Space::map_element` does anyway, so this can be run
+    /// after anything that may have taken windows out.
+    pub fn remap_placed_views(&mut self) {
+        let placed: Vec<(smithay::desktop::Window, (i32, i32))> = self
+            .views
+            .iter()
+            .filter(|view| view.mapped && view.visible && view.placed)
+            .map(|view| (view.window.clone(), (view.box_.x, view.box_.y)))
+            .collect();
+        let count = placed.len();
+        for (window, location) in placed {
+            self.space.map_element(window, location, false);
+        }
+        // Said out loud because "the windows did not come back" and "the
+        // windows came back somewhere off screen" look identical from a chair
+        // in front of the monitor.
+        tracing::info!(
+            "re-placed {count} view(s); the space holds {}",
+            self.space.elements().count()
+        );
     }
 
     /// Program a mode on the hardware, not only in the description of it.
