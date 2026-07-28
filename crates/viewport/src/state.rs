@@ -326,6 +326,8 @@ pub struct ViewportState {
     /// switcher can act on. The read-only ext protocol is beside it and
     /// describes the same windows.
     pub foreign_management_state: crate::foreign_toplevel::ForeignToplevelState,
+    /// wlr-output-power-management: what wlopm and a lid-close script speak.
+    pub output_power_state: crate::output_power::OutputPowerState,
     /// wlr-gamma-control: what wlsunset and gammastep speak. Smithay
     /// implements it nowhere, so the dispatch is in `gamma.rs`.
     pub gamma_state: crate::gamma::GammaControlState,
@@ -396,6 +398,7 @@ impl ViewportState {
         let output_management_state =
             crate::output_management::OutputManagementState::new::<Self>(&dh);
         let gamma_state = crate::gamma::GammaControlState::new::<Self>(&dh);
+        let output_power_state = crate::output_power::OutputPowerState::new::<Self>(&dh);
         let foreign_management_state =
             crate::foreign_toplevel::ForeignToplevelState::new::<Self>(&dh);
         // The standardised capture protocols. wlr-screencopy stays beside
@@ -633,6 +636,7 @@ impl ViewportState {
             _input_method_state: input_method_state,
             _virtual_keyboard_state: virtual_keyboard_state,
             gamma_state,
+            output_power_state,
             foreign_management_state,
             image_capture_source_state,
             output_capture_source_state,
@@ -1730,6 +1734,63 @@ impl ViewportState {
             .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
             .map(|surface| self.tearing_state.wants_tearing(&surface))
             .unwrap_or(false)
+    }
+
+    /// Turn one monitor's backlight off, or on again.
+    ///
+    /// DPMS rather than removing the output: a monitor that is asleep is still
+    /// where it was, so windows stay on it and come back when it wakes. That
+    /// is the difference between this and disabling an output through
+    /// wlr-output-management, which takes it out of the layout.
+    pub fn set_output_power(&mut self, output: &Output, on: bool) {
+        let Some(udev) = self.udev.as_mut() else {
+            return;
+        };
+        let Some(surface) = udev
+            .surfaces
+            .values_mut()
+            .find(|surface| surface.output == *output)
+        else {
+            return;
+        };
+        if surface.powered == on {
+            return;
+        }
+        surface.powered = on;
+        surface.pending = false;
+
+        if on {
+            // Everything that was on screen went with the blanking and the
+            // damage history does not know it.
+            surface.drm_output.reset_buffers();
+            self.needs_render = true;
+        } else if let Err(e) = surface
+            .drm_output
+            .with_compositor(|compositor| compositor.clear())
+        {
+            tracing::warn!("could not turn {} off: {e}", output.name());
+        }
+        tracing::info!("{}: {}", output.name(), if on { "on" } else { "off" });
+
+        let on = self.output_powered(output);
+        let state = std::mem::take(&mut self.output_power_state);
+        state.changed(output, on);
+        self.output_power_state = state;
+    }
+
+    /// Whether a monitor's backlight is on.
+    pub fn output_powered(&self, output: &Output) -> bool {
+        self.udev
+            .as_ref()
+            .and_then(|udev| {
+                udev.surfaces
+                    .values()
+                    .find(|surface| surface.output == *output)
+                    .map(|surface| surface.powered)
+            })
+            // Nested and headless have nothing to turn off, and saying a
+            // monitor is on is the truthful answer for a window.
+            .unwrap_or(true)
     }
 
     /// Whether an output is currently in HDR.

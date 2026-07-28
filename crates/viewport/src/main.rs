@@ -29,6 +29,7 @@ mod input;
 mod ipc;
 mod notification;
 mod output_management;
+mod output_power;
 mod pointer;
 mod render;
 mod screencopy;

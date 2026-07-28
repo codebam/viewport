@@ -380,6 +380,20 @@ impl crate::tearing::TearingControlHandler for ViewportState {
     }
 }
 
+impl crate::output_power::OutputPowerHandler for ViewportState {
+    fn output_power_state(&mut self) -> &mut crate::output_power::OutputPowerState {
+        &mut self.output_power_state
+    }
+
+    fn set_output_power(&mut self, output: &smithay::output::Output, on: bool) {
+        ViewportState::set_output_power(self, output, on);
+    }
+
+    fn output_power(&mut self, output: &smithay::output::Output) -> bool {
+        self.output_powered(output)
+    }
+}
+
 impl crate::gamma::GammaControlHandler for ViewportState {
     fn gamma_control_state(&mut self) -> &mut crate::gamma::GammaControlState {
         &mut self.gamma_state
@@ -661,6 +675,7 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for ViewportState {
 crate::delegate_screencopy!(ViewportState);
 crate::delegate_output_management!(ViewportState);
 crate::delegate_gamma_control!(ViewportState);
+crate::delegate_output_power!(ViewportState);
 crate::delegate_foreign_toplevel!(ViewportState);
 crate::delegate_tearing_control!(ViewportState);
 

@@ -99,6 +99,9 @@ pub struct Surface {
     dumped: bool,
     /// Whether this output has been switched into HDR.
     pub hdr: bool,
+    /// Whether this output's backlight is on. Off means DPMS off — the panel
+    /// sleeps — while the output keeps its place in the layout.
+    pub powered: bool,
     /// Whether this output's frames are currently allowed to tear, so the
     /// compositor is only told when it changes rather than once a frame.
     pub tearing: bool,
@@ -583,6 +586,7 @@ impl ViewportState {
                             drawn: false,
                             dumped: false,
                             hdr: false,
+                            powered: true,
                             tearing: false,
                             tearing_failures: 0,
                             refuses_tearing: false,
@@ -803,6 +807,12 @@ impl ViewportState {
         let Some(surface) = udev.surfaces.get_mut(&crtc) else {
             return;
         };
+        if !surface.powered {
+            // Asleep at a client's request. It keeps its place in the layout,
+            // so there is a frame to draw when it wakes; there is just nowhere
+            // to put it now.
+            return;
+        }
         if !surface.enabled {
             // Switched off by a client. Nothing to draw, and no vblank will
             // come to drive the next frame either.
