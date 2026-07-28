@@ -1123,6 +1123,16 @@ impl ViewportState {
             .ok_or_else(|| "the output has no mode".to_owned())?;
 
         let elements = crate::render::build(&frame, renderer);
+        // What went into the copy. A capture that comes back black is either a
+        // frame with nothing in it or a frame that was drawn and read back
+        // wrong, and the picture alone cannot say which.
+        tracing::debug!(
+            "capture of {}: {} element(s), {} window(s), shell {}",
+            output.name(),
+            elements.len(),
+            frame.windows.len(),
+            if frame.shell.is_some() { "yes" } else { "no" }
+        );
 
         let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
             (size.w, size.h).into();
