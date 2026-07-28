@@ -1115,6 +1115,13 @@ impl ViewportState {
         };
         surface.enabled = enabled;
         surface.pending = false;
+        if enabled {
+            // The damage history describes a screen that has since been
+            // cleared, so the next frame would redraw only what changed while
+            // it was off — which for a still desktop is nothing, and the
+            // monitor comes back showing the wallpaper with no windows on it.
+            surface.drm_output.reset_buffers();
+        }
         if !enabled {
             if let Err(e) = surface
                 .drm_output
@@ -1368,6 +1375,10 @@ impl ViewportState {
             // for.
             for surface in udev.surfaces.values_mut() {
                 surface.pending = false;
+                // Everything that was on screen went with the blanking, and
+                // the damage history does not know it. Without this the screen
+                // comes back holding whatever last moved and nothing else.
+                surface.drm_output.reset_buffers();
             }
             self.needs_render = true;
             return;

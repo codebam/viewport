@@ -892,6 +892,13 @@ impl ViewportState {
         }
         tracing::info!("session resumed");
 
+        // Another compositor had the screens while we were away, so nothing
+        // in the damage history describes what is on them now.
+        for surface in udev.surfaces.values_mut() {
+            surface.drm_output.reset_buffers();
+            surface.pending = false;
+        }
+
         let crtcs: Vec<crtc::Handle> = udev.surfaces.keys().copied().collect();
         // The kernel reset every gamma ramp when the session was handed over,
         // and the client that set one has no way to know.
