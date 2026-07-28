@@ -99,6 +99,14 @@ pub struct Surface {
     dumped: bool,
     /// Whether this output has been switched into HDR.
     pub hdr: bool,
+    /// Whether this output is switched on.
+    ///
+    /// A client can turn a monitor off through wlr-output-management — kanshi
+    /// does it to the laptop panel when a dock appears. A disabled output keeps
+    /// its CRTC and its surface, so turning it back on is a commit rather than
+    /// a re-scan of the device, but nothing is drawn on it and its planes are
+    /// cleared so the panel actually sleeps.
+    pub enabled: bool,
     /// A frame is queued and has not been scanned out yet.
     ///
     /// One frame in flight per output, which is what anvil arranges by
@@ -456,6 +464,16 @@ impl ViewportState {
             let output_mode = OutputMode::from(mode);
             output.change_current_state(Some(output_mode), None, None, Some((0, 0).into()));
             output.set_preferred(output_mode);
+            // Every mode the connector offers, not only the one being used. A
+            // client configuring monitors can only choose from what it was
+            // shown, and with one mode advertised the answer is always "the
+            // resolution it already had".
+            for candidate in connector.modes() {
+                let candidate = OutputMode::from(*candidate);
+                if candidate != output_mode {
+                    output.add_mode(candidate);
+                }
+            }
 
             // initialize_output lives on the locked manager: bringing a
             // connector up touches every surface on the device, because
@@ -506,6 +524,7 @@ impl ViewportState {
                             drawn: false,
                             dumped: false,
                             hdr: false,
+                            enabled: true,
                             pending: false,
                         },
                     );
@@ -516,6 +535,9 @@ impl ViewportState {
         }
 
         self.notify_output_layout();
+        // A monitor appearing or going is exactly what an output-management
+        // client is watching for.
+        self.advertise_outputs();
 
         // Draw once per new output. Rendering is driven by vblank, and vblank
         // only arrives after a frame has been queued — so without this first
@@ -718,6 +740,11 @@ impl ViewportState {
         let Some(surface) = udev.surfaces.get_mut(&crtc) else {
             return;
         };
+        if !surface.enabled {
+            // Switched off by a client. Nothing to draw, and no vblank will
+            // come to drive the next frame either.
+            return;
+        }
         // Already waiting on a flip. Drawing now would be overwritten before
         // it was ever scanned out; the request is remembered and the vblank
         // draws it.

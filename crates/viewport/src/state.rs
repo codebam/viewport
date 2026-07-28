@@ -244,6 +244,10 @@ pub struct ViewportState {
     /// wlr-screencopy: screenshots and recording. Smithay implements it
     /// nowhere, so the dispatch is in `screencopy.rs`.
     pub screencopy_state: crate::screencopy::ScreencopyState,
+    /// wlr-output-management: what kanshi, wlr-randr and wdisplays speak.
+    /// Smithay implements it nowhere, so the dispatch is in
+    /// `output_management.rs`.
+    pub output_management_state: crate::output_management::OutputManagementState,
     /// Copies asked for and not yet made. Served the next time the output
     /// they name is drawn, because that is where its renderer is.
     pub pending_copies: Vec<PendingCopy>,
@@ -300,6 +304,8 @@ impl ViewportState {
         let layer_shell_state =
             smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
         let screencopy_state = crate::screencopy::ScreencopyState::new::<Self>(&dh);
+        let output_management_state =
+            crate::output_management::OutputManagementState::new::<Self>(&dh);
         let primary_selection_state =
             smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<Self>(&dh);
         let data_control_state =
@@ -444,6 +450,7 @@ impl ViewportState {
             xdg_shell_state,
             layer_shell_state,
             screencopy_state,
+            output_management_state,
             pending_copies: Vec::new(),
             primary_selection_state,
             data_control_state,
@@ -770,6 +777,304 @@ impl ViewportState {
         .map_err(|e| format!("the client did not give shared memory: {e}"))??;
 
         Ok(())
+    }
+
+    /// Every output, as wlr-output-management needs to describe it.
+    pub fn heads(&self) -> Vec<crate::output_management::Head> {
+        // Enabled outputs are the ones in the space; a disabled one keeps its
+        // CRTC but is unmapped, because the shell places windows from the
+        // layout and a monitor that is off has no place in it.
+        let mut heads: Vec<crate::output_management::Head> = self
+            .space
+            .outputs()
+            .map(|output| crate::output_management::Head {
+                output: output.clone(),
+                enabled: true,
+                position: self
+                    .space
+                    .output_geometry(output)
+                    .map(|geometry| geometry.loc)
+                    .unwrap_or_default(),
+                adaptive_sync: self.adaptive_sync,
+            })
+            .collect();
+
+        if let Some(udev) = self.udev.as_ref() {
+            for surface in udev.surfaces.values().filter(|surface| !surface.enabled) {
+                heads.push(crate::output_management::Head {
+                    output: surface.output.clone(),
+                    enabled: false,
+                    position: Point::default(),
+                    adaptive_sync: false,
+                });
+            }
+        }
+        heads
+    }
+
+    /// Tell every output-management client what the outputs are now.
+    ///
+    /// Deliberately not called from `notify_output_layout`: that fires when a
+    /// layer surface changes the usable area, which is not an output change,
+    /// and every call invalidates the configurations clients are holding.
+    pub fn advertise_outputs(&mut self) {
+        let heads = self.heads();
+        let dh = self.display_handle.clone();
+        self.output_management_state.advertise::<Self>(&dh, &heads);
+    }
+
+    /// Carry out — or check — what a client asked of the outputs.
+    ///
+    /// Everything is validated before anything is changed. A configuration is
+    /// one operation to the client that sent it, and half of it applied is a
+    /// layout nobody asked for: the monitor moved and the resolution refused.
+    pub fn apply_output_configuration(
+        &mut self,
+        changes: &[crate::output_management::HeadChange],
+        test_only: bool,
+    ) -> bool {
+        use std::collections::HashSet;
+
+        let mut still_on: HashSet<String> = self
+            .heads()
+            .into_iter()
+            .filter(|head| head.enabled)
+            .map(|head| head.output.name())
+            .collect();
+
+        for change in changes {
+            let Some(output) = self.output_by_name(&change.name) else {
+                tracing::warn!("output configuration names {}, which is gone", change.name);
+                return false;
+            };
+            if change.enabled {
+                still_on.insert(change.name.clone());
+            } else {
+                still_on.remove(&change.name);
+            }
+
+            if let Some(mode) = change.mode {
+                if mode.size.w <= 0 || mode.size.h <= 0 {
+                    return false;
+                }
+                // A mode the display never offered cannot be programmed on
+                // real hardware: the kernel takes a modeline from the
+                // connector's own list. Nested has no such constraint, so a
+                // custom mode is only refused where it would actually fail.
+                let known = output.modes().contains(&mode);
+                if !known && self.udev.is_some() {
+                    tracing::warn!(
+                        "{}: {}x{}@{} is not a mode this display offers",
+                        change.name,
+                        mode.size.w,
+                        mode.size.h,
+                        mode.refresh
+                    );
+                    return false;
+                }
+            }
+            if change.scale.is_some_and(|scale| scale <= 0.0) {
+                return false;
+            }
+        }
+
+        // A session with every screen off cannot be turned back on from
+        // inside it. Refusing is the only thing that leaves the user a way
+        // back.
+        if still_on.is_empty() {
+            tracing::warn!("refusing a configuration that would turn every output off");
+            return false;
+        }
+
+        if test_only {
+            return true;
+        }
+
+        for change in changes {
+            let Some(output) = self.output_by_name(&change.name) else {
+                continue;
+            };
+            if !change.enabled {
+                self.set_output_enabled(&output, false);
+                continue;
+            }
+            self.set_output_enabled(&output, true);
+
+            if let Some(mode) = change.mode {
+                self.set_output_mode(&output, mode);
+            }
+            if change.transform.is_some() || change.scale.is_some() {
+                let scale = change.scale.map(smithay::output::Scale::Fractional);
+                output.change_current_state(None, change.transform, scale, None);
+            }
+            if let Some(position) = change.position {
+                self.space.map_output(&output, (position.x, position.y));
+            }
+            if let Some(vrr) = change.adaptive_sync {
+                self.set_output_adaptive_sync(&output, vrr);
+            }
+        }
+
+        self.notify_output_layout();
+        self.advertise_outputs();
+        self.needs_render = true;
+        true
+    }
+
+    /// Program a mode on the hardware, not only in the description of it.
+    ///
+    /// `change_current_state` alone moves what every client is told and leaves
+    /// the CRTC scanning out what it was: the windows resize and the picture
+    /// does not.
+    fn set_output_mode(&mut self, output: &Output, mode: smithay::output::Mode) {
+        output.change_current_state(Some(mode), None, None, None);
+
+        let Some(udev) = self.udev.as_mut() else {
+            // Nested, where the mode is the host window's to decide.
+            return;
+        };
+        let Some((&crtc, connector)) = udev
+            .surfaces
+            .iter()
+            .find(|(_, surface)| surface.output == *output)
+            .map(|(crtc, surface)| (crtc, surface.connector))
+        else {
+            return;
+        };
+
+        // The kernel takes a modeline from the connector's own list rather
+        // than numbers, so the one it offered has to be found again.
+        use smithay::reexports::drm::control::Device as _;
+        let device = udev.manager.device();
+        let Ok(info) = device.get_connector(connector, false) else {
+            return;
+        };
+        let Some(drm_mode) = info
+            .modes()
+            .iter()
+            .copied()
+            .find(|candidate| smithay::output::Mode::from(*candidate) == mode)
+        else {
+            tracing::warn!("{}: the display no longer offers that mode", output.name());
+            return;
+        };
+
+        let Some(surface) = udev.surfaces.get_mut(&crtc) else {
+            return;
+        };
+        // No render elements: this is a modeset, and the frame after it is
+        // drawn by the ordinary loop. Passing the current ones would only
+        // matter for keeping other outputs lit through a bandwidth
+        // renegotiation, and they are redrawn a moment later anyway.
+        let result = surface.drm_output.use_mode(
+            drm_mode,
+            &mut udev.renderer,
+            &smithay::backend::drm::output::DrmOutputRenderElements::<
+                _,
+                crate::render::OutputElement<viewport_vulkan::VulkanRenderer>,
+            >::new(),
+        );
+        match result {
+            Ok(()) => tracing::info!(
+                "{}: {}x{}@{}",
+                output.name(),
+                mode.size.w,
+                mode.size.h,
+                mode.refresh
+            ),
+            Err(e) => tracing::warn!("{}: the display refused the mode: {e}", output.name()),
+        }
+        // A modeset invalidates what was queued for this output.
+        surface.pending = false;
+    }
+
+    /// Turn one output on or off.
+    ///
+    /// The surface and its CRTC are kept either way, so coming back is a commit
+    /// rather than a re-scan of the device. Off means the planes are cleared
+    /// rather than painted black: a black frame still lights the panel.
+    fn set_output_enabled(&mut self, output: &Output, enabled: bool) {
+        let mapped = self.space.outputs().any(|other| other == output);
+        if enabled == mapped {
+            let already = self
+                .udev
+                .as_ref()
+                .map(|udev| {
+                    udev.surfaces
+                        .values()
+                        .find(|surface| surface.output == *output)
+                        .map(|surface| surface.enabled == enabled)
+                        .unwrap_or(true)
+                })
+                .unwrap_or(true);
+            if already {
+                return;
+            }
+        }
+
+        if enabled {
+            // Back where it was is not knowable — an unmapped output has no
+            // geometry — so it goes to the right of everything, which is where
+            // a newly plugged monitor goes too.
+            let x = self
+                .space
+                .outputs()
+                .filter_map(|other| self.space.output_geometry(other))
+                .map(|geometry| geometry.loc.x + geometry.size.w)
+                .max()
+                .unwrap_or(0);
+            self.space.map_output(output, (x, 0));
+        } else {
+            self.space.unmap_output(output);
+        }
+
+        let Some(udev) = self.udev.as_mut() else {
+            return;
+        };
+        let Some(surface) = udev
+            .surfaces
+            .values_mut()
+            .find(|surface| surface.output == *output)
+        else {
+            return;
+        };
+        surface.enabled = enabled;
+        surface.pending = false;
+        if !enabled {
+            if let Err(e) = surface
+                .drm_output
+                .with_compositor(|compositor| compositor.clear())
+            {
+                tracing::warn!("could not switch {} off: {e}", output.name());
+            }
+        }
+        tracing::info!("{} {}", output.name(), if enabled { "on" } else { "off" });
+    }
+
+    /// Variable refresh on one output.
+    fn set_output_adaptive_sync(&mut self, output: &Output, enabled: bool) {
+        let Some(udev) = self.udev.as_mut() else {
+            return;
+        };
+        let Some(surface) = udev
+            .surfaces
+            .values_mut()
+            .find(|surface| surface.output == *output)
+        else {
+            return;
+        };
+        match surface
+            .drm_output
+            .with_compositor(|compositor| compositor.use_vrr(enabled))
+        {
+            Ok(()) => tracing::info!(
+                "adaptive sync {} on {}",
+                if enabled { "on" } else { "off" },
+                output.name()
+            ),
+            // Most panels cannot, and asking is how you find out.
+            Err(e) => tracing::debug!("adaptive sync unavailable on {}: {e}", output.name()),
+        }
     }
 
     /// Whether an output is currently in HDR.

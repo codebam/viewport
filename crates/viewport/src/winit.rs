@@ -111,6 +111,7 @@ pub fn init(
                 // The shell lays out against the output layout, so a resize it
                 // is not told about would leave every window where it was.
                 state.notify_output_layout();
+                state.advertise_outputs();
             }
 
             WinitEvent::Input(event) => state.process_input_event(event),

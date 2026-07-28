@@ -26,6 +26,7 @@ mod idle;
 mod input;
 mod ipc;
 mod notification;
+mod output_management;
 mod pointer;
 mod render;
 mod screencopy;

@@ -198,7 +198,7 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 10. **Written by hand, because Smithay implements none of them.** Done:
     `zwlr_screencopy_manager_v1`, and HDR's two connector properties —
     `Colorspace` and `HDR_OUTPUT_METADATA` — which its DRM backend does not
-    expose. Left: `zwlr_output_manager_v1` and
+    expose, and `zwlr_output_manager_v1`. Left:
     `zwlr_foreign_toplevel_management_v1`, the writable half of the toplevel
     list.
 11. **Ordinary ports.** text-input, tablet and gestures. The appearance portal

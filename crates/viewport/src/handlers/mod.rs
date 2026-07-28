@@ -124,6 +124,26 @@ impl crate::screencopy::ScreencopyHandler for ViewportState {
     }
 }
 
+impl crate::output_management::OutputManagementHandler for ViewportState {
+    fn output_management_state(
+        &mut self,
+    ) -> &mut crate::output_management::OutputManagementState {
+        &mut self.output_management_state
+    }
+
+    fn current_heads(&mut self) -> Vec<crate::output_management::Head> {
+        self.heads()
+    }
+
+    fn apply_output_configuration(
+        &mut self,
+        changes: &[crate::output_management::HeadChange],
+        test_only: bool,
+    ) -> bool {
+        ViewportState::apply_output_configuration(self, changes, test_only)
+    }
+}
+
 /// Middle-click paste: a second clipboard, separate from the ordinary one.
 impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler
     for ViewportState
@@ -357,5 +377,6 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for ViewportState {
 }
 
 crate::delegate_screencopy!(ViewportState);
+crate::delegate_output_management!(ViewportState);
 
 smithay::delegate_dispatch2!(ViewportState);
