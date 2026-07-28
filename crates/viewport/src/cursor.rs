@@ -76,6 +76,17 @@ impl Theme {
         }
     }
 
+    /// The theme's name, as the settings portal reports it. A toolkit that is
+    /// told a different one draws a different cursor from the compositor.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The size in the same units the portal and every toolkit use.
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
     /// Load `name` at `scale`, or fall back through the names that mean the
     /// same thing.
     ///

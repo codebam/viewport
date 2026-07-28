@@ -477,6 +477,10 @@ impl ViewportState {
                 }
             }
             Bound::Focus(target) => self.focus_direction(&target),
+            Bound::Appearance => {
+                self.dark_mode = !self.appearance.is_dark();
+                self.appearance.set_dark(self.dark_mode);
+            }
             Bound::Shell(command) => {
                 // Split on whitespace so the shell gets a verb and arguments
                 // rather than a string it has to parse again.

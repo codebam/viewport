@@ -195,14 +195,14 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
    selection, clipboard managers, idle inhibit and idle notify, viewporter,
    presentation time, single-pixel buffers, fractional scale — and the X11
    half of the clipboard.
-10. **Next, and each needs the protocol written by hand.** Smithay implements
-    none of `zwlr_output_manager_v1`, `zwlr_foreign_toplevel_management_v1` or
-    `zwlr_screencopy_manager_v1`, and its DRM backend exposes neither the
-    `Colorspace` nor the `HDR_OUTPUT_METADATA` connector property — so
-    switching a monitor into HDR is in the same position, even though the
-    colour pipeline underneath it is finished and tested.
-11. **Ordinary ports.** text-input, tablet, gestures, and the appearance
-    portal.
+10. **Written by hand, because Smithay implements none of them.** Done:
+    `zwlr_screencopy_manager_v1`, and HDR's two connector properties —
+    `Colorspace` and `HDR_OUTPUT_METADATA` — which its DRM backend does not
+    expose. Left: `zwlr_output_manager_v1` and
+    `zwlr_foreign_toplevel_management_v1`, the writable half of the toplevel
+    list.
+11. **Ordinary ports.** text-input, tablet and gestures. The appearance portal
+    is done.
 
 ## Notifications, and where they come from
 
@@ -242,11 +242,12 @@ painted frame, not on the load event — a page that loads and then stalls is
 invisible to load-failed), `idle`, `adaptive_sync`, `vt_switching`,
 `decorations`.
 
-Not acted on: `dark_mode`. Acting on it means running the
-`org.freedesktop.impl.portal.Settings` D-Bus service, which is how a GTK or Qt
-application learns the colour scheme — the value alone changes nothing. That
-is its own deliverable rather than a config key, and the value is stored ready
-for it.
+`dark_mode` too, and it is the config key with the most machinery behind it:
+acting on it means running the `org.freedesktop.impl.portal.Settings` D-Bus
+service, which is how a GTK or Qt application learns the colour scheme. The
+value alone changes nothing — see `appearance.rs`. `Mod4+Shift+d` toggles it,
+and running applications switch on the portal's `SettingChanged` signal rather
+than at next start.
 
 Absence is not a default. Every key is optional and the file is a patch over
 the built-in values, so a key left out never resets something a flag set. Two

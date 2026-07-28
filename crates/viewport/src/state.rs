@@ -75,6 +75,8 @@ pub struct ViewportState {
     pub startup: Option<String>,
     /// The D-Bus notification service, forwarding to the shell.
     pub notifications: crate::notification::Notifications,
+    /// The settings portal, which is how a client learns the session is dark.
+    pub appearance: crate::appearance::Appearance,
     /// System statistics for the bar, sampled here because the page cannot.
     pub status: crate::status::Status,
     /// Locking and blanking after a while, off unless the file asks.
@@ -390,6 +392,7 @@ impl ViewportState {
             output_config: std::collections::HashMap::new(),
             startup: None,
             notifications: crate::notification::Notifications::default(),
+            appearance: crate::appearance::Appearance::default(),
             status: crate::status::Status::default(),
             idle: crate::idle::Idle::default(),
             idle_settings: crate::idle::Settings::default(),
@@ -1424,6 +1427,9 @@ impl ViewportState {
         }
         if let Some(dark) = file.dark_mode {
             self.dark_mode = dark;
+            // Running applications change on the portal's signal; without this
+            // a reload would move the setting and nothing on screen with it.
+            self.appearance.set_dark(dark);
         }
         if let Some(vrr) = file.adaptive_sync {
             self.adaptive_sync = vrr;

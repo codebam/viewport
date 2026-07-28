@@ -6,6 +6,7 @@
 // there is no web engine yet, so the shell is a flat backdrop and windows are
 // placed by whatever speaks to the control socket.
 
+mod appearance;
 mod apply;
 mod binding;
 // Not gated on the web engine: an output composite is worth capturing
@@ -204,6 +205,30 @@ fn main() -> Result<()> {
         // the name, still has a working compositor.
         if let Err(e) = state.notifications.start(sender) {
             tracing::warn!("notifications are unavailable: {e}");
+        }
+    }
+
+    // Dark mode, over the same bus. Nothing a compositor draws makes a client
+    // dark: Firefox, GTK and Qt each read `color-scheme` from a settings
+    // portal, and with nothing answering they all fall back to light however
+    // the shell looks.
+    {
+        let settings = crate::appearance::Settings {
+            color_scheme: if state.dark_mode {
+                crate::appearance::PREFER_DARK
+            } else {
+                crate::appearance::PREFER_LIGHT
+            },
+            // The cursor the compositor actually draws, so a toolkit does not
+            // size its own differently from the pointer on screen.
+            cursor_theme: state.cursor_theme.name().to_owned(),
+            cursor_size: state.cursor_theme.size() as i32,
+        };
+        // Not fatal: a real desktop portal already holding the name knows more
+        // about the session than this does, and applications keep the defaults
+        // they had a moment ago.
+        if let Err(e) = state.appearance.start(settings) {
+            tracing::warn!("the settings portal is unavailable: {e}");
         }
     }
 

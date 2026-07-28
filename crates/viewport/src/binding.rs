@@ -27,6 +27,11 @@ pub enum Action {
     Focus(String),
     /// Reload the shell, bypassing the HTTP cache.
     Reload,
+    /// Switch the session between dark and light.
+    ///
+    /// Not the shell's: a client's colour scheme is answered over D-Bus by the
+    /// settings portal, which the shell has no way to reach.
+    Appearance,
     /// Hand the rest to the shell as a `shell.command`.
     ///
     /// The default for anything this does not implement itself, because the
@@ -127,6 +132,7 @@ fn parse_action(action: &str) -> Action {
             "close" => Action::Close,
             "exit" => Action::Exit,
             "reload" => Action::Reload,
+            "appearance toggle" => Action::Appearance,
             // Everything else is the shell's, including `focus left` and the
             // layout verbs.
             other => Action::Shell(other.to_owned()),
@@ -160,6 +166,7 @@ pub fn defaults(terminal: &str, menu: &str, scrolling: bool) -> Vec<Binding> {
         "Mod4+Shift+q=close".to_owned(),
         "Mod4+Shift+e=exit".to_owned(),
         "Mod4+Shift+c=reload".to_owned(),
+        "Mod4+Shift+d=appearance toggle".to_owned(),
         "Mod4+Tab=focus next".to_owned(),
         "Mod4+Shift+Tab=focus prev".to_owned(),
         "Mod4+f=shell window.fullscreen".to_owned(),
@@ -328,7 +335,7 @@ mod tests {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
         let bindings = defaults("foot", "wmenu-run", false);
-        assert_eq!(bindings.len(), 12 + 16 + 18, "a default failed to parse");
+        assert_eq!(bindings.len(), 13 + 16 + 18, "a default failed to parse");
 
         let scrolling = defaults("foot", "wmenu-run", true);
         assert_eq!(scrolling.len(), bindings.len());

@@ -75,30 +75,31 @@ struct HdrOutputMetadata {
 /// SMPTE ST 2084, the PQ curve.
 const EOTF_ST2084: u8 = 2;
 
-/// The metadata the display is handed when HDR is on.
-fn hdr_metadata() -> HdrOutputMetadata {
-    let metadata = HdrOutputMetadata {
-        hdmi_metadata_type1: HdrMetadataInfoframe {
-            eotf: EOTF_ST2084,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    metadata
-}
-
-/// The metadata as the kernel reads it, for the layout tests.
-#[cfg(test)]
-fn hdr_metadata_bytes() -> Vec<u8> {
-    let metadata = hdr_metadata();
-    // SAFETY: repr(C) plain old data, which is what the kernel reads.
-    unsafe {
-        std::slice::from_raw_parts(
-            &metadata as *const HdrOutputMetadata as *const u8,
-            std::mem::size_of::<HdrOutputMetadata>(),
-        )
-    }
-    .to_vec()
+/// The metadata the display is handed when HDR is on, as the kernel reads it.
+///
+/// Written out byte by byte rather than by pointing at the struct above. The
+/// struct has two bytes of trailing padding — 30 bytes of fields rounded up to
+/// 32 by the outer u32's alignment — and padding is uninitialised memory that
+/// Rust makes no promise about. Copying it into a blob hands the kernel two
+/// bytes of whatever was on the stack, and reading it back is undefined
+/// behaviour proper: the layout test did exactly that, and once the optimiser
+/// could see across it the test process died on an illegal instruction rather
+/// than failing.
+///
+/// Little-endian throughout, which is what `drm_mode.h` means by these types:
+/// the kernel copies the bytes into the infoframe unchanged.
+fn hdr_metadata_bytes() -> [u8; std::mem::size_of::<HdrOutputMetadata>()] {
+    let mut bytes = [0u8; std::mem::size_of::<HdrOutputMetadata>()];
+    // metadata_type is the leading u32 and stays zero: the only type the
+    // kernel defines. Then the infoframe, at the offset that u32 leaves it.
+    let infoframe = std::mem::offset_of!(HdrOutputMetadata, hdmi_metadata_type1);
+    bytes[infoframe] = EOTF_ST2084;
+    // The byte after it is the static metadata descriptor, type 1, which is
+    // zero. Everything past that is the mastering display's primaries, white
+    // point and luminances — left zero, meaning unset, so the display's own
+    // capabilities are used rather than numbers this compositor would be
+    // inventing.
+    bytes
 }
 
 /// A connector property by name, with its current value.
@@ -233,7 +234,7 @@ pub fn set(
 
     // Zero clears the metadata, which is what leaving HDR wants.
     let blob = if wants_blob {
-        let metadata = hdr_metadata();
+        let metadata = hdr_metadata_bytes();
         match device.create_property_blob(&metadata) {
             Ok(property::Value::Blob(id)) => Some(id),
             Ok(_) => anyhow::bail!("the kernel returned something that is not a blob"),
