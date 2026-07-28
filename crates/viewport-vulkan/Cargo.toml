@@ -34,8 +34,12 @@ ash = "0.38"
 libc = "0.2"
 
 [dependencies.smithay]
-git = "https://github.com/Smithay/smithay.git"
-rev = "39cd5f19d0d17f0dbb9cdf2639fc114cb00c3738"
+# A fork, for one patch: DrmCompositor::set_allow_tearing, without which
+# tearing-control-v1 is a protocol the compositor can advertise and never
+# honour — the async flip flag lives inside the atomic commit smithay
+# builds, and nothing upstream reaches it.
+git = "https://github.com/codebam/smithay.git"
+rev = "5832d866c35464f22277b5de3a023176d066b0c6"
 default-features = false
 # wayland_frontend is what ImportDmaWl and ImportMemWl need — they take a
 # wl_buffer. It is behind a feature so the renderer stays usable without a

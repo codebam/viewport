@@ -258,6 +258,8 @@ pub struct ViewportState {
     /// Smithay's surface element — so neither is touched again after this.
     pub _content_type_state: smithay::wayland::content_type::ContentTypeState,
     pub _alpha_modifier_state: smithay::wayland::alpha_modifier::AlphaModifierState,
+    /// tearing-control-v1: a client choosing latency over a whole frame.
+    pub tearing_state: crate::tearing::TearingControlState,
     /// tablet-v2: drawing tablets, with pressure and tilt.
     pub _tablet_state: smithay::wayland::tablet_manager::TabletManagerState,
     /// pointer-gestures-v1: touchpad pinch, swipe and hold. Kept because the
@@ -408,6 +410,9 @@ impl ViewportState {
         // notion of a privileged client, which this compositor does not have —
         // and a filter that everything passes is worse than none, because it
         // reads as though it were deciding something.
+        // Tearing, for a full-screen game that would rather have the newest
+        // frame part-drawn than the previous one whole.
+        let tearing_state = crate::tearing::TearingControlState::new::<Self>(&dh);
         // Drawing tablets. The manager is the global; the tablets themselves
         // are added to the seat as libinput reports them, because a client is
         // told about each device and there is no honest way to describe one
@@ -611,6 +616,7 @@ impl ViewportState {
             xdg_shell_state,
             layer_shell_state,
             screencopy_state,
+            tearing_state,
             _tablet_state: tablet_state,
             _pointer_gestures_state: pointer_gestures_state,
             keyboard_shortcuts_inhibit_state,
@@ -1631,6 +1637,57 @@ impl ViewportState {
             node,
             formats: formats.into_iter().collect(),
         })
+    }
+
+    /// Whether this output's frames may tear.
+    ///
+    /// Only when one window covers the whole of it and that window's client
+    /// asked. A torn flip tears the screen, not a window: a game asking for it
+    /// while a terminal and a bar share the monitor would tear those too, and
+    /// neither asked. The shell's own buffer is behind a covering window and
+    /// never visible, so it does not count against this.
+    pub fn output_wants_tearing(&self, output: &Output) -> bool {
+        use smithay::wayland::seat::WaylandFocus as _;
+
+        if self.locked || self.overview {
+            return false;
+        }
+        let Some(area) = self.space.output_geometry(output) else {
+            return false;
+        };
+        // Anything layered on this output — a bar, a launcher — is drawn over
+        // the window and would tear with it.
+        if smithay::desktop::layer_map_for_output(output)
+            .layers()
+            .next()
+            .is_some()
+        {
+            return false;
+        }
+
+        let mut covering = None;
+        for window in self.space.elements() {
+            let Some(geometry) = self.space.element_geometry(window) else {
+                continue;
+            };
+            if !area.overlaps(geometry) {
+                continue;
+            }
+            // A second window on the same output: whatever the first asked
+            // for, the second did not.
+            if covering.is_some() {
+                return false;
+            }
+            if !geometry.contains_rect(area) {
+                return false;
+            }
+            covering = Some(window);
+        }
+
+        covering
+            .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
+            .map(|surface| self.tearing_state.wants_tearing(&surface))
+            .unwrap_or(false)
     }
 
     /// Whether an output is currently in HDR.

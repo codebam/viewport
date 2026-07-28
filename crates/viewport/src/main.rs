@@ -37,6 +37,7 @@ mod session;
 mod shell;
 mod state;
 mod status;
+mod tearing;
 mod udev;
 mod views;
 mod watchdog;

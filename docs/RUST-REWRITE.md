@@ -173,6 +173,23 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 `view.focused` `config` `modifiers` `session.restore` `notification.add`
 `notification.close` `output.layout` `shell.command` `error`
 
+## Why smithay is a fork
+
+`crates/*/Cargo.toml` point at github.com/codebam/smithay rather than upstream,
+for one patch: `DrmCompositor::set_allow_tearing`.
+
+Tearing is an asynchronous page flip — the frame lands as soon as the hardware
+takes it rather than at the next vblank — and the flag for it lives inside the
+atomic commit smithay builds. Nothing upstream reaches it: `FrameFlags` decides
+which planes may scan out, and `queue_frame` takes no commit flags. Without the
+patch, tearing-control-v1 is a protocol the compositor can advertise and never
+honour, which is worse than not advertising it.
+
+The patch gates on the driver capability and returns whether the request will
+be honoured, because a commit carrying a flag the driver does not know is
+refused outright — that would stop the output rather than tear it. It is
+otherwise upstreamable, and the fork should go away when it lands.
+
 ## Order of work
 
 1. **Done.** `viewport-ipc` — the protocol, ported field by field.
@@ -198,9 +215,8 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 10. **Written by hand, because Smithay implements none of them.** Done:
     `zwlr_screencopy_manager_v1`, and HDR's two connector properties —
     `Colorspace` and `HDR_OUTPUT_METADATA` — which its DRM backend does not
-    expose, and `zwlr_output_manager_v1`. Left:
-    `zwlr_foreign_toplevel_management_v1`, the writable half of the toplevel
-    list.
+    expose, `zwlr_output_manager_v1`, `zwlr_gamma_control_v1`,
+    `zwlr_foreign_toplevel_management_v1` and `tearing-control-v1`.
 11. **Ordinary ports.** text-input, tablet and gestures. The appearance portal
     is done.
 

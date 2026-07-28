@@ -99,6 +99,9 @@ pub struct Surface {
     dumped: bool,
     /// Whether this output has been switched into HDR.
     pub hdr: bool,
+    /// Whether this output's frames are currently allowed to tear, so the
+    /// compositor is only told when it changes rather than once a frame.
+    pub tearing: bool,
     /// Whether this output is switched on.
     ///
     /// A client can turn a monitor off through wlr-output-management — kanshi
@@ -571,6 +574,7 @@ impl ViewportState {
                             drawn: false,
                             dumped: false,
                             hdr: false,
+                            tearing: false,
                             enabled: true,
                             pending: false,
                         },
@@ -775,6 +779,7 @@ impl ViewportState {
         #[cfg(feature = "wpe")]
         self.import_shell_frame();
         let frame = self.frame_for(&output);
+        let wants_tearing = self.output_wants_tearing(&output);
         let settled_for = self.last_layout.map(|at| at.elapsed());
         let mut pending_dump = false;
 
@@ -798,6 +803,22 @@ impl ViewportState {
         if surface.pending {
             self.needs_render = true;
             return;
+        }
+
+        // Tearing, if one window covers this output and asked for it. Set
+        // before the frame is built, because it changes how the frame that is
+        // about to be queued reaches the screen.
+        if surface.tearing != wants_tearing {
+            surface.tearing = wants_tearing;
+            let honoured = surface
+                .drm_output
+                .with_compositor(|compositor| compositor.set_allow_tearing(wants_tearing));
+            tracing::info!(
+                "{}: tearing {}{}",
+                output.name(),
+                if wants_tearing { "on" } else { "off" },
+                if honoured { "" } else { " (this display cannot, so it will not)" }
+            );
         }
 
         let elements = crate::render::build(&frame, &mut udev.renderer);

@@ -374,6 +374,12 @@ fn output_of(
         .and_then(|weak| weak.upgrade())
 }
 
+impl crate::tearing::TearingControlHandler for ViewportState {
+    fn tearing_control_state(&mut self) -> &mut crate::tearing::TearingControlState {
+        &mut self.tearing_state
+    }
+}
+
 impl crate::gamma::GammaControlHandler for ViewportState {
     fn gamma_control_state(&mut self) -> &mut crate::gamma::GammaControlState {
         &mut self.gamma_state
@@ -656,5 +662,6 @@ crate::delegate_screencopy!(ViewportState);
 crate::delegate_output_management!(ViewportState);
 crate::delegate_gamma_control!(ViewportState);
 crate::delegate_foreign_toplevel!(ViewportState);
+crate::delegate_tearing_control!(ViewportState);
 
 smithay::delegate_dispatch2!(ViewportState);
