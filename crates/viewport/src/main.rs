@@ -22,6 +22,7 @@ mod handlers;
 mod headless;
 mod input;
 mod ipc;
+mod render;
 mod session;
 #[cfg(feature = "wpe")]
 mod shell;

@@ -679,91 +679,23 @@ impl ViewportState {
     pub fn render(&mut self, crtc: crtc::Handle) {
         let start = self.start_time.elapsed();
 
-        // Both taken before the renderer is borrowed.
-        #[cfg(feature = "wpe")]
-        let shell_texture = self.import_shell_frame();
-        #[cfg(feature = "wpe")]
-        let shell_element_id = self.shell_element_id.clone();
-        #[cfg(feature = "wpe")]
-        let shell_damage = self.shell_damage.snapshot();
-        let settled_for = self.last_layout.map(|at| at.elapsed());
-        let mut pending_dump = false;
-        let output_geometry = self
+        let Some(output) = self
             .udev
             .as_ref()
             .and_then(|udev| udev.surfaces.get(&crtc))
-            .and_then(|surface| self.space.output_geometry(&surface.output));
-        let output_location = output_geometry
-            .map(|geometry| (geometry.loc.x, geometry.loc.y))
-            .unwrap_or((0, 0));
-
-        // Where each window sits relative to this output, worked out before
-        // the renderer is borrowed mutably — the space and the renderer both
-        // hang off `self`.
-        let scale = self
-            .udev
-            .as_ref()
-            .and_then(|udev| udev.surfaces.get(&crtc))
-            .map(|surface| surface.output.current_scale().fractional_scale())
-            .unwrap_or(1.0);
-        // The window, where to draw it, and the hole it is cropped to.
-        let windows: Vec<(Window, Point<i32, Physical>, Option<Rectangle<i32, Physical>>)> =
-            match output_geometry {
-            Some(output_geometry) => self
-                .space
-                .elements()
-                .filter_map(|window| {
-                    let geometry = self.space.element_geometry(window)?;
-                    // Off this output entirely: drawing it would cost a
-                    // texture bind for something wholly clipped away.
-                    if !output_geometry.overlaps(geometry) {
-                        return None;
-                    }
-                    // Minus the window's own geometry origin, which is what
-                    // Smithay's Space renders at (`space/mod.rs:605`).
-                    //
-                    // A client drawing its own decorations puts shadows and
-                    // resize handles outside its logical window, and
-                    // xdg_surface.geometry marks the real window inside that
-                    // larger surface — its origin is usually negative (foot
-                    // reports 0,-26). Rendering at the geometry origin puts
-                    // the surface below where the shell asked for it and lets
-                    // it overflow the slot.
-                    let location = (geometry.loc
-                        - output_geometry.loc
-                        - window.geometry().loc)
-                        .to_f64()
-                        .to_physical(scale)
-                        .to_i32_round();
-                    // The clip arrives in layout coordinates, like the box.
-                    let clip = self
-                        .views
-                        .find_by_surface(&window.toplevel()?.wl_surface().clone())
-                        .and_then(|view| view.clip)
-                        .map(|clip| {
-                            Rectangle::<i32, smithay::utils::Logical>::new(
-                                (clip.x - output_geometry.loc.x, clip.y - output_geometry.loc.y)
-                                    .into(),
-                                (clip.width, clip.height).into(),
-                            )
-                            .to_f64()
-                            .to_physical(scale)
-                            .to_i32_round()
-                        });
-                    Some((window.clone(), location, clip))
-                })
-                .collect(),
-            None => Vec::new(),
+            .map(|surface| surface.output.clone())
+        else {
+            return;
         };
 
-        // Layer surfaces, split by whether they sit above the windows or
-        // below them. Collected before the renderer is borrowed, like the
-        // windows, and in output-local physical coordinates.
-        let (layers_above, layers_below) = self.layers_for(&crtc, scale);
-
-        // The pointer, in front of everything including the shell. Built
-        // before the renderer is borrowed, like the windows.
-        let cursor = self.cursor_element(output_geometry, scale);
+        // Everything the frame needs, worked out before the renderer is
+        // borrowed — and shared with the nested backend, which is what keeps
+        // the two showing the same desktop.
+        #[cfg(feature = "wpe")]
+        self.import_shell_frame();
+        let frame = self.frame_for(&output);
+        let settled_for = self.last_layout.map(|at| at.elapsed());
+        let mut pending_dump = false;
 
         let Some(udev) = self.udev.as_mut() else {
             return;
@@ -781,119 +713,22 @@ impl ViewportState {
             self.needs_render = true;
             return;
         }
-        let output = surface.output.clone();
 
-        // Front to back: the pointer, the windows, then the shell behind all
-        // of them.
-        let mut elements: Vec<OutputElement> = Vec::new();
-        elements.extend(cursor);
-
-        // Every mapped window, at the rectangle the shell put it in. Without
-        // this the list held the shell alone, so a client could map, be laid
-        // out, and paint — and still never appear on screen.
-        for (window, location, clip) in &windows {
-            let surfaces = window.render_elements::<WaylandSurfaceRenderElement<VulkanRenderer>>(
-                &mut udev.renderer,
-                *location,
-                scale.into(),
-                1.0,
-            );
-            match clip {
-                // Cropped to the hole the shell drew. Without this a window
-                // mid-animation, or one scrolled half off its column, covers
-                // the bar and the wallpaper with its own background.
-                Some(clip) => elements.extend(surfaces.into_iter().filter_map(|surface| {
-                    smithay::backend::renderer::element::utils::CropRenderElement::from_element(
-                        surface, scale, *clip,
-                    )
-                    .map(OutputElement::from)
-                })),
-                None => elements.extend(surfaces.into_iter().map(OutputElement::from)),
-            }
-        }
-
-        // Layer surfaces above the windows: an overlay is a lock screen or a
-        // launcher, and top is where a bar goes.
-        for (layer, location) in &layers_above {
-            elements.extend(
-                layer
-                    .render_elements::<WaylandSurfaceRenderElement<VulkanRenderer>>(
-                        &mut udev.renderer,
-                        *location,
-                        scale.into(),
-                        1.0,
-                    )
-                    .into_iter()
-                    .map(OutputElement::from),
-            );
-        }
-
-        // Background and bottom: behind the windows, in front of the shell.
-        // The shell draws the wallpaper, so a client that asked for the
-        // background layer sits between the two rather than under both.
-        for (layer, location) in &layers_below {
-            elements.extend(
-                layer
-                    .render_elements::<WaylandSurfaceRenderElement<VulkanRenderer>>(
-                        &mut udev.renderer,
-                        *location,
-                        scale.into(),
-                        1.0,
-                    )
-                    .into_iter()
-                    .map(OutputElement::from),
-            );
-        }
-
-        // The shell, imported from whatever WebKit last painted. Behind every
-        // window, spanning the whole output layout — which is what makes
-        // hit-testing fall out of the layering rather than being computed.
-        #[cfg(feature = "wpe")]
-        if let Some(texture) = shell_texture.as_ref() {
-            elements.push(OutputElement::from(
-                TextureRenderElement::from_texture_with_damage(
-                    shell_element_id,
-                    udev.renderer.context_id(),
-                    // Negative of the output's position: the shell is one
-                    // buffer across the whole layout, so an output at x=2560
-                    // shows the part of it starting there.
-                    (-output_location.0 as f64, -output_location.1 as f64),
-                    texture.clone(),
-                    1,
-                    smithay::utils::Transform::Normal,
-                    None,
-                    None,
-                    None,
-                    None,
-                    // What changed since the last frame. Without it a stable
-                    // element id means the tracker is told nothing ever
-                    // changes, and the outputs stop after the first frame.
-                    shell_damage,
-                    Kind::Unspecified,
-                ),
-            ));
-        }
+        let elements = crate::render::build(&frame, &mut udev.renderer);
 
         // A composite of exactly this list, for when the screen and the log
-        // disagree. Once per output, and only with a window up — the question
-        // it answers is about what a window does to everything behind it.
+        // disagree.
         if let Some(path) = crate::dump::output_target() {
-            // Once the layout has stopped moving. The first attempt fired on
-            // the opening frame of the window animation, where the client was
-            // still at its own size and had not processed the configure — a
-            // transient that says nothing about how it settles. The shell
-            // resends the rectangle on every frame of that animation, so its
-            // going quiet is the signal.
             let settled = settled_for
                 .map(|d| d >= std::time::Duration::from_secs(2))
                 .unwrap_or(false);
-            // Keep drawing until it fires. The capture needs a frame after the
+            // Keep drawing until it fires: the capture needs a frame after the
             // layout has settled, and settling is precisely when nothing is
-            // asking for one — so waiting for it means waiting forever.
-            if !surface.dumped && !windows.is_empty() {
+            // asking for one.
+            if !surface.dumped && !frame.windows.is_empty() {
                 pending_dump = true;
             }
-            if !surface.dumped && !windows.is_empty() && settled {
+            if !surface.dumped && !frame.windows.is_empty() && settled {
                 surface.dumped = true;
                 let size = output
                     .current_mode()
@@ -904,22 +739,7 @@ impl ViewportState {
                     path.file_stem().unwrap_or_default().to_string_lossy(),
                     output.name()
                 ));
-                // What every element claims about itself. An element whose
-                // opaque region is larger than what it paints suppresses
-                // everything behind it, and from the front that is
-                // indistinguishable from the thing behind never being drawn.
-                {
-                    use smithay::backend::renderer::element::Element as _;
-                    tracing::info!("dumping {}: {} element(s)", output.name(), elements.len());
-                    for element in &elements {
-                        tracing::info!(
-                            "  geometry {:?} src {:?} opaque {:?}",
-                            element.geometry(1.0.into()),
-                            element.src(),
-                            element.opaque_regions(1.0.into()),
-                        );
-                    }
-                }
+                tracing::info!("dumping {}: {} element(s)", output.name(), elements.len());
                 if let Err(e) = crate::dump::output_frame(
                     &mut udev.renderer,
                     &elements,
@@ -929,37 +749,20 @@ impl ViewportState {
                 ) {
                     tracing::error!("could not dump {}: {e:#}", output.name());
                 }
-                // The shell's own buffer from the same moment, so the two are
-                // comparable. "The shell is not on the output" and "the shell
-                // painted nothing" look identical in the composite alone.
-                #[cfg(feature = "wpe")]
-                if let Some(texture) = shell_texture.as_ref() {
-                    let shell_path = path.with_file_name(format!(
-                        "{}-shell.ppm",
-                        path.file_stem().unwrap_or_default().to_string_lossy(),
-                    ));
-                    if let Err(e) = crate::dump::shell_frame(
-                        &mut udev.renderer,
-                        texture,
-                        &shell_path,
-                    ) {
-                        tracing::error!("could not dump the shell: {e:#}");
-                    }
-                }
             }
         }
 
         let result = surface.drm_output.render_frame(
             &mut udev.renderer,
             &elements,
-            // Behind everything, and behind the shell too — visible only
-            // where nothing else covers it.
+            // Behind everything, and behind the shell too — visible only where
+            // nothing else covers it.
             [0.1, 0.1, 0.1, 1.0],
             frame_flags(),
         );
 
         match result {
-            Ok(frame) if !frame.is_empty => {
+            Ok(rendered) if !rendered.is_empty => {
                 if let Err(e) = surface.drm_output.queue_frame(()) {
                     // The vblank that would have driven the next frame never
                     // arrives, so a failure here stops the output for good
@@ -972,23 +775,11 @@ impl ViewportState {
                         tracing::info!("{}: first frame queued", output.name());
                     }
                 }
-                // Every draw, because the first one happens before the shell
-                // has painted anything. "The right monitor is grey" and "the
-                // right monitor drew the wrong part of the shell" are the
-                // same picture from the front, and only the element list and
-                // its offset tell them apart.
-                tracing::debug!(
-                    "{}: drew {} element(s), shell at {:?}, {} window(s)",
-                    output.name(),
-                    elements.len(),
-                    (-output_location.0, -output_location.1),
-                    windows.len(),
-                );
             }
             // Nothing changed, so nothing is submitted — and with no frame
             // queued there is no vblank, so rendering stops until something
-            // asks for it again. Correct for a static screen, and worth
-            // saying out loud because it looks identical to being stuck.
+            // asks for it again. Correct for a static screen, and worth saying
+            // out loud because it looks identical to being stuck.
             Ok(_) => tracing::debug!("{}: nothing to draw", output.name()),
             Err(e) => tracing::warn!("render_frame: {e}"),
         }
@@ -1000,6 +791,11 @@ impl ViewportState {
         // Frame callbacks: a client will not paint again until it gets one.
         for window in self.space.elements() {
             window.send_frame(&output, start, Some(Duration::ZERO), |_, _| {
+                Some(output.clone())
+            });
+        }
+        for layer in smithay::desktop::layer_map_for_output(&output).layers() {
+            layer.send_frame(&output, start, Some(Duration::ZERO), |_, _| {
                 Some(output.clone())
             });
         }

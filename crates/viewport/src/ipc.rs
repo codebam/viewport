@@ -319,15 +319,10 @@ impl ViewportState {
         }
 
         // A new frame is a reason to draw, and nothing else will ask: the
-        // vblank loop stops when there is nothing left to submit.
-        let crtcs: Vec<_> = self
-            .udev
-            .as_ref()
-            .map(|udev| udev.surfaces.keys().copied().collect())
-            .unwrap_or_default();
-        for crtc in crtcs {
-            self.render(crtc);
-        }
+        // vblank loop stops when there is nothing left to submit, and the
+        // nested backend draws only when it is asked to.
+        self.needs_render = true;
+        self.render_if_needed();
     }
 
     /// Parse one message and act on it.

@@ -11,8 +11,8 @@
 use std::time::Duration;
 
 use smithay::backend::renderer::damage::OutputDamageTracker;
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::Color32F;
 use smithay::backend::winit::{self, WinitEvent};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::EventLoop;
@@ -68,7 +68,39 @@ pub fn init(
         state.advertise_dmabuf(node, formats);
     }
 
+    // The shell, nested. It needs DRM nodes to allocate on — the same GPU the
+    // host compositor is using, which is what the EGL device names.
+    #[cfg(feature = "wpe")]
+    {
+        let node = smithay::backend::egl::EGLDevice::device_for_display(
+            backend.renderer().egl_context().display(),
+        )
+        .ok()
+        .and_then(|device| device.try_get_render_node().ok().flatten());
+        match node {
+            Some(render) => {
+                // The primary node, for WPE: wpe_drm_device_new asserts on a
+                // null one, so a render node alone is not enough.
+                let card = render
+                    .node_with_type(smithay::backend::drm::NodeType::Primary)
+                    .and_then(|node| node.ok())
+                    .unwrap_or(render);
+                if let Err(e) = state.start_shell(&card, &render) {
+                    tracing::warn!("the shell did not start, so this is windows only: {e:#}");
+                }
+            }
+            None => tracing::warn!("no render node for the shell; this is windows only"),
+        }
+    }
+
+    // Prime the loop. Each redraw asks for the next, so one is enough — but
+    // without it the first has to come from winit itself, and when it does not
+    // the shell paints into a mailbox nobody drains and the window stays
+    // empty.
+    backend.window().request_redraw();
+
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
+    let mut dumped = false;
 
     event_loop
         .handle()
@@ -87,25 +119,54 @@ pub fn init(
                 let size = backend.window_size();
                 let damage = Rectangle::from_size(size);
 
+                // The same desktop the real backend draws: shell, layer
+                // surfaces, windows with their clip, and the pointer. Assembled
+                // by the shared path so the two cannot drift — nested showing
+                // windows on a flat colour is what that drift looked like.
+                #[cfg(feature = "wpe")]
+                state.import_shell_frame();
+                let frame = state.frame_for(&output);
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
-                    let result = smithay::desktop::space::render_output::<
-                        _,
-                        WaylandSurfaceRenderElement<GlesRenderer>,
-                        _,
-                        _,
-                    >(
-                        &output,
+                    let elements = crate::render::build(&frame, renderer);
+
+                    // The same capture the real backend has. Nested is where
+                    // this gets used most, and it is the only way to tell "the
+                    // shell painted nothing" from "the shell never reached the
+                    // screen".
+                    if let Some(path) = crate::dump::output_target() {
+                        // Not the first frame after a resize: that one catches
+                        // a buffer WebKit has not painted into yet, which
+                        // comes out black and says nothing. A static desktop
+                        // paints twice and then stops, so this cannot wait for
+                        // many.
+                        #[cfg(feature = "wpe")]
+                        let painted = state.shell_frames >= 2;
+                        #[cfg(not(feature = "wpe"))]
+                        let painted = false;
+                        if !dumped && (painted || !frame.windows.is_empty()) {
+                            dumped = true;
+                            if let Err(e) = crate::dump::output_frame::<
+                                _,
+                                smithay::backend::renderer::gles::GlesRenderbuffer,
+                                _,
+                            >(
+                                renderer,
+                                &elements,
+                                size,
+                                [0.1, 0.1, 0.1, 1.0],
+                                &path,
+                            ) {
+                                tracing::error!("could not dump the nested output: {e:#}");
+                            }
+                        }
+                    }
+                    let result = damage_tracker.render_output(
                         renderer,
                         &mut framebuffer,
-                        1.0,
                         0,
-                        [&state.space],
-                        &[],
-                        &mut damage_tracker,
-                        // The shell will own this area once the web engine is
-                        // wired up; until then it is just a backdrop.
-                        [0.1, 0.1, 0.1, 1.0],
+                        &elements,
+                        Color32F::from([0.1, 0.1, 0.1, 1.0]),
                     );
                     if let Err(e) = result {
                         tracing::error!("render failed: {e}");
@@ -118,14 +179,19 @@ pub fn init(
                 // WebKit would not paint frame N+1 until frame N was
                 // acknowledged; the same discipline applies to clients, and
                 // this is where their frame callbacks fire.
+                let at = state.start_time.elapsed();
                 state.space.elements().for_each(|window| {
-                    window.send_frame(
-                        &output,
-                        state.start_time.elapsed(),
-                        Some(Duration::ZERO),
-                        |_, _| Some(output.clone()),
-                    )
+                    window.send_frame(&output, at, Some(Duration::ZERO), |_, _| {
+                        Some(output.clone())
+                    })
                 });
+                smithay::desktop::layer_map_for_output(&output)
+                    .layers()
+                    .for_each(|layer| {
+                        layer.send_frame(&output, at, Some(Duration::ZERO), |_, _| {
+                            Some(output.clone())
+                        })
+                    });
 
                 state.space.refresh();
                 state.popups.cleanup();

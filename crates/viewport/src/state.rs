@@ -15,7 +15,7 @@ use smithay::reexports::calloop::{
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
@@ -86,10 +86,14 @@ pub struct ViewportState {
     #[cfg(feature = "wpe")]
     pub shell_ping: Option<smithay::reexports::calloop::ping::Ping>,
 
-    /// The shell's newest frame, imported. Kept between frames because WebKit
-    /// only paints when something changed.
+    /// A renderer of the compositor's own, for copying WebKit's frames into
+    /// buffers it owns. Independent of the backend — see `start_shell`.
     #[cfg(feature = "wpe")]
-    pub shell_texture: Option<viewport_vulkan::VulkanTexture>,
+    pub shell_renderer: Option<viewport_vulkan::VulkanRenderer>,
+    /// The size the shell was last told it is, so a layout change that does
+    /// not alter it costs nothing.
+    #[cfg(feature = "wpe")]
+    pub shell_size: Option<(u32, u32)>,
     /// The compositor's own copy of the shell's newest frame, and its size.
     ///
     /// Reused between frames; reallocated only when the layout changes size.
@@ -262,7 +266,9 @@ impl ViewportState {
             #[cfg(feature = "wpe")]
             shell_ping: None,
             #[cfg(feature = "wpe")]
-            shell_texture: None,
+            shell_size: None,
+            #[cfg(feature = "wpe")]
+            shell_renderer: None,
             #[cfg(feature = "wpe")]
             shell_owned: None,
             #[cfg(feature = "wpe")]
@@ -421,6 +427,157 @@ impl ViewportState {
                 tracing::info!("linux-dmabuf: {count} format/modifier pair(s)");
             }
             Err(e) => tracing::error!("could not build dmabuf feedback: {e}"),
+        }
+    }
+
+    /// What an output should show, worked out without a renderer.
+    ///
+    /// Everything the backend would otherwise have to reach into this state
+    /// for while its renderer is borrowed. The two backends share it, which is
+    /// what stops the nested one drifting into showing something different
+    /// from the real thing.
+    pub fn frame_for(&mut self, output: &Output) -> crate::render::Frame {
+        use smithay::wayland::shell::wlr_layer::Layer;
+
+        let Some(output_geometry) = self.space.output_geometry(output) else {
+            return crate::render::Frame::default();
+        };
+        let scale = output.current_scale().fractional_scale();
+
+        // Layer surfaces, split by whether they sit above the windows or
+        // below them, in output-local physical coordinates.
+        let (mut layers_above, mut layers_below) = (Vec::new(), Vec::new());
+        {
+            let map = smithay::desktop::layer_map_for_output(output);
+            for layer in map.layers() {
+                let Some(geometry) = map.layer_geometry(layer) else {
+                    continue;
+                };
+                let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
+                let entry = (layer.clone(), location);
+                match layer.layer() {
+                    Layer::Overlay | Layer::Top => layers_above.push(entry),
+                    Layer::Background | Layer::Bottom => layers_below.push(entry),
+                }
+            }
+        }
+
+        let windows: Vec<_> = self
+            .space
+            .elements()
+            .filter_map(|window| {
+                let layout = self.space.element_geometry(window)?;
+                // Off this output entirely: drawing it would cost a texture
+                // bind for something wholly clipped away.
+                if !output_geometry.overlaps(layout) {
+                    return None;
+                }
+                let clip = window
+                    .toplevel()
+                    .map(|toplevel| toplevel.wl_surface().clone())
+                    .and_then(|surface| self.views.find_by_surface(&surface))
+                    .and_then(|view| view.clip)
+                    .map(|clip| {
+                        Rectangle::<i32, Logical>::new(
+                            (clip.x, clip.y).into(),
+                            (clip.width, clip.height).into(),
+                        )
+                    });
+                let (location, clip) = crate::render::window_placement(
+                    window,
+                    layout,
+                    output_geometry,
+                    clip,
+                    scale,
+                );
+                Some((window.clone(), location, clip))
+            })
+            .collect();
+
+        let cursor = self.cursor_for(output, output_geometry, scale);
+
+        #[cfg(feature = "wpe")]
+        let shell = self.shell_owned.as_ref().map(|(buffer, _)| crate::render::Shell {
+            buffer: buffer.clone(),
+            // Negative of the output's position: the shell is one buffer
+            // across the whole layout.
+            location: (
+                -output_geometry.loc.x as f64 * scale,
+                -output_geometry.loc.y as f64 * scale,
+            )
+                .into(),
+            damage: self.shell_damage.snapshot(),
+            id: self.shell_element_id.clone(),
+        });
+        #[cfg(not(feature = "wpe"))]
+        let shell = None;
+
+        crate::render::Frame {
+            layers_above,
+            windows,
+            layers_below,
+            shell,
+            cursor,
+            scale,
+        }
+    }
+
+    /// The pointer image for an output, resolved but not imported.
+    fn cursor_for(
+        &mut self,
+        output: &Output,
+        output_geometry: Rectangle<i32, Logical>,
+        scale: f64,
+    ) -> crate::render::Cursor {
+        use smithay::input::pointer::CursorImageStatus;
+
+        let _ = output;
+        let Some(pointer) = self.seat.get_pointer() else {
+            return crate::render::Cursor::Hidden;
+        };
+        let at = pointer.current_location();
+        if !output_geometry.to_f64().contains(at) {
+            return crate::render::Cursor::Hidden;
+        }
+        let local = (at - output_geometry.loc.to_f64()).to_physical(scale);
+
+        match self.cursor_status.clone() {
+            CursorImageStatus::Hidden => crate::render::Cursor::Hidden,
+            CursorImageStatus::Surface(surface) => {
+                let hotspot = smithay::wayland::compositor::with_states(&surface, |states| {
+                    states
+                        .data_map
+                        .get::<std::sync::Mutex<smithay::input::pointer::CursorImageAttributes>>()
+                        .map(|attrs| attrs.lock().unwrap().hotspot)
+                        .unwrap_or_default()
+                });
+                // The surface is drawn at the pointer minus its hotspot, and
+                // `build` subtracts the hotspot — so this carries the pointer
+                // position folded in.
+                let at = local.to_i32_round();
+                crate::render::Cursor::Surface(
+                    surface,
+                    hotspot.to_f64().to_physical(scale).to_i32_round() - at,
+                )
+            }
+            CursorImageStatus::Named(shape) => {
+                let millis = self.start_time.elapsed().as_millis() as u32;
+                match self.cursor_theme.image(shape.name(), scale.ceil() as i32, millis) {
+                    Some((buffer, hotspot)) => {
+                        crate::render::Cursor::Image(buffer, local.to_i32_round() - hotspot)
+                    }
+                    None => {
+                        if !self.cursor_warned {
+                            self.cursor_warned = true;
+                            tracing::warn!(
+                                "no xcursor image for {:?}; set XCURSOR_THEME to a theme that is installed",
+                                shape.name()
+                            );
+                        }
+                        crate::render::Cursor::Hidden
+                    }
+                }
+            }
         }
     }
 
@@ -676,6 +833,13 @@ impl ViewportState {
             })
             .collect();
 
+        // The shell is one buffer across the whole layout, so a change to the
+        // layout is a change to its size. Without this it keeps whatever size
+        // it had when it started: a monitor plugged in later, or a nested
+        // window resized, leaves the rest of the screen on the clear colour.
+        #[cfg(feature = "wpe")]
+        self.resize_shell();
+
         let event = Event::OutputLayout { outputs };
         self.notify(&event);
     }
@@ -709,6 +873,8 @@ impl ViewportState {
         if !std::mem::take(&mut self.needs_render) {
             return;
         }
+        // Nested has no crtcs; that backend redraws continuously and takes
+        // what it needs from the same shared frame description.
         let crtcs: Vec<_> = self
             .udev
             .as_ref()
@@ -766,12 +932,52 @@ impl ViewportState {
     ) -> anyhow::Result<()> {
         use smithay::backend::renderer::ImportDma as _;
 
-        let Some(udev) = self.udev.as_ref() else {
-            anyhow::bail!("the shell needs a renderer, which means the drm backend");
-        };
+        // A renderer of the compositor's own, on the render node, for copying
+        // WebKit's frames into buffers it owns.
+        //
+        // Not the backend's: the copy is about owning the buffer rather than
+        // about the output, and nesting under another compositor has no DRM
+        // renderer at all. Both backends then import the copy into whatever
+        // they draw with, which is what lets the nested one show the desktop.
+        if self.shell_renderer.is_none() {
+            let instance = smithay::backend::vulkan::Instance::new(
+                smithay::backend::vulkan::version::Version::VERSION_1_3,
+                None,
+            )
+            .map_err(|e| anyhow::anyhow!("creating a vulkan instance for the shell: {e}"))?;
+            let device = viewport_vulkan::Device::for_node(&instance, render)
+                .map_err(|e| anyhow::anyhow!("opening a vulkan device for the shell: {e}"))?;
+            // With an allocator: the copy needs somewhere of its own to draw
+            // into, and a renderer without one cannot make an offscreen at
+            // all — which presents as "no image to copy the shell's frame
+            // into" on the first frame.
+            //
+            // The render node opens directly rather than through the session:
+            // it needs no DRM master, which is the whole difference between it
+            // and the card node.
+            let path = render
+                .dev_path()
+                .ok_or_else(|| anyhow::anyhow!("the render node has no device path"))?;
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .map_err(|e| anyhow::anyhow!("opening {} for the shell: {e}", path.display()))?;
+            let gbm = smithay::backend::allocator::gbm::GbmDevice::new(file)
+                .map_err(|e| anyhow::anyhow!("creating a gbm device for the shell: {e}"))?;
+            let allocator = smithay::backend::allocator::gbm::GbmAllocator::new(
+                gbm,
+                smithay::backend::allocator::gbm::GbmBufferFlags::RENDERING,
+            );
+            let renderer = viewport_vulkan::VulkanRenderer::with_allocator(&device, allocator)
+                .map_err(|e| anyhow::anyhow!("creating a vulkan renderer for the shell: {e}"))?;
+            self.shell_renderer = Some(renderer);
+        }
 
-        let formats: Vec<(u32, u64)> = udev
-            .renderer
+        let formats: Vec<(u32, u64)> = self
+            .shell_renderer
+            .as_ref()
+            .expect("just created")
             .dmabuf_formats()
             .iter()
             .map(|format| (format.code as u32, u64::from(format.modifier)))
@@ -832,22 +1038,22 @@ impl ViewportState {
     /// That is a simplification — strictly WebKit should be released once the
     /// pixels are on screen — and it means the engine may run one frame ahead
     /// of the display.
-    pub fn import_shell_frame(&mut self) -> Option<viewport_vulkan::VulkanTexture> {
+    pub fn import_shell_frame(&mut self) {
         use smithay::backend::allocator::Buffer as _;
         use smithay::backend::renderer::ImportDma as _;
 
         if let Some(pending) = self.shell.as_ref().and_then(|shell| shell.take_frame()) {
             let imported = self
-                .udev
+                .shell_renderer
                 .as_mut()
-                .map(|udev| udev.renderer.import_dmabuf(&pending.buffer, None));
+                .map(|renderer| renderer.import_dmabuf(&pending.buffer, None));
 
             match imported {
                 Some(Ok(texture)) => {
                     // Once. "The shell did not appear" has two causes that
                     // look identical in the log otherwise: WebKit never
                     // painted, or it painted and the frame was not drawn.
-                    if self.shell_texture.is_none() {
+                    if self.shell_owned.is_none() {
                         tracing::info!(
                             "first shell frame imported, {}x{}",
                             pending.buffer.width(),
@@ -861,7 +1067,7 @@ impl ViewportState {
                     if let (Some(path), Some(udev)) =
                         (crate::dump::target(), self.udev.as_mut())
                     {
-                        if self.shell_texture.is_none() {
+                        if self.shell_owned.is_none() {
                             if let Err(e) =
                                 crate::dump::shell_frame(&mut udev.renderer, &texture, &path)
                             {
@@ -888,36 +1094,21 @@ impl ViewportState {
                         Some((buffer, at)) if at == size => Some((buffer, at)),
                         // First frame, or the layout changed under it.
                         _ => self
-                            .udev
+                            .shell_renderer
                             .as_mut()
-                            .and_then(|udev| crate::dump::owned_image(&mut udev.renderer, size).ok())
+                            .and_then(|renderer| crate::dump::owned_image(renderer, size).ok())
                             .map(|buffer| (buffer, size)),
                     };
                     match owned {
                         Some((mut buffer, at)) => {
-                            let copied = self.udev.as_mut().map(|udev| {
-                                crate::dump::copy_texture(
-                                    &mut udev.renderer,
-                                    &texture,
-                                    &mut buffer,
-                                    at,
-                                )
+                            let copied = self.shell_renderer.as_mut().map(|renderer| {
+                                crate::dump::copy_texture(renderer, &texture, &mut buffer, at)
                             });
-                            match copied {
-                                Some(Ok(())) => {
-                                    let imported = self
-                                        .udev
-                                        .as_mut()
-                                        .map(|udev| udev.renderer.import_dmabuf(&buffer, None));
-                                    if let Some(Ok(owned_texture)) = imported {
-                                        self.shell_texture = Some(owned_texture);
-                                    }
-                                }
-                                Some(Err(e)) => {
-                                    tracing::error!("could not copy the shell's frame: {e:#}")
-                                }
-                                None => {}
+                            if let Some(Err(e)) = copied {
+                                tracing::error!("could not copy the shell's frame: {e:#}");
                             }
+                            // Whichever renderer draws this output imports it
+                            // itself — see `render::build`.
                             self.shell_owned = Some((buffer, at));
                         }
                         None => tracing::error!("no image to copy the shell's frame into"),
@@ -937,9 +1128,10 @@ impl ViewportState {
                 // frame that would trigger the release can never be painted
                 // and the shell stops dead after exactly one.
                 //
-                // Releasing straight away is safe here because the import
-                // dup'd the buffer's fds — the Vulkan image owns its own
-                // reference to the memory and does not need WebKit's.
+                // Releasing straight away is safe because the frame has been
+                // copied into a buffer of the compositor's own just above. A
+                // dup'd fd would not have been enough: it is the same memory,
+                // so WebKit would paint into the picture on screen.
                 shell.frame_done(&pending.token);
                 shell.frame_release(pending.token);
                 self.shell_frames += 1;
@@ -954,7 +1146,6 @@ impl ViewportState {
             }
         }
 
-        self.shell_texture.clone()
     }
 
     /// The size of everything, which is what the shell spans.
@@ -980,6 +1171,14 @@ impl ViewportState {
         if size.0 == 0 || size.1 == 0 {
             return;
         }
+        // Only on a change: this is called from notify_output_layout, which
+        // runs for anything that touches the layout — including a layer
+        // surface arriving — and telling WebKit to resize to the size it
+        // already has costs a full repaint.
+        if self.shell_size == Some(size) {
+            return;
+        }
+        self.shell_size = Some(size);
         if let Some(shell) = self.shell.as_ref() {
             tracing::info!("shell size {}x{}", size.0, size.1);
             shell.display.resize(size.0, size.1);

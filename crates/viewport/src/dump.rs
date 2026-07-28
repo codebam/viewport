@@ -40,21 +40,25 @@ pub fn output_target() -> Option<std::path::PathBuf> {
 /// The same list the output was given, drawn the same way, so what lands here
 /// is what landed on screen — including anything an occlusion decision left
 /// undrawn, which is the whole reason for looking.
-pub fn output_frame<E>(
-    renderer: &mut VulkanRenderer,
+pub fn output_frame<R, B, E>(
+    renderer: &mut R,
     elements: &[E],
     size: Size<i32, Physical>,
     clear: [f32; 4],
     path: &std::path::Path,
 ) -> Result<()>
 where
-    E: smithay::backend::renderer::element::RenderElement<VulkanRenderer>,
+    // The buffer an offscreen is: a dmabuf for the Vulkan renderer, a
+    // renderbuffer for GLES. Which one is the backend's business.
+    R: Renderer + Bind<B> + Offscreen<B> + ExportMem,
+    E: smithay::backend::renderer::element::RenderElement<R>,
+    <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
 {
     use smithay::backend::renderer::damage::OutputDamageTracker;
     use smithay::backend::renderer::Texture as _;
 
     let buffer_size: Size<i32, BufferCoord> = (size.w, size.h).into();
-    let mut target: smithay::backend::allocator::dmabuf::Dmabuf = renderer
+    let mut target = renderer
         .create_buffer(Fourcc::Argb8888, buffer_size)
         .context("allocating the dump target")?;
 
