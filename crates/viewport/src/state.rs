@@ -89,6 +89,9 @@ pub struct ViewportState {
     pub server_decorations: bool,
     /// What the shell is told the system appearance is.
     pub dark_mode: bool,
+    /// How many popups the last frame drew, so a change is said once rather
+    /// than per frame.
+    pub popups_drawn: usize,
     /// The binding mode in force — sway's resize mode, or anything a config
     /// file invents. Empty is the ordinary keymap.
     pub binding_mode: String,
@@ -574,6 +577,7 @@ impl ViewportState {
             vt_switching: true,
             server_decorations: true,
             dark_mode: true,
+            popups_drawn: 0,
             binding_mode: String::new(),
             adaptive_sync: false,
             fallback_url: None,
@@ -2149,6 +2153,23 @@ impl ViewportState {
                 Some((window.clone(), location, clip))
             })
             .collect();
+
+        // How many popups are about to be drawn, said when it changes. A menu
+        // that is created, configured and then drawn zero times is a
+        // different fault from one that is drawn somewhere unhelpful.
+        {
+            use smithay::desktop::PopupManager;
+            use smithay::wayland::seat::WaylandFocus as _;
+            let popups: usize = windows
+                .iter()
+                .filter_map(|(window, _, _)| window.wl_surface())
+                .map(|surface| PopupManager::popups_for_surface(&surface).count())
+                .sum();
+            if popups != self.popups_drawn {
+                self.popups_drawn = popups;
+                tracing::debug!("popup: {popups} being drawn");
+            }
+        }
 
         let cursor = self.cursor_for(output, output_geometry, scale);
 

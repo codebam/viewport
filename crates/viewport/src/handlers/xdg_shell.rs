@@ -128,7 +128,12 @@ impl XdgShellHandler for ViewportState {
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         tracing::debug!("popup: created");
         self.unconstrain_popup(&surface);
-        let _ = self.popups.track_popup(PopupKind::Xdg(surface));
+        // Not discarded: a popup that fails to be tracked is in no manager, so
+        // nothing draws it and nothing finds it under the pointer — and the
+        // client is told nothing either, so the menu simply never appears.
+        if let Err(e) = self.popups.track_popup(PopupKind::Xdg(surface)) {
+            tracing::warn!("popup: could not be tracked: {e}");
+        }
     }
 
     fn reposition_request(
@@ -354,6 +359,14 @@ pub fn handle_commit(state: &mut ViewportState, surface: &WlSurface) {
                     // The initial configure is always allowed, so this cannot
                     // legitimately fail.
                     xdg.send_configure().expect("initial configure failed");
+                    let geometry = xdg.with_pending_state(|state| state.geometry);
+                    tracing::debug!(
+                        "popup: configured at {},{} {}x{}",
+                        geometry.loc.x,
+                        geometry.loc.y,
+                        geometry.size.w,
+                        geometry.size.h
+                    );
                 }
             }
             PopupKind::InputMethod(_) => {}
