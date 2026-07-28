@@ -26,7 +26,7 @@ a CPU mapping of the rendered buffer rather than trusting the GPU.
 - [x] Command submission and clears, via dynamic rendering
 - [x] Pipelines and shaders — textured and solid quads, premultiplied blending
 - [x] `Renderer`, `Frame`, `Bind`, `ImportDma`
-- [ ] `ImportMem` — shm clients
+- [x] `ImportMem` — shm clients, via a staging buffer
 - [ ] Output and surface transforms (currently refused, not ignored)
 - [ ] Explicit sync: export a fence instead of waiting on the CPU
 - [ ] Colour management

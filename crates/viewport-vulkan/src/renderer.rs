@@ -20,8 +20,8 @@ use smithay::backend::allocator::dmabuf::{Dmabuf, WeakDmabuf};
 use smithay::backend::allocator::{Format, Fourcc};
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::{
-    Bind, Color32F, ContextId, DebugFlags, Frame, ImportDma, Renderer, RendererSuper, Texture,
-    TextureFilter,
+    Bind, Color32F, ContextId, DebugFlags, Frame, ImportDma, ImportMem, Renderer, RendererSuper,
+    Texture, TextureFilter,
 };
 use smithay::utils::{Buffer as BufferCoord, Physical, Rectangle, Size, Transform};
 
@@ -49,25 +49,39 @@ pub enum Error {
 /// Cloning is cheap and shares the underlying image: Smithay hands textures
 /// around by value and expects that to be free.
 #[derive(Debug, Clone)]
-pub struct VulkanTexture(std::sync::Arc<Image>);
+pub struct VulkanTexture {
+    image: std::sync::Arc<Image>,
+    /// The buffer's y axis runs the other way. An shm client may say so, and
+    /// the flip is applied when sampling rather than by copying the rows in a
+    /// different order.
+    flipped: bool,
+    /// Only images this renderer allocated can be uploaded into. A DMA-BUF is
+    /// the client's memory and writing to it would be a data race with the
+    /// client, not an optimisation.
+    uploadable: bool,
+}
 
 impl VulkanTexture {
     pub fn image(&self) -> &Image {
-        &self.0
+        &self.image
+    }
+
+    pub fn is_flipped(&self) -> bool {
+        self.flipped
     }
 }
 
 impl Texture for VulkanTexture {
     fn width(&self) -> u32 {
-        self.0.width()
+        self.image.width()
     }
 
     fn height(&self) -> u32 {
-        self.0.height()
+        self.image.height()
     }
 
     fn format(&self) -> Option<Fourcc> {
-        Some(self.0.fourcc())
+        Some(self.image.fourcc())
     }
 }
 
@@ -274,9 +288,191 @@ impl ImportDma for VulkanRenderer {
         let image = Image::import(&self.device, dmabuf, Purpose::Sample)?;
         self.acquire_now(&image, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)?;
 
-        let texture = VulkanTexture(std::sync::Arc::new(image));
+        let texture = VulkanTexture {
+            image: std::sync::Arc::new(image),
+            flipped: false,
+            uploadable: false,
+        };
         self.imported.push((dmabuf.weak(), texture.clone()));
         Ok(texture)
+    }
+}
+
+impl ImportMem for VulkanRenderer {
+    fn import_memory(
+        &mut self,
+        data: &[u8],
+        format: Fourcc,
+        size: Size<i32, BufferCoord>,
+        flipped: bool,
+    ) -> Result<Self::TextureId, Self::Error> {
+        let (width, height) = (size.w.max(0) as u32, size.h.max(0) as u32);
+        if width == 0 || height == 0 {
+            return Err(Error::Unsupported("a zero-sized memory import".to_owned()));
+        }
+
+        let image = Image::allocate(&self.device, width, height, format)?;
+        let texture = VulkanTexture {
+            image: std::sync::Arc::new(image),
+            flipped,
+            uploadable: true,
+        };
+
+        let whole = Rectangle::from_size(size);
+        self.upload(&texture, data, whole, vk::ImageLayout::UNDEFINED)?;
+        Ok(texture)
+    }
+
+    fn update_memory(
+        &mut self,
+        texture: &Self::TextureId,
+        data: &[u8],
+        region: Rectangle<i32, BufferCoord>,
+    ) -> Result<(), Self::Error> {
+        if !texture.uploadable {
+            // A DMA-BUF is the client's memory. Writing into it would be a
+            // data race with the client rather than an update.
+            return Err(Error::Unsupported(
+                "this texture was imported from a dmabuf and cannot be uploaded into".to_owned(),
+            ));
+        }
+        // Already in SHADER_READ_ONLY_OPTIMAL from the previous upload, and
+        // its contents outside the region have to survive.
+        self.upload(
+            texture,
+            data,
+            region,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        )
+    }
+
+    fn mem_formats(&self) -> Box<dyn Iterator<Item = Fourcc>> {
+        // The four shm formats every Wayland compositor is expected to take.
+        // Argb8888 and Xrgb8888 are the two wl_shm guarantees.
+        Box::new(
+            [
+                Fourcc::Argb8888,
+                Fourcc::Xrgb8888,
+                Fourcc::Abgr8888,
+                Fourcc::Xbgr8888,
+            ]
+            .into_iter(),
+        )
+    }
+}
+
+impl VulkanRenderer {
+    /// Copy CPU pixels into an image this renderer owns.
+    ///
+    /// Waits for the copy before returning. The staging buffer is freed here,
+    /// so the alternative is keeping it alive until a fence signals — worth
+    /// doing when shm turns out to be hot, and not before.
+    fn upload(
+        &mut self,
+        texture: &VulkanTexture,
+        data: &[u8],
+        region: Rectangle<i32, BufferCoord>,
+        from_layout: vk::ImageLayout,
+    ) -> Result<(), Error> {
+        let image = &texture.image;
+        let (x, y) = (region.loc.x.max(0), region.loc.y.max(0));
+        let (w, h) = (region.size.w.max(0) as u32, region.size.h.max(0) as u32);
+        if w == 0 || h == 0 {
+            return Err(Error::Unsupported("an empty upload region".to_owned()));
+        }
+        if x as u32 + w > image.width() || y as u32 + h > image.height() {
+            return Err(Error::Unsupported(format!(
+                "region {region:?} is outside the {}x{} texture",
+                image.width(),
+                image.height()
+            )));
+        }
+
+        // Four bytes per pixel: every format in `mem_formats` is 32bpp.
+        let stride = image.width() as usize * 4;
+        let needed = stride * image.height() as usize;
+        if data.len() < needed {
+            // The trait says too small is an error and beyond is truncated.
+            return Err(Error::Unsupported(format!(
+                "{} bytes of pixels for a {}x{} texture that needs {needed}",
+                data.len(),
+                image.width(),
+                image.height()
+            )));
+        }
+
+        // The whole buffer is staged even for a partial update, so the copy
+        // can use the source stride directly instead of packing rows.
+        let mut staging = crate::staging::Staging::new(&self.device, needed as vk::DeviceSize)?;
+        staging.write(0, &data[..needed])?;
+
+        let buffer = self.commands.begin()?;
+        let handle = self.device.handle();
+
+        let to_transfer = image.transition(
+            from_layout,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::AccessFlags::empty(),
+            vk::AccessFlags::TRANSFER_WRITE,
+        );
+        let to_shader = image.transition(
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::AccessFlags::TRANSFER_WRITE,
+            vk::AccessFlags::SHADER_READ,
+        );
+
+        let copy = vk::BufferImageCopy::default()
+            // Where the region starts within the staged buffer.
+            .buffer_offset((y as usize * stride + x as usize * 4) as vk::DeviceSize)
+            // In pixels, not bytes: this is how a partial update reads the
+            // right rows out of a full-size source.
+            .buffer_row_length(image.width())
+            .buffer_image_height(image.height())
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_offset(vk::Offset3D { x, y, z: 0 })
+            .image_extent(vk::Extent3D {
+                width: w,
+                height: h,
+                depth: 1,
+            });
+
+        unsafe {
+            handle.cmd_pipeline_barrier(
+                buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_transfer],
+            );
+            handle.cmd_copy_buffer_to_image(
+                buffer,
+                staging.handle(),
+                image.handle(),
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[copy],
+            );
+            handle.cmd_pipeline_barrier(
+                buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_shader],
+            );
+        }
+
+        self.commands.submit()?;
+        self.commands.wait(std::time::Duration::from_secs(5))?;
+        Ok(())
     }
 }
 
@@ -555,6 +751,14 @@ impl Frame for VulkanFrame<'_, '_> {
         // coordinates, which is the only place the texture's own size is
         // needed.
         let (tw, th) = (texture.width() as f64, texture.height() as f64);
+        // A flipped buffer is sampled bottom-up: the v coordinate starts at
+        // the far edge and the height is negated, which costs nothing and
+        // avoids copying the rows the other way round.
+        let (v, vh) = if texture.flipped {
+            (((src.loc.y + src.size.h) / th) as f32, -((src.size.h / th) as f32))
+        } else {
+            ((src.loc.y / th) as f32, (src.size.h / th) as f32)
+        };
         let push = crate::pipeline::Push {
             dst: [
                 dst.loc.x as f32,
@@ -562,12 +766,7 @@ impl Frame for VulkanFrame<'_, '_> {
                 dst.size.w as f32,
                 dst.size.h as f32,
             ],
-            src: [
-                (src.loc.x / tw) as f32,
-                (src.loc.y / th) as f32,
-                (src.size.w / tw) as f32,
-                (src.size.h / th) as f32,
-            ],
+            src: [(src.loc.x / tw) as f32, v, (src.size.w / tw) as f32, vh],
             color: [1.0, 1.0, 1.0, 1.0],
             target: [
                 self.framebuffer.image.width() as f32,
@@ -589,7 +788,7 @@ impl Frame for VulkanFrame<'_, '_> {
 
         let image_info = vk::DescriptorImageInfo::default()
             .sampler(sampler)
-            .image_view(texture.0.view())
+            .image_view(texture.image.view())
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         let infos = [image_info];
         let write = vk::WriteDescriptorSet::default()
@@ -856,7 +1055,7 @@ mod tests {
         let second = h.renderer.import_dmabuf(&source, None).expect("second");
 
         assert!(
-            std::sync::Arc::ptr_eq(&first.0, &second.0),
+            std::sync::Arc::ptr_eq(&first.image, &second.image),
             "the second import allocated a second image"
         );
     }
@@ -873,6 +1072,139 @@ mod tests {
             .err()
             .expect("a transform this renderer cannot apply must be refused");
         assert!(error.to_string().contains("transform"), "{error}");
+    }
+
+    /// The shm path: pixels from the CPU, sampled onto the target.
+    #[test]
+    fn memory_can_be_imported_and_drawn() {
+        let Some(mut h) = harness() else { return };
+
+        // 8x8 of pure blue, as ARGB8888 sits in memory: B, G, R, A.
+        let pixels: Vec<u8> = std::iter::repeat([255u8, 0, 0, 255])
+            .take(8 * 8)
+            .flatten()
+            .collect();
+        let texture = h
+            .renderer
+            .import_memory(&pixels, Fourcc::Argb8888, (8, 8).into(), false)
+            .expect("import_memory");
+        assert_eq!(texture.width(), 8);
+        assert_eq!(texture.height(), 8);
+
+        let mut target = buffer(&mut h.allocator, 32, 32);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[])
+            .expect("clear");
+        frame
+            .render_texture_from_to(
+                &texture,
+                Rectangle::from_size(Size::from((8.0, 8.0))),
+                Rectangle::new(Point::from((8, 8)), Size::from((16, 16))),
+                &[],
+                &[],
+                Transform::Normal,
+                1.0,
+            )
+            .expect("draw");
+        let _ = frame.finish().expect("finish");
+        drop(framebuffer);
+
+        assert_eq!(pixel(&target, 16, 16), [255, 0, 0, 255], "inside");
+        assert_eq!(pixel(&target, 2, 2), [0, 0, 0, 255], "outside");
+    }
+
+    #[test]
+    fn a_memory_texture_can_be_updated_in_part() {
+        let Some(mut h) = harness() else { return };
+
+        let black: Vec<u8> = std::iter::repeat([0u8, 0, 0, 255])
+            .take(8 * 8)
+            .flatten()
+            .collect();
+        let texture = h
+            .renderer
+            .import_memory(&black, Fourcc::Argb8888, (8, 8).into(), false)
+            .expect("import");
+
+        // Repaint the left half red, in a full-size source buffer as the trait
+        // specifies.
+        let mut updated = black.clone();
+        for y in 0..8 {
+            for x in 0..4 {
+                let at = (y * 8 + x) * 4;
+                updated[at..at + 4].copy_from_slice(&[0, 0, 255, 255]);
+            }
+        }
+        h.renderer
+            .update_memory(
+                &texture,
+                &updated,
+                Rectangle::new(Point::from((0, 0)), Size::from((4, 8))),
+            )
+            .expect("update_memory");
+
+        let mut target = buffer(&mut h.allocator, 16, 16);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (16, 16).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &[])
+            .expect("clear");
+        frame
+            .render_texture_from_to(
+                &texture,
+                Rectangle::from_size(Size::from((8.0, 8.0))),
+                Rectangle::new(Point::from((0, 0)), Size::from((16, 16))),
+                &[],
+                &[],
+                Transform::Normal,
+                1.0,
+            )
+            .expect("draw");
+        let _ = frame.finish().expect("finish");
+        drop(framebuffer);
+
+        // Left half red from the update, right half still black.
+        assert_eq!(pixel(&target, 2, 8), [0, 0, 255, 255], "updated half");
+        assert_eq!(pixel(&target, 13, 8), [0, 0, 0, 255], "untouched half");
+    }
+
+    #[test]
+    fn a_dmabuf_texture_cannot_be_uploaded_into() {
+        // The client owns that memory. Writing to it would be a data race with
+        // whatever is painting into it, not an update.
+        let Some(mut h) = harness() else { return };
+        let source = buffer(&mut h.allocator, 8, 8);
+        let texture = h.renderer.import_dmabuf(&source, None).expect("import");
+
+        let data = vec![0u8; 8 * 8 * 4];
+        let error = h
+            .renderer
+            .update_memory(
+                &texture,
+                &data,
+                Rectangle::new(Point::from((0, 0)), Size::from((8, 8))),
+            )
+            .expect_err("a dmabuf texture is not uploadable");
+        assert!(error.to_string().contains("dmabuf"), "{error}");
+    }
+
+    #[test]
+    fn too_little_data_is_an_error_rather_than_a_read_past_the_end() {
+        let Some(mut h) = harness() else { return };
+        let short = vec![0u8; 4];
+        let error = h
+            .renderer
+            .import_memory(&short, Fourcc::Argb8888, (8, 8).into(), false)
+            .expect_err("a short buffer must be refused");
+        assert!(error.to_string().contains("bytes of pixels"), "{error}");
     }
 
     #[test]

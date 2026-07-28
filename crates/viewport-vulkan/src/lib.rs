@@ -30,6 +30,7 @@ pub mod format;
 pub mod image;
 pub mod pipeline;
 pub mod render;
+pub mod staging;
 pub mod renderer;
 
 #[cfg(test)]

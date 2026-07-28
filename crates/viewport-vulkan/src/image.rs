@@ -248,6 +248,105 @@ impl Image {
         })
     }
 
+    /// Allocate an image this renderer owns outright.
+    ///
+    /// Unlike [`Image::import`] there is no DMA-BUF and no modifier: the
+    /// driver picks an optimal tiling, because nothing outside this device
+    /// will ever look at the memory. This is what shm client buffers are
+    /// copied into.
+    pub fn allocate(
+        device: &Device,
+        width: u32,
+        height: u32,
+        fourcc: smithay::backend::allocator::Fourcc,
+    ) -> Result<Self> {
+        let vk_format =
+            format::to_vulkan(fourcc).ok_or_else(|| anyhow!("no Vulkan format for {fourcc:?}"))?;
+        let handle = device.handle();
+
+        let create_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk_format)
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+
+        let image = unsafe { handle.create_image(&create_info, None) }.context("vkCreateImage")?;
+
+        let result = (|| -> Result<(vk::DeviceMemory, vk::ImageView)> {
+            let requirements = unsafe { handle.get_image_memory_requirements(image) };
+            let memory_type = device
+                .memory_type_with(requirements.memory_type_bits, |flags| {
+                    flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                })
+                .ok_or_else(|| anyhow!("no device-local memory type"))?;
+
+            let allocate = vk::MemoryAllocateInfo::default()
+                .allocation_size(requirements.size)
+                .memory_type_index(memory_type);
+            let memory = unsafe { handle.allocate_memory(&allocate, None) }
+                .context("vkAllocateMemory")?;
+
+            if let Err(e) = unsafe { handle.bind_image_memory(image, memory, 0) } {
+                unsafe { handle.free_memory(memory, None) };
+                return Err(anyhow::Error::from(e).context("vkBindImageMemory"));
+            }
+
+            let view_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk_format)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            let view = match unsafe { handle.create_image_view(&view_info, None) } {
+                Ok(view) => view,
+                Err(e) => {
+                    unsafe { handle.free_memory(memory, None) };
+                    return Err(anyhow::Error::from(e).context("vkCreateImageView"));
+                }
+            };
+            Ok((memory, view))
+        })();
+
+        let (memory, view) = match result {
+            Ok(pair) => pair,
+            Err(e) => {
+                unsafe { handle.destroy_image(image, None) };
+                return Err(e);
+            }
+        };
+
+        Ok(Self {
+            device: device.clone(),
+            image,
+            memory,
+            view,
+            width,
+            height,
+            format: vk_format,
+            fourcc,
+            has_alpha: format::has_alpha(fourcc),
+            purpose: Purpose::Sample,
+            // Ours from the moment it is created: there is no other queue
+            // family that could have owned it.
+            foreign: std::cell::Cell::new(false),
+        })
+    }
+
     pub fn handle(&self) -> vk::Image {
         self.image
     }
@@ -309,7 +408,23 @@ impl Image {
     /// An imported buffer belongs to `VK_QUEUE_FAMILY_FOREIGN_EXT` until this
     /// runs. Skipping it is the kind of mistake that works on one driver and
     /// corrupts on another, because nothing checks it.
+    ///
+    /// `from` is `GENERAL`, not `UNDEFINED`, and the difference matters:
+    /// `UNDEFINED` tells the driver the contents may be thrown away, which for
+    /// a client buffer means the pixels the client just painted. `GENERAL` is
+    /// the layout an image written by a non-Vulkan API is conventionally in,
+    /// and it preserves them. Passing `UNDEFINED` is only correct for a target
+    /// about to be completely overwritten.
     pub fn acquire_barrier(&self, layout: vk::ImageLayout) -> vk::ImageMemoryBarrier<'static> {
+        self.acquire_barrier_from(vk::ImageLayout::GENERAL, layout)
+    }
+
+    /// [`Image::acquire_barrier`] with an explicit source layout.
+    pub fn acquire_barrier_from(
+        &self,
+        from: vk::ImageLayout,
+        to: vk::ImageLayout,
+    ) -> vk::ImageMemoryBarrier<'static> {
         let src_family = if self.foreign.replace(false) {
             vk::QUEUE_FAMILY_FOREIGN_EXT
         } else {
@@ -322,10 +437,35 @@ impl Image {
                 Purpose::Sample => vk::AccessFlags::SHADER_READ,
                 Purpose::Render => vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
             })
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(layout)
+            .old_layout(from)
+            .new_layout(to)
             .src_queue_family_index(src_family)
             .dst_queue_family_index(self.device.queue_family())
+            .image(self.image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+    }
+
+    /// A plain layout transition on an image this renderer already owns.
+    pub fn transition(
+        &self,
+        from: vk::ImageLayout,
+        to: vk::ImageLayout,
+        src_access: vk::AccessFlags,
+        dst_access: vk::AccessFlags,
+    ) -> vk::ImageMemoryBarrier<'static> {
+        vk::ImageMemoryBarrier::default()
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access)
+            .old_layout(from)
+            .new_layout(to)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(self.image)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
