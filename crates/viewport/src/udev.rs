@@ -808,6 +808,19 @@ impl ViewportState {
                 Some(output.clone())
             });
         }
+        // The lock screen too. It is not in the space and not a layer surface,
+        // so nothing else reaches it — and a locker that never gets a frame
+        // callback draws once and then stops, which is a lock screen whose
+        // indicator never appears no matter what is typed.
+        for lock in self.lock_surfaces.values() {
+            smithay::desktop::utils::send_frames_surface_tree(
+                lock.wl_surface(),
+                &output,
+                start,
+                Some(Duration::ZERO),
+                |_, _| Some(output.clone()),
+            );
+        }
         self.space.refresh();
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();

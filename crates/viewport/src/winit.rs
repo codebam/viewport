@@ -197,6 +197,17 @@ pub fn init(
                             Some(output.clone())
                         })
                     });
+                // The lock screen, which is neither of the above and would
+                // otherwise draw once and stop.
+                for lock in state.lock_surfaces.values() {
+                    smithay::desktop::utils::send_frames_surface_tree(
+                        lock.wl_surface(),
+                        &output,
+                        at,
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                }
 
                 state.space.refresh();
                 state.popups.cleanup();
