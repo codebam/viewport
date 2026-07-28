@@ -1046,7 +1046,7 @@ impl ViewportState {
             1.0,
             smithay::utils::Transform::Normal,
         );
-        tracker
+        let result = tracker
             .render_output(
                 renderer,
                 &mut framebuffer,
@@ -1055,6 +1055,20 @@ impl ViewportState {
                 smithay::backend::renderer::Color32F::from([0.0, 0.0, 0.0, 1.0]),
             )
             .map_err(|e| format!("compositing into the client's buffer: {e:?}"))?;
+
+        // Wait for the GPU to finish before the client is told the frame is
+        // ready.
+        //
+        // Rendering is asynchronous: `render_output` returns once the work is
+        // submitted, not once it is done. The shared-memory path reads the
+        // result back, which waits by itself; this one hands the client the
+        // buffer the GPU is still writing into, so a recorder that reads it
+        // immediately sees whatever was there before — an untouched buffer,
+        // which is black. That is a screen share of a black rectangle at the
+        // right resolution and the right frame rate.
+        if let Err(e) = result.sync.wait() {
+            return Err(format!("waiting for the capture to finish: {e}"));
+        }
         Ok(())
     }
 
