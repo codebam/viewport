@@ -82,20 +82,13 @@ impl Push {
         from: &crate::color::Description,
         to: &crate::color::Description,
     ) -> Self {
-        use crate::color::TransferFunction;
-
         let matrix = from.primaries.convert_to(&to.primaries);
         self.misc[1] = from.transfer.as_code() as f32;
         self.misc[2] = to.transfer.as_code() as f32;
-        // PQ carries absolute luminance of its own, so applying a relative
-        // scale alongside it would count the same thing twice.
-        self.misc[3] = if from.transfer == TransferFunction::Pq
-            || to.transfer == TransferFunction::Pq
-        {
-            1.0
-        } else {
-            from.reference_luminance / to.reference_luminance
-        };
+        // The same scale the reference implementation uses, rather than a
+        // second copy of the rule: the shader and `Description::convert` are
+        // checked against each other, and they can only disagree once.
+        self.misc[3] = crate::color::luminance_scale(from, to);
         self.csc0 = [matrix[0][0], matrix[0][1], matrix[0][2], 0.0];
         self.csc1 = [matrix[1][0], matrix[1][1], matrix[1][2], 0.0];
         self.csc2 = [matrix[2][0], matrix[2][1], matrix[2][2], 0.0];

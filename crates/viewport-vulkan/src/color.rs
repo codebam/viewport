@@ -44,6 +44,16 @@ impl TransferFunction {
     /// For PQ that means dividing out the absolute peak: a compositor works in
     /// relative light and applies the display's luminance at the end, so
     /// leaving PQ's 10000 cd/m² in would make everything else 0.
+    /// Whether this curve carries real luminance rather than a fraction of a
+    /// reference white.
+    ///
+    /// PQ does: its 1.0 is 10,000 cd/m² whatever the display. Everything else
+    /// here is relative, and the two cannot be mixed without saying what 1.0
+    /// is worth on each side.
+    pub fn is_absolute(self) -> bool {
+        matches!(self, Self::Pq)
+    }
+
     pub fn to_linear(self, value: f32) -> f32 {
         match self {
             Self::Linear => value,
@@ -239,6 +249,29 @@ impl Primaries {
     }
 }
 
+/// The scale between two descriptions' linear values.
+///
+/// PQ is absolute: 1.0 is 10,000 cd/m², and every other transfer function
+/// here is relative to a reference white. Converting between the two means
+/// changing what 1.0 means, and treating them as if they already agreed is
+/// what encoded an SDR desktop as 10,000 nits — every pixel driven to the
+/// panel's limit, which is the washed-out white an HDR output showed.
+pub fn luminance_scale(from: &Description, to: &Description) -> f32 {
+    /// What PQ's 1.0 means, in cd/m².
+    const PQ_PEAK: f32 = 10_000.0;
+
+    match (from.transfer.is_absolute(), to.transfer.is_absolute()) {
+        // Both relative, or both absolute: only the reference whites differ.
+        (false, false) => from.reference_luminance / to.reference_luminance,
+        (true, true) => 1.0,
+        // Relative into absolute: SDR white is `reference_luminance` nits, and
+        // PQ wants that as a fraction of 10,000.
+        (false, true) => from.reference_luminance / PQ_PEAK,
+        // Absolute into relative: the other way about.
+        (true, false) => PQ_PEAK / to.reference_luminance,
+    }
+}
+
 pub const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// Everything the renderer needs to know about one image's colour.
@@ -276,15 +309,7 @@ impl Description {
         ];
         let matrix = self.primaries.convert_to(&to.primaries);
         let converted = multiply_vector(&matrix, linear);
-        // Relative luminance: a surface authored for a dimmer reference white
-        // has to be scaled to sit correctly next to one that was not.
-        let scale = if self.transfer == TransferFunction::Pq
-            || to.transfer == TransferFunction::Pq
-        {
-            1.0
-        } else {
-            self.reference_luminance / to.reference_luminance
-        };
+        let scale = luminance_scale(self, to);
         [
             to.transfer.from_linear(converted[0] * scale),
             to.transfer.from_linear(converted[1] * scale),
@@ -341,6 +366,58 @@ fn invert(m: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn sdr_white_reaches_an_hdr_screen_as_sdr_white() {
+        // PQ is absolute — its 1.0 is 10,000 cd/m² — and sRGB is relative to a
+        // reference white of 203. Handing PQ a relative 1.0 asks the panel for
+        // ten thousand nits of white, which is every pixel at the limit: the
+        // washed-out picture an HDR output showed for an ordinary desktop.
+        let sdr = Description::default();
+        let hdr = Description {
+            transfer: TransferFunction::Pq,
+            primaries: Primaries::BT2020,
+            reference_luminance: 203.0,
+        };
+
+        let white = sdr.convert(&hdr, [1.0, 1.0, 1.0]);
+        // 203 cd/m² is 2.03% of PQ's peak, which encodes near 0.58.
+        assert!(
+            (white[0] - 0.580).abs() < 0.01,
+            "sdr white encoded as {} rather than about 0.58",
+            white[0]
+        );
+        // And not the top of the range, which is what it was.
+        assert!(white[0] < 0.9, "sdr white is being sent as peak brightness");
+
+        // Black stays black.
+        let black = sdr.convert(&hdr, [0.0, 0.0, 0.0]);
+        assert!(black[0] < 0.001, "black came out at {}", black[0]);
+    }
+
+    #[test]
+    fn hdr_content_on_an_sdr_screen_is_not_multiplied_by_ten_thousand() {
+        // The other direction: PQ's 1.0 is 10,000 nits and an SDR screen's is
+        // 203, so the same value has to come back down.
+        let hdr = Description {
+            transfer: TransferFunction::Pq,
+            primaries: Primaries::BT2020,
+            reference_luminance: 203.0,
+        };
+        assert_eq!(luminance_scale(&hdr, &Description::default()), 10_000.0 / 203.0);
+    }
+
+    #[test]
+    fn two_relative_descriptions_only_compare_their_reference_whites() {
+        let dim = Description {
+            reference_luminance: 100.0,
+            ..Description::default()
+        };
+        let bright = Description::default();
+        assert!((luminance_scale(&dim, &bright) - 100.0 / 203.0).abs() < 1e-6);
+        assert_eq!(luminance_scale(&bright, &bright), 1.0);
+    }
+
     use super::*;
 
     fn close(a: f32, b: f32, tolerance: f32) -> bool {
