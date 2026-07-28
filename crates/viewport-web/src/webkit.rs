@@ -301,9 +301,13 @@ impl WebView {
         // render_buffer. Both calls are on the thread that drives GLib.
         unsafe {
             let wpe_view = webkit_web_view_get_wpe_view(self.view);
-            if !wpe_view.is_null() {
-                wpe_view_buffer_released(wpe_view, token.as_ptr());
+            if wpe_view.is_null() {
+                // Nothing would ever get its buffers back, so say so rather
+                // than silently stalling the engine one frame later.
+                tracing::error!("the web view has no WPEView to release against");
+                return;
             }
+            wpe_view_buffer_released(wpe_view, token.as_ptr());
         }
     }
 }
