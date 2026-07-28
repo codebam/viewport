@@ -1138,11 +1138,11 @@ impl<'frame, 'buffer> VulkanFrame<'frame, 'buffer> {
     /// so on the second monitor it is drawn at minus that monitor's position
     /// and every damage rectangle lands a screen's width outside the
     /// framebuffer. Nothing is drawn and the output shows the clear colour.
-    fn set_scissor_within(
+    fn scissors_within(
         &self,
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
-    ) {
+    ) -> Vec<Rectangle<i32, Physical>> {
         // No damage means the whole destination. Smithay's GLES renderer draws
         // nothing here instead; erring towards drawing too much costs a
         // redraw, and erring the other way blanks the screen.
@@ -1166,17 +1166,19 @@ impl<'frame, 'buffer> VulkanFrame<'frame, 'buffer> {
             .map(|rect| self.transform.transform_rect_in(rect, &self.output_size))
             .collect();
 
-        // Every rectangle fell outside the destination, so there is nothing to
-        // draw. An empty list would scissor to the whole framebuffer and draw
-        // everywhere instead.
-        if rects.is_empty() {
-            self.set_scissor(&[Rectangle::default()]);
-            return;
-        }
-        self.set_scissor(&rects);
+        rects
     }
 
+    /// Set the one scissor the pipeline has.
+    ///
+    /// `scissor_count` is 1, so `cmd_set_scissor` with an array sets registers
+    /// the pipeline never reads: everything after the first rectangle is
+    /// silently ignored, and the geometry it was meant to clip is simply not
+    /// drawn. Damage arrives as several rectangles the moment a window sits in
+    /// front of something — the region around it is a frame, not a box — so
+    /// the caller draws once per rectangle instead.
     fn set_scissor(&self, rects: &[Rectangle<i32, Physical>]) {
+        debug_assert!(rects.len() <= 1, "the pipeline has one scissor");
         let target = &self.framebuffer.image;
         let scissors: Vec<vk::Rect2D> = if rects.is_empty() {
             vec![vk::Rect2D {
@@ -1246,7 +1248,10 @@ impl Frame for VulkanFrame<'_, '_> {
         damage: &[Rectangle<i32, Physical>],
         color: Color32F,
     ) -> Result<(), Self::Error> {
-        self.set_scissor_within(dst, damage);
+        let scissors = self.scissors_within(dst, damage);
+        if scissors.is_empty() {
+            return Ok(());
+        }
 
         let target_format = self.framebuffer.image.format();
         let pipeline = self
@@ -1278,7 +1283,13 @@ impl Frame for VulkanFrame<'_, '_> {
                 0,
                 push.as_bytes(),
             );
-            handle.cmd_draw(buffer, 4, 1, 0, 0);
+            // One draw per rectangle. The pipeline declares a single scissor,
+            // so setting an array of them leaves everything after the first
+            // silently unclipped-to — see `set_scissor`.
+            for rect in &scissors {
+                self.set_scissor(std::slice::from_ref(rect));
+                handle.cmd_draw(buffer, 4, 1, 0, 0);
+            }
         }
 
         self.set_scissor(&[]);
@@ -1295,7 +1306,10 @@ impl Frame for VulkanFrame<'_, '_> {
         src_transform: Transform,
         alpha: f32,
     ) -> Result<(), Self::Error> {
-        self.set_scissor_within(dst, damage);
+        let scissors = self.scissors_within(dst, damage);
+        if scissors.is_empty() {
+            return Ok(());
+        }
 
         let position = crate::transform::position(dst, self.output_size, self.transform);
         let texcoord = crate::transform::texture(
@@ -1346,7 +1360,11 @@ impl Frame for VulkanFrame<'_, '_> {
                 0,
                 push.as_bytes(),
             );
-            handle.cmd_draw(buffer, 4, 1, 0, 0);
+            // One draw per rectangle, as in draw_solid.
+            for rect in &scissors {
+                self.set_scissor(std::slice::from_ref(rect));
+                handle.cmd_draw(buffer, 4, 1, 0, 0);
+            }
         }
 
         self.set_scissor(&[]);
@@ -1996,6 +2014,73 @@ mod tests {
             [255, 0, 0, 255],
             "the buffer is opaque blue, not the red behind it"
         );
+    }
+
+    /// Damage arrives as several rectangles, and every one of them has to be
+    /// drawn.
+    ///
+    /// The pipeline declares a single scissor, so handing cmd_set_scissor an
+    /// array sets registers nothing reads: everything after the first
+    /// rectangle is silently dropped. That is not a corner case — the moment a
+    /// window sits in front of the shell, the region of the shell still
+    /// visible is a frame around it, which is four rectangles. Only the first
+    /// was drawn, so the desktop survived above the window and the strips
+    /// beside and below it were left at the clear colour.
+    #[test]
+    fn every_damage_rectangle_is_drawn_not_just_the_first() {
+        let Some(mut h) = harness() else { return };
+
+        let source = buffer(&mut h.allocator, 64, 64);
+        fill(&source, [0, 255, 0, 255], 64, 64);
+        let texture = h.renderer.import_dmabuf(&source, None).expect("import");
+
+        let mut target = buffer(&mut h.allocator, 64, 64);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (64, 64).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &[])
+            .expect("clear");
+
+        // A frame around a hole, as the visible part of the shell is when a
+        // window covers its middle.
+        let damage = [
+            Rectangle::new(Point::from((0, 0)), Size::from((64, 8))),
+            Rectangle::new(Point::from((0, 56)), Size::from((64, 8))),
+            Rectangle::new(Point::from((0, 8)), Size::from((8, 48))),
+            Rectangle::new(Point::from((56, 8)), Size::from((8, 48))),
+        ];
+        frame
+            .render_texture_from_to(
+                &texture,
+                Rectangle::from_size(Size::from((64.0, 64.0))),
+                Rectangle::new(Point::from((0, 0)), Size::from((64, 64))),
+                &damage,
+                &[],
+                Transform::Normal,
+                1.0,
+            )
+            .expect("render_texture_from_to");
+        let _ = frame.finish().expect("finish");
+        drop(framebuffer);
+
+        // Every side of the frame.
+        for (x, y, side) in [
+            (32usize, 4usize, "top"),
+            (32, 60, "bottom"),
+            (4, 32, "left"),
+            (60, 32, "right"),
+        ] {
+            assert_eq!(
+                pixel(&target, x, y),
+                [0, 255, 0, 255],
+                "the {side} damage rectangle was not drawn"
+            );
+        }
+        // The hole is not damaged, so it keeps the clear colour.
+        assert_eq!(pixel(&target, 32, 32), [255, 0, 0, 255], "undamaged middle");
     }
 
     #[test]
