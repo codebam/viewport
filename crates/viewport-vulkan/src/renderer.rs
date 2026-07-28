@@ -855,16 +855,23 @@ impl Frame for VulkanFrame<'_, '_> {
         }
         self.renderer.commands.submit()?;
 
-        // A CPU wait, returning an already-signalled point.
+        // Hand back a fence rather than waiting for one. The caller passes the
+        // fd to KMS, which waits on it in hardware — nothing on the CPU blocks
+        // between submitting a frame and starting the next.
         //
-        // The honest version exports a fence fd from the submission and hands
-        // it back as the SyncPoint, so the caller can pass it to KMS instead
-        // of blocking. That needs VK_KHR_external_semaphore_fd wired into the
-        // submit, and it is the next thing this crate should grow.
-        self.renderer
-            .commands
-            .wait(std::time::Duration::from_secs(5))?;
-        Ok(SyncPoint::signaled())
+        // A driver that cannot export leaves us with the CPU wait, which is
+        // slower and still correct.
+        match self.renderer.commands.export_fence() {
+            Ok(Some(fd)) => Ok(SyncPoint::from(crate::sync::SyncFile::new(fd))),
+            Ok(None) => Ok(SyncPoint::signaled()),
+            Err(e) => {
+                tracing::debug!("no exportable fence ({e:#}); falling back to a CPU wait");
+                self.renderer
+                    .commands
+                    .wait(std::time::Duration::from_secs(5))?;
+                Ok(SyncPoint::signaled())
+            }
+        }
     }
 }
 
@@ -895,6 +902,7 @@ mod tests {
     use smithay::backend::allocator::dmabuf::{AsDmabuf, DmabufMappingMode, DmabufSyncFlags};
     use smithay::backend::allocator::{Allocator, Modifier};
     use smithay::utils::Point;
+    use std::os::fd::AsRawFd;
 
     #[test]
     fn errors_carry_their_cause() {
@@ -1174,6 +1182,42 @@ mod tests {
         // Left half red from the update, right half still black.
         assert_eq!(pixel(&target, 2, 8), [0, 0, 255, 255], "updated half");
         assert_eq!(pixel(&target, 13, 8), [0, 0, 0, 255], "untouched half");
+    }
+
+    /// The point of explicit sync: a frame hands back a fence, not a promise
+    /// that the CPU already waited.
+    #[test]
+    fn finishing_a_frame_yields_a_real_fence() {
+        let Some(mut h) = harness() else { return };
+        let mut target = buffer(&mut h.allocator, 32, 32);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+            .expect("clear");
+        let sync = frame.finish().expect("finish");
+
+        assert!(
+            sync.contains_fence(),
+            "finish() fell back to a CPU wait; the driver could not export a fence"
+        );
+        assert!(sync.is_exportable(), "the fence cannot be handed to KMS");
+
+        // Exporting gives an fd the caller owns, which is what would be passed
+        // to a drm_syncobj timeline or an atomic commit.
+        let exported = sync.export().expect("export");
+        assert!(exported.as_raw_fd() >= 0);
+
+        // And it does actually signal, rather than being an fd that never
+        // becomes readable.
+        sync.wait().expect("wait");
+        assert!(sync.is_reached());
+        drop(framebuffer);
+
+        assert_eq!(pixel(&target, 16, 16), [0, 0, 255, 255], "the frame drew");
     }
 
     #[test]

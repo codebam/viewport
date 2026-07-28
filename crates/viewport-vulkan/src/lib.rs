@@ -31,6 +31,7 @@ pub mod image;
 pub mod pipeline;
 pub mod render;
 pub mod staging;
+pub mod sync;
 pub mod renderer;
 
 #[cfg(test)]

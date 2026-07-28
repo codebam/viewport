@@ -73,6 +73,7 @@ struct Inner {
     external_memory_fd: ash::khr::external_memory_fd::Device,
     dynamic_rendering: ash::khr::dynamic_rendering::Device,
     push_descriptor: ash::khr::push_descriptor::Device,
+    external_semaphore_fd: ash::khr::external_semaphore_fd::Device,
 }
 
 impl Device {
@@ -171,6 +172,8 @@ impl Device {
         let external_memory_fd = ash::khr::external_memory_fd::Device::new(instance, &device);
         let dynamic_rendering = ash::khr::dynamic_rendering::Device::new(instance, &device);
         let push_descriptor = ash::khr::push_descriptor::Device::new(instance, &device);
+        let external_semaphore_fd =
+            ash::khr::external_semaphore_fd::Device::new(instance, &device);
 
         let has_timeline_semaphores = enabled.contains(&vk::KHR_TIMELINE_SEMAPHORE_NAME)
             || physical.api_version() >= Version::VERSION_1_2;
@@ -190,6 +193,7 @@ impl Device {
             external_memory_fd,
             dynamic_rendering,
             push_descriptor,
+            external_semaphore_fd,
         })))
     }
 
@@ -203,6 +207,10 @@ impl Device {
 
     pub fn push_descriptor(&self) -> &ash::khr::push_descriptor::Device {
         &self.0.push_descriptor
+    }
+
+    pub fn external_semaphore_fd(&self) -> &ash::khr::external_semaphore_fd::Device {
+        &self.0.external_semaphore_fd
     }
 
     /// The index of a memory type satisfying `requirements` and allowed by

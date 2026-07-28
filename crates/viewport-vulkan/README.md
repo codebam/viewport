@@ -28,7 +28,7 @@ a CPU mapping of the rendered buffer rather than trusting the GPU.
 - [x] `Renderer`, `Frame`, `Bind`, `ImportDma`
 - [x] `ImportMem` — shm clients, via a staging buffer
 - [ ] Output and surface transforms (currently refused, not ignored)
-- [ ] Explicit sync: export a fence instead of waiting on the CPU
+- [x] Explicit sync: `finish()` returns an exported `sync_file` fence
 - [ ] Colour management
 
 ## Why Vulkan
