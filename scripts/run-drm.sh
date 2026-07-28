@@ -37,7 +37,21 @@ binary="$here/target/release/viewport"
 [ -x "$binary" ] || binary="$here/target/debug/viewport"
 if [ ! -x "$binary" ]; then
     echo "no binary; build one first:" >&2
-    echo "  nix develop --command cargo build -p viewport" >&2
+    echo "  nix develop --command cargo build -p viewport --features wpe" >&2
+    exit 1
+fi
+
+# The shell is behind a feature flag, and `cargo test` builds this same path
+# without it — so a test run silently replaces a working binary with one that
+# has no web engine in it. What that looks like is a session that comes up
+# grey where the wallpaper and the bar should be, with nothing on screen to say
+# why.
+#
+# This string exists only in a build that has the shell.
+if ! grep -qa "starting the shell at" "$binary"; then
+    echo "$binary has no shell in it: built without --features wpe," >&2
+    echo "or overwritten by a cargo test run. Build it again:" >&2
+    echo "  nix develop --command cargo build --release -p viewport --features wpe" >&2
     exit 1
 fi
 
