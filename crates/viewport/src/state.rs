@@ -205,6 +205,9 @@ pub struct ViewportState {
     /// Clipboard managers, which need to watch selections they do not own.
     pub data_control_state:
         smithay::wayland::selection::wlr_data_control::DataControlState,
+    /// ext-data-control-v1: the same, standardised.
+    pub ext_data_control_state:
+        smithay::wayland::selection::ext_data_control::DataControlState,
     /// Something asking the session not to go idle — a video player.
     pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
     /// Clients that want to know when the session went idle, rather than
@@ -410,6 +413,16 @@ impl ViewportState {
                 Some(&primary_selection_state),
                 |_| true,
             );
+        // The newer clipboard-manager protocol beside the wlroots one. Both
+        // do the same job and clients are moving between them: cliphist and
+        // wl-clipboard bind whichever they find, and a session that publishes
+        // only the old one loses the newer builds.
+        let ext_data_control_state =
+            smithay::wayland::selection::ext_data_control::DataControlState::new::<Self, _>(
+                &dh,
+                Some(&primary_selection_state),
+                |_| true,
+            );
         let idle_inhibit_state =
             smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(&dh);
         let idle_notifier_state =
@@ -568,6 +581,7 @@ impl ViewportState {
             pending_copies: Vec::new(),
             primary_selection_state,
             data_control_state,
+            ext_data_control_state,
             idle_inhibit_state,
             idle_notifier_state,
             idle_inhibitors: Vec::new(),

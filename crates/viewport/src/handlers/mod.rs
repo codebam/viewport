@@ -313,6 +313,14 @@ impl smithay::wayland::selection::wlr_data_control::DataControlHandler for Viewp
     }
 }
 
+impl smithay::wayland::selection::ext_data_control::DataControlHandler for ViewportState {
+    fn data_control_state(
+        &mut self,
+    ) -> &mut smithay::wayland::selection::ext_data_control::DataControlState {
+        &mut self.ext_data_control_state
+    }
+}
+
 /// Something asking the session not to go idle, which is what a video player
 /// does while it is playing.
 ///
