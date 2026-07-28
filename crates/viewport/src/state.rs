@@ -591,6 +591,83 @@ impl ViewportState {
         }
     }
 
+    /// Lay every window out ourselves, because the shell has not.
+    ///
+    /// Only reached when a window has been waiting for a rectangle longer than
+    /// the shell should ever take. Everything it places is marked as placed,
+    /// so the watchdog does not fire again for the same windows — and the
+    /// moment a real `view.layout` arrives it overrides this.
+    pub fn watchdog_fire(&mut self, id: u32) {
+        // Answered after all: a shell that is merely slow costs nothing.
+        if self.views.get(id).map(|view| view.placed).unwrap_or(true) {
+            return;
+        }
+
+        tracing::error!(
+            "the shell did not place view {id} within {}ms; falling back to a \
+             built-in layout. The shell is broken or unreachable.",
+            crate::watchdog::TIMEOUT.as_millis()
+        );
+
+        let (width, height) = self.layout_size();
+        let origin = self
+            .space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .map(|geometry| (geometry.loc.x, geometry.loc.y))
+            .min()
+            .unwrap_or((0, 0));
+
+        let ids: Vec<u32> = self
+            .views
+            .iter()
+            .filter(|view| view.mapped && view.visible)
+            .map(|view| view.id)
+            .collect();
+
+        for placed in crate::watchdog::columns(
+            &ids,
+            (origin.0, origin.1, width as i32, height as i32),
+        ) {
+            // Through the ordinary layout path, so a window ends up configured
+            // and mapped exactly as the shell would have done it.
+            crate::apply::apply(
+                self,
+                viewport_ipc::Request::ViewLayout(viewport_ipc::request::ViewLayout {
+                    id: placed.id,
+                    box_: viewport_ipc::geometry::PartialBox {
+                        x: Some(placed.x),
+                        y: Some(placed.y),
+                        width: Some(placed.width),
+                        height: Some(placed.height),
+                    },
+                    // No clip: a clip describes the hole the shell drew, and
+                    // there is no shell answering.
+                    clip: None,
+                    scale: None,
+                }),
+            );
+        }
+    }
+
+    /// The size of everything, which is what the shell spans.
+    ///
+    /// Not gated on the web engine: the layout watchdog needs it too, and a
+    /// compositor built without a shell still has outputs to lay windows out
+    /// across.
+    pub fn layout_size(&self) -> (u32, u32) {
+        let size = self.space.outputs().fold((0i32, 0i32), |acc, output| {
+            match self.space.output_geometry(output) {
+                Some(geometry) => (
+                    acc.0.max(geometry.loc.x + geometry.size.w),
+                    acc.1.max(geometry.loc.y + geometry.size.h),
+                ),
+                None => acc,
+            }
+        });
+        (size.0.max(0) as u32, size.1.max(0) as u32)
+    }
+
     /// One idle tick: lock and blank when their deadlines pass.
     pub fn idle_tick(&mut self) {
         if !self.idle_settings.wanted() {
@@ -1440,19 +1517,6 @@ impl ViewportState {
 
     }
 
-    /// The size of everything, which is what the shell spans.
-    pub fn layout_size(&self) -> (u32, u32) {
-        let size = self.space.outputs().fold((0i32, 0i32), |acc, output| {
-            match self.space.output_geometry(output) {
-                Some(geometry) => (
-                    acc.0.max(geometry.loc.x + geometry.size.w),
-                    acc.1.max(geometry.loc.y + geometry.size.h),
-                ),
-                None => acc,
-            }
-        });
-        (size.0.max(0) as u32, size.1.max(0) as u32)
-    }
 
     /// Tell the shell how big it is.
     ///

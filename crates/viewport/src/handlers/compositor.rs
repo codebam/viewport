@@ -110,7 +110,22 @@ impl ViewportState {
         .unwrap_or_else(|| "no surface state".to_owned());
         tracing::info!("view {}: {kind}", added.id);
 
+        let id = added.id;
         self.notify(&Event::ViewAdded(added));
+
+        // Watch for the shell answering. A window that maps and is never given
+        // a rectangle is invisible for ever, and a shell that has stopped
+        // answering gives no other sign — the session looks like a black
+        // screen with a working keyboard.
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(
+            crate::watchdog::TIMEOUT,
+        );
+        if let Err(e) = self.loop_handle.insert_source(timer, move |_, _, state| {
+            state.watchdog_fire(id);
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        }) {
+            tracing::warn!("could not arm the layout watchdog for view {id}: {e}");
+        }
     }
 }
 

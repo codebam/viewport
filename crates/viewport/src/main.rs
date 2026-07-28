@@ -30,6 +30,7 @@ mod shell;
 mod state;
 mod udev;
 mod views;
+mod watchdog;
 mod winit;
 
 use anyhow::Result;

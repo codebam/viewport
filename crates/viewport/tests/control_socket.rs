@@ -284,6 +284,63 @@ fn a_layer_shell_client_is_configured_with_a_real_size() {
     );
 }
 
+/// A window still gets a rectangle when nothing answers view.added.
+///
+/// The whole layout lives in a web page, so a shell that throws, fails to load
+/// or is served from a machine that has gone away places nothing — and a
+/// window that is never placed is never shown. Without this the session is a
+/// black screen with a working keyboard and no way to find out why.
+#[test]
+fn an_unanswered_window_is_laid_out_anyway() {
+    let compositor = Compositor::start("watchdog");
+    let display = compositor
+        .wayland_display()
+        .expect("the compositor never announced a wayland display");
+
+    // A client, and deliberately no shell: nothing will answer view.added.
+    let mut client = compositor.connect();
+    let mut child = match Command::new("foot")
+        .env("WAYLAND_DISPLAY", &display)
+        .arg("-e")
+        .arg("sleep")
+        .arg("30")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        // Not installed; the assertion would test nothing.
+        Err(_) => return,
+    };
+
+    let added = client.wait_for("view.added");
+    let id = added["id"].as_u64().expect("an id");
+
+    // Nothing places it, so the watchdog has to. Its deadline is 2500ms.
+    std::thread::sleep(Duration::from_millis(4000));
+    client.send(r#"{"type":"view.query"}"#);
+
+    // The replay carries the geometry the compositor settled on.
+    let mut placed = None;
+    for _ in 0..64 {
+        let message = client.wait_for("view.added");
+        if message["id"].as_u64() == Some(id) && message["replay"] == true {
+            placed = Some(message);
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let placed = placed.expect("the window was never replayed");
+    // The headless output is 1920x1080 and this is the only window, so the
+    // fallback gives it the whole thing.
+    assert_eq!(
+        placed["width"], 1920,
+        "the watchdog did not lay the window out: {placed}"
+    );
+}
+
 #[test]
 fn a_malformed_message_comes_back_as_an_error() {
     let compositor = Compositor::start("malformed");
