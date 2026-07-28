@@ -93,6 +93,18 @@ pub struct ViewportState {
     /// changed and would repaint the whole output forever.
     #[cfg(feature = "wpe")]
     pub shell_element_id: smithay::backend::renderer::element::Id,
+    /// What changed in the shell's buffer since the last frame.
+    ///
+    /// Required, not an optimisation. With a stable id the damage tracker
+    /// decides whether to redraw by asking the element what changed, and an
+    /// element built with `DamageSnapshot::empty()` answers "nothing" for
+    /// ever — so the outputs go quiet after the first frame while WebKit
+    /// carries on painting into buffers nobody draws.
+    #[cfg(feature = "wpe")]
+    pub shell_damage: smithay::backend::renderer::utils::DamageBag<
+        i32,
+        smithay::utils::Buffer,
+    >,
 
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
@@ -175,6 +187,8 @@ impl ViewportState {
             shell_frames: 0,
             #[cfg(feature = "wpe")]
             shell_element_id: smithay::backend::renderer::element::Id::new(),
+            #[cfg(feature = "wpe")]
+            shell_damage: Default::default(),
 
             color_management,
             compositor_state,
@@ -507,6 +521,13 @@ impl ViewportState {
                             }
                         }
                     }
+                    // The whole buffer, because WebKit's per-frame damage
+                    // rectangles are not carried across the shim. Redrawing
+                    // more than changed costs a composite; reporting none at
+                    // all stops the output.
+                    self.shell_damage.add([smithay::utils::Rectangle::from_size(
+                        (pending.buffer.width() as i32, pending.buffer.height() as i32).into(),
+                    )]);
                     self.shell_texture = Some(texture);
                     // Held so the buffer outlives the texture that samples it.
                     self.shell_buffer = Some(pending.buffer);

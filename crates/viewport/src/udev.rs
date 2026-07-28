@@ -503,6 +503,8 @@ impl ViewportState {
         let shell_texture = self.import_shell_frame();
         #[cfg(feature = "wpe")]
         let shell_element_id = self.shell_element_id.clone();
+        #[cfg(feature = "wpe")]
+        let shell_damage = self.shell_damage.snapshot();
         let output_geometry = self
             .udev
             .as_ref()
@@ -579,7 +581,7 @@ impl ViewportState {
         #[cfg(feature = "wpe")]
         if let Some(texture) = shell_texture.as_ref() {
             elements.push(OutputElement::from(
-                TextureRenderElement::from_static_texture(
+                TextureRenderElement::from_texture_with_damage(
                     shell_element_id,
                     udev.renderer.context_id(),
                     // Negative of the output's position: the shell is one
@@ -593,6 +595,10 @@ impl ViewportState {
                     None,
                     None,
                     None,
+                    // What changed since the last frame. Without it a stable
+                    // element id means the tracker is told nothing ever
+                    // changes, and the outputs stop after the first frame.
+                    shell_damage,
                     Kind::Unspecified,
                 ),
             ));

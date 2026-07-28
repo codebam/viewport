@@ -1732,6 +1732,113 @@ mod tests {
         }
     }
 
+    /// A shell element with a stable id has to carry damage, or the second
+    /// frame is never drawn.
+    ///
+    /// The id has to be stable: a fresh one per frame makes the tracker treat
+    /// the shell as a new element every time and repaint the whole output for
+    /// ever. But a stable id means the tracker decides whether to redraw by
+    /// asking the element what changed, and one built with
+    /// DamageSnapshot::empty() answers "nothing" for ever — the outputs go
+    /// quiet after the first frame while WebKit carries on painting.
+    #[test]
+    fn a_stable_element_id_still_redraws_when_its_damage_changes() {
+        use smithay::backend::renderer::damage::OutputDamageTracker;
+        use smithay::backend::renderer::element::texture::TextureRenderElement;
+        use smithay::backend::renderer::element::{Id, Kind};
+        use smithay::backend::renderer::utils::DamageBag;
+        use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
+
+        let Some(mut h) = harness() else { return };
+
+        let source = buffer(&mut h.allocator, 32, 32);
+        fill(&source, [0, 255, 0, 255], 32, 32);
+        let texture = h.renderer.import_dmabuf(&source, None).expect("import");
+
+        let output = Output::new(
+            "DP-1".to_owned(),
+            PhysicalProperties {
+                size: (600, 340).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".to_owned(),
+                model: "test".to_owned(),
+                serial_number: "test".to_owned(),
+            },
+        );
+        let mode = OutputMode {
+            size: (32, 32).into(),
+            refresh: 60_000,
+        };
+        output.change_current_state(Some(mode), None, None, Some((0, 0).into()));
+        output.set_preferred(mode);
+
+        let id = Id::new();
+        let mut bag: DamageBag<i32, BufferCoord> = DamageBag::default();
+        let mut target = buffer(&mut h.allocator, 32, 32);
+
+        let mut element = |bag: &DamageBag<i32, BufferCoord>, renderer: &VulkanRenderer| {
+            TextureRenderElement::from_texture_with_damage(
+                id.clone(),
+                renderer.context_id(),
+                (0.0, 0.0),
+                texture.clone(),
+                1,
+                Transform::Normal,
+                None,
+                None,
+                None,
+                None,
+                bag.snapshot(),
+                Kind::Unspecified,
+            )
+        };
+
+        let mut tracker = OutputDamageTracker::from_output(&output);
+        // The buffer age matters: 0 means "the contents of this buffer are
+        // unknown", which always reports full damage and would make every
+        // assertion below pass regardless.
+        let mut render = |h: &mut Harness,
+                          tracker: &mut OutputDamageTracker,
+                          target: &mut Dmabuf,
+                          bag: &DamageBag<i32, BufferCoord>,
+                          age: usize| {
+            let el = element(bag, &h.renderer);
+            let mut framebuffer = h.renderer.bind(target).expect("bind");
+            let result = tracker
+                .render_output(
+                    &mut h.renderer,
+                    &mut framebuffer,
+                    age,
+                    &[el],
+                    Color32F::from([0.0, 0.0, 1.0, 1.0]),
+                )
+                .expect("render_output");
+            let damaged = result.damage.map(|d| !d.is_empty()).unwrap_or(false);
+            drop(framebuffer);
+            damaged
+        };
+
+        bag.add([Rectangle::from_size(Size::from((32, 32)))]);
+        assert!(
+            render(&mut h, &mut tracker, &mut target, &bag, 0),
+            "the first frame always draws"
+        );
+
+        // Nothing new: the shell has not painted, so there is nothing to do.
+        assert!(
+            !render(&mut h, &mut tracker, &mut target, &bag, 1),
+            "an unchanged shell should not repaint"
+        );
+
+        // A new frame from WebKit. Without the damage this returns false and
+        // the output stops for good.
+        bag.add([Rectangle::from_size(Size::from((32, 32)))]);
+        assert!(
+            render(&mut h, &mut tracker, &mut target, &bag, 1),
+            "a new shell frame has to redraw, or the display freezes"
+        );
+    }
+
     #[test]
     fn importing_the_same_buffer_twice_reuses_the_image() {
         // Without this the renderer would allocate a fresh VkImage and a fresh
