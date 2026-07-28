@@ -445,6 +445,7 @@ impl ViewportState {
     /// pixels are on screen — and it means the engine may run one frame ahead
     /// of the display.
     pub fn import_shell_frame(&mut self) -> Option<viewport_vulkan::VulkanTexture> {
+        use smithay::backend::allocator::Buffer as _;
         use smithay::backend::renderer::ImportDma as _;
 
         if let Some(pending) = self.shell.as_ref().and_then(|shell| shell.take_frame()) {
@@ -455,6 +456,16 @@ impl ViewportState {
 
             match imported {
                 Some(Ok(texture)) => {
+                    // Once. "The shell did not appear" has two causes that
+                    // look identical in the log otherwise: WebKit never
+                    // painted, or it painted and the frame was not drawn.
+                    if self.shell_texture.is_none() {
+                        tracing::info!(
+                            "first shell frame imported, {}x{}",
+                            pending.buffer.width(),
+                            pending.buffer.height()
+                        );
+                    }
                     self.shell_texture = Some(texture);
                     // Held so the buffer outlives the texture that samples it.
                     self.shell_buffer = Some(pending.buffer);

@@ -27,12 +27,13 @@ use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType}
 use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-#[cfg(feature = "wpe")]
 use smithay::backend::renderer::element::texture::TextureRenderElement;
+use smithay::backend::renderer::element::AsRenderElements as _;
 #[cfg(feature = "wpe")]
 use smithay::backend::renderer::element::{Id, Kind};
 #[cfg(feature = "wpe")]
 use smithay::backend::renderer::Renderer as _;
+use smithay::desktop::Window;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent};
@@ -40,7 +41,7 @@ use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::drm::control::{connector, crtc, Device as _, ModeTypeFlags};
 use smithay::reexports::rustix::fs::OFlags;
-use smithay::utils::DeviceFd;
+use smithay::utils::{DeviceFd, Physical, Point};
 
 use viewport_vulkan::{Device as VulkanDevice, VulkanRenderer};
 
@@ -58,8 +59,16 @@ const SCANOUT_FORMATS: &[Fourcc] = &[
     Fourcc::Xrgb8888,
 ];
 
-#[cfg(feature = "wpe")]
-type ShellElement = TextureRenderElement<viewport_vulkan::VulkanTexture>;
+smithay::backend::renderer::element::render_elements! {
+    /// Everything one output draws.
+    ///
+    /// Two kinds, because the shell is not a Wayland client: it is a texture
+    /// imported straight from WebKit's DMA-BUF, sharing nothing with a
+    /// surface but the renderer it is sampled by.
+    pub OutputElement<=VulkanRenderer>;
+    Surface=WaylandSurfaceRenderElement<VulkanRenderer>,
+    Shell=TextureRenderElement<viewport_vulkan::VulkanTexture>,
+}
 
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 
@@ -201,6 +210,22 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         node: card,
         active: true,
     });
+
+    // Claim DRM master before anything is committed.
+    //
+    // The session is already active when the compositor starts on a TTY, so
+    // no ActivateSession event ever arrives and nothing else would take it.
+    // Without this the initial modeset appears to work and every page flip
+    // afterwards fails with EPERM — which presents as a screen that stops
+    // updating rather than as anything anyone would connect to permissions.
+    if let Some(udev) = state.udev.as_mut() {
+        if let Err(e) = udev.manager.lock().activate(false) {
+            tracing::error!("could not claim drm master: {e}");
+        } else {
+            tracing::info!("drm master claimed");
+        }
+    }
+
     state.on_connectors_changed();
 
     #[cfg(feature = "wpe")]
@@ -476,14 +501,45 @@ impl ViewportState {
         // Both taken before the renderer is borrowed.
         #[cfg(feature = "wpe")]
         let shell_texture = self.import_shell_frame();
-        #[cfg(feature = "wpe")]
-        let output_location = self
+        let output_geometry = self
             .udev
             .as_ref()
             .and_then(|udev| udev.surfaces.get(&crtc))
-            .and_then(|surface| self.space.output_geometry(&surface.output))
+            .and_then(|surface| self.space.output_geometry(&surface.output));
+        #[cfg(feature = "wpe")]
+        let output_location = output_geometry
             .map(|geometry| (geometry.loc.x, geometry.loc.y))
             .unwrap_or((0, 0));
+
+        // Where each window sits relative to this output, worked out before
+        // the renderer is borrowed mutably — the space and the renderer both
+        // hang off `self`.
+        let scale = self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.surfaces.get(&crtc))
+            .map(|surface| surface.output.current_scale().fractional_scale())
+            .unwrap_or(1.0);
+        let windows: Vec<(Window, Point<i32, Physical>)> = match output_geometry {
+            Some(output_geometry) => self
+                .space
+                .elements()
+                .filter_map(|window| {
+                    let geometry = self.space.element_geometry(window)?;
+                    // Off this output entirely: drawing it would cost a
+                    // texture bind for something wholly clipped away.
+                    if !output_geometry.overlaps(geometry) {
+                        return None;
+                    }
+                    let location = (geometry.loc - output_geometry.loc)
+                        .to_f64()
+                        .to_physical(scale)
+                        .to_i32_round();
+                    Some((window.clone(), location))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
 
         let Some(udev) = self.udev.as_mut() else {
             return;
@@ -496,14 +552,33 @@ impl ViewportState {
         };
         let output = surface.output.clone();
 
+        // Front to back: the windows, then the shell behind all of them.
+        let mut elements: Vec<OutputElement> = Vec::new();
+
+        // Every mapped window, at the rectangle the shell put it in. Without
+        // this the list held the shell alone, so a client could map, be laid
+        // out, and paint — and still never appear on screen.
+        for (window, location) in &windows {
+            elements.extend(
+                window
+                    .render_elements::<WaylandSurfaceRenderElement<VulkanRenderer>>(
+                        &mut udev.renderer,
+                        *location,
+                        scale.into(),
+                        1.0,
+                    )
+                    .into_iter()
+                    .map(OutputElement::from),
+            );
+        }
+
         // The shell, imported from whatever WebKit last painted. Behind every
         // window, spanning the whole output layout — which is what makes
         // hit-testing fall out of the layering rather than being computed.
         #[cfg(feature = "wpe")]
-        let elements: Vec<ShellElement> = {
-            let mut elements = Vec::new();
-            if let Some(texture) = shell_texture.as_ref() {
-                elements.push(TextureRenderElement::from_static_texture(
+        if let Some(texture) = shell_texture.as_ref() {
+            elements.push(OutputElement::from(
+                TextureRenderElement::from_static_texture(
                     Id::new(),
                     udev.renderer.context_id(),
                     // Negative of the output's position: the shell is one
@@ -518,12 +593,9 @@ impl ViewportState {
                     None,
                     None,
                     Kind::Unspecified,
-                ));
-            }
-            elements
-        };
-        #[cfg(not(feature = "wpe"))]
-        let elements: Vec<WaylandSurfaceRenderElement<VulkanRenderer>> = Vec::new();
+                ),
+            ));
+        }
 
         let result = surface.drm_output.render_frame(
             &mut udev.renderer,
