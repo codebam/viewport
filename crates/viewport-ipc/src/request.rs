@@ -24,6 +24,7 @@ pub enum Request {
 
     #[serde(rename = "view.visible")]
     ViewVisible {
+        #[serde(deserialize_with = "view_id")]
         id: u32,
         /// Absent means visible (`src/ipc.c:919`).
         #[serde(default = "yes")]
@@ -32,6 +33,7 @@ pub enum Request {
 
     #[serde(rename = "view.fullscreen")]
     ViewFullscreen {
+        #[serde(deserialize_with = "view_id")]
         id: u32,
         /// Absent means not fullscreen (`src/ipc.c:1182`).
         #[serde(default)]
@@ -39,16 +41,23 @@ pub enum Request {
     },
 
     #[serde(rename = "view.focus")]
-    ViewFocus { id: u32 },
+    ViewFocus {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+    },
 
     #[serde(rename = "view.close")]
-    ViewClose { id: u32 },
+    ViewClose {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+    },
 
     /// Per-window opacity, driven a frame at a time by a tween in the shell.
     /// The shell cannot fade a window with CSS: the frame is DOM, the contents
     /// are a surface the compositor draws.
     #[serde(rename = "view.opacity")]
     ViewOpacity {
+        #[serde(deserialize_with = "view_id")]
         id: u32,
         /// Absent means opaque; the value is clamped to `0.0..=1.0`
         /// (`src/ipc.c:897`).
@@ -139,6 +148,7 @@ pub enum Request {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewLayout {
+    #[serde(deserialize_with = "view_id")]
     pub id: u32,
 
     /// Absent fields keep the view's current geometry (`src/ipc.c:833`).
@@ -233,6 +243,23 @@ pub struct ModeRequest {
     pub refresh: i32,
 }
 
+/// A view id the way C reads one: `(uint32_t)object_int(object, "id", 0)`.
+///
+/// The shell sends -1 for "no view" — `session.js` passes on whatever
+/// `firstOf` returned for an empty column. C cast that to `0xffffffff`, found
+/// no window with it, and did nothing. Refusing the message instead rejects
+/// the whole request, so an unfocus turns into a parse error and the shell
+/// logs a console error for a message the C build accepted every day.
+fn view_id<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Widest signed type first so both -1 and 0xffffffff land here, then the
+    // same truncating cast C performs.
+    let raw = i64::deserialize(deserializer)?;
+    Ok(raw as u32)
+}
+
 fn yes() -> bool {
     true
 }
@@ -247,6 +274,26 @@ mod tests {
 
     fn parse(json: &str) -> Request {
         serde_json::from_str(json).expect("should parse")
+    }
+
+    #[test]
+    fn a_negative_view_id_parses_the_way_c_cast_it() {
+        // The shell sends -1 for "no view". C cast it to 0xffffffff, matched
+        // no window and did nothing; rejecting the message instead turns an
+        // unfocus into a parse error the shell reports on its console.
+        assert_eq!(
+            parse(r#"{"type":"view.focus","id":-1}"#),
+            Request::ViewFocus { id: u32::MAX }
+        );
+        // Every id field C read through the same cast.
+        assert_eq!(
+            parse(r#"{"type":"view.close","id":-1}"#),
+            Request::ViewClose { id: u32::MAX }
+        );
+        assert!(matches!(
+            parse(r#"{"type":"view.layout","id":-1,"x":0,"y":0,"width":1,"height":1}"#),
+            Request::ViewLayout(layout) if layout.id == u32::MAX
+        ));
     }
 
     #[test]

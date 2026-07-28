@@ -82,6 +82,13 @@ pub struct ViewportState {
     /// The buffer behind that texture, held so it outlives it.
     #[cfg(feature = "wpe")]
     pub shell_buffer: Option<smithay::backend::allocator::dmabuf::Dmabuf>,
+    /// The shell element's identity, stable for the life of the compositor.
+    ///
+    /// A fresh `Id` per frame would make every damage tracker treat the shell
+    /// as a new element each time, so it could never work out what actually
+    /// changed and would repaint the whole output forever.
+    #[cfg(feature = "wpe")]
+    pub shell_element_id: smithay::backend::renderer::element::Id,
 
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
@@ -160,6 +167,8 @@ impl ViewportState {
             shell_texture: None,
             #[cfg(feature = "wpe")]
             shell_buffer: None,
+            #[cfg(feature = "wpe")]
+            shell_element_id: smithay::backend::renderer::element::Id::new(),
 
             color_management,
             compositor_state,

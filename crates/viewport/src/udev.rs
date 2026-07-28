@@ -30,7 +30,7 @@ use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::AsRenderElements as _;
 #[cfg(feature = "wpe")]
-use smithay::backend::renderer::element::{Id, Kind};
+use smithay::backend::renderer::element::Kind;
 #[cfg(feature = "wpe")]
 use smithay::backend::renderer::Renderer as _;
 use smithay::desktop::Window;
@@ -501,12 +501,13 @@ impl ViewportState {
         // Both taken before the renderer is borrowed.
         #[cfg(feature = "wpe")]
         let shell_texture = self.import_shell_frame();
+        #[cfg(feature = "wpe")]
+        let shell_element_id = self.shell_element_id.clone();
         let output_geometry = self
             .udev
             .as_ref()
             .and_then(|udev| udev.surfaces.get(&crtc))
             .and_then(|surface| self.space.output_geometry(&surface.output));
-        #[cfg(feature = "wpe")]
         let output_location = output_geometry
             .map(|geometry| (geometry.loc.x, geometry.loc.y))
             .unwrap_or((0, 0));
@@ -579,7 +580,7 @@ impl ViewportState {
         if let Some(texture) = shell_texture.as_ref() {
             elements.push(OutputElement::from(
                 TextureRenderElement::from_static_texture(
-                    Id::new(),
+                    shell_element_id,
                     udev.renderer.context_id(),
                     // Negative of the output's position: the shell is one
                     // buffer across the whole layout, so an output at x=2560
@@ -615,8 +616,25 @@ impl ViewportState {
                     tracing::warn!("queue_frame: {e}");
                 } else if !surface.drawn {
                     surface.drawn = true;
+                    // What each output actually put on screen the first time
+                    // it drew. "The right monitor is grey" and "the right
+                    // monitor drew the wrong part of the shell" are the same
+                    // picture from the front, and nothing else distinguishes
+                    // them.
                     tracing::info!("{}: first frame queued", output.name());
                 }
+                // Every draw, because the first one happens before the shell
+                // has painted anything. "The right monitor is grey" and "the
+                // right monitor drew the wrong part of the shell" are the
+                // same picture from the front, and only the element list and
+                // its offset tell them apart.
+                tracing::debug!(
+                    "{}: drew {} element(s), shell at {:?}, {} window(s)",
+                    output.name(),
+                    elements.len(),
+                    (-output_location.0, -output_location.1),
+                    windows.len(),
+                );
             }
             // Nothing changed, so nothing is submitted — and with no frame
             // queued there is no vblank, so rendering stops until something
