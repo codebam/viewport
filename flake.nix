@@ -220,7 +220,16 @@
           # than linked, so the closure has to carry them and the loader has to
           # be told where they are. Getting this wrong produces "Failed to load
           # the Vulkan library", which says nothing about the cause.
+          # The shell itself, and the page it falls back to. Without them an
+          # installed compositor has nothing to load: the default URL resolves
+          # beside the binary, and a session started from a login shell has no
+          # source tree under it.
           postInstall = ''
+            mkdir -p $out/share/viewport
+            cp -r ${self}/data/shell $out/share/viewport/shell
+            cp ${self}/data/fallback.html $out/share/viewport/fallback.html
+            cp ${self}/data/config.example.json $out/share/viewport/config.example.json
+
             wrapProgram $out/bin/viewport \
               --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (with pkgs; [
                 vulkan-loader

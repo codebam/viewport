@@ -99,13 +99,25 @@ fn main() -> Result<()> {
 
     let mut state = ViewportState::new(&mut event_loop, display, socket_path)?;
     state.apply_config(config);
+    // Which backend, when nobody said.
+    //
+    // A compositor started from a TTY has no display to nest in, and one
+    // started inside another session does. Requiring the flag made a plain
+    // `viewport` from a TTY fail with "winit backend: Failed to initialize an
+    // event loop", which names the backend it should not have chosen rather
+    // than the missing flag.
+    let nested = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var_os("DISPLAY").is_some();
+    let drm = drm || (!headless && !nested);
     if drm {
+        tracing::info!("drm backend");
         udev::init(&mut event_loop, &mut state)?;
     } else if headless {
         let width = flag(&args, "--width").and_then(|v| v.parse().ok()).unwrap_or(1920);
         let height = flag(&args, "--height").and_then(|v| v.parse().ok()).unwrap_or(1080);
         headless::init(&mut event_loop, &mut state, width, height)?;
     } else {
+        tracing::info!("nested backend, inside an existing session");
         winit::init(&mut event_loop, &mut state)?;
     }
 

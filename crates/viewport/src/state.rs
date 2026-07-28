@@ -32,6 +32,32 @@ use smithay::xwayland::X11Wm;
 use crate::ipc::Ipc;
 use crate::views::{Views, NO_VIEW};
 
+/// Where an asset shipped with the compositor lives.
+///
+/// Beside the binary first — `<prefix>/bin/viewport` means
+/// `<prefix>/share/viewport/…` — because an installed compositor is started
+/// from wherever the user happened to be standing, and a path relative to the
+/// working directory then finds nothing. The source tree is the fallback, for
+/// a build run out of it.
+///
+/// Getting this wrong is a session with no shell at all: grey where the
+/// wallpaper and the bar should be, and a load error naming a file in whatever
+/// directory the login shell started in.
+pub fn shipped_asset(relative: &str) -> String {
+    if let Ok(exe) = std::env::current_exe() {
+        // One more parent than looks right: a wrapped binary is
+        // `<prefix>/bin/.viewport-wrapped`, and both forms want `<prefix>`.
+        if let Some(prefix) = exe.parent().and_then(|bin| bin.parent()) {
+            let installed = prefix.join("share/viewport").join(relative);
+            if installed.exists() {
+                return format!("file://{}", installed.display());
+            }
+        }
+    }
+    let here = std::env::current_dir().unwrap_or_default();
+    format!("file://{}/data/{relative}", here.display())
+}
+
 /// A screenshot a client asked for and has not been given yet.
 #[derive(Clone)]
 pub struct PendingCopy {
@@ -1947,10 +1973,10 @@ impl ViewportState {
         if self.shell_frames > 0 || self.shell.is_none() {
             return;
         }
-        let url = self.fallback_url.clone().unwrap_or_else(|| {
-            let here = std::env::current_dir().unwrap_or_default();
-            format!("file://{}/data/fallback.html", here.display())
-        });
+        let url = self
+            .fallback_url
+            .clone()
+            .unwrap_or_else(|| shipped_asset("fallback.html"));
         tracing::error!(
             "the shell painted nothing within {}ms; loading {url}",
             self.load_timeout_ms
@@ -2851,10 +2877,7 @@ impl ViewportState {
             .shell_url
             .clone()
             .or_else(|| std::env::var("VIEWPORT_SHELL_URL").ok())
-            .unwrap_or_else(|| {
-                let here = std::env::current_dir().unwrap_or_default();
-                format!("file://{}/data/shell/index.html", here.display())
-            });
+            .unwrap_or_else(|| shipped_asset("shell/index.html"));
         let console = std::env::var("VIEWPORT_LOG")
             .map(|level| level.contains("debug") || level.contains("trace"))
             .unwrap_or(false);
