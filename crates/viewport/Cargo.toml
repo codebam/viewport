@@ -51,4 +51,7 @@ features = [
     "backend_libinput",
     "backend_udev",
     "backend_session_libseat",
+    # X11 applications, through Xwayland. Not optional in practice: the
+    # holdouts are the ones people cannot replace.
+    "xwayland",
 ]

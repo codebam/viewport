@@ -98,6 +98,10 @@ fn main() -> Result<()> {
     // Child processes should reach this compositor rather than the host one.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
+    // Before anything is spawned, so an X program started from a menu finds a
+    // DISPLAY. It arrives asynchronously; the variable is set when it does.
+    state.start_xwayland(&event_loop.handle());
+
     tracing::info!(
         "viewport {} on {} (smithay rewrite)",
         env!("CARGO_PKG_VERSION"),

@@ -21,7 +21,16 @@ impl CompositorHandler for ViewportState {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
+        // Xwayland's own connection is inserted by Smithay with its own data
+        // type, not this compositor's. Assuming otherwise aborts the whole
+        // session the moment Xwayland connects, which is at startup.
+        if let Some(state) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &state.compositor_state;
+        }
+        if let Some(state) = client.get_data::<ClientState>() {
+            return &state.compositor_state;
+        }
+        panic!("a client with neither this compositor's data nor Xwayland's")
     }
 
     fn commit(&mut self, surface: &WlSurface) {

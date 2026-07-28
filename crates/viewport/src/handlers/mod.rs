@@ -9,6 +9,7 @@ mod compositor;
 mod xdg_shell;
 
 pub mod layer_shell;
+pub mod xwayland;
 
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
 use smithay::input::pointer::Focus;

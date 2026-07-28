@@ -233,6 +233,20 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
         }
     }
 
+    // An X client is told its whole rectangle, position included: X has no
+    // separate notion of "the compositor placed you", so a window that is
+    // moved and not reconfigured believes it is still where it was and draws
+    // its menus there.
+    if let Some(x11) = window.x11_surface() {
+        let rect = smithay::utils::Rectangle::new(
+            (resolved.box_.x, resolved.box_.y).into(),
+            (width, height).into(),
+        );
+        if let Err(e) = x11.configure(rect) {
+            tracing::warn!("could not configure an X11 window: {e}");
+        }
+    }
+
     if visible {
         state
             .space

@@ -85,6 +85,12 @@ impl View {
     }
 
     pub fn title(&self) -> String {
+        // An X11 window keeps its name in a property rather than in the xdg
+        // role attributes, so a window with no title in the dock is what
+        // reading only the latter gives.
+        if let Some(x11) = self.window.x11_surface() {
+            return x11.title();
+        }
         // Two layers of Option: the surface may have no role attributes, and
         // the client may not have set a title.
         self.role_attribute(|attrs| attrs.title.clone())
@@ -93,6 +99,11 @@ impl View {
     }
 
     pub fn app_id(&self) -> String {
+        // WM_CLASS is the X11 equivalent, and it is what a window rule and an
+        // icon lookup both key on.
+        if let Some(x11) = self.window.x11_surface() {
+            return x11.class();
+        }
         self.role_attribute(|attrs| attrs.app_id.clone())
             .flatten()
             .unwrap_or_default()

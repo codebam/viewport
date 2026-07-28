@@ -26,6 +26,8 @@ use smithay::wayland::socket::ListeningSocketSource;
 use viewport_ipc::event::{Config, OutputInfo};
 use viewport_ipc::{Event, Transform};
 
+use smithay::xwayland::X11Wm;
+
 use crate::ipc::Ipc;
 use crate::views::{Views, NO_VIEW};
 
@@ -158,6 +160,13 @@ pub struct ViewportState {
     /// use are the renderer's, and there is no renderer until a backend has
     /// started. See `advertise_dmabuf`.
     pub dmabuf_state: smithay::wayland::dmabuf::DmabufState,
+    /// The X11 window manager, once Xwayland has started. Absent until then,
+    /// and absent for good if it could not be spawned.
+    pub xwm: Option<smithay::xwayland::X11Wm>,
+    /// The X display number, for DISPLAY.
+    pub xdisplay: Option<u32>,
+    /// How Xwayland says which wl_surface belongs to which X window.
+    pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
     /// zxdg_decoration_manager_v1. Held only so the global outlives the
     /// display; every decision it drives is in the handler.
     pub xdg_decoration_state:
@@ -187,6 +196,8 @@ impl ViewportState {
         let xdg_activation_state =
             smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
         let dmabuf_state = smithay::wayland::dmabuf::DmabufState::new();
+        let xwayland_shell_state =
+            smithay::wayland::xwayland_shell::XWaylandShellState::new::<Self>(&dh);
         let xdg_decoration_state =
             smithay::wayland::shell::xdg::decoration::XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
@@ -273,6 +284,9 @@ impl ViewportState {
             layer_shell_state,
             xdg_activation_state,
             dmabuf_state,
+            xwm: None,
+            xdisplay: None,
+            xwayland_shell_state,
             xdg_decoration_state,
             shm_state,
             output_manager_state,
@@ -407,6 +421,57 @@ impl ViewportState {
                 tracing::info!("linux-dmabuf: {count} format/modifier pair(s)");
             }
             Err(e) => tracing::error!("could not build dmabuf feedback: {e}"),
+        }
+    }
+
+    /// Start Xwayland, so X11 applications can connect.
+    ///
+    /// Lazily is tempting — a session with no X client never needs it — but
+    /// DISPLAY has to be in the environment before anything is spawned, and
+    /// the whole point is that an X program started from a menu just works.
+    pub fn start_xwayland(&mut self, loop_handle: &LoopHandle<'static, Self>) {
+        use smithay::xwayland::{XWayland, XWaylandEvent};
+
+        let (xwayland, client) = match XWayland::spawn(
+            &self.display_handle,
+            None,
+            std::iter::empty::<(String, String)>(),
+            std::iter::empty::<String>(),
+            true,
+            std::process::Stdio::null(),
+            std::process::Stdio::null(),
+            |_| (),
+        ) {
+            Ok(pair) => pair,
+            // Not fatal. A compositor that will not start because Xwayland is
+            // not installed is worse than one without X11 support.
+            Err(e) => {
+                tracing::warn!("Xwayland did not start, so X11 clients cannot connect: {e}");
+                return;
+            }
+        };
+
+        let display_handle = self.display_handle.clone();
+        let handle = loop_handle.clone();
+        let inserted = loop_handle.insert_source(xwayland, move |event, _, state| match event {
+            XWaylandEvent::Ready { x11_socket, display_number } => {
+                match X11Wm::start_wm(handle.clone(), &display_handle, x11_socket, client.clone()) {
+                    Ok(wm) => {
+                        state.xwm = Some(wm);
+                        state.xdisplay = Some(display_number);
+                        // Anything spawned from here on finds an X server.
+                        unsafe { std::env::set_var("DISPLAY", format!(":{display_number}")) };
+                        tracing::info!("Xwayland ready on :{display_number}");
+                    }
+                    Err(e) => tracing::error!("could not attach the X11 window manager: {e}"),
+                }
+            }
+            XWaylandEvent::Error => {
+                tracing::warn!("Xwayland crashed on startup; X11 clients cannot connect");
+            }
+        });
+        if let Err(e) = inserted {
+            tracing::error!("inserting the Xwayland source: {e}");
         }
     }
 
