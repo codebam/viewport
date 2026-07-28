@@ -130,6 +130,13 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("inserting the exit timer: {e}"))?;
     }
 
+    // Whatever the config file asked to be run, once everything it needs is
+    // in the environment: WAYLAND_DISPLAY, DISPLAY, and the outputs.
+    if let Some(command) = state.startup.clone() {
+        tracing::info!("startup: {command}");
+        input::spawn(&command);
+    }
+
     // With the web engine, GLib owns the outer loop and calloop nests inside
     // it — see glib_loop.rs for why round that way.
     #[cfg(feature = "wpe")]

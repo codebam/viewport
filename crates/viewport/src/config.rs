@@ -162,9 +162,60 @@ pub fn bind_specs(binds: &std::collections::HashMap<String, Option<String>>) -> 
     specs
 }
 
+/// Parse a mode string: `WIDTHxHEIGHT` or `WIDTHxHEIGHT@RATE`.
+///
+/// The refresh rate is in Hz with optional decimals and comes back in mHz,
+/// which is what DRM and the IPC protocol both use. Without a rate the answer
+/// is a resolution to match on, which is why it is optional rather than zero
+/// — zero is a real refresh rate to a mode search.
+pub fn parse_mode(text: &str) -> Option<(i32, i32, Option<i32>)> {
+    let (size, rate) = match text.split_once('@') {
+        Some((size, rate)) => (size, Some(rate)),
+        None => (text, None),
+    };
+    let (width, height) = size.trim().split_once('x')?;
+    let width: i32 = width.trim().parse().ok()?;
+    let height: i32 = height.trim().parse().ok()?;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let rate = match rate {
+        Some(rate) => {
+            let hz: f64 = rate.trim().parse().ok()?;
+            if hz <= 0.0 {
+                return None;
+            }
+            Some((hz * 1000.0).round() as i32)
+        }
+        None => None,
+    };
+    Some((width, height, rate))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mode_string_parses_the_way_the_c_build_wrote_them() {
+        // `src/config.c:145` documents both forms.
+        assert_eq!(parse_mode("2560x1440"), Some((2560, 1440, None)));
+        assert_eq!(
+            parse_mode("2560x1440@239.760"),
+            Some((2560, 1440, Some(239_760)))
+        );
+        // Hz to mHz, which is what DRM and the protocol both use.
+        assert_eq!(parse_mode("1920x1080@60"), Some((1920, 1080, Some(60_000))));
+    }
+
+    #[test]
+    fn a_mode_string_that_is_not_one_is_refused() {
+        // Rather than becoming a zero, which is a real refresh rate to a mode
+        // search and would silently match nothing.
+        for bad in ["", "2560", "2560x", "x1440", "2560x1440@", "0x1440", "2560x1440@0"] {
+            assert_eq!(parse_mode(bad), None, "{bad:?} should not parse");
+        }
+    }
 
     #[test]
     fn an_empty_object_is_a_valid_config() {

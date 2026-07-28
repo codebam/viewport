@@ -26,7 +26,7 @@ use crate::views::NO_VIEW;
 ///
 /// Double-forked through a shell so the compositor does not accumulate
 /// zombies and a launched application outlives the key that started it.
-fn spawn(command: &str) {
+pub fn spawn(command: &str) {
     use std::process::{Command, Stdio};
 
     tracing::info!("exec: {command}");

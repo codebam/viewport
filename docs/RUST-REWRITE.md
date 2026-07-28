@@ -179,15 +179,35 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 2. **Done.** `viewport` — winit and headless backends, `Space`, xdg-shell, the
    control socket. Windows are placeable by a script before any web engine
    exists; see below.
-3. **Built, unverified on screen.** `viewport-web` — WPE WebKit, not Servo.
-   The engine, the GLib loop inversion, and the frame and message paths are
-   wired; whether the shell actually appears has not been seen yet.
+3. **Done.** `viewport-web` — WPE WebKit, not Servo. The shell draws the
+   desktop on both backends: WebKit paints into a DMA-BUF, the compositor
+   copies it into a buffer of its own, and each backend imports that.
 4. **Done.** udev/DRM backend, verified on hardware: two 2560x1440 displays
-   brought up side by side on an RX 7900 XTX, the Vulkan renderer drawing to
-   both, VT switching and the quit chord working. Explicit sync and colour
-   transforms are in `crates/viewport-vulkan`.
-5. layer-shell, session-lock, foreign-toplevel, text-input, tablet.
-6. `color-management-v1`, `wlr-output-management`, Xwayland.
+   side by side on an RX 7900 XTX, the Vulkan renderer drawing to both, VT
+   switching and the quit chord working. Explicit sync and colour transforms
+   are in `crates/viewport-vulkan`.
+5. **Done.** Config file, layer-shell (bars and launchers), xdg-activation,
+   linux-dmabuf, xdg-decoration, Xwayland, the cursor, and directional focus.
+6. **Next.** session-lock, foreign-toplevel, notifications, text-input,
+   tablet, `wlr-output-management`, and the X11 half of the clipboard.
+
+## What the config file does, and does not
+
+`~/.config/viewport/config.json`, or `--config`. Applied: `url`, `terminal`,
+`menu`, `layout`, `logo`, `tutorial`, `bar`, `rules`, `theme`, `binds`,
+`binds_override`, `keyboard`, `cursor`, `outputs`, `startup`.
+
+Parsed and held but not yet acted on: `fallback`, `timeout_ms`, `idle`,
+`adaptive_sync`, `vt_switching`, `dark_mode`, `decorations`. Each needs the
+subsystem it configures, and none of them fails silently — the value is there
+when that subsystem arrives.
+
+Absence is not a default. Every key is optional and the file is a patch over
+the built-in values, so a key left out never resets something a flag set. Two
+bind blocks, deliberately: `binds` is the whole keymap — presence means no
+built-ins, so an empty one asks for none — while `binds_override` layers over
+them, and a `null` claims a chord and does nothing with it, which is how a
+default is removed rather than replaced.
 
 ## Known rough edges on real hardware
 
@@ -206,6 +226,19 @@ EPERM, and because a failed flip takes its vblank with it the output stopped
 for good — which read as a dead monitor rather than a permission error. It is
 claimed explicitly at startup now. A warning that is filed as harmless because
 the next step appeared to work is worth more suspicion than that one got.
+
+## Two backends, one description of a frame
+
+`crates/viewport/src/render.rs` holds what an output draws, and both backends
+use it. A `Frame` says what should appear and is worked out with no renderer at
+all; `build` turns it into elements with whichever renderer the backend has —
+Vulkan on DRM, GLES nested.
+
+That split exists because the two had drifted. The element list used to be
+assembled inside the DRM path against one concrete renderer, so the nested
+backend drew windows on a flat colour while the real one drew the desktop, and
+nested is where most development happens. Layering, clipping and the cursor
+live in one place now.
 
 ## Diagnostics
 

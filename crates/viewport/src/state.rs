@@ -54,6 +54,11 @@ pub struct ViewportState {
     pub config: Config,
     /// Where the shell is loaded from, when the config names somewhere.
     pub shell_url: Option<String>,
+    /// The config file's `outputs` block, kept because an output named there
+    /// may be plugged in later.
+    pub output_config: std::collections::HashMap<String, crate::config::OutputConfig>,
+    /// What to run once the compositor is up.
+    pub startup: Option<String>,
     /// Whether the logo key was down last time it was looked at, so the shell
     /// hears about a change rather than about every keystroke.
     pub logo_held: bool,
@@ -249,6 +254,8 @@ impl ViewportState {
                 theme: None,
             },
             shell_url: None,
+            output_config: std::collections::HashMap::new(),
+            startup: None,
             logo_held: false,
             overview: false,
             active_output: None,
@@ -428,6 +435,63 @@ impl ViewportState {
             }
             Err(e) => tracing::error!("could not build dmabuf feedback: {e}"),
         }
+    }
+
+    /// Apply the config file's `outputs` block, once the outputs exist.
+    ///
+    /// Through the same path `output.configure` takes, so the file and the
+    /// shell cannot disagree about what a mode change means — and so a
+    /// rejected mode is reported the same way whichever asked for it.
+    ///
+    /// Called after connectors come up rather than at load: an output that is
+    /// not plugged in has nothing to configure, and one plugged in later gets
+    /// this again.
+    pub fn apply_output_config(&mut self) {
+        let outputs = std::mem::take(&mut self.output_config);
+        for (name, want) in &outputs {
+            if self.output_by_name(name).is_none() {
+                // Not plugged in. Kept, because it may be later.
+                continue;
+            }
+            let mode = want.mode.as_deref().and_then(|text| {
+                let parsed = crate::config::parse_mode(text);
+                if parsed.is_none() {
+                    tracing::error!("outputs.{name}.mode {text:?} is not WIDTHxHEIGHT[@RATE]");
+                }
+                parsed
+            });
+            let request = viewport_ipc::request::OutputConfigure {
+                name: name.clone(),
+                enabled: None,
+                mode: mode.map(|(width, height, refresh)| viewport_ipc::request::ModeRequest {
+                    width,
+                    height,
+                    // Zero means "any rate at this resolution", which is what
+                    // a mode string without one asks for.
+                    refresh: refresh.unwrap_or(0),
+                }),
+                scale: want.scale,
+                transform: want.transform.as_deref().and_then(parse_transform),
+                adaptive_sync: None,
+                x: want.x,
+                y: want.y,
+            };
+            tracing::info!("configuring {name} from the config file");
+            crate::apply::apply(self, viewport_ipc::Request::OutputConfigure(request));
+
+            // HDR is its own message, because turning it on is a colour change
+            // rather than a mode change and the two are answered differently.
+            if let Some(hdr) = want.hdr {
+                crate::apply::apply(
+                    self,
+                    viewport_ipc::Request::OutputHdr {
+                        name: Some(name.clone()),
+                        enabled: Some(hdr),
+                    },
+                );
+            }
+        }
+        self.output_config = outputs;
     }
 
     /// What an output should show, worked out without a renderer.
@@ -702,6 +766,13 @@ impl ViewportState {
         }
         if let Some(url) = file.url {
             self.shell_url = Some(url);
+        }
+        if !file.outputs.is_empty() {
+            self.output_config = file.outputs;
+        }
+        // Run after the compositor is up, so it reaches whatever it names.
+        if let Some(command) = file.startup.as_deref() {
+            self.startup = Some(command.to_owned());
         }
 
         // The cursor theme. The xcursor loader reads the environment, which is
@@ -1183,5 +1254,20 @@ impl ViewportState {
             tracing::info!("shell size {}x{}", size.0, size.1);
             shell.display.resize(size.0, size.1);
         }
+    }
+}
+
+/// A transform by the name the config file uses, which is sway's.
+fn parse_transform(text: &str) -> Option<Transform> {
+    match text {
+        "normal" | "0" => Some(Transform::Normal),
+        "90" => Some(Transform::_90),
+        "180" => Some(Transform::_180),
+        "270" => Some(Transform::_270),
+        "flipped" => Some(Transform::Flipped),
+        "flipped-90" => Some(Transform::Flipped90),
+        "flipped-180" => Some(Transform::Flipped180),
+        "flipped-270" => Some(Transform::Flipped270),
+        _ => None,
     }
 }

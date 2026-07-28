@@ -266,6 +266,9 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
 
     state.on_connectors_changed();
 
+    // Now that the outputs exist, the config file can say what they should be.
+    state.apply_output_config();
+
     #[cfg(feature = "wpe")]
     // Sizes, maps and focuses the view itself — WebKit paints nothing into an
     // unmapped view of no size.
