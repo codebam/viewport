@@ -59,6 +59,9 @@ type Manager = DrmOutputManager<GbmAllocator<DrmDeviceFd>, Exporter, (), DrmDevi
 /// One CRTC being driven.
 pub struct Surface {
     pub output: Output,
+    /// The connector this CRTC is driving, so a second pass can tell an
+    /// output that is already up from one that still needs a CRTC.
+    pub connector: connector::Handle,
     pub drm_output: DrmOutput<GbmAllocator<DrmDeviceFd>, Exporter, (), DrmDeviceFd>,
     /// The global handed to clients, dropped when the connector goes.
     _global: smithay::reexports::wayland_server::backend::GlobalId,
@@ -293,7 +296,31 @@ impl ViewportState {
             .filter(|info| info.state() == connector::State::Connected)
             .collect();
 
+        tracing::info!("{} connected connector(s)", connectors.len());
+
+        // CRTCs already driving something. Without this the second monitor
+        // gets handed the first one's CRTC, and the "already in use" check
+        // then drops it silently — which is exactly what happened on the first
+        // two-monitor run.
+        let mut taken: std::collections::HashSet<crtc::Handle> =
+            udev.surfaces.keys().copied().collect();
+
         for connector in connectors {
+            let name = format!(
+                "{}-{}",
+                connector.interface().as_str(),
+                connector.interface_id()
+            );
+
+            // Already up, from an earlier pass.
+            if udev
+                .surfaces
+                .values()
+                .any(|s| s.connector == connector.handle())
+            {
+                continue;
+            }
+
             // The mode the display says it prefers, or the first it lists.
             let Some(mode) = connector
                 .modes()
@@ -305,19 +332,14 @@ impl ViewportState {
                 continue;
             };
 
-            let Some(crtc) = free_crtc(&udev.manager, &resources, &connector) else {
-                tracing::warn!("no free crtc for {:?}", connector.interface());
+            let Some(crtc) = free_crtc(&udev.manager, &resources, &connector, &taken) else {
+                // Every CRTC this connector can reach is driving something
+                // else. Real on hardware with more outputs than CRTCs, and
+                // worth saying rather than skipping in silence.
+                tracing::warn!("{name}: no free crtc");
                 continue;
             };
-            if udev.surfaces.contains_key(&crtc) {
-                continue;
-            }
-
-            let name = format!(
-                "{}-{}",
-                connector.interface().as_str(),
-                connector.interface_id()
-            );
+            taken.insert(crtc);
             let (width, height) = connector.size().unwrap_or((0, 0));
             let output = Output::new(
                 name.clone(),
@@ -352,8 +374,24 @@ impl ViewportState {
 
             match result {
                 Ok(drm_output) => {
-                    tracing::info!("{name}: {}x{}", mode.size().0, mode.size().1);
-                    self.space.map_output(&output, (0, 0));
+                    // Side by side, left to right in the order the connectors
+                    // are enumerated. Mapping every output at the origin
+                    // instead stacks them, and the second monitor shows the
+                    // first one's pixels.
+                    //
+                    // Real placement belongs to the shell, which sends
+                    // output.configure once it is running; this is only a
+                    // sane arrangement to start from.
+                    let x = self
+                        .space
+                        .outputs()
+                        .filter_map(|o| self.space.output_geometry(o))
+                        .map(|geometry| geometry.loc.x + geometry.size.w)
+                        .max()
+                        .unwrap_or(0);
+
+                    tracing::info!("{name}: {}x{} at x={x}", mode.size().0, mode.size().1);
+                    self.space.map_output(&output, (x, 0));
                     if self.active_output.is_none() {
                         self.active_output = Some(name);
                     }
@@ -361,6 +399,7 @@ impl ViewportState {
                         crtc,
                         Surface {
                             output,
+                            connector: connector.handle(),
                             drm_output,
                             _global: global,
                             drawn: false,
@@ -489,6 +528,7 @@ fn free_crtc(
     manager: &Manager,
     resources: &smithay::reexports::drm::control::ResourceHandles,
     connector: &connector::Info,
+    taken: &std::collections::HashSet<crtc::Handle>,
 ) -> Option<crtc::Handle> {
     let device = manager.device();
     for encoder in connector.encoders() {
@@ -496,7 +536,11 @@ fn free_crtc(
             continue;
         };
         for crtc in resources.filter_crtcs(encoder.possible_crtcs()) {
-            return Some(crtc);
+            // A CRTC drives one connector at a time. Handing out one that is
+            // already in use is how a second monitor ends up with no output.
+            if !taken.contains(&crtc) {
+                return Some(crtc);
+            }
         }
     }
     None
