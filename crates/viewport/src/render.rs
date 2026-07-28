@@ -200,8 +200,13 @@ where
         use smithay::wayland::seat::WaylandFocus as _;
         if let Some(surface) = window.wl_surface() {
             for (popup, offset) in PopupManager::popups_for_surface(&surface) {
+                // The same arithmetic Smithay uses inside
+                // `Window::render_elements`, including the window's own
+                // geometry offset — a client with shadows draws its window
+                // inside a larger surface, and a menu is anchored to the
+                // window.
                 let at = *location
-                    + (offset - popup.geometry().loc)
+                    + (window.geometry().loc + offset - popup.geometry().loc)
                         .to_f64()
                         .to_physical(scale)
                         .to_i32_round();
@@ -220,12 +225,30 @@ where
             }
         }
 
-        let surfaces = window.render_elements::<WaylandSurfaceRenderElement<R>>(
-            renderer,
-            *location,
-            scale.into(),
-            1.0,
-        );
+        // The window's own surface tree, without its popups: Smithay's
+        // `Window::render_elements` draws those as well, and the copy above is
+        // the one that is not cropped — leaving both is a menu drawn twice.
+        //
+        // X11 windows keep the Smithay path, which has no popups of its own to
+        // duplicate: an X11 menu is a separate override-redirect window.
+        let surfaces = match window.wl_surface() {
+            Some(surface) if window.toplevel().is_some() => {
+                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+                    renderer,
+                    &surface,
+                    *location,
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                )
+            }
+            _ => window.render_elements::<WaylandSurfaceRenderElement<R>>(
+                renderer,
+                *location,
+                scale.into(),
+                1.0,
+            ),
+        };
         match clip {
             // Cropped to the hole the shell drew. Without this a window
             // mid-animation, or one scrolled half off its column, covers the

@@ -1787,7 +1787,13 @@ impl ViewportState {
         } else {
             viewport_vulkan::color::Description::default()
         };
-        udev.renderer.set_output_description(description);
+        // Not set here: the renderer has one output description and both
+        // monitors draw through it, so setting it when a single display went
+        // HDR converted everything on both — an SDR desktop reinterpreted as
+        // PQ, which is the washed-out white the other screen showed. The
+        // description belongs to whichever output is being drawn, so it is
+        // set per frame in `udev::render` from that surface's own state.
+        let _ = description;
 
         // Everything on screen was drawn for the old colour space.
         self.needs_render = true;

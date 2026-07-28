@@ -833,6 +833,20 @@ impl ViewportState {
             );
         }
 
+        // What this output expects, before anything is drawn for it. One
+        // renderer draws every monitor, so a description left over from an HDR
+        // display converts the next one's frame as though it were HDR too.
+        let description = if surface.hdr {
+            viewport_vulkan::color::Description {
+                primaries: viewport_vulkan::color::Primaries::BT2020,
+                transfer: viewport_vulkan::color::TransferFunction::Pq,
+                reference_luminance: 203.0,
+            }
+        } else {
+            viewport_vulkan::color::Description::default()
+        };
+        udev.renderer.set_output_description(description);
+
         let elements = crate::render::build(&frame, &mut udev.renderer);
 
         // A composite of exactly this list, for when the screen and the log
