@@ -191,9 +191,18 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 6. **Done.** session-lock, verified against swaylock.
 7. **Done.** The layout watchdog, and system statistics for the bar.
 8. **Done.** Pointer capture, the foreign toplevel list, and notifications.
-9. **Next.** text-input, tablet, `wlr-output-management`, gestures, HDR,
-   primary selection, screencopy, the appearance portal, and the X11 half of
-   the clipboard. `zwlr_foreign_toplevel_management_v1` too — see below.
+9. **Done.** The small protocols a desktop assumes are there: primary
+   selection, clipboard managers, idle inhibit and idle notify, viewporter,
+   presentation time, single-pixel buffers, fractional scale — and the X11
+   half of the clipboard.
+10. **Next, and each needs the protocol written by hand.** Smithay implements
+    none of `zwlr_output_manager_v1`, `zwlr_foreign_toplevel_management_v1` or
+    `zwlr_screencopy_manager_v1`, and its DRM backend exposes neither the
+    `Colorspace` nor the `HDR_OUTPUT_METADATA` connector property — so
+    switching a monitor into HDR is in the same position, even though the
+    colour pipeline underneath it is finished and tested.
+11. **Ordinary ports.** text-input, tablet, gestures, and the appearance
+    portal.
 
 ## Notifications, and where they come from
 
