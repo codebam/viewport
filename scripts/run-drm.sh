@@ -53,7 +53,8 @@ export VIEWPORT_LOG
 log="${VIEWPORT_LOG_FILE:-/tmp/viewport-drm.log}"
 echo "logging to $log" >&2
 echo "Ctrl+Alt+F1..F12 switches VT, Ctrl+Alt+Backspace quits." >&2
-echo "If neither works, --exit-after 120 makes it stop on its own." >&2
+echo "If neither works, --exit-after 120 makes it stop on its own," >&2
+echo "or run ./scripts/quit.sh from another TTY." >&2
 
 # Passed through unchanged if the caller supplied their own backend flag.
 case " $* " in
