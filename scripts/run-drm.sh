@@ -9,8 +9,9 @@
 # library", which says nothing about the cause — so this script re-enters the
 # dev shell itself rather than relying on anyone remembering.
 #
-#   ./scripts/run-drm.sh              # release build if present, else debug
-#   ./scripts/run-drm.sh --headless   # any argument is passed through
+#   ./scripts/run-drm.sh                    # release build if present, else debug
+#   ./scripts/run-drm.sh --exit-after 120   # stop by itself after two minutes
+#   ./scripts/run-drm.sh --headless         # any argument is passed through
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -52,6 +53,7 @@ export VIEWPORT_LOG
 log="${VIEWPORT_LOG_FILE:-/tmp/viewport-drm.log}"
 echo "logging to $log" >&2
 echo "Ctrl+Alt+F1..F12 switches VT, Ctrl+Alt+Backspace quits." >&2
+echo "If neither works, --exit-after 120 makes it stop on its own." >&2
 
 # Passed through unchanged if the caller supplied their own backend flag.
 case " $* " in

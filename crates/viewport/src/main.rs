@@ -65,6 +65,27 @@ fn main() -> Result<()> {
         state.socket_name.to_string_lossy()
     );
 
+    // A self-imposed deadline, for trying things on a real TTY.
+    //
+    // Every other way out depends on something working: the quit chord needs
+    // input routing, and the control socket needs another terminal. This needs
+    // only the event loop, so a run that comes up wrong still ends by itself
+    // rather than holding the machine.
+    if let Some(seconds) = flag(&args, "--exit-after").and_then(|v| v.parse::<u64>().ok()) {
+        tracing::info!("will exit after {seconds}s");
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(
+            std::time::Duration::from_secs(seconds),
+        );
+        event_loop
+            .handle()
+            .insert_source(timer, |_, _, state| {
+                tracing::info!("the --exit-after deadline passed; stopping");
+                state.loop_signal.stop();
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the exit timer: {e}"))?;
+    }
+
     event_loop.run(None, &mut state, |_| {})?;
     Ok(())
 }

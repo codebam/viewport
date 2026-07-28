@@ -242,6 +242,13 @@ impl ViewportState {
 
     /// Carry out one of the compositor's own chords.
     pub fn handle_action(&mut self, action: Action) {
+        // Logged at info because a chord that was seen and a chord that never
+        // arrived look identical from the outside, and the difference is the
+        // whole diagnosis when a compositor will not let go of a TTY.
+        if action != Action::Swallow {
+            tracing::info!("chord: {action:?}");
+        }
+
         match action {
             Action::SwitchVt(vt) => {
                 let Some(udev) = self.udev.as_mut() else {
