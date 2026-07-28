@@ -46,8 +46,8 @@ pub struct Push {
     /// `x`: alpha. `y`: source transfer. `z`: destination transfer.
     /// `w`: relative luminance scale.
     pub misc: [f32; 4],
-    /// Source primaries to destination primaries, by row. The fourth
-    /// component of each is unused padding.
+    /// Source primaries to destination primaries, by row. `csc0.w` carries
+    /// the ignore-alpha flag; the other two fourth components are padding.
     pub csc0: [f32; 4],
     pub csc1: [f32; 4],
     pub csc2: [f32; 4],
@@ -99,6 +99,18 @@ impl Push {
         self.csc0 = [matrix[0][0], matrix[0][1], matrix[0][2], 0.0];
         self.csc1 = [matrix[1][0], matrix[1][1], matrix[1][2], 0.0];
         self.csc2 = [matrix[2][0], matrix[2][1], matrix[2][2], 0.0];
+        self
+    }
+
+    /// Take the buffer's alpha channel as fully opaque.
+    ///
+    /// An X-format buffer — XRGB8888 and friends — has no alpha, and Vulkan
+    /// has no X formats, so it is imported as the matching A format and the
+    /// undefined byte is sampled as alpha. Clients leave it zero, so a window
+    /// that declared itself opaque comes out completely transparent and only
+    /// the bytes that happened to be non-zero survive.
+    pub fn with_opaque(mut self, opaque: bool) -> Self {
+        self.csc0[3] = if opaque { 1.0 } else { 0.0 };
         self
     }
 

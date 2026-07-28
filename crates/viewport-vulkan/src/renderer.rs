@@ -1306,7 +1306,8 @@ impl Frame for VulkanFrame<'_, '_> {
         );
         // White tint: the texture's own colours, scaled by alpha.
         let push = crate::pipeline::Push::new(position, texcoord, [1.0, 1.0, 1.0, 1.0], alpha)
-            .with_color(&texture.description, &self.renderer.output);
+            .with_color(&texture.description, &self.renderer.output)
+            .with_opaque(!texture.image.has_alpha());
 
         let target_format = self.framebuffer.image.format();
         let pipeline = self
@@ -1940,6 +1941,61 @@ mod tests {
                 "({x},{y}) should be the shell, not the clear colour"
             );
         }
+    }
+
+    /// An X-format buffer is opaque, whatever is in the byte where alpha
+    /// would be.
+    ///
+    /// Vulkan has no X formats, so XRGB8888 is imported as B8G8R8A8_UNORM and
+    /// the fourth byte is sampled as alpha. Clients leave it zero — it is
+    /// defined as ignored — so taking it at face value makes an opaque window
+    /// vanish, leaving only whatever bytes happened to be non-zero. That is a
+    /// terminal showing its glyphs over nothing at all.
+    #[test]
+    fn an_x_format_buffer_is_opaque_whatever_its_fourth_byte_says() {
+        let Some(mut h) = harness() else { return };
+
+        let source = h
+            .allocator
+            .create_buffer(32, 32, Fourcc::Xrgb8888, &[Modifier::Linear])
+            .expect("gbm allocation")
+            .export()
+            .expect("export");
+        // Blue, with the ignored byte left at zero as a client leaves it.
+        fill(&source, [255, 0, 0, 0], 32, 32);
+
+        let texture = h.renderer.import_dmabuf(&source, None).expect("import");
+        assert_eq!(texture.format(), Some(Fourcc::Xrgb8888));
+
+        let mut target = buffer(&mut h.allocator, 32, 32);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+            .expect("render");
+        // Red underneath, so a transparent draw is obvious rather than black.
+        frame
+            .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+            .expect("clear");
+        frame
+            .render_texture_from_to(
+                &texture,
+                Rectangle::from_size(Size::from((32.0, 32.0))),
+                Rectangle::new(Point::from((0, 0)), Size::from((32, 32))),
+                &[],
+                &[],
+                Transform::Normal,
+                1.0,
+            )
+            .expect("render_texture_from_to");
+        let _ = frame.finish().expect("finish");
+        drop(framebuffer);
+
+        assert_eq!(
+            pixel(&target, 16, 16),
+            [255, 0, 0, 255],
+            "the buffer is opaque blue, not the red behind it"
+        );
     }
 
     #[test]

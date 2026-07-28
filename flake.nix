@@ -151,6 +151,10 @@
           ninja
           pkg-config
           wayland-scanner
+          # The Vulkan renderer's shaders are committed as SPIR-V, so this is
+          # only needed to change one — but without it in the shell there is no
+          # way to, and the .spv and the .frag drift apart silently.
+          glslang
         ];
 
         runtimeDeps = with pkgs; [

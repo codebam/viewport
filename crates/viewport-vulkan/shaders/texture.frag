@@ -126,7 +126,10 @@ void main() {
     // Wayland buffers are premultiplied, and every step below is defined on
     // unpremultiplied light. Dividing out first and multiplying back at the
     // end is the difference between correct edges and dark fringes.
-    float a = texel.a;
+    // An X-format buffer has no alpha. Vulkan has no X formats, so it is
+    // imported as the matching A format and this samples the undefined byte —
+    // which clients leave zero, making an opaque window disappear entirely.
+    float a = push.csc0.w > 0.5 ? 1.0 : texel.a;
     vec3 rgb = a > 0.0 ? texel.rgb / a : texel.rgb;
 
     vec3 linear = to_linear(rgb, src_transfer);
