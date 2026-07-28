@@ -99,6 +99,11 @@ impl ViewportState {
             // deadline turned them off by.
             self.set_outputs_enabled(true);
         }
+        // And any client that asked to be told when the session goes idle —
+        // a chat program marking you away, which is not the compositor's
+        // business to decide but is its business to report.
+        let seat = self.seat.clone();
+        self.idle_notifier_state.notify_activity(&seat);
 
         match event {
             InputEvent::Keyboard { event, .. } => {

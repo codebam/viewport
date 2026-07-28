@@ -96,6 +96,78 @@ impl WaylandDndGrabHandler for ViewportState {
 
 impl OutputHandler for ViewportState {}
 
+/// Middle-click paste: a second clipboard, separate from the ordinary one.
+impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler
+    for ViewportState
+{
+    fn primary_selection_state(
+        &mut self,
+    ) -> &mut smithay::wayland::selection::primary_selection::PrimarySelectionState {
+        &mut self.primary_selection_state
+    }
+}
+
+/// Clipboard managers, which need to watch selections they do not own — that
+/// is the whole job of one, and the ordinary data-device protocol deliberately
+/// does not allow it.
+impl smithay::wayland::selection::wlr_data_control::DataControlHandler for ViewportState {
+    fn data_control_state(
+        &mut self,
+    ) -> &mut smithay::wayland::selection::wlr_data_control::DataControlState {
+        &mut self.data_control_state
+    }
+}
+
+/// Something asking the session not to go idle, which is what a video player
+/// does while it is playing.
+///
+/// The surfaces are remembered rather than counted: a client that dies without
+/// releasing its inhibitor would otherwise hold the screen awake for ever, and
+/// a count cannot tell which one to forget.
+impl smithay::wayland::idle_inhibit::IdleInhibitHandler for ViewportState {
+    fn inhibit(&mut self, surface: WlSurface) {
+        if !self.idle_inhibitors.contains(&surface) {
+            self.idle_inhibitors.push(surface);
+        }
+        self.refresh_idle_inhibit();
+    }
+
+    fn uninhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibitors.retain(|held| held != &surface);
+        self.refresh_idle_inhibit();
+    }
+}
+
+/// Clients that want to know the session went idle rather than asking the
+/// compositor to do something about it — a chat program marking you away.
+impl smithay::wayland::idle_notify::IdleNotifierHandler for ViewportState {
+    fn idle_notifier_state(&mut self) -> &mut smithay::wayland::idle_notify::IdleNotifierState<Self> {
+        &mut self.idle_notifier_state
+    }
+}
+
+/// Fractional scaling. Nothing to decide: a client asking for it is told the
+/// scale of the output it is on, and the render path already works in
+/// fractional coordinates.
+impl smithay::wayland::fractional_scale::FractionalScaleHandler for ViewportState {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        use smithay::wayland::compositor::with_states;
+        use smithay::wayland::fractional_scale::with_fractional_scale;
+
+        let scale = self
+            .space
+            .outputs()
+            .next()
+            .map(|output| output.current_scale().fractional_scale())
+            .unwrap_or(1.0);
+        with_states(&surface, |states| {
+            with_fractional_scale(states, |fractional| {
+                fractional.set_preferred_scale(scale);
+            });
+        });
+    }
+}
+
 /// The window list, for anything outside the compositor.
 ///
 /// The shell already knows every window — it is drawing them — but nothing

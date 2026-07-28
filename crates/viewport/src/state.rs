@@ -182,6 +182,37 @@ pub struct ViewportState {
     /// wlr-layer-shell: bars, launchers, notification daemons. Not the
     /// shell's business — a layer surface asks for an edge, not a layout.
     pub layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState,
+    /// Middle-click paste. A separate clipboard from the ordinary one, and
+    /// the one X11 applications and terminals expect.
+    pub primary_selection_state:
+        smithay::wayland::selection::primary_selection::PrimarySelectionState,
+    /// Clipboard managers, which need to watch selections they do not own.
+    pub data_control_state:
+        smithay::wayland::selection::wlr_data_control::DataControlState,
+    /// Something asking the session not to go idle — a video player.
+    pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
+    /// Clients that want to know when the session went idle, rather than
+    /// asking the compositor to act on it.
+    pub idle_notifier_state:
+        smithay::wayland::idle_notify::IdleNotifierState<Self>,
+    /// Surfaces that have been asked to hold idle off. Kept because a dead or
+    /// hidden one must stop counting, and the client will not say so.
+    pub idle_inhibitors: Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+
+    /// Buffer scaling and cropping, which a client uses to present a video at
+    /// one size from a buffer of another without a copy.
+    pub viewporter_state: smithay::wayland::viewporter::ViewporterState,
+    /// When a frame actually reached the screen, which is what a video player
+    /// synchronises audio against.
+    pub presentation_state: smithay::wayland::presentation::PresentationState,
+    /// A one-pixel buffer, so a client can fill a region with a colour without
+    /// allocating one.
+    pub single_pixel_state:
+        smithay::wayland::single_pixel_buffer::SinglePixelBufferState,
+    /// Fractional scaling: a client drawing at 1.25 rather than at 1 or 2.
+    pub fractional_scale_state:
+        smithay::wayland::fractional_scale::FractionalScaleManagerState,
+
     /// Pointer capture, and the relative motion a game reads instead of a
     /// position. Both are needed together: a lock with no relative motion
     /// leaves a game unable to turn at all.
@@ -246,6 +277,29 @@ impl ViewportState {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let layer_shell_state =
             smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
+        let primary_selection_state =
+            smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<Self>(&dh);
+        let data_control_state =
+            smithay::wayland::selection::wlr_data_control::DataControlState::new::<Self, _>(
+                &dh,
+                Some(&primary_selection_state),
+                |_| true,
+            );
+        let idle_inhibit_state =
+            smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(&dh);
+        let idle_notifier_state =
+            smithay::wayland::idle_notify::IdleNotifierState::<Self>::new(&dh, loop_handle.clone());
+        let viewporter_state = smithay::wayland::viewporter::ViewporterState::new::<Self>(&dh);
+        // CLOCK_MONOTONIC: the same clock every timestamp in this compositor
+        // uses, and the one a client compares against.
+        let presentation_state = smithay::wayland::presentation::PresentationState::new::<Self>(
+            &dh,
+            smithay::reexports::rustix::time::ClockId::Monotonic as u32,
+        );
+        let single_pixel_state =
+            smithay::wayland::single_pixel_buffer::SinglePixelBufferState::new::<Self>(&dh);
+        let fractional_scale_state =
+            smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<Self>(&dh);
         let foreign_toplevel_state =
             smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
         let pointer_constraints_state =
@@ -365,6 +419,15 @@ impl ViewportState {
             compositor_state,
             xdg_shell_state,
             layer_shell_state,
+            primary_selection_state,
+            data_control_state,
+            idle_inhibit_state,
+            idle_notifier_state,
+            idle_inhibitors: Vec::new(),
+            viewporter_state,
+            presentation_state,
+            single_pixel_state,
+            fractional_scale_state,
             foreign_toplevel_state,
             pointer_constraints_state,
             relative_pointer_state,
@@ -715,8 +778,24 @@ impl ViewportState {
         self.notify(&event);
     }
 
+    /// Tell the idle machinery whether anything is holding it off.
+    ///
+    /// Dead and unmapped surfaces are dropped first: a client that exits
+    /// without releasing its inhibitor would otherwise keep the screen awake
+    /// for the rest of the session, and it is in no position to say so.
+    pub fn refresh_idle_inhibit(&mut self) {
+        use smithay::utils::IsAlive as _;
+        self.idle_inhibitors.retain(|surface| surface.alive());
+        let inhibited = !self.idle_inhibitors.is_empty();
+        self.idle.set_inhibited(inhibited);
+        self.idle_notifier_state.set_is_inhibited(inhibited);
+    }
+
     /// One idle tick: lock and blank when their deadlines pass.
     pub fn idle_tick(&mut self) {
+        // Every tick, because a client holding one may have died since the
+        // last, and nothing else notices.
+        self.refresh_idle_inhibit();
         if !self.idle_settings.wanted() {
             return;
         }
