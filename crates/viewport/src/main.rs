@@ -144,6 +144,8 @@ fn main() -> Result<()> {
         unsafe { std::env::set_var("XDG_SESSION_TYPE", "wayland") };
     }
 
+    export_session_environment();
+
     // Before anything is spawned, so an X program started from a menu finds a
     // DISPLAY. It arrives asynchronously; the variable is set when it does.
     state.start_xwayland(&event_loop.handle());
@@ -328,4 +330,55 @@ fn main() -> Result<()> {
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     let at = args.iter().position(|a| a == name)?;
     args.get(at + 1).map(String::as_str)
+}
+
+/// Hand the session's environment to the user services, which this compositor
+/// does not start and cannot reach any other way.
+///
+/// xdg-desktop-portal and its backends are D-Bus activated with whatever
+/// environment the user manager holds, and xdg-desktop-portal-wlr guards
+/// itself with
+///
+///   ConditionEnvironment=WAYLAND_DISPLAY
+///
+/// so with nothing exported it is skipped before it runs a line. Everything
+/// downstream of that fails quietly: ScreenCast reports no sources, a browser
+/// offers a picker of black rectangles, OBS shows no screen capture — and the
+/// compositor is never asked for a frame, so its own log says nothing at all.
+/// The journal says "skipped, unmet condition check", which is accurate and
+/// names nothing anyone would search for (`src/server.c:411`).
+///
+/// Both commands, because which one is authoritative depends on the system,
+/// and failure is fine: a session with neither systemd nor D-Bus wants no part
+/// of this and works regardless.
+fn export_session_environment() {
+    const VARIABLES: [&str; 2] = ["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP"];
+
+    let commands: [(&str, Vec<&str>); 2] = [
+        (
+            "systemctl",
+            ["--user", "import-environment"]
+                .into_iter()
+                .chain(VARIABLES)
+                .collect(),
+        ),
+        (
+            "dbus-update-activation-environment",
+            ["--systemd"].into_iter().chain(VARIABLES).collect(),
+        ),
+    ];
+
+    for (program, arguments) in commands {
+        match std::process::Command::new(program).args(&arguments).spawn() {
+            // Reaped on a thread of its own: both exit at once, and a
+            // compositor that never waits would leave two zombies for the life
+            // of the session.
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) => tracing::debug!("could not run {program}: {e}"),
+        }
+    }
 }
