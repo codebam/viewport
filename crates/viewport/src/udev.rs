@@ -97,6 +97,16 @@ pub struct Surface {
     drawn: bool,
     /// Whether a composite of this output has been written already.
     dumped: bool,
+    /// A frame is queued and has not been scanned out yet.
+    ///
+    /// One frame in flight per output, which is what anvil arranges by
+    /// scheduling the next repaint from the vblank rather than rendering
+    /// straight away (`anvil/src/udev.rs:1328`). Rendering again before the
+    /// flip draws into the next swapchain buffer with a damage age that no
+    /// longer describes it, so the buffers end up holding different pictures —
+    /// visible as flicker whenever a client repaints quickly, like a terminal
+    /// being typed into.
+    pending: bool,
 }
 
 /// Everything the DRM backend holds.
@@ -141,6 +151,13 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         .unwrap_or(card);
 
     tracing::info!("primary GPU: card {card:?}, render {render:?}");
+    // Said out loud because both change what the screen does, and a run whose
+    // settings are not in its log cannot be compared with another one.
+    tracing::info!(
+        "scanout {}, full damage {}",
+        if frame_flags().is_empty() { "off" } else { "on" },
+        if full_damage() { "on" } else { "off" },
+    );
 
     let mut session = session;
     let (manager, renderer, drm_notifier) = open_device(&mut session, &card, &render)?;
@@ -466,6 +483,7 @@ impl ViewportState {
                             _global: global,
                             drawn: false,
                             dumped: false,
+                            pending: false,
                         },
                     );
                     started.push(crtc);
@@ -597,6 +615,8 @@ impl ViewportState {
         let Some(surface) = udev.surfaces.get_mut(&crtc) else {
             return;
         };
+        // The flip happened, so this output may be drawn into again.
+        surface.pending = false;
         if let Err(e) = surface.drm_output.frame_submitted() {
             tracing::warn!("frame_submitted: {e}");
         }
@@ -701,6 +721,13 @@ impl ViewportState {
         let Some(surface) = udev.surfaces.get_mut(&crtc) else {
             return;
         };
+        // Already waiting on a flip. Drawing now would be overwritten before
+        // it was ever scanned out; the request is remembered and the vblank
+        // draws it.
+        if surface.pending {
+            self.needs_render = true;
+            return;
+        }
         let output = surface.output.clone();
 
         // Front to back: the pointer, the windows, then the shell behind all
@@ -835,6 +862,11 @@ impl ViewportState {
             }
         }
 
+        // Before the frame, so the tracker has no history to trust.
+        if full_damage() {
+            surface.drm_output.reset_buffers();
+        }
+
         let result = surface.drm_output.render_frame(
             &mut udev.renderer,
             &elements,
@@ -851,14 +883,12 @@ impl ViewportState {
                     // arrives, so a failure here stops the output for good
                     // rather than dropping one frame.
                     tracing::warn!("queue_frame: {e}");
-                } else if !surface.drawn {
-                    surface.drawn = true;
-                    // What each output actually put on screen the first time
-                    // it drew. "The right monitor is grey" and "the right
-                    // monitor drew the wrong part of the shell" are the same
-                    // picture from the front, and nothing else distinguishes
-                    // them.
-                    tracing::info!("{}: first frame queued", output.name());
+                } else {
+                    surface.pending = true;
+                    if !surface.drawn {
+                        surface.drawn = true;
+                        tracing::info!("{}: first frame queued", output.name());
+                    }
                 }
                 // Every draw, because the first one happens before the shell
                 // has painted anything. "The right monitor is grey" and "the
@@ -941,6 +971,17 @@ fn frame_flags() -> FrameFlags {
         Ok("0") => FrameFlags::empty(),
         _ => FrameFlags::DEFAULT,
     }
+}
+
+/// Whether to throw away the damage history before every frame.
+///
+/// Redrawing everything every time is what a compositor does before it has
+/// damage tracking, and it is always correct. So it separates "the damage is
+/// wrong" from everything else — which nothing on screen does, because a
+/// region drawn from stale damage and a region drawn from a stale plane look
+/// the same.
+fn full_damage() -> bool {
+    matches!(std::env::var("VIEWPORT_FULL_DAMAGE").as_deref(), Ok("1"))
 }
 
 /// A CRTC this connector can drive that nothing else is using.
