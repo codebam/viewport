@@ -177,6 +177,17 @@ pub fn apply(state: &mut ViewportState, request: Request) {
     }
 }
 
+/// The size to configure a client with for a rectangle the shell asked for.
+///
+/// Never below what the client says it can handle: a client configured under
+/// its minimum is entitled to ignore the configure and commit whatever size it
+/// likes, which leaves the window overflowing the hole the shell drew with the
+/// two unable to agree (`src/xdg_shell.c:855`). Zero on an axis means
+/// unconstrained.
+fn configure_size(box_: (i32, i32), min: (i32, i32)) -> (i32, i32) {
+    (box_.0.max(min.0), box_.1.max(min.1))
+}
+
 fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLayout) {
     let Some(view) = state.views.get(layout.id) else {
         return;
@@ -189,11 +200,37 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
     let window = view.window.clone();
     let visible = view.visible;
 
+    // Never ask a client for less than it says it can handle.
+    //
+    // A client configured below its minimum is entitled to ignore it and
+    // commit whatever size it likes, which leaves the window overflowing the
+    // hole the shell drew, with the layout and the reality unable to agree
+    // (`src/xdg_shell.c:855`).
+    let toplevel = window.toplevel().cloned();
+    let (width, height) =
+        configure_size((resolved.box_.width, resolved.box_.height), view.min_size());
+
     let view = state.views.get_mut(layout.id).expect("just looked it up");
     view.box_ = resolved.box_;
     view.scale = resolved.scale;
     view.clip = resolved.clip;
     view.placed = true;
+    let resize = view.configured != Some((width, height));
+    if resize {
+        view.configured = Some((width, height));
+    }
+
+    // Only when the size actually changed. Every configure is a round trip and
+    // the shell resends the rectangle on every frame of an animation, so
+    // configuring each time would make a move as expensive as a resize.
+    if resize {
+        if let Some(toplevel) = toplevel {
+            toplevel.with_pending_state(|pending| {
+                pending.size = Some((width, height).into());
+            });
+            toplevel.send_pending_configure();
+        }
+    }
 
     if visible {
         state
@@ -282,4 +319,34 @@ fn reject(state: &mut ViewportState, context: &str, message: &str) {
         message: message.to_owned(),
     };
     state.notify(&event);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_client_is_never_configured_below_its_minimum() {
+        // It would be entitled to ignore the configure and commit whatever
+        // size it liked, leaving the window overflowing the shell's hole.
+        assert_eq!(configure_size((100, 50), (200, 80)), (200, 80));
+        // Zero means unconstrained on that axis.
+        assert_eq!(configure_size((2540, 1390), (0, 0)), (2540, 1390));
+        assert_eq!(configure_size((2540, 10), (0, 39)), (2540, 39));
+    }
+
+    #[test]
+    fn a_move_is_not_a_resize() {
+        // The shell resends the whole rectangle on every frame of an
+        // animation. A window sliding across the screen changes position sixty
+        // times a second and its size not at all, and every configure is a
+        // round trip — so the size decides whether one is sent, and the
+        // position never does.
+        let first = configure_size((2540, 1390), (6, 39));
+        let moved = configure_size((2540, 1390), (6, 39));
+        assert_eq!(first, moved, "a move must not look like a resize");
+
+        let resized = configure_size((1270, 1390), (6, 39));
+        assert_ne!(first, resized, "a real resize must still be seen");
+    }
 }

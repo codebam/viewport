@@ -47,6 +47,14 @@ pub struct View {
     /// window with CSS: the frame is DOM, the contents are a surface the
     /// compositor draws.
     pub opacity: f32,
+
+    /// The size the client was last configured with, clamped.
+    ///
+    /// Kept so a move does not cost a resize. Every configure is a round trip,
+    /// and the shell resends the whole rectangle on every frame of an
+    /// animation — a window sliding across the screen changes position sixty
+    /// times a second and its size not at all (`src/xdg_shell.c:877`).
+    pub configured: Option<(i32, i32)>,
 }
 
 impl View {
@@ -166,6 +174,7 @@ impl Views {
             scale: 1.0,
             clip: None,
             opacity: 1.0,
+            configured: None,
         });
         id
     }
