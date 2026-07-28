@@ -222,6 +222,23 @@ impl VulkanRenderer {
         self.targets.retain(|(weak, _)| !weak.is_gone());
     }
 
+    /// Wait for a sync point, on the GPU where possible.
+    ///
+    /// An exportable fence becomes a semaphore the next submission waits on,
+    /// so nothing blocks here. A sync point that cannot be exported — one
+    /// backed by something other than a fence fd — leaves no choice but to
+    /// wait on the CPU.
+    fn wait_for(&mut self, sync: &SyncPoint) -> Result<(), Error> {
+        if sync.is_reached() {
+            return Ok(());
+        }
+        if let Some(fd) = sync.export() {
+            return self.commands.wait_on(fd).map_err(Error::from);
+        }
+        sync.wait()
+            .map_err(|_| Error::Unsupported("interrupted waiting for a sync point".to_owned()))
+    }
+
     /// Take an imported image from the foreign queue, once.
     ///
     /// Submitted on its own rather than folded into a frame, because this has
@@ -294,12 +311,7 @@ impl Renderer for VulkanRenderer {
     }
 
     fn wait(&mut self, sync: &SyncPoint) -> Result<(), Self::Error> {
-        // A CPU wait. Importing the fence into a Vulkan semaphore and waiting
-        // on the queue instead is what VK_KHR_external_semaphore_fd is for,
-        // and is the obvious next step.
-        sync.wait().map_err(|_| {
-            Error::Unsupported("interrupted waiting for a sync point".to_owned())
-        })
+        self.wait_for(sync)
     }
 
     fn cleanup_texture_cache(&mut self) -> Result<(), Self::Error> {
@@ -1253,8 +1265,9 @@ impl Frame for VulkanFrame<'_, '_> {
     }
 
     fn wait(&mut self, sync: &SyncPoint) -> Result<(), Self::Error> {
-        sync.wait()
-            .map_err(|_| Error::Unsupported("interrupted waiting for a sync point".to_owned()))
+        // Queued onto the submission this frame will make at finish(), so a
+        // client's acquire fence delays the GPU rather than this thread.
+        self.renderer.wait_for(sync)
     }
 
     fn finish(mut self) -> Result<SyncPoint, Self::Error> {
@@ -1726,6 +1739,68 @@ mod tests {
             advertised,
             "copy_texture and can_read_texture must agree"
         );
+    }
+
+    /// A fence handed to the renderer becomes a wait on the queue, not a
+    /// stall on this thread.
+    #[test]
+    fn waiting_on_a_fence_defers_to_the_gpu() {
+        let Some(mut h) = harness() else { return };
+
+        // A real, not-yet-signalled fence: render into a buffer and take the
+        // sync point without waiting for it.
+        let mut source = buffer(&mut h.allocator, 64, 64);
+        let sync = {
+            let mut framebuffer = h.renderer.bind(&mut source).expect("bind");
+            let mut frame = h
+                .renderer
+                .render(&mut framebuffer, (64, 64).into(), Transform::Normal)
+                .expect("render");
+            frame
+                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+                .expect("clear");
+            frame.finish().expect("finish")
+        };
+        assert!(sync.contains_fence(), "the frame did not produce a fence");
+
+        // Handing it over must queue a semaphore rather than block.
+        assert_eq!(h.renderer.commands.pending_waits(), 0);
+        h.renderer.wait(&sync).expect("wait");
+        assert_eq!(
+            h.renderer.commands.pending_waits(),
+            1,
+            "the fence was waited on by the CPU instead of the queue"
+        );
+
+        // The next submission consumes it and still produces correct pixels.
+        let mut target = buffer(&mut h.allocator, 64, 64);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (64, 64).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &[])
+            .expect("clear");
+        let after = frame.finish().expect("finish");
+        after.wait().expect("wait");
+        drop(framebuffer);
+
+        assert_eq!(
+            h.renderer.commands.pending_waits(),
+            0,
+            "the wait was not consumed by the submission"
+        );
+        assert_eq!(pixel(&target, 32, 32), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn an_already_signalled_sync_point_queues_nothing() {
+        let Some(mut h) = harness() else { return };
+        h.renderer
+            .wait(&SyncPoint::signaled())
+            .expect("an already-reached sync point is not an error");
+        assert_eq!(h.renderer.commands.pending_waits(), 0);
     }
 
     #[test]

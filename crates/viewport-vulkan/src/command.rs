@@ -8,7 +8,7 @@
 // single-queue: this renderer composites, it does not run async compute, and a
 // second queue would only add ownership transfers to pay for.
 
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context as _, Result};
@@ -28,6 +28,13 @@ pub struct Commands {
     /// Exporting a SYNC_FD transfers the payload out, which leaves the
     /// semaphore unsignalled and ready for the next submit — so one is enough.
     signal: vk::Semaphore,
+    /// Semaphores the next submission must wait on, imported from fences
+    /// handed to us by clients or by another renderer.
+    waits: Vec<vk::Semaphore>,
+    /// Semaphores belonging to the submission in flight. They cannot be
+    /// destroyed until it completes, so they are held here and freed once the
+    /// fence signals.
+    retired: Vec<vk::Semaphore>,
     /// Whether the fence has been submitted and not yet waited on. Resetting
     /// an unsignalled fence, or waiting on one that was never submitted, both
     /// hang rather than fail.
@@ -88,6 +95,8 @@ impl Commands {
             buffer,
             fence,
             signal,
+            waits: Vec::new(),
+            retired: Vec::new(),
             pending: false,
         })
     }
@@ -131,15 +140,67 @@ impl Commands {
 
             let buffers = [self.buffer];
             let signals = [self.signal];
+            // ALL_COMMANDS rather than a narrower stage: the imported fence
+            // guards the buffer's contents, and narrowing this to, say, the
+            // fragment stage would be a claim about where it is read that this
+            // layer cannot make.
+            let stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; self.waits.len()];
             let submit = vk::SubmitInfo::default()
                 .command_buffers(&buffers)
+                .wait_semaphores(&self.waits)
+                .wait_dst_stage_mask(&stages)
                 .signal_semaphores(&signals);
             handle
                 .queue_submit(self.device.queue(), &[submit], self.fence)
                 .context("vkQueueSubmit")?;
         }
+        // Held until the submission completes; destroying a semaphore the
+        // queue is still waiting on is a use-after-free inside the driver.
+        self.retired.append(&mut self.waits);
         self.pending = true;
         Ok(())
+    }
+
+    /// Make the next submission wait on `fd` before it runs.
+    ///
+    /// This is the other half of explicit sync. A client that hands over an
+    /// acquire fence is saying "do not read this buffer yet"; importing that
+    /// fd into a semaphore and letting the queue wait on it means the GPU
+    /// blocks, not us.
+    ///
+    /// The import is TEMPORARY, which is required for SYNC_FD and means the
+    /// payload is consumed by the wait — so a semaphore is used once and then
+    /// retired.
+    pub fn wait_on(&mut self, fd: OwnedFd) -> Result<()> {
+        let handle = self.device.handle();
+        let semaphore = unsafe { handle.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }
+            .context("vkCreateSemaphore")?;
+
+        let info = vk::ImportSemaphoreFdInfoKHR::default()
+            .semaphore(semaphore)
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+            .flags(vk::SemaphoreImportFlags::TEMPORARY)
+            .fd(fd.as_raw_fd());
+
+        if let Err(e) = unsafe {
+            self.device
+                .external_semaphore_fd()
+                .import_semaphore_fd(&info)
+        } {
+            unsafe { handle.destroy_semaphore(semaphore, None) };
+            return Err(anyhow::Error::from(e).context("vkImportSemaphoreFdKHR"));
+        }
+
+        // Vulkan took ownership of the fd on a successful import.
+        std::mem::forget(fd);
+
+        self.waits.push(semaphore);
+        Ok(())
+    }
+
+    /// How many fences the next submission will wait on.
+    pub fn pending_waits(&self) -> usize {
+        self.waits.len()
     }
 
     /// Export the last submission's completion as a `sync_file` fd.
@@ -187,7 +248,15 @@ impl Commands {
                 .context("vkWaitForFences")?;
         }
         self.pending = false;
+        self.free_retired();
         Ok(())
+    }
+
+    fn free_retired(&mut self) {
+        let handle = self.device.handle();
+        for semaphore in self.retired.drain(..) {
+            unsafe { handle.destroy_semaphore(semaphore, None) };
+        }
     }
 }
 
@@ -198,7 +267,11 @@ impl Drop for Commands {
 
         let device = self.device.clone();
         let handle = device.handle();
+        self.free_retired();
         unsafe {
+            for semaphore in self.waits.drain(..) {
+                handle.destroy_semaphore(semaphore, None);
+            }
             handle.destroy_semaphore(self.signal, None);
             handle.destroy_fence(self.fence, None);
             handle.destroy_command_pool(self.pool, None);

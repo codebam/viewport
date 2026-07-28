@@ -30,7 +30,7 @@ a CPU mapping of the rendered buffer rather than trusting the GPU.
 - [x] `ExportMem` — read-back for screenshots and screencopy
 - [x] Output and surface transforms
 - [x] Explicit sync: `finish()` returns an exported `sync_file` fence
-- [ ] Waiting on an imported fence in the queue rather than on the CPU
+- [x] Waiting on an imported fence in the queue rather than on the CPU
 - [x] `Offscreen` (with an allocator) and `Blit`
 - [ ] `ImportDmaWl` / `ImportMemWl` — the `wl_buffer` wrappers
 - [ ] Colour management
