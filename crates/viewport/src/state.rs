@@ -789,10 +789,21 @@ impl ViewportState {
         windows.reverse();
 
         for (window, location) in windows {
+            // Where the surface is drawn, not where the window is mapped.
+            //
+            // A client with client-side decorations draws its shadows outside
+            // the window: xdg_surface.geometry marks the real window inside a
+            // larger surface, and its origin is frequently negative. The map
+            // location is the window's, so surface-local coordinates have to
+            // start from the surface's — which is what `Space::element_under`
+            // returns and what reading the map location instead got wrong, by
+            // exactly the width of the shadow.
+            use smithay::desktop::space::SpaceElement as _;
+            let render_location = location - window.geometry().loc;
             if let Some((surface, at)) =
-                window.surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
+                window.surface_under(pos - render_location.to_f64(), WindowSurfaceType::ALL)
             {
-                return Some((surface, (at + location).to_f64()));
+                return Some((surface, (at + render_location).to_f64()));
             }
         }
         below
