@@ -88,6 +88,8 @@ pub struct Surface {
     /// "did it draw at all" is the first question of any bring-up and the
     /// answer was not in the log the first time.
     drawn: bool,
+    /// Whether a composite of this output has been written already.
+    dumped: bool,
 }
 
 /// Everything the DRM backend holds.
@@ -456,6 +458,7 @@ impl ViewportState {
                             drm_output,
                             _global: global,
                             drawn: false,
+                            dumped: false,
                         },
                     );
                     started.push(crtc);
@@ -723,6 +726,33 @@ impl ViewportState {
                     Kind::Unspecified,
                 ),
             ));
+        }
+
+        // A composite of exactly this list, for when the screen and the log
+        // disagree. Once per output, and only with a window up — the question
+        // it answers is about what a window does to everything behind it.
+        if let Some(path) = crate::dump::output_target() {
+            if !surface.dumped && !windows.is_empty() {
+                surface.dumped = true;
+                let size = output
+                    .current_mode()
+                    .map(|m| (m.size.w, m.size.h).into())
+                    .unwrap_or_else(|| (0, 0).into());
+                let path = path.with_file_name(format!(
+                    "{}-{}.ppm",
+                    path.file_stem().unwrap_or_default().to_string_lossy(),
+                    output.name()
+                ));
+                if let Err(e) = crate::dump::output_frame(
+                    &mut udev.renderer,
+                    &elements,
+                    size,
+                    [0.1, 0.1, 0.1, 1.0],
+                    &path,
+                ) {
+                    tracing::error!("could not dump {}: {e:#}", output.name());
+                }
+            }
         }
 
         let result = surface.drm_output.render_frame(

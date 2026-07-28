@@ -21,9 +21,67 @@ use smithay::utils::{Buffer as BufferCoord, Physical, Point, Rectangle, Size, Tr
 
 use viewport_vulkan::{VulkanRenderer, VulkanTexture};
 
-/// Where to write, if anywhere.
+/// Where to write the shell's own buffer, if anywhere.
 pub fn target() -> Option<std::path::PathBuf> {
     std::env::var_os("VIEWPORT_DUMP_SHELL").map(std::path::PathBuf::from)
+}
+
+/// Where to write composited outputs, if anywhere.
+///
+/// The shell's buffer alone cannot answer "why is there grey where the bar
+/// should be": that is a question about what survived compositing, and the
+/// only place it exists is the output.
+pub fn output_target() -> Option<std::path::PathBuf> {
+    std::env::var_os("VIEWPORT_DUMP_OUTPUT").map(std::path::PathBuf::from)
+}
+
+/// Composite `elements` for an output of `size` and write the result.
+///
+/// The same list the output was given, drawn the same way, so what lands here
+/// is what landed on screen — including anything an occlusion decision left
+/// undrawn, which is the whole reason for looking.
+pub fn output_frame<E>(
+    renderer: &mut VulkanRenderer,
+    elements: &[E],
+    size: Size<i32, Physical>,
+    clear: [f32; 4],
+    path: &std::path::Path,
+) -> Result<()>
+where
+    E: smithay::backend::renderer::element::RenderElement<VulkanRenderer>,
+{
+    use smithay::backend::renderer::damage::OutputDamageTracker;
+    use smithay::backend::renderer::Texture as _;
+
+    let buffer_size: Size<i32, BufferCoord> = (size.w, size.h).into();
+    let mut target: smithay::backend::allocator::dmabuf::Dmabuf = renderer
+        .create_buffer(Fourcc::Argb8888, buffer_size)
+        .context("allocating the dump target")?;
+
+    let mut tracker = OutputDamageTracker::new(size, 1.0, Transform::Normal);
+    {
+        let mut framebuffer = renderer.bind(&mut target).context("binding it")?;
+        tracker
+            .render_output(renderer, &mut framebuffer, 0, elements, Color32F::from(clear))
+            .map_err(|e| anyhow::anyhow!("compositing the dump: {e:?}"))?;
+
+        let mapping = renderer
+            .copy_framebuffer(
+                &framebuffer,
+                Rectangle::from_size(buffer_size),
+                Fourcc::Argb8888,
+            )
+            .context("reading it back")?;
+        let (w, h) = (
+            mapping.width(),
+            mapping.height(),
+        );
+        let pixels = renderer.map_texture(&mapping).context("mapping it")?;
+        write_ppm(path, w, h, pixels)?;
+    }
+
+    tracing::info!("wrote a composited output to {}", path.display());
+    Ok(())
 }
 
 /// Draw `texture` on its own and write the result as a binary PPM.
