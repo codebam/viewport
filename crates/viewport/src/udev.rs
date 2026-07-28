@@ -845,6 +845,7 @@ impl ViewportState {
                 // The shell's own buffer from the same moment, so the two are
                 // comparable. "The shell is not on the output" and "the shell
                 // painted nothing" look identical in the composite alone.
+                #[cfg(feature = "wpe")]
                 if let Some(texture) = shell_texture.as_ref() {
                     let shell_path = path.with_file_name(format!(
                         "{}-shell.ppm",

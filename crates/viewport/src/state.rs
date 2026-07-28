@@ -47,6 +47,12 @@ pub struct ViewportState {
     pub ipc: Ipc,
     pub shell_announced: bool,
 
+    /// What the shell is told on connect, and what the config file patches.
+    /// The built-in values are C's (`src/main.c:61`).
+    pub config: Config,
+    /// Where the shell is loaded from, when the config names somewhere.
+    pub shell_url: Option<String>,
+
     /// While the overview is up the shell draws miniatures of every window and
     /// a click means "go there" rather than reaching the client underneath.
     pub overview: bool,
@@ -197,6 +203,19 @@ impl ViewportState {
 
             ipc,
             shell_announced: false,
+            config: Config {
+                layout: "tiling".to_owned(),
+                // Both true, as in src/main.c:69 — "the empty desktop explains
+                // itself until told not to". These set no-logo and no-tutorial
+                // on the document when false, and on a desktop with no windows
+                // they are the only things there are to draw.
+                logo: true,
+                tutorial: true,
+                bar: None,
+                rules: None,
+                theme: None,
+            },
+            shell_url: None,
             overview: false,
             active_output: None,
             udev: None,
@@ -335,15 +354,71 @@ impl ViewportState {
         // with no windows those two are the only things there are to draw. It
         // leaves the wallpaper and nothing else, which is what three runs of
         // "the right display is grey" actually were.
-        let event = Event::Config(Config {
-            layout: "tiling".to_owned(),
-            logo: true,
-            tutorial: true,
-            bar: None,
-            rules: None,
-            theme: None,
-        });
+        let event = Event::Config(self.config.clone());
         self.notify(&event);
+    }
+
+    /// Apply a config file over the built-in defaults.
+    ///
+    /// Only what the file contains: a key left out never resets something a
+    /// flag or an earlier load set, which is what makes a reload safe
+    /// (`src/config.c:400`).
+    pub fn apply_config(&mut self, file: crate::config::File) {
+        if let Some(layout) = file.layout {
+            self.config.layout = layout;
+        }
+        if let Some(logo) = file.logo {
+            self.config.logo = logo;
+        }
+        if let Some(tutorial) = file.tutorial {
+            self.config.tutorial = tutorial;
+        }
+        if let Some(bar) = file.bar {
+            self.config.bar = Some(bar);
+        }
+        if file.rules.is_some() {
+            self.config.rules = file.rules;
+        }
+        if file.theme.is_some() {
+            self.config.theme = file.theme;
+        }
+        if let Some(url) = file.url {
+            self.shell_url = Some(url);
+        }
+
+        // Bindings last, because whether the defaults are there at all depends
+        // on the file. Presence of "binds" means "this is the whole keymap",
+        // so an empty one asks for none.
+        let terminal = file
+            .terminal
+            .or_else(|| std::env::var("VIEWPORT_TERMINAL").ok())
+            .unwrap_or_else(|| "foot".to_owned());
+        let menu = file
+            .menu
+            .or_else(|| std::env::var("VIEWPORT_MENU").ok())
+            .unwrap_or_else(|| "wmenu-run".to_owned());
+        let scrolling = self.config.layout == "scrolling";
+
+        let mut bindings = Vec::new();
+        // Overrides go in front: bindings are matched first-wins, so a chord
+        // the file claims shadows the default without the default needing to
+        // be removed.
+        if let Some(over) = file.binds_override.as_ref() {
+            bindings.extend(
+                crate::config::bind_specs(over)
+                    .iter()
+                    .filter_map(|spec| crate::binding::parse(spec)),
+            );
+        }
+        match file.binds.as_ref() {
+            Some(binds) => bindings.extend(
+                crate::config::bind_specs(binds)
+                    .iter()
+                    .filter_map(|spec| crate::binding::parse(spec)),
+            ),
+            None => bindings.extend(crate::binding::defaults(&terminal, &menu, scrolling)),
+        }
+        self.bindings = bindings;
     }
 
     pub fn notify_output_layout(&mut self) {
@@ -497,12 +572,16 @@ impl ViewportState {
             anyhow::bail!("the drm nodes have no device paths");
         };
 
-        // Where the shell lives. The C build takes this from its config; until
-        // that is ported, the environment is the way to point it somewhere.
-        let url = std::env::var("VIEWPORT_SHELL_URL").unwrap_or_else(|_| {
-            let here = std::env::current_dir().unwrap_or_default();
-            format!("file://{}/data/shell/index.html", here.display())
-        });
+        // Where the shell lives: the config file's "url", then the
+        // environment, then the copy in the source tree.
+        let url = self
+            .shell_url
+            .clone()
+            .or_else(|| std::env::var("VIEWPORT_SHELL_URL").ok())
+            .unwrap_or_else(|| {
+                let here = std::env::current_dir().unwrap_or_default();
+                format!("file://{}/data/shell/index.html", here.display())
+            });
         let console = std::env::var("VIEWPORT_LOG")
             .map(|level| level.contains("debug") || level.contains("trace"))
             .unwrap_or(false);

@@ -31,16 +31,30 @@ impl Compositor {
     /// The socket path has to stay under `sockaddr_un.sun_path`, so this uses
     /// /tmp with the pid rather than CARGO_TARGET_TMPDIR, which is long.
     fn start(tag: &str) -> Self {
+        Self::start_with(tag, &[])
+    }
+
+    /// With extra environment, for the settings that only arrive that way.
+    fn start_with(tag: &str, env: &[(&str, &std::path::Path)]) -> Self {
         let socket = PathBuf::from(format!("/tmp/viewport-test-{}-{tag}.sock", std::process::id()));
         let _ = std::fs::remove_file(&socket);
 
-        let child = Command::new(env!("CARGO_BIN_EXE_viewport"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_viewport"));
+        command
             .args(["--headless", "--socket"])
             .arg(&socket)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("could not start the compositor");
+            .stderr(Stdio::null());
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        // Otherwise a config file in the developer's own home decides what
+        // these tests see.
+        if !env.iter().any(|(key, _)| *key == "XDG_CONFIG_HOME") {
+            command.env("XDG_CONFIG_HOME", "/nonexistent");
+        }
+
+        let child = command.spawn().expect("could not start the compositor");
 
         let compositor = Self { child, socket };
         compositor.wait_for_socket();
@@ -154,6 +168,34 @@ fn view_query_answers_with_the_config() {
     // Unset members are omitted, not null.
     assert!(config.get("bar").is_none());
     assert!(config.get("rules").is_none());
+}
+
+#[test]
+fn a_config_file_reaches_the_shell() {
+    // The point of the file: what it says is what the shell is told on
+    // connect. Anything the file leaves out keeps its built-in value, which is
+    // why "tutorial" is still true here.
+    let dir = std::env::temp_dir().join("viewport-config-integration");
+    std::fs::create_dir_all(dir.join("viewport")).expect("mkdir");
+    let path = dir.join("viewport/config.json");
+    std::fs::write(
+        &path,
+        r#"{"layout":"scrolling","logo":false,"bar":"auto"}"#,
+    )
+    .expect("write");
+
+    let compositor = Compositor::start_with("config-file", &[("XDG_CONFIG_HOME", &dir)]);
+    let mut client = compositor.connect();
+    client.send(r#"{"type":"view.query"}"#);
+    let config = client.wait_for("config");
+
+    assert_eq!(config["layout"], "scrolling");
+    assert_eq!(config["logo"], false);
+    assert_eq!(config["bar"], "auto");
+    // Not in the file, so still the built-in.
+    assert_eq!(config["tutorial"], true);
+
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

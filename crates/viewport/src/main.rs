@@ -8,9 +8,11 @@
 
 mod apply;
 mod binding;
-#[cfg(feature = "wpe")]
+// Not gated on the web engine: an output composite is worth capturing
+// whatever is drawing into it.
 mod dump;
 mod color_management;
+mod config;
 mod cursor;
 mod focus;
 mod framing;
@@ -51,10 +53,38 @@ fn main() -> Result<()> {
     // is already displaying, which is what development wants.
     let drm = args.iter().any(|a| a == "--drm");
 
+    // The config file, before anything reads a default out of it.
+    //
+    // A missing default file is ordinary; a missing --config is not, because
+    // the user named it. Everything else — a syntax error, a permission
+    // problem — stops the compositor either way rather than starting with
+    // settings the file was meant to change.
+    let explicit = flag(&args, "--config").map(std::path::PathBuf::from);
+    let config_path = explicit.clone().or_else(config::default_path);
+    let config = match config_path.as_deref().map(config::load) {
+        Some(Ok(Some(file))) => {
+            tracing::info!("loaded config from {}", config_path.as_ref().unwrap().display());
+            file
+        }
+        Some(Ok(None)) => {
+            if explicit.is_some() {
+                anyhow::bail!("{}: no such file", config_path.unwrap().display());
+            }
+            tracing::debug!(
+                "no config at {}, using defaults",
+                config_path.as_ref().unwrap().display()
+            );
+            config::File::default()
+        }
+        Some(Err(e)) => return Err(e),
+        None => config::File::default(),
+    };
+
     let mut event_loop: EventLoop<ViewportState> = EventLoop::try_new()?;
     let display: Display<ViewportState> = Display::new()?;
 
     let mut state = ViewportState::new(&mut event_loop, display, socket_path)?;
+    state.apply_config(config);
     if drm {
         udev::init(&mut event_loop, &mut state)?;
     } else if headless {

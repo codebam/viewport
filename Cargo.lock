@@ -1642,6 +1642,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "pkg-config",
+ "serde",
  "serde_json",
  "smithay",
  "tracing",
