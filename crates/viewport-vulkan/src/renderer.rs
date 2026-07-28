@@ -1839,6 +1839,109 @@ mod tests {
         );
     }
 
+    /// A small element in front must not stop a large one behind it from
+    /// being drawn everywhere else.
+    ///
+    /// This is the shape of the compositor's own list: the shell is one buffer
+    /// spanning every output and every window sits in front of part of it. If
+    /// the element in front suppresses the one behind beyond its own
+    /// rectangle, the desktop is replaced by the clear colour the moment a
+    /// window opens.
+    #[test]
+    fn an_element_in_front_only_covers_its_own_rectangle() {
+        use smithay::backend::renderer::damage::OutputDamageTracker;
+        use smithay::backend::renderer::element::texture::TextureRenderElement;
+        use smithay::backend::renderer::element::{Id, Kind};
+        use smithay::backend::renderer::utils::DamageBag;
+        use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
+
+        let Some(mut h) = harness() else { return };
+
+        // The "shell": wider than the output, as the real one is.
+        let shell_buf = buffer(&mut h.allocator, 128, 64);
+        fill(&shell_buf, [0, 255, 0, 255], 128, 64);
+        let shell = h.renderer.import_dmabuf(&shell_buf, None).expect("shell");
+
+        // The "window": small, opaque, in front.
+        let win_buf = buffer(&mut h.allocator, 16, 16);
+        fill(&win_buf, [0, 0, 255, 255], 16, 16);
+        let window = h.renderer.import_dmabuf(&win_buf, None).expect("window");
+
+        let output = Output::new(
+            "DP-1".to_owned(),
+            PhysicalProperties {
+                size: (600, 340).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".to_owned(),
+                model: "test".to_owned(),
+                serial_number: "test".to_owned(),
+            },
+        );
+        let mode = OutputMode {
+            size: (64, 64).into(),
+            refresh: 60_000,
+        };
+        output.change_current_state(Some(mode), None, None, Some((0, 0).into()));
+        output.set_preferred(mode);
+        let mut tracker = OutputDamageTracker::from_output(&output);
+
+        let mut bag: DamageBag<i32, BufferCoord> = DamageBag::default();
+        bag.add([Rectangle::from_size(Size::from((128, 64)))]);
+
+        let shell_element = TextureRenderElement::from_texture_with_damage(
+            Id::new(),
+            h.renderer.context_id(),
+            (0.0, 0.0),
+            shell.clone(),
+            1,
+            Transform::Normal,
+            None,
+            None,
+            None,
+            None,
+            bag.snapshot(),
+            Kind::Unspecified,
+        );
+        let window_element = TextureRenderElement::from_static_texture(
+            Id::new(),
+            h.renderer.context_id(),
+            (0.0, 0.0),
+            window.clone(),
+            1,
+            Transform::Normal,
+            None,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        );
+
+        let mut target = buffer(&mut h.allocator, 64, 64);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        tracker
+            .render_output(
+                &mut h.renderer,
+                &mut framebuffer,
+                0,
+                // Front to back, as the compositor builds it.
+                &[window_element, shell_element],
+                Color32F::from([1.0, 0.0, 0.0, 1.0]),
+            )
+            .expect("render_output");
+        drop(framebuffer);
+
+        // Under the window: the window.
+        assert_eq!(pixel(&target, 8, 8), [0, 0, 255, 255], "the window itself");
+        // Everywhere else: the shell, not the clear colour.
+        for (x, y) in [(40usize, 8usize), (8, 40), (40, 40), (60, 60)] {
+            assert_eq!(
+                pixel(&target, x, y),
+                [0, 255, 0, 255],
+                "({x},{y}) should be the shell, not the clear colour"
+            );
+        }
+    }
+
     #[test]
     fn importing_the_same_buffer_twice_reuses_the_image() {
         // Without this the renderer would allocate a fresh VkImage and a fresh

@@ -607,6 +607,10 @@ impl ViewportState {
         let shell_element_id = self.shell_element_id.clone();
         #[cfg(feature = "wpe")]
         let shell_damage = self.shell_damage.snapshot();
+        #[cfg(feature = "wpe")]
+        let shell_frames = self.shell_frames;
+        #[cfg(not(feature = "wpe"))]
+        let shell_frames = 0u64;
         let output_geometry = self
             .udev
             .as_ref()
@@ -732,7 +736,11 @@ impl ViewportState {
         // disagree. Once per output, and only with a window up — the question
         // it answers is about what a window does to everything behind it.
         if let Some(path) = crate::dump::output_target() {
-            if !surface.dumped && !windows.is_empty() {
+            // Late enough to be steady state. The first attempt fired on the
+            // opening frame of the window animation, where the client was
+            // still at its own size and had not processed the configure — a
+            // transient that says nothing about how it settles.
+            if !surface.dumped && !windows.is_empty() && shell_frames >= 5 {
                 surface.dumped = true;
                 let size = output
                     .current_mode()
@@ -743,6 +751,22 @@ impl ViewportState {
                     path.file_stem().unwrap_or_default().to_string_lossy(),
                     output.name()
                 ));
+                // What every element claims about itself. An element whose
+                // opaque region is larger than what it paints suppresses
+                // everything behind it, and from the front that is
+                // indistinguishable from the thing behind never being drawn.
+                {
+                    use smithay::backend::renderer::element::Element as _;
+                    tracing::info!("dumping {}: {} element(s)", output.name(), elements.len());
+                    for element in &elements {
+                        tracing::info!(
+                            "  geometry {:?} src {:?} opaque {:?}",
+                            element.geometry(1.0.into()),
+                            element.src(),
+                            element.opaque_regions(1.0.into()),
+                        );
+                    }
+                }
                 if let Err(e) = crate::dump::output_frame(
                     &mut udev.renderer,
                     &elements,
@@ -751,6 +775,22 @@ impl ViewportState {
                     &path,
                 ) {
                     tracing::error!("could not dump {}: {e:#}", output.name());
+                }
+                // The shell's own buffer from the same moment, so the two are
+                // comparable. "The shell is not on the output" and "the shell
+                // painted nothing" look identical in the composite alone.
+                if let Some(texture) = shell_texture.as_ref() {
+                    let shell_path = path.with_file_name(format!(
+                        "{}-shell.ppm",
+                        path.file_stem().unwrap_or_default().to_string_lossy(),
+                    ));
+                    if let Err(e) = crate::dump::shell_frame(
+                        &mut udev.renderer,
+                        texture,
+                        &shell_path,
+                    ) {
+                        tracing::error!("could not dump the shell: {e:#}");
+                    }
                 }
             }
         }
