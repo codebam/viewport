@@ -321,12 +321,29 @@ impl ViewportState {
         // the left of the window, so the menu was pushed off the left edge to
         // "fit" — configured at -320,32 and invisible, which is a menu that
         // does not open.
+        // The output holding most of the window, by area.
+        //
+        // Not the first one the window touches: a client with client-side
+        // decorations draws shadows outside its window, so a window ten
+        // pixels inside the right-hand monitor overlaps the left-hand one by
+        // the width of its shadow and was described by the wrong screen — the
+        // target came out as -2570,-10 and the positioner slid a menu that
+        // had asked for 909,32 off to -320,32 to fit it.
+        let window_rect = self
+            .space
+            .element_geometry(&view.window)
+            .unwrap_or_default();
         let output = self
             .space
-            .outputs_for_element(&view.window)
-            .into_iter()
-            .next()
-            .or_else(|| self.space.outputs().next().cloned());
+            .outputs()
+            .max_by_key(|output| {
+                self.space
+                    .output_geometry(output)
+                    .and_then(|geometry| geometry.intersection(window_rect))
+                    .map(|shared| shared.size.w as i64 * shared.size.h as i64)
+                    .unwrap_or(0)
+            })
+            .cloned();
         let Some(output) = output else {
             return;
         };
