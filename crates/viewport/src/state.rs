@@ -344,6 +344,10 @@ impl ViewportState {
         self.ipc.broadcast(event);
         #[cfg(feature = "wpe")]
         if let Some(shell) = self.shell.as_ref() {
+            // Both directions, because a message that is sent and one that
+            // arrives look the same from here and only one of them explains a
+            // shell that draws its wallpaper and nothing else.
+            tracing::debug!("to shell: {event:?}");
             if let Err(e) = shell.post(event) {
                 tracing::warn!("could not post to the shell: {e:#}");
             }

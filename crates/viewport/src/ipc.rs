@@ -311,6 +311,7 @@ impl ViewportState {
             .unwrap_or_default();
 
         for message in messages {
+            tracing::debug!("from shell: {message}");
             // Client id 0: the shell is not one of the socket clients, and an
             // error it caused goes to the broadcast channel it already
             // listens to rather than to a connection that does not exist.
