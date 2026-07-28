@@ -106,6 +106,23 @@ pub struct ViewportState {
         smithay::utils::Buffer,
     >,
 
+    /// The pointer image: the client's own surface where one is set, the
+    /// theme's otherwise. Nothing draws a cursor unless this says what.
+    pub cursor_status: smithay::input::pointer::CursorImageStatus,
+    /// The xcursor theme, loaded on first use.
+    pub cursor_theme: crate::cursor::Theme,
+    /// Whether the missing-theme warning has been said. Once is a diagnosis;
+    /// every frame is a flood.
+    pub cursor_warned: bool,
+
+    /// An output whose contents changed but which has no frame in flight.
+    ///
+    /// Rendering is driven by vblank and vblank stops when nothing is
+    /// submitted, so a client that paints while the screen is still has
+    /// nothing to wake the loop for it. Without this a window updates only
+    /// when something unrelated happens to cause a frame.
+    pub needs_render: bool,
+
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
     pub color_management: crate::color_management::ColorManagementState,
@@ -195,6 +212,11 @@ impl ViewportState {
             shell_element_id: smithay::backend::renderer::element::Id::new(),
             #[cfg(feature = "wpe")]
             shell_damage: Default::default(),
+
+            cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
+            cursor_theme: crate::cursor::Theme::new(),
+            cursor_warned: false,
+            needs_render: false,
 
             color_management,
             compositor_state,
@@ -379,6 +401,25 @@ impl ViewportState {
             if let Err(e) = shell.post(event) {
                 tracing::warn!("could not post to the shell: {e:#}");
             }
+        }
+    }
+
+    /// Draw any output that has something new to show.
+    ///
+    /// Called from the outer loop rather than from wherever the change
+    /// happened, so a commit that touches five subsurfaces costs one frame
+    /// instead of five.
+    pub fn render_if_needed(&mut self) {
+        if !std::mem::take(&mut self.needs_render) {
+            return;
+        }
+        let crtcs: Vec<_> = self
+            .udev
+            .as_ref()
+            .map(|udev| udev.surfaces.keys().copied().collect())
+            .unwrap_or_default();
+        for crtc in crtcs {
+            self.render(crtc);
         }
     }
 

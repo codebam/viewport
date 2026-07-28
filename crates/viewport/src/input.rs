@@ -12,7 +12,7 @@
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
@@ -159,6 +159,46 @@ impl ViewportState {
                 }
             }
 
+            // A mouse sends relative motion; absolute is for tablets and
+            // touchscreens. Handling only the latter leaves the pointer
+            // pinned at the origin for the whole session.
+            InputEvent::PointerMotion { event, .. } => {
+                let Some(pointer) = self.seat.get_pointer() else {
+                    return;
+                };
+                let from = pointer.current_location();
+                let outputs: Vec<_> = self
+                    .space
+                    .outputs()
+                    .filter_map(|o| self.space.output_geometry(o))
+                    .collect();
+                let pos = crate::cursor::clamp(&outputs, from, from + event.delta());
+
+                let serial = SERIAL_COUNTER.next_serial();
+                let under = self.surface_under(pos);
+                pointer.motion(
+                    self,
+                    under.clone(),
+                    &MotionEvent {
+                        location: pos,
+                        serial,
+                        time: event.time_msec(),
+                    },
+                );
+                pointer.relative_motion(
+                    self,
+                    under,
+                    &smithay::input::pointer::RelativeMotionEvent {
+                        delta: event.delta(),
+                        delta_unaccel: event.delta_unaccel(),
+                        utime: event.time(),
+                    },
+                );
+                pointer.frame(self);
+                // The cursor moved, and nothing else would draw it.
+                self.needs_render = true;
+            }
+
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let Some(output) = self.space.outputs().next() else {
                     return;
@@ -183,6 +223,7 @@ impl ViewportState {
                     },
                 );
                 pointer.frame(self);
+                self.needs_render = true;
             }
 
             InputEvent::PointerButton { event, .. } => {

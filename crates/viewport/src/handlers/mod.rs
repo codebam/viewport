@@ -31,7 +31,17 @@ impl SeatHandler for ViewportState {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
+    /// A client set its own pointer image, or asked for a named one.
+    ///
+    /// Kept rather than acted on: what is drawn is decided at render time,
+    /// because the same status has to produce a different image on an output
+    /// with a different scale.
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: smithay::input::pointer::CursorImageStatus) {
+        self.cursor_status = image;
+        // The pointer changing shape is a visible change with no other reason
+        // to draw a frame behind it.
+        self.needs_render = true;
+    }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let dh = &self.display_handle;

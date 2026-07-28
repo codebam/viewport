@@ -40,6 +40,12 @@ impl CompositorHandler for ViewportState {
         xdg_shell::handle_commit(self, surface);
 
         self.announce_if_newly_mapped(surface);
+
+        // A client painted. Rendering is driven by vblank and vblank stops
+        // when nothing is submitted, so with a still screen there is nothing
+        // to carry this to an output — the window would update only when
+        // something unrelated caused a frame.
+        self.needs_render = true;
     }
 }
 

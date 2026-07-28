@@ -1649,6 +1649,7 @@ dependencies = [
  "viewport-ipc",
  "viewport-vulkan",
  "viewport-web",
+ "xcursor",
 ]
 
 [[package]]

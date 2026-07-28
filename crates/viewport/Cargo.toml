@@ -15,6 +15,7 @@ default = []
 wpe = ["viewport-web/wpe"]
 
 [dependencies]
+xcursor = "0.3"
 viewport-ipc.workspace = true
 viewport-web.workspace = true
 viewport-vulkan = { path = "../viewport-vulkan" }

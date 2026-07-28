@@ -73,7 +73,10 @@ pub struct Image {
     /// Images arrive from outside this device's queue family, and the first
     /// barrier has to say so. Tracked because it is only true once: after the
     /// first acquire the image belongs to us.
-    foreign: std::cell::Cell<bool>,
+    /// An `AtomicBool` rather than a `Cell` so an `Image` is `Sync`. Smithay's
+    /// `MemoryRenderBuffer` — which is how the cursor is drawn — keeps
+    /// per-renderer textures in a shared map and requires it.
+    foreign: std::sync::atomic::AtomicBool,
 }
 
 impl Image {
@@ -264,7 +267,7 @@ impl Image {
             has_alpha: format::has_alpha(fourcc),
             purpose,
             usage,
-            foreign: std::cell::Cell::new(true),
+            foreign: std::sync::atomic::AtomicBool::new(true),
         })
     }
 
@@ -364,7 +367,7 @@ impl Image {
             usage: ALLOCATED_USAGE,
             // Ours from the moment it is created: there is no other queue
             // family that could have owned it.
-            foreign: std::cell::Cell::new(false),
+            foreign: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -457,7 +460,10 @@ impl Image {
         from: vk::ImageLayout,
         to: vk::ImageLayout,
     ) -> vk::ImageMemoryBarrier<'static> {
-        let src_family = if self.foreign.replace(false) {
+        let src_family = if self
+            .foreign
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
             vk::QUEUE_FAMILY_FOREIGN_EXT
         } else {
             self.device.queue_family()

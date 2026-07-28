@@ -112,6 +112,11 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         let state = &mut *bridge.state;
         let _ = event_loop.dispatch(Some(Duration::ZERO), state);
 
+        // Anything that changed needs a frame before we block, for the same
+        // reason: vblank drives rendering and vblank stops when nothing is
+        // submitted.
+        state.render_if_needed();
+
         // Push pending events out to clients before GLib blocks
         // (`src/glib_loop.c:71`).
         //
@@ -156,6 +161,8 @@ unsafe extern "C" fn dispatch(
     if let Err(e) = event_loop.dispatch(Some(Duration::ZERO), state) {
         tracing::error!("calloop dispatch failed: {e}");
     }
+
+    state.render_if_needed();
 
     // Whatever that produced, out to the clients. GLib may block before
     // prepare runs again, and a reply left in a buffer is a client left

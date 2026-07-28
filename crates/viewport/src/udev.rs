@@ -68,6 +68,7 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputElement<=VulkanRenderer>;
     Surface=WaylandSurfaceRenderElement<VulkanRenderer>,
     Shell=TextureRenderElement<viewport_vulkan::VulkanTexture>,
+    Cursor=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<VulkanRenderer>,
 }
 
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
@@ -475,6 +476,104 @@ impl ViewportState {
         }
     }
 
+    /// The pointer, as elements for one output.
+    ///
+    /// Empty when the pointer is elsewhere, or when the client asked for it to
+    /// be hidden — `CursorImageStatus::Hidden` is a request to draw nothing,
+    /// not to fall back to the theme.
+    fn cursor_element(
+        &mut self,
+        output_geometry: Option<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
+        scale: f64,
+    ) -> Vec<OutputElement> {
+        use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+        use smithay::input::pointer::CursorImageStatus;
+
+        let Some(output_geometry) = output_geometry else {
+            return Vec::new();
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return Vec::new();
+        };
+        let location = pointer.current_location();
+        if !output_geometry.to_f64().contains(location) {
+            return Vec::new();
+        }
+        // Relative to this output, which is the space every element is in.
+        let local = (location - output_geometry.loc.to_f64()).to_physical(scale);
+
+        match self.cursor_status.clone() {
+            CursorImageStatus::Hidden => Vec::new(),
+
+            // The client's own surface. Its hotspot is stored on the surface
+            // by the seat, and the surface is drawn with that subtracted so
+            // the point the user aims with is where the pointer is.
+            CursorImageStatus::Surface(surface) => {
+                use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+                use smithay::wayland::compositor::with_states;
+
+                let hotspot = with_states(&surface, |states| {
+                    states
+                        .data_map
+                        .get::<std::sync::Mutex<smithay::input::pointer::CursorImageAttributes>>()
+                        .map(|attrs| attrs.lock().unwrap().hotspot)
+                        .unwrap_or_default()
+                });
+                let at = (local.to_f64() - hotspot.to_f64().to_physical(scale)).to_i32_round();
+                let Some(udev) = self.udev.as_mut() else {
+                    return Vec::new();
+                };
+                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<VulkanRenderer>>(
+                    &mut udev.renderer,
+                    &surface,
+                    at,
+                    scale,
+                    1.0,
+                    smithay::backend::renderer::element::Kind::Cursor,
+                )
+                .into_iter()
+                .map(OutputElement::from)
+                .collect()
+            }
+
+            CursorImageStatus::Named(shape) => {
+                let millis = self.start_time.elapsed().as_millis() as u32;
+                let Some((buffer, hotspot)) =
+                    self.cursor_theme
+                        .image(shape.name(), scale.ceil() as i32, millis)
+                else {
+                    // No theme installed, or none with this shape. Drawing
+                    // nothing is better than a wrong image, and saying so once
+                    // beats a pointer that is silently absent.
+                    if !self.cursor_warned {
+                        self.cursor_warned = true;
+                        tracing::warn!(
+                            "no xcursor image for {:?}; set XCURSOR_THEME to a theme that is installed",
+                            shape.name()
+                        );
+                    }
+                    return Vec::new();
+                };
+                let Some(udev) = self.udev.as_mut() else {
+                    return Vec::new();
+                };
+                MemoryRenderBufferRenderElement::from_buffer(
+                    &mut udev.renderer,
+                    (local.to_f64() - hotspot.to_f64()),
+                    &buffer,
+                    None,
+                    None,
+                    None,
+                    smithay::backend::renderer::element::Kind::Cursor,
+                )
+                .ok()
+                .map(OutputElement::from)
+                .into_iter()
+                .collect()
+            }
+        }
+    }
+
     /// A frame finished scanning out, so the next one may be drawn.
     pub fn on_vblank(
         &mut self,
@@ -556,6 +655,14 @@ impl ViewportState {
             None => Vec::new(),
         };
 
+        // The pointer, in front of everything including the shell. Built
+        // before the renderer is borrowed, like the windows.
+        let cursor = self.cursor_element(output_geometry, scale);
+
+        // The pointer, in front of everything including the shell. Built
+        // before the renderer is borrowed, like the windows.
+        let cursor = self.cursor_element(output_geometry, scale);
+
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
@@ -567,8 +674,10 @@ impl ViewportState {
         };
         let output = surface.output.clone();
 
-        // Front to back: the windows, then the shell behind all of them.
+        // Front to back: the pointer, the windows, then the shell behind all
+        // of them.
         let mut elements: Vec<OutputElement> = Vec::new();
+        elements.extend(cursor);
 
         // Every mapped window, at the rectangle the shell put it in. Without
         // this the list held the shell alone, so a client could map, be laid
