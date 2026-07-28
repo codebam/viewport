@@ -94,6 +94,17 @@ impl WaylandDndGrabHandler for ViewportState {
     }
 }
 
+/// Tablet tools, which cursor-shape requires whether or not there is a tablet.
+///
+/// A tool can name its own cursor exactly as a pointer can, so the protocol's
+/// dispatch asks for this. There is no tablet support yet, so the focus type is
+/// the same surface every other input uses and a tool setting an image is
+/// ignored — the alternative is not advertising cursor-shape at all, which
+/// costs every ordinary client its named cursors.
+impl smithay::input::tablet::TabletSeatHandler for ViewportState {
+    type ToolFocus = WlSurface;
+}
+
 impl OutputHandler for ViewportState {}
 
 impl crate::screencopy::ScreencopyHandler for ViewportState {

@@ -244,6 +244,17 @@ pub struct ViewportState {
     /// wlr-screencopy: screenshots and recording. Smithay implements it
     /// nowhere, so the dispatch is in `screencopy.rs`.
     pub screencopy_state: crate::screencopy::ScreencopyState,
+    /// cursor-shape-v1: a client naming a cursor rather than drawing one.
+    ///
+    /// Kept only because the global has to outlive the display: nothing reads
+    /// it, because a named shape arrives through `SeatHandler::cursor_image`
+    /// like any other cursor.
+    pub _cursor_shape_state: smithay::wayland::cursor_shape::CursorShapeManagerState,
+    /// content-type-v1 and alpha-modifier-v1. Both are read where they are
+    /// used — the content type by whatever decides about tearing, the alpha by
+    /// Smithay's surface element — so neither is touched again after this.
+    pub _content_type_state: smithay::wayland::content_type::ContentTypeState,
+    pub _alpha_modifier_state: smithay::wayland::alpha_modifier::AlphaModifierState,
     /// wlr-output-management: what kanshi, wlr-randr and wdisplays speak.
     /// Smithay implements it nowhere, so the dispatch is in
     /// `output_management.rs`.
@@ -306,6 +317,20 @@ impl ViewportState {
         let screencopy_state = crate::screencopy::ScreencopyState::new::<Self>(&dh);
         let output_management_state =
             crate::output_management::OutputManagementState::new::<Self>(&dh);
+        // A client that names its cursor rather than drawing one. Without it a
+        // GTK application shows the pointer it inherited from whatever it last
+        // hovered, because it has no other way to ask for a text caret.
+        let cursor_shape_state =
+            smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(&dh);
+        // What a surface is showing — video, a game — which is what a
+        // compositor would decide tearing and refresh from.
+        let content_type_state =
+            smithay::wayland::content_type::ContentTypeState::new::<Self>(&dh);
+        // A multiplier a client applies to its own surface. Smithay's surface
+        // element reads it while building the render element, so honouring it
+        // is the global and nothing else.
+        let alpha_modifier_state =
+            smithay::wayland::alpha_modifier::AlphaModifierState::new::<Self>(&dh);
         let primary_selection_state =
             smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<Self>(&dh);
         let data_control_state =
@@ -450,6 +475,9 @@ impl ViewportState {
             xdg_shell_state,
             layer_shell_state,
             screencopy_state,
+            _cursor_shape_state: cursor_shape_state,
+            _content_type_state: content_type_state,
+            _alpha_modifier_state: alpha_modifier_state,
             output_management_state,
             pending_copies: Vec::new(),
             primary_selection_state,
