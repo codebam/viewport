@@ -97,6 +97,8 @@ pub struct Surface {
     drawn: bool,
     /// Whether a composite of this output has been written already.
     dumped: bool,
+    /// Whether this output has been switched into HDR.
+    pub hdr: bool,
     /// A frame is queued and has not been scanned out yet.
     ///
     /// One frame in flight per output, which is what anvil arranges by
@@ -503,6 +505,7 @@ impl ViewportState {
                             _global: global,
                             drawn: false,
                             dumped: false,
+                            hdr: false,
                             pending: false,
                         },
                     );

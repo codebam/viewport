@@ -125,16 +125,20 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         // Nothing arms a revert yet, so there is nothing to cancel.
         Request::OutputConfirm => {}
 
-        Request::OutputHdr { name, .. } => {
+        Request::OutputHdr { name, enabled } => {
             let name = name
                 .or_else(|| state.active_output.clone())
                 .unwrap_or_default();
-            let message = if state.output_by_name(&name).is_none() {
-                "no such output"
-            } else {
-                "the display would not take HDR"
-            };
-            reject(state, "output.hdr", message);
+            if state.output_by_name(&name).is_none() {
+                reject(state, "output.hdr", "no such output");
+                return;
+            }
+            // Absent toggles, which is what a keybinding wants and what a
+            // settings panel does not (`src/ipc.c:1321`).
+            let want = enabled.unwrap_or_else(|| !state.hdr_enabled(&name));
+            if let Err(e) = state.set_hdr(&name, want) {
+                reject(state, "output.hdr", &format!("{e:#}"));
+            }
         }
 
         Request::OutputTestAdd => reject(

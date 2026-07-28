@@ -584,6 +584,68 @@ impl ViewportState {
         }
     }
 
+    /// Whether an output is currently in HDR.
+    pub fn hdr_enabled(&self, name: &str) -> bool {
+        self.udev
+            .as_ref()
+            .map(|udev| {
+                udev.surfaces
+                    .values()
+                    .any(|surface| surface.output.name() == name && surface.hdr)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Switch an output into or out of HDR.
+    ///
+    /// Two properties on the connector, because Smithay's DRM backend has no
+    /// notion of either. The client half — a client saying what its content
+    /// actually is, and the renderer converting — is already here; without it
+    /// this would only make every SDR window look washed out.
+    pub fn set_hdr(&mut self, name: &str, enabled: bool) -> anyhow::Result<()> {
+        let Some(udev) = self.udev.as_mut() else {
+            anyhow::bail!("HDR needs the drm backend");
+        };
+        let Some((crtc, connector)) = udev
+            .surfaces
+            .iter()
+            .find(|(_, surface)| surface.output.name() == name)
+            .map(|(crtc, surface)| (*crtc, surface.connector))
+        else {
+            anyhow::bail!("no such output");
+        };
+
+        let device = udev.manager.device();
+        if !crate::hdr::capable(device, connector) {
+            anyhow::bail!("the display does not offer BT.2020 with PQ metadata");
+        }
+        crate::hdr::set(device, connector, enabled)?;
+
+        if let Some(surface) = udev.surfaces.get_mut(&crtc) {
+            surface.hdr = enabled;
+        }
+        tracing::info!("{name}: HDR {}", if enabled { "on" } else { "off" });
+
+        // The renderer converts into whatever the output is in, so it has to
+        // be told what that now is — otherwise every window is reinterpreted
+        // rather than converted, which is the washed-out look this exists to
+        // avoid.
+        let description = if enabled {
+            viewport_vulkan::color::Description {
+                primaries: viewport_vulkan::color::Primaries::BT2020,
+                transfer: viewport_vulkan::color::TransferFunction::Pq,
+                reference_luminance: 203.0,
+            }
+        } else {
+            viewport_vulkan::color::Description::default()
+        };
+        udev.renderer.set_output_description(description);
+
+        // Everything on screen was drawn for the old colour space.
+        self.needs_render = true;
+        Ok(())
+    }
+
     /// Turn variable refresh on or off for every output that supports it.
     ///
     /// Whole-session rather than per-output, as in C (`src/output.c:315`): the

@@ -19,6 +19,7 @@ mod framing;
 #[cfg(feature = "wpe")]
 mod glib_loop;
 mod handlers;
+mod hdr;
 mod headless;
 mod idle;
 mod input;
