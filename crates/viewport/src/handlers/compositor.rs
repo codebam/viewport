@@ -141,6 +141,7 @@ impl CompositorHandler for ViewportState {
         self.focus_lock_surface(surface);
 
         self.announce_if_newly_mapped(surface);
+        self.trace_size_mismatch(surface);
 
         // A client painted. Rendering is driven by vblank and vblank stops
         // when nothing is submitted, so with a still screen there is nothing
@@ -156,6 +157,46 @@ impl ViewportState {
     /// Announcing at `new_toplevel` would be too early: the window has no
     /// title, no app_id and no size yet, and the shell would place an empty
     /// rectangle and then have to be told all three again.
+    /// Say when what a client painted is not the size it was asked for.
+    ///
+    /// A window drawn at a size other than its rectangle is either scaled or
+    /// cropped depending on where it is drawn, and both look like a
+    /// compositor bug from the outside. Only on a change, because a client
+    /// that ignores a configure would otherwise say so sixty times a second.
+    fn trace_size_mismatch(&mut self, surface: &WlSurface) {
+        let Some(view) = self.views.find_by_surface(surface) else {
+            return;
+        };
+        let Some(configured) = view.configured else {
+            return;
+        };
+        let id = view.id;
+        let scale = view.scale;
+        let Some(size) = with_renderer_surface_state(surface, |state| state.surface_size()) else {
+            return;
+        };
+        let Some(size) = size else {
+            return;
+        };
+        if (size.w, size.h) == configured {
+            return;
+        }
+        let Some(view) = self.views.find_by_surface_mut(surface) else {
+            return;
+        };
+        if view.last_mismatch == Some((size.w, size.h)) {
+            return;
+        }
+        view.last_mismatch = Some((size.w, size.h));
+        tracing::debug!(
+            "view {id}: painted {}x{} for a rectangle of {}x{} (scale {scale})",
+            size.w,
+            size.h,
+            configured.0,
+            configured.1
+        );
+    }
+
     fn announce_if_newly_mapped(&mut self, surface: &WlSurface) {
         let Some(view) = self.views.find_by_surface(surface) else {
             return;

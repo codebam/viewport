@@ -48,6 +48,47 @@ impl XdgShellHandler for ViewportState {
         tracing::debug!("new toplevel, view {id}");
     }
 
+    /// A client asking to go fullscreen — a game starting, a video going
+    /// full-screen.
+    ///
+    /// Answered whether or not it is honoured, as in `src/xdg_shell.c:233`:
+    /// the protocol requires a configure in reply, and a client that never
+    /// gets one waits for it. A game that asked at startup and was ignored
+    /// comes up in a window, which is what this build did — there was no
+    /// handler at all, so the request reached nothing.
+    ///
+    /// The layout itself is the shell's, so the state goes there as the same
+    /// command C sends and comes back as an ordinary rectangle.
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        self.answer_fullscreen(&surface, true);
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.answer_fullscreen(&surface, false);
+    }
+
+    /// Maximise, which this compositor has no notion of.
+    ///
+    /// The shell owns the layout and there is no maximised state for it to
+    /// mean. A configure is still sent, because the protocol requires an
+    /// answer and a client that gets none waits for one
+    /// (`src/xdg_shell.c:115`).
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        surface.send_configure();
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        surface.send_configure();
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        surface.send_configure();
+    }
+
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let Some(view) = self.views.find_by_surface(surface.wl_surface()) else {
             return;
@@ -85,6 +126,7 @@ impl XdgShellHandler for ViewportState {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        tracing::debug!("popup: created");
         self.unconstrain_popup(&surface);
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
@@ -115,12 +157,19 @@ impl XdgShellHandler for ViewportState {
         };
         let kind = PopupKind::Xdg(surface);
         let Ok(root) = find_popup_root_surface(&kind) else {
+            tracing::debug!("popup: grab refused, no root surface");
             return;
         };
 
-        let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else {
-            return;
+        let grab = self.popups.grab_popup(root, kind, &seat, serial);
+        let mut grab = match grab {
+            Ok(grab) => grab,
+            Err(e) => {
+                tracing::debug!("popup: grab refused: {e}");
+                return;
+            }
         };
+        tracing::debug!("popup: grabbed");
 
         // A grab is only allowed to follow the one it was asked for. A client
         // grabbing from a serial that belongs to somebody else's grab would
@@ -223,6 +272,33 @@ impl ViewportState {
             app_id,
         };
         self.notify(&event);
+    }
+
+    /// Set the state a client asked for and tell the shell.
+    fn answer_fullscreen(&mut self, surface: &ToplevelSurface, fullscreen: bool) {
+        surface.with_pending_state(|pending| {
+            if fullscreen {
+                pending.states.set(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                );
+            } else {
+                pending.states.unset(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                );
+            }
+        });
+        surface.send_configure();
+
+        let Some(view) = self.views.find_by_surface(surface.wl_surface()) else {
+            return;
+        };
+        let id = view.id;
+        self.foreign_management_state
+            .set_state(id, self.focused == id, fullscreen);
+        self.notify(&Event::ShellCommand {
+            command: "window.fullscreen.set".to_owned(),
+            args: vec![id.to_string(), u8::from(fullscreen).to_string()],
+        });
     }
 
     fn unconstrain_popup(&self, popup: &PopupSurface) {

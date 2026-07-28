@@ -48,6 +48,10 @@ pub struct View {
     /// compositor draws.
     pub opacity: f32,
 
+    /// The last surface size that did not match the rectangle it was given,
+    /// so the mismatch is said once rather than per frame.
+    pub last_mismatch: Option<(i32, i32)>,
+
     /// This window's entry in the foreign toplevel list, so anything outside
     /// the compositor can see it. Absent until the window is announced: a
     /// window with no title and no app id is not worth listing.
@@ -195,6 +199,7 @@ impl Views {
         let id = self.next_id;
         self.next_id += 1;
         self.views.push(View {
+            last_mismatch: None,
             id,
             window,
             mapped: false,

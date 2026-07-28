@@ -102,6 +102,9 @@ pub struct Surface {
     /// Whether this output's frames are currently allowed to tear, so the
     /// compositor is only told when it changes rather than once a frame.
     pub tearing: bool,
+    /// How many tearing flips this display has refused. A frame or two around
+    /// the change itself is ordinary; a display that keeps refusing cannot.
+    pub tearing_failures: u32,
     /// Set when a tearing flip was refused by the display. The capability says
     /// the hardware can flip asynchronously, not that it can in whatever state
     /// this output is in — adaptive sync being the combination that goes wrong
@@ -581,6 +584,7 @@ impl ViewportState {
                             dumped: false,
                             hdr: false,
                             tearing: false,
+                            tearing_failures: 0,
                             refuses_tearing: false,
                             enabled: true,
                             pending: false,
@@ -873,7 +877,17 @@ impl ViewportState {
             // Behind everything, and behind the shell too — visible only where
             // nothing else covers it.
             [0.1, 0.1, 0.1, 1.0],
-            frame_flags(),
+            // While tearing, only the primary plane may change: an
+            // asynchronous flip is rejected outright if the commit touches
+            // anything else, which is the EINVAL a game asking for tearing
+            // produced. The cursor is composited into the frame instead of
+            // riding its own plane, which is what it does on any frame where
+            // the plane is unavailable anyway.
+            if surface.tearing {
+                FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
+            } else {
+                frame_flags()
+            },
         );
 
         match result {
@@ -898,12 +912,26 @@ impl ViewportState {
                         let _ = surface
                             .drm_output
                             .with_compositor(|compositor| compositor.set_allow_tearing(false));
-                        tracing::warn!(
-                            "{}: the display would not take a tearing flip, so it will \
-                             not be asked again",
-                            output.name()
-                        );
-                        surface.refuses_tearing = true;
+                        surface.tearing_failures += 1;
+                        // Not on the first refusal. Turning tearing on changes
+                        // which planes a frame uses, and the commit that
+                        // carries that change is the one most likely to be
+                        // refused — giving up there would mean a display that
+                        // can tear never does.
+                        if surface.tearing_failures >= 3 {
+                            surface.refuses_tearing = true;
+                            tracing::warn!(
+                                "{}: the display refused a tearing flip three times, so it \
+                                 will not be asked again",
+                                output.name()
+                            );
+                        } else {
+                            tracing::warn!(
+                                "{}: the display refused a tearing flip ({} of 3)",
+                                output.name(),
+                                surface.tearing_failures
+                            );
+                        }
                         self.needs_render = true;
                     }
                 } else {
