@@ -29,6 +29,8 @@ impl SessionLockHandler for ViewportState {
     fn lock(&mut self, confirmation: SessionLocker) {
         tracing::info!("session locked");
         self.locked = true;
+        self.locked_at = Some(std::time::Instant::now());
+        self.lock_warned = false;
         self.lock_surfaces.clear();
 
         // Keyboard focus goes nowhere until a lock surface arrives and takes
@@ -48,6 +50,7 @@ impl SessionLockHandler for ViewportState {
     fn unlock(&mut self) {
         tracing::info!("session unlocked");
         self.locked = false;
+        self.locked_at = None;
         self.lock_surfaces.clear();
         self.needs_render = true;
     }
@@ -56,11 +59,17 @@ impl SessionLockHandler for ViewportState {
         use smithay::output::Output;
 
         let Some(output) = Output::from_resource(&output) else {
+            // Nothing to size it against, and a lock surface with no size
+            // never paints — which is a locked session showing whatever was
+            // on screen before, with no way back.
+            tracing::error!("a lock surface arrived for an output we do not know");
             return;
         };
         let Some(geometry) = self.space.output_geometry(&output) else {
+            tracing::error!("a lock surface arrived for {} which is not mapped", output.name());
             return;
         };
+        tracing::info!("lock surface on {}", output.name());
 
         // The whole output, because that is the only size a lock surface may
         // be. It will not paint until it has been told.
@@ -75,6 +84,57 @@ impl SessionLockHandler for ViewportState {
 }
 
 impl ViewportState {
+    /// Say so if the session is locked and nothing is drawing a lock screen.
+    ///
+    /// A locker that exits after taking the lock leaves the session locked
+    /// with no way to authenticate — correct by the protocol, and identical to
+    /// what the C build does, but from the front it is a black screen that
+    /// eats every key. The only ways out are another locker or a VT switch,
+    /// and neither is guessable from a screen that says nothing.
+    ///
+    /// Warned once per lock rather than every tick.
+    pub fn check_lock_screen(&mut self) {
+        if !self.locked || self.lock_warned {
+            return;
+        }
+        let Some(at) = self.locked_at else {
+            return;
+        };
+
+        // A locker that drew and then exited leaves surfaces behind that no
+        // longer exist. Keeping them means rendering a dead client and never
+        // noticing that nothing is on screen any more.
+        use smithay::utils::IsAlive as _;
+        let before = self.lock_surfaces.len();
+        self.lock_surfaces
+            .retain(|_, surface| surface.wl_surface().alive());
+        if self.lock_surfaces.len() != before {
+            self.needs_render = true;
+        }
+
+        if at.elapsed() < std::time::Duration::from_secs(3) {
+            return;
+        }
+
+        let missing: Vec<String> = self
+            .space
+            .outputs()
+            .map(|output| output.name())
+            .filter(|name| !self.lock_surfaces.contains_key(name))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        self.lock_warned = true;
+        tracing::error!(
+            "locked, but nothing has drawn a lock screen on {}. \
+             The locker has probably exited. The session stays locked — that is \
+             what the protocol asks for — so the way out is Ctrl+Alt+F1..F12 to \
+             another VT, or running another locker against this display.",
+            missing.join(", ")
+        );
+    }
+
     /// Focus a lock surface, so the locker can be typed into.
     ///
     /// Called when one commits: focusing at `new_surface` would be too early,

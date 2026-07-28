@@ -147,9 +147,13 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("inserting the shell load timer: {e}"))?;
     }
 
-    // The idle countdown, if the config asked for one. A second is fine: the
-    // deadlines are in seconds and nothing here is worth waking for sooner.
-    if state.idle_settings.wanted() {
+    // One slow tick. A second is fine: the idle deadlines are in seconds, and
+    // the lock check is only there to notice a locker that never drew.
+    //
+    // Always inserted, even with no idle deadlines configured — the lock check
+    // is not optional, because it is the only thing that says anything at all
+    // when a locked screen is black and eating every key.
+    {
         let timer = smithay::reexports::calloop::timer::Timer::from_duration(
             std::time::Duration::from_secs(1),
         );
@@ -157,11 +161,12 @@ fn main() -> Result<()> {
             .handle()
             .insert_source(timer, |_, _, state| {
                 state.idle_tick();
+                state.check_lock_screen();
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
                     std::time::Duration::from_secs(1),
                 )
             })
-            .map_err(|e| anyhow::anyhow!("inserting the idle timer: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("inserting the housekeeping timer: {e}"))?;
     }
 
     // Whatever the config file asked to be run, once everything it needs is

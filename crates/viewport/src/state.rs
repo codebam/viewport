@@ -183,6 +183,10 @@ pub struct ViewportState {
     /// Whether the session is locked. Stays true if the locker dies, because
     /// otherwise killing it would be the way past it.
     pub locked: bool,
+    /// When the session was locked, so a locker that never draws can be
+    /// noticed rather than leaving a black screen that says nothing.
+    pub locked_at: Option<std::time::Instant>,
+    pub lock_warned: bool,
     /// One lock surface per output, by output name.
     pub lock_surfaces:
         std::collections::HashMap<String, smithay::wayland::session_lock::LockSurface>,
@@ -339,6 +343,8 @@ impl ViewportState {
             layer_shell_state,
             session_lock_state,
             locked: false,
+            locked_at: None,
+            lock_warned: false,
             lock_surfaces: std::collections::HashMap::new(),
             xdg_activation_state,
             dmabuf_state,
@@ -761,6 +767,9 @@ impl ViewportState {
             lock: self
                 .lock_surfaces
                 .get(&output.name())
+                // A locker that exited leaves its surfaces behind until the
+                // next housekeeping tick; drawing one is drawing nothing.
+                .filter(|lock| smithay::utils::IsAlive::alive(lock.wl_surface()))
                 .map(|lock| lock.wl_surface().clone()),
             locked_blank: self.locked,
         }
