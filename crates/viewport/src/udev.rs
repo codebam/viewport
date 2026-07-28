@@ -62,6 +62,10 @@ pub struct Surface {
     pub drm_output: DrmOutput<GbmAllocator<DrmDeviceFd>, Exporter, (), DrmDeviceFd>,
     /// The global handed to clients, dropped when the connector goes.
     _global: smithay::reexports::wayland_server::backend::GlobalId,
+    /// Whether anything has been put on this output yet. Logged once, because
+    /// "did it draw at all" is the first question of any bring-up and the
+    /// answer was not in the log the first time.
+    drawn: bool,
 }
 
 /// Everything the DRM backend holds.
@@ -71,6 +75,9 @@ pub struct Udev {
     pub manager: Manager,
     pub surfaces: HashMap<crtc::Handle, Surface>,
     pub node: DrmNode,
+    /// False between a VT switch away and the switch back. Every device fd is
+    /// revoked in that window, so committing a frame would fail.
+    pub active: bool,
 }
 
 /// Bring up the backend.
@@ -167,6 +174,7 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         manager,
         surfaces: HashMap::new(),
         node: card,
+        active: true,
     });
     state.on_connectors_changed();
 
@@ -261,6 +269,16 @@ impl ViewportState {
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
+        if !udev.active {
+            // The fds are revoked while switched away; asking the device
+            // anything here fails and the answer would be stale by the time we
+            // came back anyway.
+            return;
+        }
+
+        // Outputs brought up by this pass, so the first frame can be kicked
+        // once the borrow on `udev` is released.
+        let mut started: Vec<crtc::Handle> = Vec::new();
 
         let device = udev.manager.device();
         let Ok(resources) = device.resource_handles() else {
@@ -345,14 +363,25 @@ impl ViewportState {
                             output,
                             drm_output,
                             _global: global,
+                            drawn: false,
                         },
                     );
+                    started.push(crtc);
                 }
                 Err(e) => tracing::warn!("{name}: could not initialise: {e}"),
             }
         }
 
         self.notify_output_layout();
+
+        // Draw once per new output. Rendering is driven by vblank, and vblank
+        // only arrives after a frame has been queued — so without this first
+        // push nothing ever draws and the compositor sits on a modeset screen
+        // doing nothing, which is exactly what the first run on real hardware
+        // did.
+        for crtc in started {
+            self.render(crtc);
+        }
     }
 
     /// A frame finished scanning out, so the next one may be drawn.
@@ -380,6 +409,9 @@ impl ViewportState {
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
+        if !udev.active {
+            return;
+        }
         let Some(surface) = udev.surfaces.get_mut(&crtc) else {
             return;
         };
@@ -399,9 +431,16 @@ impl ViewportState {
             Ok(frame) if !frame.is_empty => {
                 if let Err(e) = surface.drm_output.queue_frame(()) {
                     tracing::warn!("queue_frame: {e}");
+                } else if !surface.drawn {
+                    surface.drawn = true;
+                    tracing::info!("{}: first frame queued", output.name());
                 }
             }
-            Ok(_) => {}
+            // Nothing changed, so nothing is submitted — and with no frame
+            // queued there is no vblank, so rendering stops until something
+            // asks for it again. Correct for a static screen, and worth
+            // saying out loud because it looks identical to being stuck.
+            Ok(_) => tracing::debug!("{}: nothing to draw", output.name()),
             Err(e) => tracing::warn!("render_frame: {e}"),
         }
 
@@ -421,6 +460,7 @@ impl ViewportState {
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
+        udev.active = false;
         udev.manager.pause();
         tracing::info!("session paused");
     }
@@ -431,6 +471,7 @@ impl ViewportState {
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
+        udev.active = true;
         if let Err(e) = udev.manager.lock().activate(true) {
             tracing::error!("reactivating drm: {e}");
         }
