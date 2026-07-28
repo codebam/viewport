@@ -139,10 +139,18 @@ fn main() -> Result<()> {
     if std::env::var_os("XDG_CURRENT_DESKTOP").is_none() {
         unsafe { std::env::set_var("XDG_CURRENT_DESKTOP", "viewport:wlroots") };
     }
-    // Applications ask this before they ask anything else about the display.
-    if std::env::var_os("XDG_SESSION_TYPE").is_none() {
-        unsafe { std::env::set_var("XDG_SESSION_TYPE", "wayland") };
-    }
+    // What kind of session this is, overwriting whatever logind decided.
+    //
+    // A compositor started from a TTY inherits XDG_SESSION_TYPE=tty, which is
+    // true of the login and false of everything running inside it. Firefox
+    // reads it to decide whether screen sharing goes through the portal, and
+    // with "tty" it falls back to capturing the X11 root window through
+    // Xwayland — which has no contents. That is a share of a black rectangle
+    // at the right resolution with a cursor drawn on it, and the portal is
+    // never called at all, so nothing anywhere logs a reason.
+    //
+    // sway sets it the same way, unconditionally.
+    unsafe { std::env::set_var("XDG_SESSION_TYPE", "wayland") };
 
     export_session_environment();
 
@@ -352,7 +360,8 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 /// and failure is fine: a session with neither systemd nor D-Bus wants no part
 /// of this and works regardless.
 fn export_session_environment() {
-    const VARIABLES: [&str; 2] = ["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP"];
+    const VARIABLES: [&str; 3] =
+        ["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
 
     let commands: [(&str, Vec<&str>); 2] = [
         (
