@@ -18,7 +18,15 @@ fn main() {
     // wpe-platform is the subclassing API; the 2.0 suffix is WPE_API_VERSION
     // 2.0, which is what ENABLE_WPE_PLATFORM selects. glib comes in through
     // it, but is named explicitly so a missing one is reported as itself.
-    let deps = ["wpe-platform-2.0", "glib-2.0", "gobject-2.0"];
+    // wpe-webkit-2.0 brings WebKit and JavaScriptCore, which the Rust side
+    // calls into directly; the others are named so a missing one is reported
+    // as itself rather than as a WebKit failure.
+    let deps = [
+        "wpe-platform-2.0",
+        "wpe-webkit-2.0",
+        "glib-2.0",
+        "gobject-2.0",
+    ];
     let mut build = cc::Build::new();
     build.file("shim/viewport-shim.c").include("shim");
 

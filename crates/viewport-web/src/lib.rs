@@ -16,6 +16,8 @@ use std::os::unix::io::OwnedFd;
 pub mod dmabuf;
 
 #[cfg(feature = "wpe")]
+pub mod webkit;
+#[cfg(feature = "wpe")]
 pub mod wpe;
 
 use viewport_ipc::{Event, Request};
