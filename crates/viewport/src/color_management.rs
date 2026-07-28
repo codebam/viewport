@@ -449,7 +449,7 @@ impl Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<CreatorParams>> for Viewp
 
 impl Dispatch<WpImageDescriptionV1, ImageDescription> for ViewportState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         description: &WpImageDescriptionV1,
         request: wp_image_description_v1::Request,
@@ -467,8 +467,19 @@ impl Dispatch<WpImageDescriptionV1, ImageDescription> for ViewportState {
                     return;
                 };
                 let info = data_init.init(information, ());
-                describe(&info, &held);
-                info.done();
+
+                // Deferred to an idle rather than sent here, because `done` is
+                // a destructor event. Sending it inside the callback that
+                // created the object destroys it before wayland-backend has
+                // attached its user data, and wayland-backend unwraps that
+                // failure — so the compositor aborts rather than the client
+                // seeing an error. The idle runs as soon as this dispatch
+                // finishes, so the client still gets everything in the same
+                // round trip.
+                state.loop_handle.insert_idle(move |_| {
+                    describe(&info, &held);
+                    info.done();
+                });
             }
             wp_image_description_v1::Request::Destroy => {}
             _ => {}
