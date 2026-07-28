@@ -275,6 +275,10 @@ pub struct ViewportState {
     pub _input_method_state: smithay::wayland::input_method::InputMethodManagerState,
     pub _virtual_keyboard_state:
         smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState,
+    /// linux-drm-syncobj-v1: a client saying when its buffer is ready rather
+    /// than the kernel guessing. Absent on a GPU that cannot do it, and on
+    /// the nested backend, which has no DRM device of its own.
+    pub syncobj_state: Option<smithay::wayland::drm_syncobj::DrmSyncobjState>,
     /// wlr-foreign-toplevel-management: the window list a taskbar or a
     /// switcher can act on. The read-only ext protocol is beside it and
     /// describes the same windows.
@@ -555,6 +559,7 @@ impl ViewportState {
             _virtual_keyboard_state: virtual_keyboard_state,
             gamma_state,
             foreign_management_state,
+            syncobj_state: None,
             gamma_ramps: std::collections::HashMap::new(),
             _cursor_shape_state: cursor_shape_state,
             _content_type_state: content_type_state,

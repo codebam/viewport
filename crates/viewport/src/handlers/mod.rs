@@ -245,6 +245,14 @@ impl crate::foreign_toplevel::ForeignToplevelHandler for ViewportState {
     }
 }
 
+impl smithay::wayland::drm_syncobj::DrmSyncobjHandler for ViewportState {
+    fn drm_syncobj_state(
+        &mut self,
+    ) -> Option<&mut smithay::wayland::drm_syncobj::DrmSyncobjState> {
+        self.syncobj_state.as_mut()
+    }
+}
+
 impl crate::gamma::GammaControlHandler for ViewportState {
     fn gamma_control_state(&mut self) -> &mut crate::gamma::GammaControlState {
         &mut self.gamma_state

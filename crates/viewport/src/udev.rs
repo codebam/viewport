@@ -285,6 +285,36 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         state.set_adaptive_sync(true);
     }
 
+    // Explicit synchronisation, if this GPU can do it.
+    //
+    // Without it a client hands over a buffer and the compositor has to guess
+    // when the GPU has finished writing it, which the kernel does through
+    // implicit fences on the buffer itself. Vulkan clients have no implicit
+    // fence to attach, and nvidia's driver has never had them at all — this is
+    // the protocol that replaces the guess with the client saying so.
+    //
+    // Only advertised where the driver supports the eventfd form: the protocol
+    // has no way to say "actually, no", so a global on a device that cannot do
+    // it is a client waiting for a signal that never arrives.
+    {
+        let import_device = state
+            .udev
+            .as_ref()
+            .map(|udev| udev.manager.device().device_fd().clone());
+        if let Some(import_device) = import_device {
+            if smithay::wayland::drm_syncobj::supports_syncobj_eventfd(&import_device) {
+                state.syncobj_state =
+                    Some(smithay::wayland::drm_syncobj::DrmSyncobjState::new::<ViewportState>(
+                        &state.display_handle,
+                        import_device,
+                    ));
+                tracing::info!("explicit sync is available on this gpu");
+            } else {
+                tracing::info!("this gpu has no syncobj eventfd; implicit sync only");
+            }
+        }
+    }
+
     #[cfg(feature = "wpe")]
     // Sizes, maps and focuses the view itself — WebKit paints nothing into an
     // unmapped view of no size.

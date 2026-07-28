@@ -2,10 +2,12 @@
 
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_surface::WlSurface};
-use smithay::reexports::wayland_server::Client;
+use smithay::reexports::wayland_server::{Client, Resource as _};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler, CompositorState,
+    add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states,
+    BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
+    SurfaceAttributes,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
@@ -31,6 +33,91 @@ impl CompositorHandler for ViewportState {
             return &state.compositor_state;
         }
         panic!("a client with neither this compositor's data nor Xwayland's")
+    }
+
+    /// Hold a commit back until the client's drawing has actually finished.
+    ///
+    /// A client hands over a buffer its GPU may still be writing into. The
+    /// kernel's implicit fences cover that for a GL client, but a Vulkan one
+    /// attaches no implicit fence and nvidia's driver has never had them at
+    /// all — so the compositor samples a half-drawn frame and the window shows
+    /// torn or stale contents for one frame at a time.
+    ///
+    /// linux-drm-syncobj-v1 replaces the guess: the client names a timeline
+    /// point that signals when the buffer is ready. That point becomes a
+    /// blocker on the commit, and the commit is applied when it fires. A
+    /// client that does not use the protocol falls back to the dmabuf's own
+    /// fence, which is the implicit path this never had either.
+    fn new_surface(&mut self, surface: &WlSurface) {
+        add_pre_commit_hook::<Self, _>(surface, move |state, _dh, surface| {
+            let mut acquire = None;
+            let dmabuf = with_states(surface, |states| {
+                acquire.clone_from(
+                    &states
+                        .cached_state
+                        .get::<smithay::wayland::drm_syncobj::DrmSyncobjCachedState>()
+                        .pending()
+                        .acquire_point,
+                );
+                match states
+                    .cached_state
+                    .get::<SurfaceAttributes>()
+                    .pending()
+                    .buffer
+                    .as_ref()
+                {
+                    Some(BufferAssignment::NewBuffer(buffer)) => {
+                        smithay::wayland::dmabuf::get_dmabuf(buffer).cloned().ok()
+                    }
+                    _ => None,
+                }
+            });
+            // Shared memory is written by the CPU and is finished by the time
+            // the commit arrives; there is nothing to wait for.
+            let Some(dmabuf) = dmabuf else {
+                return;
+            };
+            let Some(client) = surface.client() else {
+                return;
+            };
+
+            // The client's own point first: it knows when it is done, and the
+            // buffer's fence may cover work that has nothing to do with this
+            // frame.
+            if let Some(acquire) = acquire {
+                if let Ok((blocker, source)) = acquire.generate_blocker() {
+                    let client = client.clone();
+                    let inserted = state.loop_handle.insert_source(source, move |_, _, state| {
+                        let dh = state.display_handle.clone();
+                        state
+                            .client_compositor_state(&client)
+                            .blocker_cleared(state, &dh);
+                        Ok(())
+                    });
+                    if inserted.is_ok() {
+                        add_blocker(surface, blocker);
+                        return;
+                    }
+                }
+            }
+
+            // No explicit point, so the buffer's own fence — which is what a
+            // GL client relies on and what was missing here entirely.
+            if let Ok((blocker, source)) =
+                dmabuf.generate_blocker(smithay::reexports::calloop::Interest::READ)
+            {
+                let inserted = state.loop_handle.insert_source(source, move |_, _, state| {
+                    let dh = state.display_handle.clone();
+                    state
+                        .client_compositor_state(&client)
+                        .blocker_cleared(state, &dh);
+                    Ok(())
+                });
+                if inserted.is_ok() {
+                    add_blocker(surface, blocker);
+                }
+            }
+        });
     }
 
     fn commit(&mut self, surface: &WlSurface) {
