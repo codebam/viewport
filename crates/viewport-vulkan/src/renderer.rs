@@ -106,6 +106,46 @@ impl Texture for VulkanFramebuffer<'_> {
     }
 }
 
+/// Something that can allocate a DMA-BUF.
+///
+/// A trait of its own rather than Smithay's `Allocator` because that one has
+/// associated types, which cannot be made into a trait object — and the point
+/// here is for the renderer to hold *an* allocator without being generic over
+/// which, or gaining a GBM device it does not otherwise need.
+pub trait DmabufAllocator {
+    fn allocate(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: Fourcc,
+        modifiers: &[smithay::backend::allocator::Modifier],
+    ) -> anyhow::Result<Dmabuf>;
+}
+
+impl<A> DmabufAllocator for smithay::backend::allocator::gbm::GbmAllocator<A>
+where
+    // The same bound Smithay puts on its own Allocator impl for GbmAllocator.
+    A: std::os::fd::AsFd + 'static,
+{
+    fn allocate(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: Fourcc,
+        modifiers: &[smithay::backend::allocator::Modifier],
+    ) -> anyhow::Result<Dmabuf> {
+        use smithay::backend::allocator::dmabuf::AsDmabuf;
+        use smithay::backend::allocator::Allocator as _;
+
+        let buffer = self
+            .create_buffer(width, height, format, modifiers)
+            .map_err(|e| anyhow::anyhow!("gbm allocation: {e}"))?;
+        buffer
+            .export()
+            .map_err(|e| anyhow::anyhow!("exporting the gbm buffer: {e}"))
+    }
+}
+
 /// A Vulkan renderer for Smithay.
 pub struct VulkanRenderer {
     device: Device,
@@ -125,6 +165,11 @@ pub struct VulkanRenderer {
     /// frame is the common case, and re-importing it would mean a
     /// vkCreateImage and a memory allocation per frame.
     targets: Vec<(WeakDmabuf, std::sync::Arc<Image>)>,
+
+    /// Optional, because a renderer does not need one: buffers normally
+    /// arrive from clients or from the compositor's own swapchain. It is
+    /// required only for `Offscreen`, which has to create its own targets.
+    allocator: Option<Box<dyn DmabufAllocator>>,
 }
 
 impl std::fmt::Debug for VulkanRenderer {
@@ -146,7 +191,25 @@ impl VulkanRenderer {
             debug_flags: DebugFlags::empty(),
             imported: Vec::new(),
             targets: Vec::new(),
+            allocator: None,
         })
+    }
+
+    /// A renderer that can also allocate its own render targets.
+    ///
+    /// Only needed for [`smithay::backend::renderer::Offscreen`]; everything
+    /// else takes the buffers it is given.
+    pub fn with_allocator(
+        device: &Device,
+        allocator: impl DmabufAllocator + 'static,
+    ) -> Result<Self, Error> {
+        let mut renderer = Self::new(device)?;
+        renderer.allocator = Some(Box::new(allocator));
+        Ok(renderer)
+    }
+
+    pub fn can_allocate(&self) -> bool {
+        self.allocator.is_some()
     }
 
     pub fn device(&self) -> &Device {
@@ -718,6 +781,187 @@ impl Bind<Dmabuf> for VulkanRenderer {
                 })
                 .collect(),
         )
+    }
+}
+
+impl smithay::backend::renderer::Offscreen<Dmabuf> for VulkanRenderer {
+    fn create_buffer(
+        &mut self,
+        format: Fourcc,
+        size: Size<i32, BufferCoord>,
+    ) -> Result<Dmabuf, Self::Error> {
+        // Renderable modifiers only: the whole point of an offscreen buffer is
+        // that something will be drawn into it.
+        let modifiers: Vec<_> = format::modifiers(self.device.physical(), format)
+            .into_iter()
+            .filter(|s| s.rendering && s.planes == 1)
+            .map(|s| s.modifier)
+            .collect();
+        if modifiers.is_empty() {
+            return Err(Error::Unsupported(format!(
+                "{format:?} cannot be rendered into on {}",
+                self.device.name()
+            )));
+        }
+
+        let allocator = self.allocator.as_mut().ok_or_else(|| {
+            Error::Unsupported(
+                "this renderer was built without an allocator; use VulkanRenderer::with_allocator"
+                    .to_owned(),
+            )
+        })?;
+        Ok(allocator.allocate(
+            size.w.max(0) as u32,
+            size.h.max(0) as u32,
+            format,
+            &modifiers,
+        )?)
+    }
+}
+
+impl smithay::backend::renderer::Blit for VulkanRenderer {
+    fn blit(
+        &mut self,
+        from: &Self::Framebuffer<'_>,
+        to: &mut Self::Framebuffer<'_>,
+        src: Rectangle<i32, Physical>,
+        dst: Rectangle<i32, Physical>,
+        filter: TextureFilter,
+    ) -> Result<SyncPoint, Self::Error> {
+        let source = from.image.clone();
+        let target = to.image.clone();
+
+        if std::sync::Arc::ptr_eq(&source, &target) {
+            // Reading and writing one image in a single blit is undefined, and
+            // the trait lists it as a failure.
+            return Err(Error::Unsupported(
+                "the source and destination framebuffers are the same image".to_owned(),
+            ));
+        }
+        if !source.is_readable() {
+            return Err(Error::Unsupported(
+                "the source framebuffer's modifier does not support being copied from".to_owned(),
+            ));
+        }
+        if !target.is_writable() {
+            return Err(Error::Unsupported(
+                "the destination framebuffer's modifier does not support being copied into"
+                    .to_owned(),
+            ));
+        }
+
+        let command = self.commands.begin()?;
+        let handle = self.device.handle();
+
+        // Both start in GENERAL, which is where release_barrier leaves an
+        // image and where an externally written one is.
+        let to_src = source.transition(
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::AccessFlags::empty(),
+            vk::AccessFlags::TRANSFER_READ,
+        );
+        let to_dst = target.transition(
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::AccessFlags::empty(),
+            vk::AccessFlags::TRANSFER_WRITE,
+        );
+        // Put both back: a blit must leave the source intact and the
+        // destination usable by whoever holds it.
+        let restore_src = source.transition(
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::GENERAL,
+            vk::AccessFlags::TRANSFER_READ,
+            vk::AccessFlags::empty(),
+        );
+        let restore_dst = target.transition(
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::GENERAL,
+            vk::AccessFlags::TRANSFER_WRITE,
+            vk::AccessFlags::empty(),
+        );
+
+        let layers = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let region = vk::ImageBlit::default()
+            .src_subresource(layers)
+            .src_offsets([
+                vk::Offset3D {
+                    x: src.loc.x,
+                    y: src.loc.y,
+                    z: 0,
+                },
+                vk::Offset3D {
+                    x: src.loc.x + src.size.w,
+                    y: src.loc.y + src.size.h,
+                    z: 1,
+                },
+            ])
+            .dst_subresource(layers)
+            .dst_offsets([
+                vk::Offset3D {
+                    x: dst.loc.x,
+                    y: dst.loc.y,
+                    z: 0,
+                },
+                vk::Offset3D {
+                    x: dst.loc.x + dst.size.w,
+                    y: dst.loc.y + dst.size.h,
+                    z: 1,
+                },
+            ]);
+
+        // vkCmdBlitImage scales, which is the reason to use it over a plain
+        // copy: the sizes are allowed to differ.
+        let filter = match filter {
+            TextureFilter::Linear => vk::Filter::LINEAR,
+            TextureFilter::Nearest => vk::Filter::NEAREST,
+        };
+
+        unsafe {
+            handle.cmd_pipeline_barrier(
+                command,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_src, to_dst],
+            );
+            handle.cmd_blit_image(
+                command,
+                source.handle(),
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                target.handle(),
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+                filter,
+            );
+            handle.cmd_pipeline_barrier(
+                command,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[restore_src, restore_dst],
+            );
+        }
+        self.commands.submit()?;
+
+        match self.commands.export_fence() {
+            Ok(Some(fd)) => Ok(SyncPoint::from(crate::sync::SyncFile::new(fd))),
+            Ok(None) => Ok(SyncPoint::signaled()),
+            Err(_) => {
+                self.commands.wait(std::time::Duration::from_secs(5))?;
+                Ok(SyncPoint::signaled())
+            }
+        }
     }
 }
 
@@ -1421,10 +1665,10 @@ mod tests {
     }
 
     #[test]
-    fn an_shm_texture_can_be_read_back_but_a_dmabuf_one_cannot() {
+    fn an_shm_texture_can_be_read_back() {
         let Some(mut h) = harness() else { return };
 
-        // Allocated by this renderer, so it has transfer support.
+        // Allocated by this renderer, so it always has transfer support.
         let pixels: Vec<u8> = std::iter::repeat([0u8, 255, 0, 255])
             .take(8 * 8)
             .flatten()
@@ -1445,21 +1689,163 @@ mod tests {
             .expect("copy_texture");
         let out = h.renderer.map_texture(&mapping).expect("map");
         assert_eq!(&out[0..4], &[0, 255, 0, 255], "green survived the round trip");
+    }
 
-        // An imported dmabuf is created without TRANSFER_SRC, because asking
-        // for it can make a modifier that would otherwise work be refused.
+    /// Readability of an imported buffer follows its modifier, not a guess.
+    ///
+    /// The transfer usages are only requested where the modifier advertises
+    /// them, because asking for one it does not support makes vkCreateImage
+    /// refuse a buffer that would otherwise have imported fine. So whether a
+    /// dmabuf can be read back is a property of the modifier, and the two have
+    /// to agree.
+    #[test]
+    fn dmabuf_readability_matches_what_the_modifier_advertises() {
+        let Some(mut h) = harness() else { return };
         let source = buffer(&mut h.allocator, 8, 8);
-        let dma = h.renderer.import_dmabuf(&source, None).expect("import");
-        assert!(!h.renderer.can_read_texture(&dma).expect("can_read"));
-        let error = h
+        let texture = h.renderer.import_dmabuf(&source, None).expect("import");
+
+        let advertised = format::modifiers(h.renderer.device().physical(), Fourcc::Argb8888)
+            .into_iter()
+            .find(|s| s.modifier == Modifier::Linear)
+            .expect("linear ARGB8888 is supported, the harness checked")
+            .transfer_src;
+
+        let reported = h.renderer.can_read_texture(&texture).expect("can_read");
+        assert_eq!(
+            reported, advertised,
+            "can_read_texture disagrees with the modifier's TRANSFER_SRC feature"
+        );
+
+        let result = h.renderer.copy_texture(
+            &texture,
+            Rectangle::new(Point::from((0, 0)), Size::from((8, 8))),
+            Fourcc::Argb8888,
+        );
+        assert_eq!(
+            result.is_ok(),
+            advertised,
+            "copy_texture and can_read_texture must agree"
+        );
+    }
+
+    #[test]
+    fn offscreen_needs_an_allocator_and_says_so() {
+        use smithay::backend::renderer::Offscreen;
+
+        let Some(mut h) = harness() else { return };
+        assert!(!h.renderer.can_allocate());
+
+        let error = Offscreen::<Dmabuf>::create_buffer(
+            &mut h.renderer,
+            Fourcc::Argb8888,
+            (16, 16).into(),
+        )
+        .expect_err("a renderer without an allocator cannot create buffers");
+        assert!(error.to_string().contains("allocator"), "{error}");
+    }
+
+    #[test]
+    fn a_renderer_with_an_allocator_creates_its_own_targets() {
+        use smithay::backend::allocator::Buffer as _;
+        use smithay::backend::renderer::Offscreen;
+
+        let Some(TestGpu { device, node }) = require_gpu() else {
+            return;
+        };
+        let Some(allocator) = gbm_allocator(&node) else {
+            return;
+        };
+        let mut renderer =
+            VulkanRenderer::with_allocator(&device, allocator).expect("renderer");
+        assert!(renderer.can_allocate());
+
+        let mut created =
+            Offscreen::<Dmabuf>::create_buffer(&mut renderer, Fourcc::Argb8888, (32, 16).into())
+                .expect("create_buffer");
+        assert_eq!(created.size().w, 32);
+        assert_eq!(created.size().h, 16);
+
+        // And it is a real render target: binding and drawing into it works.
+        let mut framebuffer = renderer.bind(&mut created).expect("bind");
+        let mut frame = renderer
+            .render(&mut framebuffer, (32, 16).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &[])
+            .expect("clear");
+        let _ = frame.finish().expect("finish");
+    }
+
+    /// Blitting one framebuffer into another, which is what a screencopy that
+    /// hands back a dmabuf does.
+    #[test]
+    fn a_blit_copies_between_framebuffers() {
+        use smithay::backend::renderer::Blit;
+
+        let Some(mut h) = harness() else { return };
+
+        let modifier_supports_transfer =
+            format::modifiers(h.renderer.device().physical(), Fourcc::Argb8888)
+                .into_iter()
+                .find(|s| s.modifier == Modifier::Linear)
+                .map(|s| s.transfer_src && s.transfer_dst)
+                .unwrap_or(false);
+        if !modifier_supports_transfer {
+            skip("linear ARGB8888 cannot be both copied from and into");
+            return;
+        }
+
+        // Fill the source by rendering into it.
+        let mut source = buffer(&mut h.allocator, 32, 32);
+        {
+            let mut framebuffer = h.renderer.bind(&mut source).expect("bind source");
+            let mut frame = h
+                .renderer
+                .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+                .expect("render");
+            frame
+                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &[])
+                .expect("clear");
+            let _ = frame.finish().expect("finish");
+        }
+
+        let mut target = buffer(&mut h.allocator, 32, 32);
+        {
+            let mut framebuffer = h.renderer.bind(&mut target).expect("bind target");
+            let mut frame = h
+                .renderer
+                .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
+                .expect("render");
+            frame
+                .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &[])
+                .expect("clear");
+            let _ = frame.finish().expect("finish");
+        }
+
+        // Blit the top-left quarter of the source into the bottom-right of the
+        // target, scaling on the way — the reason to use a blit rather than a
+        // copy.
+        let from = h.renderer.bind(&mut source).expect("bind from");
+        let mut to = h.renderer.bind(&mut target).expect("bind to");
+        let sync = h
             .renderer
-            .copy_texture(
-                &dma,
-                Rectangle::new(Point::from((0, 0)), Size::from((8, 8))),
-                Fourcc::Argb8888,
+            .blit(
+                &from,
+                &mut to,
+                Rectangle::new(Point::from((0, 0)), Size::from((16, 16))),
+                Rectangle::new(Point::from((16, 16)), Size::from((16, 16))),
+                TextureFilter::Linear,
             )
-            .expect_err("an unreadable texture must be refused");
-        assert!(error.to_string().contains("transfer"), "{error}");
+            .expect("blit");
+        sync.wait().expect("wait");
+        drop(to);
+        drop(from);
+
+        // Red where the blit landed, blue everywhere else.
+        assert_eq!(pixel(&target, 24, 24), [0, 0, 255, 255], "the blitted region");
+        assert_eq!(pixel(&target, 4, 4), [255, 0, 0, 255], "untouched");
+        // Non-destructive: the source still holds red.
+        assert_eq!(pixel(&source, 4, 4), [0, 0, 255, 255], "the source survived");
     }
 
     #[test]

@@ -46,16 +46,8 @@ pub enum Purpose {
 impl Purpose {
     fn usage(self) -> vk::ImageUsageFlags {
         match self {
-            // No TRANSFER_SRC: an imported buffer's modifier is only checked
-            // for sampling and rendering support, and asking for transfer as
-            // well can make vkCreateImage refuse a modifier that would
-            // otherwise have worked. Images this renderer allocates get it.
             Self::Sample => vk::ImageUsageFlags::SAMPLED,
-            // TRANSFER_SRC so a screenshot or a copy-capture request can read
-            // the output back without a second render.
-            Self::Render => {
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC
-            }
+            Self::Render => vk::ImageUsageFlags::COLOR_ATTACHMENT,
         }
     }
 }
@@ -120,6 +112,17 @@ impl Image {
             _ => {}
         }
 
+        // Take the transfer usages the modifier actually advertises, and no
+        // more. That is what makes read-back and blitting work where the
+        // driver allows them without breaking imports where it does not.
+        let mut usage = purpose.usage();
+        if support.transfer_src {
+            usage |= vk::ImageUsageFlags::TRANSFER_SRC;
+        }
+        if support.transfer_dst {
+            usage |= vk::ImageUsageFlags::TRANSFER_DST;
+        }
+
         let planes = buffer.num_planes();
         if planes as u32 != support.planes {
             return Err(anyhow!(
@@ -161,7 +164,7 @@ impl Image {
             .samples(vk::SampleCountFlags::TYPE_1)
             // Not OPTIMAL or LINEAR: the layout is whatever the modifier says.
             .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-            .usage(purpose.usage())
+            .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             // UNDEFINED would discard the contents, which for an imported
             // client buffer is exactly the pixels we were given.
@@ -260,7 +263,7 @@ impl Image {
             fourcc,
             has_alpha: format::has_alpha(fourcc),
             purpose,
-            usage: purpose.usage(),
+            usage,
             foreign: std::cell::Cell::new(true),
         })
     }
@@ -401,6 +404,11 @@ impl Image {
     /// can be read back into memory at all.
     pub fn is_readable(&self) -> bool {
         self.usage.contains(vk::ImageUsageFlags::TRANSFER_SRC)
+    }
+
+    /// Whether this image can be the destination of a copy or a blit.
+    pub fn is_writable(&self) -> bool {
+        self.usage.contains(vk::ImageUsageFlags::TRANSFER_DST)
     }
 
     /// A barrier handing the image back to whoever will consume it next.

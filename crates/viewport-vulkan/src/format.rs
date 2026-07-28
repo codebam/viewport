@@ -64,6 +64,10 @@ pub struct ModifierSupport {
     pub sampling: bool,
     /// Can be rendered into — an output buffer needs this.
     pub rendering: bool,
+    /// Can be the source of a copy, which is what read-back needs.
+    pub transfer_src: bool,
+    /// Can be the destination of a copy, which is what a blit needs.
+    pub transfer_dst: bool,
 }
 
 /// Every modifier this device supports for `fourcc`.
@@ -90,6 +94,16 @@ pub fn modifiers(physical: &PhysicalDevice, fourcc: Fourcc) -> Vec<ModifierSuppo
             rendering: property
                 .drm_format_modifier_tiling_features
                 .contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT),
+            // Asked about rather than assumed. Requesting a usage the
+            // modifier does not support makes vkCreateImage refuse a buffer
+            // that would otherwise have imported fine, and the failure looks
+            // like an unrelated format problem.
+            transfer_src: property
+                .drm_format_modifier_tiling_features
+                .contains(vk::FormatFeatureFlags::TRANSFER_SRC),
+            transfer_dst: property
+                .drm_format_modifier_tiling_features
+                .contains(vk::FormatFeatureFlags::TRANSFER_DST),
         })
         .collect()
 }
