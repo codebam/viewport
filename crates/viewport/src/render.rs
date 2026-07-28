@@ -81,6 +81,16 @@ pub struct Frame {
     pub shell: Option<Shell>,
     pub cursor: Cursor,
     pub scale: f64,
+    /// The lock screen for this output, if the session is locked.
+    ///
+    /// When present it is the only thing drawn apart from the pointer: the
+    /// protocol's guarantee is that nothing else can be seen, and a lock
+    /// screen the desktop shows through is not one.
+    pub lock: Option<WlSurface>,
+    /// Locked with no surface for this output yet — the locker has not drawn,
+    /// or has died. Black, because showing the desktop instead would be a way
+    /// past the lock.
+    pub locked_blank: bool,
 }
 
 impl Default for Cursor {
@@ -106,6 +116,28 @@ where
 {
     let scale = frame.scale;
     let mut elements: Vec<OutputElement<R>> = Vec::new();
+
+    // Locked: the lock surface and the pointer, and nothing else. Returning
+    // early is the guarantee — there is no ordering of the desktop that would
+    // also be safe.
+    if frame.locked_blank || frame.lock.is_some() {
+        if let Some(surface) = frame.lock.as_ref() {
+            use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+            elements.extend(
+                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+                    renderer,
+                    surface,
+                    Point::from((0, 0)),
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                )
+                .into_iter()
+                .map(OutputElement::from),
+            );
+        }
+        return elements;
+    }
 
     match &frame.cursor {
         Cursor::Hidden => {}

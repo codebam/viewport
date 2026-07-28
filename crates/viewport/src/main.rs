@@ -20,6 +20,7 @@ mod framing;
 mod glib_loop;
 mod handlers;
 mod headless;
+mod idle;
 mod input;
 mod ipc;
 mod render;
@@ -128,6 +129,39 @@ fn main() -> Result<()> {
                 smithay::reexports::calloop::timer::TimeoutAction::Drop
             })
             .map_err(|e| anyhow::anyhow!("inserting the exit timer: {e}"))?;
+    }
+
+    // The shell's first-paint deadline. Zero turns it off, which a shell being
+    // developed wants — a page that is slow to come up is not a failure then.
+    #[cfg(feature = "wpe")]
+    if state.load_timeout_ms > 0 {
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(
+            std::time::Duration::from_millis(state.load_timeout_ms),
+        );
+        event_loop
+            .handle()
+            .insert_source(timer, |_, _, state| {
+                state.check_shell_loaded();
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the shell load timer: {e}"))?;
+    }
+
+    // The idle countdown, if the config asked for one. A second is fine: the
+    // deadlines are in seconds and nothing here is worth waking for sooner.
+    if state.idle_settings.wanted() {
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(
+            std::time::Duration::from_secs(1),
+        );
+        event_loop
+            .handle()
+            .insert_source(timer, |_, _, state| {
+                state.idle_tick();
+                smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
+                    std::time::Duration::from_secs(1),
+                )
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the idle timer: {e}"))?;
     }
 
     // Whatever the config file asked to be run, once everything it needs is

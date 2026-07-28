@@ -91,6 +91,15 @@ fn shortcut(modifiers: &ModifiersState, keysym: Keysym) -> Option<Action> {
 
 impl ViewportState {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // Anything at all counts. Device added and removed do not — they
+        // arrive when a dock is plugged in with nobody at the machine — but
+        // they are filtered out before this.
+        if self.idle.activity() {
+            // The screens were off. Bring them back through the same path the
+            // deadline turned them off by.
+            self.set_outputs_enabled(true);
+        }
+
         match event {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -114,6 +123,17 @@ impl ViewportState {
                             // The compositor's own chords first: those have to
                             // work even when a binding table is broken.
                             if let Some(action) = shortcut(modifiers, keysym) {
+                                // VT switching still works while locked — it
+                                // is the session's, not this seat's, and a
+                                // locked session on another VT is still
+                                // locked. Quitting does not: it would drop the
+                                // lock along with the compositor.
+                                if state.locked
+                                    && !matches!(action, Action::SwitchVt(_))
+                                {
+                                    state.suppressed_keys.push(keysym);
+                                    return FilterResult::Intercept(Some(Action::Swallow));
+                                }
                                 // Remembered so the release is swallowed too;
                                 // a client that saw only the release would
                                 // think the key was stuck.
@@ -129,6 +149,14 @@ impl ViewportState {
                                 .raw_latin_sym_or_raw_current_sym()
                                 .map(|sym| sym.raw())
                                 .unwrap_or_else(|| keysym.raw());
+
+                            // Nothing configurable reaches anything while
+                            // locked: a binding that spawns a terminal would
+                            // put it on top of the lock screen.
+                            if state.locked {
+                                state.suppressed_keys.push(keysym);
+                                return FilterResult::Intercept(Some(Action::Swallow));
+                            }
 
                             match crate::binding::match_binding(
                                 &state.bindings,
@@ -363,6 +391,14 @@ impl ViewportState {
 
         match action {
             Action::SwitchVt(vt) => {
+                // A kiosk turns this off so the session cannot be left
+                // (`src/input.c:1002`). Swallowed rather than forwarded: the
+                // chord was intercepted either way, and handing
+                // XF86Switch_VT_n to a client would be strange.
+                if !self.vt_switching {
+                    tracing::debug!("vt switching is disabled by the config");
+                    return;
+                }
                 let Some(udev) = self.udev.as_mut() else {
                     // Nested, where the VT belongs to whatever is hosting us.
                     tracing::debug!("ignoring a VT switch: not on a real session");

@@ -59,6 +59,22 @@ pub struct ViewportState {
     pub output_config: std::collections::HashMap<String, crate::config::OutputConfig>,
     /// What to run once the compositor is up.
     pub startup: Option<String>,
+    /// Locking and blanking after a while, off unless the file asks.
+    pub idle: crate::idle::Idle,
+    pub idle_settings: crate::idle::Settings,
+    /// Whether Ctrl+Alt+F1..F12 may switch VT. A kiosk turns this off.
+    pub vt_switching: bool,
+    /// Whether clients are asked to let the compositor own the window frame.
+    /// The shell draws one in DOM, so a client titlebar is a duplicate.
+    pub server_decorations: bool,
+    /// What the shell is told the system appearance is.
+    pub dark_mode: bool,
+    /// Variable refresh, where the display does it.
+    pub adaptive_sync: bool,
+    /// Where to go if the shell will not load, and how long to wait for its
+    /// first painted frame.
+    pub fallback_url: Option<String>,
+    pub load_timeout_ms: u64,
     /// Whether the logo key was down last time it was looked at, so the shell
     /// hears about a change rather than about every keystroke.
     pub logo_held: bool,
@@ -162,6 +178,14 @@ pub struct ViewportState {
     /// wlr-layer-shell: bars, launchers, notification daemons. Not the
     /// shell's business — a layer surface asks for an edge, not a layout.
     pub layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState,
+    /// ext-session-lock-v1: the screen locker.
+    pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
+    /// Whether the session is locked. Stays true if the locker dies, because
+    /// otherwise killing it would be the way past it.
+    pub locked: bool,
+    /// One lock surface per output, by output name.
+    pub lock_surfaces:
+        std::collections::HashMap<String, smithay::wayland::session_lock::LockSurface>,
     /// xdg-activation. A launcher needs the global to exist before it will
     /// draw at all, quite apart from what activation is for.
     pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
@@ -202,6 +226,14 @@ impl ViewportState {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let layer_shell_state =
             smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
+        let session_lock_state =
+            smithay::wayland::session_lock::SessionLockManagerState::new::<Self, _>(
+                &dh,
+                // Every client may ask. Restricting it to a privileged few is
+                // for a compositor that has a notion of privilege; this one
+                // does not, and refusing here would only mean no locker works.
+                |_| true,
+            );
         let xdg_activation_state =
             smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
         let dmabuf_state = smithay::wayland::dmabuf::DmabufState::new();
@@ -256,6 +288,16 @@ impl ViewportState {
             shell_url: None,
             output_config: std::collections::HashMap::new(),
             startup: None,
+            idle: crate::idle::Idle::default(),
+            idle_settings: crate::idle::Settings::default(),
+            vt_switching: true,
+            server_decorations: true,
+            dark_mode: true,
+            adaptive_sync: false,
+            fallback_url: None,
+            // C's default (`src/main.c:54`). The deadline is on the first
+            // painted frame, not on the load event.
+            load_timeout_ms: 5000,
             logo_held: false,
             overview: false,
             active_output: None,
@@ -295,6 +337,9 @@ impl ViewportState {
             compositor_state,
             xdg_shell_state,
             layer_shell_state,
+            session_lock_state,
+            locked: false,
+            lock_surfaces: std::collections::HashMap::new(),
             xdg_activation_state,
             dmabuf_state,
             xwm: None,
@@ -352,6 +397,12 @@ impl ViewportState {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if self.locked {
+            // Only the locker may be reached. Its own surface is focused
+            // explicitly when it commits; nothing is picked by position,
+            // because there is nothing else the pointer may touch.
+            return None;
+        }
         if self.overview {
             // Every click belongs to the shell while it is drawing miniatures.
             return None;
@@ -434,6 +485,130 @@ impl ViewportState {
                 tracing::info!("linux-dmabuf: {count} format/modifier pair(s)");
             }
             Err(e) => tracing::error!("could not build dmabuf feedback: {e}"),
+        }
+    }
+
+    /// Turn variable refresh on or off for every output that supports it.
+    ///
+    /// Whole-session rather than per-output, as in C (`src/output.c:315`): the
+    /// config key is not under `outputs`, and a display that cannot do it says
+    /// so rather than failing the commit.
+    pub fn set_adaptive_sync(&mut self, enabled: bool) {
+        let Some(udev) = self.udev.as_mut() else {
+            return;
+        };
+        for surface in udev.surfaces.values_mut() {
+            let result = surface
+                .drm_output
+                .with_compositor(|compositor| compositor.use_vrr(enabled));
+            match result {
+                Ok(()) => tracing::info!(
+                    "adaptive sync {} on {}",
+                    if enabled { "on" } else { "off" },
+                    surface.output.name()
+                ),
+                // Not an error worth stopping for: most panels do not do it,
+                // and asking is how you find out.
+                Err(e) => tracing::debug!(
+                    "adaptive sync unavailable on {}: {e}",
+                    surface.output.name()
+                ),
+            }
+        }
+    }
+
+    /// Turn every output on or off.
+    ///
+    /// Blanking is a DRM state change rather than drawing black: a black frame
+    /// still lights the panel, and the point is that the monitor sleeps.
+    pub fn set_outputs_enabled(&mut self, enabled: bool) {
+        let Some(udev) = self.udev.as_mut() else {
+            return;
+        };
+        if udev.blanked == !enabled {
+            return;
+        }
+        udev.blanked = !enabled;
+        tracing::info!("outputs {}", if enabled { "on" } else { "off" });
+
+        if enabled {
+            // Nothing to undo explicitly: `clear` re-enables on the next
+            // queued frame. But vblank cannot provide one — nothing has been
+            // queued since the screens went off — so the frame has to be asked
+            // for.
+            for surface in udev.surfaces.values_mut() {
+                surface.pending = false;
+            }
+            self.needs_render = true;
+            return;
+        }
+
+        for surface in udev.surfaces.values_mut() {
+            // DPMS off and every plane disabled, rather than a black frame: a
+            // black frame still lights the panel, and the point is that the
+            // monitor sleeps.
+            if let Err(e) = surface
+                .drm_output
+                .with_compositor(|compositor| compositor.clear())
+            {
+                tracing::warn!("could not blank an output: {e}");
+            }
+            // No frame is in flight now, and none will be until the screens
+            // come back.
+            surface.pending = false;
+        }
+    }
+
+    /// Load the fallback page if the shell has not painted in time.
+    ///
+    /// The deadline is on the first *painted frame*, not on the load event
+    /// (`src/web.c:100`). A page that loads and then stalls, or one whose
+    /// script throws before it renders, leaves the user staring at a blank
+    /// screen — and both are invisible to a load-failed signal.
+    #[cfg(feature = "wpe")]
+    pub fn check_shell_loaded(&mut self) {
+        if self.shell_frames > 0 || self.shell.is_none() {
+            return;
+        }
+        let url = self.fallback_url.clone().unwrap_or_else(|| {
+            let here = std::env::current_dir().unwrap_or_default();
+            format!("file://{}/data/fallback.html", here.display())
+        });
+        tracing::error!(
+            "the shell painted nothing within {}ms; loading {url}",
+            self.load_timeout_ms
+        );
+        if let Some(shell) = self.shell.as_ref() {
+            if let Err(e) = shell.view.load(&url) {
+                tracing::error!("the fallback would not load either: {e:#}");
+            }
+        }
+    }
+
+    /// One idle tick: lock and blank when their deadlines pass.
+    pub fn idle_tick(&mut self) {
+        if !self.idle_settings.wanted() {
+            return;
+        }
+        let elapsed = self.idle.since.elapsed();
+        let actions = self.idle.tick(&self.idle_settings, elapsed);
+        if actions.lock {
+            match self.idle_settings.lock_command.clone() {
+                Some(command) => {
+                    tracing::info!("idle for {}s; locking", elapsed.as_secs());
+                    crate::input::spawn(&command);
+                }
+                // Nothing to run. Said once per idle period rather than
+                // silently doing nothing, because "lock_after" with no
+                // "lock_command" looks like it should work.
+                None => tracing::warn!(
+                    "idle.lock_after passed but no idle.lock_command is set"
+                ),
+            }
+        }
+        if actions.blank {
+            tracing::info!("idle for {}s; blanking", elapsed.as_secs());
+            self.set_outputs_enabled(false);
         }
     }
 
@@ -583,6 +758,11 @@ impl ViewportState {
             shell,
             cursor,
             scale,
+            lock: self
+                .lock_surfaces
+                .get(&output.name())
+                .map(|lock| lock.wl_surface().clone()),
+            locked_blank: self.locked,
         }
     }
 
@@ -774,6 +954,33 @@ impl ViewportState {
         if let Some(command) = file.startup.as_deref() {
             self.startup = Some(command.to_owned());
         }
+        if let Some(url) = file.fallback {
+            self.fallback_url = Some(url);
+        }
+        if let Some(ms) = file.timeout_ms {
+            self.load_timeout_ms = ms.max(0) as u64;
+        }
+        if let Some(allowed) = file.vt_switching {
+            self.vt_switching = allowed;
+        }
+        if let Some(dark) = file.dark_mode {
+            self.dark_mode = dark;
+        }
+        if let Some(vrr) = file.adaptive_sync {
+            self.adaptive_sync = vrr;
+        }
+        if let Some(mode) = file.decorations.as_deref() {
+            // "client" hands the frame back; anything else, including a value
+            // nobody recognises, keeps it here (`src/config.c:315`).
+            self.server_decorations = mode != "client";
+        }
+        if file.idle != crate::config::IdleConfig::default() {
+            self.idle_settings = crate::idle::Settings {
+                lock_after: file.idle.lock_after,
+                blank_after: file.idle.blank_after,
+                lock_command: file.idle.lock_command,
+            };
+        }
 
         // The cursor theme. The xcursor loader reads the environment, which is
         // also how every toolkit resolves it — so setting it here is what makes
@@ -942,6 +1149,11 @@ impl ViewportState {
     /// instead of five.
     pub fn render_if_needed(&mut self) {
         if !std::mem::take(&mut self.needs_render) {
+            return;
+        }
+        // Drawing while the screens are off would queue a frame, and a queued
+        // frame is what turns them back on.
+        if self.udev.as_ref().map(|udev| udev.blanked).unwrap_or(false) {
             return;
         }
         // Nested has no crtcs; that backend redraws continuously and takes

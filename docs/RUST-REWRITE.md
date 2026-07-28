@@ -188,8 +188,9 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
    are in `crates/viewport-vulkan`.
 5. **Done.** Config file, layer-shell (bars and launchers), xdg-activation,
    linux-dmabuf, xdg-decoration, Xwayland, the cursor, and directional focus.
-6. **Next.** session-lock, foreign-toplevel, notifications, text-input,
-   tablet, `wlr-output-management`, and the X11 half of the clipboard.
+6. **Done.** session-lock, verified against swaylock.
+7. **Next.** foreign-toplevel, notifications, text-input, tablet,
+   `wlr-output-management`, and the X11 half of the clipboard.
 
 ## What the config file does, and does not
 
@@ -197,10 +198,16 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 `menu`, `layout`, `logo`, `tutorial`, `bar`, `rules`, `theme`, `binds`,
 `binds_override`, `keyboard`, `cursor`, `outputs`, `startup`.
 
-Parsed and held but not yet acted on: `fallback`, `timeout_ms`, `idle`,
-`adaptive_sync`, `vt_switching`, `dark_mode`, `decorations`. Each needs the
-subsystem it configures, and none of them fails silently — the value is there
-when that subsystem arrives.
+Also applied: `fallback` and `timeout_ms` (the deadline is on the first
+painted frame, not on the load event — a page that loads and then stalls is
+invisible to load-failed), `idle`, `adaptive_sync`, `vt_switching`,
+`decorations`.
+
+Not acted on: `dark_mode`. Acting on it means running the
+`org.freedesktop.impl.portal.Settings` D-Bus service, which is how a GTK or Qt
+application learns the colour scheme — the value alone changes nothing. That
+is its own deliverable rather than a config key, and the value is stored ready
+for it.
 
 Absence is not a default. Every key is optional and the file is a patch over
 the built-in values, so a key left out never resets something a flag set. Two

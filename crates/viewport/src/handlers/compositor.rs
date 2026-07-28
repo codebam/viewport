@@ -51,6 +51,7 @@ impl CompositorHandler for ViewportState {
         // until it has been configured.
         self.layer_commit(surface);
         self.focus_layer_if_exclusive(surface);
+        self.focus_lock_surface(surface);
 
         self.announce_if_newly_mapped(surface);
 

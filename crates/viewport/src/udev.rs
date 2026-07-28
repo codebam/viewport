@@ -106,7 +106,7 @@ pub struct Surface {
     /// longer describes it, so the buffers end up holding different pictures —
     /// visible as flicker whenever a client repaints quickly, like a terminal
     /// being typed into.
-    pending: bool,
+    pub pending: bool,
 }
 
 /// Everything the DRM backend holds.
@@ -116,6 +116,8 @@ pub struct Udev {
     pub manager: Manager,
     pub surfaces: HashMap<crtc::Handle, Surface>,
     pub node: DrmNode,
+    /// True while the outputs are off because the session went idle.
+    pub blanked: bool,
     /// False between a VT switch away and the switch back. Every device fd is
     /// revoked in that window, so committing a frame would fail.
     pub active: bool,
@@ -234,6 +236,7 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         manager,
         surfaces: HashMap::new(),
         node: card,
+        blanked: false,
         active: true,
     });
 
@@ -268,6 +271,9 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
 
     // Now that the outputs exist, the config file can say what they should be.
     state.apply_output_config();
+    if state.adaptive_sync {
+        state.set_adaptive_sync(true);
+    }
 
     #[cfg(feature = "wpe")]
     // Sizes, maps and focuses the view itself — WebKit paints nothing into an

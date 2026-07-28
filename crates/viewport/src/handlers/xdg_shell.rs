@@ -109,29 +109,39 @@ impl XdgShellHandler for ViewportState {
 /// nothing here can stop it. Asking is all the protocol offers.
 impl XdgDecorationHandler for ViewportState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(DecorationMode::ServerSide);
-        });
-        toplevel.send_configure();
+        let mode = self.decoration_mode();
+        answer_decoration(&toplevel, mode);
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
         // The answer does not depend on what was asked for.
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(DecorationMode::ServerSide);
-        });
-        toplevel.send_configure();
+        let mode = self.decoration_mode();
+        answer_decoration(&toplevel, mode);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(DecorationMode::ServerSide);
-        });
-        toplevel.send_configure();
+        let mode = self.decoration_mode();
+        answer_decoration(&toplevel, mode);
     }
 }
 
+fn answer_decoration(toplevel: &ToplevelSurface, mode: DecorationMode) {
+    toplevel.with_pending_state(|state| {
+        state.decoration_mode = Some(mode);
+    });
+    toplevel.send_configure();
+}
+
 impl ViewportState {
+    /// Server side unless the config file says `"decorations": "client"`.
+    fn decoration_mode(&self) -> DecorationMode {
+        if self.server_decorations {
+            DecorationMode::ServerSide
+        } else {
+            DecorationMode::ClientSide
+        }
+    }
+
     fn notify_props(&mut self, surface: &WlSurface) {
         let Some(view) = self.views.find_by_surface(surface) else {
             return;
