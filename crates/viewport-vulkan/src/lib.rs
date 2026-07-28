@@ -28,6 +28,7 @@ pub mod command;
 pub mod device;
 pub mod format;
 pub mod image;
+pub mod pipeline;
 pub mod render;
 
 #[cfg(test)]
@@ -36,7 +37,8 @@ mod test_support;
 pub use command::Commands;
 pub use device::Device;
 pub use image::{Image, Purpose};
-pub use render::{Color, Frame};
+pub use pipeline::Pipelines;
+pub use render::{Color, Frame, Rect};
 
 use anyhow::{Context as _, Result};
 use smithay::backend::drm::DrmNode;

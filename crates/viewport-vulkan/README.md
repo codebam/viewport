@@ -23,7 +23,7 @@ hardware. The renderer traits are not implemented yet.
 - [x] DRM fourcc ↔ Vulkan format mapping, modifier queries
 - [x] Images from imported DMA-BUFs, with foreign-queue acquire barriers
 - [x] Command submission and clears, via dynamic rendering
-- [ ] Pipelines and shaders — textured and solid quads
+- [x] Pipelines and shaders — textured and solid quads, premultiplied blending
 - [ ] `Renderer`, `Frame`, `Bind`
 - [ ] `ImportDma`, `ImportMem`
 - [ ] Explicit sync via timeline semaphores
@@ -74,6 +74,28 @@ VIEWPORT_REQUIRE_GPU=1 cargo test -p viewport-vulkan
 ```
 
 That turns every skip into a failure. CI should set it.
+
+## Shaders
+
+SPIR-V is committed rather than compiled at build time. The shaders are three
+files that change rarely, and compiling them would put a C++ toolchain and
+shaderc into the dependency graph of everyone who builds this. Each shader's
+header comment carries the line that regenerates it:
+
+```
+glslangValidator -V shaders/quad.vert -o shaders/quad.vert.spv
+```
+
+There is no vertex buffer. The quad is generated from `gl_VertexIndex` as a
+four-vertex triangle strip and positioned entirely from push constants, so
+drawing a surface is a push and a draw with nothing to allocate or
+synchronise. Textures are bound with `VK_KHR_push_descriptor`, which removes
+the descriptor pool a compositor would otherwise have to size and recycle
+every frame.
+
+Blending is premultiplied — `ONE`, not `SRC_ALPHA`. Wayland buffers are
+premultiplied, and using `SRC_ALPHA` double-multiplies, which shows up as dark
+halos around translucent edges.
 
 ## Licence
 

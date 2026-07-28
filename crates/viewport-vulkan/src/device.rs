@@ -35,6 +35,11 @@ pub const REQUIRED_EXTENSIONS: &[&CStr] = &[
     // different imported image, so a cache of render passes keyed by format
     // would be rebuilt constantly and buy nothing.
     vk::KHR_DYNAMIC_RENDERING_NAME,
+    // Descriptors pushed straight into the command buffer. A compositor binds
+    // a different texture for every surface every frame, so the alternative is
+    // a descriptor pool that has to be sized, allocated from and recycled —
+    // all of it bookkeeping this avoids entirely.
+    vk::KHR_PUSH_DESCRIPTOR_NAME,
 ];
 
 /// Wanted, but the renderer degrades rather than fails without them.
@@ -67,6 +72,7 @@ struct Inner {
     /// vkGetDeviceProcAddr, so building one per import would be pure overhead.
     external_memory_fd: ash::khr::external_memory_fd::Device,
     dynamic_rendering: ash::khr::dynamic_rendering::Device,
+    push_descriptor: ash::khr::push_descriptor::Device,
 }
 
 impl Device {
@@ -164,6 +170,7 @@ impl Device {
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
         let external_memory_fd = ash::khr::external_memory_fd::Device::new(instance, &device);
         let dynamic_rendering = ash::khr::dynamic_rendering::Device::new(instance, &device);
+        let push_descriptor = ash::khr::push_descriptor::Device::new(instance, &device);
 
         let has_timeline_semaphores = enabled.contains(&vk::KHR_TIMELINE_SEMAPHORE_NAME)
             || physical.api_version() >= Version::VERSION_1_2;
@@ -182,6 +189,7 @@ impl Device {
             has_timeline_semaphores,
             external_memory_fd,
             dynamic_rendering,
+            push_descriptor,
         })))
     }
 
@@ -191,6 +199,10 @@ impl Device {
 
     pub fn dynamic_rendering(&self) -> &ash::khr::dynamic_rendering::Device {
         &self.0.dynamic_rendering
+    }
+
+    pub fn push_descriptor(&self) -> &ash::khr::push_descriptor::Device {
+        &self.0.push_descriptor
     }
 
     /// The index of a memory type satisfying `requirements` and allowed by
