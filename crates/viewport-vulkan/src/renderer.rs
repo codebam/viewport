@@ -59,6 +59,9 @@ pub struct VulkanTexture {
     /// the client's memory and writing to it would be a data race with the
     /// client, not an optimisation.
     uploadable: bool,
+    /// What the pixels in this buffer mean. Defaults to SDR sRGB, which is
+    /// what a client that says nothing is assumed to have sent.
+    description: crate::color::Description,
 }
 
 impl VulkanTexture {
@@ -68,6 +71,20 @@ impl VulkanTexture {
 
     pub fn is_flipped(&self) -> bool {
         self.flipped
+    }
+
+    pub fn description(&self) -> &crate::color::Description {
+        &self.description
+    }
+
+    /// Say what this buffer's pixels mean.
+    ///
+    /// Taken by value because a texture is a cheap handle: the caller gets a
+    /// second view of the same image with a different description, which is
+    /// what a client changing its image description mid-stream produces.
+    pub fn with_description(mut self, description: crate::color::Description) -> Self {
+        self.description = description;
+        self
     }
 }
 
@@ -176,6 +193,9 @@ pub struct VulkanRenderer {
     /// `VulkanRenderer::forget_shm_buffer`.
     #[cfg(feature = "wayland")]
     pub(crate) shm: crate::wayland::ShmCache,
+
+    /// What the output expects. Every textured draw converts into this.
+    output: crate::color::Description,
 }
 
 impl std::fmt::Debug for VulkanRenderer {
@@ -200,6 +220,7 @@ impl VulkanRenderer {
             allocator: None,
             #[cfg(feature = "wayland")]
             shm: Vec::new(),
+            output: crate::color::Description::default(),
         })
     }
 
@@ -214,6 +235,21 @@ impl VulkanRenderer {
         let mut renderer = Self::new(device)?;
         renderer.allocator = Some(Box::new(allocator));
         Ok(renderer)
+    }
+
+    /// What the output expects; textures are converted into it.
+    pub fn output_description(&self) -> &crate::color::Description {
+        &self.output
+    }
+
+    /// Set what the output expects.
+    ///
+    /// An HDR output would be PQ with BT.2020 primaries; an ordinary one is
+    /// the sRGB default. Everything drawn is converted into this, which is
+    /// what lets an SDR and an HDR surface share a screen without one of them
+    /// being wrong.
+    pub fn set_output_description(&mut self, description: crate::color::Description) {
+        self.output = description;
     }
 
     pub fn can_allocate(&self) -> bool {
@@ -365,6 +401,7 @@ impl ImportDma for VulkanRenderer {
             image: std::sync::Arc::new(image),
             flipped: false,
             uploadable: false,
+            description: crate::color::Description::default(),
         };
         self.imported.push((dmabuf.weak(), texture.clone()));
         Ok(texture)
@@ -389,6 +426,7 @@ impl ImportMem for VulkanRenderer {
             image: std::sync::Arc::new(image),
             flipped,
             uploadable: true,
+            description: crate::color::Description::default(),
         };
 
         let whole = Rectangle::from_size(size);
@@ -1217,8 +1255,8 @@ impl Frame for VulkanFrame<'_, '_> {
             texture.flipped,
         );
         // White tint: the texture's own colours, scaled by alpha.
-        let push =
-            crate::pipeline::Push::new(position, texcoord, [1.0, 1.0, 1.0, 1.0], alpha);
+        let push = crate::pipeline::Push::new(position, texcoord, [1.0, 1.0, 1.0, 1.0], alpha)
+            .with_color(&texture.description, &self.renderer.output);
 
         let target_format = self.framebuffer.image.format();
         let pipeline = self
@@ -1809,6 +1847,146 @@ mod tests {
             .wait(&SyncPoint::signaled())
             .expect("an already-reached sync point is not an error");
         assert_eq!(h.renderer.commands.pending_waits(), 0);
+    }
+
+    /// Draw a texture with a known description and check the result against
+    /// what `color.rs` says it should be.
+    ///
+    /// This is the test that matters for colour: the shader is a translation
+    /// of those functions, and nothing else checks that the translation is
+    /// faithful. A drifted curve looks like a slightly washed-out image, which
+    /// no other assertion here would catch.
+    fn convert_and_read(
+        h: &mut Harness,
+        source: crate::color::Description,
+        output: crate::color::Description,
+        value: u8,
+    ) -> [u8; 4] {
+        // A texture holding one known value, opaque.
+        let pixels: Vec<u8> = std::iter::repeat([value, value, value, 255])
+            .take(8 * 8)
+            .flatten()
+            .collect();
+        let texture = h
+            .renderer
+            .import_memory(&pixels, Fourcc::Argb8888, (8, 8).into(), false)
+            .expect("import_memory")
+            .with_description(source);
+
+        h.renderer.set_output_description(output);
+
+        let mut target = buffer(&mut h.allocator, 16, 16);
+        let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
+        let mut frame = h
+            .renderer
+            .render(&mut framebuffer, (16, 16).into(), Transform::Normal)
+            .expect("render");
+        frame
+            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[])
+            .expect("clear");
+        frame
+            .render_texture_from_to(
+                &texture,
+                Rectangle::from_size(Size::from((8.0, 8.0))),
+                Rectangle::new(Point::from((0, 0)), Size::from((16, 16))),
+                &[],
+                &[],
+                Transform::Normal,
+                1.0,
+            )
+            .expect("draw");
+        let _ = frame.finish().expect("finish");
+        drop(framebuffer);
+
+        pixel(&target, 8, 8)
+    }
+
+    #[test]
+    fn the_shader_agrees_with_the_cpu_colour_conversion() {
+        use crate::color::{Description, Primaries, TransferFunction};
+
+        let Some(mut h) = harness() else { return };
+
+        let cases = [
+            // Linear content onto an sRGB output: the encode alone.
+            (
+                Description {
+                    transfer: TransferFunction::Linear,
+                    ..Default::default()
+                },
+                Description::default(),
+            ),
+            // sRGB to sRGB: nothing should change.
+            (Description::default(), Description::default()),
+            // A wide gamut onto a narrow one: the primaries matrix as well.
+            (
+                Description {
+                    transfer: TransferFunction::Srgb,
+                    primaries: Primaries::BT2020,
+                    ..Default::default()
+                },
+                Description::default(),
+            ),
+            // Gamma 2.2 content, which is close to sRGB but not equal to it.
+            (
+                Description {
+                    transfer: TransferFunction::Gamma22,
+                    ..Default::default()
+                },
+                Description::default(),
+            ),
+        ];
+
+        for (source, output) in cases {
+            for value in [64u8, 128, 200] {
+                let got = convert_and_read(&mut h, source, output, value);
+
+                let normalised = value as f32 / 255.0;
+                let expected = source.convert(&output, [normalised; 3]);
+                // ARGB8888 is B, G, R, A in memory, and the input is grey so
+                // every channel should agree.
+                let want = (expected[0].clamp(0.0, 1.0) * 255.0).round() as i32;
+
+                for (channel, name) in [(got[0], "blue"), (got[1], "green"), (got[2], "red")] {
+                    assert!(
+                        (channel as i32 - want).abs() <= 3,
+                        "{source:?} -> {output:?} at {value}: {name} was {channel}, \\
+                         color.rs says {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_texture_in_the_output_space_is_passed_through_unchanged() {
+        use crate::color::Description;
+
+        let Some(mut h) = harness() else { return };
+        // Identical descriptions: whatever the curve, the value must survive.
+        let got = convert_and_read(&mut h, Description::default(), Description::default(), 128);
+        for channel in &got[..3] {
+            assert!(
+                (*channel as i32 - 128).abs() <= 2,
+                "an identity conversion changed 128 to {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_texture_defaults_to_sdr_srgb() {
+        // What a client that says nothing is assumed to have sent.
+        let Some(mut h) = harness() else { return };
+        let source = buffer(&mut h.allocator, 8, 8);
+        let texture = h.renderer.import_dmabuf(&source, None).expect("import");
+        assert_eq!(
+            *texture.description(),
+            crate::color::Description::default()
+        );
+        assert_eq!(
+            *h.renderer.output_description(),
+            crate::color::Description::default()
+        );
     }
 
     #[test]

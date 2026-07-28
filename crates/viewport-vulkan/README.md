@@ -33,7 +33,8 @@ a CPU mapping of the rendered buffer rather than trusting the GPU.
 - [x] Waiting on an imported fence in the queue rather than on the CPU
 - [x] `Offscreen` (with an allocator) and `Blit`
 - [x] `ImportDmaWl` / `ImportMemWl` — the `wl_buffer` wrappers
-- [ ] Colour management
+- [x] Colour pipeline — transfer functions, primaries, reference luminance
+- [ ] `wp_color_management_v1` protocol handler
 
 ## Why Vulkan
 

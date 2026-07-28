@@ -17,17 +17,14 @@
 #version 450
 
 layout(push_constant) uniform Push {
-    // Unit quad corner to clip space. pos_a holds the images of (1,0) and
-    // (0,1) relative to the origin; pos_b holds the origin.
     vec4 pos_a;
     vec4 pos_b;
-    // The same, for texture coordinates.
     vec4 tex_a;
-    vec4 tex_b;
-    // Premultiplied colour, or a tint for the textured pipeline.
     vec4 color;
-    // x is alpha; the rest is padding to keep the block 16-byte aligned.
     vec4 misc;
+    vec4 csc0;
+    vec4 csc1;
+    vec4 csc2;
 } push;
 
 layout(location = 0) out vec2 out_uv;
@@ -40,5 +37,7 @@ void main() {
     vec2 position = push.pos_a.xy * corner.x + push.pos_a.zw * corner.y + push.pos_b.xy;
     gl_Position = vec4(position, 0.0, 1.0);
 
-    out_uv = push.tex_a.xy * corner.x + push.tex_a.zw * corner.y + push.tex_b.xy;
+    // The texture coordinate origin shares pos_b's spare half; see
+    // common.glsl for why.
+    out_uv = push.tex_a.xy * corner.x + push.tex_a.zw * corner.y + push.pos_b.zw;
 }

@@ -25,43 +25,81 @@ const QUAD_VERT: &[u8] = include_bytes!("../shaders/quad.vert.spv");
 const SOLID_FRAG: &[u8] = include_bytes!("../shaders/solid.frag.spv");
 const TEXTURE_FRAG: &[u8] = include_bytes!("../shaders/texture.frag.spv");
 
-/// The push constant block, laid out to match `shaders/quad.vert`.
+/// The push constant block, laid out to match `shaders/common.glsl`.
 ///
-/// 96 bytes, inside the 128 every Vulkan implementation must provide. Six
-/// `vec4`s rather than a mixture of sizes: a `mat3x2` or a trailing `vec2`
-/// have std430 alignment rules that are easy to get subtly wrong, and the
-/// symptom is geometry in the wrong place rather than an error.
+/// Exactly 128 bytes, which is the largest block every Vulkan implementation
+/// is required to support. That budget is why the texture coordinate origin
+/// rides in `pos_b`'s spare half rather than having a `vec4` of its own: the
+/// colour matrix needs three whole `vec4`s and there was nowhere else to take
+/// them from.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Push {
-    /// Unit quad corner to clip space; see [`crate::transform::Affine`].
+    /// Unit quad corner to clip space, the two basis vectors.
     pub pos_a: [f32; 4],
+    /// `xy`: position origin. `zw`: texture coordinate origin.
     pub pos_b: [f32; 4],
-    /// The same, for texture coordinates.
+    /// Corner to texture coordinate, the two basis vectors.
     pub tex_a: [f32; 4],
-    pub tex_b: [f32; 4],
     /// Premultiplied colour, or a tint for the textured pipeline.
     pub color: [f32; 4],
-    /// `x` is alpha. The rest is padding.
+    /// `x`: alpha. `y`: source transfer. `z`: destination transfer.
+    /// `w`: relative luminance scale.
     pub misc: [f32; 4],
+    /// Source primaries to destination primaries, by row. The fourth
+    /// component of each is unused padding.
+    pub csc0: [f32; 4],
+    pub csc1: [f32; 4],
+    pub csc2: [f32; 4],
 }
 
 impl Push {
-    /// Build from the two maps, a colour and an alpha.
+    /// Build with no colour conversion — what the solid pipeline wants, and
+    /// what a texture already in the output's space wants too.
     pub fn new(
         position: crate::transform::Affine,
         texture: crate::transform::Affine,
         color: [f32; 4],
         alpha: f32,
     ) -> Self {
+        let linear = crate::color::TransferFunction::Linear.as_code() as f32;
         Self {
             pos_a: position.a,
-            pos_b: position.b,
+            // The texture origin rides in the spare half.
+            pos_b: [position.b[0], position.b[1], texture.b[0], texture.b[1]],
             tex_a: texture.a,
-            tex_b: texture.b,
             color,
-            misc: [alpha, 0.0, 0.0, 0.0],
+            misc: [alpha, linear, linear, 1.0],
+            csc0: [1.0, 0.0, 0.0, 0.0],
+            csc1: [0.0, 1.0, 0.0, 0.0],
+            csc2: [0.0, 0.0, 1.0, 0.0],
         }
+    }
+
+    /// Add a colour space conversion from `from` to `to`.
+    pub fn with_color(
+        mut self,
+        from: &crate::color::Description,
+        to: &crate::color::Description,
+    ) -> Self {
+        use crate::color::TransferFunction;
+
+        let matrix = from.primaries.convert_to(&to.primaries);
+        self.misc[1] = from.transfer.as_code() as f32;
+        self.misc[2] = to.transfer.as_code() as f32;
+        // PQ carries absolute luminance of its own, so applying a relative
+        // scale alongside it would count the same thing twice.
+        self.misc[3] = if from.transfer == TransferFunction::Pq
+            || to.transfer == TransferFunction::Pq
+        {
+            1.0
+        } else {
+            from.reference_luminance / to.reference_luminance
+        };
+        self.csc0 = [matrix[0][0], matrix[0][1], matrix[0][2], 0.0];
+        self.csc1 = [matrix[1][0], matrix[1][1], matrix[1][2], 0.0];
+        self.csc2 = [matrix[2][0], matrix[2][1], matrix[2][2], 0.0];
+        self
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -308,18 +346,20 @@ mod tests {
 
     #[test]
     fn the_push_block_matches_the_shader_layout() {
-        // Six vec4s at 16-byte intervals, as the GLSL declares them. If this
+        // Eight vec4s at 16-byte intervals, as the GLSL declares them. If this
         // drifts, geometry lands in the wrong place and nothing reports an
         // error.
         assert_eq!(std::mem::offset_of!(Push, pos_a), 0);
         assert_eq!(std::mem::offset_of!(Push, pos_b), 16);
         assert_eq!(std::mem::offset_of!(Push, tex_a), 32);
-        assert_eq!(std::mem::offset_of!(Push, tex_b), 48);
-        assert_eq!(std::mem::offset_of!(Push, color), 64);
-        assert_eq!(std::mem::offset_of!(Push, misc), 80);
-        assert_eq!(std::mem::size_of::<Push>(), 96);
-        // Every implementation guarantees at least 128 bytes.
-        assert!(std::mem::size_of::<Push>() <= 128);
+        assert_eq!(std::mem::offset_of!(Push, color), 48);
+        assert_eq!(std::mem::offset_of!(Push, misc), 64);
+        assert_eq!(std::mem::offset_of!(Push, csc0), 80);
+        assert_eq!(std::mem::offset_of!(Push, csc1), 96);
+        assert_eq!(std::mem::offset_of!(Push, csc2), 112);
+        // Exactly the minimum every implementation must provide. Adding
+        // anything means finding somewhere else to put it.
+        assert_eq!(std::mem::size_of::<Push>(), 128);
     }
 
     #[test]

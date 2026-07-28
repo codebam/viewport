@@ -3,6 +3,9 @@
 // A flat colour. Used for the background, for the areas no surface covers,
 // and for anything the compositor draws itself.
 //
+// No colour conversion: a colour the compositor chose is already expressed in
+// the output's space, so there is nothing to convert from.
+//
 // Compile with:
 //   glslangValidator -V solid.frag -o solid.frag.spv
 
@@ -12,10 +15,11 @@ layout(push_constant) uniform Push {
     vec4 pos_a;
     vec4 pos_b;
     vec4 tex_a;
-    vec4 tex_b;
     vec4 color;
-    // x is alpha.
     vec4 misc;
+    vec4 csc0;
+    vec4 csc1;
+    vec4 csc2;
 } push;
 
 layout(location = 0) in vec2 in_uv;

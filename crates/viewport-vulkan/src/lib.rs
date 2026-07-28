@@ -24,6 +24,7 @@
 // stated explicitly, which is what makes `color-management-v1` implementable
 // rather than approximable.
 
+pub mod color;
 pub mod command;
 pub mod device;
 pub mod format;
