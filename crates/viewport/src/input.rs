@@ -12,10 +12,15 @@
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
+    GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _,
     KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
 };
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, ModifiersState};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::input::pointer::{
+    AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
+    GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+    GestureSwipeUpdateEvent, MotionEvent,
+};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
@@ -113,6 +118,9 @@ impl ViewportState {
                     return;
                 };
                 let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
+                // Worked out before the keyboard's state is borrowed by the
+                // filter, which is where it is needed.
+                let inhibited = self.shortcuts_inhibited();
 
                 // The filter runs with the keyboard's state borrowed, so it
                 // decides *what* to do and the action is carried out after.
@@ -127,6 +135,21 @@ impl ViewportState {
                         if pressed {
                             // The compositor's own chords first: those have to
                             // work even when a binding table is broken.
+                            // A client holding an inhibitor gets everything
+                            // except a VT switch. That one is the session's
+                            // rather than this seat's — a client cannot be
+                            // allowed to take the only way off a frozen
+                            // desktop, and no client inside a VT has any use
+                            // for the chord that leaves it.
+                            if inhibited {
+                                match shortcut(modifiers, keysym) {
+                                    Some(action @ Action::SwitchVt(_)) => {
+                                        state.suppressed_keys.push(keysym);
+                                        return FilterResult::Intercept(Some(action));
+                                    }
+                                    _ => return FilterResult::Forward,
+                                }
+                            }
                             if let Some(action) = shortcut(modifiers, keysym) {
                                 // VT switching still works while locked — it
                                 // is the session's, not this seat's, and a
@@ -410,6 +433,112 @@ impl ViewportState {
                 };
                 pointer.axis(self, frame);
                 pointer.frame(self);
+            }
+
+            // Touchpad gestures, forwarded whole. A client that cannot see
+            // them has no way to tell a three-finger swipe from a scroll,
+            // because scroll is all it would otherwise be sent — and pinch to
+            // zoom in a browser or a map is exactly this.
+            InputEvent::GestureSwipeBegin { event, .. } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.gesture_swipe_begin(
+                        self,
+                        &GestureSwipeBeginEvent {
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                            fingers: event.fingers(),
+                        },
+                    );
+                }
+            }
+            InputEvent::GestureSwipeUpdate { event, .. } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.gesture_swipe_update(
+                        self,
+                        &GestureSwipeUpdateEvent {
+                            time: event.time_msec(),
+                            delta: event.delta(),
+                        },
+                    );
+                }
+            }
+            InputEvent::GestureSwipeEnd { event, .. } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.gesture_swipe_end(
+                        self,
+                        &GestureSwipeEndEvent {
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                            // A gesture the touchpad gave up on is not a
+                            // gesture that finished, and a client that is told
+                            // it finished acts on it.
+                            cancelled: event.cancelled(),
+                        },
+                    );
+                }
+            }
+            InputEvent::GesturePinchBegin { event, .. } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.gesture_pinch_begin(
+                        self,
+                        &GesturePinchBeginEvent {
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                            fingers: event.fingers(),
+                        },
+                    );
+                }
+            }
+            InputEvent::GesturePinchUpdate { event, .. } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.gesture_pinch_update(
+                        self,
+                        &GesturePinchUpdateEvent {
+                            time: event.time_msec(),
+                            delta: event.delta(),
+                            scale: event.scale(),
+                            rotation: event.rotation(),
+                        },
+                    );
+                }
+            }
+            InputEvent::GesturePinchEnd { event, .. } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.gesture_pinch_end(
+                        self,
+                        &GesturePinchEndEvent {
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                            cancelled: event.cancelled(),
+                        },
+                    );
+                }
+            }
+            // A hold is how a touchpad says fingers are resting: what stops
+            // kinetic scrolling when a hand comes down on it.
+            InputEvent::GestureHoldBegin { event, .. } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.gesture_hold_begin(
+                        self,
+                        &GestureHoldBeginEvent {
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                            fingers: event.fingers(),
+                        },
+                    );
+                }
+            }
+            InputEvent::GestureHoldEnd { event, .. } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.gesture_hold_end(
+                        self,
+                        &GestureHoldEndEvent {
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                            cancelled: event.cancelled(),
+                        },
+                    );
+                }
             }
 
             // Touch. A tap is not a click: the pointer is not moved and no

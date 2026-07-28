@@ -255,6 +255,18 @@ pub struct ViewportState {
     /// Smithay's surface element — so neither is touched again after this.
     pub _content_type_state: smithay::wayland::content_type::ContentTypeState,
     pub _alpha_modifier_state: smithay::wayland::alpha_modifier::AlphaModifierState,
+    /// pointer-gestures-v1: touchpad pinch, swipe and hold. Kept because the
+    /// global has to outlive the display; the events go through the pointer.
+    pub _pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState,
+    /// keyboard-shortcuts-inhibit-v1: a client asking for the chords the
+    /// compositor would otherwise take.
+    pub keyboard_shortcuts_inhibit_state:
+        smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
+    /// The inhibitors handed out, because Smithay's state offers no way to
+    /// look one up by surface and the question asked on every key press is
+    /// "does the surface with the keyboard have one".
+    pub shortcut_inhibitors:
+        Vec<smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor>,
     /// text-input-v3, input-method-v2 and virtual-keyboard-v1: the three
     /// halves of an input method. Kept because the globals have to outlive the
     /// display; the conversation itself is Smithay's, and reaches the
@@ -342,6 +354,18 @@ impl ViewportState {
         // notion of a privileged client, which this compositor does not have —
         // and a filter that everything passes is worse than none, because it
         // reads as though it were deciding something.
+        // Touchpad gestures. A client that cannot see them has no way to tell
+        // a two-finger scroll from a three-finger swipe, because everything
+        // else it is sent is scroll.
+        let pointer_gestures_state =
+            smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh);
+        // A client asking for the chords the compositor would otherwise take.
+        // A virtual machine and a remote desktop both need Mod4 to reach the
+        // session inside them rather than the one around it.
+        let keyboard_shortcuts_inhibit_state =
+            smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState::new::<
+                Self,
+            >(&dh);
         let text_input_state =
             smithay::wayland::text_input::TextInputManagerState::new::<Self>(&dh);
         let input_method_state =
@@ -517,6 +541,9 @@ impl ViewportState {
             xdg_shell_state,
             layer_shell_state,
             screencopy_state,
+            _pointer_gestures_state: pointer_gestures_state,
+            keyboard_shortcuts_inhibit_state,
+            shortcut_inhibitors: Vec::new(),
             _text_input_state: text_input_state,
             _input_method_state: input_method_state,
             _virtual_keyboard_state: virtual_keyboard_state,
@@ -1296,6 +1323,28 @@ impl ViewportState {
             };
             self.apply_gamma(&output, &ramp);
         }
+    }
+
+    /// Whether the focused client has asked for the compositor's own chords.
+    ///
+    /// A virtual machine and a remote desktop both need Mod4 to reach the
+    /// session inside them rather than the one around it. The inhibitor is per
+    /// surface, so this is only true while that surface holds the keyboard —
+    /// the chords come back the moment focus leaves it.
+    pub fn shortcuts_inhibited(&self) -> bool {
+        use smithay::utils::IsAlive as _;
+
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let Some(focus) = keyboard.current_focus() else {
+            return false;
+        };
+        self.shortcut_inhibitors.iter().any(|inhibitor| {
+            inhibitor.wl_surface().alive()
+                && *inhibitor.wl_surface() == focus
+                && inhibitor.is_active()
+        })
     }
 
     /// Whether an output is currently in HDR.

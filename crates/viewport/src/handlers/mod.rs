@@ -179,6 +179,38 @@ impl smithay::wayland::input_method::InputMethodHandler for ViewportState {
     }
 }
 
+/// A client asking to be given the compositor's own chords.
+///
+/// Granted on the spot, and only ever while that surface has the keyboard:
+/// the inhibitor is per surface, so a virtual machine takes Mod4 while it is
+/// focused and gives it back the moment focus leaves. Asking the user first is
+/// what a compositor with a notification and a policy would do, and there is
+/// no policy here to ask about — refusing outright would mean no VM or remote
+/// desktop can ever be driven from inside.
+impl smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitHandler
+    for ViewportState
+{
+    fn keyboard_shortcuts_inhibit_state(
+        &mut self,
+    ) -> &mut smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState {
+        &mut self.keyboard_shortcuts_inhibit_state
+    }
+
+    fn new_inhibitor(
+        &mut self,
+        inhibitor: smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor,
+    ) {
+        use smithay::utils::IsAlive as _;
+
+        // Dead ones first: a client that went away leaves its inhibitor
+        // behind, and the list is walked on every key press.
+        self.shortcut_inhibitors
+            .retain(|existing| existing.wl_surface().alive());
+        inhibitor.activate();
+        self.shortcut_inhibitors.push(inhibitor);
+    }
+}
+
 impl crate::gamma::GammaControlHandler for ViewportState {
     fn gamma_control_state(&mut self) -> &mut crate::gamma::GammaControlState {
         &mut self.gamma_state
