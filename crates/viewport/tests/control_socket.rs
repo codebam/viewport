@@ -142,7 +142,15 @@ fn view_query_answers_with_the_config() {
     let config = client.wait_for("config");
 
     assert_eq!(config["layout"], "tiling");
-    assert!(config["logo"].is_boolean());
+    // Both true, as in src/main.c:69 — "the empty desktop explains itself
+    // until told not to". These set no-logo and no-tutorial on the document
+    // when false, and on a desktop with no windows they are the only things
+    // there are to draw, so getting them wrong leaves bare wallpaper and
+    // looks like a compositor that is not drawing the shell at all.
+    //
+    // Asserting is_boolean() here is what let that through.
+    assert_eq!(config["logo"], true, "the empty desktop would be bare");
+    assert_eq!(config["tutorial"], true, "the empty desktop would be bare");
     // Unset members are omitted, not null.
     assert!(config.get("bar").is_none());
     assert!(config.get("rules").is_none());

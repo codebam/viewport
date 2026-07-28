@@ -273,11 +273,18 @@ impl ViewportState {
 
     pub fn notify_config(&mut self) {
         // Config parsing is not ported yet; these are the C build's defaults
-        // (`src/ipc.c:390`).
+        // (`src/main.c:61`).
+        //
+        // logo and tutorial are true there — "the empty desktop explains
+        // itself until told not to". Sending false is not a smaller default,
+        // it sets no-logo and no-tutorial on the document, and on a desktop
+        // with no windows those two are the only things there are to draw. It
+        // leaves the wallpaper and nothing else, which is what three runs of
+        // "the right display is grey" actually were.
         let event = Event::Config(Config {
             layout: "tiling".to_owned(),
-            logo: false,
-            tutorial: false,
+            logo: true,
+            tutorial: true,
             bar: None,
             rules: None,
             theme: None,
