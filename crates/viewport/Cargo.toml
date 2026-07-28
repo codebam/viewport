@@ -17,6 +17,7 @@ servo = ["viewport-web/servo"]
 [dependencies]
 viewport-ipc.workspace = true
 viewport-web.workspace = true
+viewport-vulkan = { path = "../viewport-vulkan" }
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

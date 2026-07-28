@@ -1566,6 +1566,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "viewport-ipc",
+ "viewport-vulkan",
  "viewport-web",
 ]
 

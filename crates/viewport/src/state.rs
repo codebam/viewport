@@ -52,6 +52,10 @@ pub struct ViewportState {
     pub overview: bool,
     pub active_output: Option<String>,
 
+    /// wp_color_management_v1. Smithay has no handler for it, so the
+    /// implementation is in crate::color_management.
+    pub color_management: crate::color_management::ColorManagementState,
+
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
@@ -71,6 +75,8 @@ impl ViewportState {
         let loop_handle = event_loop.handle();
 
         let compositor_state = CompositorState::new::<Self>(&dh);
+        let color_management =
+            crate::color_management::ColorManagementState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
@@ -107,6 +113,7 @@ impl ViewportState {
             overview: false,
             active_output: None,
 
+            color_management,
             compositor_state,
             xdg_shell_state,
             shm_state,

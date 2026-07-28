@@ -34,7 +34,7 @@ a CPU mapping of the rendered buffer rather than trusting the GPU.
 - [x] `Offscreen` (with an allocator) and `Blit`
 - [x] `ImportDmaWl` / `ImportMemWl` — the `wl_buffer` wrappers
 - [x] Colour pipeline — transfer functions, primaries, reference luminance
-- [ ] `wp_color_management_v1` protocol handler
+- [x] `wp_color_management_v1` protocol handler (in the compositor crate)
 
 ## Why Vulkan
 

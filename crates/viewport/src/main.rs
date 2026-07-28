@@ -7,6 +7,7 @@
 // placed by whatever speaks to the control socket.
 
 mod apply;
+mod color_management;
 mod framing;
 mod handlers;
 mod headless;
