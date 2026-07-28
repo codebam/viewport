@@ -191,17 +191,42 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 
 ## Known rough edges on real hardware
 
-Three things the log says on every run. None stops it working, and all three
-are recorded here rather than left to be rediscovered:
+Two things the log says on every run. Neither stops it working:
 
-- `Unable to become drm master, assuming unprivileged mode`, early. Master is
-  evidently acquired later through the session, because the atomic modeset
-  succeeds — but it is the first thing to look at if a modeset ever fails.
 - `Failed to restore previous state. Error: Invalid argument` on exit. Smithay
   restores the pre-compositor DRM state when the device drops, and that commit
   is rejected. The session comes back regardless.
 - `Failed to destroy old mode property blob: No such file or directory`, once
   per output during modeset. Harmless; there was no old blob to destroy.
+
+`Unable to become drm master, assuming unprivileged mode` used to be listed
+here too, with a note that master was "evidently acquired later, because the
+modeset succeeds". It was not. Nothing claimed it, every page flip failed with
+EPERM, and because a failed flip takes its vblank with it the output stopped
+for good — which read as a dead monitor rather than a permission error. It is
+claimed explicitly at startup now. A warning that is filed as harmless because
+the next step appeared to work is worth more suspicion than that one got.
+
+## Diagnostics
+
+Bring-up on real hardware turned on questions the log could not answer, because
+the screen was the only witness and several different faults produced the same
+picture. Two things exist for that:
+
+- `VIEWPORT_DUMP_OUTPUT=/tmp/out.ppm` writes one composite per output, from the
+  same element list and damage tracker the output was given, plus the shell's
+  own buffer from the same moment. Comparing the two separates "the shell
+  painted nothing" from "the shell never reached the screen"; measuring a pixel
+  separates the clear colour from a window's background. Both distinctions
+  cost a run each to learn.
+- `VIEWPORT_SCANOUT=0` composites everything instead of putting elements on DRM
+  planes. Slower and always correct, so it tells a plane problem from a
+  renderer problem in one run.
+
+Two references were worth more than reading this code again: `src/` for what
+the C build does about the same problem, and smithay's `anvil` for how a
+smithay compositor is normally shaped. The rendering loop drew several times
+per refresh until it was compared against the latter.
 
 ## Running it now
 

@@ -151,12 +151,11 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         .unwrap_or(card);
 
     tracing::info!("primary GPU: card {card:?}, render {render:?}");
-    // Said out loud because both change what the screen does, and a run whose
+    // Said out loud because it changes what the screen does, and a run whose
     // settings are not in its log cannot be compared with another one.
     tracing::info!(
-        "scanout {}, full damage {}",
-        if frame_flags().is_empty() { "off" } else { "on" },
-        if full_damage() { "on" } else { "off" },
+        "scanout {}",
+        if frame_flags().is_empty() { "off" } else { "on" }
     );
 
     let mut session = session;
@@ -862,11 +861,6 @@ impl ViewportState {
             }
         }
 
-        // Before the frame, so the tracker has no history to trust.
-        if full_damage() {
-            surface.drm_output.reset_buffers();
-        }
-
         let result = surface.drm_output.render_frame(
             &mut udev.renderer,
             &elements,
@@ -973,16 +967,6 @@ fn frame_flags() -> FrameFlags {
     }
 }
 
-/// Whether to throw away the damage history before every frame.
-///
-/// Redrawing everything every time is what a compositor does before it has
-/// damage tracking, and it is always correct. So it separates "the damage is
-/// wrong" from everything else — which nothing on screen does, because a
-/// region drawn from stale damage and a region drawn from a stale plane look
-/// the same.
-fn full_damage() -> bool {
-    matches!(std::env::var("VIEWPORT_FULL_DAMAGE").as_deref(), Ok("1"))
-}
 
 /// A CRTC this connector can drive that nothing else is using.
 fn free_crtc(
