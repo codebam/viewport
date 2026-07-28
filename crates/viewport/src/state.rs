@@ -55,6 +55,9 @@ pub struct ViewportState {
     /// The DRM backend, when running on real hardware rather than nested.
     pub udev: Option<crate::udev::Udev>,
 
+    /// Keys whose press was intercepted, so the matching release can be too.
+    pub suppressed_keys: Vec<smithay::input::keyboard::Keysym>,
+
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
     pub color_management: crate::color_management::ColorManagementState,
@@ -116,6 +119,7 @@ impl ViewportState {
             overview: false,
             active_output: None,
             udev: None,
+            suppressed_keys: Vec::new(),
 
             color_management,
             compositor_state,
