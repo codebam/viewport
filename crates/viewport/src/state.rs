@@ -258,6 +258,8 @@ pub struct ViewportState {
     /// Smithay's surface element — so neither is touched again after this.
     pub _content_type_state: smithay::wayland::content_type::ContentTypeState,
     pub _alpha_modifier_state: smithay::wayland::alpha_modifier::AlphaModifierState,
+    /// tablet-v2: drawing tablets, with pressure and tilt.
+    pub _tablet_state: smithay::wayland::tablet_manager::TabletManagerState,
     /// pointer-gestures-v1: touchpad pinch, swipe and hold. Kept because the
     /// global has to outlive the display; the events go through the pointer.
     pub _pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState,
@@ -406,6 +408,12 @@ impl ViewportState {
         // notion of a privileged client, which this compositor does not have —
         // and a filter that everything passes is worse than none, because it
         // reads as though it were deciding something.
+        // Drawing tablets. The manager is the global; the tablets themselves
+        // are added to the seat as libinput reports them, because a client is
+        // told about each device and there is no honest way to describe one
+        // that is not plugged in.
+        let tablet_state =
+            smithay::wayland::tablet_manager::TabletManagerState::new::<Self>(&dh);
         // Touchpad gestures. A client that cannot see them has no way to tell
         // a two-finger scroll from a three-finger swipe, because everything
         // else it is sent is scroll.
@@ -603,6 +611,7 @@ impl ViewportState {
             xdg_shell_state,
             layer_shell_state,
             screencopy_state,
+            _tablet_state: tablet_state,
             _pointer_gestures_state: pointer_gestures_state,
             keyboard_shortcuts_inhibit_state,
             shortcut_inhibitors: Vec::new(),

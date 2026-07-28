@@ -22,6 +22,7 @@ use smithay::input::pointer::{
     GestureSwipeUpdateEvent, MotionEvent,
 };
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::input::tablet::{TabletDescriptor, TabletSeatTrait as _};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::state::ViewportState;
@@ -433,6 +434,181 @@ impl ViewportState {
                 };
                 pointer.axis(self, frame);
                 pointer.frame(self);
+            }
+
+            // A device appearing. A tablet has to be added to the seat before
+            // a client can be told anything about it, and libinput is the only
+            // thing that knows one is there.
+            InputEvent::DeviceAdded { device } => {
+                use smithay::backend::input::Device as _;
+                if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
+                    let descriptor =
+                        TabletDescriptor::from(&device);
+                    let dh = self.display_handle.clone();
+                    self.seat.tablet_seat().add_wp_tablet(&dh, &descriptor);
+                    tracing::info!("tablet: {}", descriptor.name);
+                }
+            }
+            InputEvent::DeviceRemoved { device } => {
+                use smithay::backend::input::Device as _;
+                if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
+                    let seat = self.seat.tablet_seat();
+                    seat.remove_tablet(
+                        &TabletDescriptor::from(&device),
+                    );
+                    // The tools belong to the tablets. With none left there is
+                    // nothing for a tool to be on, and a client holding one
+                    // would be told about pressure from a device that is in a
+                    // drawer.
+                    if seat.count_tablets() == 0 {
+                        seat.clear_tools();
+                    }
+                }
+            }
+
+            // A tablet pen moving. It carries what a mouse cannot: pressure,
+            // tilt, and which end of the pen is down — which is the whole
+            // reason a drawing program wants the protocol rather than the
+            // pointer.
+            InputEvent::TabletToolAxis { event, .. } => {
+                use smithay::backend::input::TabletToolEvent as _;
+                let Some(position) = self.touch_position(&event) else {
+                    return;
+                };
+                let under = self.surface_under(position);
+                let time = event.time_msec();
+                let tool = self.seat.tablet_seat().get_tool(&event.tool());
+
+                // The pointer moves too: a tablet is also how the cursor gets
+                // around, and a client with no tablet support still sees it.
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.motion(
+                        self,
+                        under.clone(),
+                        &MotionEvent {
+                            location: position,
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time,
+                        },
+                    );
+                    pointer.frame(self);
+                }
+
+                if let Some(tool) = tool {
+                    tool.axis(self, axis_frame(&event));
+                    tool.motion(
+                        self,
+                        under,
+                        &smithay::input::tablet::tool::MotionEvent {
+                            location: position,
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time,
+                        },
+                    );
+                    tool.frame(self, time);
+                }
+                self.needs_render = true;
+            }
+
+            // The pen coming within range of the tablet, or leaving it.
+            InputEvent::TabletToolProximity { event, .. } => {
+                use smithay::backend::input::{
+                    TabletToolEvent as _, TabletToolProximityEvent as _,
+                };
+                let Some(position) = self.touch_position(&event) else {
+                    return;
+                };
+                let under = self.surface_under(position);
+                let time = event.time_msec();
+                let dh = self.display_handle.clone();
+                let seat = self.seat.tablet_seat();
+                let tablet = seat.get_tablet(
+                    &TabletDescriptor::from(&event.device()),
+                );
+                let tool = seat.get_tool(&event.tool());
+                let tool = match tool {
+                    Some(tool) => tool,
+                    // First sight of this pen. A tablet reports its tools as
+                    // they arrive rather than up front, because a pen is not
+                    // plugged in.
+                    None => self.seat.tablet_seat().add_wp_tool(self, &dh, &event.tool()),
+                };
+                let Some(tablet) = tablet else {
+                    return;
+                };
+
+                match event.state() {
+                    smithay::backend::input::ProximityState::In => tool.proximity_in(
+                        self,
+                        under,
+                        tablet,
+                        &smithay::input::tablet::tool::ProximityInEvent {
+                            location: position,
+                            axis: Some(axis_frame(&event)),
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time,
+                        },
+                    ),
+                    smithay::backend::input::ProximityState::Out => tool.proximity_out(
+                        self,
+                        &smithay::input::tablet::tool::ProximityOutEvent {
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time,
+                        },
+                    ),
+                }
+                tool.frame(self, time);
+            }
+
+            // The pen touching the tablet, which is a click that also takes
+            // the keyboard: there is nothing else to focus with.
+            InputEvent::TabletToolTip { event, .. } => {
+                use smithay::backend::input::{TabletToolEvent as _, TabletToolTipEvent as _};
+                let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
+                    return;
+                };
+                let serial = SERIAL_COUNTER.next_serial();
+                let time = event.time_msec();
+                match event.tip_state() {
+                    smithay::backend::input::TabletToolTipState::Down => {
+                        tool.down(
+                            self,
+                            &smithay::input::tablet::tool::DownEvent { serial, time },
+                        );
+                        let at = self
+                            .seat
+                            .get_pointer()
+                            .map(|pointer| pointer.current_location());
+                        if let (Some(at), Some(keyboard)) = (at, self.seat.get_keyboard()) {
+                            if let Some((surface, _)) = self.surface_under(at) {
+                                keyboard.set_focus(self, Some(surface), serial);
+                            }
+                        }
+                    }
+                    smithay::backend::input::TabletToolTipState::Up => tool.up(
+                        self,
+                        &smithay::input::tablet::tool::UpEvent { serial, time },
+                    ),
+                }
+                tool.frame(self, time);
+            }
+
+            InputEvent::TabletToolButton { event, .. } => {
+                use smithay::backend::input::{TabletToolButtonEvent as _, TabletToolEvent as _};
+                let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
+                    return;
+                };
+                let time = event.time_msec();
+                tool.button(
+                    self,
+                    &smithay::input::tablet::tool::ButtonEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        button: event.button(),
+                        state: event.button_state(),
+                        time,
+                    },
+                );
+                tool.frame(self, time);
             }
 
             // Touchpad gestures, forwarded whole. A client that cannot see
@@ -912,5 +1088,25 @@ impl ViewportState {
             }
         });
         (locked, confine.map(|region| (region, origin)))
+    }
+}
+
+/// What a tablet event says about the pen, for the axes that changed.
+///
+/// Only the ones that changed: the protocol is a delta, and reporting an
+/// unchanged pressure every event makes a stroke look like it was pressed
+/// evenly when it was not.
+fn axis_frame<E: smithay::backend::input::TabletToolEvent<I>, I: smithay::backend::input::InputBackend>(
+    event: &E,
+) -> smithay::input::tablet::tool::AxisFrame {
+    smithay::input::tablet::tool::AxisFrame {
+        pressure: event.pressure_has_changed().then(|| event.pressure()),
+        distance: event.distance_has_changed().then(|| event.distance()),
+        tilt: event.tilt_has_changed().then(|| event.tilt()),
+        rotation: event.rotation_has_changed().then(|| event.rotation()),
+        slider: event.slider_has_changed().then(|| event.slider_position()),
+        wheel: event
+            .wheel_has_changed()
+            .then(|| (event.wheel_delta(), event.wheel_delta_discrete())),
     }
 }
