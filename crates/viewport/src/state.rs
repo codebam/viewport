@@ -1994,11 +1994,34 @@ impl ViewportState {
         &mut self,
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
     ) -> Vec<smithay::backend::allocator::dmabuf::Dmabuf> {
-        use smithay::backend::renderer::Offscreen as _;
-
-        let Some(udev) = self.udev.as_mut() else {
+        // Through the backend's own renderer, which is where the allocator
+        // lives. Only reachable from outside the render path — see
+        // `allocate_cast_targets`.
+        let Some(mut udev) = self.udev.take() else {
             return Vec::new();
         };
+        let targets = Self::allocate_cast_targets(&mut udev.renderer, size);
+        self.udev = Some(udev);
+        targets
+    }
+
+    /// Allocate against a renderer that is already in hand.
+    ///
+    /// Taking the renderer rather than reaching for `self.udev`, because the
+    /// render path has already moved it out of the state — it has to, to lend
+    /// it out while calling back into the compositor. Reaching for it there
+    /// found nothing and returned no buffers, and a stream with no buffers to
+    /// offer advertises no DMA-BUF format at all: every renegotiation quietly
+    /// dropped the share onto the shared-memory path, which is the readback
+    /// per frame this was written to avoid. Nothing said so, because "could
+    /// not allocate" and "this backend has no allocator" looked the same.
+    fn allocate_cast_targets<R>(
+        renderer: &mut R,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) -> Vec<smithay::backend::allocator::dmabuf::Dmabuf>
+    where
+        R: Offscreen<smithay::backend::allocator::dmabuf::Dmabuf>,
+    {
         let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
             (size.w.max(1), size.h.max(1)).into();
 
@@ -2008,8 +2031,7 @@ impl ViewportState {
             // describes to the consumer: four bytes a pixel, no alpha, because
             // a screen is opaque and a consumer that reads the fourth byte as
             // alpha shows a transparent picture.
-            match udev
-                .renderer
+            match renderer
                 .create_buffer(smithay::backend::allocator::Fourcc::Xrgb8888, buffer_size)
             {
                 Ok(target) => targets.push(target),
@@ -2138,6 +2160,64 @@ impl ViewportState {
         // or not this end has changed, and one that stops arriving reads as a
         // frozen screen rather than a still one.
         self.needs_render = true;
+    }
+
+    /// The size a source is now, whatever it was when the share started.
+    fn cast_size(
+        &self,
+        source: &crate::screencast::Source,
+    ) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
+        match source {
+            crate::screencast::Source::Output(output) => {
+                output.current_mode().map(|mode| mode.size)
+            }
+            crate::screencast::Source::Window(id) => {
+                let view = self.views.get(*id)?;
+                let geometry = self.space.element_geometry(&view.window)?;
+                Some((geometry.size.w.max(1), geometry.size.h.max(1)).into())
+            }
+        }
+    }
+
+    /// Agree a new format for anything whose source has resized.
+    /// Called from the backend before it feeds them, because only the backend
+    /// knows whether it can allocate: `None` renegotiates without DMA-BUFs,
+    /// which is right for a nested session — its streams are shared memory
+    /// anyway, and shared memory is allocated when PipeWire asks rather than
+    /// up front.
+    pub fn resize_casts<R>(&mut self, renderer: Option<&mut R>)
+    where
+        R: Offscreen<smithay::backend::allocator::dmabuf::Dmabuf>,
+    {
+        let mut renderer = renderer;
+        let resized: Vec<(usize, smithay::utils::Size<i32, smithay::utils::Physical>)> = self
+            .casts
+            .iter()
+            .enumerate()
+            .filter_map(|(at, cast)| {
+                let size = self.cast_size(&cast.source)?;
+                cast.stream.needs_renegotiation(size).then_some((at, size))
+            })
+            .collect();
+        if resized.is_empty() {
+            return;
+        }
+
+        for (at, size) in resized {
+            // Buffers of the new size, before the offer goes out: the consumer
+            // may take the format at once and ask for them on its own thread.
+            let targets = match renderer.as_deref_mut() {
+                Some(renderer) => Self::allocate_cast_targets(renderer, size),
+                None => Vec::new(),
+            };
+            let mut casts = std::mem::take(&mut self.casts);
+            if let (Some(cast), Some(pipewire)) = (casts.get_mut(at), self.pipewire.as_ref()) {
+                if let Err(e) = cast.stream.renegotiate(size, targets, &pipewire.thread_loop) {
+                    tracing::warn!("could not resize a screencast: {e}");
+                }
+            }
+            self.casts = casts;
+        }
     }
 
     /// Composite a frame straight into the buffer each waiting stream will

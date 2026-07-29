@@ -985,6 +985,13 @@ impl ViewportState {
         // Anything sharing this screen, fed from the frame just drawn.
         if !self.casts.is_empty() {
             if let Some(mut udev) = self.udev.take() {
+                // Before the frames: a source that has resized needs the
+                // format agreed again, and the buffers for it come from this
+                // renderer — which is why this is here and not inside
+                // `feed_casts`. The state does not hold the renderer while it
+                // is lent out, so anything reaching for `self.udev` in there
+                // finds nothing.
+                self.resize_casts(Some(&mut udev.renderer));
                 self.feed_casts::<_, smithay::backend::allocator::dmabuf::Dmabuf>(
                     &output,
                     &mut udev.renderer,

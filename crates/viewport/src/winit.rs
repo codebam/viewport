@@ -197,6 +197,10 @@ pub fn init(
                     state.service_image_capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
                         &output, renderer,
                     );
+                    // No allocator here, so a resized source is renegotiated
+                    // onto shared memory — which is what a nested session was
+                    // using in any case.
+                    state.resize_casts(None::<&mut viewport_vulkan::VulkanRenderer>);
                     state.feed_casts::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
                         &output, renderer,
                     );

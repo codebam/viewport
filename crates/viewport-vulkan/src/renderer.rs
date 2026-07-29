@@ -1468,6 +1468,7 @@ mod tests {
         allocator: smithay::backend::allocator::gbm::GbmAllocator<std::fs::File>,
     }
 
+
     fn harness() -> Option<Harness> {
         let TestGpu { device, node } = require_gpu()?;
         let allocator = gbm_allocator(&node)?;

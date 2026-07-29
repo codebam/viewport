@@ -33,6 +33,17 @@ use smithay::utils::{Physical, Size};
 /// screen.
 pub const BUFFERS: usize = 3;
 
+/// What the stream has agreed to produce, which a renegotiation replaces.
+///
+/// Shared rather than captured: the callbacks are registered once and live as
+/// long as the stream, and the whole point of renegotiating is that what they
+/// have to answer with is not what it was when they were written.
+#[derive(Clone, Copy, Debug)]
+struct Agreed {
+    size: Size<i32, Physical>,
+    layout: Option<Layout>,
+}
+
 /// What the buffers the compositor allocated look like.
 ///
 /// Taken from a real allocation rather than computed: the driver chooses the
@@ -125,6 +136,13 @@ pub struct Stream {
     /// The node a client connects to, which is what the portal hands back over
     /// D-Bus.
     pub node_id: u32,
+    /// What the callbacks answer with, which changes when the source resizes.
+    agreed: Arc<Mutex<Agreed>>,
+    /// The buffers waiting to be handed out, refilled on a renegotiation.
+    pool: Arc<Mutex<Vec<Dmabuf>>>,
+    /// When the format was last renegotiated, so dragging a window's edge does
+    /// not allocate three screens' worth of buffers per frame of the drag.
+    renegotiated: Option<std::time::Instant>,
     /// Whether the format that was agreed is one the GPU can draw into.
     ///
     /// Decided by the consumer: both are offered, and one that cannot import a
@@ -148,6 +166,68 @@ impl Stream {
             return false;
         }
         self.last.map(|at| at.elapsed() >= rate).unwrap_or(true)
+    }
+
+    /// How long the source has to hold still before the format is agreed
+    /// again.
+    ///
+    /// Renegotiating allocates three screens' worth of buffers and costs a
+    /// round trip with the consumer, and dragging a window's edge produces a
+    /// new size every frame. Frames are dropped in the meantime, which is what
+    /// was happening for the whole of a share before any of this existed.
+    const SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
+
+    /// Whether the source has changed size out from under the agreed format.
+    ///
+    /// A stream whose format says one size and whose frames arrive at another
+    /// drops every one of them: 488 of them in one run, with nothing but a
+    /// debug line to say the share had silently frozen on its last good frame.
+    pub fn needs_renegotiation(&self, size: Size<i32, Physical>) -> bool {
+        needs_renegotiation(
+            *self.agreed.lock().unwrap(),
+            self.renegotiated,
+            size,
+        )
+    }
+
+    /// Agree a new format, at the size the source is now.
+    ///
+    /// In place, rather than by making a new stream: the consumer is connected
+    /// to a node number it was given once, and a stream that went away and came
+    /// back under a new number would be a share that stops.
+    pub fn renegotiate(
+        &mut self,
+        size: Size<i32, Physical>,
+        targets: Vec<Dmabuf>,
+        loop_: &pw::thread_loop::ThreadLoop,
+    ) -> anyhow::Result<()> {
+        let _guard = loop_.lock();
+
+        let agreed = Agreed {
+            size,
+            layout: targets.first().and_then(Layout::of),
+        };
+        // Before the offer goes out: PipeWire may ask for buffers as soon as
+        // the format is settled, and it asks on its own thread.
+        *self.pool.lock().unwrap() = targets;
+        *self.agreed.lock().unwrap() = agreed;
+
+        let described = offered_formats(agreed)?;
+        let mut params = described
+            .iter()
+            .map(|bytes| {
+                spa::pod::Pod::from_bytes(bytes)
+                    .ok_or_else(|| anyhow::anyhow!("the format description is not a valid pod"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        self.stream
+            .update_params(&mut params)
+            .map_err(|e| anyhow::anyhow!("offering a new format: {e}"))?;
+
+        self.size = size;
+        self.renegotiated = Some(std::time::Instant::now());
+        tracing::info!("screencast: the source is {}x{} now", size.w, size.h);
+        Ok(())
     }
 
     /// Whether frames for this stream are drawn by the GPU rather than copied.
@@ -366,7 +446,10 @@ impl Pipewire {
         // What the compositor is going to hand over, if it managed to
         // allocate anything. A backend with no GPU allocator — nested, or
         // headless — has none, and offers only the shared-memory format.
-        let layout = targets.first().and_then(Layout::of);
+        let agreed = Arc::new(Mutex::new(Agreed {
+            size,
+            layout: targets.first().and_then(Layout::of),
+        }));
         let pool = Arc::new(Mutex::new(targets));
         let memory: Arc<Mutex<HashMap<i64, Memory>>> = Arc::new(Mutex::new(HashMap::new()));
         let dmabuf = Arc::new(AtomicBool::new(false));
@@ -376,6 +459,9 @@ impl Pipewire {
         let chose_dmabuf = dmabuf.clone();
         let added = memory.clone();
         let removed = memory.clone();
+        let negotiating = agreed.clone();
+        let allocating = agreed.clone();
+        let handing_out = pool.clone();
         let listener = stream
             .add_local_listener_with_user_data(())
             .state_changed(move |_stream, (), old, new| {
@@ -409,7 +495,9 @@ impl Pipewire {
                 // Which of the two offers was taken. A format carrying a
                 // modifier is a DMA-BUF one — nothing else needs to describe
                 // how the pixels are laid out in memory the consumer imports.
-                let chosen = layout.filter(|_| carries_modifier(pod));
+                let agreed = *negotiating.lock().unwrap();
+                let size = agreed.size;
+                let chosen = agreed.layout.filter(|_| carries_modifier(pod));
                 chose_dmabuf.store(chosen.is_some(), Ordering::Relaxed);
                 tracing::debug!(
                     "screencast: sharing through {}",
@@ -448,9 +536,10 @@ impl Pipewire {
                         return;
                     };
                     // The kinds of memory this buffer will accept, as a mask.
+                    let size = allocating.lock().unwrap().size;
                     let allowed = (*data).type_;
                     if allowed & (1 << spa::sys::SPA_DATA_DmaBuf) != 0 {
-                        match pool.lock().unwrap().pop() {
+                        match handing_out.lock().unwrap().pop() {
                             Some(target) => attach_dmabuf(data, target, &added),
                             None => tracing::warn!(
                                 "screencast: pipewire asked for more than {BUFFERS} buffers"
@@ -474,15 +563,7 @@ impl Pipewire {
             .register()
             .map_err(|e| anyhow::anyhow!("listening to a pipewire stream: {e}"))?;
 
-        // Both, in the order they are preferred. A consumer takes the first it
-        // can use, and one that cannot import a DMA-BUF — a remote desktop, a
-        // recorder without a GPU — still gets a picture rather than a
-        // negotiation that fails.
-        let mut described = Vec::new();
-        if let Some(layout) = layout {
-            described.push(video_format(size, Some(layout.modifier))?);
-        }
-        described.push(video_format(size, None)?);
+        let described = offered_formats(*agreed.lock().unwrap())?;
         let mut params = described
             .iter()
             .map(|bytes| {
@@ -533,6 +614,9 @@ impl Pipewire {
             size,
             streaming,
             last: None,
+            agreed,
+            pool,
+            renegotiated: None,
             dmabuf,
             memory,
         })
@@ -680,6 +764,36 @@ fn carries_modifier(pod: &spa::pod::Pod) -> bool {
             .any(|property| property.key == spa::sys::SPA_FORMAT_VIDEO_modifier),
         _ => false,
     }
+}
+
+/// Whether a source of this size needs the format agreed again.
+///
+/// Apart from the stream so it can be tested: getting it wrong in either
+/// direction is invisible until a share has been running for a while — too
+/// eager and every frame of a drag reallocates, too shy and the share freezes.
+fn needs_renegotiation(
+    agreed: Agreed,
+    renegotiated: Option<std::time::Instant>,
+    size: Size<i32, Physical>,
+) -> bool {
+    if size == agreed.size || size.w <= 0 || size.h <= 0 {
+        return false;
+    }
+    renegotiated.is_none_or(|at| at.elapsed() >= Stream::SETTLE)
+}
+
+/// Both offers, in the order they are preferred.
+///
+/// A consumer takes the first it can use, and one that cannot import a DMA-BUF
+/// — a remote desktop, a recorder without a GPU — still gets a picture rather
+/// than a negotiation that fails.
+fn offered_formats(agreed: Agreed) -> anyhow::Result<Vec<Vec<u8>>> {
+    let mut described = Vec::new();
+    if let Some(layout) = agreed.layout {
+        described.push(video_format(agreed.size, Some(layout.modifier))?);
+    }
+    described.push(video_format(agreed.size, None)?);
+    Ok(described)
 }
 
 /// The stream's format, as a SPA object.
@@ -888,6 +1002,39 @@ mod tests {
 
         let copied = buffer_params(size(), None).expect("buffer parameters");
         assert_eq!(kinds(&copied), vec![1 << spa::sys::SPA_DATA_MemFd]);
+    }
+
+    /// A source that has changed size needs the format agreed again, and one
+    /// that has not must not be renegotiated at all: doing it per frame would
+    /// allocate three screens' worth of buffers sixty times a second.
+    #[test]
+    fn only_a_resize_asks_for_a_new_format() {
+        let agreed = Agreed {
+            size: (1920, 1080).into(),
+            layout: None,
+        };
+        assert!(!needs_renegotiation(agreed, None, (1920, 1080).into()));
+        assert!(needs_renegotiation(agreed, None, (1280, 720).into()));
+
+        // Nothing has a size of zero except a window on its way out, and
+        // renegotiating to it would agree a format no frame can satisfy.
+        assert!(!needs_renegotiation(agreed, None, (0, 0).into()));
+        assert!(!needs_renegotiation(agreed, None, (1280, 0).into()));
+    }
+
+    /// And a drag is a new size every frame. Each one costs three buffers and
+    /// a round trip with the consumer, so the source has to hold still first.
+    #[test]
+    fn a_dragged_edge_settles_before_the_format_moves() {
+        let agreed = Agreed {
+            size: (1920, 1080).into(),
+            layout: None,
+        };
+        let just_now = std::time::Instant::now();
+        assert!(!needs_renegotiation(agreed, Some(just_now), (1280, 720).into()));
+
+        let a_while_ago = just_now - Stream::SETTLE - std::time::Duration::from_millis(1);
+        assert!(needs_renegotiation(agreed, Some(a_while_ago), (1280, 720).into()));
     }
 
     /// The driver's stride, not the packed width.
