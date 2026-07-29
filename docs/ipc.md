@@ -34,7 +34,14 @@ socat - UNIX:$VIEWPORT_SOCKET
 | `status.update` | `cpu`, `memory`, `load`, `net_rx`, `net_tx`, `disk_free`, `disk_total` |
 | `notification.add` | `id`, `app_name`, `icon`, `summary`, `body`, `urgency`, `timeout`, `actions[]` with `key` and `label` |
 | `notification.close` | `id` — the application withdrew it |
+| `screencast.pick` | `id`, `sources[]` with `kind` (`"output"` or `"window"`), `label`, `detail`, and `selected` — an application has asked to share the screen, and this is the list to draw with the highlight where the compositor is holding it. Re-sent whole every time the highlight moves |
+| `screencast.pick.done` | `id` — the choice was made or abandoned; take the chooser down |
 | `error` | `context`, `message` |
+
+The chooser is drawn by the shell and steered by the compositor, which is the
+same split the overview runs on. The shell receives no input of its own, so the
+keys are routed here: the compositor takes the keyboard while a chooser is up
+and re-sends the list with a new `selected` on each press.
 
 ### Shell → compositor
 
@@ -42,7 +49,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 
 | Message | Payload |
 | --- | --- |
-| `view.layout` | `id`, `x`, `y`, `width`, `height`, optional `clip{x,y,width,height}`, optional `scale` |
+| `view.layout` | `id`, `x`, `y`, `width`, `height`, optional `clip{x,y,width,height}`, optional `scale`, optional `frame{x,y,width,height}` |
 | `view.visible` | `id`, `visible` |
 | `view.fullscreen` | `id`, `fullscreen` — tells the client, which rearranges itself on the state |
 | `view.focus` | `id` |
@@ -51,6 +58,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `view.query` | — replays `config` and a `view.added` for every mapped window |
 | `shell.focus` | — |
 | `shell.overview` | `active` |
+| `screencast.rect` | `x`, `y`, `width`, `height` — where the shell drew something that has to be above the windows; a zero size means nothing is |
 | `session.save` | `state` (opaque string) |
 | `session.query` | — |
 | `notification.action` | `id`, `action` (the key the application supplied, not the label) |
@@ -77,6 +85,32 @@ hardware cannot drive is reported back as an `error` instead of blanking the
 screen you are configuring from. A configuration that *does* commit is still
 provisional: it reverts after twelve seconds unless an `output.confirm` arrives,
 because a wrong mode blanks the very screen you would need in order to undo it.
+
+### Drawing in front of the windows
+
+Everything the shell paints is *underneath* every client surface: the shell is
+one buffer spanning the layout, and each window is a hole in it. That is what
+makes the design work — the browser computes the layout and the compositor
+paints real clients into the rectangles it measures — and it has one
+consequence worth knowing before drawing anything that overlaps a window.
+
+A tiled border is never noticed, because it falls in the gap between two
+windows where there is no surface to cover it. A floating window's border lands
+*inside* the window beneath it, where that client's surface covers it, and a
+floating window drawn that way has no border at all. A dialog the shell puts up
+over the desktop is the same thing at full size.
+
+Two messages name the pieces that have to be in front, and the compositor draws
+that part of the shell's buffer a second time, above the windows:
+
+- `frame` on `view.layout` — the frame around one window, drawn immediately
+  above *that* window, so two floating windows keep their real stacking. Send
+  it for a floating window and leave it off a tiled one, which needs nothing.
+  The compositor draws the four sides and not the middle: the middle of a
+  frame is the desktop's own background in the buffer — `.viewport` has no
+  background, but the wallpaper behind it does — and drawing it over the client
+  turns the window into a block of wallpaper.
+- `screencast.rect` — a dialog, drawn above every window.
 
 A window is a real Wayland surface, so nothing the shell draws can crop it —
 CSS `overflow` bounds the shell's own painting and no more. `clip` on

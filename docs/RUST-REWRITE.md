@@ -64,14 +64,18 @@ Present in `smithay::wayland`: `shell::xdg`, `shell::wlr_layer`, `session_lock`,
 
 Absent, and therefore ours to write:
 
-- **`color-management-v1`.** Smithay has no handler. The *wire bindings* do
-  exist — `wayland_protocols::wp::color_management`, already pulled in via
-  Smithay's `staging` feature — so this is a `Dispatch` impl plus renderer
-  colour transforms, not protocol codegen. niri and cosmic-comp are GPL-3.0
-  and Viewport is MIT, so their implementations can be read but not copied.
-- **`wlr-output-management-unstable-v1`.** Same situation; XML is already in
-  `protocols/`.
-- **`wlr-output-power-management-unstable-v1`.** XML in `protocols/`.
+- **`color-management-v1`.** Written, in `crates/viewport/src/color_management.rs`, with
+  the renderer's colour transforms behind it. The *wire bindings* existed —
+  `wayland_protocols::wp::color_management`, pulled in via Smithay's `staging`
+  feature — so it was a `Dispatch` impl rather than protocol codegen. niri and
+  cosmic-comp are GPL-3.0 and Viewport is MIT, so their implementations could
+  be read but not copied.
+- **The wlr protocols, all written by hand.** `wlr-output-management`,
+  `wlr-output-power-management`, `wlr-gamma-control`, `wlr-screencopy` and
+  `wlr-foreign-toplevel-management`, with XML in `protocols/`.
+- **`tearing-control-v1`.** The protocol *and* the flip: Smithay's DRM backend
+  had no way to ask for an immediate page flip either, which is why the fork
+  exists. See below.
 - **A `wlr_scene` equivalent.** See below.
 
 ## Scene graph
@@ -173,6 +177,31 @@ Outbound (compositor to shell): `view.added` `view.removed` `view.props`
 `view.focused` `config` `modifiers` `session.restore` `notification.add`
 `notification.close` `output.layout` `shell.command` `error`
 
+Added by the rewrite, and not in the C build: `screencast.pick` and
+`screencast.pick.done` outbound, `screencast.rect` inbound, and a `frame` field
+on `view.layout`. All four exist because the shell is one buffer *under* the
+windows, so anything it draws that overlaps a client is covered by it — the
+compositor draws the named rectangles a second time, in front. See
+`docs/ipc.md`.
+
+### Wayland protocols
+
+Beyond what Smithay hands over: `wlr-screencopy`, `wlr-output-management`,
+`wlr-output-power-management`, `wlr-gamma-control`,
+`wlr-foreign-toplevel-management`, `tearing-control-v1`, `ext-data-control`,
+`ext-image-capture-source` and `ext-image-copy-capture`, `cursor-shape`,
+`content-type`, `alpha-modifier`, `pointer-gestures`,
+`keyboard-shortcuts-inhibit`, `text-input-v3` with `input-method-v2` and
+`virtual-keyboard-v1`, `tablet-v2`, `linux-drm-syncobj-v1`, `xdg-dialog-v1`,
+and `color-management-v1`.
+
+Not implemented, all of them present in Smithay and none of them yet asked for
+by anything running here: `ext-workspace` — external bars cannot see the
+workspaces, which are the shell's and are not published — `drm-lease`,
+`security-context`, `xdg-toplevel-icon`, `xdg-toplevel-tag`, `fifo`,
+`commit-timing`, `xdg-system-bell`, `xdg-foreign`, `pointer-warp` and
+`xwayland-keyboard-grab`.
+
 ## Why smithay is a fork
 
 `crates/*/Cargo.toml` point at github.com/codebam/smithay rather than upstream,
@@ -217,8 +246,32 @@ otherwise upstreamable, and the fork should go away when it lands.
     `Colorspace` and `HDR_OUTPUT_METADATA` — which its DRM backend does not
     expose, `zwlr_output_manager_v1`, `zwlr_gamma_control_v1`,
     `zwlr_foreign_toplevel_management_v1` and `tearing-control-v1`.
-11. **Ordinary ports.** text-input, tablet and gestures. The appearance portal
-    is done.
+11. **Done. Ordinary ports.** text-input, tablet and gestures, and the
+    appearance portal.
+12. **Done. The screencast portal.** `org.freedesktop.impl.portal.ScreenCast`
+    and a PipeWire stream, served from the compositor rather than left to
+    xdg-desktop-portal-wlr — which can only offer monitors, because
+    wlr-screencopy can only capture outputs. Offering a *window* is the whole
+    reason to own the interface, and it is what niri and hyprland concluded
+    too. Frames are composited straight into a DMA-BUF the consumer imports.
+13. **Done. The screen-share chooser**, drawn by the shell and steered by the
+    compositor.
+
+### Still open
+
+- **The shell receives no input.** `viewport-web` exposes `post()` and nothing
+  in the other direction, so every `mousedown` handler in `data/shell/*.js` is
+  dead code: the notification close button and its actions, the taskbar,
+  overview drag-and-drop, and the screen-share chooser, which is keyboard-only
+  in consequence. The largest single gap, and it is load-bearing for a set of
+  features that read as finished.
+- **A screencast does not renegotiate.** The PipeWire format is agreed once at
+  `Start`, so a window that is resized while it is being shared drops every
+  frame from then on and the share freezes on its last good one.
+- **Mod4 and the left button do not move a tiled window.** The shell's
+  `moveByDelta` returns early unless the window floats.
+- **Output transform 90 is unimplemented in the Vulkan renderer**, so a rotated
+  monitor cannot be driven.
 
 ## Notifications, and where they come from
 
@@ -354,10 +407,13 @@ protocol testable in CI, and what `output.test_add` is gated on.
 - **No layout policy, at all.** A window is created but not mapped into the
   `Space` until a `view.layout` arrives for it. There is nowhere a window could
   legitimately be drawn before the shell has said where.
-- **No move or resize grabs.** A client asking the compositor to move or resize
-  it has asked the wrong party — the frame is DOM and dragging an edge is the
-  browser resizing a flex container. Those requests are ignored, not implemented.
-- **Per-window opacity is stored but not applied.** It needs a render element
-  that can carry alpha, which arrives with the shell render path in step 3.
+- **No client-driven move or resize grabs.** A client asking the compositor to
+  move or resize it has asked the wrong party — the frame is DOM and dragging
+  an edge is the browser resizing a flex container. Those requests are ignored,
+  not implemented. Mod4 with a button *is* implemented, and works the other way
+  round: the compositor follows the pointer and sends the shell a delta, which
+  the shell resolves against whatever layout the window is in.
+- **Per-window opacity is stored but not applied.** Applied since step 3.
 - Notifications, keybindings, config parsing and HDR answer with an `error`
-  naming what is missing rather than failing silently.
+  naming what is missing rather than failing silently. All four are implemented
+  now; the last two points are kept for the record of what step 2 was.
