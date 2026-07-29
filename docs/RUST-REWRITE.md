@@ -195,13 +195,18 @@ Beyond what Smithay hands over: `wlr-screencopy`, `wlr-output-management`,
 `virtual-keyboard-v1`, `tablet-v2`, `linux-drm-syncobj-v1`, `xdg-dialog-v1`,
 and `color-management-v1`.
 
-Also implemented, from what Smithay ships: `wp-fifo` and `wp-commit-timing`,
-`xdg-system-bell`, `xdg-toplevel-tag` and `wp-pointer-warp`.
+Also implemented, from what Smithay ships: `xdg-system-bell`,
+`xdg-toplevel-tag` and `wp-pointer-warp`.
 
-The first two block a client's commit until the compositor releases it, so
-advertising them is a promise: a barrier nobody signals is a client that paints
-once and never again. They are released where the frame callbacks are sent —
-`ViewportState::release_frame_barriers`.
+**`wp-fifo` and `wp-commit-timing` are deliberately absent.** Both block a
+client's commit until the compositor releases it, and this compositor renders on
+demand: a blocked commit produces no damage, no damage means no frame, and no
+frame means nothing signals the barrier. They were implemented, released where
+the frame callbacks are sent, and taken out again after a terminal drew one
+frame and froze — `painted 800x490 for a rectangle of 2540x1420`, then six
+hundred lines of `nothing to draw`. Honouring them needs a render tick that runs
+while any barrier is outstanding, which is a change to how the compositor
+decides to draw at all.
 
 Still not implemented, all present in Smithay: `ext-workspace` — external bars
 cannot see the workspaces, which are the shell's and are not published —

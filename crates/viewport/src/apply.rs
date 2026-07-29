@@ -360,6 +360,14 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         .filter(|s| *s > 0.0)
         .map(|s| Scale::Fractional(s));
     let transform = config.transform.map(to_smithay_transform);
+    // Said out loud, because a rotated output has three sizes that must agree
+    // and only one of them is visible from any given place: the mode the panel
+    // is driven at, the logical rectangle the layout gives it, and the page the
+    // shell draws that rectangle into. A picture that comes out wrong on
+    // rotation is one of the three not having moved.
+    if let Some(transform) = transform {
+        tracing::info!("{}: transform {transform:?}", output.name());
+    }
 
     output.change_current_state(mode, transform, scale, None);
     if let Some(mode) = mode {

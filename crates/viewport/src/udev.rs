@@ -1014,12 +1014,6 @@ impl ViewportState {
             }
         }
 
-        // Anything blocked waiting for this frame: a client pacing itself
-        // with wp-fifo, or timing a commit with wp-commit-timing. Released
-        // before the frame callbacks, because both are about *this* frame
-        // having happened.
-        self.release_frame_barriers(&output, start);
-
         // Frame callbacks: a client will not paint again until it gets one.
         for window in self.space.elements() {
             window.send_frame(&output, start, Some(Duration::ZERO), |_, _| {
