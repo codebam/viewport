@@ -101,12 +101,23 @@ impl Stream {
 
         {
             let Some(data) = buffer.datas_mut().first_mut() else {
+                tracing::warn!("screencast: a buffer with nothing in it");
                 return;
             };
             let Some(destination) = data.data() else {
+                // A buffer the compositor cannot write into — a DMA-BUF, or
+                // one PipeWire did not map. Returning here leaves the chunk at
+                // zero, which a consumer reads as a frame of nothing: it
+                // connects, streams, and shows an empty picture.
+                tracing::warn!("screencast: a buffer that cannot be written to");
                 return;
             };
             if destination.len() < wanted || pixels.len() < wanted {
+                tracing::warn!(
+                    "screencast: {} bytes of frame and {} of buffer, for {wanted} wanted",
+                    pixels.len(),
+                    destination.len()
+                );
                 return;
             }
             destination[..wanted].copy_from_slice(&pixels[..wanted]);
@@ -260,12 +271,18 @@ impl Pipewire {
                 spa::utils::Direction::Output,
                 None,
                 // Mapped, because the frames are written by the CPU after a
-                // readback. A DMA-BUF stream avoids the copy and is what this
-                // should become once the format negotiation carries
-                // modifiers.
-                pw::stream::StreamFlags::DRIVER
-                    | pw::stream::StreamFlags::MAP_BUFFERS
-                    | pw::stream::StreamFlags::ALLOC_BUFFERS,
+                // readback.
+                //
+                // Not ALLOC_BUFFERS: that flag means *this* end provides the
+                // memory, and promising it without handing any over is how
+                // every buffer arrived with a maxsize of zero — the stream
+                // negotiated, played, and delivered frames with nowhere to
+                // write them, which a consumer shows as an empty picture.
+                //
+                // A DMA-BUF stream would allocate here, and is what this
+                // should become: it would drop the readback as well as the
+                // copy.
+                pw::stream::StreamFlags::DRIVER | pw::stream::StreamFlags::MAP_BUFFERS,
                 &mut params,
             )
             .map_err(|e| anyhow::anyhow!("connecting a pipewire stream: {e}"))?;
@@ -370,12 +387,29 @@ fn buffer_params(size: Size<i32, Physical>) -> anyhow::Result<Vec<u8>> {
                 Value::Int(stride * size.h.max(1)),
             ),
             spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
-            // Shared memory, which is what the frames are copied into today.
+            // Shared memory, as a choice of flags rather than a bare number.
+            //
+            // A plain integer here is read as one value and not as the set of
+            // kinds the stream will accept, so PipeWire allocated buffers it
+            // could put no memory in: every frame arrived with maxsize zero,
+            // the compositor had nowhere to write, and a consumer that
+            // connected and streamed saw an empty picture with nothing in any
+            // log to say why.
+            //
             // Rendering into a DMA-BUF the consumer imports is what this
             // should become, and this is the line that will say so.
             spa::pod::Property::new(
                 spa::sys::SPA_PARAM_BUFFERS_dataType,
-                Value::Int((1 << spa::sys::SPA_DATA_MemFd) | (1 << spa::sys::SPA_DATA_MemPtr)),
+                Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                    spa::utils::ChoiceFlags::empty(),
+                    spa::utils::ChoiceEnum::Flags {
+                        default: 1 << spa::sys::SPA_DATA_MemFd,
+                        flags: vec![
+                            1 << spa::sys::SPA_DATA_MemFd,
+                            1 << spa::sys::SPA_DATA_MemPtr,
+                        ],
+                    },
+                ))),
             ),
         ],
     };
