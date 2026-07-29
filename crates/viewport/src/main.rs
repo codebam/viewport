@@ -152,7 +152,17 @@ fn main() -> Result<()> {
     // sway sets it the same way, unconditionally.
     unsafe { std::env::set_var("XDG_SESSION_TYPE", "wayland") };
 
-    export_session_environment();
+    // Only the session's own compositor, which is the one on DRM.
+    //
+    // A nested or headless instance is a client of the session around it, and
+    // exporting its socket to the user manager takes the portal — and anything
+    // else D-Bus activates — away from the compositor the user is actually
+    // looking at. Every test run left the session pointing at a socket that
+    // no longer existed, and the portal then failed with "failed to connect to
+    // display" until someone put it back by hand.
+    if drm {
+        export_session_environment();
+    }
 
     // Before anything is spawned, so an X program started from a menu finds a
     // DISPLAY. It arrives asynchronously; the variable is set when it does.
