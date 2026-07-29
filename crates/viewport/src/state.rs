@@ -986,7 +986,7 @@ impl ViewportState {
             // once for a screenshot and not sixty times a second for a video.
             let result = match smithay::wayland::dmabuf::get_dmabuf(&buffer) {
                 Ok(dmabuf) => {
-                    self.render_output_into(&frame_output, dmabuf.clone(), renderer)
+                    self.render_output_into(&frame_output, dmabuf.clone(), false, renderer)
                 }
                 Err(_) => self
                     .copy_output_into::<R, B>(&frame_output, region, false, &buffer, renderer),
@@ -1025,6 +1025,7 @@ impl ViewportState {
         &mut self,
         output: &Output,
         mut target: smithay::backend::allocator::dmabuf::Dmabuf,
+        overlay_cursor: bool,
         renderer: &mut R,
     ) -> Result<(), String>
     where
@@ -1038,7 +1039,9 @@ impl ViewportState {
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         let mut frame = self.frame_for(output);
-        frame.cursor = crate::render::Cursor::Hidden;
+        if !overlay_cursor {
+            frame.cursor = crate::render::Cursor::Hidden;
+        }
 
         let size = output
             .current_mode()
@@ -1913,12 +1916,57 @@ impl ViewportState {
             }
         };
 
+        // Buffers the GPU can draw into, if this backend can allocate any.
+        // Without them the stream falls back to shared memory, which costs a
+        // whole screen off the GPU and back for every frame.
+        let targets = self.cast_targets(size);
         let pipewire = self.pipewire.as_ref().expect("just connected");
-        let stream = pipewire.create_stream(&name, size)?;
+        let stream = pipewire.create_stream(&name, size, targets)?;
         let node = stream.node_id;
         self.casts.push(crate::screencast::Cast { source, stream });
         tracing::info!("sharing {name} as pipewire node {node}");
         Ok((node, size))
+    }
+
+    /// Allocate the buffers a stream will hand out.
+    ///
+    /// All of them or none: a stream with some of its buffers is one that
+    /// stutters between the two paths, and the shared-memory fallback works
+    /// whole.
+    ///
+    /// Only on the DRM backend. It is the one with a GPU allocator, and it is
+    /// also the only one anybody shares a screen from — nested and headless
+    /// are for testing, and both still stream through shared memory.
+    fn cast_targets(
+        &mut self,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) -> Vec<smithay::backend::allocator::dmabuf::Dmabuf> {
+        use smithay::backend::renderer::Offscreen as _;
+
+        let Some(udev) = self.udev.as_mut() else {
+            return Vec::new();
+        };
+        let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
+            (size.w.max(1), size.h.max(1)).into();
+
+        let mut targets = Vec::with_capacity(crate::screencast::stream::BUFFERS);
+        for _ in 0..crate::screencast::stream::BUFFERS {
+            // The same format the readback path used, which is what the stream
+            // describes to the consumer: four bytes a pixel, no alpha, because
+            // a screen is opaque and a consumer that reads the fourth byte as
+            // alpha shows a transparent picture.
+            match udev
+                .renderer
+                .create_buffer(smithay::backend::allocator::Fourcc::Xrgb8888, buffer_size)
+            {
+                Ok(target) => targets.push(target),
+                Err(e) => {
+                    tracing::warn!("could not allocate a screencast buffer: {e}");
+                    return Vec::new();
+                }
+            }
+        }
+        targets
     }
 
     /// Stop sharing whatever a session was showing.
@@ -1939,6 +1987,7 @@ impl ViewportState {
     where
         R: Renderer
             + Bind<B>
+            + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
             + Offscreen<B>
             + ExportMem
             + smithay::backend::renderer::ImportAll
@@ -1963,10 +2012,16 @@ impl ViewportState {
             return;
         }
 
-        // Whole screens first: one composite serves every client watching this
-        // output.
+        // The streams that take a buffer the GPU drew into, first and one at a
+        // time. Each is composited straight into the memory the consumer will
+        // read, so there is nothing to share between them and nothing to copy.
+        self.draw_into_casts(output, renderer);
+
+        // Then the ones that need pixels in shared memory. One composite and
+        // one readback serves every client watching this output.
         let watching_output = self.casts.iter().any(|cast| {
             cast.stream.wants_frame(RATE)
+                && !cast.stream.uses_dmabuf()
                 && matches!(&cast.source, crate::screencast::Source::Output(o) if o == output)
         });
         if watching_output {
@@ -1980,6 +2035,7 @@ impl ViewportState {
                         |source| {
                             matches!(source, crate::screencast::Source::Output(o) if o == output)
                         },
+
                         &pixels,
                         size,
                     ),
@@ -1994,7 +2050,7 @@ impl ViewportState {
         let windows: Vec<u32> = self
             .casts
             .iter()
-            .filter(|cast| cast.stream.wants_frame(RATE))
+            .filter(|cast| cast.stream.wants_frame(RATE) && !cast.stream.uses_dmabuf())
             .filter_map(|cast| match &cast.source {
                 crate::screencast::Source::Window(id) => Some(*id),
                 _ => None,
@@ -2031,6 +2087,79 @@ impl ViewportState {
         self.needs_render = true;
     }
 
+    /// Composite a frame straight into the buffer each waiting stream will
+    /// hand to its consumer.
+    ///
+    /// The point of the whole DMA-BUF path: the shared-memory one reads a
+    /// screen back off the GPU and writes it out again — fifteen megabytes a
+    /// frame at 1440p, thirty times a second — and this one draws where the
+    /// consumer is already looking.
+    fn draw_into_casts<R>(&mut self, output: &Output, renderer: &mut R)
+    where
+        R: Renderer
+            + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        const RATE: std::time::Duration = std::time::Duration::from_millis(33);
+
+        // Both taken out for the duration: compositing needs the whole state,
+        // and the stream being drawn into is part of it.
+        let mut casts = std::mem::take(&mut self.casts);
+        let pipewire = self.pipewire.take();
+        if let Some(pipewire) = pipewire.as_ref() {
+            for cast in casts.iter_mut() {
+                if !cast.stream.uses_dmabuf() || !cast.stream.wants_frame(RATE) {
+                    continue;
+                }
+                match &cast.source {
+                    crate::screencast::Source::Output(shared) if shared == output => {
+                        let shared = shared.clone();
+                        let size = match shared.current_mode() {
+                            Some(mode) => mode.size,
+                            None => continue,
+                        };
+                        cast.stream
+                            .with_target(size, &pipewire.thread_loop, |target| {
+                                // The cursor is drawn in: this is a picture of
+                                // a screen rather than a screenshot of one, and
+                                // a share without a pointer is hard to follow.
+                                self.render_output_into(&shared, target.clone(), true, renderer)
+                            });
+                    }
+                    crate::screencast::Source::Window(id) => {
+                        let id = *id;
+                        // Only from the output it is on, so a window straddling
+                        // two screens is not composited once for each.
+                        let geometry = self
+                            .views
+                            .get(id)
+                            .and_then(|view| self.space.element_geometry(&view.window));
+                        let on_this_output = geometry
+                            .zip(self.space.output_geometry(output))
+                            .map(|(window, screen)| screen.overlaps(window))
+                            .unwrap_or(false);
+                        let Some(geometry) = geometry.filter(|_| on_this_output) else {
+                            continue;
+                        };
+                        let size = (geometry.size.w.max(1), geometry.size.h.max(1)).into();
+                        cast.stream
+                            .with_target(size, &pipewire.thread_loop, |target| {
+                                self.render_window_into(id, target.clone(), renderer)
+                            });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.pipewire = pipewire;
+        self.casts = casts;
+    }
+
     /// Hand a frame to every cast a predicate matches.
     fn push_to_casts(
         &mut self,
@@ -2040,11 +2169,112 @@ impl ViewportState {
     ) {
         let mut casts = std::mem::take(&mut self.casts);
         if let Some(pipewire) = self.pipewire.as_ref() {
-            for cast in casts.iter_mut().filter(|cast| matches(&cast.source)) {
+            for cast in casts
+                .iter_mut()
+                .filter(|cast| !cast.stream.uses_dmabuf() && matches(&cast.source))
+            {
                 cast.stream.push(pixels, size, &pipewire.thread_loop);
             }
         }
         self.casts = casts;
+    }
+
+    /// Composite one window straight into a buffer a consumer will read.
+    ///
+    /// The same picture `read_window_pixels` produces, drawn where it is going
+    /// rather than read back and copied.
+    fn render_window_into<R>(
+        &mut self,
+        id: u32,
+        mut target: smithay::backend::allocator::dmabuf::Dmabuf,
+        renderer: &mut R,
+    ) -> Result<(), String>
+    where
+        R: Renderer
+            + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        let (elements, size) = self.window_elements(id, renderer)?;
+
+        let mut framebuffer = renderer
+            .bind(&mut target)
+            .map_err(|e| format!("binding a window capture target: {e}"))?;
+        let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+            size,
+            1.0,
+            smithay::utils::Transform::Normal,
+        );
+        let result = tracker
+            .render_output(
+                renderer,
+                &mut framebuffer,
+                0,
+                &elements,
+                smithay::backend::renderer::Color32F::from([0.0, 0.0, 0.0, 1.0]),
+            )
+            .map_err(|e| format!("compositing a window: {e:?}"))?;
+
+        // Waited for, because nothing else will. Rendering returns once the
+        // work is submitted, and a consumer handed the buffer the GPU is still
+        // writing into reads whatever was there before.
+        result
+            .sync
+            .wait()
+            .map_err(|e| format!("waiting for a window capture to finish: {e}"))
+    }
+
+    /// One window's own surface tree, drawn at its own origin.
+    ///
+    /// Its own tree rather than the part of the screen it occupies: what is on
+    /// top of a window belongs to the desktop, and a client that asked to share
+    /// a window did not ask to share whatever is covering it. Drawn at the
+    /// window's origin so the shadow a client draws outside its geometry falls
+    /// off the edge rather than shifting the picture.
+    fn window_elements<R>(
+        &mut self,
+        id: u32,
+        renderer: &mut R,
+    ) -> Result<
+        (
+            Vec<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<R>>,
+            smithay::utils::Size<i32, smithay::utils::Physical>,
+        ),
+        String,
+    >
+    where
+        R: Renderer + smithay::backend::renderer::ImportAll,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+    {
+        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+        use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+        use smithay::backend::renderer::element::Kind;
+        use smithay::wayland::seat::WaylandFocus as _;
+
+        let view = self.views.get(id).ok_or_else(|| "no such window".to_owned())?;
+        let window = view.window.clone();
+        let geometry = window.geometry();
+        let size: smithay::utils::Size<i32, smithay::utils::Physical> =
+            (geometry.size.w.max(1), geometry.size.h.max(1)).into();
+        let surface = window
+            .wl_surface()
+            .ok_or_else(|| "that window has no surface".to_owned())?
+            .into_owned();
+
+        let elements = render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+            renderer,
+            &surface,
+            (-geometry.loc.x, -geometry.loc.y),
+            1.0,
+            1.0,
+            Kind::Unspecified,
+        );
+        Ok((elements, size))
     }
 
     /// Composite one window on its own, and read it back.
@@ -2069,33 +2299,7 @@ impl ViewportState {
             Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
-        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
-        use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-        use smithay::backend::renderer::element::Kind;
-        use smithay::desktop::space::SpaceElement as _;
-        use smithay::wayland::seat::WaylandFocus as _;
-
-        let view = self.views.get(id).ok_or_else(|| "no such window".to_owned())?;
-        let window = view.window.clone();
-        let geometry = window.geometry();
-        let size: smithay::utils::Size<i32, smithay::utils::Physical> =
-            (geometry.size.w.max(1), geometry.size.h.max(1)).into();
-        let surface = window
-            .wl_surface()
-            .ok_or_else(|| "that window has no surface".to_owned())?
-            .into_owned();
-
-        // Drawn at the window's own origin, so the shadow a client draws
-        // outside its geometry falls off the edge rather than shifting the
-        // picture.
-        let elements = render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
-            renderer,
-            &surface,
-            (-geometry.loc.x, -geometry.loc.y),
-            1.0,
-            1.0,
-            Kind::Unspecified,
-        );
+        let (elements, size) = self.window_elements(id, renderer)?;
 
         let format = smithay::backend::allocator::Fourcc::Xrgb8888;
         let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =

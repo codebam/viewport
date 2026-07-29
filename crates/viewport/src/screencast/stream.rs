@@ -14,11 +14,81 @@
 // avoid a few lines of event-loop plumbing would mean synchronising them
 // afterwards anyway.
 
+use std::collections::HashMap;
 use std::io::Cursor;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use pipewire as pw;
 use pw::spa;
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::Buffer as _;
 use smithay::utils::{Physical, Size};
+
+/// How many buffers a stream cycles through.
+///
+/// Enough that the compositor can draw one while the consumer reads another,
+/// few enough that a stalled consumer does not pin much: each is a whole
+/// screen.
+pub const BUFFERS: usize = 3;
+
+/// What the buffers the compositor allocated look like.
+///
+/// Taken from a real allocation rather than computed: the driver chooses the
+/// modifier and the stride, and a consumer told anything else cannot import
+/// what it is sent.
+#[derive(Clone, Copy, Debug)]
+struct Layout {
+    modifier: u64,
+    stride: i32,
+    offset: u32,
+    size: u32,
+}
+
+impl Layout {
+    fn of(target: &Dmabuf) -> Option<Self> {
+        let stride = target.strides().next()? as i32;
+        let offset = target.offsets().next()?;
+        Some(Self {
+            modifier: u64::from(target.format().modifier),
+            stride,
+            offset,
+            size: stride as u32 * target.height(),
+        })
+    }
+}
+
+/// Memory the compositor handed to PipeWire for one buffer.
+///
+/// Held for as long as PipeWire has the buffer: the descriptor is the
+/// compositor's, and closing it while the consumer is still importing from it
+/// is a picture that stops.
+enum Memory {
+    /// A buffer the GPU draws straight into.
+    Dma(Dmabuf),
+    /// Shared memory the compositor writes with the CPU, for a consumer that
+    /// cannot import a DMA-BUF.
+    Shared {
+        _fd: OwnedFd,
+        /// As an integer, so the map can be shared with PipeWire's thread — a
+        /// raw pointer is not Send and this is only ever unmapped here.
+        ptr: usize,
+        len: usize,
+    },
+}
+
+impl Drop for Memory {
+    fn drop(&mut self) {
+        if let Memory::Shared { ptr, len, .. } = self {
+            // SAFETY: this mapping was made below and is unmapped once, when
+            // PipeWire has given the buffer back.
+            unsafe {
+                let _ = smithay::reexports::rustix::mm::munmap(*ptr as *mut _, *len);
+            }
+        }
+    }
+}
 
 /// PipeWire's own file descriptor, so calloop can wait on it.
 ///
@@ -55,6 +125,15 @@ pub struct Stream {
     /// The node a client connects to, which is what the portal hands back over
     /// D-Bus.
     pub node_id: u32,
+    /// Whether the format that was agreed is one the GPU can draw into.
+    ///
+    /// Decided by the consumer: both are offered, and one that cannot import a
+    /// DMA-BUF picks the shared-memory format instead.
+    dmabuf: Arc<AtomicBool>,
+    /// What was handed over for each buffer, by the descriptor it went out
+    /// under. The descriptor is how a buffer coming back is recognised —
+    /// PipeWire hands back the same `spa_data`, and nothing else in it is ours.
+    memory: Arc<Mutex<HashMap<i64, Memory>>>,
 }
 
 impl Stream {
@@ -69,6 +148,73 @@ impl Stream {
             return false;
         }
         self.last.map(|at| at.elapsed() >= rate).unwrap_or(true)
+    }
+
+    /// Whether frames for this stream are drawn by the GPU rather than copied.
+    pub fn uses_dmabuf(&self) -> bool {
+        self.dmabuf.load(Ordering::Relaxed)
+    }
+
+    /// Draw one frame straight into the buffer the consumer will read.
+    ///
+    /// No readback and no copy: `fill` is handed the DMA-BUF that is about to
+    /// go out, and composites into it. That is the whole difference between
+    /// this and `push` — the shared-memory path pulls a whole screen back
+    /// across the bus and then writes it out again, thirty times a second.
+    pub fn with_target<F>(
+        &mut self,
+        size: Size<i32, Physical>,
+        loop_: &pw::thread_loop::ThreadLoop,
+        fill: F,
+    ) where
+        F: FnOnce(&Dmabuf) -> Result<(), String>,
+    {
+        self.last = Some(std::time::Instant::now());
+        let _guard = loop_.lock();
+        if size != self.size {
+            tracing::debug!(
+                "screencast: a {}x{} frame for a {}x{} stream",
+                size.w,
+                size.h,
+                self.size.w,
+                self.size.h
+            );
+            return;
+        }
+        let Some(mut buffer) = self.stream.dequeue_buffer() else {
+            tracing::debug!("screencast: no buffer to fill");
+            return;
+        };
+
+        let Some(data) = buffer.datas_mut().first_mut() else {
+            tracing::warn!("screencast: a buffer with nothing in it");
+            return;
+        };
+        // Which of ours this is. The descriptor is the only part of the buffer
+        // that came from this end, so it is what identifies it.
+        let fd = data.as_raw().fd;
+        let held = self.memory.lock().unwrap();
+        let Some(Memory::Dma(target)) = held.get(&fd) else {
+            tracing::warn!("screencast: a buffer on descriptor {fd} that was never handed out");
+            return;
+        };
+        let Some(layout) = Layout::of(target) else {
+            tracing::warn!("screencast: a target with no planes");
+            return;
+        };
+
+        tracing::debug!("screencast: drawing into a buffer");
+        if let Err(e) = fill(target) {
+            tracing::warn!("screencast: {e}");
+            return;
+        }
+
+        // What was drawn. A consumer reads the chunk rather than the buffer,
+        // and one left at zero is a frame of nothing.
+        let chunk = data.chunk_mut();
+        *chunk.size_mut() = layout.size;
+        *chunk.stride_mut() = layout.stride;
+        *chunk.offset_mut() = layout.offset;
     }
 
     pub fn push(&mut self, pixels: &[u8], size: Size<i32, Physical>, loop_: &pw::thread_loop::ThreadLoop) {
@@ -193,7 +339,12 @@ impl Pipewire {
     /// BGRx rather than anything with alpha: what is captured is a screen,
     /// which is opaque, and a consumer that takes the fourth byte for alpha
     /// shows a transparent picture.
-    pub fn create_stream(&self, name: &str, size: Size<i32, Physical>) -> anyhow::Result<Stream> {
+    pub fn create_stream(
+        &self,
+        name: &str,
+        size: Size<i32, Physical>,
+        targets: Vec<Dmabuf>,
+    ) -> anyhow::Result<Stream> {
         let mut guard = self.thread_loop.lock();
         // The node id is what the portal hands back, and it does not exist
         // until the server has answered — `node_id()` before that is
@@ -212,8 +363,19 @@ impl Pipewire {
         )
         .map_err(|e| anyhow::anyhow!("creating a pipewire stream: {e}"))?;
 
+        // What the compositor is going to hand over, if it managed to
+        // allocate anything. A backend with no GPU allocator — nested, or
+        // headless — has none, and offers only the shared-memory format.
+        let layout = targets.first().and_then(Layout::of);
+        let pool = Arc::new(Mutex::new(targets));
+        let memory: Arc<Mutex<HashMap<i64, Memory>>> = Arc::new(Mutex::new(HashMap::new()));
+        let dmabuf = Arc::new(AtomicBool::new(false));
+
         let streaming = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = streaming.clone();
+        let chose_dmabuf = dmabuf.clone();
+        let added = memory.clone();
+        let removed = memory.clone();
         let listener = stream
             .add_local_listener_with_user_data(())
             .state_changed(move |_stream, (), old, new| {
@@ -244,7 +406,17 @@ impl Pipewire {
                     return;
                 }
 
-                match buffer_params(size) {
+                // Which of the two offers was taken. A format carrying a
+                // modifier is a DMA-BUF one — nothing else needs to describe
+                // how the pixels are laid out in memory the consumer imports.
+                let chosen = layout.filter(|_| carries_modifier(pod));
+                chose_dmabuf.store(chosen.is_some(), Ordering::Relaxed);
+                tracing::debug!(
+                    "screencast: sharing through {}",
+                    if chosen.is_some() { "a dma-buf" } else { "shared memory" }
+                );
+
+                match buffer_params(size, chosen) {
                     Ok(params) => {
                         let Some(pod) = spa::pod::Pod::from_bytes(&params) else {
                             tracing::warn!("screencast: the buffer parameters are not a pod");
@@ -259,30 +431,80 @@ impl Pipewire {
                     Err(e) => tracing::warn!("screencast: {e}"),
                 }
             })
+            // The memory for one buffer.
+            //
+            // This end allocates, which is what ALLOC_BUFFERS means: PipeWire
+            // has no GPU allocator and cannot make a buffer the compositor can
+            // render into, so it asks. Answering with nothing is a stream that
+            // negotiates, plays, and delivers frames with maxsize zero — a
+            // consumer sees an empty picture and no log says why.
+            .add_buffer(move |_stream, (), raw| {
+                // SAFETY: PipeWire hands over a buffer it owns for exactly as
+                // long as this callback, and calls it on its own thread with
+                // the loop held.
+                unsafe {
+                    let Some(data) = first_data(raw) else {
+                        tracing::warn!("screencast: a buffer with no data to fill in");
+                        return;
+                    };
+                    // The kinds of memory this buffer will accept, as a mask.
+                    let allowed = (*data).type_;
+                    if allowed & (1 << spa::sys::SPA_DATA_DmaBuf) != 0 {
+                        match pool.lock().unwrap().pop() {
+                            Some(target) => attach_dmabuf(data, target, &added),
+                            None => tracing::warn!(
+                                "screencast: pipewire asked for more than {BUFFERS} buffers"
+                            ),
+                        }
+                    } else if allowed & (1 << spa::sys::SPA_DATA_MemFd) != 0 {
+                        attach_shared(data, size, &added);
+                    } else {
+                        tracing::warn!("screencast: pipewire wants memory of kind {allowed}");
+                    }
+                }
+            })
+            .remove_buffer(move |_stream, (), raw| {
+                // SAFETY: as above — and the buffer is still PipeWire's until
+                // this returns, so the memory is dropped here and not later.
+                unsafe {
+                    let Some(data) = first_data(raw) else { return };
+                    removed.lock().unwrap().remove(&(*data).fd);
+                }
+            })
             .register()
             .map_err(|e| anyhow::anyhow!("listening to a pipewire stream: {e}"))?;
 
-        let format = video_format(size)?;
-        let mut params = [spa::pod::Pod::from_bytes(&format)
-            .ok_or_else(|| anyhow::anyhow!("the format description is not a valid pod"))?];
+        // Both, in the order they are preferred. A consumer takes the first it
+        // can use, and one that cannot import a DMA-BUF — a remote desktop, a
+        // recorder without a GPU — still gets a picture rather than a
+        // negotiation that fails.
+        let mut described = Vec::new();
+        if let Some(layout) = layout {
+            described.push(video_format(size, Some(layout.modifier))?);
+        }
+        described.push(video_format(size, None)?);
+        let mut params = described
+            .iter()
+            .map(|bytes| {
+                spa::pod::Pod::from_bytes(bytes)
+                    .ok_or_else(|| anyhow::anyhow!("the format description is not a valid pod"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         stream
             .connect(
                 spa::utils::Direction::Output,
                 None,
-                // Mapped, because the frames are written by the CPU after a
-                // readback.
+                // This end provides the memory, which is what ALLOC_BUFFERS
+                // means. It has to: a buffer the GPU renders into is one only
+                // the compositor can allocate, and PipeWire allocating for us
+                // is how the shared-memory path worked and why it cost a
+                // readback per frame.
                 //
-                // Not ALLOC_BUFFERS: that flag means *this* end provides the
-                // memory, and promising it without handing any over is how
-                // every buffer arrived with a maxsize of zero — the stream
-                // negotiated, played, and delivered frames with nowhere to
-                // write them, which a consumer shows as an empty picture.
-                //
-                // A DMA-BUF stream would allocate here, and is what this
-                // should become: it would drop the readback as well as the
-                // copy.
-                pw::stream::StreamFlags::DRIVER | pw::stream::StreamFlags::MAP_BUFFERS,
+                // Nothing is mapped here — the shared-memory path maps its own
+                // memory when it makes it, and a DMA-BUF is never touched by
+                // the CPU at all.
+                pw::stream::StreamFlags::DRIVER | pw::stream::StreamFlags::ALLOC_BUFFERS,
                 &mut params,
             )
             .map_err(|e| anyhow::anyhow!("connecting a pipewire stream: {e}"))?;
@@ -311,7 +533,152 @@ impl Pipewire {
             size,
             streaming,
             last: None,
+            dmabuf,
+            memory,
         })
+    }
+}
+
+
+/// The first plane of a PipeWire buffer, if it has one.
+///
+/// One plane throughout: the buffer parameters ask for a single block, and a
+/// format that needs more is one this compositor does not offer.
+///
+/// # Safety
+/// `raw` must be a buffer PipeWire is handing over, valid for this call.
+unsafe fn first_data(raw: *mut pw::sys::pw_buffer) -> Option<*mut spa::sys::spa_data> {
+    if raw.is_null() {
+        return None;
+    }
+    let buffer = (*raw).buffer;
+    if buffer.is_null() || (*buffer).n_datas < 1 || (*buffer).datas.is_null() {
+        return None;
+    }
+    Some((*buffer).datas)
+}
+
+/// Hand a buffer the GPU can draw into to PipeWire.
+///
+/// # Safety
+/// `data` must be a plane PipeWire is asking this end to fill in.
+unsafe fn attach_dmabuf(
+    data: *mut spa::sys::spa_data,
+    target: Dmabuf,
+    held: &Arc<Mutex<HashMap<i64, Memory>>>,
+) {
+    let Some(layout) = Layout::of(&target) else {
+        tracing::warn!("screencast: a target with no planes");
+        return;
+    };
+    let Some(handle) = target.handles().next() else {
+        tracing::warn!("screencast: a target with no descriptor");
+        return;
+    };
+    let fd = handle.as_raw_fd() as i64;
+
+    (*data).type_ = spa::sys::SPA_DATA_DmaBuf;
+    (*data).flags = spa::sys::SPA_DATA_FLAG_READABLE;
+    (*data).fd = fd;
+    (*data).mapoffset = 0;
+    (*data).maxsize = layout.size;
+    // Never mapped: the consumer imports this into its own GPU, and nothing on
+    // either end reads it with the CPU.
+    (*data).data = std::ptr::null_mut();
+    let chunk = (*data).chunk;
+    if !chunk.is_null() {
+        (*chunk).offset = layout.offset;
+        (*chunk).stride = layout.stride;
+        (*chunk).size = layout.size;
+    }
+
+    // Held until PipeWire gives the buffer back. The descriptor stays open for
+    // as long as the target does, which is what the consumer is importing from.
+    held.lock().unwrap().insert(fd, Memory::Dma(target));
+}
+
+/// Hand shared memory to PipeWire, for a consumer that cannot import a
+/// DMA-BUF.
+///
+/// # Safety
+/// `data` must be a plane PipeWire is asking this end to fill in.
+unsafe fn attach_shared(
+    data: *mut spa::sys::spa_data,
+    size: Size<i32, Physical>,
+    held: &Arc<Mutex<HashMap<i64, Memory>>>,
+) {
+    use smithay::reexports::rustix::{fs, mm};
+
+    let stride = size.w.max(1) * 4;
+    let len = (stride * size.h.max(1)) as usize;
+
+    let fd = match fs::memfd_create("viewport-screencast", fs::MemfdFlags::CLOEXEC) {
+        Ok(fd) => fd,
+        Err(e) => {
+            tracing::warn!("screencast: could not make memory for a buffer: {e}");
+            return;
+        }
+    };
+    if let Err(e) = fs::ftruncate(&fd, len as u64) {
+        tracing::warn!("screencast: could not size a buffer: {e}");
+        return;
+    }
+    // SAFETY: a fresh mapping of a descriptor made just above, unmapped once
+    // when the buffer comes back.
+    let ptr = match mm::mmap(
+        std::ptr::null_mut(),
+        len,
+        mm::ProtFlags::READ | mm::ProtFlags::WRITE,
+        mm::MapFlags::SHARED,
+        &fd,
+        0,
+    ) {
+        Ok(ptr) => ptr,
+        Err(e) => {
+            tracing::warn!("screencast: could not map a buffer: {e}");
+            return;
+        }
+    };
+
+    let raw = fd.as_raw_fd() as i64;
+    (*data).type_ = spa::sys::SPA_DATA_MemFd;
+    (*data).flags = 0;
+    (*data).fd = raw;
+    (*data).mapoffset = 0;
+    (*data).maxsize = len as u32;
+    // The compositor writes through this pointer, which is what makes the
+    // frame appear at the other end of the descriptor.
+    (*data).data = ptr;
+    let chunk = (*data).chunk;
+    if !chunk.is_null() {
+        (*chunk).offset = 0;
+        (*chunk).stride = stride;
+        (*chunk).size = len as u32;
+    }
+
+    held.lock().unwrap().insert(
+        raw,
+        Memory::Shared {
+            _fd: fd,
+            ptr: ptr as usize,
+            len,
+        },
+    );
+}
+
+/// Whether a negotiated format describes memory the GPU laid out.
+///
+/// The modifier is the tell: it says how the pixels are arranged in a buffer
+/// the consumer will import, and a shared-memory format has no use for one.
+fn carries_modifier(pod: &spa::pod::Pod) -> bool {
+    use spa::pod::deserialize::PodDeserializer;
+
+    match PodDeserializer::deserialize_any_from(pod.as_bytes()) {
+        Ok((_, spa::pod::Value::Object(object))) => object
+            .properties
+            .iter()
+            .any(|property| property.key == spa::sys::SPA_FORMAT_VIDEO_modifier),
+        _ => false,
     }
 }
 
@@ -320,13 +687,13 @@ impl Pipewire {
 /// Fixed rather than a range: the compositor knows exactly what it is going to
 /// produce, and offering a choice it cannot satisfy only moves the failure to
 /// the first frame.
-fn video_format(size: Size<i32, Physical>) -> anyhow::Result<Vec<u8>> {
+fn video_format(size: Size<i32, Physical>, modifier: Option<u64>) -> anyhow::Result<Vec<u8>> {
     use spa::param::format::{FormatProperties, MediaSubtype, MediaType};
     use spa::param::video::VideoFormat;
     use spa::pod::serialize::PodSerializer;
     use spa::pod::{object, property, Value};
 
-    let object = object!(
+    let mut object = object!(
         spa::utils::SpaTypes::ObjectParamFormat,
         spa::param::ParamType::EnumFormat,
         property!(FormatProperties::MediaType, Id, MediaType::Video),
@@ -355,6 +722,21 @@ fn video_format(size: Size<i32, Physical>) -> anyhow::Result<Vec<u8>> {
         ),
     );
 
+    // How the pixels are laid out in the buffer the consumer imports.
+    //
+    // Mandatory, as the protocol requires of a modifier: a consumer that
+    // ignored it would import a buffer as though it were linear and show a
+    // picture that is sheared, tiled, or noise. Exactly one value, because the
+    // compositor has already allocated — this describes what exists rather
+    // than asking what would be acceptable.
+    if let Some(modifier) = modifier {
+        object.properties.push(spa::pod::Property {
+            key: FormatProperties::VideoModifier.as_raw(),
+            flags: spa::pod::PropertyFlags::MANDATORY,
+            value: Value::Long(modifier as i64),
+        });
+    }
+
     let (cursor, _) = PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(object))
         .map_err(|e| anyhow::anyhow!("describing the stream format: {e}"))?;
     Ok(cursor.into_inner())
@@ -365,11 +747,20 @@ fn video_format(size: Size<i32, Physical>) -> anyhow::Result<Vec<u8>> {
 /// Published when the format is agreed. Without it a consumer has nothing to
 /// allocate against and the stream never leaves Paused, which from the outside
 /// is a share that hands back a node and then does nothing.
-fn buffer_params(size: Size<i32, Physical>) -> anyhow::Result<Vec<u8>> {
+fn buffer_params(size: Size<i32, Physical>, dmabuf: Option<Layout>) -> anyhow::Result<Vec<u8>> {
     use spa::pod::serialize::PodSerializer;
     use spa::pod::Value;
 
-    let stride = size.w.max(1) * 4;
+    // The driver's own stride when the GPU allocated, and the packed width
+    // otherwise. Telling a consumer the packed width for a buffer the driver
+    // padded is a picture that shears further with every row.
+    let (stride, total) = match dmabuf {
+        Some(layout) => (layout.stride, layout.size as i32),
+        None => {
+            let stride = size.w.max(1) * 4;
+            (stride, stride * size.h.max(1))
+        }
+    };
     // Built from the raw keys rather than a typed enum: the binding has names
     // for format properties and not for buffer ones, and the numbers are the
     // interface either way.
@@ -380,34 +771,38 @@ fn buffer_params(size: Size<i32, Physical>) -> anyhow::Result<Vec<u8>> {
             // Enough that the compositor can fill one while the consumer
             // reads another, few enough that a stalled consumer does not pin
             // much: each is a whole screen.
-            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_buffers, Value::Int(3)),
-            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_blocks, Value::Int(1)),
             spa::pod::Property::new(
-                spa::sys::SPA_PARAM_BUFFERS_size,
-                Value::Int(stride * size.h.max(1)),
+                spa::sys::SPA_PARAM_BUFFERS_buffers,
+                Value::Int(BUFFERS as i32),
             ),
+            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_blocks, Value::Int(1)),
+            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_size, Value::Int(total)),
             spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
-            // Shared memory, as a choice of flags rather than a bare number.
+            // What kind of memory the buffers are, as a choice of flags rather
+            // than a bare number.
             //
             // A plain integer here is read as one value and not as the set of
-            // kinds the stream will accept, so PipeWire allocated buffers it
-            // could put no memory in: every frame arrived with maxsize zero,
-            // the compositor had nowhere to write, and a consumer that
-            // connected and streamed saw an empty picture with nothing in any
-            // log to say why.
+            // kinds the stream will accept, and PipeWire answered by allocating
+            // buffers it could put no memory in: every frame arrived with
+            // maxsize zero, the compositor had nowhere to write, and a consumer
+            // that connected and streamed saw an empty picture with nothing in
+            // any log to say why.
             //
-            // Rendering into a DMA-BUF the consumer imports is what this
-            // should become, and this is the line that will say so.
+            // Whichever kind the format settled on, and only that one. Offering
+            // both here and allocating one of them is the same mismatch again.
             spa::pod::Property::new(
                 spa::sys::SPA_PARAM_BUFFERS_dataType,
                 Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
                     spa::utils::ChoiceFlags::empty(),
                     spa::utils::ChoiceEnum::Flags {
-                        default: 1 << spa::sys::SPA_DATA_MemFd,
-                        flags: vec![
-                            1 << spa::sys::SPA_DATA_MemFd,
-                            1 << spa::sys::SPA_DATA_MemPtr,
-                        ],
+                        default: match dmabuf {
+                            Some(_) => 1 << spa::sys::SPA_DATA_DmaBuf,
+                            None => 1 << spa::sys::SPA_DATA_MemFd,
+                        },
+                        flags: vec![match dmabuf {
+                            Some(_) => 1 << spa::sys::SPA_DATA_DmaBuf,
+                            None => 1 << spa::sys::SPA_DATA_MemFd,
+                        }],
                     },
                 ))),
             ),
@@ -417,4 +812,112 @@ fn buffer_params(size: Size<i32, Physical>) -> anyhow::Result<Vec<u8>> {
     let (cursor, _) = PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(object))
         .map_err(|e| anyhow::anyhow!("describing the stream buffers: {e}"))?;
     Ok(cursor.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn size() -> Size<i32, Physical> {
+        (1920, 1080).into()
+    }
+
+    fn properties(bytes: &[u8]) -> Vec<spa::pod::Property> {
+        let pod = spa::pod::Pod::from_bytes(bytes).expect("a pod");
+        match spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()) {
+            Ok((_, spa::pod::Value::Object(object))) => object.properties,
+            other => panic!("not an object: {other:?}"),
+        }
+    }
+
+    fn property(bytes: &[u8], key: u32) -> Option<spa::pod::Value> {
+        properties(bytes)
+            .into_iter()
+            .find(|property| property.key == key)
+            .map(|property| property.value)
+    }
+
+    /// The modifier says how the pixels are laid out in memory the consumer
+    /// imports. A DMA-BUF offer without one is a buffer the consumer reads as
+    /// though it were linear, which is a picture of noise.
+    #[test]
+    fn a_dmabuf_format_carries_its_modifier() {
+        let described = video_format(size(), Some(0x0100_0000_0000_0001)).expect("a format");
+        let value = property(&described, spa::sys::SPA_FORMAT_VIDEO_modifier);
+        assert_eq!(value, Some(spa::pod::Value::Long(0x0100_0000_0000_0001)));
+
+        let pod = spa::pod::Pod::from_bytes(&described).expect("a pod");
+        assert!(carries_modifier(pod));
+    }
+
+    /// And the shared-memory offer must not: it is what a consumer that cannot
+    /// import a DMA-BUF falls back to, and the modifier is how the two are
+    /// told apart once one has been chosen.
+    #[test]
+    fn a_shared_memory_format_carries_none() {
+        let described = video_format(size(), None).expect("a format");
+        assert_eq!(property(&described, spa::sys::SPA_FORMAT_VIDEO_modifier), None);
+
+        let pod = spa::pod::Pod::from_bytes(&described).expect("a pod");
+        assert!(!carries_modifier(pod));
+    }
+
+    /// One kind of memory, matching the format that was agreed.
+    ///
+    /// Offering both and allocating one is what left every buffer with a
+    /// maxsize of zero: the stream negotiated, played, and delivered frames
+    /// with nowhere to write them.
+    #[test]
+    fn the_buffers_are_of_the_kind_that_was_negotiated() {
+        let kinds = |params: &[u8]| match property(params, spa::sys::SPA_PARAM_BUFFERS_dataType) {
+            Some(spa::pod::Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                _,
+                spa::utils::ChoiceEnum::Flags { flags, .. },
+            )))) => flags,
+            other => panic!("not a choice of flags: {other:?}"),
+        };
+
+        let layout = Layout {
+            modifier: 0,
+            stride: 7680,
+            offset: 0,
+            size: 7680 * 1080,
+        };
+        let drawn = buffer_params(size(), Some(layout)).expect("buffer parameters");
+        assert_eq!(kinds(&drawn), vec![1 << spa::sys::SPA_DATA_DmaBuf]);
+
+        let copied = buffer_params(size(), None).expect("buffer parameters");
+        assert_eq!(kinds(&copied), vec![1 << spa::sys::SPA_DATA_MemFd]);
+    }
+
+    /// The driver's stride, not the packed width.
+    ///
+    /// A consumer told the packed width for a buffer the driver padded reads
+    /// each row a little further into the next one, which shears the picture
+    /// progressively down the screen.
+    #[test]
+    fn a_drawn_buffer_is_described_with_the_stride_it_has() {
+        let layout = Layout {
+            modifier: 0,
+            stride: 8192,
+            offset: 0,
+            size: 8192 * 1080,
+        };
+        let drawn = buffer_params(size(), Some(layout)).expect("buffer parameters");
+        assert_eq!(
+            property(&drawn, spa::sys::SPA_PARAM_BUFFERS_stride),
+            Some(spa::pod::Value::Int(8192))
+        );
+        assert_eq!(
+            property(&drawn, spa::sys::SPA_PARAM_BUFFERS_size),
+            Some(spa::pod::Value::Int(8192 * 1080))
+        );
+
+        // And the packed width when the compositor is copying instead.
+        let copied = buffer_params(size(), None).expect("buffer parameters");
+        assert_eq!(
+            property(&copied, spa::sys::SPA_PARAM_BUFFERS_stride),
+            Some(spa::pod::Value::Int(1920 * 4))
+        );
+    }
 }
