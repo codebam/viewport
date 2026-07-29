@@ -240,6 +240,7 @@ pub struct SessionObject {
 impl SessionObject {
     /// The application has stopped sharing.
     fn close(&self) {
+        tracing::debug!("screencast: the frontend closed a session");
         let node = self
             .sessions
             .lock()

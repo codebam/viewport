@@ -212,6 +212,42 @@ impl Pipewire {
                     std::sync::atomic::Ordering::Relaxed,
                 );
             })
+            // What the consumer needs to allocate against.
+            //
+            // A stream that never answers this never starts. gstreamer
+            // tolerated its absence and Firefox did not: the portal handed
+            // back a node, the browser connected to nothing, and the log
+            // showed a stream that reached Paused and stopped there.
+            .param_changed(move |stream, (), id, pod| {
+                if id != spa::param::ParamType::Format.as_raw() {
+                    return;
+                }
+                let Some(pod) = pod else { return };
+                let Ok((media_type, media_subtype)) = spa::param::format_utils::parse_format(pod)
+                else {
+                    return;
+                };
+                if media_type != spa::param::format::MediaType::Video
+                    || media_subtype != spa::param::format::MediaSubtype::Raw
+                {
+                    return;
+                }
+
+                match buffer_params(size) {
+                    Ok(params) => {
+                        let Some(pod) = spa::pod::Pod::from_bytes(&params) else {
+                            tracing::warn!("screencast: the buffer parameters are not a pod");
+                            return;
+                        };
+                        if let Err(e) = stream.update_params(&mut [pod]) {
+                            tracing::warn!("screencast: buffer parameters refused: {e}");
+                        } else {
+                            tracing::debug!("screencast: buffer parameters published");
+                        }
+                    }
+                    Err(e) => tracing::warn!("screencast: {e}"),
+                }
+            })
             .register()
             .map_err(|e| anyhow::anyhow!("listening to a pipewire stream: {e}"))?;
 
@@ -304,5 +340,47 @@ fn video_format(size: Size<i32, Physical>) -> anyhow::Result<Vec<u8>> {
 
     let (cursor, _) = PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(object))
         .map_err(|e| anyhow::anyhow!("describing the stream format: {e}"))?;
+    Ok(cursor.into_inner())
+}
+
+/// What the consumer should expect of the buffers.
+///
+/// Published when the format is agreed. Without it a consumer has nothing to
+/// allocate against and the stream never leaves Paused, which from the outside
+/// is a share that hands back a node and then does nothing.
+fn buffer_params(size: Size<i32, Physical>) -> anyhow::Result<Vec<u8>> {
+    use spa::pod::serialize::PodSerializer;
+    use spa::pod::Value;
+
+    let stride = size.w.max(1) * 4;
+    // Built from the raw keys rather than a typed enum: the binding has names
+    // for format properties and not for buffer ones, and the numbers are the
+    // interface either way.
+    let object = spa::pod::Object {
+        type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
+        id: spa::param::ParamType::Buffers.as_raw(),
+        properties: vec![
+            // Enough that the compositor can fill one while the consumer
+            // reads another, few enough that a stalled consumer does not pin
+            // much: each is a whole screen.
+            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_buffers, Value::Int(3)),
+            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_blocks, Value::Int(1)),
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_BUFFERS_size,
+                Value::Int(stride * size.h.max(1)),
+            ),
+            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
+            // Shared memory, which is what the frames are copied into today.
+            // Rendering into a DMA-BUF the consumer imports is what this
+            // should become, and this is the line that will say so.
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_BUFFERS_dataType,
+                Value::Int((1 << spa::sys::SPA_DATA_MemFd) | (1 << spa::sys::SPA_DATA_MemPtr)),
+            ),
+        ],
+    };
+
+    let (cursor, _) = PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(object))
+        .map_err(|e| anyhow::anyhow!("describing the stream buffers: {e}"))?;
     Ok(cursor.into_inner())
 }
