@@ -384,7 +384,7 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     // windows could use 2560x1440 of it, so it laid out a desktop wider than
     // the screen and half of it fell off the side.
     if mode.is_some() || transform.is_some() || scale.is_some() {
-        smithay::desktop::layer_map_for_output(&output).arrange();
+        state.output_reshaped(&output);
     }
 
     if config.x.is_some() || config.y.is_some() {

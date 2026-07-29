@@ -1467,6 +1467,7 @@ impl ViewportState {
             if change.transform.is_some() || change.scale.is_some() {
                 let scale = change.scale.map(smithay::output::Scale::Fractional);
                 output.change_current_state(None, change.transform, scale, None);
+                self.output_reshaped(&output);
             }
             if let Some(position) = change.position {
                 self.space.map_output(&output, (position.x, position.y));
@@ -1586,6 +1587,10 @@ impl ViewportState {
         }
         // A modeset invalidates what was queued for this output.
         surface.pending = false;
+
+        // And a different mode is a different screen, so the layer map and the
+        // damage history are as stale as they are after a rotation.
+        self.output_reshaped(output);
     }
 
     /// Turn one output on or off.
@@ -3700,6 +3705,49 @@ impl ViewportState {
                     .is_some_and(|t| t.xdg_toplevel().id() == id)
             })
             .map(|view| view.id)
+    }
+
+    /// An output has changed shape: a new mode, a new scale, or a rotation.
+    ///
+    /// Two things stop describing the screen the moment that happens, and
+    /// neither notices on its own.
+    ///
+    /// The layer map holds the output's shape from when it was last arranged,
+    /// along with everything reserved against it — a bar's exclusive zone, and
+    /// the area left over for windows. Rotating a monitor without re-arranging
+    /// it left the usable area landscape on a portrait screen, so the shell was
+    /// told the output was 1440x2560 and that windows could use 2560x1440 of
+    /// it.
+    ///
+    /// And the damage history describes a screen that no longer exists. The
+    /// framebuffers are reused between frames and only the damaged part of one
+    /// is redrawn; a rotation changes every pixel while leaving the buffers the
+    /// same size, so whatever the new frame did not report as damaged stayed on
+    /// screen — the old landscape desktop with the new portrait one drawn over
+    /// part of it, both at once. The same reset the compositor already does
+    /// when it comes back from a VT switch, and for the same reason.
+    ///
+    /// Called from both paths that can reshape an output: the shell's
+    /// `output.configure`, and wlr-output-management, which is what `wlr-randr`
+    /// speaks. Putting it in one of them and not the other is how this went out
+    /// fixed for a tool nobody was using and unfixed for the one being tested.
+    pub fn output_reshaped(&mut self, output: &Output) {
+        smithay::desktop::layer_map_for_output(output).arrange();
+
+        if let Some(udev) = self.udev.as_mut() {
+            for surface in udev.surfaces.values_mut() {
+                if surface.output == *output {
+                    surface.drm_output.reset_buffers();
+                    surface.pending = false;
+                }
+            }
+        }
+        self.needs_render = true;
+        tracing::info!(
+            "{}: reshaped to {:?}",
+            output.name(),
+            output.current_transform()
+        );
     }
 
     /// Send an event to everything listening: the socket clients and the
