@@ -229,6 +229,14 @@
           postInstall = ''
             mkdir -p $out/share/viewport
             cp -r ${self}/data/shell $out/share/viewport/shell
+
+            # How xdg-desktop-portal learns this backend exists. Without the
+            # file the frontend does not know the name "viewport" refers to
+            # anything, so a config naming it matches nothing and the request
+            # goes to whichever backend is left.
+            mkdir -p $out/share/xdg-desktop-portal/portals
+            cp ${self}/data/portal-share/xdg-desktop-portal/portals/viewport.portal \
+              $out/share/xdg-desktop-portal/portals/viewport.portal
             cp ${self}/data/fallback.html $out/share/viewport/fallback.html
             cp ${self}/data/config.example.json $out/share/viewport/config.example.json
 
@@ -448,11 +456,19 @@
             xdg.portal = {
               enable = true;
 
-              # The ScreenCast and Screenshot implementation. Viewport speaks
-              # the wlr-screencopy and ext-image-copy-capture protocols this
-              # backend needs.
+              # Screenshot, and ScreenCast for a session running the C build.
+              # Viewport speaks the wlr-screencopy and ext-image-copy-capture
+              # protocols this backend needs.
               wlr.enable = lib.mkDefault true;
-              extraPortals = [ pkgs.xdg-desktop-portal-gtk ];
+              # The compositor answers Settings and ScreenCast itself, and the
+              # frontend only learns that from the .portal file this package
+              # installs — a config naming "viewport" with no declaration
+              # behind it matches nothing, and the request quietly goes
+              # somewhere else.
+              extraPortals = [
+                pkgs.xdg-desktop-portal-gtk
+                self.packages.${pkgs.system}.viewport-smithay
+              ];
 
               # Named for XDG_CURRENT_DESKTOP's first entry, which the
               # compositor sets to "viewport:wlroots".

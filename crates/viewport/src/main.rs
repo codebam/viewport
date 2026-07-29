@@ -282,37 +282,10 @@ fn main() -> Result<()> {
         }
     }
 
-    // Dark mode, over the same bus. Nothing a compositor draws makes a client
-    // dark: Firefox, GTK and Qt each read `color-scheme` from a settings
-    // portal, and with nothing answering they all fall back to light however
-    // the shell looks.
-    {
-        let settings = crate::appearance::Settings {
-            color_scheme: if state.dark_mode {
-                crate::appearance::PREFER_DARK
-            } else {
-                crate::appearance::PREFER_LIGHT
-            },
-            // The cursor the compositor actually draws, so a toolkit does not
-            // size its own differently from the pointer on screen.
-            cursor_theme: state.cursor_theme.name().to_owned(),
-            cursor_size: state.cursor_theme.size() as i32,
-        };
-        // Not fatal: a real desktop portal already holding the name knows more
-        // about the session than this does, and applications keep the defaults
-        // they had a moment ago.
-        if let Err(e) = state.appearance.start(settings) {
-            tracing::warn!("the settings portal is unavailable: {e}");
-        }
-    }
-
-    // A screencast of the first output, for testing the stream without a
-    // portal to ask for one. Removed once the portal can.
-    // The screencast portal, on the D-Bus thread with a channel back.
-    //
-    // Picking a window and compositing it belong where the windows are, and
-    // the frontend is waiting on the call — so the answer travels back on a
-    // channel of its own rather than the compositor being reached into.
+    // The portals this compositor answers itself: dark mode, and screen
+    // sharing. Both on one connection, because they share a bus name — a
+    // second connection claiming it does not get it, and the interface built
+    // second is simply missing from the bus.
     {
         let (sender, source) = smithay::reexports::calloop::channel::channel();
         event_loop
@@ -326,11 +299,24 @@ fn main() -> Result<()> {
             })
             .map_err(|e| anyhow::anyhow!("inserting the screencast source: {e}"))?;
 
-        // Not fatal: a session with no D-Bus, or one where another portal
-        // already answers ScreenCast, still has a working desktop — it simply
-        // cannot share a window.
-        if let Err(e) = state.start_screencast_portal(sender) {
-            tracing::warn!("the screencast portal is unavailable: {e}");
+        let settings = crate::appearance::Settings {
+            color_scheme: if state.dark_mode {
+                crate::appearance::PREFER_DARK
+            } else {
+                crate::appearance::PREFER_LIGHT
+            },
+            // The cursor the compositor actually draws, so a toolkit does not
+            // size its own differently from the pointer on screen.
+            cursor_theme: state.cursor_theme.name().to_owned(),
+            cursor_size: state.cursor_theme.size() as i32,
+        };
+        let screencast = crate::screencast::portal::ScreenCast::new(sender);
+
+        // Not fatal: a real desktop portal already holding the name knows more
+        // about the session than this does, and applications keep the defaults
+        // they had a moment ago.
+        if let Err(e) = state.appearance.start(settings, screencast) {
+            tracing::warn!("the portals are unavailable: {e}");
         }
     }
 

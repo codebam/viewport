@@ -155,23 +155,37 @@ impl Appearance {
     /// desktop portal already owns the name, still has a working compositor —
     /// its applications simply keep their own defaults, which is what they had
     /// a moment ago.
-    pub fn start(&mut self, settings: Settings) -> anyhow::Result<()> {
+    pub fn start(
+        &mut self,
+        settings: Settings,
+        screencast: crate::screencast::portal::ScreenCast,
+    ) -> anyhow::Result<()> {
         let scheme = settings.color_scheme;
         *self.settings.lock().unwrap() = settings;
 
         let portal = Portal {
             settings: self.settings.clone(),
         };
-        // The name is claimed if it is free and left alone if it is not, rather
-        // than replacing whoever holds it: a real desktop portal running
-        // alongside knows more about the session than this does.
+        // One connection for both interfaces, because they share a bus name.
+        //
+        // A second connection claiming org.freedesktop.impl.portal.desktop.
+        // viewport does not get it — the first one holds it — so whichever
+        // interface was built second was simply absent from the bus, and the
+        // portal frontend fell through to another backend without saying
+        // anything. Settings and ScreenCast live at the same object path, as
+        // they do in every other portal implementation.
+        //
+        // The name is claimed if it is free and left alone if it is not,
+        // rather than replacing whoever holds it: a real desktop portal
+        // running alongside knows more about the session than this does.
         let connection = zbus::blocking::connection::Builder::session()?
             .name(BUS_NAME)?
             .serve_at(OBJECT_PATH, portal)?
+            .serve_at(OBJECT_PATH, screencast)?
             .build()?;
 
         self.connection = Some(connection);
-        tracing::info!("settings portal up, color-scheme={scheme}");
+        tracing::info!("settings and screencast portals up, color-scheme={scheme}");
         Ok(())
     }
 

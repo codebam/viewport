@@ -352,9 +352,6 @@ pub struct ViewportState {
     /// switcher can act on. The read-only ext protocol is beside it and
     /// describes the same windows.
     pub foreign_management_state: crate::foreign_toplevel::ForeignToplevelState,
-    /// The D-Bus connection the screencast portal answers on, kept because
-    /// dropping it takes the interface off the bus.
-    pub screencast_portal: Option<zbus::blocking::Connection>,
     /// The screencast portal's streams, one per source a client is watching,
     /// and the PipeWire connection they live on. Absent until something asks
     /// to share a screen: a desktop nobody is sharing should not hold a
@@ -672,7 +669,6 @@ impl ViewportState {
             _virtual_keyboard_state: virtual_keyboard_state,
             gamma_state,
             output_power_state,
-            screencast_portal: None,
             pipewire: None,
             casts: Vec::new(),
             foreign_management_state,
@@ -2127,23 +2123,6 @@ impl ViewportState {
             .map_err(|e| format!("mapping a window capture: {e}"))?
             .to_vec();
         Ok((pixels, size))
-    }
-
-    /// Answer org.freedesktop.impl.portal.ScreenCast on the session bus.
-    pub fn start_screencast_portal(
-        &mut self,
-        sender: smithay::reexports::calloop::channel::Sender<crate::screencast::portal::Message>,
-    ) -> anyhow::Result<()> {
-        let portal = crate::screencast::portal::ScreenCast::new(sender);
-        let connection = zbus::blocking::connection::Builder::session()?
-            // The name the frontend looks for, keyed on the desktop's own
-            // name — which is why XDG_CURRENT_DESKTOP has to say viewport.
-            .name("org.freedesktop.impl.portal.desktop.viewport")?
-            .serve_at("/org/freedesktop/portal/desktop", portal)?
-            .build()?;
-        self.screencast_portal = Some(connection);
-        tracing::info!("screencast portal up");
-        Ok(())
     }
 
     /// Carry out what the portal asked for.
