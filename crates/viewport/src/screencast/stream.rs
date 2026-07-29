@@ -118,7 +118,7 @@ impl std::os::fd::AsFd for LoopFd {
 
 /// A stream a client is watching.
 pub struct Stream {
-    pub stream: pw::stream::Stream,
+    pub stream: pw::stream::StreamRc,
     /// Kept alive: dropping the listener stops the callbacks.
     _listener: pw::stream::StreamListener<()>,
     pub size: Size<i32, Physical>,
@@ -379,11 +379,14 @@ impl Stream {
 /// thread loop is what xdg-desktop-portal-wlr uses for the same reason: every
 /// call into it takes the loop's own lock, so frames can be handed over from
 /// wherever the renderer happens to be.
+/// The `Rc` variants throughout: pipewire-rs 0.9 splits every object into an
+/// owning `Box` form and a reference-counted `Rc` one, and a stream has to hold
+/// the core alive, so the core has to be shared rather than owned here.
 pub struct Pipewire {
-    pub thread_loop: pw::thread_loop::ThreadLoop,
-    pub core: pw::core::Core,
+    pub thread_loop: pw::thread_loop::ThreadLoopRc,
+    pub core: pw::core::CoreRc,
     /// Held because dropping it tears the connection down.
-    _context: pw::context::Context,
+    _context: pw::context::ContextRc,
 }
 
 impl Pipewire {
@@ -397,7 +400,7 @@ impl Pipewire {
         // into it below takes its lock — which is the contract the binding
         // marks unsafe for.
         let thread_loop = unsafe {
-            pw::thread_loop::ThreadLoop::new(Some("viewport-screencast"), None)
+            pw::thread_loop::ThreadLoopRc::new(Some("viewport-screencast"), None)
         }
         .map_err(|e| anyhow::anyhow!("creating a pipewire loop: {e}"))?;
 
@@ -406,10 +409,10 @@ impl Pipewire {
         // the lock is a race with it.
         let (context, core) = {
             let _guard = thread_loop.lock();
-            let context = pw::context::Context::new(&thread_loop)
+            let context = pw::context::ContextRc::new(&thread_loop, None)
                 .map_err(|e| anyhow::anyhow!("creating a pipewire context: {e}"))?;
             let core = context
-                .connect(None)
+                .connect_rc(None)
                 .map_err(|e| anyhow::anyhow!("connecting to pipewire: {e}"))?;
             (context, core)
         };
@@ -439,8 +442,8 @@ impl Pipewire {
         // until the server has answered — `node_id()` before that is
         // 0xffffffff, which a client cannot connect to.
         const INVALID_NODE: u32 = u32::MAX;
-        let stream = pw::stream::Stream::new(
-            &self.core,
+        let stream = pw::stream::StreamRc::new(
+            self.core.clone(),
             name,
             pw::properties::properties! {
                 *pw::keys::MEDIA_CLASS => "Video/Source",

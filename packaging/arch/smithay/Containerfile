@@ -1,0 +1,45 @@
+FROM docker.io/library/archlinux:latest
+
+# base-devel for makepkg itself; the rest is what the PKGBUILD declares, put in
+# the image so a rebuild does not re-download them every time. makepkg
+# --syncdeps installs anything still missing on top.
+RUN pacman -Syu --noconfirm --disable-sandbox --needed \
+      base-devel git rust cargo pkgconf clang \
+      wayland wayland-protocols libxkbcommon pixman libdrm libinput seatd \
+      systemd-libs mesa libglvnd vulkan-icd-loader vulkan-headers \
+      wpewebkit glib2 json-glib libxcb xcb-util-wm pipewire shared-mime-info \
+ && pacman -Scc --noconfirm
+
+# makepkg refuses to run as root, and normally the answer is an unprivileged
+# user in the image. That needs a second uid, and rootless podman on a host
+# with no /etc/subuid range has exactly one — every file the build tried to
+# give to another user would fail with EINVAL.
+#
+# So the guard comes out instead. This is a throwaway container that builds one
+# package and is deleted; the PKGBUILD it runs is an ordinary one that anybody
+# can build the ordinary way on a real Arch machine.
+RUN sed -i 's/(( EUID == 0 ))/(( 0 ))/' /usr/bin/makepkg \
+ && grep -q 'PKGEXT' /etc/makepkg.conf
+
+# libspa-sys 0.8 builds its bindings with bindgen 0.69, which cannot read a
+# current libclang: against Arch's clang 22 it emits `struct spa_pod_builder`
+# as an opaque `_address` byte and the build dies on `no field 'data' on type
+# spa_pod_builder`. bindgen 0.72 reads the same header correctly, but 0.69 is
+# what the dependency asks for, and bumping it means moving to pipewire-rs 0.9,
+# which moved every constructor onto new Rc types.
+#
+# So an older libclang is unpacked beside the current one — extracted, not
+# installed, because pacman would have to downgrade llvm-libs and rustc links
+# against it. bindgen dlopens whatever LIBCLANG_PATH points at and is happy.
+RUN curl -fsSLO https://archive.archlinux.org/packages/c/clang/clang-19.1.7-2-x86_64.pkg.tar.zst \
+ && curl -fsSLO https://archive.archlinux.org/packages/l/llvm-libs/llvm-libs-19.1.7-2-x86_64.pkg.tar.zst \
+ && mkdir -p /opt/llvm19 \
+ && tar -C /opt/llvm19 -xf clang-19.1.7-2-x86_64.pkg.tar.zst usr/lib \
+ && tar -C /opt/llvm19 -xf llvm-libs-19.1.7-2-x86_64.pkg.tar.zst usr/lib \
+ && rm -f ./*.pkg.tar.zst \
+ && test -e /opt/llvm19/usr/lib/libclang.so
+
+ENV LIBCLANG_PATH=/opt/llvm19/usr/lib
+ENV LD_LIBRARY_PATH=/opt/llvm19/usr/lib
+
+WORKDIR /pkg

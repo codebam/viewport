@@ -28,7 +28,7 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 zvariant = "5"
 # The screencast portal streams frames through PipeWire, which is how every
 # consumer of one expects to receive them — a browser, OBS, a recorder.
-pipewire = "0.8"
+pipewire = "0.9"
 # The screencast portal answers on the bus thread and the answer is a person
 # choosing what to share, so the wait has to yield rather than block: a blocked
 # executor is a desktop whose settings and session calls stop with it.
