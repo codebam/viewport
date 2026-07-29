@@ -90,6 +90,13 @@ function syncOutputs(list) {
       if (activeOutput === null) activeOutput = info.name;
     }
 
+    /* Kept as numbers as well as CSS: anything that has to report a position
+       back to the compositor needs the layout coordinates, and reading them
+       back out of a style string is a parser nobody needs. */
+    output.rect = {
+      x: info.x, y: info.y, width: info.width, height: info.height,
+    };
+
     Object.assign(output.el.style, {
       left: `${info.x}px`,
       top: `${info.y}px`,

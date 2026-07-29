@@ -93,6 +93,19 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             state.notify_focus(NO_VIEW);
         }
 
+        Request::ScreencastRect { x, y, width, height } => {
+            // A zero size is the shell saying there is nothing above the
+            // windows now, which is the ordinary case.
+            state.shell_overlay = (width > 0 && height > 0).then(|| {
+                smithay::utils::Rectangle::new((x, y).into(), (width, height).into())
+            });
+            // The stack changed without anything committing, and a desktop
+            // nobody is touching produces no damage of its own — so without
+            // this the chooser appears on the next frame something else
+            // happens to cause, which on an idle desktop is none.
+            state.needs_render = true;
+        }
+
         Request::ShellOverview { active } => {
             state.overview = active;
             if active {
@@ -110,6 +123,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             for view in state.views.views_mut() {
                 view.scale = 1.0;
                 view.clip = None;
+                view.frame = None;
             }
         }
 
@@ -241,6 +255,9 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
     view.box_ = resolved.box_;
     view.scale = resolved.scale;
     view.clip = resolved.clip;
+    // Absent means there is nothing of this window's frame that has to be
+    // drawn above anything, which is every tiled window.
+    view.frame = layout.frame;
     view.placed = true;
     // A rectangle un-hides a window, as in C (`src/xdg_shell.c:832`).
     //

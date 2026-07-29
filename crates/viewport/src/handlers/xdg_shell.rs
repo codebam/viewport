@@ -30,6 +30,15 @@ use viewport_ipc::Event;
 use crate::state::ViewportState;
 use crate::views::NO_VIEW;
 
+/// xdg-dialog-v1.
+///
+/// Nothing to do on the change itself: the hint is kept in the toplevel's role
+/// attributes by Smithay, and it is read when a window is first laid out. What
+/// this trait being implemented buys is the global existing at all — without it
+/// no client can set the hint, and a dialog is only ever inferred from having a
+/// parent.
+impl smithay::wayland::shell::xdg::dialog::XdgDialogHandler for ViewportState {}
+
 impl XdgShellHandler for ViewportState {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state

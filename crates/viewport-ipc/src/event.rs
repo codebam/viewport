@@ -81,11 +81,44 @@ pub enum Event {
     #[serde(rename = "shell.command")]
     ShellCommand { command: String, args: Vec<String> },
 
+    /// An application asked to share the screen, and the user has to choose
+    /// what.
+    ///
+    /// Re-sent, whole, every time the highlight moves. The shell draws this
+    /// list and nothing else decides it: the compositor knows which windows and
+    /// monitors exist and which of them the application will accept, and it
+    /// routes the keys, because the shell receives no input of its own.
+    #[serde(rename = "screencast.pick")]
+    ScreencastPick {
+        /// Which request this is, so an answer cannot land on a later one.
+        id: u32,
+        sources: Vec<CastSource>,
+        /// Where the highlight is, as an index into `sources`.
+        selected: u32,
+    },
+
+    /// The choice was made, or it was abandoned. The shell takes its chooser
+    /// down either way.
+    #[serde(rename = "screencast.pick.done")]
+    ScreencastPickDone { id: u32 },
+
     /// A rejected message. Delivered to the client that caused it where there
     /// is one, and broadcast otherwise — an error the shell caused is one it
     /// must see on the channel it already listens to.
     #[serde(rename = "error")]
     Error { context: String, message: String },
+}
+
+/// Something an application could be given a picture of.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CastSource {
+    /// `output` or `window`.
+    pub kind: String,
+    /// What to show the user: a monitor's name, or a window's title.
+    pub label: String,
+    /// The line under it — the make and model of a monitor, the application of
+    /// a window. Empty string, never null.
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -373,6 +406,12 @@ mod tests {
             json(&Event::OutputLayout {
                 outputs: Vec::new(),
             }),
+            json(&Event::ScreencastPick {
+                id: 0,
+                sources: Vec::new(),
+                selected: 0,
+            }),
+            json(&Event::ScreencastPickDone { id: 0 }),
             json(&Event::ShellCommand {
                 command: String::new(),
                 args: Vec::new(),
@@ -397,6 +436,8 @@ mod tests {
                 "notification.add",
                 "notification.close",
                 "output.layout",
+                "screencast.pick",
+                "screencast.pick.done",
                 "shell.command",
                 "error",
             ]

@@ -42,6 +42,19 @@ pub struct View {
     pub visible: bool,
     pub scale: f64,
     pub clip: Option<Box>,
+    /// The frame the shell drew, when it has to be drawn above the windows
+    /// underneath this one — see `ViewLayout::frame`.
+    pub frame: Option<Box>,
+    /// Element ids for that frame, one per side, stable for the life of the
+    /// view: the damage tracker keys on the id, and one that changed every
+    /// frame would redraw the whole output for a border.
+    ///
+    /// Four, because what is drawn is the border and not the window. The
+    /// middle of a frame is the desktop's own background in the shell's buffer
+    /// — `.viewport` has no background, but the wallpaper behind it does — so
+    /// drawing the whole rectangle paints the desktop over the client, which is
+    /// a floating window that has become a solid block of wallpaper.
+    pub overlay_ids: [smithay::backend::renderer::element::Id; 4],
 
     /// Driven a frame at a time by a tween in the shell, which cannot fade a
     /// window with CSS: the frame is DOM, the contents are a surface the
@@ -153,17 +166,94 @@ impl View {
 
     /// Whether this window would rather float than be tiled.
     ///
-    /// The compositor can see the signals for this and the shell cannot: a
-    /// parent toplevel means a dialog.
-    ///
-    /// The C build also consults the X11 window type, and xdg-dialog-v1 would
-    /// be a third signal — but Smithay keeps `ToplevelDialogHint` private, so
-    /// reading it needs an upstream change. Parent alone covers the ordinary
-    /// dialog case.
+    /// The compositor can see these signals and the shell cannot, which is why
+    /// the answer is sent with the window rather than worked out there. A
+    /// window rule in the config still overrides it: this is what the
+    /// application asked for, not what the user settled on.
     pub fn wants_floating(&self) -> bool {
-        self.window
-            .toplevel()
-            .is_some_and(|toplevel| toplevel.parent().is_some())
+        // An X11 window says so outright, in the type it advertises. Reading
+        // it is what the C build does, and without it every GIMP tool palette
+        // and every splash screen is tiled into the layout as though it were a
+        // main window.
+        if let Some(x11) = self.window.x11_surface() {
+            use smithay::xwayland::xwm::WmWindowType;
+            if let Some(kind) = x11.window_type() {
+                if matches!(
+                    kind,
+                    WmWindowType::Dialog
+                        | WmWindowType::Utility
+                        | WmWindowType::Toolbar
+                        | WmWindowType::Splash
+                        | WmWindowType::Menu
+                        | WmWindowType::DropdownMenu
+                        | WmWindowType::PopupMenu
+                        | WmWindowType::Notification
+                        | WmWindowType::Tooltip
+                        | WmWindowType::Combo
+                        | WmWindowType::Dnd
+                ) {
+                    return true;
+                }
+            }
+            // A window opened on behalf of another one — the X11 spelling of a
+            // parent, and what a dialog with no type set still has.
+            if x11.is_transient_for().is_some() {
+                return true;
+            }
+            // Never placed by the compositor at all, in the protocol's own
+            // terms: tooltips and menus that position themselves.
+            if x11.is_override_redirect() {
+                return true;
+            }
+        }
+
+        let Some(toplevel) = self.window.toplevel() else {
+            return false;
+        };
+
+        // A parent toplevel means a dialog.
+        if toplevel.parent().is_some() {
+            return true;
+        }
+
+        // xdg-dialog-v1, where a client says it plainly rather than leaving it
+        // to be inferred. Modal counts the same as dialog here: both are
+        // windows that came up to be dealt with and go away, and neither
+        // belongs in a tiling column.
+        use smithay::wayland::shell::xdg::dialog::ToplevelDialogHint;
+        if self
+            .role_attribute(|attrs| attrs.dialog_hint)
+            .is_some_and(|hint| matches!(hint, ToplevelDialogHint::Dialog | ToplevelDialogHint::Modal))
+        {
+            return true;
+        }
+
+        // A window that cannot be resized. Tiling it means either breaking the
+        // layout or asking a client to do something it has said it will not,
+        // and what a client means by a fixed size is almost always a dialog:
+        // an about box, a preferences panel, a password prompt.
+        let (min, max) = self.size_bounds();
+        if min.0 > 0 && min.1 > 0 && min == max {
+            return true;
+        }
+
+        false
+    }
+
+    /// What the client will accept, as (minimum, maximum). Zero for "no
+    /// opinion", which is what the protocol uses.
+    fn size_bounds(&self) -> ((i32, i32), (i32, i32)) {
+        let Some(surface) = self.surface() else {
+            return ((0, 0), (0, 0));
+        };
+        with_states(&surface, |states| {
+            let mut guard = states.cached_state.get::<SurfaceCachedState>();
+            let current = guard.current();
+            (
+                (current.min_size.w, current.min_size.h),
+                (current.max_size.w, current.max_size.h),
+            )
+        })
     }
 
     fn role_attribute<F, T>(&self, f: F) -> Option<T>
@@ -208,6 +298,10 @@ impl Views {
             visible: true,
             scale: 1.0,
             clip: None,
+            frame: None,
+            overlay_ids: std::array::from_fn(|_| {
+                smithay::backend::renderer::element::Id::new()
+            }),
             opacity: 1.0,
             configured: None,
             foreign: None,

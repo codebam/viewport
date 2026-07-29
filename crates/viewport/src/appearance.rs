@@ -178,11 +178,18 @@ impl Appearance {
         // The name is claimed if it is free and left alone if it is not,
         // rather than replacing whoever holds it: a real desktop portal
         // running alongside knows more about the session than this does.
+        // Before it is handed over: the watcher needs the same sessions the
+        // object on the bus is keeping.
+        let sessions = screencast.sessions();
+        let closer = screencast.closer();
+
         let connection = zbus::blocking::connection::Builder::session()?
             .name(BUS_NAME)?
             .serve_at(OBJECT_PATH, portal)?
             .serve_at(OBJECT_PATH, screencast)?
             .build()?;
+
+        crate::screencast::portal::watch_frontend(connection.clone(), sessions, closer);
 
         self.connection = Some(connection);
         tracing::info!("settings and screencast portals up, color-scheme={scheme}");

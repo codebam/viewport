@@ -13,7 +13,7 @@ pub mod event;
 pub mod geometry;
 pub mod request;
 
-pub use event::Event;
+pub use event::{CastSource, Event};
 pub use geometry::{Box, PartialBox, Transform};
 pub use request::Request;
 

@@ -136,8 +136,26 @@ function ancestorOnAxis(id, axis) {
 
 /* Keyboard resize, one step at a time. sway's resize mode maps left/right to
  * shrink/grow width and up/down to shrink/grow height. */
+/* How much one press of resize mode moves an edge of a floating window.
+ *
+ * Pixels rather than a fraction: a floating window has no container to take a
+ * share of, so there is nothing for a fraction to be a fraction of. */
+const FLOAT_RESIZE_STEP = 40;
+
 function resizeFocused(direction) {
   if (focusedId == null) return;
+
+  /* A floating window is not in the tree, so the lookup below finds nothing
+     and resize mode did nothing at all for one — every press ignored, with no
+     way to tell that from a binding that never fired. It simply grows: there
+     are no siblings to take the space from. */
+  if (floatingOf(focusedId)) {
+    const step = (direction === 'left' || direction === 'up')
+      ? -FLOAT_RESIZE_STEP : FLOAT_RESIZE_STEP;
+    const horizontal = direction === 'left' || direction === 'right';
+    resizeByDelta(focusedId, horizontal ? step : 0, horizontal ? 0 : step);
+    return;
+  }
 
   const axis = (direction === 'left' || direction === 'right')
     ? 'horizontal' : 'vertical';

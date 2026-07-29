@@ -26,6 +26,13 @@
 -->
 <div id="notifications"></div>
 
+<!--
+  The screen-share chooser. Outside the outputs for the same reason as the
+  notifications: it belongs to the session rather than to one desktop, and it
+  is drawn over whichever one is being looked at.
+-->
+<div id="screencast" hidden></div>
+
 <template id="desktop-template">
   <main class="desktop">
     <nav class="bar">
@@ -96,4 +103,5 @@ Mod4+d       launcher</pre>
 <script src="outputs.js"></script>
 <script src="windows.js"></script>
 <script src="bar.js"></script>
+<script src="screencast.js"></script>
 <script src="commands.js"></script>

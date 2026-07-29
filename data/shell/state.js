@@ -168,6 +168,7 @@ function clearOverviewState() {
 
 const outputsEl = document.getElementById('outputs');
 const notificationsEl = document.getElementById('notifications');
+const screencastEl = document.getElementById('screencast');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
 

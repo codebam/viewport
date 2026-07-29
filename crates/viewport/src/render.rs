@@ -39,6 +39,9 @@ smithay::backend::renderer::element::render_elements! {
     Surface=WaylandSurfaceRenderElement<R>,
     CroppedSurface=CropRenderElement<WaylandSurfaceRenderElement<R>>,
     Shell=TextureRenderElement<<R as RendererSuper>::TextureId>,
+    /// A piece of the shell drawn above the windows: the frame around a
+    /// floating window, or a dialog the shell put up.
+    CroppedShell=CropRenderElement<TextureRenderElement<<R as RendererSuper>::TextureId>>,
     Cursor=MemoryRenderBufferRenderElement<R>,
 }
 
@@ -65,6 +68,26 @@ pub struct Shell {
     pub damage: DamageSnapshot<i32, BufferCoord>,
     /// Stable for the life of the compositor, for the same reason.
     pub id: Id,
+    /// For the copy drawn above the windows, which needs an id of its own.
+    pub overlay_id: Id,
+}
+
+/// One window, and everything about drawing it that is not the window itself.
+pub struct WindowFrame {
+    pub window: Window,
+    pub location: Point<i32, Physical>,
+    /// The hole the shell drew, which the surface is cropped to.
+    pub clip: Option<Rectangle<i32, Physical>>,
+    /// The shell's border around this window, drawn immediately above it: the
+    /// four sides, and not the middle.
+    ///
+    /// Only for a window that is over another one — a floating window — where
+    /// the border falls inside the window beneath and would otherwise be
+    /// covered by that client's surface. Above *this* window rather than above
+    /// everything, so two floating windows stack the way they are stacked: the
+    /// lower one's border stays under the upper one's surface, which is where
+    /// it belongs.
+    pub overlay: Vec<(Id, Rectangle<i32, Physical>)>,
 }
 
 /// What one output should show.
@@ -75,10 +98,17 @@ pub struct Shell {
 pub struct Frame {
     /// Front to back within each group.
     pub layers_above: Vec<(LayerSurface, Point<i32, Physical>)>,
-    /// Window, where to draw it, and the hole it is cropped to.
-    pub windows: Vec<(Window, Point<i32, Physical>, Option<Rectangle<i32, Physical>>)>,
+    /// The windows on this output, front to back.
+    pub windows: Vec<WindowFrame>,
     pub layers_below: Vec<(LayerSurface, Point<i32, Physical>)>,
     pub shell: Option<Shell>,
+    /// The part of the shell to draw *above* the windows, in this output's
+    /// physical coordinates, and nothing if there is none.
+    ///
+    /// The shell is one buffer under everything, so this is how anything it
+    /// draws can be in front: the same texture, a second time, cropped to the
+    /// piece that belongs on top.
+    pub overlay: Option<Rectangle<i32, Physical>>,
     pub cursor: Cursor,
     pub scale: f64,
     /// The lock screen for this output, if the session is locked.
@@ -188,7 +218,43 @@ where
         );
     }
 
-    for (window, location, clip) in &frame.windows {
+    // A dialog the shell put up, above every window.
+    //
+    // The same buffer as the copy at the bottom — there is only one — drawn
+    // again and cropped to the part that has to be in front. A chooser asking
+    // which window to share cannot be behind the windows it is asking about,
+    // and the shell has no way to be in front on its own.
+    if let (Some(shell), Some(crop)) = (frame.shell.as_ref(), frame.overlay) {
+        if let Some(element) = shell_element(renderer, shell, shell.overlay_id.clone()) {
+            // Cropped away to nothing is a chooser on another monitor, not a
+            // fault.
+            if let Some(cropped) = CropRenderElement::from_element(element, scale, crop) {
+                elements.push(OutputElement::from(cropped));
+            }
+        }
+    }
+
+    for WindowFrame {
+        window,
+        location,
+        clip,
+        overlay,
+    } in &frame.windows
+    {
+        // This window's border, above the windows it is stacked over and below
+        // its own surface's popups. The sides only: the middle is the client,
+        // and the shell's buffer has the desktop behind it rather than a hole.
+        if let Some(shell) = frame.shell.as_ref() {
+            for (id, side) in overlay {
+                let Some(element) = shell_element(renderer, shell, id.clone()) else {
+                    break;
+                };
+                if let Some(cropped) = CropRenderElement::from_element(element, scale, *side) {
+                    elements.push(OutputElement::from(cropped));
+                }
+            }
+        }
+
         // Popups first and unclipped, drawn over everything below.
         //
         // A menu overflows the window that opened it — that is what a menu is
@@ -274,32 +340,93 @@ where
         );
     }
 
+    // The shell itself, under everything. Every window is a hole in it.
     if let Some(shell) = frame.shell.as_ref() {
-        // Imported here rather than held as a texture, because which renderer
-        // it belongs to is the backend's business. Renderers cache the import,
-        // so this is not a copy per frame.
-        match renderer.import_dmabuf(&shell.buffer, None) {
-            Ok(texture) => elements.push(OutputElement::from(
-                TextureRenderElement::from_texture_with_damage(
-                    shell.id.clone(),
-                    renderer.context_id(),
-                    shell.location,
-                    texture,
-                    1,
-                    Transform::Normal,
-                    None,
-                    None,
-                    None,
-                    None,
-                    shell.damage.clone(),
-                    Kind::Unspecified,
-                ),
-            )),
-            Err(_) => tracing::error!("could not import the shell's frame into this renderer"),
+        if let Some(element) = shell_element(renderer, shell, shell.id.clone()) {
+            elements.push(OutputElement::from(element));
         }
     }
 
     elements
+}
+
+/// The shell's frame as one texture, under the id it is drawn with.
+///
+/// Imported here rather than held as a texture, because which renderer it
+/// belongs to is the backend's business. Renderers cache the import, so this is
+/// not a copy per frame — and not per call either, which is what makes drawing
+/// it twice affordable.
+fn shell_element<R>(
+    renderer: &mut R,
+    shell: &Shell,
+    id: Id,
+) -> Option<TextureRenderElement<<R as RendererSuper>::TextureId>>
+where
+    R: Renderer + ImportAll + ImportMem + ImportDma,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    match renderer.import_dmabuf(&shell.buffer, None) {
+        Ok(texture) => Some(TextureRenderElement::from_texture_with_damage(
+            id,
+            renderer.context_id(),
+            shell.location,
+            texture,
+            1,
+            Transform::Normal,
+            None,
+            None,
+            None,
+            None,
+            shell.damage.clone(),
+            Kind::Unspecified,
+        )),
+        Err(_) => {
+            tracing::error!("could not import the shell's frame into this renderer");
+            None
+        }
+    }
+}
+
+/// The four sides of a border, given the frame the shell drew and the hole
+/// inside it.
+///
+/// The middle is left out on purpose. What the shell paints inside a window is
+/// the desktop behind it — `.viewport` has no background of its own, but the
+/// wallpaper it sits on does — so a copy of the whole frame drawn over the
+/// window is the desktop drawn over the client, which is a floating window
+/// turned into a solid rectangle of wallpaper.
+///
+/// Top and bottom run the full width, so the corners belong to them and the
+/// border reads as continuous. A side with no thickness comes back empty and
+/// the caller drops it.
+pub fn border_sides(
+    frame: viewport_ipc::geometry::Box,
+    hole: viewport_ipc::geometry::Box,
+) -> [viewport_ipc::geometry::Box; 4] {
+    use viewport_ipc::geometry::Box;
+
+    let bottom_of_hole = hole.y + hole.height;
+    let right_of_hole = hole.x + hole.width;
+    [
+        // Top.
+        Box::new(frame.x, frame.y, frame.width, (hole.y - frame.y).max(0)),
+        // Bottom.
+        Box::new(
+            frame.x,
+            bottom_of_hole,
+            frame.width,
+            (frame.y + frame.height - bottom_of_hole).max(0),
+        ),
+        // Left, between the two, so the corners are not drawn twice.
+        Box::new(frame.x, hole.y, (hole.x - frame.x).max(0), hole.height),
+        // Right.
+        Box::new(
+            right_of_hole,
+            hole.y,
+            (frame.x + frame.width - right_of_hole).max(0),
+            hole.height,
+        ),
+    ]
 }
 
 /// Where a window sits relative to an output, and what it is cropped to.
@@ -329,4 +456,53 @@ pub fn window_placement(
         .to_i32_round()
     });
     (location, clip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use viewport_ipc::geometry::Box;
+
+    /// A frame drawn over the window instead of around it is the desktop drawn
+    /// over the client: `.viewport` has no background, but the wallpaper it
+    /// sits on does, so the middle of the frame is opaque in the shell's
+    /// buffer. That is a floating window turned into a solid rectangle.
+    #[test]
+    fn the_middle_of_a_border_is_not_drawn() {
+        let frame = Box::new(100, 100, 400, 300);
+        let hole = Box::new(102, 102, 396, 296);
+        let sides = border_sides(frame, hole);
+
+        for side in sides {
+            let overlaps_middle = side.x < hole.x + hole.width
+                && side.x + side.width > hole.x
+                && side.y < hole.y + hole.height
+                && side.y + side.height > hole.y;
+            assert!(!overlaps_middle, "{side:?} covers the client");
+        }
+    }
+
+    /// And all four of them are there, each as thick as the border.
+    #[test]
+    fn every_side_of_a_border_is_drawn() {
+        let frame = Box::new(100, 100, 400, 300);
+        let hole = Box::new(102, 102, 396, 296);
+        let [top, bottom, left, right] = border_sides(frame, hole);
+
+        assert_eq!(top, Box::new(100, 100, 400, 2));
+        assert_eq!(bottom, Box::new(100, 398, 400, 2));
+        // Between the two, so the corners are drawn once rather than twice.
+        assert_eq!(left, Box::new(100, 102, 2, 296));
+        assert_eq!(right, Box::new(498, 102, 2, 296));
+    }
+
+    /// A window whose frame is its hole has no border, and asking for one
+    /// gives four rectangles of nothing rather than four of something.
+    #[test]
+    fn a_window_with_no_border_gets_no_sides() {
+        let box_ = Box::new(0, 0, 800, 600);
+        for side in border_sides(box_, box_) {
+            assert!(side.width == 0 || side.height == 0, "{side:?} is not empty");
+        }
+    }
 }

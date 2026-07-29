@@ -186,6 +186,19 @@ pub struct ViewportState {
     /// changed and would repaint the whole output forever.
     #[cfg(feature = "wpe")]
     pub shell_element_id: smithay::backend::renderer::element::Id,
+    /// A second id for the copy of the shell drawn *over* the windows.
+    ///
+    /// Its own, because the damage tracker keys on the id and one element
+    /// appearing twice under a single id is a frame it cannot describe.
+    pub shell_overlay_id: smithay::backend::renderer::element::Id,
+    /// Where the shell drew something that has to be above the windows, in the
+    /// layout's own coordinates.
+    ///
+    /// Only the screen-share chooser so far. The shell is one buffer at the
+    /// bottom of everything — the windows are painted into holes in it — so
+    /// anything it draws is behind them by construction, which for a dialog
+    /// asking a question is the one place that will not do.
+    pub shell_overlay: Option<smithay::utils::Rectangle<i32, Logical>>,
     /// What changed in the shell's buffer since the last frame.
     ///
     /// Required, not an optimisation. With a stable id the damage tracker
@@ -227,6 +240,12 @@ pub struct ViewportState {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    /// xdg-dialog-v1: a client saying outright that a window is a dialog.
+    ///
+    /// Held rather than dropped, because dropping it takes the global down —
+    /// and without the global the hint is never set, so every dialog is back to
+    /// being inferred from whether it has a parent.
+    pub xdg_dialog_state: smithay::wayland::shell::xdg::dialog::XdgDialogState,
     /// wlr-layer-shell: bars, launchers, notification daemons. Not the
     /// shell's business — a layer surface asks for an edge, not a layout.
     pub layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState,
@@ -358,6 +377,16 @@ pub struct ViewportState {
     /// connection open.
     pub pipewire: Option<crate::screencast::stream::Pipewire>,
     pub casts: Vec<crate::screencast::Cast>,
+    /// A window being dragged with the pointer, and what the drag is doing to
+    /// it.
+    pub pointer_drag: Option<PointerDrag>,
+    /// The chooser that is up, while an application is waiting to be told what
+    /// it may share.
+    pub picker: Option<crate::screencast::Picker>,
+    /// Which request the next chooser is for. Rising rather than reused so a
+    /// stale answer — a timer that fired while the user was still deciding —
+    /// cannot be applied to the chooser that replaced it.
+    next_pick: u32,
     /// wlr-output-power-management: what wlopm and a lid-close script speak.
     pub output_power_state: crate::output_power::OutputPowerState,
     /// wlr-gamma-control: what wlsunset and gammastep speak. Smithay
@@ -424,6 +453,8 @@ impl ViewportState {
         let color_management =
             crate::color_management::ColorManagementState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_dialog_state =
+            smithay::wayland::shell::xdg::dialog::XdgDialogState::new::<Self>(&dh);
         let layer_shell_state =
             smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
         let screencopy_state = crate::screencopy::ScreencopyState::new::<Self>(&dh);
@@ -645,6 +676,8 @@ impl ViewportState {
             shell_frames: 0,
             #[cfg(feature = "wpe")]
             shell_element_id: smithay::backend::renderer::element::Id::new(),
+            shell_overlay_id: smithay::backend::renderer::element::Id::new(),
+            shell_overlay: None,
             #[cfg(feature = "wpe")]
             shell_damage: Default::default(),
 
@@ -657,6 +690,7 @@ impl ViewportState {
             color_management,
             compositor_state,
             xdg_shell_state,
+            xdg_dialog_state,
             layer_shell_state,
             screencopy_state,
             tearing_state,
@@ -671,6 +705,9 @@ impl ViewportState {
             output_power_state,
             pipewire: None,
             casts: Vec::new(),
+            pointer_drag: None,
+            picker: None,
+            next_pick: 1,
             foreign_management_state,
             image_capture_source_state,
             output_capture_source_state,
@@ -2346,51 +2383,231 @@ impl ViewportState {
         use crate::screencast::portal::{Message, Started};
 
         match message {
-            Message::Start { types, reply } => {
-                let source = self.pick_screencast_source(types);
-                let answer = match source {
-                    Some(source) => {
-                        let kind = source.kind();
-                        self.start_cast(source)
-                            .map(|(node, size)| Started {
-                                node,
-                                width: size.w,
-                                height: size.h,
-                                source_type: kind,
-                            })
-                            .map_err(|e| e.to_string())
-                    }
-                    None => Err("there is nothing to share".to_owned()),
-                };
-                let _ = reply.send(answer);
-            }
+            Message::Start { types, reply } => self.open_screencast_picker(types, reply),
             Message::Close { node } => self.stop_cast(node),
         }
     }
 
-    /// What to share, given what the application asked for.
+    /// How long a chooser stays up before it gives up on being answered.
     ///
-    /// A window if one was asked for and one is focused, and the screen it is
-    /// on otherwise. Asking the user is the shell's job — it draws every
-    /// window already — and until it does, the focused window is the one the
-    /// user was looking at when they pressed share.
-    fn pick_screencast_source(&mut self, types: u32) -> Option<crate::screencast::Source> {
+    /// The application is waiting on this: its own dialogue says the share is
+    /// starting for as long as the chooser is open, so a user who walked away
+    /// leaves it there. Long enough to read the list and think about it.
+    const PICK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Ask the user what to share.
+    fn open_screencast_picker(
+        &mut self,
+        types: u32,
+        reply: async_channel::Sender<Result<crate::screencast::portal::Started, String>>,
+    ) {
+        // One at a time. Two choosers on screen with one keyboard between them
+        // is a race the user cannot see, let alone win.
+        if self.picker.is_some() {
+            let _ = reply.try_send(Err("something else is already being chosen".to_owned()));
+            return;
+        }
+
+        let sources = self.screencast_sources(types);
+        if sources.is_empty() {
+            let _ = reply.try_send(Err("there is nothing to share".to_owned()));
+            return;
+        }
+
+        // Nobody to draw it. A shell that is not up — a test, a crash, a build
+        // without the web engine — should still be able to share a screen, so
+        // this falls back to what was on screen when the user pressed share.
+        if !self.shell_is_up() {
+            let source = sources.into_iter().next().expect("checked above");
+            let answer = self.begin_cast(source);
+            let _ = reply.try_send(answer);
+            return;
+        }
+
+        let id = self.next_pick;
+        self.next_pick = self.next_pick.wrapping_add(1).max(1);
+        self.picker = Some(crate::screencast::Picker {
+            id,
+            sources,
+            selected: 0,
+            restore: self.focused,
+            reply,
+        });
+
+        // The keys have to come here rather than to whatever was focused: the
+        // chooser is driven from the compositor, and a keystroke meant for it
+        // that reached a terminal instead would be typed into it.
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+        }
+        self.notify_picker();
+
+        // Answered either way, in the end. An application left waiting on a
+        // chooser nobody is looking at shows a share that is forever about to
+        // start.
+        let _ = self.loop_handle.insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(Self::PICK_TIMEOUT),
+            move |_, _, state| {
+                if state.picker.as_ref().is_some_and(|picker| picker.id == id) {
+                    tracing::info!("nobody chose what to share");
+                    state.cancel_screencast_pick();
+                }
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            },
+        );
+    }
+
+    /// Whether there is a shell to draw a chooser.
+    fn shell_is_up(&self) -> bool {
+        #[cfg(feature = "wpe")]
+        {
+            self.shell.is_some()
+        }
+        #[cfg(not(feature = "wpe"))]
+        {
+            false
+        }
+    }
+
+    /// Everything the application could be given a picture of.
+    ///
+    /// Windows before monitors, and the focused window first: what somebody
+    /// means to share is usually what they were just looking at, and the list
+    /// is walked from the top.
+    fn screencast_sources(&self, types: u32) -> Vec<crate::screencast::Source> {
+        let mut sources = Vec::new();
         if types & crate::screencast::SOURCE_WINDOW != 0 {
-            if let Some(view) = self.views.get(self.focused) {
-                if view.mapped {
-                    return Some(crate::screencast::Source::Window(view.id));
+            let focused = self.views.get(self.focused).filter(|view| view.mapped);
+            if let Some(view) = focused {
+                sources.push(crate::screencast::Source::Window(view.id));
+            }
+            for view in self.views.iter() {
+                if view.mapped && Some(view.id) != focused.map(|view| view.id) {
+                    sources.push(crate::screencast::Source::Window(view.id));
                 }
             }
         }
         if types & crate::screencast::SOURCE_MONITOR != 0 {
-            let output = self
+            // The one being looked at first, for the same reason.
+            let active = self
                 .active_output
                 .as_ref()
-                .and_then(|name| self.output_by_name(name))
-                .or_else(|| self.space.outputs().next().cloned())?;
-            return Some(crate::screencast::Source::Output(output));
+                .and_then(|name| self.output_by_name(name));
+            if let Some(output) = active.clone() {
+                sources.push(crate::screencast::Source::Output(output));
+            }
+            for output in self.space.outputs() {
+                if Some(output) != active.as_ref() {
+                    sources.push(crate::screencast::Source::Output(output.clone()));
+                }
+            }
         }
-        None
+        sources
+    }
+
+    /// Send the chooser, or what is left of it, to the shell.
+    fn notify_picker(&mut self) {
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let id = picker.id;
+        let selected = picker.selected as u32;
+        let sources = picker
+            .sources
+            .iter()
+            .map(|source| match source {
+                crate::screencast::Source::Output(output) => {
+                    let properties = output.physical_properties();
+                    viewport_ipc::CastSource {
+                        kind: "output".to_owned(),
+                        label: output.name(),
+                        detail: format!("{} {}", properties.make, properties.model)
+                            .trim()
+                            .to_owned(),
+                    }
+                }
+                crate::screencast::Source::Window(id) => {
+                    let view = self.views.get(*id);
+                    viewport_ipc::CastSource {
+                        kind: "window".to_owned(),
+                        label: view.map(|view| view.title()).unwrap_or_default(),
+                        detail: view.map(|view| view.app_id()).unwrap_or_default(),
+                    }
+                }
+            })
+            .collect();
+
+        let event = Event::ScreencastPick {
+            id,
+            sources,
+            selected,
+        };
+        self.notify(&event);
+    }
+
+    /// Move the highlight.
+    pub fn step_screencast_pick(&mut self, delta: isize) {
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        picker.step(delta);
+        self.notify_picker();
+    }
+
+    /// Share what is highlighted.
+    pub fn confirm_screencast_pick(&mut self) {
+        let Some(picker) = self.picker.take() else {
+            return;
+        };
+        let id = picker.id;
+        let Some(source) = picker.sources.into_iter().nth(picker.selected) else {
+            let _ = picker.reply.try_send(Err("nothing was chosen".to_owned()));
+            self.notify(&Event::ScreencastPickDone { id });
+            return;
+        };
+        let answer = self.begin_cast(source);
+        let _ = picker.reply.try_send(answer);
+        self.notify(&Event::ScreencastPickDone { id });
+        self.restore_focus(picker.restore);
+    }
+
+    /// Share nothing, which the application is told is a refusal.
+    pub fn cancel_screencast_pick(&mut self) {
+        let Some(picker) = self.picker.take() else {
+            return;
+        };
+        // Dropping the sender would answer too — the other end reads a closed
+        // channel as no answer — but saying so keeps the reason in one place.
+        let _ = picker.reply.try_send(Err("nothing was chosen".to_owned()));
+        self.notify(&Event::ScreencastPickDone { id: picker.id });
+        self.restore_focus(picker.restore);
+    }
+
+    /// Put the keyboard back where the chooser found it.
+    ///
+    /// A window that has closed in the meantime is left alone: focus stays
+    /// nowhere, which is what it would have been anyway.
+    fn restore_focus(&mut self, id: u32) {
+        if self.views.get(id).is_some_and(|view| view.mapped) {
+            crate::apply::focus_view(self, id);
+        }
+    }
+
+    /// Start sharing one source, described the way the portal wants it.
+    fn begin_cast(
+        &mut self,
+        source: crate::screencast::Source,
+    ) -> Result<crate::screencast::portal::Started, String> {
+        let source_type = source.kind();
+        self.start_cast(source)
+            .map(|(node, size)| crate::screencast::portal::Started {
+                node,
+                width: size.w,
+                height: size.h,
+                source_type,
+            })
+            .map_err(|e| e.to_string())
     }
 
     /// Whether an output is currently in HDR.
@@ -2612,9 +2829,10 @@ impl ViewportState {
                         width: Some(placed.width),
                         height: Some(placed.height),
                     },
-                    // No clip: a clip describes the hole the shell drew, and
-                    // there is no shell answering.
+                    // No clip and no frame: both describe what the shell drew,
+                    // and there is no shell answering.
                     clip: None,
+                    frame: None,
                     scale: None,
                 }),
             );
@@ -2800,9 +3018,17 @@ impl ViewportState {
             }
         }
 
+        // Front to back, which is the order the renderer draws in and the
+        // order `Frame::windows` is documented to be in. Smithay's space
+        // yields the other way round — bottom of the stack first — so taking
+        // it as it comes drew the stack inside out: whatever had just been
+        // raised went to the back. Two windows that never overlap look
+        // identical either way, which is why a tiling desktop hid this and a
+        // floating or maximised window over a tiled one did not.
         let windows: Vec<_> = self
             .space
             .elements()
+            .rev()
             .filter_map(|window| {
                 let layout = self.space.element_geometry(window)?;
                 // Off this output entirely: drawing it would cost a texture
@@ -2810,10 +3036,18 @@ impl ViewportState {
                 if !output_geometry.overlaps(layout) {
                     return None;
                 }
-                let clip = window
+                let view = window
                     .toplevel()
                     .map(|toplevel| toplevel.wl_surface().clone())
-                    .and_then(|surface| self.views.find_by_surface(&surface))
+                    .and_then(|surface| self.views.find_by_surface(&surface));
+                let overlay_ids: [smithay::backend::renderer::element::Id; 4] = view
+                    .map(|view| view.overlay_ids.clone())
+                    .unwrap_or_else(|| {
+                        std::array::from_fn(|_| {
+                            smithay::backend::renderer::element::Id::new()
+                        })
+                    });
+                let clip = view
                     .and_then(|view| view.clip)
                     .map(|clip| {
                         Rectangle::<i32, Logical>::new(
@@ -2828,7 +3062,41 @@ impl ViewportState {
                     clip,
                     scale,
                 );
-                Some((window.clone(), location, clip))
+
+                // The shell's border for this window, where it has said one
+                // has to be drawn above whatever is underneath — as four
+                // sides around the hole rather than one rectangle over it.
+                let overlay = view
+                    .and_then(|view| view.frame.map(|frame| (frame, view.box_)))
+                    .map(|(frame, hole)| {
+                        crate::render::border_sides(frame, hole)
+                            .into_iter()
+                            .zip(overlay_ids.iter().cloned())
+                            .filter_map(|(side, id)| {
+                                let local = smithay::utils::Rectangle::<i32, Logical>::new(
+                                    (
+                                        side.x - output_geometry.loc.x,
+                                        side.y - output_geometry.loc.y,
+                                    )
+                                        .into(),
+                                    (side.width, side.height).into(),
+                                );
+                                // A side of no thickness is a border the shell
+                                // did not draw on that edge.
+                                (side.width > 0 && side.height > 0).then(|| {
+                                    (id, local.to_f64().to_physical(scale).to_i32_round())
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                Some(crate::render::WindowFrame {
+                    window: window.clone(),
+                    location,
+                    clip,
+                    overlay,
+                })
             })
             .collect();
 
@@ -2840,7 +3108,7 @@ impl ViewportState {
             use smithay::wayland::seat::WaylandFocus as _;
             let popups: usize = windows
                 .iter()
-                .filter_map(|(window, _, _)| window.wl_surface())
+                .filter_map(|frame| frame.window.wl_surface())
                 .map(|surface| PopupManager::popups_for_surface(&surface).count())
                 .sum();
             // Per output: one monitor drawing a menu and the other not is the
@@ -2867,15 +3135,33 @@ impl ViewportState {
                 .into(),
             damage: self.shell_damage.snapshot(),
             id: self.shell_element_id.clone(),
+            overlay_id: self.shell_overlay_id.clone(),
         });
         #[cfg(not(feature = "wpe"))]
         let shell = None;
+
+        // The part of the shell that goes above the windows, in this output's
+        // own physical coordinates.
+        let overlay = self.shell_overlay.and_then(|rect| {
+            let local = smithay::utils::Rectangle::<i32, Logical>::new(
+                (rect.loc.x - output_geometry.loc.x, rect.loc.y - output_geometry.loc.y).into(),
+                rect.size,
+            );
+            // Nothing of it on this monitor: the chooser is drawn on one of
+            // them and the others carry on as they were.
+            let visible = smithay::utils::Rectangle::from_size(
+                (output_geometry.size.w, output_geometry.size.h).into(),
+            );
+            local.intersection(visible)?;
+            Some(local.to_f64().to_physical(scale).to_i32_round())
+        });
 
         crate::render::Frame {
             layers_above,
             windows,
             layers_below,
             shell,
+            overlay,
             cursor,
             scale,
             lock: self
@@ -3640,4 +3926,26 @@ fn parse_transform(text: &str) -> Option<Transform> {
         "flipped-270" => Some(Transform::Flipped270),
         _ => None,
     }
+}
+
+/// A window being dragged with Mod4 and a button held.
+///
+/// The compositor follows the pointer and the shell does the arithmetic: where
+/// a window may go, and how big it may be, are questions about the layout —
+/// and the layout is the shell's.
+pub struct PointerDrag {
+    pub id: u32,
+    /// The right button rather than the left: resizing rather than moving.
+    pub resize: bool,
+    /// Where the pointer was when the last delta was worked out.
+    pub last: smithay::utils::Point<f64, smithay::utils::Logical>,
+    /// Motion too small to be worth a whole pixel yet.
+    ///
+    /// Kept rather than rounded away: a slow drag is a stream of fractional
+    /// deltas, and rounding each one to zero is a window that does not move at
+    /// all until the pointer is thrown across the desk.
+    pub pending: (f64, f64),
+    /// When the shell was last told, so a mouse reporting a thousand times a
+    /// second does not ask for a thousand relayouts.
+    pub sent: Option<std::time::Instant>,
 }

@@ -663,3 +663,98 @@ html.no-tutorial .empty .tutorial { display: none; }
 }
 
 .notification-actions button:hover { border-color: var(--border-focus); }
+
+/* ------------------------------------------------------------------------
+ * The screen-share chooser
+ *
+ * Centred and over everything: an application is waiting on an answer, and
+ * the desktop behind it cannot be used until there is one — the compositor
+ * holds the keyboard for as long as this is up.
+ * --------------------------------------------------------------------- */
+
+/* Positioned over one monitor, set from the layout — see screencast.js.
+   No dimming: only the dialog is drawn above the windows, so a scrim here
+   would darken the wallpaper and leave every window at full brightness, which
+   reads as a rendering fault rather than as a modal. */
+#screencast {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+#screencast[hidden] { display: none; }
+
+.screencast-dialog {
+  width: 28rem;
+  max-width: 80vw;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* Opaque: what is behind it in the shell's own buffer is the wallpaper, and
+     what is behind it on screen is a window. Neither should show through the
+     thing asking the question.
+
+     No shadow, because the compositor draws this cropped to the dialog and a
+     shadow falling outside that would be cut off square. */
+  background: #161a22;
+}
+
+.screencast-title {
+  font-weight: 600;
+}
+
+.screencast-help {
+  opacity: .7;
+  font-size: .85em;
+}
+
+.screencast-list {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  overflow-y: auto;
+  margin: .25rem 0;
+}
+
+.screencast-source {
+  padding: .4rem .55rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+}
+
+/* The highlight, which is the whole interface: there is no pointer here, so
+   the only thing telling somebody what Enter will do is which row is lit. */
+.screencast-source.selected {
+  border-color: var(--border-focus);
+  background: #ffffff14;
+}
+
+.screencast-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screencast-detail {
+  opacity: .6;
+  font-size: .8em;
+}
+
+/* A monitor and a window read the same otherwise, and which one is about to
+   be handed over matters more here than anywhere else in the shell. */
+.screencast-source[data-kind="output"] .screencast-label::before {
+  content: "monitor · ";
+  opacity: .6;
+}
+
+.screencast-keys {
+  opacity: .6;
+  font-size: .8em;
+}

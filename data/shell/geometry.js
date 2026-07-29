@@ -85,20 +85,42 @@ function reportGeometry(id) {
     };
   }
 
+  /* The frame the shell drew around a floating window, so the compositor can
+     draw that piece of the shell above the windows underneath it.
+     
+     Everything the shell paints is under every client surface — the windows
+     are holes in one buffer — so a border that falls inside another window's
+     hole is covered by that client. A tiled border never does: it sits in the
+     gap between two windows, where there is no surface to hide it. A floating
+     window is the case where it does, every time. */
+  const frameEl = isFloating(id) ? view.el?.getBoundingClientRect() : null;
+  const frame = frameEl
+    ? {
+      x: Math.round(frameEl.left),
+      y: Math.round(frameEl.top),
+      width: Math.round(frameEl.width),
+      height: Math.round(frameEl.height),
+    }
+    : null;
+
   const prev = view.box;
   const prevClip = view.clip;
+  const prevFrame = view.frame;
   if (prev && prev.x === box.x && prev.y === box.y &&
       prev.width === box.width && prev.height === box.height &&
-      prev.scale === scale && sameBox(prevClip, clip)) {
+      prev.scale === scale && sameBox(prevClip, clip) &&
+      sameBox(prevFrame, frame)) {
     return false;
   }
 
   view.box = { ...box, scale };
   view.clip = clip;
+  view.frame = frame;
 
   const message = { type: 'view.layout', id, ...box };
   if (scale !== 1) message.scale = scale;
   if (clip) message.clip = clip;
+  if (frame) message.frame = frame;
   /* Anything that gets past the comparison above differs, so this goes out
      unconditionally — including the case where the scale alone changed, which
      is worth a message even though the rect did not move. */

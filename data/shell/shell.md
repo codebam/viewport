@@ -53,6 +53,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | `outputs.js` | Outputs, workspaces, and moving between them. |
 | `windows.js` | The window lifecycle: added, focused, closed, floated, fullscreened. |
 | `bar.js` | The status bar. |
+| `screencast.js` | The screen-share chooser. Drawn here, steered from the compositor: the shell receives no input of its own, so the highlight arrives in the message. |
 | `commands.js` | Commands from the compositor and the inbound message loop. Loaded last: its bottom asks for the state the shell starts from, so everything handling the answer must already exist. |
 
 `shell.css` styles all of it, and `index.html` is the document.

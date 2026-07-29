@@ -2285,6 +2285,7 @@ name = "viewport"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "pipewire",
  "pkg-config",
  "serde",

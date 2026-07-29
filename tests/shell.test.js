@@ -127,6 +127,8 @@ const sent = [];
  * a stale focus. */
 const pendingFocus = [];
 const outputsEl = new El('div');
+/* Held rather than made inline, so a test can look at what the chooser drew. */
+const screencastEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -152,6 +154,7 @@ global.document = {
   getElementById: (id) => ({
     outputs: outputsEl,
     notifications: new El('div'),
+    screencast: screencastEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -968,6 +971,32 @@ if (mode === 'scrolling') {
   check('the test opened a floating window',
     globalThis.__shell.floatingForTest(90) !== null);
 
+  /* The compositor cannot draw a floating window's border above the windows
+     under it without being told where that border is. */
+  const framed = sent.filter((m) => m.type === 'view.layout' && m.id === 90).at(-1);
+  check('a floating window reports its frame',
+    framed !== undefined && framed.frame !== undefined &&
+    framed.frame.width > 0 && framed.frame.height > 0);
+
+  /* A tiled border falls in the gap between two windows, where nothing covers
+     it, so reporting one would be a texture drawn per window for nothing. */
+  open(93, 'tiled-one');
+  const tiled = sent.filter((m) => m.type === 'view.layout' && m.id === 93).at(-1);
+  check('a tiled window reports none',
+    tiled !== undefined && tiled.frame === undefined);
+  emit({ type: 'view.removed', id: 93 });
+
+  /* Resize mode looks the focused window up in the tree, and a floating window
+     is not in it — so every press was ignored. */
+  emit({ type: 'view.focused', id: 90 });
+  const before = globalThis.__shell.floatingForTest(90).width;
+  emit({ type: 'shell.command', command: 'layout.resize', args: ['right'] });
+  const after = globalThis.__shell.floatingForTest(90).width;
+  check('resize mode grows a floating window', after > before);
+  emit({ type: 'shell.command', command: 'layout.resize', args: ['left'] });
+  check('and shrinks it again',
+    globalThis.__shell.floatingForTest(90).width === before);
+
   emit({ type: 'view.focused', id: 90 });
   const floatFrom = ws(90);
   const floatTo = floatFrom === 4 ? 5 : 4;
@@ -995,6 +1024,72 @@ if (mode === 'scrolling') {
 
   emit({ type: 'view.removed', id: 90 });
   emit({ type: 'view.removed', id: 91 });
+}
+
+/* --- the screen-share chooser ------------------------------------------
+ *
+ * Drawn here and decided in the compositor: the highlight arrives in the
+ * message rather than being moved by a key, because the shell receives no
+ * input of its own. So what these check is that the shell draws exactly what
+ * it was told, and takes it down when it is told to.
+ * --------------------------------------------------------------------- */
+
+{
+  const rows = () => {
+    const dialog = screencastEl.children[0];
+    if (!dialog) return [];
+    const list = dialog.children.find((c) => c._classes.has('screencast-list'));
+    return list ? list.children : [];
+  };
+  const highlighted = () => rows().findIndex((r) => r._classes.has('selected'));
+  const label = (row) => row.children[0].textContent;
+
+  emit({ type: 'screencast.pick', id: 7, selected: 0, sources: [
+    { kind: 'window', label: 'a terminal', detail: 'foot' },
+    { kind: 'window', label: '', detail: 'firefox' },
+    { kind: 'output', label: 'DP-1', detail: 'Dell U2720Q' },
+  ] });
+
+  check('the chooser is up', screencastEl.hidden === false);
+  check('one row per source', rows().length === 3);
+  check('the first is highlighted', highlighted() === 0);
+  check('a window is named by its title', label(rows()[0]) === 'a terminal');
+  /* A row with no text in it reads as a bug rather than as a choice. */
+  check('an untitled window still says something',
+    label(rows()[1]) === 'an untitled window');
+  check('a monitor is marked as one', rows()[2].dataset.kind === 'output');
+
+  /* The compositor moved the highlight and re-sent the list, which is the
+     whole of the interaction: there is no state here to move. */
+  emit({ type: 'screencast.pick', id: 7, selected: 2, sources: [
+    { kind: 'window', label: 'a terminal', detail: 'foot' },
+    { kind: 'window', label: '', detail: 'firefox' },
+    { kind: 'output', label: 'DP-1', detail: 'Dell U2720Q' },
+  ] });
+  check('the highlight moved', highlighted() === 2);
+  check('and only one row has it',
+    rows().filter((r) => r._classes.has('selected')).length === 1);
+
+  /* An answer for a request that is already dealt with must not take down the
+     chooser that replaced it. */
+  emit({ type: 'screencast.pick.done', id: 6 });
+  check('a stale answer leaves it alone', screencastEl.hidden === false);
+
+  /* The compositor cannot draw the chooser above the windows without being
+     told which part of the shell it is. */
+  const rect = sent.filter((m) => m.type === 'screencast.rect').at(-1);
+  check('the shell says where the dialog is',
+    rect !== undefined && rect.width > 0 && rect.height > 0);
+
+  emit({ type: 'screencast.pick.done', id: 7 });
+  check('the chooser goes away when it is answered',
+    screencastEl.hidden === true);
+  check('and takes its rows with it', screencastEl.children.length === 0);
+  /* Otherwise the compositor goes on drawing that piece of the shell over
+     whatever is there now. */
+  const gone = sent.filter((m) => m.type === 'screencast.rect').at(-1);
+  check('and tells the compositor there is nothing on top now',
+    gone.width === 0 && gone.height === 0);
 }
 
 emit({ type: 'view.removed', id: 1 });

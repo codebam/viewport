@@ -25,6 +25,10 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::input::tablet::{TabletDescriptor, TabletSeatTrait as _};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
+/// The two buttons a drag can start with, as libinput numbers them.
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+
 use crate::state::ViewportState;
 use crate::views::NO_VIEW;
 
@@ -72,6 +76,18 @@ pub enum Action {
     Swallow,
     /// A binding fired.
     Bound(crate::binding::Action),
+    /// A key aimed at the screen-share chooser, which is drawn by the shell
+    /// and steered from here because the shell receives no input of its own.
+    Pick(Pick),
+}
+
+/// What a key does while the chooser is up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    /// Move the highlight by one, up or down the list.
+    Step(i8),
+    Confirm,
+    Cancel,
 }
 
 /// Match a key against the compositor's own chords.
@@ -151,6 +167,29 @@ impl ViewportState {
                                     _ => return FilterResult::Forward,
                                 }
                             }
+                            // The chooser owns the keyboard while it is up.
+                            //
+                            // Everything is taken, not only the keys it uses: a
+                            // keystroke that fell through would go to whatever
+                            // was focused before the share was asked for, which
+                            // is a password typed into a terminal the user is
+                            // not looking at.
+                            if state.picker.is_some() {
+                                state.suppressed_keys.push(keysym);
+                                let pick = match keysym {
+                                    Keysym::Escape => Some(Pick::Cancel),
+                                    Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                                        Some(Pick::Confirm)
+                                    }
+                                    Keysym::Up | Keysym::k => Some(Pick::Step(-1)),
+                                    Keysym::Down | Keysym::j | Keysym::Tab => Some(Pick::Step(1)),
+                                    _ => None,
+                                };
+                                return FilterResult::Intercept(
+                                    pick.map(Action::Pick).or(Some(Action::Swallow)),
+                                );
+                            }
+
                             if let Some(action) = shortcut(modifiers, keysym) {
                                 // VT switching still works while locked — it
                                 // is the session's, not this seat's, and a
@@ -304,6 +343,7 @@ impl ViewportState {
                     },
                 );
                 pointer.frame(self);
+                self.drag_to(pos);
                 // The cursor moved, and nothing else would draw it.
                 self.needs_render = true;
             }
@@ -332,6 +372,7 @@ impl ViewportState {
                     },
                 );
                 pointer.frame(self);
+                self.drag_to(pos);
                 self.needs_render = true;
             }
 
@@ -343,6 +384,48 @@ impl ViewportState {
                 };
                 let serial = SERIAL_COUNTER.next_serial();
                 let state = event.state();
+
+                // Mod4 and a button drags the window under the pointer: left
+                // moves it, right resizes it. The chord every tiling
+                // compositor has, and what makes a floating window usable
+                // without a titlebar to grab — this compositor draws none,
+                // because the shell draws the frame.
+                //
+                // The shell has done the arithmetic for both since it was
+                // written, and nothing ever sent it: `layout.move.delta` and
+                // `layout.resize.delta` had a handler, a comment saying the
+                // compositor forwards the drag, and no sender anywhere.
+                if state == ButtonState::Pressed
+                    && !pointer.is_grabbed()
+                    && keyboard.modifier_state().logo
+                    && matches!(event.button_code(), BTN_LEFT | BTN_RIGHT)
+                {
+                    let hit = self
+                        .space
+                        .element_under(pointer.current_location())
+                        .map(|(w, _)| w.clone());
+                    if let Some(id) = hit.and_then(|window| {
+                        self.views.iter().find(|v| v.window == window).map(|v| v.id)
+                    }) {
+                        self.pointer_drag = Some(crate::state::PointerDrag {
+                            id,
+                            resize: event.button_code() == BTN_RIGHT,
+                            last: pointer.current_location(),
+                            pending: (0.0, 0.0),
+                            sent: None,
+                        });
+                        // Not forwarded. The client did not ask to be dragged
+                        // and a button it sees pressed and never released is a
+                        // button it thinks is still down.
+                        return;
+                    }
+                }
+
+                // The end of one, wherever the pointer has got to.
+                if state == ButtonState::Released && self.pointer_drag.is_some() {
+                    self.pointer_drag = None;
+                    return;
+                }
 
                 if state == ButtonState::Pressed && !pointer.is_grabbed() {
                     let hit = self
@@ -835,6 +918,12 @@ impl ViewportState {
         }
 
         match action {
+            Action::Pick(pick) => match pick {
+                Pick::Step(delta) => self.step_screencast_pick(delta as isize),
+                Pick::Confirm => self.confirm_screencast_pick(),
+                Pick::Cancel => self.cancel_screencast_pick(),
+            },
+
             Action::SwitchVt(vt) => {
                 // A kiosk turns this off so the session cannot be left
                 // (`src/input.c:1002`). Swallowed rather than forwarded: the
@@ -908,6 +997,58 @@ impl ViewportState {
                 self.notify(&event);
             }
         }
+    }
+
+    /// Carry a drag as far as the pointer has got.
+    ///
+    /// Deltas rather than positions: what the shell is being asked is "this
+    /// much further", which is the same question whether the window is
+    /// floating, tiled or in a column, and the shell answers each of those
+    /// differently. Sending a position instead would make it the compositor's
+    /// business where a window may be, which is the one thing this design puts
+    /// on the other side.
+    fn drag_to(&mut self, pos: Point<f64, Logical>) {
+        /// Fast enough to track the pointer, slow enough that a mouse
+        /// reporting a thousand times a second does not ask the shell to lay
+        /// the desktop out a thousand times.
+        const EVERY: std::time::Duration = std::time::Duration::from_millis(8);
+
+        let Some(drag) = self.pointer_drag.as_mut() else {
+            return;
+        };
+        let delta = pos - drag.last;
+        drag.last = pos;
+        drag.pending.0 += delta.x;
+        drag.pending.1 += delta.y;
+
+        if drag.sent.is_some_and(|at| at.elapsed() < EVERY) {
+            return;
+        }
+        let (dx, dy) = (drag.pending.0.trunc(), drag.pending.1.trunc());
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        // What is left over stays: a drag slow enough to move less than a
+        // pixel between reports still moves.
+        drag.pending.0 -= dx;
+        drag.pending.1 -= dy;
+        drag.sent = Some(std::time::Instant::now());
+
+        let command = if drag.resize {
+            "layout.resize.delta"
+        } else {
+            "layout.move.delta"
+        };
+        let args = vec![
+            drag.id.to_string(),
+            (dx as i32).to_string(),
+            (dy as i32).to_string(),
+        ];
+        let event = viewport_ipc::Event::ShellCommand {
+            command: command.to_owned(),
+            args,
+        };
+        self.notify(&event);
     }
 
     fn send_pending_configures(&mut self) {

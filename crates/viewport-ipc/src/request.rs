@@ -75,6 +75,20 @@ pub enum Request {
 
     /// Enter or leave the overview. While it is up the shell draws miniatures
     /// of every window and input is routed to the shell.
+    /// Where the shell drew something that belongs above the windows, in the
+    /// layout's own coordinates.
+    ///
+    /// The shell is one buffer under the whole desktop — the windows are
+    /// painted into holes in it — so anything it draws is behind them unless
+    /// it says where. A zero size means there is nothing on top any more.
+    #[serde(rename = "screencast.rect")]
+    ScreencastRect {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
+
     #[serde(rename = "shell.overview")]
     ShellOverview {
         #[serde(default)]
@@ -167,6 +181,22 @@ pub struct ViewLayout {
     /// resolved layout box, not to the view's current clip (`src/ipc.c:862`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip: Option<PartialBox>,
+
+    /// The frame the shell drew around this window — border and all — where
+    /// that frame has to be drawn above the windows beneath it.
+    ///
+    /// The shell is one buffer under the whole desktop, so everything it paints
+    /// is behind every client surface. A tiled border is never noticed, because
+    /// it falls in the gap between two windows where there is no surface to
+    /// hide it. A floating window sits *over* another window, and its border
+    /// lands inside that window's hole — where the client's own surface covers
+    /// it, which is a floating window drawn with no border at all.
+    ///
+    /// Naming the rectangle lets the compositor draw that piece of the shell
+    /// again, above the windows this one is stacked over. Absent for a window
+    /// that needs nothing of the sort, which is most of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<crate::geometry::Box>,
 }
 
 impl ViewLayout {

@@ -145,6 +145,9 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
     naturalWidth: width, naturalHeight: height,
     /* Rect while floating, null while tiled; see floatingOf(). */
     floating: null,
+    /* The frame last reported to the compositor, so an unchanged one is not
+       re-sent. Null for a tiled window, which needs none. */
+    frame: null,
     /* Set while the overview is up; see clearOverviewState(). */
     overview: null,
   });

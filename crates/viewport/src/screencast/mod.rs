@@ -48,3 +48,39 @@ pub struct Cast {
     pub source: Source,
     pub stream: stream::Stream,
 }
+
+/// A screen share waiting on the user to say what to share.
+///
+/// The shell draws the list and the compositor routes the keys. That split is
+/// not a shortcut: the shell is a web page the compositor composites and it
+/// receives no input of its own, so anything the user drives has to be steered
+/// from here. The overview works the same way.
+pub struct Picker {
+    /// Which request this is. An answer for an older one is ignored rather
+    /// than applied to whatever is open now.
+    pub id: u32,
+    /// What the application will accept, in the order they are offered.
+    pub sources: Vec<Source>,
+    pub selected: usize,
+    /// What was focused when the chooser went up, so the keyboard goes back
+    /// where it was. Taking focus is how the chooser gets the keys at all, and
+    /// leaving it nowhere afterwards is a desktop that stops typing.
+    pub restore: u32,
+    /// Where the answer goes when there is one.
+    pub reply: async_channel::Sender<Result<portal::Started, String>>,
+}
+
+impl Picker {
+    /// Move the highlight, wrapping at both ends.
+    ///
+    /// Wrapping because the list is short and a chooser that stops at the
+    /// bottom makes the last item harder to reach than the first for no
+    /// reason.
+    pub fn step(&mut self, delta: isize) {
+        if self.sources.is_empty() {
+            return;
+        }
+        let count = self.sources.len() as isize;
+        self.selected = (self.selected as isize + delta).rem_euclid(count) as usize;
+    }
+}

@@ -258,6 +258,16 @@ window.addEventListener('viewport', (event) => {
       renderBarsModules();
       break;
 
+    case 'screencast.pick':
+      /* Sent whole every time the highlight moves: the compositor owns the
+         selection because it owns the keyboard. */
+      showScreencastPicker(message);
+      break;
+
+    case 'screencast.pick.done':
+      hideScreencastPicker(message.id);
+      break;
+
     case 'notification.add':
       showNotification(message);
       break;
