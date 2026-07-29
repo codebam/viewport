@@ -1952,12 +1952,23 @@ impl ViewportState {
             return;
         }
 
+        // What a share is worth asking the renderer for.
+        //
+        // Compositing and reading back a screen is a full frame off the GPU —
+        // fifteen megabytes at 1440p — and doing it at the compositor's own
+        // rate made the desktop lag while a share was open. Thirty a second
+        // is what a screen share is watched at.
+        const RATE: std::time::Duration = std::time::Duration::from_millis(33);
+        if !self.casts.iter().any(|cast| cast.stream.wants_frame(RATE)) {
+            return;
+        }
+
         // Whole screens first: one composite serves every client watching this
         // output.
-        let watching_output = self
-            .casts
-            .iter()
-            .any(|cast| matches!(&cast.source, crate::screencast::Source::Output(o) if o == output));
+        let watching_output = self.casts.iter().any(|cast| {
+            cast.stream.wants_frame(RATE)
+                && matches!(&cast.source, crate::screencast::Source::Output(o) if o == output)
+        });
         if watching_output {
             if let Some(size) = output.current_mode().map(|mode| mode.size) {
                 let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
@@ -1983,6 +1994,7 @@ impl ViewportState {
         let windows: Vec<u32> = self
             .casts
             .iter()
+            .filter(|cast| cast.stream.wants_frame(RATE))
             .filter_map(|cast| match &cast.source {
                 crate::screencast::Source::Window(id) => Some(*id),
                 _ => None,

@@ -41,6 +41,17 @@ pub struct Stream {
     /// Kept alive: dropping the listener stops the callbacks.
     _listener: pw::stream::StreamListener<()>,
     pub size: Size<i32, Physical>,
+    /// Whether a consumer is actually reading.
+    ///
+    /// Compositing and reading back a screen costs a full frame off the GPU
+    /// every time — fifteen megabytes at 1440p — and doing it for a stream in
+    /// any other state is that cost for nothing. A session that has been
+    /// created and not started, or one whose consumer has gone away, leaves
+    /// the stream paused, and the compositor was paying for it anyway.
+    streaming: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When the last frame went out, so a share does not ask the renderer for
+    /// more than it can use.
+    last: Option<std::time::Instant>,
     /// The node a client connects to, which is what the portal hands back over
     /// D-Bus.
     pub node_id: u32,
@@ -52,7 +63,16 @@ impl Stream {
     /// A frame is dropped rather than queued when the consumer has not
     /// returned a buffer: a screen share that falls behind should show the
     /// newest frame late, not every frame later still.
+    /// Whether it is worth compositing a frame for this stream at all.
+    pub fn wants_frame(&self, rate: std::time::Duration) -> bool {
+        if !self.streaming.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        self.last.map(|at| at.elapsed() >= rate).unwrap_or(true)
+    }
+
     pub fn push(&mut self, pixels: &[u8], size: Size<i32, Physical>, loop_: &pw::thread_loop::ThreadLoop) {
+        self.last = Some(std::time::Instant::now());
         // The loop's thread is dispatching this stream; touching its buffers
         // without the lock races with it.
         let _guard = loop_.lock();
@@ -181,10 +201,16 @@ impl Pipewire {
         )
         .map_err(|e| anyhow::anyhow!("creating a pipewire stream: {e}"))?;
 
+        let streaming = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = streaming.clone();
         let listener = stream
             .add_local_listener_with_user_data(())
-            .state_changed(|_stream, (), old, new| {
+            .state_changed(move |_stream, (), old, new| {
                 tracing::debug!("screencast stream: {old:?} -> {new:?}");
+                flag.store(
+                    matches!(new, pw::stream::StreamState::Streaming),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             })
             .register()
             .map_err(|e| anyhow::anyhow!("listening to a pipewire stream: {e}"))?;
@@ -230,6 +256,8 @@ impl Pipewire {
             stream,
             _listener: listener,
             size,
+            streaming,
+            last: None,
         })
     }
 }
