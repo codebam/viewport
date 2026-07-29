@@ -352,6 +352,12 @@ pub struct ViewportState {
     /// switcher can act on. The read-only ext protocol is beside it and
     /// describes the same windows.
     pub foreign_management_state: crate::foreign_toplevel::ForeignToplevelState,
+    /// The screencast portal's streams, one per source a client is watching,
+    /// and the PipeWire connection they live on. Absent until something asks
+    /// to share a screen: a desktop nobody is sharing should not hold a
+    /// connection open.
+    pub pipewire: Option<crate::screencast::stream::Pipewire>,
+    pub casts: Vec<crate::screencast::Cast>,
     /// wlr-output-power-management: what wlopm and a lid-close script speak.
     pub output_power_state: crate::output_power::OutputPowerState,
     /// wlr-gamma-control: what wlsunset and gammastep speak. Smithay
@@ -663,6 +669,8 @@ impl ViewportState {
             _virtual_keyboard_state: virtual_keyboard_state,
             gamma_state,
             output_power_state,
+            pipewire: None,
+            casts: Vec::new(),
             foreign_management_state,
             image_capture_source_state,
             output_capture_source_state,
@@ -1124,6 +1132,64 @@ impl ViewportState {
             Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
+        let pixels = self.read_output_pixels::<R, B>(output, region, overlay_cursor, renderer)?;
+
+        // Into the client's own memory. The shm path is the only one a client
+        // can read without having allocated the buffer itself.
+        smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
+            let want = (region.size.w * region.size.h * 4) as usize;
+            if len < want || data.width < region.size.w || data.height < region.size.h {
+                return Err(format!(
+                    "the client's buffer is {}x{} and the copy is {}x{}",
+                    data.width, data.height, region.size.w, region.size.h
+                ));
+            }
+            // Row by row, because the client's stride need not be the packed
+            // width — and writing as though it were shears the image.
+            let stride = data.stride as usize;
+            let row = (region.size.w * 4) as usize;
+            for y in 0..region.size.h as usize {
+                let from = &pixels[y * row..(y + 1) * row];
+                // SAFETY: the length was checked above, and shm guarantees the
+                // mapping is valid for the duration of this closure.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        from.as_ptr(),
+                        ptr.add(data.offset as usize + y * stride),
+                        row,
+                    );
+                }
+            }
+            Ok(())
+        })
+        .map_err(|e| format!("the client did not give shared memory: {e}"))??;
+
+        Ok(())
+    }
+
+    /// Composite an output and read it back, packed, four bytes to a pixel.
+    ///
+    /// The shared half of every capture that cannot be drawn into directly: a
+    /// client's shared memory, and a PipeWire buffer.
+    pub fn read_output_pixels<R, B>(
+        &mut self,
+        output: &Output,
+        region: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+        overlay_cursor: bool,
+        renderer: &mut R,
+    ) -> Result<Vec<u8>, String>
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
         let mut frame = self.frame_for(output);
         if !overlay_cursor {
             // A screenshot with a pointer in it is rarely what was asked for,
@@ -1198,38 +1264,7 @@ impl ViewportState {
             .map_texture(&mapping)
             .map_err(|e| format!("mapping the copy: {e}"))?
             .to_vec();
-
-        // Into the client's own memory. The shm path is the only one a client
-        // can read without having allocated the buffer itself.
-        smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
-            let want = (region.size.w * region.size.h * 4) as usize;
-            if len < want || data.width < region.size.w || data.height < region.size.h {
-                return Err(format!(
-                    "the client's buffer is {}x{} and the copy is {}x{}",
-                    data.width, data.height, region.size.w, region.size.h
-                ));
-            }
-            // Row by row, because the client's stride need not be the packed
-            // width — and writing as though it were shears the image.
-            let stride = data.stride as usize;
-            let row = (region.size.w * 4) as usize;
-            for y in 0..region.size.h as usize {
-                let from = &pixels[y * row..(y + 1) * row];
-                // SAFETY: the length was checked above, and shm guarantees the
-                // mapping is valid for the duration of this closure.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        from.as_ptr(),
-                        ptr.add(data.offset as usize + y * stride),
-                        row,
-                    );
-                }
-            }
-            Ok(())
-        })
-        .map_err(|e| format!("the client did not give shared memory: {e}"))??;
-
-        Ok(())
+        Ok(pixels)
     }
 
     /// Every output, as wlr-output-management needs to describe it.
@@ -1841,6 +1876,95 @@ impl ViewportState {
             // Nested and headless have nothing to turn off, and saying a
             // monitor is on is the truthful answer for a window.
             .unwrap_or(true)
+    }
+
+    /// Start sharing an output, and say which PipeWire node to watch.
+    ///
+    /// The connection is made on the first request rather than at startup: a
+    /// desktop nobody is sharing has no reason to hold one open, and a session
+    /// without PipeWire should still be a working desktop.
+    pub fn start_cast(
+        &mut self,
+        output: &Output,
+        loop_handle: &LoopHandle<'static, Self>,
+    ) -> anyhow::Result<u32> {
+        if self.pipewire.is_none() {
+            self.pipewire = Some(crate::screencast::stream::Pipewire::new()?);
+        }
+
+        let size = output
+            .current_mode()
+            .map(|mode| mode.size)
+            .ok_or_else(|| anyhow::anyhow!("that output has no mode"))?;
+        let pipewire = self.pipewire.as_ref().expect("just connected");
+        let stream = pipewire.create_stream(&output.name(), size)?;
+        let node = stream.node_id;
+        self.casts.push(crate::screencast::Cast {
+            output: output.clone(),
+            stream,
+        });
+        tracing::info!("sharing {} as pipewire node {node}", output.name());
+        Ok(node)
+    }
+
+    /// Stop sharing whatever a session was showing.
+    pub fn stop_cast(&mut self, node: u32) {
+        self.casts.retain(|cast| cast.stream.node_id != node);
+        if self.casts.is_empty() {
+            // Nothing is being shared, so the connection is not worth holding.
+            self.pipewire = None;
+        }
+    }
+
+    /// Hand this output's frame to anything sharing it.
+    pub fn feed_casts<R, B>(&mut self, output: &Output, renderer: &mut R)
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        if !self.casts.iter().any(|cast| cast.output == *output) {
+            return;
+        }
+        tracing::debug!("screencast: feeding {}", output.name());
+        let Some(size) = output.current_mode().map(|mode| mode.size) else {
+            return;
+        };
+        let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
+        // The cursor is drawn in: a screen share without a pointer is hard to
+        // follow, and this is the picture of a screen rather than a
+        // screenshot of one.
+        let pixels = match self.read_output_pixels::<R, B>(output, region, true, renderer) {
+            Ok(pixels) => pixels,
+            Err(e) => {
+                tracing::warn!("could not read a frame for the screencast: {e}");
+                return;
+            }
+        };
+
+        let mut casts = std::mem::take(&mut self.casts);
+        if let Some(pipewire) = self.pipewire.as_ref() {
+            for cast in casts.iter_mut().filter(|cast| cast.output == *output) {
+                cast.stream.push(&pixels, size, &pipewire.thread_loop);
+            }
+        }
+        self.casts = casts;
+
+        // Keep drawing while anything is watching.
+        //
+        // Rendering is driven by damage, and a desktop nobody is touching
+        // produces none — so the compositor drew one frame, handed it over,
+        // and stopped. A share is a stream: the viewer needs a frame whether
+        // or not this end has changed, and the one that stops arriving is read
+        // as a frozen screen rather than a still one.
+        self.needs_render = true;
     }
 
     /// Whether an output is currently in HDR.

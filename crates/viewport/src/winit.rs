@@ -197,6 +197,9 @@ pub fn init(
                     state.service_image_capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
                         &output, renderer,
                     );
+                    state.feed_casts::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                        &output, renderer,
+                    );
                 }
                 if let Err(e) = backend.submit(Some(&[damage])) {
                     tracing::error!("submit failed: {e}");

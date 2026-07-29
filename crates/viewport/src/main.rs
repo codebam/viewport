@@ -32,6 +32,7 @@ mod output_management;
 mod output_power;
 mod pointer;
 mod render;
+mod screencast;
 mod screencopy;
 mod session;
 #[cfg(feature = "wpe")]
@@ -303,6 +304,31 @@ fn main() -> Result<()> {
         if let Err(e) = state.appearance.start(settings) {
             tracing::warn!("the settings portal is unavailable: {e}");
         }
+    }
+
+    // A screencast of the first output, for testing the stream without a
+    // portal to ask for one. Removed once the portal can.
+    if std::env::var_os("VIEWPORT_TEST_CAST").is_some() {
+        // On a timer, because an output settles into its real size after the
+        // shell has been laid out — a stream created before that negotiates a
+        // size the compositor then stops producing.
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(
+            std::time::Duration::from_secs(6),
+        );
+        event_loop
+            .handle()
+            .insert_source(timer, |_, _, state| {
+                let output = state.space.outputs().next().cloned();
+                if let Some(output) = output {
+                    let handle = state.loop_handle.clone();
+                    match state.start_cast(&output, &handle) {
+                        Ok(node) => tracing::info!("test cast on node {node}"),
+                        Err(e) => tracing::error!("test cast: {e:#}"),
+                    }
+                }
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the test cast timer: {e}"))?;
     }
 
     // System statistics for the bar. Every two seconds, as in C

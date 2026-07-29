@@ -982,6 +982,17 @@ impl ViewportState {
         // The renderer is moved out and put back because servicing needs the
         // whole compositor as well as the renderer, and the renderer lives
         // inside it — a copy composites the desktop, which is everything.
+        // Anything sharing this screen, fed from the frame just drawn.
+        if !self.casts.is_empty() {
+            if let Some(mut udev) = self.udev.take() {
+                self.feed_casts::<_, smithay::backend::allocator::dmabuf::Dmabuf>(
+                    &output,
+                    &mut udev.renderer,
+                );
+                self.udev = Some(udev);
+            }
+        }
+
         if !self.pending_copies.is_empty() || !self.pending_capture_frames.is_empty() {
             if let Some(mut udev) = self.udev.take() {
                 self.service_screencopy::<_, smithay::backend::allocator::dmabuf::Dmabuf>(

@@ -176,6 +176,8 @@
           glib
           json-glib
           wpewebkit
+          # The screencast portal's transport.
+          pipewire
         ];
 
         # The Rust rewrite. Built from the same tree, beside the C compositor
