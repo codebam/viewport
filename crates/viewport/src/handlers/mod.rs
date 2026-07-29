@@ -679,4 +679,90 @@ crate::delegate_output_power!(ViewportState);
 crate::delegate_foreign_toplevel!(ViewportState);
 crate::delegate_tearing_control!(ViewportState);
 
+/// xdg-system-bell: a client asking the desktop to make a noise.
+///
+/// Logged rather than sounded. There is no audio path in this compositor and
+/// no configuration for what a bell should be, and a terminal that rings one
+/// on every tab completion is a client that would be very sorry to be taken
+/// literally. Implementing the trait is what makes the global exist, which is
+/// what stops a client treating its absence as an error.
+impl smithay::wayland::xdg_system_bell::XdgSystemBellHandler for ViewportState {
+    fn ring(&mut self, surface: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>) {
+        tracing::debug!("bell from {surface:?}");
+    }
+}
+
+/// xdg-toplevel-tag: what a client calls its own windows.
+///
+/// A tag identifies one of an application's windows across restarts — its
+/// terminal's scratchpad, its browser's picture-in-picture — which is exactly
+/// what a session that restores a layout needs and cannot infer from a title.
+/// Kept on the view so a window rule can match it.
+impl smithay::wayland::xdg_toplevel_tag::XdgToplevelTagHandler for ViewportState {
+    fn set_tag(
+        &mut self,
+        toplevel: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel,
+        tag: String,
+    ) {
+        let Some(view) = self.view_for_toplevel(&toplevel) else {
+            return;
+        };
+        tracing::debug!("view {view}: tagged {tag:?}");
+        if let Some(view) = self.views.get_mut(view) {
+            view.tag = Some(tag);
+        }
+    }
+
+    fn set_description(
+        &mut self,
+        _toplevel: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel,
+        _description: String,
+    ) {
+        // For a window switcher to show beside the title. Nothing here draws
+        // one — the shell's taskbar has the title and the application — so it
+        // is accepted and not kept.
+    }
+}
+
+/// wp-pointer-warp: a client moving the pointer within its own surface.
+///
+/// Honoured only for the surface the pointer is already over, which is what
+/// the protocol requires: a client that could warp the pointer onto itself
+/// from anywhere could steal it from whatever the user was doing.
+impl smithay::wayland::pointer_warp::PointerWarpHandler for ViewportState {
+    fn warp_pointer(
+        &mut self,
+        surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        _pointer: smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer,
+        position: smithay::utils::Point<f64, smithay::utils::Logical>,
+        serial: smithay::utils::Serial,
+    ) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let at = pointer.current_location();
+        let Some((under, origin)) = self.surface_under(at) else {
+            return;
+        };
+        if under != surface {
+            return;
+        }
+
+        // The client's position is relative to its own surface.
+        let to = at - origin + position;
+        let under = self.surface_under(to);
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location: to,
+                serial,
+                time: self.start_time.elapsed().as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
+        self.needs_render = true;
+    }
+}
+
 smithay::delegate_dispatch2!(ViewportState);

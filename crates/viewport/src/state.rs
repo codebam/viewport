@@ -246,6 +246,25 @@ pub struct ViewportState {
     /// and without the global the hint is never set, so every dialog is back to
     /// being inferred from whether it has a parent.
     pub xdg_dialog_state: smithay::wayland::shell::xdg::dialog::XdgDialogState,
+    /// wp-fifo: a client asking for its frames to be paced by the display
+    /// rather than drawn as fast as it can manage.
+    ///
+    /// Holding the state is not the whole of it. A client that waits on a
+    /// barrier is *blocked* until the compositor signals it, so advertising
+    /// this and never signalling is a client that paints once and stops — see
+    /// `release_frame_barriers`.
+    pub fifo_state: smithay::wayland::fifo::FifoManagerState,
+    /// wp-commit-timing: a client asking for a commit to take effect at a
+    /// particular time rather than at once. Blocked in the same way, and
+    /// released in the same place.
+    pub commit_timing_state: smithay::wayland::commit_timing::CommitTimingManagerState,
+    /// xdg-system-bell: a client asking the desktop to make a noise.
+    pub system_bell_state: smithay::wayland::xdg_system_bell::XdgSystemBellState,
+    /// xdg-toplevel-tag: what a client calls its own windows, so a session can
+    /// tell two of them apart.
+    pub toplevel_tag_state: smithay::wayland::xdg_toplevel_tag::XdgToplevelTagManager,
+    /// wp-pointer-warp: a client moving the pointer inside its own surface.
+    pub pointer_warp_state: smithay::wayland::pointer_warp::PointerWarpManager,
     /// wlr-layer-shell: bars, launchers, notification daemons. Not the
     /// shell's business — a layer surface asks for an edge, not a layout.
     pub layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState,
@@ -469,6 +488,15 @@ impl ViewportState {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let xdg_dialog_state =
             smithay::wayland::shell::xdg::dialog::XdgDialogState::new::<Self>(&dh);
+        let fifo_state = smithay::wayland::fifo::FifoManagerState::new::<Self>(&dh);
+        let commit_timing_state =
+            smithay::wayland::commit_timing::CommitTimingManagerState::new::<Self>(&dh);
+        let system_bell_state =
+            smithay::wayland::xdg_system_bell::XdgSystemBellState::new::<Self>(&dh);
+        let toplevel_tag_state =
+            smithay::wayland::xdg_toplevel_tag::XdgToplevelTagManager::new::<Self>(&dh);
+        let pointer_warp_state =
+            smithay::wayland::pointer_warp::PointerWarpManager::new::<Self>(&dh);
         let layer_shell_state =
             smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
         let screencopy_state = crate::screencopy::ScreencopyState::new::<Self>(&dh);
@@ -705,6 +733,11 @@ impl ViewportState {
             compositor_state,
             xdg_shell_state,
             xdg_dialog_state,
+            fifo_state,
+            commit_timing_state,
+            system_bell_state,
+            toplevel_tag_state,
+            pointer_warp_state,
             layer_shell_state,
             screencopy_state,
             tearing_state,
@@ -3663,6 +3696,74 @@ impl ViewportState {
 
         let event = Event::OutputLayout { outputs };
         self.notify(&event);
+    }
+
+    /// Let go of everything a client is waiting on for this frame.
+    ///
+    /// Two protocols block a commit until the compositor says so: wp-fifo,
+    /// where a client asks to be paced by the display, and wp-commit-timing,
+    /// where it asks for a commit to land at a particular time. Both are the
+    /// compositor's to release, and a client whose barrier is never signalled
+    /// does not simply lose the feature — it never paints again.
+    ///
+    /// Called where the frame callbacks are sent, which is the moment the
+    /// frame this surface is part of has been handed to the display.
+    pub fn release_frame_barriers(
+        &self,
+        output: &Output,
+        frame_target: std::time::Duration,
+    ) {
+        use smithay::desktop::utils::with_surfaces_surface_tree;
+        use smithay::wayland::commit_timing::CommitTimerBarrierStateUserData;
+        use smithay::wayland::fifo::FifoBarrierCachedState;
+        use smithay::utils::Time;
+
+        let target: Time<smithay::utils::Monotonic> = frame_target.into();
+        let release = |_surface: &WlSurface, states: &smithay::wayland::compositor::SurfaceData| {
+            if let Some(mut timer) = states
+                .data_map
+                .get::<CommitTimerBarrierStateUserData>()
+                .map(|timer| timer.lock().unwrap())
+            {
+                timer.signal_until(target);
+            }
+            if let Some(barrier) = states
+                .cached_state
+                .get::<FifoBarrierCachedState>()
+                .current()
+                .barrier
+                .take()
+            {
+                barrier.signal();
+            }
+        };
+
+        for window in self.space.elements() {
+            window.with_surfaces(&release);
+        }
+        for layer in smithay::desktop::layer_map_for_output(output).layers() {
+            layer.with_surfaces(&release);
+        }
+        for lock in self.lock_surfaces.values() {
+            with_surfaces_surface_tree(lock.wl_surface(), &release);
+        }
+    }
+
+    /// Which view a toplevel object belongs to.
+    pub fn view_for_toplevel(
+        &self,
+        toplevel: &smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel,
+    ) -> Option<u32> {
+        use smithay::reexports::wayland_server::Resource as _;
+        let id = toplevel.id();
+        self.views
+            .iter()
+            .find(|view| {
+                view.window
+                    .toplevel()
+                    .is_some_and(|t| t.xdg_toplevel().id() == id)
+            })
+            .map(|view| view.id)
     }
 
     /// Send an event to everything listening: the socket clients and the

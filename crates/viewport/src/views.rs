@@ -42,6 +42,13 @@ pub struct View {
     pub visible: bool,
     pub scale: f64,
     pub clip: Option<Box>,
+    /// What the client calls this window, from xdg-toplevel-tag.
+    ///
+    /// An application's own name for one of its windows — a scratchpad, a
+    /// picture-in-picture — which survives a restart and is what a session
+    /// restoring a layout would match on. Nothing does yet; it is kept because
+    /// the client is entitled to be remembered by it.
+    pub tag: Option<String>,
     /// The frame the shell drew, when it has to be drawn above the windows
     /// underneath this one — see `ViewLayout::frame`.
     pub frame: Option<Box>,
@@ -298,6 +305,7 @@ impl Views {
             visible: true,
             scale: 1.0,
             clip: None,
+            tag: None,
             frame: None,
             overlay_ids: std::array::from_fn(|_| {
                 smithay::backend::renderer::element::Id::new()

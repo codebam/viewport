@@ -195,11 +195,17 @@ Beyond what Smithay hands over: `wlr-screencopy`, `wlr-output-management`,
 `virtual-keyboard-v1`, `tablet-v2`, `linux-drm-syncobj-v1`, `xdg-dialog-v1`,
 and `color-management-v1`.
 
-Not implemented, all of them present in Smithay and none of them yet asked for
-by anything running here: `ext-workspace` — external bars cannot see the
-workspaces, which are the shell's and are not published — `drm-lease`,
-`security-context`, `xdg-toplevel-icon`, `xdg-toplevel-tag`, `fifo`,
-`commit-timing`, `xdg-system-bell`, `xdg-foreign`, `pointer-warp` and
+Also implemented, from what Smithay ships: `wp-fifo` and `wp-commit-timing`,
+`xdg-system-bell`, `xdg-toplevel-tag` and `wp-pointer-warp`.
+
+The first two block a client's commit until the compositor releases it, so
+advertising them is a promise: a barrier nobody signals is a client that paints
+once and never again. They are released where the frame callbacks are sent —
+`ViewportState::release_frame_barriers`.
+
+Still not implemented, all present in Smithay: `ext-workspace` — external bars
+cannot see the workspaces, which are the shell's and are not published —
+`drm-lease`, `security-context`, `xdg-toplevel-icon`, `xdg-foreign` and
 `xwayland-keyboard-grab`.
 
 ## Why smithay is a fork
@@ -270,8 +276,11 @@ otherwise upstreamable, and the fork should go away when it lands.
   frame from then on and the share freezes on its last good one.
 - **Mod4 and the left button do not move a tiled window.** The shell's
   `moveByDelta` returns early unless the window floats.
-- **Output transform 90 is unimplemented in the Vulkan renderer**, so a rotated
-  monitor cannot be driven.
+All eight output transforms are implemented in `crates/viewport-vulkan/src/
+transform.rs` and tested against the GPU, and `DrmOutput::render_frame` applies
+the output's own transform, so a rotated monitor is driven the same as any
+other. (An earlier revision of this list said otherwise on the strength of a
+grep that matched a string inside a test of error *formatting*.)
 
 ## Notifications, and where they come from
 
