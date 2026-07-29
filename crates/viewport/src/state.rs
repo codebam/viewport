@@ -1121,11 +1121,10 @@ impl ViewportState {
         let mut framebuffer = renderer
             .bind(&mut target)
             .map_err(|e| format!("binding the client's buffer: {e}"))?;
-        let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
-            size,
-            1.0,
-            smithay::utils::Transform::Normal,
-        );
+        // From the output, so a rotated screen is drawn into the client's
+        // buffer the way it is displayed rather than the way it is laid out.
+        let mut tracker =
+            smithay::backend::renderer::damage::OutputDamageTracker::from_output(output);
         let result = tracker
             .render_output(
                 renderer,
@@ -1306,11 +1305,13 @@ impl ViewportState {
             let mut framebuffer = renderer
                 .bind(&mut target)
                 .map_err(|e| format!("binding the copy target: {e}"))?;
-            let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
-                size,
-                1.0,
-                smithay::utils::Transform::Normal,
-            );
+            // From the output, so the copy carries its scale and its
+            // transform. Hand-rolling it as (mode size, 1.0, Normal)
+            // composites the desktop in the output's logical space — portrait,
+            // for a rotated screen — and writes it into a landscape buffer
+            // without turning it, which is a screenshot lying on its side.
+            let mut tracker =
+                smithay::backend::renderer::damage::OutputDamageTracker::from_output(output);
             tracker
                 .render_output(
                     renderer,
@@ -2461,6 +2462,9 @@ impl ViewportState {
             let mut framebuffer = renderer
                 .bind(&mut target)
                 .map_err(|e| format!("binding a window capture target: {e}"))?;
+            // A window, not an output: its own size, upright. A window is not
+            // rotated by the screen it happens to be on — what a client asked
+            // to capture is the window.
             let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
                 size,
                 1.0,
@@ -3654,7 +3658,7 @@ impl ViewportState {
                     hdr: false,
                     hdr_capable: false,
                     scale: output.current_scale().fractional_scale(),
-                    transform: Transform::Normal,
+                    transform: crate::apply::from_smithay_transform(output.current_transform()),
                     modes: output
                         .modes()
                         .into_iter()

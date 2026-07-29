@@ -374,6 +374,19 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         output.set_preferred(mode);
     }
 
+    // The layer map holds the output's shape from when it was last arranged,
+    // and everything reserved against it — a bar's exclusive zone, and the
+    // area left over for windows. A mode change or a rotation makes all of
+    // that the wrong shape, and nothing else recomputes it.
+    //
+    // Rotating a monitor without this left the usable area landscape on a
+    // portrait screen: the shell was told the output was 1440x2560 and that
+    // windows could use 2560x1440 of it, so it laid out a desktop wider than
+    // the screen and half of it fell off the side.
+    if mode.is_some() || transform.is_some() || scale.is_some() {
+        smithay::desktop::layer_map_for_output(&output).arrange();
+    }
+
     if config.x.is_some() || config.y.is_some() {
         let current = state.space.output_geometry(&output).unwrap_or_default();
         let x = config.x.unwrap_or(current.loc.x);
@@ -382,6 +395,23 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     }
 
     state.notify_output_layout();
+}
+
+/// What the shell is told an output is turned to.
+///
+/// It was `Normal` unconditionally, which is a rotated monitor described to
+/// the shell as though it were not.
+pub fn from_smithay_transform(transform: SmithayTransform) -> Transform {
+    match transform {
+        SmithayTransform::Normal => Transform::Normal,
+        SmithayTransform::_90 => Transform::_90,
+        SmithayTransform::_180 => Transform::_180,
+        SmithayTransform::_270 => Transform::_270,
+        SmithayTransform::Flipped => Transform::Flipped,
+        SmithayTransform::Flipped90 => Transform::Flipped90,
+        SmithayTransform::Flipped180 => Transform::Flipped180,
+        SmithayTransform::Flipped270 => Transform::Flipped270,
+    }
 }
 
 fn to_smithay_transform(transform: Transform) -> SmithayTransform {
