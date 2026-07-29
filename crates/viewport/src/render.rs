@@ -83,6 +83,16 @@ pub struct WindowFrame {
     pub location: Point<i32, Physical>,
     /// The hole the shell drew, which the surface is cropped to.
     pub clip: Option<Rectangle<i32, Physical>>,
+    /// The window's own top-left corner, which is what a shrunken window is
+    /// scaled about.
+    ///
+    /// Not `location`: that is where the *surface* starts, and a client drawing
+    /// its own shadows starts its surface outside its window — 26 pixels out on
+    /// every side, for the ones in this session's log. Scaling about the
+    /// surface origin moves a thumbnail up and left by the shadow times one
+    /// minus the scale, which is a strip of window hanging outside the box the
+    /// shell drew for it.
+    pub origin: Point<i32, Physical>,
     /// Drawn this much smaller than the client actually is, about the window's
     /// own top-left corner.
     ///
@@ -252,6 +262,7 @@ where
     for WindowFrame {
         window,
         location,
+        origin,
         clip,
         scale: window_scale,
         opacity: frame_opacity,
@@ -293,18 +304,31 @@ where
                         .to_f64()
                         .to_physical(scale)
                         .to_i32_round();
-                elements.extend(
-                    render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
-                        renderer,
-                        popup.wl_surface(),
-                        at,
-                        scale,
-                        1.0,
-                        Kind::Unspecified,
-                    )
-                    .into_iter()
-                    .map(OutputElement::from),
+                let drawn = render_elements_from_surface_tree::<
+                    _,
+                    WaylandSurfaceRenderElement<R>,
+                >(
+                    renderer,
+                    popup.wl_surface(),
+                    at,
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
                 );
+                // Shrunk with the window it belongs to. Uncropped still — a
+                // menu is entitled to overflow its window — but a full-size
+                // menu over a thumbnail belongs to neither.
+                if (*window_scale - 1.0).abs() > f64::EPSILON {
+                    elements.extend(drawn.into_iter().map(|element| {
+                        OutputElement::from(RescaleRenderElement::from_element(
+                            element,
+                            *origin,
+                            *window_scale,
+                        ))
+                    }));
+                } else {
+                    elements.extend(drawn.into_iter().map(OutputElement::from));
+                }
             }
         }
 
@@ -353,7 +377,7 @@ where
                 CropRenderElement::from_element(surface, scale, *clip).map(|cropped| {
                     OutputElement::from(RescaleRenderElement::from_element(
                         cropped,
-                        *location,
+                        *origin,
                         *window_scale,
                     ))
                 })
@@ -362,7 +386,7 @@ where
             (None, true) => elements.extend(surfaces.into_iter().map(|surface| {
                 OutputElement::from(RescaleRenderElement::from_element(
                     surface,
-                    *location,
+                    *origin,
                     *window_scale,
                 ))
             })),

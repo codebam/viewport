@@ -3107,9 +3107,19 @@ impl ViewportState {
                     })
                     .unwrap_or_default();
 
+                // Where the window's own corner is, as opposed to where its
+                // surface starts: the difference is the shadow a client draws
+                // outside its geometry, and it is what a thumbnail has to be
+                // scaled about.
+                let origin = (layout.loc - output_geometry.loc)
+                    .to_f64()
+                    .to_physical(scale)
+                    .to_i32_round();
+
                 Some(crate::render::WindowFrame {
                     window: window.clone(),
                     location,
+                    origin,
                     clip,
                     // Both were stored and neither was ever applied: the
                     // overview drew its thumbnails and the compositor painted
