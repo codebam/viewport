@@ -305,7 +305,9 @@ impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for ViewportS
         source: &smithay::wayland::image_capture_source::ImageCaptureSource,
     ) -> Option<smithay::wayland::image_copy_capture::BufferConstraints> {
         let output = output_of(source)?;
-        let size = output.current_mode()?.size;
+        let size = output
+            .current_mode()
+            .map(|mode| output.current_transform().transform_size(mode.size))?;
         tracing::debug!(
             "capture constraints for {}: {}x{}, dmabuf {}",
             output.name(),

@@ -1041,7 +1041,7 @@ impl ViewportState {
         for (frame_output, frame) in mine {
             let size = frame_output
                 .current_mode()
-                .map(|mode| mode.size)
+                .map(|mode| frame_output.current_transform().transform_size(mode.size))
                 .unwrap_or_default();
             let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
             let buffer = frame.buffer();
@@ -1114,7 +1114,7 @@ impl ViewportState {
 
         let size = output
             .current_mode()
-            .map(|mode| mode.size)
+            .map(|mode| output.current_transform().transform_size(mode.size))
             .ok_or_else(|| "the output has no mode".to_owned())?;
         let elements = crate::render::build(&frame, renderer);
 
@@ -1123,8 +1123,11 @@ impl ViewportState {
             .map_err(|e| format!("binding the client's buffer: {e}"))?;
         // From the output, so a rotated screen is drawn into the client's
         // buffer the way it is displayed rather than the way it is laid out.
-        let mut tracker =
-            smithay::backend::renderer::damage::OutputDamageTracker::from_output(output);
+        let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+            size,
+            output.current_scale().fractional_scale(),
+            smithay::utils::Transform::Normal,
+        );
         let result = tracker
             .render_output(
                 renderer,
@@ -1270,7 +1273,7 @@ impl ViewportState {
 
         let size = output
             .current_mode()
-            .map(|mode| mode.size)
+            .map(|mode| output.current_transform().transform_size(mode.size))
             .ok_or_else(|| "the output has no mode".to_owned())?;
 
         let elements = crate::render::build(&frame, renderer);
@@ -1310,8 +1313,11 @@ impl ViewportState {
             // composites the desktop in the output's logical space — portrait,
             // for a rotated screen — and writes it into a landscape buffer
             // without turning it, which is a screenshot lying on its side.
-            let mut tracker =
-                smithay::backend::renderer::damage::OutputDamageTracker::from_output(output);
+            let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+                size,
+                output.current_scale().fractional_scale(),
+                smithay::utils::Transform::Normal,
+            );
             tracker
                 .render_output(
                     renderer,
@@ -2122,7 +2128,7 @@ impl ViewportState {
                 && matches!(&cast.source, crate::screencast::Source::Output(o) if o == output)
         });
         if watching_output {
-            if let Some(size) = output.current_mode().map(|mode| mode.size) {
+            if let Some(size) = output.current_mode().map(|mode| output.current_transform().transform_size(mode.size)) {
                 let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
                 // The cursor is drawn in: this is a picture of a screen rather
                 // than a screenshot of one, and a share without a pointer is
@@ -2191,7 +2197,7 @@ impl ViewportState {
     ) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
         match source {
             crate::screencast::Source::Output(output) => {
-                output.current_mode().map(|mode| mode.size)
+                output.current_mode().map(|mode| output.current_transform().transform_size(mode.size))
             }
             crate::screencast::Source::Window(id) => {
                 let view = self.views.get(*id)?;
@@ -2275,7 +2281,7 @@ impl ViewportState {
                     crate::screencast::Source::Output(shared) if shared == output => {
                         let shared = shared.clone();
                         let size = match shared.current_mode() {
-                            Some(mode) => mode.size,
+                            Some(mode) => shared.current_transform().transform_size(mode.size),
                             None => continue,
                         };
                         cast.stream
@@ -3732,6 +3738,9 @@ impl ViewportState {
     /// speaks. Putting it in one of them and not the other is how this went out
     /// fixed for a tool nobody was using and unfixed for the one being tested.
     pub fn output_reshaped(&mut self, output: &Output) {
+        if let Some(loc) = self.space.output_geometry(output).map(|g| g.loc) {
+            self.space.map_output(output, loc);
+        }
         smithay::desktop::layer_map_for_output(output).arrange();
 
         if let Some(udev) = self.udev.as_mut() {
@@ -3750,6 +3759,7 @@ impl ViewportState {
             }
         }
         self.needs_render = true;
+        self.notify_output_layout();
         tracing::info!(
             "{}: reshaped to {:?}",
             output.name(),

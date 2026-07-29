@@ -384,10 +384,12 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     // windows could use 2560x1440 of it, so it laid out a desktop wider than
     // the screen and half of it fell off the side.
     if mode.is_some() || transform.is_some() || scale.is_some() {
+        let current = state.space.output_geometry(&output).unwrap_or_default();
+        let x = config.x.unwrap_or(current.loc.x);
+        let y = config.y.unwrap_or(current.loc.y);
+        state.space.map_output(&output, (x, y));
         state.output_reshaped(&output);
-    }
-
-    if config.x.is_some() || config.y.is_some() {
+    } else if config.x.is_some() || config.y.is_some() {
         let current = state.space.output_geometry(&output).unwrap_or_default();
         let x = config.x.unwrap_or(current.loc.x);
         let y = config.y.unwrap_or(current.loc.y);

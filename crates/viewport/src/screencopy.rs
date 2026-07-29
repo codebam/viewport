@@ -138,7 +138,7 @@ where
                 };
                 let size = output
                     .current_mode()
-                    .map(|mode| mode.size)
+                    .map(|mode| output.current_transform().transform_size(mode.size))
                     .unwrap_or_default();
                 (
                     frame,

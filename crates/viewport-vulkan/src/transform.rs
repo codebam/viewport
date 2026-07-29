@@ -57,38 +57,89 @@ impl Affine {
 /// The map from a unit quad to clip space, for a rectangle in output
 /// coordinates.
 ///
-/// `output_size` is the size *before* `transform` is applied, which is what
-/// Smithay's `Renderer::render` is given. The framebuffer is the transformed
-/// size, and the two differ whenever the transform swaps axes.
+/// `output_size` is the **framebuffer**: the size Smithay's `Renderer::render`
+/// is given, which is what the GLES renderer sets its viewport to before it
+/// touches the transform at all (`gles/mod.rs`, `Viewport(0, 0, output_size)`).
+///
+/// `dst` is in the space *after* the transform — the one `Frame::output_size`
+/// reports, and the one Smithay's damage tracker lays elements out in
+/// (`output_geo = transform.transform_size(output_size)`). The two differ
+/// whenever the transform swaps axes: a 2560x1440 panel rotated 90 degrees
+/// scans out a 2560x1440 framebuffer holding a 1440x2560 desktop.
 pub fn position(
     dst: Rectangle<i32, Physical>,
     output_size: Size<i32, Physical>,
     transform: Transform,
 ) -> Affine {
-    let framebuffer = transform.transform_size(output_size);
-    let (fw, fh) = (framebuffer.w as f32, framebuffer.h as f32);
-
     let to_clip = |u: f32, v: f32| -> (f32, f32) {
-        // Corner of the destination rectangle, in output coordinates.
-        let x = dst.loc.x as f64 + u as f64 * dst.size.w as f64;
-        let y = dst.loc.y as f64 + v as f64 * dst.size.h as f64;
-
-        // Into framebuffer coordinates. Smithay's own function, so a rotated
-        // output lands where the rest of Smithay expects it to.
-        let point = transform.transform_point_in(
-            Point::<f64, Physical>::from((x, y)),
-            &Size::<f64, Physical>::from((output_size.w as f64, output_size.h as f64)),
-        );
-
-        // And into clip space. No Y flip: Vulkan's +Y is down, like the
-        // framebuffer's.
-        (
-            (point.x as f32 / fw) * 2.0 - 1.0,
-            (point.y as f32 / fh) * 2.0 - 1.0,
-        )
+        // Corner of the destination rectangle, in the transformed space.
+        let x = dst.loc.x as f32 + u * dst.size.w as f32;
+        let y = dst.loc.y as f32 + v * dst.size.h as f32;
+        clip(x, y, output_size, transform)
     };
 
     Affine::from_corners(to_clip(0.0, 0.0), to_clip(1.0, 0.0), to_clip(0.0, 1.0))
+}
+
+/// A point in the transformed space, in clip coordinates.
+///
+/// The chain is Smithay's, taken from `GlesRenderer::render`: an orthographic
+/// projection of the transformed space into OpenGL's -1..1 with +Y up,
+/// `Transform::matrix()` applied there, and then the flip that puts +Y back
+/// down — which is where Vulkan starts, so nothing more is needed here.
+///
+/// `Transform::matrix()` rather than `Transform::transform_point_in`, which
+/// looks like it says the same thing and does not: for `Flipped90` and
+/// `Flipped270` the two disagree by a half turn. `transform_point_in` maps
+/// `Flipped90` to a bare transpose `(y, x)`, while the matrix is a transpose
+/// *and* a 180-degree rotation. Every other renderer goes through the matrix,
+/// so it is the one that decides where a pixel belongs — and a display set to
+/// `flipped-90` came up upside down until this followed it.
+fn clip(x: f32, y: f32, output_size: Size<i32, Physical>, transform: Transform) -> (f32, f32) {
+    let area = transform.transform_size(output_size);
+
+    // Into OpenGL's clip space, +Y up.
+    let a = 2.0 * x / area.w as f32 - 1.0;
+    let b = 1.0 - 2.0 * y / area.h as f32;
+
+    // [e00, e01, e10, e11, e20, e21] — two basis vectors and a translation.
+    let m = transform.matrix().to_cols_array();
+    let tx = m[0] * a + m[2] * b + m[4];
+    let ty = m[1] * a + m[3] * b + m[5];
+
+    (tx, -ty)
+}
+
+/// Where a rectangle in the transformed space lands in the framebuffer.
+///
+/// The scissor is in framebuffer pixels, and everything else here is in the
+/// space the transform produced, so this is the one place that has to go back
+/// the other way. Through [`clip`], so a scissor cannot end up describing a
+/// different rectangle than the quad it is clipping.
+pub fn framebuffer_rect(
+    rect: Rectangle<i32, Physical>,
+    output_size: Size<i32, Physical>,
+    transform: Transform,
+) -> Rectangle<i32, Physical> {
+    let corner = |x: i32, y: i32| -> (f32, f32) {
+        let (cx, cy) = clip(x as f32, y as f32, output_size, transform);
+        (
+            (cx + 1.0) * 0.5 * output_size.w as f32,
+            (cy + 1.0) * 0.5 * output_size.h as f32,
+        )
+    };
+
+    // Two opposite corners are enough: every transform is axis-aligned, so the
+    // image of a rectangle is a rectangle.
+    let (x0, y0) = corner(rect.loc.x, rect.loc.y);
+    let (x1, y1) = corner(rect.loc.x + rect.size.w, rect.loc.y + rect.size.h);
+
+    let loc = Point::<i32, Physical>::from((x0.min(x1).round() as i32, y0.min(y1).round() as i32));
+    let size = Size::<i32, Physical>::from((
+        (x1 - x0).abs().round() as i32,
+        (y1 - y0).abs().round() as i32,
+    ));
+    Rectangle::new(loc, size)
 }
 
 /// The map from a unit quad to normalised texture coordinates.
@@ -141,9 +192,10 @@ mod tests {
     #[test]
     fn an_untransformed_rect_maps_straight_to_clip_space() {
         // The whole of a 100x50 output.
+        let size = Size::from((100, 50));
         let affine = position(
-            Rectangle::new(Point::from((0, 0)), Size::from((100, 50))),
-            Size::from((100, 50)),
+            Rectangle::new(Point::from((0, 0)), size),
+            size,
             Transform::Normal,
         );
         assert!(close(affine.apply(0.0, 0.0), (-1.0, -1.0)), "top-left");
@@ -156,9 +208,10 @@ mod tests {
     fn a_quadrant_lands_in_its_quadrant() {
         // Top-left quarter of a 100x100 output is the top-left quarter of clip
         // space, which runs -1..1.
+        let size = Size::from((100, 100));
         let affine = position(
             Rectangle::new(Point::from((0, 0)), Size::from((50, 50))),
-            Size::from((100, 100)),
+            size,
             Transform::Normal,
         );
         assert!(close(affine.apply(0.0, 0.0), (-1.0, -1.0)));
@@ -167,13 +220,15 @@ mod tests {
 
     #[test]
     fn a_rotated_output_moves_the_corner_round() {
-        // The top-left of the output, on a display rotated 90 degrees.
-        // transform_point_in maps (0,0) in a 100x50 area to (50, 0), and the
-        // framebuffer is 50x100 — so it is the top-right corner.
+        // A 100x50 framebuffer on a display rotated 90 degrees, so the desktop
+        // drawn into it is 50x100. transform_point_in maps (0,0) in that 50x100
+        // area to (50, 0) — the top-right corner of the framebuffer.
+        let framebuffer = Size::from((100, 50));
+        let transform = Transform::_90;
         let affine = position(
-            Rectangle::new(Point::from((0, 0)), Size::from((100, 50))),
-            Size::from((100, 50)),
-            Transform::_90,
+            Rectangle::from_size(transform.transform_size(framebuffer)),
+            framebuffer,
+            transform,
         );
         assert!(close(affine.apply(0.0, 0.0), (1.0, -1.0)), "top-left goes right");
         // And the whole quad still covers the whole framebuffer.
@@ -198,7 +253,11 @@ mod tests {
             Transform::Flipped180,
             Transform::Flipped270,
         ] {
-            let affine = position(Rectangle::from_size(size), size, transform);
+            let affine = position(
+                Rectangle::from_size(transform.transform_size(size)),
+                size,
+                transform,
+            );
             let mut corners: Vec<(i32, i32)> = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
                 .into_iter()
                 .map(|(u, v)| {
@@ -211,6 +270,79 @@ mod tests {
                 corners,
                 vec![(-1, -1), (-1, 1), (1, -1), (1, 1)],
                 "{transform:?} does not cover clip space"
+            );
+        }
+    }
+
+    /// A flip is not a rotation, and the difference is visible.
+    ///
+    /// `Flipped90` is `_90` mirrored, so a quadrant that lands in one half of
+    /// the framebuffer under one has to land in the other half under the other.
+    /// Deriving the map from `transform_point_in` put them in the same place —
+    /// the transpose it uses for `Flipped90` is the matrix's transpose turned
+    /// half a turn — and a monitor set to `flipped-90` came up upside down.
+    #[test]
+    fn a_flip_is_not_the_rotation_it_shares_a_name_with() {
+        // A 32x16 framebuffer holds a 16x32 desktop under either transform.
+        let framebuffer = Size::<i32, Physical>::from((32, 16));
+        let quadrant = Rectangle::new(Point::from((0, 0)), Size::from((8, 8)));
+
+        let rotated = framebuffer_rect(quadrant, framebuffer, Transform::_90);
+        let flipped = framebuffer_rect(quadrant, framebuffer, Transform::Flipped90);
+
+        assert_eq!(
+            rotated,
+            Rectangle::new(Point::from((24, 0)), Size::from((8, 8))),
+            "_90 puts the desktop's top-left in the framebuffer's top-right"
+        );
+        assert_eq!(
+            flipped,
+            Rectangle::new(Point::from((24, 8)), Size::from((8, 8))),
+            "Flipped90 mirrors that into the bottom-right"
+        );
+    }
+
+    /// The scissor and the quad describe the same rectangle.
+    #[test]
+    fn a_scissor_covers_exactly_what_the_quad_covers() {
+        let framebuffer = Size::<i32, Physical>::from((80, 40));
+        for transform in [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ] {
+            let area = transform.transform_size(framebuffer);
+            let rect = Rectangle::new(
+                Point::from((area.w / 4, area.h / 8)),
+                Size::from((area.w / 2, area.h / 4)),
+            );
+            let scissor = framebuffer_rect(rect, framebuffer, transform);
+            let affine = position(rect, framebuffer, transform);
+
+            // The quad's corners, back out of clip space into pixels.
+            let mut xs = vec![];
+            let mut ys = vec![];
+            for (u, v) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                let (x, y) = affine.apply(u, v);
+                xs.push((x + 1.0) * 0.5 * framebuffer.w as f32);
+                ys.push((y + 1.0) * 0.5 * framebuffer.h as f32);
+            }
+            let low = |v: &[f32]| v.iter().cloned().fold(f32::INFINITY, f32::min).round() as i32;
+            let high =
+                |v: &[f32]| v.iter().cloned().fold(f32::NEG_INFINITY, f32::max).round() as i32;
+
+            assert_eq!(
+                scissor,
+                Rectangle::new(
+                    Point::from((low(&xs), low(&ys))),
+                    Size::from((high(&xs) - low(&xs), high(&ys) - low(&ys)))
+                ),
+                "{transform:?}: the scissor and the quad disagree"
             );
         }
     }

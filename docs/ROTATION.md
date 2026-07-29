@@ -1,16 +1,16 @@
-# Rotating an output is broken
+# Rotating an output
 
-`wlr-randr --output DP-3 --transform 90` leaves the panel mostly black, with a
-stretched piece of the desktop in one corner. Four attempts have each fixed
-something real without fixing this. What follows is what is known, what is
-ruled out and with what evidence, so none of it has to be rediscovered.
+Fixed. `wlr-randr --output DP-3 --transform 90` used to leave the panel mostly
+black with a stretched piece of the desktop in one corner; the cause is in
+[What it was](#what-it-was), and the rest of this is kept because five attempts
+went past it and the reasons they did are worth not repeating.
 
 The hardware is two 2560x1440 displays side by side, DP-1 at +0+0 and DP-3 at
 +2560+0, on an RX 7900 XTX, Vulkan renderer, DRM backend.
 
 ## The symptom, precisely
 
-After the transform is applied:
+What it looked like, before the fix below:
 
 - The panel is black apart from a region in its bottom-left — which, given the
   rotation, is the *top-left* of the composite.
@@ -26,11 +26,11 @@ scene graph.
 
 ## Ruled out, with evidence
 
-- **The renderer's transforms.** All eight are implemented in
-  `crates/viewport-vulkan/src/transform.rs` and covered by GPU tests, including
-  `a_rotated_output_puts_pixels_where_the_rotation_says`, which pins where a
-  90-degree draw lands. `VIEWPORT_REQUIRE_GPU=1 cargo test -p viewport-vulkan
-  rotated` passes.
+- ~~**The renderer's transforms.**~~ This is where it was. The GPU tests passed
+  because they asserted the renderer's own inverted convention back at it: the
+  rotated test bound a transposed target, which is not the buffer a rotated
+  output scans out. A test that agrees with the code says nothing about whether
+  either agrees with Smithay.
 - **DrmOutput not hearing about the change.** `initialize_output` is given the
   `Output` itself (`crates/viewport/src/udev.rs`), so the mode source is
   `OutputModeSource::Auto` and size, scale and transform are re-read every
@@ -68,35 +68,43 @@ scene graph.
   absence of the log line said so and was not checked. Both paths now call
   `output_reshaped`, as does a mode change.
 
-## Where to look next
+## What it was
 
-The lead is the primary plane. In `smithay/src/backend/drm/compositor/mod.rs`
-the primary plane is configured with `src: Rectangle::from_size(dmabuf.size())`
-and `dst: Rectangle::from_size(current_size)`, with a comment that the transform
-is deliberately *not* applied to that plane because "this is handled by the
-dtr/renderer". So two things must agree: the buffer the renderer produced, and
-`current_size`. If the renderer draws a 1440x2560 image (the logical, portrait
-size) while `dst` is the 2560x1440 mode — or the reverse — the result is exactly
-a stretched image in one corner.
+The Vulkan renderer had the two sizes the wrong way round.
 
-Concretely:
+The primary plane was never the problem: the swapchain is allocated at
+`mode.size()` and the plane is configured `src: dmabuf.size(), dst:
+current_size` — both the landscape mode, both agreeing. The stretch was in the
+image drawn into that buffer.
 
-1. Turn on `smithay::backend::drm` at debug and read the `PlaneConfig` line for
-   DP-3 after a rotation. Before rotation it reads `src: 2560x1440, dst:
-   2560x1440`. Whatever it reads after is the answer. Note that a run captured
-   for this document showed *no* `PlaneConfig` lines after the rotation at all,
-   which contradicts the screen visibly updating — so check the log level and
-   the window being grepped before trusting that.
-2. Check what `current_size` resolves to for `OutputModeSource::Auto` under a
-   transform: the mode size, or the transformed logical size.
-3. Check which size the swapchain allocates after `reset_buffers` on a rotated
-   output, since the framebuffer must stay the mode's shape while the render
-   target is described in logical terms.
-4. `crates/viewport/src/state.rs:frame_for` positions elements against
-   `output_geometry`, which is the *transformed* rectangle (1440x2560). If
-   smithay's own damage tracker also applies the transform, one of the two is
-   doing it twice — though note that would rotate the content rather than
-   stretch it, so this is second on the list.
+Smithay's convention, which `GlesRenderer::render` is the statement of:
+
+- `Renderer::render` is given the **framebuffer** size. GLES sets its viewport
+  to it *before* it looks at the transform at all.
+- Only then does it swap the axes for transposed transforms, and that swapped
+  size is the space every `dst` rectangle, every damage rectangle and
+  `Frame::output_size` are in. Smithay's damage tracker agrees: it lays elements
+  out against `output_transform.transform_size(output_size)`.
+
+So a 2560x1440 panel rotated 90 degrees scans out a 2560x1440 framebuffer
+holding a 1440x2560 desktop. `crates/viewport-vulkan/src/transform.rs` had it
+the other way about — it normalised into clip space by the *transformed* size
+and treated `dst` as being in the *untransformed* one — so the desktop was
+squeezed into a fraction of the framebuffer and hung off the edge. The GPU tests
+passed throughout because they encoded the same inversion: they bound a
+transposed target and drew into it.
+
+The second half of it is that Smithay has two functions that look like they say
+the same thing and do not. `Transform::transform_point_in` maps `Flipped90` to a
+bare transpose `(y, x)`; `Transform::matrix()` — what GLES, and so everything
+downstream of a renderer, actually uses — is that transpose *and* a half turn.
+The same disagreement is in `transform_rect_in`, which the scissor went through.
+Deriving from `transform_point_in` left `flipped-90` and `flipped-270` upside
+down while the four rotations were right. `position` and the new
+`framebuffer_rect` both go through `matrix()` now, and one test pins `_90` and
+`Flipped90` to different quadrants so they cannot quietly converge again.
+
+Everything else here was real and none of it was the cause.
 
 ## Testing it
 
@@ -106,6 +114,11 @@ Concretely:
 change never reached the compositor and nothing downstream matters.
 
 `grim -o DP-3 out.png` composites through the same `frame_for` the scanout uses
-and is trustworthy again, so a capture and the panel should now agree; if they
-disagree, the difference is itself the clue, because the only thing between them
-is the plane configuration.
+and comes back at the transformed size — 1440x2560 for a rotated 2560x1440
+panel — with the desktop upright in it.
+
+A capture is still not proof about the panel. It goes through an offscreen
+target of its own, sized and oriented for the client's buffer, so the one thing
+it cannot exercise is the scanout framebuffer's shape — which is exactly what
+was wrong. Both were checked here: `flipped-90` and `flipped-270` were upside
+down on the panel while their captures looked correct. Look at the screen.

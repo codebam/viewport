@@ -875,7 +875,7 @@ impl ViewportState {
                 surface.dumped = true;
                 let size = output
                     .current_mode()
-                    .map(|m| (m.size.w, m.size.h).into())
+                    .map(|m| output.current_transform().transform_size(m.size))
                     .unwrap_or_else(|| (0, 0).into());
                 let path = path.with_file_name(format!(
                     "{}-{}.ppm",

@@ -1027,7 +1027,15 @@ impl smithay::backend::renderer::Blit for VulkanRenderer {
 pub struct VulkanFrame<'frame, 'buffer> {
     renderer: &'frame mut VulkanRenderer,
     framebuffer: &'frame mut VulkanFramebuffer<'buffer>,
+    /// The framebuffer, in pixels: the size `Renderer::render` was given, which
+    /// is what GLES sets its viewport to before it looks at the transform.
     output_size: Size<i32, Physical>,
+    /// The same framebuffer as the desktop sees it — `output_size` with the
+    /// transform applied, so portrait on a screen rotated 90 degrees. Every
+    /// rectangle a caller hands in is in this space: it is what
+    /// `Frame::output_size` reports and what Smithay's damage tracker lays
+    /// elements out against.
+    logical_size: Size<i32, Physical>,
     /// The output transform this frame was begun with. Every position map is
     /// built through it, so a rotated display needs nothing else.
     transform: Transform,
@@ -1112,6 +1120,7 @@ impl<'frame, 'buffer> VulkanFrame<'frame, 'buffer> {
             renderer,
             framebuffer,
             output_size,
+            logical_size: transform.transform_size(output_size),
             transform,
             finished: false,
         })
@@ -1155,13 +1164,15 @@ impl<'frame, 'buffer> VulkanFrame<'frame, 'buffer> {
             .filter_map(|rect| Rectangle::new(rect.loc + dst.loc, rect.size).intersection(dst))
             .collect();
 
-        // Still output space at this point. The scissor is in framebuffer
+        // Still desktop space at this point. The scissor is in framebuffer
         // coordinates, and the two differ whenever the transform swaps axes —
         // scissoring a rotated output with its own rectangle leaves most of
         // the framebuffer untouched.
         let rects: Vec<Rectangle<i32, Physical>> = clipped
             .into_iter()
-            .map(|rect| self.transform.transform_rect_in(rect, &self.output_size))
+            .map(|rect| {
+                crate::transform::framebuffer_rect(rect, self.output_size, self.transform)
+            })
             .collect();
 
         rects
@@ -1233,7 +1244,7 @@ impl Frame for VulkanFrame<'_, '_> {
         if at.is_empty() {
             return Ok(());
         }
-        let whole = Rectangle::from_size(self.output_size);
+        let whole = Rectangle::from_size(self.logical_size);
         for rect in at {
             // The destination is the whole output and the rectangle is the
             // damage, so a clear of several regions is several draws of the
@@ -1377,7 +1388,11 @@ impl Frame for VulkanFrame<'_, '_> {
     }
 
     fn output_size(&self) -> Size<i32, Physical> {
-        self.output_size
+        // The transformed size, as GLES reports it (`gles/mod.rs` swaps the
+        // axes before storing it). A caller that clears
+        // `Rectangle::from_size(frame.output_size())` on a rotated screen is
+        // asking for the whole desktop, not the whole framebuffer.
+        self.logical_size
     }
 
     fn wait(&mut self, sync: &SyncPoint) -> Result<(), Self::Error> {
@@ -2160,19 +2175,21 @@ mod tests {
 
     /// A rotated display, drawn the way Smithay asks for it.
     ///
-    /// `render` is given the output size *before* the transform; the
-    /// framebuffer is the transformed size. For a 32x16 output rotated 90
-    /// degrees the framebuffer is 16x32, and `transform_point_in` maps
-    /// `(x, y)` to `(16 - y, x)`.
+    /// `render` is given the *framebuffer* size and the transform, and the
+    /// rectangles that follow are in the transformed space — the same way round
+    /// as GLES, which sets its viewport to the size it was handed and only then
+    /// swaps the axes for its projection.
     ///
-    /// So the left quarter of the output — x 0..8, full height — becomes the
-    /// top strip of the framebuffer: x 0..16, y 0..8. An unrotated draw of the
-    /// same rectangle would instead fill x 0..8, y 0..16, which is what the
-    /// two "distinguishes" assertions below pin down.
+    /// So a 32x16 framebuffer rotated 90 degrees holds a 16x32 desktop, and
+    /// `transform_point_in` maps `(x, y)` in that desktop to `(32 - y, x)`.
+    /// The top quarter of the desktop — y 0..8, full width — becomes the right
+    /// strip of the framebuffer: x 24..32, y 0..16. An unrotated draw of the
+    /// same rectangle would instead fill x 0..16, y 0..8, which is what the two
+    /// "distinguishes" assertions below pin down.
     #[test]
     fn a_rotated_output_puts_pixels_where_the_rotation_says() {
         let Some(mut h) = harness() else { return };
-        let mut target = buffer(&mut h.allocator, 16, 32);
+        let mut target = buffer(&mut h.allocator, 32, 16);
 
         let mut framebuffer = h.renderer.bind(&mut target).expect("bind");
         let mut frame = h
@@ -2180,14 +2197,19 @@ mod tests {
             .render(&mut framebuffer, (32, 16).into(), Transform::_90)
             .expect("a rotated output must be supported");
         assert_eq!(frame.transformation(), Transform::_90);
+        assert_eq!(
+            frame.output_size(),
+            Size::from((16, 32)),
+            "a rotated frame reports the desktop it holds"
+        );
 
         frame
             .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
             .expect("clear");
         frame
             .draw_solid(
-                Rectangle::new(Point::from((0, 0)), Size::from((8, 16))),
-                &all(8, 16),
+                Rectangle::new(Point::from((0, 0)), Size::from((16, 8))),
+                &all(16, 8),
                 Color32F::from([0.0, 1.0, 0.0, 1.0]),
             )
             .expect("draw");
@@ -2195,17 +2217,17 @@ mod tests {
         drop(framebuffer);
 
         // Green is byte 1.
-        assert_eq!(pixel(&target, 2, 2), [0, 255, 0, 255], "inside the rotated strip");
-        assert_eq!(pixel(&target, 2, 20), [0, 0, 0, 255], "below it");
+        assert_eq!(pixel(&target, 29, 2), [0, 255, 0, 255], "inside the rotated strip");
+        assert_eq!(pixel(&target, 4, 2), [0, 0, 0, 255], "left of it");
 
         // The two pixels where a rotated and an unrotated draw disagree.
         assert_eq!(
-            pixel(&target, 12, 4),
+            pixel(&target, 28, 12),
             [0, 255, 0, 255],
             "an unrotated draw would have missed this"
         );
         assert_eq!(
-            pixel(&target, 2, 12),
+            pixel(&target, 4, 4),
             [0, 0, 0, 255],
             "an unrotated draw would have covered this"
         );
