@@ -669,6 +669,13 @@
               "https://codebam-nix-cache.storage.googleapis.com"
               "https://storage.googleapis.com/codebam-nix-cache"
             ];
+            # nixConfig above only applies to interactive evaluation of this
+            # flake, and only with accept-flake-config. A system that imports
+            # this module gets the substituter but would reject every narinfo
+            # as unsigned without the matching key here.
+            nix.settings.extra-trusted-public-keys = [
+              "codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0="
+            ];
 
             services.seatd.enable = true;
             security.polkit.enable = true;
