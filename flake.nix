@@ -433,6 +433,46 @@
       }) // {
 
       # ----------------------------------------------------------------------
+      # The binary cache, so that importing any part of this builds nothing it
+      # does not have to.
+      #
+      # This used to live in the session module alone, and a system that took
+      # only the portal module still built the compositor — the portal backend
+      # *is* the compositor's package — from source, every time. Both modules
+      # import this one, so the substituter arrives with whichever of them is
+      # enabled.
+      #
+      # The key matters as much as the URL: nixConfig in this flake applies to
+      # interactive evaluation and only with accept-flake-config, so a system
+      # without the key here reaches the bucket and rejects every narinfo in it
+      # as unsigned. That failure is silent, and looks exactly like a cache
+      # that has nothing in it.
+      # ----------------------------------------------------------------------
+      nixosModules.cache = { config, lib, ... }:
+        let
+          cfg = config.programs.viewport;
+          substituters = [
+            "https://codebam-nix-cache.storage.googleapis.com"
+            "https://storage.googleapis.com/codebam-nix-cache"
+          ];
+        in
+        {
+          # `or false` because either module can be imported without the other,
+          # so either option may be undefined here.
+          config = lib.mkIf ((cfg.enable or false) || (cfg.portals.enable or false)) {
+            nix.settings = {
+              extra-substituters = substituters;
+              trusted-substituters = substituters;
+              # Signed by the key gcp-cache-fill pulls from GCP Secret Manager
+              # (secret: nix-cache-signing-key).
+              extra-trusted-public-keys = [
+                "codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0="
+              ];
+            };
+          };
+        };
+
+      # ----------------------------------------------------------------------
       # NixOS module: session entry + seatd, so viewport can be picked from a
       # display manager or launched straight from a TTY.
       # ----------------------------------------------------------------------
@@ -442,6 +482,8 @@
       # simply rejects, and no log anywhere names a portal or a desktop.
       nixosModules.portal = { config, lib, pkgs, ... }:
         {
+          imports = [ self.nixosModules.cache ];
+
           options.programs.viewport.portals.enable =
             lib.mkEnableOption "xdg-desktop-portal wiring for Viewport" // {
               description = ''
@@ -660,22 +702,6 @@
 
           config = mkIf cfg.enable {
             environment.systemPackages = [ cfg.package ];
-
-            nix.settings.extra-substituters = [
-              "https://codebam-nix-cache.storage.googleapis.com"
-              "https://storage.googleapis.com/codebam-nix-cache"
-            ];
-            nix.settings.trusted-substituters = [
-              "https://codebam-nix-cache.storage.googleapis.com"
-              "https://storage.googleapis.com/codebam-nix-cache"
-            ];
-            # nixConfig above only applies to interactive evaluation of this
-            # flake, and only with accept-flake-config. A system that imports
-            # this module gets the substituter but would reject every narinfo
-            # as unsigned without the matching key here.
-            nix.settings.extra-trusted-public-keys = [
-              "codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0="
-            ];
 
             services.seatd.enable = true;
             security.polkit.enable = true;
