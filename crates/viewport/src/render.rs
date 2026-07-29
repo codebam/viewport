@@ -20,7 +20,7 @@ use smithay::backend::renderer::element::memory::{
 };
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::texture::TextureRenderElement;
-use smithay::backend::renderer::element::utils::CropRenderElement;
+use smithay::backend::renderer::element::utils::{CropRenderElement, RescaleRenderElement};
 use smithay::backend::renderer::element::{AsRenderElements as _, Id, Kind};
 use smithay::backend::renderer::utils::DamageSnapshot;
 use smithay::backend::renderer::{ImportAll, ImportDma, ImportMem, Renderer, RendererSuper};
@@ -38,6 +38,11 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputElement<R> where R: ImportAll + ImportMem;
     Surface=WaylandSurfaceRenderElement<R>,
     CroppedSurface=CropRenderElement<WaylandSurfaceRenderElement<R>>,
+    /// A window drawn smaller than it is: the overview, where every window on
+    /// every workspace is on screen at once and no client is asked to resize
+    /// itself into a thumbnail.
+    ScaledSurface=RescaleRenderElement<CropRenderElement<WaylandSurfaceRenderElement<R>>>,
+    ScaledWholeSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
     Shell=TextureRenderElement<<R as RendererSuper>::TextureId>,
     /// A piece of the shell drawn above the windows: the frame around a
     /// floating window, or a dialog the shell put up.
@@ -78,6 +83,16 @@ pub struct WindowFrame {
     pub location: Point<i32, Physical>,
     /// The hole the shell drew, which the surface is cropped to.
     pub clip: Option<Rectangle<i32, Physical>>,
+    /// Drawn this much smaller than the client actually is, about the window's
+    /// own top-left corner.
+    ///
+    /// The overview is the whole reason it exists: every window on every
+    /// workspace at once, without asking a client to resize itself into a
+    /// thumbnail — which many would refuse, having a minimum size larger than
+    /// one. 1.0 for everything else.
+    pub scale: f64,
+    /// What the shell asked this window to be drawn at, 0.0 to 1.0.
+    pub opacity: f32,
     /// The shell's border around this window, drawn immediately above it: the
     /// four sides, and not the middle.
     ///
@@ -238,6 +253,8 @@ where
         window,
         location,
         clip,
+        scale: window_scale,
+        opacity: frame_opacity,
         overlay,
     } in &frame.windows
     {
@@ -297,6 +314,7 @@ where
         //
         // X11 windows keep the Smithay path, which has no popups of its own to
         // duplicate: an X11 menu is a separate override-redirect window.
+        let alpha = frame_opacity.clamp(0.0, 1.0);
         let surfaces = match window.wl_surface() {
             Some(surface) if window.toplevel().is_some() => {
                 render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
@@ -304,7 +322,7 @@ where
                     &surface,
                     *location,
                     scale,
-                    1.0,
+                    alpha,
                     Kind::Unspecified,
                 )
             }
@@ -312,17 +330,42 @@ where
                 renderer,
                 *location,
                 scale.into(),
-                1.0,
+                alpha,
             ),
         };
-        match clip {
+
+        // Cropped first and scaled after, which is the order the shell's
+        // arithmetic assumes: it sends the clip in the window's own unscaled
+        // coordinates, because that is the only space the client's buffer
+        // means anything in.
+        //
+        // Scaled about the window's own corner, so a thumbnail shrinks toward
+        // where the shell put it rather than toward the origin of the screen.
+        let shrink = (*window_scale - 1.0).abs() > f64::EPSILON;
+        match (clip, shrink) {
             // Cropped to the hole the shell drew. Without this a window
             // mid-animation, or one scrolled half off its column, covers the
             // bar and the wallpaper with its own background.
-            Some(clip) => elements.extend(surfaces.into_iter().filter_map(|surface| {
+            (Some(clip), false) => elements.extend(surfaces.into_iter().filter_map(|surface| {
                 CropRenderElement::from_element(surface, scale, *clip).map(OutputElement::from)
             })),
-            None => elements.extend(surfaces.into_iter().map(OutputElement::from)),
+            (Some(clip), true) => elements.extend(surfaces.into_iter().filter_map(|surface| {
+                CropRenderElement::from_element(surface, scale, *clip).map(|cropped| {
+                    OutputElement::from(RescaleRenderElement::from_element(
+                        cropped,
+                        *location,
+                        *window_scale,
+                    ))
+                })
+            })),
+            (None, false) => elements.extend(surfaces.into_iter().map(OutputElement::from)),
+            (None, true) => elements.extend(surfaces.into_iter().map(|surface| {
+                OutputElement::from(RescaleRenderElement::from_element(
+                    surface,
+                    *location,
+                    *window_scale,
+                ))
+            })),
         }
     }
 

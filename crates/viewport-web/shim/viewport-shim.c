@@ -335,6 +335,109 @@ void viewport_shim_display_show(ViewportShimDisplay *display)
 	wpe_view_focus_in(view);
 }
 
+/* -------------------------------------------------------------------------
+ * Input
+ *
+ * Ported from src/web.c of the C compositor. The shell is a page, and a page
+ * with no input is a page whose every button is decoration: the taskbar, the
+ * notification actions, the overview's drag-and-drop and the screen-share
+ * chooser are all ordinary DOM handlers waiting for events that have to come
+ * from here.
+ *
+ * Coordinates are the layout's own, which is also the page's: the shell is one
+ * document spanning every monitor, so a point on the second screen is a point
+ * near the right-hand edge of the page and needs no translation.
+ * ---------------------------------------------------------------------- */
+
+static WPEView *viewport_shim_view(ViewportShimDisplay *display)
+{
+	if (display == NULL || display->display == NULL) {
+		return NULL;
+	}
+	return display->display->view;
+}
+
+void viewport_shim_pointer_motion(ViewportShimDisplay *display,
+	uint32_t time_msec, double x, double y, uint32_t modifiers)
+{
+	WPEView *view = viewport_shim_view(display);
+	if (view == NULL) {
+		return;
+	}
+
+	/* Negative coordinates mean the pointer moved onto a client window.
+	 * WebKit needs the leave or a :hover state sticks — a button left
+	 * highlighted under a window the pointer has moved on to. */
+	WPEEventType type = (x < 0 || y < 0)
+		? WPE_EVENT_POINTER_LEAVE : WPE_EVENT_POINTER_MOVE;
+
+	WPEEvent *event = wpe_event_pointer_move_new(type, view,
+		WPE_INPUT_SOURCE_MOUSE, time_msec, modifiers, x, y, 0, 0);
+	wpe_view_event(view, event);
+	wpe_event_unref(event);
+}
+
+void viewport_shim_pointer_button(ViewportShimDisplay *display,
+	uint32_t time_msec, double x, double y, uint32_t button, bool pressed,
+	uint32_t modifiers)
+{
+	WPEView *view = viewport_shim_view(display);
+	if (view == NULL) {
+		return;
+	}
+
+	/* evdev BTN_LEFT/RIGHT/MIDDLE are 0x110-0x112; WPE numbers buttons from
+	 * one, in the order left, middle, right. */
+	guint wpe_button;
+	switch (button) {
+	case 0x110: wpe_button = 1; break;
+	case 0x112: wpe_button = 2; break;
+	case 0x111: wpe_button = 3; break;
+	default: wpe_button = button - 0x10f; break;
+	}
+
+	WPEEvent *event = wpe_event_pointer_button_new(
+		pressed ? WPE_EVENT_POINTER_DOWN : WPE_EVENT_POINTER_UP,
+		view, WPE_INPUT_SOURCE_MOUSE, time_msec, modifiers, wpe_button,
+		x, y, pressed ? 1 : 0);
+	wpe_view_event(view, event);
+	wpe_event_unref(event);
+}
+
+void viewport_shim_pointer_axis(ViewportShimDisplay *display,
+	uint32_t time_msec, double x, double y, double dx, double dy,
+	bool precise, uint32_t modifiers)
+{
+	WPEView *view = viewport_shim_view(display);
+	if (view == NULL) {
+		return;
+	}
+
+	/* Negated: Wayland reports the direction the surface moves and WPE wants
+	 * the direction the content does. */
+	WPEEvent *event = wpe_event_scroll_new(view, WPE_INPUT_SOURCE_MOUSE,
+		time_msec, modifiers, -dx, -dy, precise, FALSE, x, y);
+	wpe_view_event(view, event);
+	wpe_event_unref(event);
+}
+
+void viewport_shim_keyboard_key(ViewportShimDisplay *display,
+	uint32_t time_msec, uint32_t keycode, uint32_t keysym, bool pressed,
+	uint32_t modifiers)
+{
+	WPEView *view = viewport_shim_view(display);
+	if (view == NULL) {
+		return;
+	}
+
+	WPEEvent *event = wpe_event_keyboard_new(
+		pressed ? WPE_EVENT_KEYBOARD_KEY_DOWN : WPE_EVENT_KEYBOARD_KEY_UP,
+		view, WPE_INPUT_SOURCE_KEYBOARD, time_msec, modifiers, keycode,
+		keysym);
+	wpe_view_event(view, event);
+	wpe_event_unref(event);
+}
+
 void viewport_shim_string_free(char *string)
 {
 	g_free(string);

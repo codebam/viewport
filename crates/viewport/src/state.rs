@@ -380,6 +380,20 @@ pub struct ViewportState {
     /// A window being dragged with the pointer, and what the drag is doing to
     /// it.
     pub pointer_drag: Option<PointerDrag>,
+    /// Whether the pointer is over the shell rather than over a client.
+    ///
+    /// Kept because the transitions are what matter: the shell has to be told
+    /// when the pointer leaves it, or a `:hover` stays lit under whatever the
+    /// pointer moved on to.
+    pub pointer_on_shell: bool,
+    /// A button pressed on the shell holds the pointer until it is released.
+    ///
+    /// Without it, dragging the divider between two windows breaks the moment
+    /// the cursor crosses onto a window: hit-testing would start routing motion
+    /// to that client and the shell would never see the rest of the drag.
+    /// Wayland gives clients an implicit grab for exactly this reason
+    /// (`src/input.c:237`).
+    pub pointer_grabbed_by_shell: bool,
     /// The chooser that is up, while an application is waiting to be told what
     /// it may share.
     pub picker: Option<crate::screencast::Picker>,
@@ -706,6 +720,8 @@ impl ViewportState {
             pipewire: None,
             casts: Vec::new(),
             pointer_drag: None,
+            pointer_on_shell: false,
+            pointer_grabbed_by_shell: false,
             picker: None,
             next_pick: 1,
             foreign_management_state,
@@ -2458,8 +2474,8 @@ impl ViewportState {
         );
     }
 
-    /// Whether there is a shell to draw a chooser.
-    fn shell_is_up(&self) -> bool {
+    /// Whether there is a shell — to draw a chooser, or to be sent input.
+    pub fn shell_is_up(&self) -> bool {
         #[cfg(feature = "wpe")]
         {
             self.shell.is_some()
@@ -3095,6 +3111,12 @@ impl ViewportState {
                     window: window.clone(),
                     location,
                     clip,
+                    // Both were stored and neither was ever applied: the
+                    // overview drew its thumbnails and the compositor painted
+                    // full-size windows into them, and a window faded out by
+                    // the shell stayed solid.
+                    scale: view.map(|view| view.scale).unwrap_or(1.0),
+                    opacity: view.map(|view| view.opacity).unwrap_or(1.0),
                     overlay,
                 })
             })

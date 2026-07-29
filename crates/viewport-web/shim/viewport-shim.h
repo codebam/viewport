@@ -117,6 +117,24 @@ void viewport_shim_display_resize(ViewportShimDisplay *display,
  * scripts run, it talks to the compositor — and no frame ever arrives. */
 void viewport_shim_display_show(ViewportShimDisplay *display);
 
+/* Input, in the layout's own coordinates — which are the page's, since the
+ * shell is one document spanning every monitor.
+ *
+ * A negative position means the pointer has moved onto a client window, and is
+ * delivered as a leave: without one, a :hover state sticks under whatever the
+ * pointer moved on to. `modifiers` is a WPE_MODIFIER_* mask. */
+void viewport_shim_pointer_motion(ViewportShimDisplay *display,
+	uint32_t time_msec, double x, double y, uint32_t modifiers);
+void viewport_shim_pointer_button(ViewportShimDisplay *display,
+	uint32_t time_msec, double x, double y, uint32_t button, bool pressed,
+	uint32_t modifiers);
+void viewport_shim_pointer_axis(ViewportShimDisplay *display,
+	uint32_t time_msec, double x, double y, double dx, double dy,
+	bool precise, uint32_t modifiers);
+void viewport_shim_keyboard_key(ViewportShimDisplay *display,
+	uint32_t time_msec, uint32_t keycode, uint32_t keysym, bool pressed,
+	uint32_t modifiers);
+
 void viewport_shim_string_free(char *string);
 
 #ifdef __cplusplus

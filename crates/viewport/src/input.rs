@@ -77,8 +77,22 @@ pub enum Action {
     /// A binding fired.
     Bound(crate::binding::Action),
     /// A key aimed at the screen-share chooser, which is drawn by the shell
-    /// and steered from here because the shell receives no input of its own.
+    /// and steered from here.
     Pick(Pick),
+    /// A key for the shell's page: nothing else holds the keyboard.
+    Web(WebKey),
+}
+
+/// A key on its way to the shell, in the terms WPE wants it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebKey {
+    /// An X11-style keycode — evdev's, offset by eight — which is what WPE
+    /// expects and what the C build sent (`src/input.c:963`).
+    pub keycode: u32,
+    pub keysym: u32,
+    pub pressed: bool,
+    pub modifiers: u32,
+    pub time: u32,
 }
 
 /// What a key does while the chooser is up.
@@ -138,6 +152,16 @@ impl ViewportState {
                 // Worked out before the keyboard's state is borrowed by the
                 // filter, which is where it is needed.
                 let inhibited = self.shortcuts_inhibited();
+                // Nothing holds the keyboard, so the keys are the shell's.
+                //
+                // By who actually holds focus rather than by whether a window
+                // is focused: a layer surface — a launcher, a lock screen —
+                // takes focus without being a toplevel, and checking the
+                // focused window alone would deliver its keystrokes to the
+                // page instead, leaving the launcher unable to type
+                // (`src/input.c:1052`).
+                let to_shell = keyboard.current_focus().is_none() && self.shell_is_up();
+                let modifiers_now = self.shell_modifiers();
 
                 // The filter runs with the keyboard's state borrowed, so it
                 // decides *what* to do and the action is carried out after.
@@ -240,13 +264,41 @@ impl ViewportState {
                                         bound.clone(),
                                     )))
                                 }
+                                // To the page, which is the only thing left
+                                // that could want it. Intercepted rather than
+                                // forwarded because forwarding it goes
+                                // nowhere: there is no focused surface, which
+                                // is why it is the shell's in the first place.
+                                None if to_shell => {
+                                    state.suppressed_keys.push(keysym);
+                                    FilterResult::Intercept(Some(Action::Web(WebKey {
+                                        keycode: handle.raw_code().raw() + 8,
+                                        keysym: keysym.raw(),
+                                        pressed: true,
+                                        modifiers: modifiers_now,
+                                        time,
+                                    })))
+                                }
                                 None => FilterResult::Forward,
                             }
                         } else if let Some(at) =
                             state.suppressed_keys.iter().position(|k| *k == keysym)
                         {
                             state.suppressed_keys.remove(at);
-                            FilterResult::Intercept(Some(Action::Swallow))
+                            // A key the page was given has to be released to
+                            // it as well, or the page has one held down for
+                            // ever.
+                            if to_shell {
+                                FilterResult::Intercept(Some(Action::Web(WebKey {
+                                    keycode: handle.raw_code().raw() + 8,
+                                    keysym: keysym.raw(),
+                                    pressed: false,
+                                    modifiers: modifiers_now,
+                                    time,
+                                })))
+                            } else {
+                                FilterResult::Intercept(Some(Action::Swallow))
+                            }
                         } else {
                             FilterResult::Forward
                         }
@@ -333,6 +385,7 @@ impl ViewportState {
 
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self.surface_under(pos);
+                let on_shell = under.is_none();
                 pointer.motion(
                     self,
                     under,
@@ -344,6 +397,7 @@ impl ViewportState {
                 );
                 pointer.frame(self);
                 self.drag_to(pos);
+                self.shell_pointer_motion(pos, on_shell, event.time_msec());
                 // The cursor moved, and nothing else would draw it.
                 self.needs_render = true;
             }
@@ -361,6 +415,7 @@ impl ViewportState {
                     return;
                 };
                 let under = self.surface_under(pos);
+                let on_shell = under.is_none();
 
                 pointer.motion(
                     self,
@@ -373,6 +428,7 @@ impl ViewportState {
                 );
                 pointer.frame(self);
                 self.drag_to(pos);
+                self.shell_pointer_motion(pos, on_shell, event.time_msec());
                 self.needs_render = true;
             }
 
@@ -470,6 +526,29 @@ impl ViewportState {
                     }
                 }
 
+                // To the shell, when that is where the pointer is. A press
+                // holds it until release, so a drag that crosses onto a window
+                // is still the shell's — the same implicit grab Wayland gives
+                // a client.
+                let pressed = state == ButtonState::Pressed;
+                let on_shell = self.pointer_grabbed_by_shell
+                    || self.surface_under(pointer.current_location()).is_none();
+                if on_shell && self.shell_is_up() {
+                    if pressed {
+                        self.pointer_grabbed_by_shell = true;
+                    }
+                    let at = pointer.current_location();
+                    self.shell_pointer_button(
+                        at,
+                        event.button_code(),
+                        pressed,
+                        event.time_msec(),
+                    );
+                }
+                if !pressed {
+                    self.pointer_grabbed_by_shell = false;
+                }
+
                 pointer.button(
                     self,
                     &ButtonEvent {
@@ -516,6 +595,18 @@ impl ViewportState {
                 let Some(pointer) = self.seat.get_pointer() else {
                     return;
                 };
+                // Scrolling the shell: the taskbar, the notification list, and
+                // a chooser longer than the screen.
+                let at = pointer.current_location();
+                if self.surface_under(at).is_none() && self.shell_is_up() {
+                    self.shell_pointer_axis(
+                        at,
+                        horizontal,
+                        vertical,
+                        source == AxisSource::Finger,
+                        event.time_msec(),
+                    );
+                }
                 pointer.axis(self, frame);
                 pointer.frame(self);
             }
@@ -918,6 +1009,8 @@ impl ViewportState {
         }
 
         match action {
+            Action::Web(key) => self.shell_keyboard_key(key),
+
             Action::Pick(pick) => match pick {
                 Pick::Step(delta) => self.step_screencast_pick(delta as isize),
                 Pick::Confirm => self.confirm_screencast_pick(),
@@ -997,6 +1090,116 @@ impl ViewportState {
                 self.notify(&event);
             }
         }
+    }
+
+    /// Tell the shell where the pointer is, if it is the shell's to know.
+    ///
+    /// The transitions are the point. A pointer that moves onto a window has
+    /// *left* the shell, and a page that is not told keeps a `:hover` lit under
+    /// whatever the pointer went to — which the C build handled by sending a
+    /// negative position, and so does this (`src/web.c:492`).
+    fn shell_pointer_motion(&mut self, at: Point<f64, Logical>, on_shell: bool, time: u32) {
+        if !self.shell_is_up() {
+            return;
+        }
+        // While the shell holds the pointer it gets every position, wherever
+        // the cursor has got to: that is what makes a drag survive crossing
+        // onto a window.
+        let on_shell = on_shell || self.pointer_grabbed_by_shell;
+        if !on_shell && !self.pointer_on_shell {
+            return;
+        }
+        let (x, y) = if on_shell { (at.x, at.y) } else { (-1.0, -1.0) };
+        self.pointer_on_shell = on_shell;
+        let modifiers = self.shell_modifiers();
+        #[cfg(feature = "wpe")]
+        if let Some(shell) = self.shell.as_ref() {
+            shell.display.pointer_motion(time, x, y, modifiers);
+        }
+        let _ = (x, y, time, modifiers);
+    }
+
+    fn shell_pointer_button(
+        &mut self,
+        at: Point<f64, Logical>,
+        button: u32,
+        pressed: bool,
+        time: u32,
+    ) {
+        let modifiers = self.shell_modifiers();
+        #[cfg(feature = "wpe")]
+        if let Some(shell) = self.shell.as_ref() {
+            shell
+                .display
+                .pointer_button(time, at.x, at.y, button, pressed, modifiers);
+        }
+        let _ = (at, button, pressed, time, modifiers);
+    }
+
+    fn shell_pointer_axis(
+        &mut self,
+        at: Point<f64, Logical>,
+        dx: f64,
+        dy: f64,
+        precise: bool,
+        time: u32,
+    ) {
+        let modifiers = self.shell_modifiers();
+        #[cfg(feature = "wpe")]
+        if let Some(shell) = self.shell.as_ref() {
+            shell
+                .display
+                .pointer_axis(time, at.x, at.y, dx, dy, precise, modifiers);
+        }
+        let _ = (at, dx, dy, precise, time, modifiers);
+    }
+
+    fn shell_keyboard_key(&mut self, key: WebKey) {
+        #[cfg(feature = "wpe")]
+        if let Some(shell) = self.shell.as_ref() {
+            shell.display.keyboard_key(
+                key.time,
+                key.keycode,
+                key.keysym,
+                key.pressed,
+                key.modifiers,
+            );
+        }
+        let _ = key;
+    }
+
+    /// The modifiers as WPE numbers them.
+    fn shell_modifiers(&self) -> u32 {
+        // WPEModifiers, from WPEEvent.h. Named rather than computed, because
+        // the bit order is not the one Wayland uses and a mistake here is a
+        // page that thinks Control is held.
+        const CONTROL: u32 = 1 << 0;
+        const SHIFT: u32 = 1 << 1;
+        const ALT: u32 = 1 << 2;
+        const META: u32 = 1 << 3;
+        const CAPS_LOCK: u32 = 1 << 4;
+
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return 0;
+        };
+        let held = keyboard.modifier_state();
+        let mut out = 0;
+        if held.ctrl {
+            out |= CONTROL;
+        }
+        if held.shift {
+            out |= SHIFT;
+        }
+        if held.alt {
+            out |= ALT;
+        }
+        if held.logo {
+            out |= META;
+        }
+        if held.caps_lock {
+            out |= CAPS_LOCK;
+        }
+        out
     }
 
     /// Carry a drag as far as the pointer has got.

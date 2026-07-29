@@ -59,6 +59,40 @@ extern "C" {
     fn viewport_shim_frame_done(display: *mut ShimDisplay, token: *mut c_void);
     fn viewport_shim_display_resize(display: *mut ShimDisplay, width: u32, height: u32);
     fn viewport_shim_display_show(display: *mut ShimDisplay);
+    fn viewport_shim_pointer_motion(
+        display: *mut ShimDisplay,
+        time_msec: u32,
+        x: f64,
+        y: f64,
+        modifiers: u32,
+    );
+    fn viewport_shim_pointer_button(
+        display: *mut ShimDisplay,
+        time_msec: u32,
+        x: f64,
+        y: f64,
+        button: u32,
+        pressed: bool,
+        modifiers: u32,
+    );
+    fn viewport_shim_pointer_axis(
+        display: *mut ShimDisplay,
+        time_msec: u32,
+        x: f64,
+        y: f64,
+        dx: f64,
+        dy: f64,
+        precise: bool,
+        modifiers: u32,
+    );
+    fn viewport_shim_keyboard_key(
+        display: *mut ShimDisplay,
+        time_msec: u32,
+        keycode: u32,
+        keysym: u32,
+        pressed: bool,
+        modifiers: u32,
+    );
     fn viewport_shim_string_free(string: *mut c_char);
 }
 
@@ -199,6 +233,61 @@ impl Display {
     pub fn show(&self) {
         // SAFETY: as above.
         unsafe { viewport_shim_display_show(self.inner) };
+    }
+
+    /// The pointer moved, in the layout's own coordinates.
+    ///
+    /// A negative position is a leave — the pointer moved onto a client
+    /// window — and has to be sent, or a `:hover` state stays lit under
+    /// whatever the pointer went to.
+    pub fn pointer_motion(&self, time_msec: u32, x: f64, y: f64, modifiers: u32) {
+        // SAFETY: as above.
+        unsafe { viewport_shim_pointer_motion(self.inner, time_msec, x, y, modifiers) };
+    }
+
+    pub fn pointer_button(
+        &self,
+        time_msec: u32,
+        x: f64,
+        y: f64,
+        button: u32,
+        pressed: bool,
+        modifiers: u32,
+    ) {
+        // SAFETY: as above.
+        unsafe {
+            viewport_shim_pointer_button(self.inner, time_msec, x, y, button, pressed, modifiers)
+        };
+    }
+
+    pub fn pointer_axis(
+        &self,
+        time_msec: u32,
+        x: f64,
+        y: f64,
+        dx: f64,
+        dy: f64,
+        precise: bool,
+        modifiers: u32,
+    ) {
+        // SAFETY: as above.
+        unsafe {
+            viewport_shim_pointer_axis(self.inner, time_msec, x, y, dx, dy, precise, modifiers)
+        };
+    }
+
+    pub fn keyboard_key(
+        &self,
+        time_msec: u32,
+        keycode: u32,
+        keysym: u32,
+        pressed: bool,
+        modifiers: u32,
+    ) {
+        // SAFETY: as above.
+        unsafe {
+            viewport_shim_keyboard_key(self.inner, time_msec, keycode, keysym, pressed, modifiers)
+        };
     }
 }
 
