@@ -509,6 +509,17 @@ body {
   position: absolute;
   z-index: 5;
   box-shadow: 0 .5rem 1.5rem #0008;
+
+  /* The rect describes the hole, not the frame around it.
+     
+     Everything else here is border-box, and a floating window's size comes
+     from what the client asked for — so a border-box rect made the hole two
+     pixels smaller on each side than the client wanted. A client that can be
+     resized simply took the smaller size; one that cannot — an about box, a
+     password prompt, anything with a fixed size — ignored the configure,
+     stayed as big as it was, and had its right and bottom edges cropped
+     against a hole it never agreed to. */
+  box-sizing: content-box;
 }
 
 /* Hidden on another workspace: kept in the DOM so the client stays alive. */

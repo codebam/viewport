@@ -183,6 +183,15 @@ impl Stream {
     /// drops every one of them: 488 of them in one run, with nothing but a
     /// debug line to say the share had silently frozen on its last good frame.
     pub fn needs_renegotiation(&self, size: Size<i32, Physical>) -> bool {
+        // Not for a stream nobody is reading. A share whose consumer has gone
+        // away — a closed tab whose session the frontend has not got round to
+        // closing — would otherwise allocate three screens' worth of buffers
+        // every time the window behind it was resized, for a picture no one
+        // will see. It is renegotiated when it resumes, which is the first
+        // frame anybody asks for.
+        if !self.streaming.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
         needs_renegotiation(
             *self.agreed.lock().unwrap(),
             self.renegotiated,

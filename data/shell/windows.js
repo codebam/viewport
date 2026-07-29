@@ -69,10 +69,33 @@ function toggleFloating(id) {
   setFloating(id, !isFloating(id));
 }
 
-/* Drag a floating window, in response to Mod4 + left drag reported by the
- * compositor. Tiled windows have no position of their own, so this is a no-op
- * for them rather than an error. */
+/* Drag a window, in response to Mod4 + left drag reported by the compositor.
+ *
+ * A tiled window has no position of its own, so dragging one floats it where
+ * it already is and carries on from there — which is what sway does, and the
+ * only reading of the gesture that does anything: the alternative was to
+ * ignore the drag entirely, which is what happened before. */
 function moveByDelta(id, dx, dy) {
+  if (!floatingOf(id)) {
+    const view = views.get(id);
+    const workspace = workspaceOf(id);
+    if (!view || workspace === null) return;
+
+    /* Where it is now, so it does not jump on the first pixel of the drag.
+       The frame rather than the hole: a floating rect describes the window
+       element, borders and all. */
+    const rect = view.el.getBoundingClientRect();
+    const area = windowsAreaOf(workspace);
+    setFloating(id, true, area
+      ? {
+        x: Math.round(rect.left - area.left),
+        y: Math.round(rect.top - area.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      }
+      : null);
+  }
+
   const floating = floatingOf(id);
   if (!floating) return;
 

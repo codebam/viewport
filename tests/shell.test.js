@@ -986,6 +986,21 @@ if (mode === 'scrolling') {
     tiled !== undefined && tiled.frame === undefined);
   emit({ type: 'view.removed', id: 93 });
 
+  /* Mod4 and the left button on a *tiled* window did nothing at all: the
+     handler returned early unless the window already floated. */
+  open(94, 'tiled-drag');
+  check('the test opened a tiled window',
+    globalThis.__shell.floatingForTest(94) === null);
+  emit({ type: 'shell.command', command: 'layout.move.delta',
+    args: ['94', '30', '20'] });
+  const dragged = globalThis.__shell.floatingForTest(94);
+  check('dragging a tiled window floats it', dragged !== null);
+  /* And it carries on from where it was rather than jumping to the middle of
+     the screen on the first pixel of the drag. */
+  check('and it moves by what was dragged',
+    dragged !== null && dragged.x !== 0 && dragged.y !== 0);
+  emit({ type: 'view.removed', id: 94 });
+
   /* Resize mode looks the focused window up in the tree, and a floating window
      is not in it — so every press was ignored. */
   emit({ type: 'view.focused', id: 90 });
