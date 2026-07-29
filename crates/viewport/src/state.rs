@@ -3738,7 +3738,14 @@ impl ViewportState {
             for surface in udev.surfaces.values_mut() {
                 if surface.output == *output {
                     surface.drm_output.reset_buffers();
-                    surface.pending = false;
+                    // `pending` is not cleared here, though the VT-switch path
+                    // this was taken from does clear it. There, every flip died
+                    // with the session; here one is very likely in flight, and
+                    // forgetting it means the compositor stops waiting for the
+                    // vblank that would tell it the flip landed. What that
+                    // produced was a black screen and half a million lines of
+                    // "nothing to draw": rendering as fast as the loop would go
+                    // and committing nothing.
                 }
             }
         }
