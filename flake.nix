@@ -467,7 +467,14 @@
               config.viewport = {
                 default = [ "gtk" "*" ];
                 "org.freedesktop.impl.portal.Settings" = [ "viewport" "gtk" ];
-                "org.freedesktop.impl.portal.ScreenCast" = [ "wlr" ];
+                # ScreenCast is answered by the compositor itself, because
+                # the wlroots portal can only offer monitors: wlr-screencopy
+                # captures outputs and nothing else, so an application asking
+                # to share a window is handed a whole screen. Viewport
+                # composites windows already, and owning the interface is what
+                # lets it offer one. wlr stays the fallback for a session
+                # running the C build, which does not answer this.
+                "org.freedesktop.impl.portal.ScreenCast" = [ "viewport" "wlr" ];
                 "org.freedesktop.impl.portal.Screenshot" = [ "wlr" ];
               };
             };

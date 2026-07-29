@@ -308,27 +308,30 @@ fn main() -> Result<()> {
 
     // A screencast of the first output, for testing the stream without a
     // portal to ask for one. Removed once the portal can.
-    if std::env::var_os("VIEWPORT_TEST_CAST").is_some() {
-        // On a timer, because an output settles into its real size after the
-        // shell has been laid out — a stream created before that negotiates a
-        // size the compositor then stops producing.
-        let timer = smithay::reexports::calloop::timer::Timer::from_duration(
-            std::time::Duration::from_secs(6),
-        );
+    // The screencast portal, on the D-Bus thread with a channel back.
+    //
+    // Picking a window and compositing it belong where the windows are, and
+    // the frontend is waiting on the call — so the answer travels back on a
+    // channel of its own rather than the compositor being reached into.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
         event_loop
             .handle()
-            .insert_source(timer, |_, _, state| {
-                let output = state.space.outputs().next().cloned();
-                if let Some(output) = output {
-                    let handle = state.loop_handle.clone();
-                    match state.start_cast(&output, &handle) {
-                        Ok(node) => tracing::info!("test cast on node {node}"),
-                        Err(e) => tracing::error!("test cast: {e:#}"),
-                    }
-                }
-                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(message) = event else {
+                    return;
+                };
+                state.handle_screencast(message);
             })
-            .map_err(|e| anyhow::anyhow!("inserting the test cast timer: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("inserting the screencast source: {e}"))?;
+
+        // Not fatal: a session with no D-Bus, or one where another portal
+        // already answers ScreenCast, still has a working desktop — it simply
+        // cannot share a window.
+        if let Err(e) = state.start_screencast_portal(sender) {
+            tracing::warn!("the screencast portal is unavailable: {e}");
+        }
     }
 
     // System statistics for the bar. Every two seconds, as in C

@@ -352,6 +352,9 @@ pub struct ViewportState {
     /// switcher can act on. The read-only ext protocol is beside it and
     /// describes the same windows.
     pub foreign_management_state: crate::foreign_toplevel::ForeignToplevelState,
+    /// The D-Bus connection the screencast portal answers on, kept because
+    /// dropping it takes the interface off the bus.
+    pub screencast_portal: Option<zbus::blocking::Connection>,
     /// The screencast portal's streams, one per source a client is watching,
     /// and the PipeWire connection they live on. Absent until something asks
     /// to share a screen: a desktop nobody is sharing should not hold a
@@ -669,6 +672,7 @@ impl ViewportState {
             _virtual_keyboard_state: virtual_keyboard_state,
             gamma_state,
             output_power_state,
+            screencast_portal: None,
             pipewire: None,
             casts: Vec::new(),
             foreign_management_state,
@@ -1885,31 +1889,49 @@ impl ViewportState {
     /// without PipeWire should still be a working desktop.
     pub fn start_cast(
         &mut self,
-        output: &Output,
-        loop_handle: &LoopHandle<'static, Self>,
-    ) -> anyhow::Result<u32> {
+        source: crate::screencast::Source,
+    ) -> anyhow::Result<(u32, smithay::utils::Size<i32, smithay::utils::Physical>)> {
         if self.pipewire.is_none() {
             self.pipewire = Some(crate::screencast::stream::Pipewire::new()?);
         }
 
-        let size = output
-            .current_mode()
-            .map(|mode| mode.size)
-            .ok_or_else(|| anyhow::anyhow!("that output has no mode"))?;
+        let (name, size) = match &source {
+            crate::screencast::Source::Output(output) => {
+                let size = output
+                    .current_mode()
+                    .map(|mode| mode.size)
+                    .ok_or_else(|| anyhow::anyhow!("that output has no mode"))?;
+                (output.name(), size)
+            }
+            crate::screencast::Source::Window(id) => {
+                let view = self
+                    .views
+                    .get(*id)
+                    .ok_or_else(|| anyhow::anyhow!("no such window"))?;
+                let size = self
+                    .space
+                    .element_geometry(&view.window)
+                    .map(|geometry| geometry.size)
+                    .ok_or_else(|| anyhow::anyhow!("that window is not on screen"))?;
+                (view.title(), (size.w, size.h).into())
+            }
+        };
+
         let pipewire = self.pipewire.as_ref().expect("just connected");
-        let stream = pipewire.create_stream(&output.name(), size)?;
+        let stream = pipewire.create_stream(&name, size)?;
         let node = stream.node_id;
-        self.casts.push(crate::screencast::Cast {
-            output: output.clone(),
-            stream,
-        });
-        tracing::info!("sharing {} as pipewire node {node}", output.name());
-        Ok(node)
+        self.casts.push(crate::screencast::Cast { source, stream });
+        tracing::info!("sharing {name} as pipewire node {node}");
+        Ok((node, size))
     }
 
     /// Stop sharing whatever a session was showing.
     pub fn stop_cast(&mut self, node: u32) {
+        let before = self.casts.len();
         self.casts.retain(|cast| cast.stream.node_id != node);
+        if self.casts.len() != before {
+            tracing::info!("stopped sharing on pipewire node {node}");
+        }
         if self.casts.is_empty() {
             // Nothing is being shared, so the connection is not worth holding.
             self.pipewire = None;
@@ -1930,41 +1952,250 @@ impl ViewportState {
             Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
-        if !self.casts.iter().any(|cast| cast.output == *output) {
+        if self.casts.is_empty() {
             return;
         }
-        tracing::debug!("screencast: feeding {}", output.name());
-        let Some(size) = output.current_mode().map(|mode| mode.size) else {
-            return;
-        };
-        let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
-        // The cursor is drawn in: a screen share without a pointer is hard to
-        // follow, and this is the picture of a screen rather than a
-        // screenshot of one.
-        let pixels = match self.read_output_pixels::<R, B>(output, region, true, renderer) {
-            Ok(pixels) => pixels,
-            Err(e) => {
-                tracing::warn!("could not read a frame for the screencast: {e}");
-                return;
-            }
-        };
 
-        let mut casts = std::mem::take(&mut self.casts);
-        if let Some(pipewire) = self.pipewire.as_ref() {
-            for cast in casts.iter_mut().filter(|cast| cast.output == *output) {
-                cast.stream.push(&pixels, size, &pipewire.thread_loop);
+        // Whole screens first: one composite serves every client watching this
+        // output.
+        let watching_output = self
+            .casts
+            .iter()
+            .any(|cast| matches!(&cast.source, crate::screencast::Source::Output(o) if o == output));
+        if watching_output {
+            if let Some(size) = output.current_mode().map(|mode| mode.size) {
+                let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
+                // The cursor is drawn in: this is a picture of a screen rather
+                // than a screenshot of one, and a share without a pointer is
+                // hard to follow.
+                match self.read_output_pixels::<R, B>(output, region, true, renderer) {
+                    Ok(pixels) => self.push_to_casts(
+                        |source| {
+                            matches!(source, crate::screencast::Source::Output(o) if o == output)
+                        },
+                        &pixels,
+                        size,
+                    ),
+                    Err(e) => tracing::warn!("could not read a frame for a screencast: {e}"),
+                }
             }
         }
-        self.casts = casts;
+
+        // Then windows, one composite each. A window is shared as itself
+        // rather than as the part of the screen it covers: whatever is on top
+        // of it belongs to the desktop, not to the thing being shared.
+        let windows: Vec<u32> = self
+            .casts
+            .iter()
+            .filter_map(|cast| match &cast.source {
+                crate::screencast::Source::Window(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        for id in windows {
+            let on_this_output = self
+                .views
+                .get(id)
+                .and_then(|view| self.space.element_geometry(&view.window))
+                .zip(self.space.output_geometry(output))
+                .map(|(window, screen)| screen.overlaps(window))
+                .unwrap_or(false);
+            if !on_this_output {
+                continue;
+            }
+            match self.read_window_pixels::<R, B>(id, renderer) {
+                Ok((pixels, size)) => self.push_to_casts(
+                    |source| matches!(source, crate::screencast::Source::Window(other) if *other == id),
+                    &pixels,
+                    size,
+                ),
+                Err(e) => tracing::warn!("could not read a window for a screencast: {e}"),
+            }
+        }
 
         // Keep drawing while anything is watching.
         //
         // Rendering is driven by damage, and a desktop nobody is touching
         // produces none — so the compositor drew one frame, handed it over,
         // and stopped. A share is a stream: the viewer needs a frame whether
-        // or not this end has changed, and the one that stops arriving is read
-        // as a frozen screen rather than a still one.
+        // or not this end has changed, and one that stops arriving reads as a
+        // frozen screen rather than a still one.
         self.needs_render = true;
+    }
+
+    /// Hand a frame to every cast a predicate matches.
+    fn push_to_casts(
+        &mut self,
+        matches: impl Fn(&crate::screencast::Source) -> bool,
+        pixels: &[u8],
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) {
+        let mut casts = std::mem::take(&mut self.casts);
+        if let Some(pipewire) = self.pipewire.as_ref() {
+            for cast in casts.iter_mut().filter(|cast| matches(&cast.source)) {
+                cast.stream.push(pixels, size, &pipewire.thread_loop);
+            }
+        }
+        self.casts = casts;
+    }
+
+    /// Composite one window on its own, and read it back.
+    ///
+    /// Its own surface tree rather than the part of the screen it occupies:
+    /// what is on top of a window belongs to the desktop, and a client that
+    /// asked to share a window did not ask to share whatever is covering it.
+    fn read_window_pixels<R, B>(
+        &mut self,
+        id: u32,
+        renderer: &mut R,
+    ) -> Result<(Vec<u8>, smithay::utils::Size<i32, smithay::utils::Physical>), String>
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId:
+            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+        use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+        use smithay::backend::renderer::element::Kind;
+        use smithay::desktop::space::SpaceElement as _;
+        use smithay::wayland::seat::WaylandFocus as _;
+
+        let view = self.views.get(id).ok_or_else(|| "no such window".to_owned())?;
+        let window = view.window.clone();
+        let geometry = window.geometry();
+        let size: smithay::utils::Size<i32, smithay::utils::Physical> =
+            (geometry.size.w.max(1), geometry.size.h.max(1)).into();
+        let surface = window
+            .wl_surface()
+            .ok_or_else(|| "that window has no surface".to_owned())?
+            .into_owned();
+
+        // Drawn at the window's own origin, so the shadow a client draws
+        // outside its geometry falls off the edge rather than shifting the
+        // picture.
+        let elements = render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+            renderer,
+            &surface,
+            (-geometry.loc.x, -geometry.loc.y),
+            1.0,
+            1.0,
+            Kind::Unspecified,
+        );
+
+        let format = smithay::backend::allocator::Fourcc::Xrgb8888;
+        let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
+            (size.w, size.h).into();
+        let mut target = renderer
+            .create_buffer(format, buffer_size)
+            .map_err(|e| format!("allocating a window capture target: {e}"))?;
+
+        let mapping = {
+            let mut framebuffer = renderer
+                .bind(&mut target)
+                .map_err(|e| format!("binding a window capture target: {e}"))?;
+            let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+                size,
+                1.0,
+                smithay::utils::Transform::Normal,
+            );
+            tracker
+                .render_output(
+                    renderer,
+                    &mut framebuffer,
+                    0,
+                    &elements,
+                    smithay::backend::renderer::Color32F::from([0.0, 0.0, 0.0, 1.0]),
+                )
+                .map_err(|e| format!("compositing a window: {e:?}"))?;
+            renderer
+                .copy_framebuffer(
+                    &framebuffer,
+                    smithay::utils::Rectangle::from_size(buffer_size),
+                    format,
+                )
+                .map_err(|e| format!("reading a window back: {e}"))?
+        };
+        let pixels = renderer
+            .map_texture(&mapping)
+            .map_err(|e| format!("mapping a window capture: {e}"))?
+            .to_vec();
+        Ok((pixels, size))
+    }
+
+    /// Answer org.freedesktop.impl.portal.ScreenCast on the session bus.
+    pub fn start_screencast_portal(
+        &mut self,
+        sender: smithay::reexports::calloop::channel::Sender<crate::screencast::portal::Message>,
+    ) -> anyhow::Result<()> {
+        let portal = crate::screencast::portal::ScreenCast::new(sender);
+        let connection = zbus::blocking::connection::Builder::session()?
+            // The name the frontend looks for, keyed on the desktop's own
+            // name — which is why XDG_CURRENT_DESKTOP has to say viewport.
+            .name("org.freedesktop.impl.portal.desktop.viewport")?
+            .serve_at("/org/freedesktop/portal/desktop", portal)?
+            .build()?;
+        self.screencast_portal = Some(connection);
+        tracing::info!("screencast portal up");
+        Ok(())
+    }
+
+    /// Carry out what the portal asked for.
+    pub fn handle_screencast(&mut self, message: crate::screencast::portal::Message) {
+        use crate::screencast::portal::{Message, Started};
+
+        match message {
+            Message::Start { types, reply } => {
+                let source = self.pick_screencast_source(types);
+                let answer = match source {
+                    Some(source) => {
+                        let kind = source.kind();
+                        self.start_cast(source)
+                            .map(|(node, size)| Started {
+                                node,
+                                width: size.w,
+                                height: size.h,
+                                source_type: kind,
+                            })
+                            .map_err(|e| e.to_string())
+                    }
+                    None => Err("there is nothing to share".to_owned()),
+                };
+                let _ = reply.send(answer);
+            }
+            Message::Close { node } => self.stop_cast(node),
+        }
+    }
+
+    /// What to share, given what the application asked for.
+    ///
+    /// A window if one was asked for and one is focused, and the screen it is
+    /// on otherwise. Asking the user is the shell's job — it draws every
+    /// window already — and until it does, the focused window is the one the
+    /// user was looking at when they pressed share.
+    fn pick_screencast_source(&mut self, types: u32) -> Option<crate::screencast::Source> {
+        if types & crate::screencast::SOURCE_WINDOW != 0 {
+            if let Some(view) = self.views.get(self.focused) {
+                if view.mapped {
+                    return Some(crate::screencast::Source::Window(view.id));
+                }
+            }
+        }
+        if types & crate::screencast::SOURCE_MONITOR != 0 {
+            let output = self
+                .active_output
+                .as_ref()
+                .and_then(|name| self.output_by_name(name))
+                .or_else(|| self.space.outputs().next().cloned())?;
+            return Some(crate::screencast::Source::Output(output));
+        }
+        None
     }
 
     /// Whether an output is currently in HDR.
