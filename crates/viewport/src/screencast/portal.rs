@@ -177,6 +177,30 @@ impl ScreenCast {
         (RESPONSE_SUCCESS, HashMap::new())
     }
 
+    /// A connection to PipeWire, for the application to read the stream
+    /// through.
+    ///
+    /// Without this the application has a node number and no way to reach it:
+    /// it builds its pw_core from this descriptor, so a portal that does not
+    /// answer leaves the stream sitting at Paused with nothing negotiating —
+    /// which is a share that hands back a node and produces nothing, and says
+    /// so nowhere.
+    ///
+    /// A fresh connection to the daemon rather than the compositor's own: the
+    /// application gets its own client, and closing it is its business.
+    fn open_pipe_wire_remote(
+        &self,
+        _session_handle: ObjectPath<'_>,
+        _options: HashMap<String, OwnedValue>,
+    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+        let socket = pipewire_socket()
+            .ok_or_else(|| zbus::fdo::Error::Failed("no pipewire socket".to_owned()))?;
+        let stream = std::os::unix::net::UnixStream::connect(&socket).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("connecting to {}: {e}", socket.display()))
+        })?;
+        Ok(zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(stream)))
+    }
+
     /// Pick a source and hand back the stream.
     fn start(
         &self,
@@ -256,4 +280,14 @@ impl SessionObject {
     fn version(&self) -> u32 {
         2
     }
+}
+
+/// Where the PipeWire daemon is listening.
+///
+/// The same search the client library does: the name from the environment if
+/// it is set, and pipewire-0 otherwise, inside the runtime directory.
+fn pipewire_socket() -> Option<std::path::PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
+    let name = std::env::var_os("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into());
+    Some(std::path::PathBuf::from(runtime).join(name))
 }
