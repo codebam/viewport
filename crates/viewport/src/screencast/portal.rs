@@ -131,6 +131,7 @@ impl ScreenCast {
         #[zbus(object_server)] server: &zbus::ObjectServer,
     ) -> (u32, HashMap<String, OwnedValue>) {
         let path = OwnedObjectPath::from(session_handle);
+        tracing::debug!("screencast: create session {path}");
         self.sessions
             .lock()
             .unwrap()
@@ -169,8 +170,10 @@ impl ScreenCast {
             // interface has always defaulted to.
             .unwrap_or(super::SOURCE_MONITOR);
 
+        tracing::debug!("screencast: select sources, types {types}");
         let mut sessions = self.sessions.lock().unwrap();
         let Some(session) = sessions.get_mut(&OwnedObjectPath::from(session_handle)) else {
+            tracing::warn!("screencast: select sources for a session that does not exist");
             return (RESPONSE_FAILED, HashMap::new());
         };
         session.types = types;
@@ -193,6 +196,7 @@ impl ScreenCast {
         _session_handle: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+        tracing::debug!("screencast: the application asked for a pipewire connection");
         let socket = pipewire_socket()
             .ok_or_else(|| zbus::fdo::Error::Failed("no pipewire socket".to_owned()))?;
         let stream = std::os::unix::net::UnixStream::connect(&socket).map_err(|e| {
@@ -246,8 +250,20 @@ impl ScreenCast {
         let streams = vec![(started.node, properties)];
 
         let mut results: HashMap<String, OwnedValue> = HashMap::new();
-        if let Ok(value) = OwnedValue::try_from(Value::from(streams)) {
-            results.insert("streams".to_owned(), value);
+        match OwnedValue::try_from(Value::from(streams)) {
+            Ok(value) => {
+                results.insert("streams".to_owned(), value);
+                tracing::debug!(
+                    "screencast: answering with node {} at {}x{}",
+                    started.node,
+                    started.width,
+                    started.height
+                );
+            }
+            // The frontend has nothing to pass on without this, and an
+            // application shown an empty result waits for a stream that will
+            // never be named.
+            Err(e) => tracing::warn!("screencast: could not describe the stream: {e}"),
         }
         (RESPONSE_SUCCESS, results)
     }
