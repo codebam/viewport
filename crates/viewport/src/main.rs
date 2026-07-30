@@ -278,6 +278,17 @@ fn main() -> Result<()> {
                     }
                     crate::notification::Message::Close(id) => {
                         state.notify(&viewport_ipc::Event::NotificationClose { id });
+                        // And tell the sender, which the specification requires
+                        // and this did not do: a notification closed by
+                        // `CloseNotification` must be reported with reason 3.
+                        // Without it an application that closes its own
+                        // notification — a progress bar finishing, a chat
+                        // client clearing a message it has shown — is never
+                        // told it happened, and one that tracks its own
+                        // notifications waits for an answer that never comes.
+                        state
+                            .notifications
+                            .closed(id, crate::notification::CloseReason::ByRequest);
                     }
                 }
             })
@@ -352,12 +363,15 @@ fn main() -> Result<()> {
 
     // With the web engine, GLib owns the outer loop and calloop nests inside
     // it — see glib_loop.rs for why round that way.
+    // Falling through to the shared `Ok(())` rather than returning from inside
+    // the block: with the web engine on, a `return` here left the tail
+    // unreachable and the warning permanently lit, which is where a real
+    // unreachable-code warning would have hidden.
     #[cfg(feature = "wpe")]
     {
         let mut glib = glib_loop::GlibLoop::new(&event_loop)?;
         state.glib = Some(glib.signal());
         glib.run(&mut event_loop, &mut state);
-        return Ok(());
     }
 
     #[cfg(not(feature = "wpe"))]

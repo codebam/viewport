@@ -588,7 +588,7 @@ where
                     );
                     return;
                 };
-                change.transform = Some(transform.into());
+                change.transform = Some(transform_from_wl(transform));
             }
             zwlr_output_configuration_head_v1::Request::SetScale { scale } => {
                 once!(change.scale, AlreadySet);
