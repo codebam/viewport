@@ -474,9 +474,9 @@ pub struct ViewportState {
     pub barrier_tick: bool,
     /// A frame-callback tick is already armed.
     pub frame_clock: bool,
-    /// A client committed while the tick was armed, so tick once more after it
-    /// fires. This is what lets the clock stop when the desktop goes quiet.
-    pub frame_clock_wanted: bool,
+    /// When that tick is due. GLib owns the blocking wait and has to be told
+    /// how long it may sleep, or a calloop timer simply never comes round.
+    pub frame_clock_at: Option<std::time::Instant>,
     /// How many ticks in a row have released nothing.
     pub barrier_quiet: u32,
     /// The shell's workspaces, mirrored for `ext-workspace-v1`. Empty until
@@ -862,7 +862,7 @@ impl ViewportState {
             commit_timing_state,
             barrier_tick: false,
             frame_clock: false,
-            frame_clock_wanted: false,
+            frame_clock_at: None,
             barrier_quiet: 0,
             _security_context_state: security_context_state,
             _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
@@ -4068,6 +4068,7 @@ impl ViewportState {
     /// everything if the output has no CRTC here, which is the nested backend
     /// and the moment between a monitor arriving and being brought up.
     pub fn mark_output_dirty(&mut self, output: &Output) {
+        self.arm_frame_clock();
         let crtc = self.udev.as_ref().and_then(|udev| {
             udev.surfaces
                 .iter()
@@ -4293,37 +4294,33 @@ impl ViewportState {
     /// difference between a frame clock and the busy loop it replaces.
     pub fn arm_frame_clock(&mut self) {
         if self.frame_clock {
-            // Already ticking. Ask for one more tick after this one, so a
-            // client that is still going keeps being invited.
-            self.frame_clock_wanted = true;
             return;
         }
         self.frame_clock = true;
-        let timer =
-            smithay::reexports::calloop::timer::Timer::from_duration(self.frame_interval());
+        let interval = self.frame_interval();
+        self.frame_clock_at = Some(std::time::Instant::now() + interval);
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(interval);
         if let Err(e) = self.loop_handle.insert_source(timer, move |_, _, state| {
             state.frame_clock = false;
+            state.frame_clock_at = None;
             let at = state.start_time.elapsed();
             let outputs: Vec<Output> = state.space.outputs().cloned().collect();
             for output in &outputs {
                 state.send_frame_callbacks(output, at);
             }
-            // A new frame is a new answer: whatever found nothing last time
-            // may find something now.
-            if let Some(udev) = state.udev.as_mut() {
-                for surface in udev.surfaces.values_mut() {
-                    surface.idle = false;
-                }
-            }
+            // One render for everything that happened since the last tick.
             state.render_if_needed();
             let _ = state.display_handle.flush_clients();
-            if std::mem::take(&mut state.frame_clock_wanted) {
+            // Anything still owed a frame keeps the clock going; an empty
+            // desk lets it stop.
+            if state.needs_render || !state.dirty_outputs.is_empty() {
                 state.arm_frame_clock();
             }
             smithay::reexports::calloop::timer::TimeoutAction::Drop
         }) {
             tracing::warn!("frame clock: {e}");
             self.frame_clock = false;
+            self.frame_clock_at = None;
         }
     }
 

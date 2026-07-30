@@ -172,8 +172,24 @@ strength of a counter that sat above that function's early return and so
 counted calls that did nothing. Calls are cheap; the passes are not. The churn
 is client commits, one render each.
 
-Four ways of not doing that work have been tried and all four cost more than
-they saved. Recorded so they are not tried again in the same form:
+**Fixed** by rendering once a frame instead of once per commit. The outer loop
+now only arms the frame clock; the clock does one `render_if_needed` for
+everything that arrived since the last tick. Same 17,232 commits, ~240 renders,
+and the compositor went from 87% of a core to 10% with the video still smooth.
+This is what wlroots does, and why sway answers the same traffic without the
+heat.
+
+It needed one thing that is not obvious. GLib owns the blocking wait, so a
+calloop timer only fires if GLib wakes up to let calloop dispatch it, and
+`prepare` was setting `*timeout = -1` — block until an fd speaks. Harmless
+while the frame was rendered inline in `prepare`; the moment the clock took the
+job over it meant no mouse and no keyboard produced no fd traffic and so no
+tick, and the desktop redrew about twice a second. `prepare` now hands GLib the
+clock's deadline.
+
+Four earlier attempts cost more than they saved, all by trying to do less work
+per commit rather than fewer renders. Recorded so they are not tried again in
+the same form:
 
 - Holding attempts to one a frame, anchored to the last attempt. Merges any two
   commits sharing a window, which halves a client already at panel rate.
