@@ -219,6 +219,44 @@ mod tests {
     }
 
     #[test]
+    fn an_sdr_output_leaves_a_client_no_headroom_to_aim_at() {
+        // mpv's arithmetic, from video/out/wayland_common.c, reproduced because
+        // the numbers this compositor sends are only correct in terms of what a
+        // client does with them.
+        //
+        // It rescales the target luminances onto libplacebo's fixed reference
+        // white, then compares the maximum against it. Anything other than
+        // equality means headroom, and headroom means it re-encodes into PQ for
+        // an HDR display that is not there — while never telling the compositor,
+        // which goes on decoding those buffers as sRGB. That is the washed-out
+        // picture, and it is reachable from nothing but these three numbers.
+        const SDR_WHITE: f32 = 203.0;
+        const HDR_BLACK: f32 = 0.005;
+
+        let description = Description::default();
+        let min = MIN_LUMINANCE;
+        let reference = description.reference_luminance;
+        // What `target_luminance` carries: the same maximum, not a multiple.
+        let target_max = reference;
+
+        let scale = (SDR_WHITE - HDR_BLACK) / (reference - min);
+        let rescaled = (target_max - min) * scale + HDR_BLACK;
+
+        assert!(
+            (rescaled - SDR_WHITE).abs() < 1e-2,
+            "an SDR output rescaled to {rescaled}, which mpv reads as HDR headroom"
+        );
+    }
+
+    #[test]
+    fn the_minimum_luminance_survives_the_wire_units() {
+        // Ten-thousandths, not thousandths and not whole cd/m². Getting this
+        // wrong moves the black point a client is told about by a factor of ten,
+        // and it is the divisor in the rescale above.
+        assert_eq!((MIN_LUMINANCE * 10_000.0) as u32, 2_000);
+    }
+
+    #[test]
     fn a_surface_that_said_nothing_is_srgb() {
         // Not a guess: the protocol requires it.
         assert_eq!(Description::default().transfer, TransferFunction::Srgb);
@@ -545,14 +583,35 @@ impl Dispatch<WpColorManagementSurfaceV1, WlSurface> for ViewportState {
     }
 }
 
+/// The darkest the compositor claims its output goes, in cd/m².
+///
+/// The sRGB reference viewing condition rather than a measured panel, which is
+/// what this compositor actually knows.
+pub const MIN_LUMINANCE: f32 = 0.2;
+
 /// Send everything known about a description.
 ///
 /// Both the named form and the explicit chromaticities are sent: a client that
 /// understands the name can use it, and one that does not still gets the
 /// numbers. The protocol encodes chromaticities as parts per million and
 /// luminance in thousandths, so nothing here is in the units it looks like.
+///
+/// The `target_*` half is not optional decoration. The protocol lists
+/// `target_primaries` and `target_luminance` among the events a parametric
+/// description *must* send, and they are the only place a client learns what
+/// the display itself can do — `luminances` describes the encoding, not the
+/// panel. Leaving them out does not read as "unknown", it reads as zero, and a
+/// zero maximum is not a luminance any real display has. mpv takes that
+/// literally: a target maximum that is not exactly SDR white means headroom
+/// exists, so it re-encodes into PQ for what it believes is an HDR screen. It
+/// then never sets an image description on its surface, so the compositor
+/// decodes those PQ bytes as sRGB — lifted blacks and a white that stops at
+/// about 58%, which is the washed-out picture every video looked like.
 fn describe(info: &WpImageDescriptionInfoV1, description: &Description) {
     const CHROMATICITY: f32 = 1_000_000.0;
+    /// Minimum luminance rides in ten-thousandths; every other one is whole
+    /// cd/m².
+    const MIN_LUMINANCE_SCALE: f32 = 10_000.0;
     let xy = |(x, y): (f32, f32)| ((x * CHROMATICITY) as i32, (y * CHROMATICITY) as i32);
 
     if let Some(named) = named_primaries(&description.primaries) {
@@ -568,15 +627,20 @@ fn describe(info: &WpImageDescriptionInfoV1, description: &Description) {
         info.tf_named(named);
     }
 
-    // Minimum luminance is in ten-thousandths; the others are whole cd/m².
-    // The minimum and maximum here are the sRGB reference viewing conditions
-    // rather than a measured display, which is what this compositor actually
-    // knows.
+    let min_lum = (MIN_LUMINANCE * MIN_LUMINANCE_SCALE) as u32;
     info.luminances(
-        (0.2 * 10_000.0) as u32,
+        min_lum,
         description.reference_luminance as u32,
         description.reference_luminance as u32,
     );
+
+    // The displayable volume, as opposed to the encodable one above. This
+    // compositor composites into an SDR framebuffer and hands it to a panel it
+    // drives as SDR, so the two are the same: the primaries it renders in, and
+    // a maximum that is the reference white rather than some multiple of it.
+    // Saying so is what tells a client there is no headroom to aim at.
+    info.target_primaries(rx, ry, gx, gy, bx, by, wx, wy);
+    info.target_luminance(min_lum, description.reference_luminance as u32);
 }
 
 /// The protocol name for a set of primaries, where there is one.
