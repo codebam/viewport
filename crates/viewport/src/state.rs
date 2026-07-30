@@ -3968,6 +3968,33 @@ impl ViewportState {
         }
     }
 
+    /// Ask for a frame on whichever screens show this surface.
+    ///
+    /// A client painting at its own rate is the common case, and marking the
+    /// whole desktop for it means the other monitor attempts a frame per
+    /// commit and finds nothing — two thousand of them in five seconds, for a
+    /// cube on the first screen. Falls back to everything when the surface is
+    /// not a window this compositor has placed: a layer surface, a popup, the
+    /// lock screen, or a window between mapping and being given a rectangle.
+    pub fn mark_dirty_for_surface(&mut self, surface: &WlSurface) {
+        let mut root = surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+        let outputs = self
+            .views
+            .find_by_surface(&root)
+            .map(|view| self.space.outputs_for_element(&view.window))
+            .unwrap_or_default();
+        if outputs.is_empty() {
+            self.needs_render = true;
+            return;
+        }
+        for output in outputs {
+            self.mark_output_dirty(&output);
+        }
+    }
+
     /// Ask for a frame on one output rather than all of them.
     ///
     /// A pacing barrier belongs to a window, a window is on a screen, and the

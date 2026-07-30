@@ -875,7 +875,12 @@ impl ViewportState {
         // it was ever scanned out; the request is remembered and the vblank
         // draws it.
         if surface.pending {
-            self.needs_render = true;
+            // This screen, not every screen. A client painting flat out keeps
+            // one output's flip in the air, and marking the whole desktop for
+            // the retry had the other monitor attempting a frame each time and
+            // finding nothing — thousands of them a second, for a window it
+            // does not show.
+            self.dirty_outputs.insert(crtc);
             return;
         }
 
@@ -1009,7 +1014,7 @@ impl ViewportState {
                                 surface.tearing_failures
                             );
                         }
-                        self.needs_render = true;
+                        self.dirty_outputs.insert(crtc);
                     }
                 } else {
                     surface.pending = true;
@@ -1028,7 +1033,7 @@ impl ViewportState {
         }
 
         if pending_dump {
-            self.needs_render = true;
+            self.dirty_outputs.insert(crtc);
         }
 
         // Screenshots, now that the frame this output shows has been drawn.

@@ -147,7 +147,11 @@ impl CompositorHandler for ViewportState {
         // when nothing is submitted, so with a still screen there is nothing
         // to carry this to an output — the window would update only when
         // something unrelated caused a frame.
-        self.needs_render = true;
+        //
+        // Only the screens this surface is actually on: a client painting at
+        // 120Hz on one monitor had the other attempting a frame per commit for
+        // nothing.
+        self.mark_dirty_for_surface(surface);
 
         // If this commit set a fifo barrier or a commit timer, the *next* one
         // is going to block, and a blocked commit makes no damage to draw. The
