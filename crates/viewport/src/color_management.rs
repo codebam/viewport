@@ -31,12 +31,15 @@ use smithay::reexports::wayland_protocols::wp::color_management::v1::server::{
     wp_image_description_info_v1::WpImageDescriptionInfoV1,
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
+use smithay::output::Output;
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 use smithay::wayland::compositor::with_states;
 
+pub use viewport_vulkan::color::{description_for, SurfaceColor};
 use viewport_vulkan::color::{Description, Primaries, TransferFunction};
 
 /// The version of the protocol this implements.
@@ -46,6 +49,17 @@ const VERSION: u32 = 1;
 #[derive(Debug)]
 pub struct ColorManagementState {
     _global: smithay::reexports::wayland_server::backend::GlobalId,
+    /// The per-output objects clients hold.
+    ///
+    /// Kept because the protocol gives a client no way to notice on its own:
+    /// it fetches the output's image description once, when it connects, and
+    /// only asks again if it is told the description changed. Without this
+    /// list an output switched into HDR stays SDR to every client already
+    /// running — and to every client started afterwards, since nothing else
+    /// consulted the output's state either.
+    outputs: Vec<(WpColorManagementOutputV1, WlOutput)>,
+    /// The per-surface feedback objects, for the same reason.
+    feedback: Vec<(WpColorManagementSurfaceFeedbackV1, WlSurface)>,
 }
 
 impl ColorManagementState {
@@ -55,26 +69,16 @@ impl ColorManagementState {
     {
         Self {
             _global: display.create_global::<D, WpColorManagerV1, _>(VERSION, ()),
+            outputs: Vec::new(),
+            feedback: Vec::new(),
         }
     }
-}
 
-/// The description a surface has declared, or `None` for "assume sRGB".
-#[derive(Debug, Default)]
-pub struct SurfaceColor(pub Mutex<Option<Description>>);
-
-/// What a surface's buffers contain, or the sRGB default.
-///
-/// The default is not a guess so much as the protocol's own answer: a client
-/// that has not said anything is required to be treated as sRGB.
-pub fn description_for(surface: &WlSurface) -> Description {
-    with_states(surface, |states| {
-        states
-            .data_map
-            .get::<SurfaceColor>()
-            .and_then(|color| color.0.lock().ok().and_then(|held| *held))
-            .unwrap_or_default()
-    })
+    /// Drop the objects whose client has gone.
+    fn reap(&mut self) {
+        self.outputs.retain(|(object, _)| object.is_alive());
+        self.feedback.retain(|(object, _)| object.is_alive());
+    }
 }
 
 /// Map the protocol's named transfer function onto ours.
@@ -249,11 +253,98 @@ mod tests {
     }
 
     #[test]
+    fn the_luminances_go_out_in_the_order_the_protocol_takes_them() {
+        // min, max, reference — not min, reference, max. The last two are the
+        // same number for every SDR description, so the wrong order is
+        // invisible until something is HDR and then says its reference white
+        // is 10,000 cd/m².
+        let (min, max, reference) = luminance_args(&hdr_description());
+        assert_eq!(min, (MIN_LUMINANCE * 10_000.0) as u32);
+        assert_eq!(max, PQ_PEAK as u32);
+        assert_eq!(reference, hdr_description().reference_luminance as u32);
+        assert!(reference < max, "reference white above the encodable maximum");
+
+        // And the target pair: minimum then maximum, the panel rather than the
+        // encoding.
+        let (target_min, target_max) = target_luminance_args(&hdr_description());
+        assert_eq!(target_min, min);
+        assert_eq!(target_max, HDR_PEAK_LUMINANCE as u32);
+    }
+
+    #[test]
     fn the_minimum_luminance_survives_the_wire_units() {
         // Ten-thousandths, not thousandths and not whole cd/m². Getting this
         // wrong moves the black point a client is told about by a factor of ten,
         // and it is the divisor in the rescale above.
         assert_eq!((MIN_LUMINANCE * 10_000.0) as u32, 2_000);
+    }
+
+    #[test]
+    fn an_hdr_output_leaves_a_client_headroom_to_aim_at() {
+        // The other half of the test above, and the bug this pair exists for:
+        // an output already switched into HDR reported the SDR numbers, so
+        // every client did this arithmetic and concluded there was no headroom
+        // — Chrome then offered the page an SDR display and played the SDR
+        // rendition of an HDR video on a screen that was in HDR.
+        const SDR_WHITE: f32 = 203.0;
+        const HDR_BLACK: f32 = 0.005;
+
+        let description = hdr_description();
+        let min = MIN_LUMINANCE;
+        let reference = description.reference_luminance;
+        let target_max = displayable_peak(&description);
+
+        let scale = (SDR_WHITE - HDR_BLACK) / (reference - min);
+        let rescaled = (target_max - min) * scale + HDR_BLACK;
+
+        assert!(
+            rescaled > SDR_WHITE,
+            "an HDR output rescaled to {rescaled}, which a client reads as no headroom"
+        );
+    }
+
+    #[test]
+    fn an_hdr_output_is_described_as_what_it_is_driven_as() {
+        // These three are what `udev::render` hands the renderer for an output
+        // in HDR. A client told anything else is drawing for a screen that is
+        // not the one in front of it.
+        let description = hdr_description();
+        assert_eq!(description.transfer, TransferFunction::Pq);
+        assert_eq!(description.primaries, Primaries::BT2020);
+        assert_eq!(named_transfer(description.transfer), Some(WireTransferFunction::St2084Pq));
+        assert_eq!(named_primaries(&description.primaries), Some(WirePrimaries::Bt2020));
+    }
+
+    #[test]
+    fn pq_encodes_to_ten_thousand_however_bright_the_panel_is() {
+        // The encodable maximum is fixed by ST 2084; the displayable one is
+        // the panel. Sending the panel's figure as the encoding maximum would
+        // tell a client its PQ values are clipped at 1000, which they are not.
+        let hdr = hdr_description();
+        assert_eq!(encodable_peak(&hdr), 10_000.0);
+        assert_eq!(displayable_peak(&hdr), HDR_PEAK_LUMINANCE);
+
+        // SDR has no separate volume: reference white is both.
+        let sdr = Description::default();
+        assert_eq!(encodable_peak(&sdr), sdr.reference_luminance);
+        assert_eq!(displayable_peak(&sdr), sdr.reference_luminance);
+    }
+
+    #[test]
+    fn the_same_description_always_has_the_same_identity() {
+        // A client compares identities to decide whether its surface already
+        // matches the output. A fresh number per request makes every match
+        // look like a mismatch, and makes the identity announced by
+        // `preferred_changed` disagree with the one handed back afterwards.
+        assert_eq!(
+            identity_for(&Description::default()),
+            identity_for(&Description::default())
+        );
+        assert_eq!(identity_for(&hdr_description()), identity_for(&hdr_description()));
+        assert_ne!(
+            identity_for(&Description::default()),
+            identity_for(&hdr_description())
+        );
     }
 
     #[test]
@@ -304,7 +395,7 @@ impl GlobalDispatch<WpColorManagerV1, ()> for ViewportState {
 
 impl Dispatch<WpColorManagerV1, ()> for ViewportState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         manager: &WpColorManagerV1,
         request: wp_color_manager_v1::Request,
@@ -335,12 +426,20 @@ impl Dispatch<WpColorManagerV1, ()> for ViewportState {
             // into. Answering with the truth costs nothing; posting an error
             // would kill the connection of any client that merely asks, which
             // is what `wayland-info` does on startup.
-            wp_color_manager_v1::Request::GetSurfaceFeedback { id, .. } => {
-                data_init.init(id, ());
+            //
+            // Both are kept, with what they were asked about: the description
+            // depends on which output is involved, and the client has to be
+            // told when that output changes.
+            wp_color_manager_v1::Request::GetSurfaceFeedback { id, surface } => {
+                let object = data_init.init(id, surface.clone());
+                state.color_management.reap();
+                state.color_management.feedback.push((object, surface));
             }
 
-            wp_color_manager_v1::Request::GetOutput { id, .. } => {
-                data_init.init(id, ());
+            wp_color_manager_v1::Request::GetOutput { id, output } => {
+                let object = data_init.init(id, output.clone());
+                state.color_management.reap();
+                state.color_management.outputs.push((object, output));
             }
 
             wp_color_manager_v1::Request::CreateWindowsScrgb { image_description }
@@ -421,7 +520,13 @@ impl Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<CreatorParams>> for Viewp
                 }
                 // The protocol's own constraint. Reference above maximum is
                 // not a rounding problem, it is a contradiction.
-                if reference_lum > max_lum || min_lum as u32 >= max_lum * 10_000 {
+                //
+                // Saturating, because the minimum rides in ten-thousandths and
+                // the maximum in whole cd/m²: putting them in the same units
+                // overflows a u32 above about 429,000 cd/m², which is a number
+                // a client is free to send and which would otherwise panic the
+                // compositor rather than fail the request.
+                if reference_lum > max_lum || min_lum as u32 >= max_lum.saturating_mul(10_000) {
                     creator.post_error(
                         Error::InvalidLuminance,
                         "the reference luminance exceeds the maximum",
@@ -589,6 +694,24 @@ impl Dispatch<WpColorManagementSurfaceV1, WlSurface> for ViewportState {
 /// what this compositor actually knows.
 pub const MIN_LUMINANCE: f32 = 0.2;
 
+/// What PQ's encoded 1.0 means, in cd/m².
+///
+/// Fixed by ST 2084, so it is the maximum of the *encoding* whatever panel is
+/// attached.
+const PQ_PEAK: f32 = 10_000.0;
+
+/// The peak this compositor claims an HDR output reaches, in cd/m².
+///
+/// Not measured. The connector's HDR metadata blob carries zeroes for the
+/// mastering display — `hdr::hdr_metadata_bytes` sends what the C version sent
+/// — so there is no panel figure to pass on. Some maximum above reference
+/// white has to be sent regardless: a client compares the target maximum with
+/// reference white, and equality means no headroom, which is the answer that
+/// keeps it in SDR. 1000 is the level HDR10 content is graded against and the
+/// figure a consumer HDR panel is at least asked to approximate, so it is the
+/// least wrong number available without reading the EDID.
+pub const HDR_PEAK_LUMINANCE: f32 = 1000.0;
+
 /// Send everything known about a description.
 ///
 /// Both the named form and the explicit chromaticities are sent: a client that
@@ -609,9 +732,6 @@ pub const MIN_LUMINANCE: f32 = 0.2;
 /// about 58%, which is the washed-out picture every video looked like.
 fn describe(info: &WpImageDescriptionInfoV1, description: &Description) {
     const CHROMATICITY: f32 = 1_000_000.0;
-    /// Minimum luminance rides in ten-thousandths; every other one is whole
-    /// cd/m².
-    const MIN_LUMINANCE_SCALE: f32 = 10_000.0;
     let xy = |(x, y): (f32, f32)| ((x * CHROMATICITY) as i32, (y * CHROMATICITY) as i32);
 
     if let Some(named) = named_primaries(&description.primaries) {
@@ -627,20 +747,68 @@ fn describe(info: &WpImageDescriptionInfoV1, description: &Description) {
         info.tf_named(named);
     }
 
-    let min_lum = (MIN_LUMINANCE * MIN_LUMINANCE_SCALE) as u32;
-    info.luminances(
-        min_lum,
-        description.reference_luminance as u32,
-        description.reference_luminance as u32,
-    );
+    let (min_lum, max_lum, reference_lum) = luminance_args(description);
+    info.luminances(min_lum, max_lum, reference_lum);
 
-    // The displayable volume, as opposed to the encodable one above. This
-    // compositor composites into an SDR framebuffer and hands it to a panel it
-    // drives as SDR, so the two are the same: the primaries it renders in, and
-    // a maximum that is the reference white rather than some multiple of it.
-    // Saying so is what tells a client there is no headroom to aim at.
+    // The displayable volume, as opposed to the encodable one above.
+    //
+    // Driven as SDR the two are the same: the primaries composited in, and a
+    // maximum that is reference white rather than some multiple of it. Saying
+    // so is what tells a client there is no headroom to aim at.
+    //
+    // Driven as HDR they are not, and saying they are is what kept every
+    // client in SDR on a screen that was already in HDR. A client reads this
+    // pair and nothing else to decide whether the display can show more than
+    // reference white — Chrome will not offer a page HDR video without it, and
+    // mpv will not re-encode into PQ — so an HDR output has to report the peak
+    // it actually aims at.
     info.target_primaries(rx, ry, gx, gy, bx, by, wx, wy);
-    info.target_luminance(min_lum, description.reference_luminance as u32);
+    let (target_min, target_max) = target_luminance_args(description);
+    info.target_luminance(target_min, target_max);
+}
+
+/// The three arguments of `luminances`, in the order the protocol takes them:
+/// minimum, maximum, reference white.
+///
+/// Split out to be testable. The maximum and reference white were the same
+/// number while every description this sent was SDR, so their order was
+/// unobservable — and swapping them told a client its PQ reference white was
+/// 10,000 cd/m², which is a display that does not exist.
+fn luminance_args(description: &Description) -> (u32, u32, u32) {
+    /// The minimum rides in ten-thousandths; the other two are whole cd/m².
+    const MIN_LUMINANCE_SCALE: f32 = 10_000.0;
+    (
+        (MIN_LUMINANCE * MIN_LUMINANCE_SCALE) as u32,
+        encodable_peak(description) as u32,
+        description.reference_luminance as u32,
+    )
+}
+
+/// The two arguments of `target_luminance`: minimum, then maximum.
+fn target_luminance_args(description: &Description) -> (u32, u32) {
+    let (min_lum, ..) = luminance_args(description);
+    (min_lum, displayable_peak(description) as u32)
+}
+
+/// The brightest value the encoding itself can carry, in cd/m².
+///
+/// PQ is absolute and tops out at 10,000 whatever is attached; every other
+/// curve here is relative, so its maximum *is* reference white.
+fn encodable_peak(description: &Description) -> f32 {
+    if description.transfer.is_absolute() {
+        PQ_PEAK
+    } else {
+        description.reference_luminance
+    }
+}
+
+/// The brightest the display this describes is claimed to reach, in cd/m².
+fn displayable_peak(description: &Description) -> f32 {
+    if description.transfer.is_absolute() {
+        HDR_PEAK_LUMINANCE
+    } else {
+        description.reference_luminance
+    }
 }
 
 /// The protocol name for a set of primaries, where there is one.
@@ -665,13 +833,57 @@ fn named_transfer(transfer: TransferFunction) -> Option<WireTransferFunction> {
     })
 }
 
-/// The description the compositor renders into.
+/// What the compositor renders into for a given output.
 ///
-/// Both the output and the feedback objects answer with this. It is the sRGB
-/// default until outputs can be configured for HDR, and saying so is accurate
-/// rather than a placeholder.
-fn output_description() -> Description {
-    Description::default()
+/// This is the answer both the output objects and the surface feedback objects
+/// give, and it is the whole of what a client knows about the screen. It has
+/// to follow the output's actual state: an output in HDR is being driven with
+/// BT.2020 primaries and a PQ curve, and `udev::render` already sets exactly
+/// this on the renderer before drawing that output's frame. Answering sRGB
+/// while driving PQ is not a placeholder, it is a different picture from the
+/// one the client is told to draw.
+pub fn output_description(state: &ViewportState, output: Option<&Output>) -> Description {
+    let hdr = output
+        .map(|output| state.hdr_enabled(&output.name()))
+        .unwrap_or(false);
+    if hdr {
+        hdr_description()
+    } else {
+        Description::default()
+    }
+}
+
+/// What an output in HDR is being driven as.
+///
+/// The same three values `udev::render` hands the renderer, so a client that
+/// matches this description is handed straight through instead of converted.
+pub fn hdr_description() -> Description {
+    Description {
+        primaries: Primaries::BT2020,
+        transfer: TransferFunction::Pq,
+        reference_luminance: Description::default().reference_luminance,
+    }
+}
+
+/// The identity for a description, allocated once per distinct description.
+///
+/// The protocol requires a given identity to always mean the same description,
+/// and clients compare identities to decide whether their surface already
+/// matches the output — Chrome skips a conversion on a match. Handing out a
+/// fresh number for every request would make two identical descriptions look
+/// different, and would make the identity in `preferred_changed` disagree with
+/// the one the client then gets back from `get_preferred`.
+fn identity_for(description: &Description) -> u32 {
+    static KNOWN: Mutex<Vec<(Description, u32)>> = Mutex::new(Vec::new());
+    let Ok(mut known) = KNOWN.lock() else {
+        return next_identity();
+    };
+    if let Some((_, identity)) = known.iter().find(|(held, _)| held == description) {
+        return *identity;
+    }
+    let identity = next_identity();
+    known.push((*description, identity));
+    identity
 }
 
 /// Hand a client a ready image description carrying `description`.
@@ -686,7 +898,7 @@ fn send_description(
             description: Mutex::new(Some(description)),
         },
     );
-    object.ready(next_identity());
+    object.ready(identity_for(&description));
 }
 
 impl Dispatch<WpImageDescriptionInfoV1, ()> for ViewportState {
@@ -703,19 +915,21 @@ impl Dispatch<WpImageDescriptionInfoV1, ()> for ViewportState {
     }
 }
 
-impl Dispatch<WpColorManagementOutputV1, ()> for ViewportState {
+impl Dispatch<WpColorManagementOutputV1, WlOutput> for ViewportState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         _object: &WpColorManagementOutputV1,
         request: wp_color_management_output_v1::Request,
-        _data: &(),
+        wl_output: &WlOutput,
         _display: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
         match request {
             wp_color_management_output_v1::Request::GetImageDescription { image_description } => {
-                send_description(image_description, output_description(), data_init);
+                let output = Output::from_resource(wl_output);
+                let description = output_description(state, output.as_ref());
+                send_description(image_description, description, data_init);
             }
             wp_color_management_output_v1::Request::Destroy => {}
             _ => {}
@@ -723,26 +937,92 @@ impl Dispatch<WpColorManagementOutputV1, ()> for ViewportState {
     }
 }
 
-impl Dispatch<WpColorManagementSurfaceFeedbackV1, ()> for ViewportState {
+impl Dispatch<WpColorManagementSurfaceFeedbackV1, WlSurface> for ViewportState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         _object: &WpColorManagementSurfaceFeedbackV1,
         request: wp_color_management_surface_feedback_v1::Request,
-        _data: &(),
+        surface: &WlSurface,
         _display: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
         use wp_color_management_surface_feedback_v1::Request;
         match request {
             // What the compositor would prefer this surface were in, which is
-            // simply what it renders into.
+            // what it renders the output the surface is on into.
             Request::GetPreferred { image_description }
             | Request::GetPreferredParametric { image_description } => {
-                send_description(image_description, output_description(), data_init);
+                let output = state.output_of_surface(surface);
+                let description = output_description(state, output.as_ref());
+                send_description(image_description, description, data_init);
             }
             Request::Destroy => {}
             _ => {}
+        }
+    }
+}
+
+impl ViewportState {
+    /// The output a surface is being shown on, if it is on one.
+    ///
+    /// Walks to the root the way `mark_dirty_for_surface` does: a client asks
+    /// about the subsurface it puts video in, and only the toplevel above it
+    /// has been placed on an output.
+    fn output_of_surface(&self, surface: &WlSurface) -> Option<Output> {
+        let mut root = surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+        self.views
+            .find_by_surface(&root)
+            .and_then(|view| self.space.outputs_for_element(&view.window).into_iter().next())
+    }
+
+    /// Tell everyone holding a colour-management object that an output's
+    /// colour changed.
+    ///
+    /// Image descriptions are immutable, so there is nothing to update: the
+    /// event only says "ask again". Without it a client keeps the description
+    /// it fetched at startup for as long as it runs, and `Mod4+Shift+p` moves
+    /// the screen into a colour space no client is aware of.
+    pub fn notify_output_colour(&mut self, name: &str) {
+        self.color_management.reap();
+
+        let outputs: Vec<_> = self
+            .color_management
+            .outputs
+            .iter()
+            .filter(|(_, wl_output)| {
+                Output::from_resource(wl_output).is_some_and(|output| output.name() == name)
+            })
+            .map(|(object, wl_output)| (object.clone(), wl_output.clone()))
+            .collect();
+        for (object, wl_output) in outputs {
+            object.image_description_changed();
+            // The protocol asks for it, and a client that batches on
+            // `wl_output.done` never applies the change without one.
+            if wl_output.version() >= 2 {
+                wl_output.done();
+            }
+        }
+
+        // Feedback is per surface, so only the surfaces on this output have
+        // anything new to be told.
+        let feedback: Vec<_> = self
+            .color_management
+            .feedback
+            .iter()
+            .filter(|(_, surface)| {
+                self.output_of_surface(surface)
+                    .is_some_and(|output| output.name() == name)
+            })
+            .map(|(object, surface)| (object.clone(), surface.clone()))
+            .collect();
+        for (object, surface) in feedback {
+            let output = self.output_of_surface(&surface);
+            let description = output_description(self, output.as_ref());
+            object.preferred_changed(identity_for(&description));
         }
     }
 }

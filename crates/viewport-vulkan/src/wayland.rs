@@ -11,7 +11,7 @@
 // Behind the `wayland` feature so the renderer stays usable — and testable —
 // without a Wayland display.
 
-use smithay::backend::renderer::{ImportDmaWl, ImportMem, ImportMemWl, Texture as _};
+use smithay::backend::renderer::{ImportDma, ImportDmaWl, ImportMem, ImportMemWl, Texture as _};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Buffer as BufferCoord, Rectangle};
@@ -20,9 +20,44 @@ use smithay::wayland::shm::with_buffer_contents;
 
 use crate::renderer::{Error, VulkanRenderer, VulkanTexture};
 
-/// A dmabuf `wl_buffer` is just a `Dmabuf` underneath, and Smithay's default
-/// body unwraps it and calls `import_dmabuf`. Nothing here to add.
-impl ImportDmaWl for VulkanRenderer {}
+/// A dmabuf `wl_buffer` is just a `Dmabuf` underneath, so the import itself is
+/// Smithay's default body. What is added is the one thing this layer knows and
+/// `ImportDma` does not: which surface the buffer came from, and therefore what
+/// the client said its pixels mean.
+///
+/// This is the only place the two meet. `import_dmabuf` is handed a `Dmabuf`
+/// with no surface attached, so a description recorded against the surface can
+/// never reach the texture from there — it would be stored by the protocol
+/// code and silently dropped on the way to the shader, which is how a client
+/// that correctly declared PQ still got decoded as sRGB.
+impl ImportDmaWl for VulkanRenderer {
+    fn import_dma_buffer(
+        &mut self,
+        buffer: &WlBuffer,
+        surface: Option<&SurfaceData>,
+        damage: &[Rectangle<i32, BufferCoord>],
+    ) -> Result<Self::TextureId, Self::Error> {
+        let dmabuf = smithay::wayland::dmabuf::get_dmabuf(buffer)
+            .map_err(|e| Error::Unsupported(format!("not a dmabuf: {e}")))?;
+        let texture = self.import_dmabuf(dmabuf, Some(damage))?;
+        Ok(described(texture, surface))
+    }
+}
+
+/// Stamp the surface's declared colour onto a texture.
+///
+/// A texture is a cheap handle over a shared image, so this is a second view
+/// of the same pixels rather than a copy — which is also why the description
+/// has to be applied on every import instead of once: the cached image is
+/// shared with whatever else imported the same buffer.
+fn described(texture: VulkanTexture, surface: Option<&SurfaceData>) -> VulkanTexture {
+    match surface {
+        Some(states) => texture.with_description(crate::color::description_in(states)),
+        // No surface: a cursor, a screencopy source, something the compositor
+        // made itself. sRGB is what the texture already carries.
+        None => texture,
+    }
+}
 
 /// Repack `src` into tightly packed rows.
 ///
@@ -65,7 +100,7 @@ impl ImportMemWl for VulkanRenderer {
     fn import_shm_buffer(
         &mut self,
         buffer: &WlBuffer,
-        _surface: Option<&SurfaceData>,
+        surface: Option<&SurfaceData>,
         damage: &[Rectangle<i32, BufferCoord>],
     ) -> Result<Self::TextureId, Self::Error> {
         // The closure returns a Result so a bad buffer is reported rather than
@@ -125,7 +160,7 @@ impl ImportMemWl for VulkanRenderer {
             for region in plan_upload(damage, &pending, whole) {
                 self.update_memory(&texture, &pixels, region)?;
             }
-            return Ok(texture);
+            return Ok(described(texture, surface));
         }
 
         // New, or a different shape: a full upload either way.
@@ -136,7 +171,7 @@ impl ImportMemWl for VulkanRenderer {
             texture: texture.clone(),
             pending: Vec::new(),
         });
-        Ok(texture)
+        Ok(described(texture, surface))
     }
 }
 

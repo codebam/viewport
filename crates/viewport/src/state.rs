@@ -2869,6 +2869,26 @@ impl ViewportState {
             .unwrap_or(false)
     }
 
+    /// Whether an output's display would accept HDR at all.
+    ///
+    /// Read from the connector rather than remembered, because it is a
+    /// property of whatever is plugged in — the answer changes when the cable
+    /// moves. A shell that offers the toggle on a display that cannot take it
+    /// offers a key that does nothing.
+    pub fn hdr_capable(&self, name: &str) -> bool {
+        self.udev
+            .as_ref()
+            .and_then(|udev| {
+                let connector = udev
+                    .surfaces
+                    .values()
+                    .find(|surface| surface.output.name() == name)?
+                    .connector;
+                Some(crate::hdr::capable(udev.manager.device(), connector))
+            })
+            .unwrap_or(false)
+    }
+
     /// Switch an output into or out of HDR.
     ///
     /// Two properties on the connector, because Smithay's DRM backend has no
@@ -2919,6 +2939,14 @@ impl ViewportState {
         // description belongs to whichever output is being drawn, so it is
         // set per frame in `udev::render` from that surface's own state.
         let _ = description;
+
+        // The clients, too. They were told what this output was when they
+        // connected and have no way to notice it changed, so a screen switched
+        // into HDR goes on being drawn for by every one of them as though it
+        // were SDR until it is said out loud.
+        self.notify_output_colour(name);
+        // And the shell, which draws the HDR badge from this.
+        self.notify_output_layout();
 
         // Everything on screen was drawn for the old colour space.
         self.needs_render = true;
@@ -4148,8 +4176,8 @@ impl ViewportState {
                     usable_y: usable.loc.y,
                     usable_width: usable.size.w,
                     usable_height: usable.size.h,
-                    hdr: false,
-                    hdr_capable: false,
+                    hdr: self.hdr_enabled(&output.name()),
+                    hdr_capable: self.hdr_capable(&output.name()),
                     scale: output.current_scale().fractional_scale(),
                     transform: crate::apply::from_smithay_transform(output.current_transform()),
                     modes: output
