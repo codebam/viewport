@@ -474,9 +474,30 @@ pub struct ViewportState {
     pub barrier_tick: bool,
     /// A frame-callback tick is already armed.
     pub frame_clock: bool,
-    /// When that tick is due. GLib owns the blocking wait and has to be told
-    /// how long it may sleep, or a calloop timer simply never comes round.
+    /// When that tick is due. Kept for the log and for anything that wants to
+    /// know how far off the next invitation is.
     pub frame_clock_at: Option<std::time::Instant>,
+    /// Someone asked for a tick since the last one ran.
+    ///
+    /// The tick after a commit is not always the one that answers it: frame
+    /// callbacks are throttled to one a refresh per surface, so a commit
+    /// landing just after a callback went out finds the next tick refusing to
+    /// send another. Something has to bring the tick after *that* one around,
+    /// and nothing else will — a client waiting on an invitation makes no
+    /// damage, and no damage is what stops the clock. So a request is
+    /// remembered across one tick.
+    pub frame_pending: bool,
+    /// The timer the frame clock is armed on, once it has been created.
+    ///
+    /// A timerfd rather than one of calloop's own timers. calloop keeps those
+    /// in a wheel it consults while it is doing the waiting, and under the web
+    /// engine it is not doing the waiting: GLib owns the blocking poll and
+    /// watches calloop's epoll fd as a single source, so a wheel entry is
+    /// invisible to it. An expiring timerfd makes that epoll fd readable like
+    /// any other event would, which is the whole difference between a tick
+    /// that arrives on a still desktop and one that waits for the mouse to
+    /// move.
+    pub frame_timer: Option<std::os::fd::OwnedFd>,
     /// How many ticks in a row have released nothing.
     pub barrier_quiet: u32,
     /// The shell's workspaces, mirrored for `ext-workspace-v1`. Empty until
@@ -863,6 +884,8 @@ impl ViewportState {
             barrier_tick: false,
             frame_clock: false,
             frame_clock_at: None,
+            frame_pending: false,
+            frame_timer: None,
             barrier_quiet: 0,
             _security_context_state: security_context_state,
             _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
@@ -4315,34 +4338,127 @@ impl ViewportState {
     /// while clients are committing and stops when they stop, which is the
     /// difference between a frame clock and the busy loop it replaces.
     pub fn arm_frame_clock(&mut self) {
+        // Recorded even when the clock is already running, so that the tick
+        // this request lands behind is not the last one. See `frame_pending`.
+        self.frame_pending = true;
         if self.frame_clock {
             return;
         }
-        self.frame_clock = true;
         let interval = self.frame_interval();
+
+        if self.frame_timer.is_none() {
+            self.frame_timer = self.create_frame_timer();
+        }
+        if let Some(fd) = self.frame_timer.as_ref() {
+            use smithay::reexports::rustix::time::{
+                timerfd_settime, Itimerspec, TimerfdTimerFlags, Timespec,
+            };
+            // One shot. A repeating timer would keep waking a desktop that has
+            // settled, which is the cost the clock exists to avoid; the tick
+            // arms the next one itself for as long as there is a reason to.
+            let spec = Itimerspec {
+                it_interval: Timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+                it_value: Timespec {
+                    tv_sec: interval.as_secs() as _,
+                    tv_nsec: interval.subsec_nanos() as _,
+                },
+            };
+            match timerfd_settime(fd, TimerfdTimerFlags::empty(), &spec) {
+                Ok(_) => {
+                    self.frame_clock = true;
+                    self.frame_clock_at = Some(std::time::Instant::now() + interval);
+                    return;
+                }
+                Err(e) => tracing::warn!("frame clock: could not arm the timer: {e}"),
+            }
+        }
+
+        // No timerfd. calloop's own timer still works whenever calloop is the
+        // one waiting, which is every backend except the web engine's, so it
+        // is worth having rather than dropping the tick entirely.
+        self.frame_clock = true;
         self.frame_clock_at = Some(std::time::Instant::now() + interval);
         let timer = smithay::reexports::calloop::timer::Timer::from_duration(interval);
         if let Err(e) = self.loop_handle.insert_source(timer, move |_, _, state| {
-            state.frame_clock = false;
-            state.frame_clock_at = None;
-            let at = state.start_time.elapsed();
-            let outputs: Vec<Output> = state.space.outputs().cloned().collect();
-            for output in &outputs {
-                state.send_frame_callbacks(output, at);
-            }
-            // One render for everything that happened since the last tick.
-            state.render_if_needed();
-            let _ = state.display_handle.flush_clients();
-            // Anything still owed a frame keeps the clock going; an empty
-            // desk lets it stop.
-            if state.needs_render || !state.dirty_outputs.is_empty() {
-                state.arm_frame_clock();
-            }
+            state.frame_tick();
             smithay::reexports::calloop::timer::TimeoutAction::Drop
         }) {
             tracing::warn!("frame clock: {e}");
             self.frame_clock = false;
             self.frame_clock_at = None;
+        }
+    }
+
+    /// Create the timerfd and put it in the loop, once.
+    ///
+    /// Returns a second handle on the same timer: the source owns the fd it
+    /// watches, and arming happens from outside the source.
+    fn create_frame_timer(&mut self) -> Option<std::os::fd::OwnedFd> {
+        use smithay::reexports::rustix::time::{timerfd_create, TimerfdClockId, TimerfdFlags};
+
+        let fd = match timerfd_create(
+            TimerfdClockId::Monotonic,
+            TimerfdFlags::NONBLOCK | TimerfdFlags::CLOEXEC,
+        ) {
+            Ok(fd) => fd,
+            Err(e) => {
+                tracing::warn!("frame clock: no timerfd ({e}), falling back to a loop timer");
+                return None;
+            }
+        };
+        let watched = match fd.try_clone() {
+            Ok(watched) => watched,
+            Err(e) => {
+                tracing::warn!("frame clock: could not dup the timer ({e})");
+                return None;
+            }
+        };
+
+        if let Err(e) = self.loop_handle.insert_source(
+            Generic::new(watched, Interest::READ, Mode::Level),
+            |_, fd, state: &mut Self| {
+                // Drained, or a level-triggered source reports the same
+                // expiry for ever and the loop never sleeps again.
+                let mut buf = [0u8; 8];
+                let _ = smithay::reexports::rustix::io::read(&*fd, &mut buf[..]);
+                state.frame_tick();
+                Ok(PostAction::Continue)
+            },
+        ) {
+            tracing::warn!("frame clock: could not watch the timer ({e})");
+            return None;
+        }
+
+        Some(fd)
+    }
+
+    /// One turn of the frame clock: invite, draw, send.
+    fn frame_tick(&mut self) {
+        self.frame_clock = false;
+        self.frame_clock_at = None;
+        let asked = std::mem::take(&mut self.frame_pending);
+
+        let at = self.start_time.elapsed();
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        for output in &outputs {
+            self.send_frame_callbacks(output, at);
+        }
+        // One render for everything that happened since the last tick.
+        self.render_if_needed();
+        let _ = self.display_handle.flush_clients();
+
+        // Anything still owed a frame keeps the clock going; an empty desk
+        // lets it stop. `asked` is what covers the surface whose invitation
+        // this tick was too early to send — see `frame_pending`. Cleared
+        // straight after, because the arming below *is* that follow-up and
+        // treating it as a fresh request would leave the clock running for
+        // ever.
+        if asked || self.needs_render || !self.dirty_outputs.is_empty() {
+            self.arm_frame_clock();
+            self.frame_pending = false;
         }
     }
 
