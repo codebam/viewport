@@ -194,3 +194,49 @@ client's request leaves as `workspace.request`. Wire bindings come from
 `ext_workspace_manager_v1.commit` is honoured as a batch — requests are held
 against the manager that received them and forwarded in order — because a bar
 that assigns a workspace and activates it in one commit means both.
+
+## wp-drm-lease-v1
+
+`crates/viewport/src/workspace.rs`'s neighbour, `crates/viewport/src/udev.rs`
+plus the handler in `handlers/mod.rs`. A connector with the `non-desktop`
+property is never made into an output: it is offered for lease, and a client
+that takes one is given the connector, a CRTC that is not driving a desktop
+output, and that CRTC's primary plane with a claim on it.
+
+Smithay's pre-flight for the global opens the primary node and drops master,
+tolerating EINVAL as "this fd never had master". On kernel 7.1 with amdgpu that
+case answers EACCES instead, so the fork widens it — without that, no lease
+global exists at all on this machine.
+
+Untested against a headset. `cargo run -p viewport --example leases` shows what
+a client sees: the DRM fd, and the connector list terminated with `done`.
+
+## wp-fifo-v1 and wp-commit-timing-v1
+
+`ViewportState::release_frame_barriers` and `arm_barrier_tick` in `state.rs`.
+Both block a client's commit until the compositor releases it, which is why
+they were withdrawn once: this compositor draws on damage, and a blocked commit
+makes none.
+
+Three things are needed to honour them, and missing any one of them freezes the
+client on its first frame:
+
+1. `CompositorClientState::blocker_cleared` after signalling. Signalling only
+   sets a flag; nothing re-examines the held commit until the compositor says
+   so.
+2. A CLOCK_MONOTONIC deadline for the commit timer. Time since the compositor
+   started is smaller by the machine's uptime, and every deadline stays in the
+   future for ever.
+3. A clock that runs while a barrier is outstanding, so a barrier is released
+   even on a frame with nothing to draw. It stops after a second of releasing
+   nothing.
+
+`VIEWPORT_FIFO=0` withdraws both globals.
+
+## The rest, by delegation
+
+`xdg-toplevel-icon` (the name reaches the shell on `view.props`),
+`xdg-foreign`, `security-context` (a client through a sandbox's socket is
+tagged, and cannot create sandboxes of its own) and `xwayland-keyboard-grab`
+(advertised only to Xwayland, by Smithay's own filter, so its absence from
+`wayland-info` is not a fault).
