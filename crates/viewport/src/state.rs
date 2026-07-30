@@ -4027,22 +4027,6 @@ impl ViewportState {
     /// not a window this compositor has placed: a layer surface, a popup, the
     /// lock screen, or a window between mapping and being given a rectangle.
     pub fn mark_dirty_for_surface(&mut self, surface: &WlSurface) {
-        // Named by the client that committed, because "a surface committed
-        // thirteen thousand times a second" does not say whose.
-        let who: &'static str = surface
-            .client()
-            .and_then(|client| client.get_credentials(&self.display_handle).ok())
-            .map(|creds| {
-                let pid = creds.pid;
-                Box::leak(
-                    std::fs::read_to_string(format!("/proc/{pid}/comm"))
-                        .unwrap_or_else(|_| format!("pid {pid}"))
-                        .trim()
-                        .to_owned()
-                        .into_boxed_str(),
-                ) as &'static str
-            })
-            .unwrap_or("unknown");
         let mut root = surface.clone();
         while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
             root = parent;

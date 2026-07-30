@@ -106,7 +106,6 @@ unsafe fn bridge(source: *mut c_void) -> *mut Bridge {
 /// "it only appears when you press a key".
 unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
     let bridge = &*bridge(source);
-    let mut due: i32 = -1;
     if !bridge.event_loop.is_null() && !bridge.state.is_null() {
         // Zero timeout: dispatch whatever is already pending without waiting.
         let event_loop = &mut *bridge.event_loop;
@@ -125,15 +124,18 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         // is what wlroots does and why sway answers the same traffic with 240.
         state.arm_frame_clock();
 
-        // What the frame clock is waiting for, in milliseconds, rounded up so
-        // a sub-millisecond remainder sleeps zero rather than a whole frame.
-        due = match state.frame_clock_at {
-            Some(at) => {
-                let left = at.saturating_duration_since(std::time::Instant::now());
-                i32::try_from(left.as_micros().div_ceil(1_000)).unwrap_or(i32::MAX)
-            }
-            None => -1,
-        };
+        // And draw what is already owed, before GLib blocks.
+        //
+        // Rendering from the frame clock instead — batching every commit that
+        // arrived since the last tick into one pass — measures far cheaper,
+        // 9% of a core against 81% with a video playing. It is not here
+        // because it breaks a quiet desktop: with nothing else generating fd
+        // traffic the tick does not arrive, and a terminal shows nothing of
+        // what is typed into it until something else wakes the loop. Handing
+        // GLib the clock's deadline as the poll timeout was not enough, and
+        // reporting readiness from `prepare` or `check` as well broke input
+        // outright. See docs/debugging.md.
+        state.render_if_needed();
 
         // Push pending events out to clients before GLib blocks
         // (`src/glib_loop.c:71`).
@@ -150,14 +152,8 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         let _ = state.display_handle.flush_clients();
     }
     if !timeout.is_null() {
-        // How long GLib may sleep. It owns the blocking wait, so a calloop
-        // timer only fires if GLib wakes up to let calloop dispatch it — and
-        // -1 means "block until an fd speaks". That was harmless while the
-        // frame was rendered inline just above, and became a desktop redrawing
-        // twice a second the moment the frame clock took the job over: with no
-        // mouse and no keyboard there is no fd to end the sleep, so the tick
-        // that would have drawn the next frame never comes.
-        *timeout = due;
+        // Nothing here needs waking on a timer; the fd does that.
+        *timeout = -1;
     }
     0
 }

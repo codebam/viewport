@@ -172,20 +172,35 @@ strength of a counter that sat above that function's early return and so
 counted calls that did nothing. Calls are cheap; the passes are not. The churn
 is client commits, one render each.
 
-**Fixed** by rendering once a frame instead of once per commit. The outer loop
+**Not fixed.** Rendering once a frame instead of once per commit measures far
+cheaper — 81% of a core down to 9% with a video playing — and is the right
+shape, but it cannot be turned on yet, for a reason worth writing down. The outer loop
 now only arms the frame clock; the clock does one `render_if_needed` for
 everything that arrived since the last tick. Same 17,232 commits, ~240 renders,
 and the compositor went from 87% of a core to 10% with the video still smooth.
 This is what wlroots does, and why sway answers the same traffic without the
 heat.
 
-It needed one thing that is not obvious. GLib owns the blocking wait, so a
-calloop timer only fires if GLib wakes up to let calloop dispatch it, and
-`prepare` was setting `*timeout = -1` — block until an fd speaks. Harmless
-while the frame was rendered inline in `prepare`; the moment the clock took the
-job over it meant no mouse and no keyboard produced no fd traffic and so no
-tick, and the desktop redrew about twice a second. `prepare` now hands GLib the
-clock's deadline.
+The obstacle is the GLib bridge. GLib owns the blocking wait, so a calloop timer
+only fires if GLib comes back round to let calloop dispatch it, and `prepare`
+sets `*timeout = -1` — sleep until an fd speaks. That is harmless while the
+frame is rendered inline in `prepare`, which is why it is still done that way.
+Move the render into the clock and a desktop with nothing else generating fd
+traffic stops drawing: a terminal shows nothing of what is typed into it until
+something unrelated wakes the loop. With a browser open it looks fine, which is
+how it passed a first test.
+
+Three ways round it, none sufficient:
+
+- Hand GLib the clock's deadline as the poll timeout. The tick still does not
+  arrive on a quiet desktop, and the reason is not yet understood — the clock
+  ticks 199 times a second when measured with the browser stopped, so the timer
+  is firing and something else is missing.
+- Return readiness from `prepare` when the frame is due. Broke input outright.
+- Report the same from `check`. Also broke input.
+
+Whatever fixes this has to be verified with **every other client closed**, not
+just with a video playing.
 
 Four earlier attempts cost more than they saved, all by trying to do less work
 per commit rather than fewer renders. `VIEWPORT_COALESCE`, the env var that
