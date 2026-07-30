@@ -683,29 +683,25 @@ impl ViewportState {
         let xdg_activation_state =
             smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
         let xdg_foreign_state = smithay::wayland::xdg_foreign::XdgForeignState::new::<Self>(&dh);
-        // Off, and VIEWPORT_FIFO=1 puts them back.
+        // On, and VIEWPORT_FIFO=0 turns them off.
         //
-        // These froze clients once before and were taken out (`c7c4433`), then
-        // came back (`7a48b16`), and they still freeze them: one terminal on an
-        // otherwise empty workspace stops showing what is typed into it until a
-        // second window appears. Bisected to this on 2026-07-30 — the same
-        // build with `VIEWPORT_FIFO=0` does not freeze, everything else equal.
+        // These froze clients twice — taken out once (`c7c4433`), brought back
+        // (`7a48b16`), and still freezing on 2026-07-30: one terminal on an
+        // otherwise empty workspace stopped showing what was typed into it
+        // until a second window appeared. Not a corner of the desktop, because
+        // Mesa paces FIFO present mode with `wp_fifo_v1` — so it was every
+        // client painting through Vulkan or EGL, which is most of them.
         //
-        // rio paints through Mesa, and Mesa paces FIFO present mode with
-        // `wp_fifo_v1`, so this is not a corner of the desktop: it is every
-        // client that presents through Vulkan or EGL.
+        // Both causes are fixed rather than avoided: presentation feedback was
+        // never sent to anybody because nothing recorded which screen a surface
+        // was on, and fifo barriers were signalled where they lay instead of
+        // being taken, in both halves of the double buffer. See
+        // `released_frame_barriers` and `update_scanout_outputs`.
         //
-        // The release path is what is wrong, not the protocols. Two divergences
-        // from what `smithay::wayland::fifo` documents, both in
-        // `released_frame_barriers`: the barrier is signalled where it lies
-        // rather than taken, so a round that finds only barriers it already
-        // signalled reports "released nothing" — which is what counts toward
-        // `QUIET` and stops the clock; and the *pending* barrier is signalled
-        // too, which is the one the pre-commit hook hands the next commit, so
-        // it is never blocked and the pacing the protocol exists for does not
-        // happen. Fixing that is worth doing; shipping a desktop where a
-        // terminal freezes is not.
-        let pacing = std::env::var("VIEWPORT_FIFO").as_deref() == Ok("1");
+        // The switch stays because it is what found this. One run with it off
+        // separated "the pacing protocols" from "everything else" in a minute,
+        // after a day of reading code that did not.
+        let pacing = std::env::var("VIEWPORT_FIFO").as_deref() != Ok("0");
         let fifo_state =
             pacing.then(|| smithay::wayland::fifo::FifoManagerState::new::<Self>(&dh));
         let commit_timing_state = pacing.then(|| {
