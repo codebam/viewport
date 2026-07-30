@@ -87,6 +87,12 @@ pub struct Surface {
     dumped: bool,
     /// Whether this output has been switched into HDR.
     pub hdr: bool,
+    /// When a frame was last attempted, so a client committing faster than the
+    /// screen refreshes does not cost a render each time.
+    pub last_attempt: Option<std::time::Instant>,
+    /// Whether a deferred render is already waiting for this output's frame
+    /// interval to pass.
+    pub coalescing: bool,
     /// Whether this output's backlight is on. Off means DPMS off — the panel
     /// sleeps — while the output keeps its place in the layout.
     pub powered: bool,
@@ -699,7 +705,14 @@ impl ViewportState {
             // rate for anyone who never says otherwise. `"mode": "2560x1440@240"`
             // or `"max_refresh": true` is how the C build was told, and this is
             // where it is honoured.
-            let wanted = self.output_config.get(&name);
+            // By name, then by `*`. A configuration that says "every screen
+            // as fast as it goes" should not have to name monitors it has not
+            // met, and the C build took the wildcard — so a config written for
+            // it was silently doing nothing here.
+            let wanted = self
+                .output_config
+                .get(&name)
+                .or_else(|| self.output_config.get("*"));
             let chosen = wanted.and_then(|config| {
                 crate::config::pick_mode(connector.modes(), config)
             });
@@ -810,6 +823,8 @@ impl ViewportState {
                             _global: global,
                             drawn: false,
                             dumped: false,
+                            last_attempt: None,
+                            coalescing: false,
                             hdr: false,
                             powered: true,
                             tearing: false,
