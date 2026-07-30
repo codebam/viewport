@@ -188,7 +188,8 @@ tick, and the desktop redrew about twice a second. `prepare` now hands GLib the
 clock's deadline.
 
 Four earlier attempts cost more than they saved, all by trying to do less work
-per commit rather than fewer renders. Recorded so they are not tried again in
+per commit rather than fewer renders. `VIEWPORT_COALESCE`, the env var that
+switched the first of them on for A/B testing, is gone with them. Recorded so they are not tried again in
 the same form:
 
 - Holding attempts to one a frame, anchored to the last attempt. Merges any two
@@ -208,14 +209,6 @@ happening. They have their own clock (`arm_frame_clock`), which ticks at the
 refresh rate while clients are committing and stops when they stop. Without it
 any damage-driven rendering deadlocks: no damage, no render, no callback, and a
 client that paints only when invited never paints again.
-
-`VIEWPORT_COALESCE=1` holds attempts to one a frame. It takes the compositor
-from roughly half a core to a twentieth of one — and costs smooth video, which
-is why it is off by default. Holding an attempt for the rest of the frame
-merges any two commits that land in the same 4.17ms window, and a client
-already drawing at the panel's rate has every frame land in a window with
-another, so it is halved: 189 frames a second reaching a 240Hz screen became 92,
-and the video visibly juddered.
 
 The lesson for anything that changes pacing: CPU and delivered frames move in
 opposite directions, and only one of them is visible to a person. Count frames

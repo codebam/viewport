@@ -10,7 +10,7 @@
 
 pkgname=viewport-smithay
 pkgver=0.1.0
-pkgrel=3
+pkgrel=4
 pkgdesc='Wayland compositor whose entire shell is a web page — the Smithay rewrite'
 arch=('x86_64' 'aarch64')
 url='https://github.com/codebam/viewport-smithay'

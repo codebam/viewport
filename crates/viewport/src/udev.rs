@@ -70,26 +70,6 @@ type Feedback = Option<smithay::desktop::utils::OutputPresentationFeedback>;
 
 type Manager = DrmOutputManager<GbmAllocator<DrmDeviceFd>, Exporter, Feedback, DrmDeviceFd>;
 
-/// Whether render attempts are held to one a frame. Off unless asked for.
-///
-/// It saves a great deal of CPU and costs smooth video, so it is not on by
-/// default. Holding an attempt for the rest of the frame merges any two
-/// commits that land in the same 4.17ms window, and a client already drawing
-/// at the panel's rate has every one of its frames land in a window with
-/// another — which halves it. Measured on a 240Hz panel: 189 frames a second
-/// reaching the screen with this off, 92 with it on, and a video that visibly
-/// judders.
-///
-/// The waste it was written for turned out not to be the clients. Of 2,679
-/// damage events a second, 2,679 came from the compositor's own
-/// `render_if_needed` and a few hundred from the browser. Throttling the
-/// browser was treating the symptom of a loop that is ours; that loop is the
-/// thing to fix, and when it is fixed this has nothing left to do.
-fn coalescing_wanted() -> bool {
-    static WANTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *WANTED.get_or_init(|| std::env::var("VIEWPORT_COALESCE").as_deref() == Ok("1"))
-}
-
 /// One CRTC being driven.
 pub struct Surface {
     pub output: Output,
@@ -140,16 +120,6 @@ pub struct Surface {
     /// visible as flicker whenever a client repaints quickly, like a terminal
     /// being typed into.
     pub pending: bool,
-    /// This output looked and found nothing to draw, and nothing has happened
-    /// since that could change the answer. Cleared by the frame clock and by a
-    /// vblank, which are the two things that can.
-    pub idle: bool,
-    /// When this output was last drawn into, for holding attempts to one a
-    /// frame.
-    pub last_attempt: Option<std::time::Instant>,
-    /// A held attempt has a timer behind it, so a burst of commits arms one
-    /// timer rather than thousands.
-    pub deferred: bool,
 }
 
 /// Everything the DRM backend holds.
@@ -847,9 +817,6 @@ impl ViewportState {
                             _global: global,
                             drawn: false,
                             dumped: false,
-                            idle: false,
-                            last_attempt: None,
-                            deferred: false,
                             hdr: false,
                             powered: true,
                             tearing: false,
@@ -981,14 +948,11 @@ impl ViewportState {
         // dropped loop source, torn-down output — the flag alone would stop
         // this screen from ever drawing again, so the vblank clears it. An
         // extra timer that finds nothing to do is the harmless failure.
-        surface.deferred = false;
-        surface.idle = false;
         // A vblank is the start of a new frame period, so the render this
         // vblank drives is never a repeat of the last one and must not be
         // held back. Throttling it costs the whole refresh — the flip misses
         // its window and the screen runs at half rate, which is a video that
         // judders rather than a compositor that idles.
-        surface.last_attempt = None;
         let refresh = surface
             .output
             .current_mode()
@@ -1195,55 +1159,6 @@ impl ViewportState {
             return;
         }
 
-        // One attempt per frame, whatever the clients do. Firefox commits some
-        // thousands of times a second on this machine, and every commit used
-        // to become a whole render pass that mostly found nothing to draw. A
-        // screen shows one frame per vblank; the rest of that work is heat.
-        //
-        // The attempt is deferred rather than dropped. Dropping it loses the
-        // last commit of a burst — the one nothing follows, and the one the
-        // eye is actually waiting on.
-        // This output's own frame time. A 60Hz screen beside a 240Hz one must
-        // not be held to the fast one's interval, nor the fast one to the
-        // slow one's.
-        let interval = surface
-            .output
-            .current_mode()
-            .map(|mode| std::time::Duration::from_nanos(1_000_000_000_000 / mode.refresh.max(1) as u64))
-            .unwrap_or_else(|| std::time::Duration::from_millis(16));
-        if let Some(at) = surface.last_attempt.filter(|_| coalescing_wanted()) {
-            let waited = at.elapsed();
-            if waited < interval {
-                if !surface.deferred {
-                    surface.deferred = true;
-                    let timer = smithay::reexports::calloop::timer::Timer::from_duration(
-                        interval - waited,
-                    );
-                    if self
-                        .loop_handle
-                        .insert_source(timer, move |_, _, state| {
-                            // Cleared first, and whatever happens next: a
-                            // surface left holding this flag with no timer
-                            // behind it would never draw again.
-                            if let Some(surface) = state
-                                .udev
-                                .as_mut()
-                                .and_then(|udev| udev.surfaces.get_mut(&crtc))
-                            {
-                                surface.deferred = false;
-                            }
-                            state.render(crtc);
-                            smithay::reexports::calloop::timer::TimeoutAction::Drop
-                        })
-                        .is_err()
-                    {
-                        surface.deferred = false;
-                    }
-                }
-                return;
-            }
-        }
-
         // Tearing, if one window covers this output and asked for it. Set
         // before the frame is built, because it changes how the frame that is
         // about to be queued reaches the screen.
@@ -1407,8 +1322,6 @@ impl ViewportState {
             // vblank, and the vblank draws the next one. Only the empty pass
             // repeats without limit, and only the empty pass is timed.
             Ok(_) => {
-                surface.idle = true;
-                surface.last_attempt = Some(std::time::Instant::now());
                 tracing::debug!("{}: nothing to draw", output.name());
             }
             Err(e) => tracing::warn!("render_frame: {e}"),
