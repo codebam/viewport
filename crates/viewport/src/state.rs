@@ -498,6 +498,9 @@ pub struct ViewportState {
     /// that arrives on a still desktop and one that waits for the mouse to
     /// move.
     pub frame_timer: Option<std::os::fd::OwnedFd>,
+    /// The timer the barrier tick is armed on. Same reasoning, and the same
+    /// consequence for getting it wrong: see [`ViewportState::arm_barrier_tick`].
+    pub barrier_timer: Option<std::os::fd::OwnedFd>,
     /// How many ticks in a row have released nothing.
     pub barrier_quiet: u32,
     /// The shell's workspaces, mirrored for `ext-workspace-v1`. Empty until
@@ -886,6 +889,7 @@ impl ViewportState {
             frame_clock_at: None,
             frame_pending: false,
             frame_timer: None,
+            barrier_timer: None,
             barrier_quiet: 0,
             _security_context_state: security_context_state,
             _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
@@ -4047,42 +4051,67 @@ impl ViewportState {
         if !self.barriers_outstanding() {
             return;
         }
-        self.barrier_tick = true;
         let interval = self.frame_interval();
+
+        // On a timerfd, for the same reason the frame clock is: this tick is
+        // the *only* thing that can free a client blocked on a barrier when
+        // nothing else is happening. A blocked commit makes no damage, so
+        // there is no frame, so there is no vblank, so `on_vblank` — the other
+        // half of the release — never runs either. Under the web engine GLib
+        // owns the blocking poll and cannot see a calloop timer, so this tick
+        // used to arrive only when a mouse or another window woke the loop for
+        // unrelated reasons. That is a terminal on an empty workspace showing
+        // nothing of what is typed into it: rio paints through Mesa, Mesa
+        // paces itself with `wp_fifo_v1`, and every one of its commits waits
+        // on a barrier this tick was supposed to lift.
+        if self.barrier_timer.is_none() {
+            self.barrier_timer = self.create_tick("barrier tick", Self::release_barriers);
+        }
+        if Self::arm_tick("barrier tick", self.barrier_timer.as_ref(), interval) {
+            self.barrier_tick = true;
+            return;
+        }
+
+        self.barrier_tick = true;
         let timer = smithay::reexports::calloop::timer::Timer::from_duration(interval);
         if let Err(e) = self.loop_handle.insert_source(timer, move |_, _, state| {
-            state.barrier_tick = false;
-            let at = state.start_time.elapsed();
-            let outputs: Vec<Output> = state.space.outputs().cloned().collect();
-            let mut released = false;
-            for output in &outputs {
-                if state.released_frame_barriers(output, at) {
-                    released = true;
-                    state.mark_output_dirty(output);
-                }
-            }
-            // Only when something was let go. Releasing a barrier applies the
-            // commit it was blocking, and an applied commit is damage, and
-            // damage is what asks for a frame — so the frame arrives without
-            // being demanded here. Asking anyway drew every output at the
-            // refresh rate for as long as one client used the protocol, which
-            // on a second monitor with nothing on it is pure heat.
-            if released {
-                state.barrier_quiet = 0;
-            } else {
-                state.barrier_quiet = state.barrier_quiet.saturating_add(1);
-            }
-            // A tick that has released nothing for a second is a tick nobody
-            // needs: the deadlines that could not be seen have all passed, or
-            // there were none. A commit is the only thing that can make a new
-            // one, and a commit arms this again.
-            if state.barrier_quiet < Self::QUIET {
-                state.arm_barrier_tick();
-            }
+            state.release_barriers();
             smithay::reexports::calloop::timer::TimeoutAction::Drop
         }) {
             tracing::warn!("arming the barrier tick: {e}");
             self.barrier_tick = false;
+        }
+    }
+
+    /// One turn of the barrier tick: let go of whatever is due.
+    fn release_barriers(&mut self) {
+        self.barrier_tick = false;
+        let at = self.start_time.elapsed();
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        let mut released = false;
+        for output in &outputs {
+            if self.released_frame_barriers(output, at) {
+                released = true;
+                self.mark_output_dirty(output);
+            }
+        }
+        // Only when something was let go. Releasing a barrier applies the
+        // commit it was blocking, and an applied commit is damage, and damage
+        // is what asks for a frame — so the frame arrives without being
+        // demanded here. Asking anyway drew every output at the refresh rate
+        // for as long as one client used the protocol, which on a second
+        // monitor with nothing on it is pure heat.
+        if released {
+            self.barrier_quiet = 0;
+        } else {
+            self.barrier_quiet = self.barrier_quiet.saturating_add(1);
+        }
+        // A tick that has released nothing for a second is a tick nobody
+        // needs: the deadlines that could not be seen have all passed, or
+        // there were none. A commit is the only thing that can make a new one,
+        // and a commit arms this again.
+        if self.barrier_quiet < Self::QUIET {
+            self.arm_barrier_tick();
         }
     }
 
@@ -4381,33 +4410,12 @@ impl ViewportState {
         let interval = self.frame_interval();
 
         if self.frame_timer.is_none() {
-            self.frame_timer = self.create_frame_timer();
+            self.frame_timer = self.create_tick("frame clock", Self::frame_tick);
         }
-        if let Some(fd) = self.frame_timer.as_ref() {
-            use smithay::reexports::rustix::time::{
-                timerfd_settime, Itimerspec, TimerfdTimerFlags, Timespec,
-            };
-            // One shot. A repeating timer would keep waking a desktop that has
-            // settled, which is the cost the clock exists to avoid; the tick
-            // arms the next one itself for as long as there is a reason to.
-            let spec = Itimerspec {
-                it_interval: Timespec {
-                    tv_sec: 0,
-                    tv_nsec: 0,
-                },
-                it_value: Timespec {
-                    tv_sec: interval.as_secs() as _,
-                    tv_nsec: interval.subsec_nanos() as _,
-                },
-            };
-            match timerfd_settime(fd, TimerfdTimerFlags::empty(), &spec) {
-                Ok(_) => {
-                    self.frame_clock = true;
-                    self.frame_clock_at = Some(std::time::Instant::now() + interval);
-                    return;
-                }
-                Err(e) => tracing::warn!("frame clock: could not arm the timer: {e}"),
-            }
+        if Self::arm_tick("frame clock", self.frame_timer.as_ref(), interval) {
+            self.frame_clock = true;
+            self.frame_clock_at = Some(std::time::Instant::now() + interval);
+            return;
         }
 
         // No timerfd. calloop's own timer still works whenever calloop is the
@@ -4426,11 +4434,15 @@ impl ViewportState {
         }
     }
 
-    /// Create the timerfd and put it in the loop, once.
+    /// Create a timerfd, put it in the loop, and say what a tick does.
     ///
     /// Returns a second handle on the same timer: the source owns the fd it
     /// watches, and arming happens from outside the source.
-    fn create_frame_timer(&mut self) -> Option<std::os::fd::OwnedFd> {
+    ///
+    /// A plain `fn` rather than a closure so that the tick body stays a named
+    /// method — these run a frame apart from everything else and are easier to
+    /// find when they are not anonymous.
+    fn create_tick(&mut self, what: &'static str, run: fn(&mut Self)) -> Option<std::os::fd::OwnedFd> {
         use smithay::reexports::rustix::time::{timerfd_create, TimerfdClockId, TimerfdFlags};
 
         let fd = match timerfd_create(
@@ -4439,34 +4451,71 @@ impl ViewportState {
         ) {
             Ok(fd) => fd,
             Err(e) => {
-                tracing::warn!("frame clock: no timerfd ({e}), falling back to a loop timer");
+                tracing::warn!("{what}: no timerfd ({e}), falling back to a loop timer");
                 return None;
             }
         };
         let watched = match fd.try_clone() {
             Ok(watched) => watched,
             Err(e) => {
-                tracing::warn!("frame clock: could not dup the timer ({e})");
+                tracing::warn!("{what}: could not dup the timer ({e})");
                 return None;
             }
         };
 
         if let Err(e) = self.loop_handle.insert_source(
             Generic::new(watched, Interest::READ, Mode::Level),
-            |_, fd, state: &mut Self| {
+            move |_, fd, state: &mut Self| {
                 // Drained, or a level-triggered source reports the same
                 // expiry for ever and the loop never sleeps again.
                 let mut buf = [0u8; 8];
                 let _ = smithay::reexports::rustix::io::read(&*fd, &mut buf[..]);
-                state.frame_tick();
+                run(state);
                 Ok(PostAction::Continue)
             },
         ) {
-            tracing::warn!("frame clock: could not watch the timer ({e})");
+            tracing::warn!("{what}: could not watch the timer ({e})");
             return None;
         }
 
         Some(fd)
+    }
+
+    /// Set a one-shot timerfd `interval` from now. False if there was none to
+    /// set, or the kernel refused it.
+    ///
+    /// One shot rather than repeating: a repeating timer would keep waking a
+    /// desktop that has settled, which is the cost these clocks exist to
+    /// avoid. Each tick arms the next itself for as long as there is a reason.
+    fn arm_tick(
+        what: &'static str,
+        fd: Option<&std::os::fd::OwnedFd>,
+        interval: std::time::Duration,
+    ) -> bool {
+        use smithay::reexports::rustix::time::{
+            timerfd_settime, Itimerspec, TimerfdTimerFlags, Timespec,
+        };
+
+        let Some(fd) = fd else {
+            return false;
+        };
+        let spec = Itimerspec {
+            it_interval: Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+            it_value: Timespec {
+                tv_sec: interval.as_secs() as _,
+                tv_nsec: interval.subsec_nanos() as _,
+            },
+        };
+        match timerfd_settime(fd, TimerfdTimerFlags::empty(), &spec) {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!("{what}: could not arm the timer: {e}");
+                false
+            }
+        }
     }
 
     /// One turn of the frame clock: invite, draw, send.

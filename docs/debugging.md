@@ -204,13 +204,7 @@ tried again:
 - Return readiness from `prepare` when the frame is due. Broke input outright.
 - Report the same from `check`. Also broke input.
 
-This also fixes a freeze that had nothing to do with the render pacing, and was
-the reason the clock mattered before the pacing change ever landed. Frame
-callbacks are throttled to one per surface per refresh. A client that commits
-just after a callback went out is refused the next one, and the only thing that
-was going to come back and offer it again was the clock tick — which never
-arrived. That is a terminal that stops updating until the mouse moves or another
-window happens to wake the loop. Two smaller pieces go with it:
+Two smaller pieces go with it:
 
 - `prepare` and `dispatch` no longer arm the clock on every pass. With a tick
   that actually fires, arming there re-arms the clock immediately after each of
@@ -219,6 +213,43 @@ window happens to wake the loop. Two smaller pieces go with it:
 - A tick remembers whether one was asked for while it was pending
   (`frame_pending`) and arms one more, so the surface whose invitation this tick
   was too early to send gets it on the next one rather than never.
+
+## A terminal on an empty workspace shows nothing of what is typed
+
+Fixed. The same root cause as above, in the other clock, and worth its own
+section because it is the one a person actually notices.
+
+Open one terminal on an otherwise empty workspace and type. Sometimes it works
+and sometimes the text does not appear until a second window is on the screen,
+or until the mouse moves. **The intermittency is the tell**, and it is what says
+this is a wakeup problem rather than a rendering one.
+
+rio paints through Mesa, and Mesa's Wayland WSI paces FIFO present mode with
+`wp_fifo_v1` — `strings libvulkan_radeon.so` has `wp_fifo_v1` and
+`wp_commit_timing` in it. So every frame rio draws commits with a barrier, and
+the *next* commit is held until the compositor releases it. There are exactly
+two things that release one: `on_vblank`, and `arm_barrier_tick`. A held commit
+makes no damage, so there is no frame, so there is no vblank, so `on_vblank`
+never runs — the tick is the only way out, and the tick was a `calloop::Timer`.
+
+Which is invisible to GLib's poll, as above. It fired only when GLib woke for
+some other reason: the shell is a WebKit page with a clock in it, so GLib does
+wake, at whatever moment WebKit's own timers happen to fall. That is the
+intermittency exactly — a barrier due in four milliseconds released after
+however long it takes something unrelated to happen. Two windows, or a moving
+mouse, mean the loop is being woken constantly and the tick is never late.
+
+Both clocks are on timerfds now, one each. Not one shared fd: they are armed
+from different places and fall due independently, so arming either on a shared
+timer would move the other's deadline, and the loser would be the one nothing
+else can rescue. `two_clocks_do_not_swallow_each_other` in
+`tests/frame_clock.rs` is the guard.
+
+Still on calloop timers, and so still late by however long GLib sleeps: the
+one-second idle and lock check, the two-second status tick, the layout watchdog
+and the pick timeout. All of them are slow enough that lateness is cosmetic
+rather than a freeze, but a bar clock that stutters on an idle desktop is this,
+not the shell.
 
 Whatever touches this has to be verified with **every other client closed**, not
 just with a video playing.

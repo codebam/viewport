@@ -87,6 +87,70 @@ fn a_timerfd_wakes_an_outer_poll() {
     assert!(ticked, "the loop woke but the tick did not run");
 }
 
+/// Two clocks, one loop, and neither swallows the other.
+///
+/// The compositor runs two of these — the frame clock, which invites clients
+/// to paint, and the barrier tick, which frees a client blocked on
+/// `wp_fifo_v1`. They are armed from different places and fall due
+/// independently, so they get a timerfd each. Folding them onto one fd would
+/// mean arming either one moved the other's deadline, and the one that lost
+/// would be the one nothing else can rescue.
+#[test]
+fn two_clocks_do_not_swallow_each_other() {
+    let mut event_loop: EventLoop<'static, Vec<&'static str>> = EventLoop::try_new().unwrap();
+
+    let mut clocks = Vec::new();
+    for name in ["frame", "barrier"] {
+        let timer = timerfd_create(
+            TimerfdClockId::Monotonic,
+            TimerfdFlags::NONBLOCK | TimerfdFlags::CLOEXEC,
+        )
+        .unwrap();
+        let watched = timer.try_clone().unwrap();
+        event_loop
+            .handle()
+            .insert_source(
+                Generic::new(watched, Interest::READ, Mode::Level),
+                move |_, fd, ticked: &mut Vec<&'static str>| {
+                    let mut buf = [0u8; 8];
+                    let _ = smithay::reexports::rustix::io::read(&*fd, &mut buf[..]);
+                    ticked.push(name);
+                    Ok(PostAction::Continue)
+                },
+            )
+            .unwrap();
+        clocks.push(timer);
+    }
+
+    // The barrier first and the frame clock a moment later, which is the order
+    // a commit produces them in.
+    timerfd_settime(&clocks[1], TimerfdTimerFlags::empty(), &in_twenty_ms()).unwrap();
+    timerfd_settime(&clocks[0], TimerfdTimerFlags::empty(), &in_twenty_ms()).unwrap();
+
+    let mut ticked: Vec<&'static str> = Vec::new();
+    // A handle of its own on the loop's fd, so polling it does not hold a
+    // borrow across the dispatch that follows.
+    let loop_fd = smithay::reexports::rustix::io::dup(event_loop.as_fd()).unwrap();
+    // Two rounds, because the two expiries need not land in the same wakeup.
+    for _ in 0..2 {
+        if ticked.len() == 2 {
+            break;
+        }
+        let mut fds = [PollFd::new(&loop_fd, PollFlags::IN)];
+        assert_eq!(poll(&mut fds, Some(&PATIENCE)).unwrap(), 1, "no wakeup");
+        event_loop
+            .dispatch(Some(Duration::ZERO), &mut ticked)
+            .unwrap();
+    }
+
+    ticked.sort_unstable();
+    assert_eq!(
+        ticked,
+        vec!["barrier", "frame"],
+        "one clock's arming lost the other's deadline"
+    );
+}
+
 /// And calloop's own timer does not, which is why the clock is not one.
 ///
 /// Not a complaint about calloop: its timers live in a wheel it consults while
