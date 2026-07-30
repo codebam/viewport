@@ -1653,14 +1653,14 @@ impl ViewportState {
         // drawn by the ordinary loop. Passing the current ones would only
         // matter for keeping other outputs lit through a bandwidth
         // renegotiation, and they are redrawn a moment later anyway.
-        let result = surface.drm_output.use_mode(
-            drm_mode,
-            &mut udev.renderer,
-            &smithay::backend::drm::output::DrmOutputRenderElements::<
-                _,
-                crate::render::OutputElement<viewport_vulkan::VulkanRenderer>,
-            >::new(),
-        );
+        let result = crate::with_gpu!(&mut udev.renderer, |renderer| surface
+            .drm_output
+            .use_mode(
+                drm_mode,
+                renderer,
+                &smithay::backend::drm::output::DrmOutputRenderElements::<_, crate::render::OutputElement<_>>::new(),
+            )
+            .map_err(|e| e.to_string()));
         match result {
             Ok(()) => tracing::info!(
                 "{}: {}x{}@{}",
@@ -2108,7 +2108,13 @@ impl ViewportState {
         let Some(mut udev) = self.udev.take() else {
             return Vec::new();
         };
-        let targets = Self::allocate_cast_targets(&mut udev.renderer, size);
+        // DMA-BUF targets come from the Vulkan renderer's allocator; GLES has
+        // no `Offscreen<Dmabuf>`, so a screen share under it takes the
+        // shared-memory path instead of handing buffers over.
+        let targets = match &mut udev.renderer {
+            crate::udev::Gpu::Vulkan(renderer) => Self::allocate_cast_targets(renderer, size),
+            _ => Vec::new(),
+        };
         self.udev = Some(udev);
         targets
     }
@@ -4479,10 +4485,15 @@ impl ViewportState {
                         (crate::dump::target(), self.udev.as_mut())
                     {
                         if self.shell_owned.is_none() {
-                            if let Err(e) =
-                                crate::dump::shell_frame(&mut udev.renderer, &texture, &path)
-                            {
-                                tracing::error!("could not dump the shell's frame: {e:#}");
+                            // The dump path is Vulkan's: it is a diagnostic
+                            // for the renderer that has colour management, and
+                            // teaching it a second one buys nothing.
+                            if let crate::udev::Gpu::Vulkan(renderer) = &mut udev.renderer {
+                                if let Err(e) =
+                                    crate::dump::shell_frame(renderer, &texture, &path)
+                                {
+                                    tracing::error!("could not dump the shell's frame: {e:#}");
+                                }
                             }
                         }
                     }

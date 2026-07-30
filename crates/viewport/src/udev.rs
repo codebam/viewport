@@ -129,6 +129,28 @@ pub struct Surface {
 pub enum Gpu {
     Vulkan(VulkanRenderer),
     Gles(smithay::backend::renderer::gles::GlesRenderer),
+    /// Only ever here while the real renderer is on the stack: a call that
+    /// borrows the rest of `Udev` cannot borrow the renderer out of it at the
+    /// same time, so it is moved out and put back.
+    Placeholder,
+}
+
+/// What a renderer composites a capture into.
+///
+/// Vulkan can allocate a DMA-BUF and hand it to a client; GLES draws into a
+/// renderbuffer and the pixels are read back, which is what the nested backend
+/// has always done. The difference is one associated type rather than two
+/// copies of the capture paths.
+pub trait Captures: smithay::backend::renderer::RendererSuper {
+    type Buffer: Send + 'static;
+}
+
+impl Captures for VulkanRenderer {
+    type Buffer = smithay::backend::allocator::dmabuf::Dmabuf;
+}
+
+impl Captures for smithay::backend::renderer::gles::GlesRenderer {
+    type Buffer = smithay::backend::renderer::gles::GlesRenderbuffer;
 }
 
 /// Do the same thing with whichever renderer this is.
@@ -141,6 +163,9 @@ macro_rules! with_gpu {
         match $gpu {
             $crate::udev::Gpu::Vulkan($renderer) => $body,
             $crate::udev::Gpu::Gles($renderer) => $body,
+            $crate::udev::Gpu::Placeholder => {
+                panic!("the renderer was used while it was moved out")
+            }
         }
     };
 }
@@ -152,6 +177,7 @@ impl Gpu {
         match self {
             Gpu::Vulkan(renderer) => renderer.dmabuf_formats(),
             Gpu::Gles(renderer) => renderer.dmabuf_formats(),
+            Gpu::Placeholder => Default::default(),
         }
     }
 
@@ -460,7 +486,7 @@ fn open_device(
     session: &mut LibSeatSession,
     card: &DrmNode,
     render: &DrmNode,
-) -> Result<(Manager, VulkanRenderer, smithay::backend::drm::DrmDeviceNotifier)> {
+) -> Result<(Manager, Gpu, smithay::backend::drm::DrmDeviceNotifier)> {
     let path = card
         .dev_path()
         .ok_or_else(|| anyhow!("{card:?} has no device path"))?;
@@ -505,9 +531,6 @@ fn open_device(
         )
     })?;
 
-    let vulkan = VulkanDevice::for_node(&instance, render)
-        .context("opening a vulkan device on the primary GPU")?;
-
     // SCANOUT as well as RENDERING: these buffers go to the display
     // controller, and a buffer allocated without it may not be scannable.
     let allocator = GbmAllocator::new(
@@ -515,10 +538,42 @@ fn open_device(
         GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
     );
 
-    let renderer = VulkanRenderer::with_allocator(&vulkan, allocator.clone())
-        .map_err(|e| anyhow!("creating the vulkan renderer: {e}"))?;
+    // Vulkan unless it cannot serve this display, or unless told otherwise.
+    //
+    // VIEWPORT_RENDERER=gles forces the OpenGL path and =vulkan refuses to fall
+    // back, which is what a bug report needs: "it works with the other one" is
+    // the first thing worth knowing and should not require a rebuild.
+    let asked = std::env::var("VIEWPORT_RENDERER").unwrap_or_default();
+    let renderer = match asked.as_str() {
+        "gles" | "gl" | "opengl" => {
+            tracing::info!("VIEWPORT_RENDERER={asked}: the OpenGL renderer");
+            Gpu::Gles(gles_renderer(&gbm)?)
+        }
+        _ => {
+            let vulkan = VulkanDevice::for_node(&instance, render)
+                .context("opening a vulkan device on the primary GPU")
+                .and_then(|device| {
+                    VulkanRenderer::with_allocator(&device, allocator.clone())
+                        .map_err(|e| anyhow!("creating the vulkan renderer: {e}"))
+                });
+            match vulkan {
+                Ok(renderer) => Gpu::Vulkan(renderer),
+                Err(e) if asked == "vulkan" => return Err(e),
+                Err(e) => {
+                    // A virtual machine is the usual reason: software Vulkan
+                    // has no VK_EXT_image_drm_format_modifier and Venus aborts
+                    // in its own driver, while virgl gives OpenGL ES on the
+                    // GBM platform and works. Refusing here is a session that
+                    // shows nothing, which is worse than one without colour
+                    // management.
+                    tracing::warn!("no usable Vulkan renderer ({e:#}); falling back to OpenGL");
+                    Gpu::Gles(gles_renderer(&gbm)?)
+                }
+            }
+        }
+    };
 
-    let render_formats = smithay::backend::renderer::ImportDma::dmabuf_formats(&renderer);
+    let render_formats = renderer.dmabuf_formats();
 
     // The exporter turns a rendered buffer into a DRM framebuffer handle. It
     // takes the node so it can tell a buffer allocated here from one imported
@@ -535,6 +590,22 @@ fn open_device(
     );
 
     Ok((manager, renderer, notifier))
+}
+
+/// An OpenGL ES renderer on the same GBM device.
+///
+/// EGL rather than Vulkan, which is what makes it work where Vulkan cannot:
+/// virgl in a guest exposes GL through the GBM platform, and this is the path
+/// the nested backend has always used.
+fn gles_renderer(gbm: &GbmDevice<DrmDeviceFd>) -> Result<smithay::backend::renderer::gles::GlesRenderer> {
+    let display = unsafe { smithay::backend::egl::EGLDisplay::new(gbm.clone()) }
+        .context("opening an EGL display on the GBM device")?;
+    let context = smithay::backend::egl::EGLContext::new(&display)
+        .context("creating an EGL context")?;
+    // SAFETY: the context is current on this thread for the renderer's life,
+    // which is the compositor's — the DRM path is single-threaded.
+    Ok(unsafe { smithay::backend::renderer::gles::GlesRenderer::new(context) }
+        .context("creating the OpenGL renderer")?)
 }
 
 impl ViewportState {
@@ -665,18 +736,25 @@ impl ViewportState {
             // initialize_output lives on the locked manager: bringing a
             // connector up touches every surface on the device, because
             // adding one can force the others onto different modifiers.
-            let result = udev.manager.lock().initialize_output::<
-                _,
-                WaylandSurfaceRenderElement<VulkanRenderer>,
-            >(
-                crtc,
-                mode,
-                &[connector.handle()],
-                &output,
-                None,
-                &mut udev.renderer,
-                &Default::default(),
-            );
+            // The manager is borrowed for the whole call, so the renderer
+            // cannot come out of `udev` at the same time — it is taken and put
+            // back around the two arms.
+            let mut renderer = std::mem::replace(&mut udev.renderer, Gpu::Placeholder);
+            let result = crate::with_gpu!(&mut renderer, |r| {
+                udev.manager
+                    .lock()
+                    .initialize_output::<_, WaylandSurfaceRenderElement<_>>(
+                        crtc,
+                        mode,
+                        &[connector.handle()],
+                        &output,
+                        None,
+                        r,
+                        &Default::default(),
+                    )
+                    .map_err(|e| e.to_string())
+            });
+            udev.renderer = renderer;
 
             match result {
                 Ok(drm_output) => {
@@ -781,103 +859,6 @@ impl ViewportState {
         (above, below)
     }
 
-    /// The pointer, as elements for one output.
-    ///
-    /// Empty when the pointer is elsewhere, or when the client asked for it to
-    /// be hidden — `CursorImageStatus::Hidden` is a request to draw nothing,
-    /// not to fall back to the theme.
-    fn cursor_element(
-        &mut self,
-        output_geometry: Option<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
-        scale: f64,
-    ) -> Vec<crate::render::OutputElement<VulkanRenderer>> {
-        use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
-        use smithay::input::pointer::CursorImageStatus;
-
-        let Some(output_geometry) = output_geometry else {
-            return Vec::new();
-        };
-        let Some(pointer) = self.seat.get_pointer() else {
-            return Vec::new();
-        };
-        let location = pointer.current_location();
-        if !output_geometry.to_f64().contains(location) {
-            return Vec::new();
-        }
-        // Relative to this output, which is the space every element is in.
-        let local = (location - output_geometry.loc.to_f64()).to_physical(scale);
-
-        match self.cursor_status.clone() {
-            CursorImageStatus::Hidden => Vec::new(),
-
-            // The client's own surface. Its hotspot is stored on the surface
-            // by the seat, and the surface is drawn with that subtracted so
-            // the point the user aims with is where the pointer is.
-            CursorImageStatus::Surface(surface) => {
-                use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
-                use smithay::wayland::compositor::with_states;
-
-                let hotspot = with_states(&surface, |states| {
-                    states
-                        .data_map
-                        .get::<std::sync::Mutex<smithay::input::pointer::CursorImageAttributes>>()
-                        .map(|attrs| attrs.lock().unwrap().hotspot)
-                        .unwrap_or_default()
-                });
-                let at = (local.to_f64() - hotspot.to_f64().to_physical(scale)).to_i32_round();
-                let Some(udev) = self.udev.as_mut() else {
-                    return Vec::new();
-                };
-                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<VulkanRenderer>>(
-                    &mut udev.renderer,
-                    &surface,
-                    at,
-                    scale,
-                    1.0,
-                    smithay::backend::renderer::element::Kind::Cursor,
-                )
-                .into_iter()
-                .map(crate::render::OutputElement::from)
-                .collect()
-            }
-
-            CursorImageStatus::Named(shape) => {
-                let millis = self.start_time.elapsed().as_millis() as u32;
-                let Some((buffer, hotspot)) =
-                    self.cursor_theme
-                        .image(shape.name(), scale.ceil() as i32, millis)
-                else {
-                    // No theme installed, or none with this shape. Drawing
-                    // nothing is better than a wrong image, and saying so once
-                    // beats a pointer that is silently absent.
-                    if !self.cursor_warned {
-                        self.cursor_warned = true;
-                        tracing::warn!(
-                            "no xcursor image for {:?}; set XCURSOR_THEME to a theme that is installed",
-                            shape.name()
-                        );
-                    }
-                    return Vec::new();
-                };
-                let Some(udev) = self.udev.as_mut() else {
-                    return Vec::new();
-                };
-                MemoryRenderBufferRenderElement::from_buffer(
-                    &mut udev.renderer,
-                    (local.to_f64() - hotspot.to_f64()),
-                    &buffer,
-                    None,
-                    None,
-                    None,
-                    smithay::backend::renderer::element::Kind::Cursor,
-                )
-                .ok()
-                .map(crate::render::OutputElement::from)
-                .into_iter()
-                .collect()
-            }
-        }
-    }
 
     /// A frame finished scanning out, so the next one may be drawn.
     pub fn on_vblank(
@@ -947,9 +928,79 @@ impl ViewportState {
         let settled_for = self.last_layout.map(|at| at.elapsed());
         let mut pending_dump = false;
 
-        let Some(udev) = self.udev.as_mut() else {
+        let Some(mut udev) = self.udev.take() else {
             return;
         };
+        // Out of the struct and onto the stack: the call below borrows the rest
+        // of `udev` and all of `self`, which it cannot do while the renderer is
+        // still a field of one of them.
+        let mut gpu = std::mem::replace(&mut udev.renderer, Gpu::Placeholder);
+        // Colour management belongs to the Vulkan renderer; GLES draws in the
+        // output's own space, so an HDR screen driven by it gets the ordinary
+        // one — the honest result of that renderer not having the transforms.
+        if let Gpu::Vulkan(renderer) = &mut gpu {
+            let description = if udev
+                .surfaces
+                .get(&crtc)
+                .map(|surface| surface.hdr)
+                .unwrap_or(false)
+            {
+                viewport_vulkan::color::Description {
+                    primaries: viewport_vulkan::color::Primaries::BT2020,
+                    transfer: viewport_vulkan::color::TransferFunction::Pq,
+                    reference_luminance: 203.0,
+                }
+            } else {
+                viewport_vulkan::color::Description::default()
+            };
+            renderer.set_output_description(description);
+        }
+        crate::with_gpu!(&mut gpu, |renderer| self.render_pass(
+            &mut udev,
+            renderer,
+            crtc,
+            &output,
+            frame,
+            wants_tearing,
+            settled_for,
+            start,
+            &mut pending_dump,
+        ));
+        udev.renderer = gpu;
+        self.udev = Some(udev);
+    }
+
+
+    /// One frame, with whichever renderer the device chose.
+    ///
+    /// Split out so the body is written once and compiled for both: the
+    /// element list is typed by the renderer, so everything from building it
+    /// to handing it to KMS has to live on this side of the choice.
+    #[allow(clippy::too_many_arguments)]
+    fn render_pass<R>(
+        &mut self,
+        udev: &mut Udev,
+        renderer: &mut R,
+        crtc: crtc::Handle,
+        output: &smithay::output::Output,
+        frame: crate::render::Frame,
+        wants_tearing: bool,
+        settled_for: Option<std::time::Duration>,
+        start: std::time::Duration,
+        pending_dump: &mut bool,
+    ) where
+        R: smithay::backend::renderer::Renderer
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::Bind<smithay::backend::allocator::dmabuf::Dmabuf>
+            + smithay::backend::renderer::ExportMem
+            + smithay::backend::renderer::ImportDma
+            + smithay::backend::renderer::Bind<<R as Captures>::Buffer>
+            + smithay::backend::renderer::Offscreen<<R as Captures>::Buffer>
+            + Captures,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
         if !udev.active {
             return;
         }
@@ -1010,9 +1061,7 @@ impl ViewportState {
         } else {
             viewport_vulkan::color::Description::default()
         };
-        udev.renderer.set_output_description(description);
-
-        let elements = crate::render::build(&frame, &mut udev.renderer);
+        let elements = crate::render::build(&frame, renderer);
 
         // A composite of exactly this list, for when the screen and the log
         // disagree.
@@ -1024,7 +1073,7 @@ impl ViewportState {
             // layout has settled, and settling is precisely when nothing is
             // asking for one.
             if !surface.dumped && !frame.windows.is_empty() {
-                pending_dump = true;
+                *pending_dump = true;
             }
             if !surface.dumped && !frame.windows.is_empty() && settled {
                 surface.dumped = true;
@@ -1038,8 +1087,8 @@ impl ViewportState {
                     output.name()
                 ));
                 tracing::info!("dumping {}: {} element(s)", output.name(), elements.len());
-                if let Err(e) = crate::dump::output_frame(
-                    &mut udev.renderer,
+                if let Err(e) = crate::dump::output_frame::<_, <R as Captures>::Buffer, _>(
+                    renderer,
                     &elements,
                     size,
                     [0.1, 0.1, 0.1, 1.0],
@@ -1054,7 +1103,7 @@ impl ViewportState {
         // clients on this output are invited to draw another one.
         let mut submitted = false;
         let result = surface.drm_output.render_frame(
-            &mut udev.renderer,
+            renderer,
             &elements,
             // Behind everything, and behind the shell too — visible only where
             // nothing else covers it.
@@ -1133,7 +1182,7 @@ impl ViewportState {
             Err(e) => tracing::warn!("render_frame: {e}"),
         }
 
-        if pending_dump {
+        if *pending_dump {
             self.dirty_outputs.insert(crtc);
         }
 
@@ -1143,33 +1192,34 @@ impl ViewportState {
         // inside it — a copy composites the desktop, which is everything.
         // Anything sharing this screen, fed from the frame just drawn.
         if !self.casts.is_empty() {
-            if let Some(mut udev) = self.udev.take() {
+            {
                 // Before the frames: a source that has resized needs the
                 // format agreed again, and the buffers for it come from this
                 // renderer — which is why this is here and not inside
                 // `feed_casts`. The state does not hold the renderer while it
                 // is lent out, so anything reaching for `self.udev` in there
                 // finds nothing.
-                self.resize_casts(Some(&mut udev.renderer));
-                self.feed_casts::<_, smithay::backend::allocator::dmabuf::Dmabuf>(
+                // Only the Vulkan renderer can allocate the DMA-BUFs a cast
+                // hands over; under GLES a share takes the shared-memory path,
+                // so there is nothing to resize here.
+                self.resize_casts(None::<&mut VulkanRenderer>);
+                self.feed_casts::<_, <R as Captures>::Buffer>(
                     &output,
-                    &mut udev.renderer,
+                    renderer,
                 );
-                self.udev = Some(udev);
             }
         }
 
         if !self.pending_copies.is_empty() || !self.pending_capture_frames.is_empty() {
-            if let Some(mut udev) = self.udev.take() {
-                self.service_screencopy::<_, smithay::backend::allocator::dmabuf::Dmabuf>(
+            {
+                self.service_screencopy::<_, <R as Captures>::Buffer>(
                     &output,
-                    &mut udev.renderer,
+                    renderer,
                 );
-                self.service_image_capture::<_, smithay::backend::allocator::dmabuf::Dmabuf>(
+                self.service_image_capture::<_, <R as Captures>::Buffer>(
                     &output,
-                    &mut udev.renderer,
+                    renderer,
                 );
-                self.udev = Some(udev);
             }
         }
 
@@ -1220,6 +1270,8 @@ impl ViewportState {
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();
     }
+
+
 
     /// The VT was switched away from. Every device fd is about to be revoked.
     pub fn on_session_paused(&mut self) {

@@ -630,7 +630,11 @@ impl smithay::wayland::dmabuf::DmabufHandler for ViewportState {
         let imported = self
             .udev
             .as_mut()
-            .map(|udev| udev.renderer.import_dmabuf(&dmabuf, None).is_ok());
+            .map(|udev| {
+                crate::with_gpu!(&mut udev.renderer, |renderer| renderer
+                    .import_dmabuf(&dmabuf, None)
+                    .is_ok())
+            });
         match imported {
             Some(true) | None => {
                 let _ = notifier.successful::<ViewportState>();

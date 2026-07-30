@@ -68,6 +68,13 @@ fn main() -> Result<()> {
     // The real backend. Without it the compositor runs nested under whatever
     // is already displaying, which is what development wants.
     let drm = args.iter().any(|a| a == "--drm");
+    // `--renderer gles` is the same switch as VIEWPORT_RENDERER, for a session
+    // started from a display manager where setting an environment variable
+    // means editing a unit file. The flag wins, because it is the more
+    // deliberate of the two.
+    if let Some(which) = flag(&args, "--renderer") {
+        unsafe { std::env::set_var("VIEWPORT_RENDERER", which) };
+    }
 
     // The config file, before anything reads a default out of it.
     //
