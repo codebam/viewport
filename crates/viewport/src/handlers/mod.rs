@@ -254,11 +254,16 @@ impl smithay::wayland::drm_syncobj::DrmSyncobjHandler for ViewportState {
 /// The standardised capture protocols, which is what a current
 /// xdg-desktop-portal reaches for before wlr-screencopy.
 ///
-/// A source is a thing that can be captured; this compositor offers outputs
-/// and nothing else. Toplevel capture would need a window's own contents
-/// composited apart from the desktop, and the shell draws window frames
-/// around them — a captured window without its frame is not what the picker
-/// showed.
+/// A source is a thing that can be captured: a screen, or one window.
+///
+/// Windows were declined here for a while, on the grounds that a window
+/// captured apart from the desktop loses the frame the shell drew around it
+/// and so is not what the picker showed. The screencast portal then had to
+/// offer windows anyway — offering them is the whole reason to own that
+/// interface — and `read_window_pixels` composites a window's own surface tree
+/// for it. So the capability exists and is already shipped; declining it only
+/// here left a client that speaks the standard protocol worse off than one
+/// going through the portal, for no difference in the picture either gets.
 impl smithay::wayland::image_capture_source::ImageCaptureSourceHandler for ViewportState {
     fn source_destroyed(
         &mut self,
@@ -291,6 +296,57 @@ impl smithay::wayland::image_capture_source::OutputCaptureSourceHandler for View
     }
 }
 
+impl smithay::wayland::image_capture_source::ToplevelCaptureSourceHandler for ViewportState {
+    fn toplevel_capture_source_state(
+        &mut self,
+    ) -> &mut smithay::wayland::image_capture_source::ToplevelCaptureSourceState {
+        &mut self.toplevel_capture_source_state
+    }
+
+    fn toplevel_source_created(
+        &mut self,
+        source: smithay::wayland::image_capture_source::ImageCaptureSource,
+        toplevel: smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle,
+    ) {
+        // The view id, not the handle and not the window. A `Window` is a
+        // handle into the `Space` that a remap invalidates; the id is what the
+        // shell, the portal and the IPC all name this window by, and resolving
+        // it at capture time is what makes a closed window fail rather than
+        // draw whatever took its place.
+        // By identifier: `ForeignToplevelHandle` is not `PartialEq` and its
+        // `Arc` is private, but the identifier is the 32 random characters the
+        // protocol itself uses to tell two toplevels apart.
+        let wanted = toplevel.identifier();
+        let Some(id) = self
+            .views
+            .iter()
+            .find(|view| {
+                view.foreign
+                    .as_ref()
+                    .is_some_and(|handle| handle.identifier() == wanted)
+            })
+            .map(|view| view.id)
+        else {
+            // A handle for a window that has already gone. The source stays
+            // valid — the protocol has no way to refuse one — and every frame
+            // asked of it fails, which is what a client that raced a close
+            // has to handle anyway.
+            tracing::debug!("a capture source was made from a toplevel that no longer exists");
+            return;
+        };
+        source.user_data().insert_if_missing(|| ViewCapture(id));
+        // Held for the same reason an output source is: the client destroys
+        // its own object as soon as it has a session.
+        self.capture_sources.push(source);
+    }
+}
+
+/// The view a toplevel capture source names, in its user data.
+///
+/// A newtype rather than a bare `u32` so it cannot collide with anything else
+/// stored there — `UserDataMap` is keyed by type.
+struct ViewCapture(u32);
+
 impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for ViewportState {
     fn image_copy_capture_state(
         &mut self,
@@ -302,13 +358,28 @@ impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for ViewportS
         &mut self,
         source: &smithay::wayland::image_capture_source::ImageCaptureSource,
     ) -> Option<smithay::wayland::image_copy_capture::BufferConstraints> {
-        let output = output_of(source)?;
-        let size = output
-            .current_mode()
-            .map(|mode| output.current_transform().transform_size(mode.size))?;
+        let (what, size) = match target_of(self, source)? {
+            crate::state::CaptureTarget::Output(output) => {
+                let size = output
+                    .current_mode()
+                    .map(|mode| output.current_transform().transform_size(mode.size))?;
+                (output.name(), size)
+            }
+            // The window's own size, upright, because that is what it is
+            // composited at. Not the screen's, and not turned by the screen's
+            // transform: a window is not rotated by the monitor it is on.
+            crate::state::CaptureTarget::Window(id) => {
+                let view = self.views.get(id)?;
+                let geometry = self.space.element_geometry(&view.window)?;
+                (
+                    format!("view {id}"),
+                    (geometry.size.w.max(1), geometry.size.h.max(1)).into(),
+                )
+            }
+        };
         tracing::debug!(
             "capture constraints for {}: {}x{}, dmabuf {}",
-            output.name(),
+            what,
             size.w,
             size.h,
             if self.capture_dmabuf_constraints().is_some() {
@@ -350,27 +421,43 @@ impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for ViewportS
         frame: smithay::wayland::image_copy_capture::Frame,
     ) {
         tracing::debug!("a capture frame was asked for");
-        let Some(output) = output_of(&session.source()) else {
+        // Stopped, not Unknown: the source named a screen that was unplugged
+        // or a window that closed, and neither is coming back.
+        let Some(target) = target_of(self, &session.source()) else {
             frame.fail(
                 smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::FailureReason::Stopped,
             );
             return;
         };
-        self.pending_capture_frames.push((output, frame));
+        self.pending_capture_frames.push((target, frame));
         // An idle desktop draws nothing, and a screenshot of an idle desktop
         // is the ordinary case.
         self.needs_render = true;
     }
 }
 
-/// The output a capture source names, if it still exists.
-fn output_of(
+/// What a capture source names, if it still exists.
+///
+/// Both arms can come back `None`, and for the same reason: a source outlives
+/// what it points at. An unplugged monitor's `WeakOutput` stops upgrading and
+/// a closed window's id stops resolving, which is how a session over either
+/// one starts failing its frames instead of drawing something else.
+fn target_of(
+    state: &ViewportState,
     source: &smithay::wayland::image_capture_source::ImageCaptureSource,
-) -> Option<smithay::output::Output> {
-    source
+) -> Option<crate::state::CaptureTarget> {
+    if let Some(output) = source
         .user_data()
         .get::<smithay::output::WeakOutput>()
         .and_then(|weak| weak.upgrade())
+    {
+        return Some(crate::state::CaptureTarget::Output(output));
+    }
+    let id = source.user_data().get::<ViewCapture>()?.0;
+    state
+        .views
+        .get(id)
+        .map(|_| crate::state::CaptureTarget::Window(id))
 }
 
 impl crate::tearing::TearingControlHandler for ViewportState {

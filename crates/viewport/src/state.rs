@@ -375,6 +375,8 @@ pub struct ViewportState {
     pub image_capture_source_state: smithay::wayland::image_capture_source::ImageCaptureSourceState,
     pub output_capture_source_state:
         smithay::wayland::image_capture_source::OutputCaptureSourceState,
+    pub toplevel_capture_source_state:
+        smithay::wayland::image_capture_source::ToplevelCaptureSourceState,
     pub image_copy_capture_state: smithay::wayland::image_copy_capture::ImageCopyCaptureState,
     /// The capture sessions, held for the same reason as the sources: a
     /// dropped session sends `stopped` to its client, so letting one go is
@@ -395,7 +397,7 @@ pub struct ViewportState {
     )>,
     /// Capture frames waiting for the renderer, exactly as screencopy's are:
     /// the copy happens where the renderer is, which is inside a backend.
-    pub pending_capture_frames: Vec<(Output, smithay::wayland::image_copy_capture::Frame)>,
+    pub pending_capture_frames: Vec<(CaptureTarget, smithay::wayland::image_copy_capture::Frame)>,
     /// linux-drm-syncobj-v1: a client saying when its buffer is ready rather
     /// than the kernel guessing. Absent on a GPU that cannot do it, and on
     /// the nested backend, which has no DRM device of its own.
@@ -558,6 +560,19 @@ pub struct ViewportState {
     pub seat: Seat<Self>,
 }
 
+/// What a capture is a picture of.
+///
+/// A view id rather than a window for the second one: a `Window` is a handle
+/// into the `Space` that a remap invalidates, while the id is what the shell,
+/// the screencast portal and the IPC all name the same thing by. Resolving it
+/// late means a capture of a window that has closed fails rather than draws
+/// something else.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CaptureTarget {
+    Output(Output),
+    Window(u32),
+}
+
 /// The surfaces one window is drawn from, and the size they cover.
 ///
 /// Generic over the renderer because `with_gpu!` compiles every render body
@@ -603,6 +618,11 @@ impl ViewportState {
             smithay::wayland::image_capture_source::ImageCaptureSourceState::new();
         let output_capture_source_state =
             smithay::wayland::image_capture_source::OutputCaptureSourceState::new::<Self>(&dh);
+        // Windows as well as screens. The picker in a browser's "share your
+        // screen" dialogue lists both, and a client that binds this manager
+        // and finds nothing behind it has no way to offer the second.
+        let toplevel_capture_source_state =
+            smithay::wayland::image_capture_source::ToplevelCaptureSourceState::new::<Self>(&dh);
         let image_copy_capture_state =
             smithay::wayland::image_copy_capture::ImageCopyCaptureState::new::<Self>(&dh);
         // Input methods. Three protocols that only work together: the
@@ -886,6 +906,7 @@ impl ViewportState {
             foreign_management_state,
             image_capture_source_state,
             output_capture_source_state,
+            toplevel_capture_source_state,
             image_copy_capture_state,
             capture_sessions: Vec::new(),
             capture_sources: Vec::new(),
@@ -1181,18 +1202,60 @@ impl ViewportState {
         if self.pending_capture_frames.is_empty() {
             return;
         }
+        // A window's frame is served on the pass for a screen it is on, the
+        // same rule the screencast path uses: this runs once per output and a
+        // window has to be picked up by exactly one of those passes, or it is
+        // either drawn twice or never.
         let mut mine = Vec::new();
         let mut rest = Vec::new();
-        for (frame_output, frame) in std::mem::take(&mut self.pending_capture_frames) {
-            if frame_output == *output {
-                mine.push((frame_output, frame));
+        for (target, frame) in std::mem::take(&mut self.pending_capture_frames) {
+            let ours = match &target {
+                CaptureTarget::Output(frame_output) => frame_output == output,
+                CaptureTarget::Window(id) => self.window_is_on(*id, output),
+            };
+            if ours {
+                mine.push((target, frame));
             } else {
-                rest.push((frame_output, frame));
+                rest.push((target, frame));
             }
         }
         self.pending_capture_frames = rest;
 
-        for (frame_output, frame) in mine {
+        let mut windows = Vec::new();
+        let mut outputs = Vec::new();
+        for (target, frame) in mine {
+            match target {
+                CaptureTarget::Output(frame_output) => outputs.push((frame_output, frame)),
+                CaptureTarget::Window(id) => windows.push((id, frame)),
+            }
+        }
+
+        for (id, frame) in windows {
+            let buffer = frame.buffer();
+            let result = match smithay::wayland::dmabuf::get_dmabuf(&buffer) {
+                Ok(dmabuf) => self.render_window_into(id, dmabuf.clone(), renderer),
+                Err(_) => self.copy_window_into::<R, B>(id, &buffer, renderer),
+            };
+            match result {
+                Ok(()) => {
+                    tracing::debug!("image capture: a frame of view {id}");
+                    let now = self.start_time.elapsed();
+                    // Normal, unlike an output. A window is not rotated by the
+                    // screen it happens to be on — `read_window_pixels` draws
+                    // it upright — so telling a client the screen's transform
+                    // would have it turn an already-upright picture.
+                    frame.success(smithay::utils::Transform::Normal, None, now);
+                }
+                Err(e) => {
+                    tracing::warn!("image capture of view {id} failed: {e}");
+                    frame.fail(
+                        smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::FailureReason::Unknown,
+                    );
+                }
+            }
+        }
+
+        for (frame_output, frame) in outputs {
             let size = frame_output
                 .current_mode()
                 .map(|mode| frame_output.current_transform().transform_size(mode.size))
@@ -2517,6 +2580,76 @@ impl ViewportState {
             }
         }
         self.casts = casts;
+    }
+
+    /// Whether a view is showing on this output at all.
+    ///
+    /// Overlap, not containment: a window straddling two screens is on both,
+    /// and the caller picks one. False for a view that has gone — which is how
+    /// a capture of a closed window stops being anybody's to serve.
+    pub fn window_is_on(&self, id: u32, output: &Output) -> bool {
+        self.views
+            .get(id)
+            .and_then(|view| self.space.element_geometry(&view.window))
+            .zip(self.space.output_geometry(output))
+            .map(|(window, screen)| screen.overlaps(window))
+            .unwrap_or(false)
+    }
+
+    /// Composite one window and copy it into a client's shared memory.
+    ///
+    /// The shm half of `render_window_into`, and the same relationship
+    /// `copy_output_into` has to `render_output_into`: a client that could not
+    /// allocate a DMA-BUF still gets its picture, at the cost of reading every
+    /// pixel back.
+    fn copy_window_into<R, B>(
+        &mut self,
+        id: u32,
+        buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+        renderer: &mut R,
+    ) -> Result<(), String>
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        let (pixels, size) = self.read_window_pixels::<R, B>(id, renderer)?;
+
+        smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
+            let want = (size.w * size.h * 4) as usize;
+            if len < want || data.width < size.w || data.height < size.h {
+                return Err(format!(
+                    "the client's buffer is {}x{} and the window is {}x{}",
+                    data.width, data.height, size.w, size.h
+                ));
+            }
+            // Row by row: the client's stride need not be the packed width,
+            // and writing as though it were shears the image.
+            let stride = data.stride as usize;
+            let row = (size.w * 4) as usize;
+            for y in 0..size.h as usize {
+                let from = &pixels[y * row..(y + 1) * row];
+                // SAFETY: the length was checked above, and shm guarantees the
+                // mapping is valid for the duration of this closure.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        from.as_ptr(),
+                        ptr.add(data.offset as usize + y * stride),
+                        row,
+                    );
+                }
+            }
+            Ok(())
+        })
+        .map_err(|e| format!("the client did not give shared memory: {e}"))??;
+
+        Ok(())
     }
 
     /// Composite one window straight into a buffer a consumer will read.

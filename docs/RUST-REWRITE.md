@@ -397,50 +397,63 @@ display attached to the headless runs:
 
 | test | C | Rust |
 |---|---|---|
+| `output-order` | pass | pass |
 | `capture-tiling` | pass | **fail** |
-| `output-order` | pass | **fail** |
+| `capture-scrolling` | pass | **fail** |
 | `session-lock-crash` | fail | fail |
 
 `session-lock-crash` fails for both and is not evidence of anything: it wants a
 renderer that a headless run on this machine does not give it. CI runs it
 against lavapipe, which is where its result means something.
 
-The other two are real, and they are different in kind.
+**`output-order` passes now.** It did not because `output.test_add` was
+rejected with "headless hotplug is only available under `--headless`" by an arm
+in `apply.rs` that rejected it unconditionally, *including* under `--headless`,
+while `headless.rs` opened by saying that request is what the backend exists
+for. The headless backend can plug and unplug virtual outputs, appended to the
+right in the order they arrive, which is what `Space::outputs()` then hands back
+and what the shell reads as left-to-right.
 
-**`capture-tiling` is a decision, not a gap.** The test client binds
-`ext_foreign_toplevel_image_capture_source_manager_v1` and the Rust build does
-not advertise it. That is deliberate and already written down at
-`crates/viewport/src/handlers/mod.rs:255`: a source is a thing that can be
-captured, this compositor offers outputs, and a window captured apart from the
-desktop loses the frame the shell drew around it — which is not what the picker
-showed the user. Windows are offered through the screencast portal instead,
-which composites them with their frames.
+**`capture-*` needed a decision, and it went the other way.** The test client
+binds `ext_foreign_toplevel_image_capture_source_manager_v1`, which this build
+declined to advertise on the grounds — written at `handlers/mod.rs` — that a
+window captured apart from the desktop loses the frame the shell drew around
+it. That reasoning did not survive contact with the screencast portal, which
+has to offer windows and does, compositing each one's own surface tree through
+`read_window_pixels`. Declining only here left a client speaking the standard
+protocol worse off than one going through the portal, for the same picture. The
+global is advertised now and a toplevel source captures through the same path
+the portal uses.
 
-So this test encodes a C-era answer that the rewrite reversed on purpose.
-Before `src/` goes, one of two things has to happen: the rewrite advertises the
-global (Smithay ships `ToplevelCaptureSourceState`, so it is small) and the
-decision above is withdrawn, or the test is rewritten to capture through the
-portal. It cannot just stay red.
+### The one thing left: the headless backend has no renderer
 
-**`output-order` is a gap, and the error message is wrong about it.**
-`output.test_add` is rejected with "headless hotplug is only available under
-`--headless`" — from `crates/viewport/src/apply.rs:215`, which rejects it
-unconditionally, including under `--headless`. `crates/viewport/src/headless.rs`
-opens by saying `output.test_add` is what the headless backend exists for. One
-of those two files is lying and it is `apply.rs`.
+With the global bound the tests get further and stop at `FAIL a frame arrives`,
+and the reason is structural rather than anything to do with capture.
+`service_image_capture` — and `service_screencopy` beside it — are called from
+`winit.rs` and `udev.rs`, because the copy has to happen where the renderer is.
+The headless backend does not have one. It is a virtual output and a timer
+standing in for vblank; `pending_capture_frames` fills up and nothing ever
+drains it.
 
-Without it there is no way to hotplug a second headless output, so nothing
-tests the enumeration order that `output.layout` hands the shell — the order
-the bar's fallbacks read as "leftmost display". That order has been wrong
-before.
+wlroots did not have this problem: `WLR_BACKENDS=headless` with
+`WLR_RENDERER=vulkan` still gives a headless compositor a real renderer, which
+is why the C build passes these tests on a machine with no display, and why the
+CI job points `VK_DRIVER_FILES` at lavapipe.
+
+So the last parity item is: give the headless backend a renderer. It is not a
+capture change, and it is worth stating as its own piece of work — an offscreen
+`VulkanRenderer` with no DRM node to hang off, plus a render pass for outputs
+nothing scans out. Everything that composites without a display depends on it:
+these two tests, `session-lock-crash`, and any future test that wants to look
+at a pixel in CI.
 
 ### The checklist
 
 `src/` and `include/` can be deleted when, and not before:
 
 1. `capture.test.sh`, `lock.test.sh` and `output-order.test.sh` pass against
-   the Rust binary — or a test has been rewritten, with the reason recorded
-   here, as `capture-tiling` will need.
+   the Rust binary. `output-order` does; the other two wait on the headless
+   renderer above.
 2. `meson.build` no longer needs to build a compositor: the `shell-*`, `kiosk`
    and `unit` targets stay, and the C sources they compile against are gone or
    moved.
