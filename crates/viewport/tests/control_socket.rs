@@ -264,6 +264,13 @@ fn a_layer_shell_client_is_configured_with_a_real_size() {
     let mut trace = String::new();
     let _ = child.stderr.take().unwrap().read_to_string(&mut trace);
     let _ = child.wait();
+    // libwayland colours its trace, and it does not ask whether anything is
+    // watching: the request name and its arguments come out with an escape
+    // between them, so `.configure(` never appears literally and this test
+    // failed on a compositor that was answering perfectly. Stripped rather
+    // than matched around, because every future assertion here would have to
+    // remember.
+    let trace = strip_ansi(&trace);
 
     assert!(
         trace.contains("zwlr_layer_surface_v1"),
@@ -468,4 +475,29 @@ fn quit_stops_the_compositor() {
         assert!(Instant::now() < deadline, "still running after quit");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Escape sequences out of a captured trace.
+///
+/// Only the CSI sequences libwayland emits — enough for a log, not a terminal
+/// emulator.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // ESC [ ... <final byte in @..~>
+        if chars.next() != Some('[') {
+            continue;
+        }
+        for c in chars.by_ref() {
+            if ('@'..='~').contains(&c) {
+                break;
+            }
+        }
+    }
+    out
 }

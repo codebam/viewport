@@ -233,6 +233,11 @@ pub struct ViewportState {
     /// nothing to wake the loop for it. Without this a window updates only
     /// when something unrelated happens to cause a frame.
     pub needs_render: bool,
+    /// Outputs that need a frame, when it is known which ones do. `needs_render`
+    /// means all of them, and stays the answer for anything that changes the
+    /// desktop as a whole; this is for the cases that know better, such as a
+    /// pacing barrier released for one screen's windows.
+    pub dirty_outputs: std::collections::HashSet<smithay::reexports::drm::control::crtc::Handle>,
 
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
@@ -775,6 +780,7 @@ impl ViewportState {
             cursor_warned: false,
             last_layout: None,
             needs_render: false,
+            dirty_outputs: std::collections::HashSet::new(),
 
             color_management,
             compositor_state,
@@ -3813,7 +3819,10 @@ impl ViewportState {
             }
         };
 
-        for window in self.space.elements() {
+        // Only the windows on this output. Walking every window once per
+        // output did the same work twice on a two-monitor desktop and made a
+        // release on one screen look like a reason to draw the other.
+        for window in self.space.elements_for_output(output) {
             window.with_surfaces(&release);
         }
         for layer in smithay::desktop::layer_map_for_output(output).layers() {
@@ -3929,7 +3938,10 @@ impl ViewportState {
             let outputs: Vec<Output> = state.space.outputs().cloned().collect();
             let mut released = false;
             for output in &outputs {
-                released |= state.released_frame_barriers(output, at);
+                if state.released_frame_barriers(output, at) {
+                    released = true;
+                    state.mark_output_dirty(output);
+                }
             }
             // Only when something was let go. Releasing a barrier applies the
             // commit it was blocking, and an applied commit is damage, and
@@ -3938,7 +3950,6 @@ impl ViewportState {
             // refresh rate for as long as one client used the protocol, which
             // on a second monitor with nothing on it is pure heat.
             if released {
-                state.needs_render = true;
                 state.barrier_quiet = 0;
             } else {
                 state.barrier_quiet = state.barrier_quiet.saturating_add(1);
@@ -3954,6 +3965,27 @@ impl ViewportState {
         }) {
             tracing::warn!("arming the barrier tick: {e}");
             self.barrier_tick = false;
+        }
+    }
+
+    /// Ask for a frame on one output rather than all of them.
+    ///
+    /// A pacing barrier belongs to a window, a window is on a screen, and the
+    /// other screen has no reason to be redrawn for it. Falls back to marking
+    /// everything if the output has no CRTC here, which is the nested backend
+    /// and the moment between a monitor arriving and being brought up.
+    pub fn mark_output_dirty(&mut self, output: &Output) {
+        let crtc = self.udev.as_ref().and_then(|udev| {
+            udev.surfaces
+                .iter()
+                .find(|(_, surface)| &surface.output == output)
+                .map(|(crtc, _)| *crtc)
+        });
+        match crtc {
+            Some(crtc) => {
+                self.dirty_outputs.insert(crtc);
+            }
+            None => self.needs_render = true,
         }
     }
 
@@ -4127,7 +4159,9 @@ impl ViewportState {
     /// happened, so a commit that touches five subsurfaces costs one frame
     /// instead of five.
     pub fn render_if_needed(&mut self) {
-        if !std::mem::take(&mut self.needs_render) {
+        let all = std::mem::take(&mut self.needs_render);
+        let some = std::mem::take(&mut self.dirty_outputs);
+        if !all && some.is_empty() {
             return;
         }
         // Drawing while the screens are off would queue a frame, and a queued
@@ -4140,7 +4174,13 @@ impl ViewportState {
         let crtcs: Vec<_> = self
             .udev
             .as_ref()
-            .map(|udev| udev.surfaces.keys().copied().collect())
+            .map(|udev| {
+                udev.surfaces
+                    .keys()
+                    .copied()
+                    .filter(|crtc| all || some.contains(crtc))
+                    .collect()
+            })
             .unwrap_or_default();
         for crtc in crtcs {
             self.render(crtc);
