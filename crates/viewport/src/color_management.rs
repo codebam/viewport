@@ -59,7 +59,18 @@ pub struct ColorManagementState {
     /// consulted the output's state either.
     outputs: Vec<(WpColorManagementOutputV1, WlOutput)>,
     /// The per-surface feedback objects, for the same reason.
-    feedback: Vec<(WpColorManagementSurfaceFeedbackV1, WlSurface)>,
+    feedback: Vec<Feedback>,
+}
+
+/// One client's feedback object, and the last answer it was given.
+#[derive(Debug)]
+struct Feedback {
+    object: WpColorManagementSurfaceFeedbackV1,
+    surface: WlSurface,
+    /// The identity last announced, so an unchanged answer is not re-sent.
+    /// A client is entitled to fetch a new description on every event, and
+    /// this runs on every layout.
+    last: Option<u32>,
 }
 
 impl ColorManagementState {
@@ -77,7 +88,7 @@ impl ColorManagementState {
     /// Drop the objects whose client has gone.
     fn reap(&mut self) {
         self.outputs.retain(|(object, _)| object.is_alive());
-        self.feedback.retain(|(object, _)| object.is_alive());
+        self.feedback.retain(|entry| entry.object.is_alive());
     }
 }
 
@@ -331,6 +342,35 @@ mod tests {
     }
 
     #[test]
+    fn a_window_across_two_screens_belongs_to_the_one_it_is_most_on() {
+        // The rule `output_of_surface` applies, on the geometry rather than
+        // through the compositor: a window wide enough to cross a monitor edge
+        // overlaps both, and the first one listed is not an answer — it flips
+        // with output order and calls a window nine tenths on the HDR screen
+        // an SDR one.
+        use smithay::utils::{Physical, Rectangle};
+        let dp1: Rectangle<i32, Physical> = Rectangle::new((0, 0).into(), (2560, 1440).into());
+        let dp3: Rectangle<i32, Physical> = Rectangle::new((2560, 0).into(), (2560, 1440).into());
+
+        let overlap = |window: Rectangle<i32, Physical>, screen: Rectangle<i32, Physical>| {
+            screen
+                .intersection(window)
+                .map(|shared| shared.size.w as i64 * shared.size.h as i64)
+                .unwrap_or(0)
+        };
+
+        // Mostly on the right-hand screen: 560 wide on one, 840 on the other.
+        let straddling: Rectangle<i32, Physical> =
+            Rectangle::new((2000, 100).into(), (1400, 800).into());
+        assert!(overlap(straddling, dp3) > overlap(straddling, dp1));
+
+        // Entirely on the left: the other screen must not be the answer at all.
+        let left: Rectangle<i32, Physical> = Rectangle::new((100, 100).into(), (800, 600).into());
+        assert!(overlap(left, dp1) > 0);
+        assert_eq!(overlap(left, dp3), 0);
+    }
+
+    #[test]
     fn the_same_description_always_has_the_same_identity() {
         // A client compares identities to decide whether its surface already
         // matches the output. A fresh number per request makes every match
@@ -433,7 +473,11 @@ impl Dispatch<WpColorManagerV1, ()> for ViewportState {
             wp_color_manager_v1::Request::GetSurfaceFeedback { id, surface } => {
                 let object = data_init.init(id, surface.clone());
                 state.color_management.reap();
-                state.color_management.feedback.push((object, surface));
+                state.color_management.feedback.push(Feedback {
+                    object,
+                    surface,
+                    last: None,
+                });
             }
 
             wp_color_manager_v1::Request::GetOutput { id, output } => {
@@ -969,14 +1013,67 @@ impl ViewportState {
     /// Walks to the root the way `mark_dirty_for_surface` does: a client asks
     /// about the subsurface it puts video in, and only the toplevel above it
     /// has been placed on an output.
+    ///
+    /// A window wide enough to cross a monitor edge is on *both*, so "the"
+    /// output is the one it is most on. Taking whichever came first instead
+    /// answers with an SDR screen for a window that is nine tenths on the HDR
+    /// one, and the answer flips depending on the order outputs happen to sit
+    /// in — which is not something a client can be expected to work around.
     fn output_of_surface(&self, surface: &WlSurface) -> Option<Output> {
         let mut root = surface.clone();
         while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
             root = parent;
         }
-        self.views
-            .find_by_surface(&root)
-            .and_then(|view| self.space.outputs_for_element(&view.window).into_iter().next())
+        let view = self.views.find_by_surface(&root)?;
+        let geometry = self.space.element_geometry(&view.window)?;
+        self.space
+            .outputs_for_element(&view.window)
+            .into_iter()
+            .max_by_key(|output| {
+                self.space
+                    .output_geometry(output)
+                    .and_then(|area| area.intersection(geometry))
+                    // i64, because a 4K width times a 4K height overflows the
+                    // i32 these are measured in.
+                    .map(|shared| shared.size.w as i64 * shared.size.h as i64)
+                    .unwrap_or(0)
+            })
+    }
+
+    /// Tell each surface holding feedback whether the colour it should draw in
+    /// has changed.
+    ///
+    /// Moving a window from an SDR screen to an HDR one changes the answer to
+    /// `get_preferred` without any output itself changing, so
+    /// `notify_output_colour` never fires and a client that asked once would
+    /// go on drawing for the screen it started on. Cheap to run on every
+    /// layout: the list holds one entry per surface that asked, which is the
+    /// video players and nothing else.
+    pub fn notify_surface_colour(&mut self) {
+        self.color_management.reap();
+
+        let current: Vec<(usize, u32)> = self
+            .color_management
+            .feedback
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let output = self.output_of_surface(&entry.surface);
+                let description = output_description(self, output.as_ref());
+                (index, identity_for(&description))
+            })
+            .collect();
+
+        for (index, identity) in current {
+            let Some(entry) = self.color_management.feedback.get_mut(index) else {
+                continue;
+            };
+            if entry.last == Some(identity) {
+                continue;
+            }
+            entry.last = Some(identity);
+            entry.object.preferred_changed(identity);
+        }
     }
 
     /// Tell everyone holding a colour-management object that an output's
@@ -1007,22 +1104,9 @@ impl ViewportState {
             }
         }
 
-        // Feedback is per surface, so only the surfaces on this output have
-        // anything new to be told.
-        let feedback: Vec<_> = self
-            .color_management
-            .feedback
-            .iter()
-            .filter(|(_, surface)| {
-                self.output_of_surface(surface)
-                    .is_some_and(|output| output.name() == name)
-            })
-            .map(|(object, surface)| (object.clone(), surface.clone()))
-            .collect();
-        for (object, surface) in feedback {
-            let output = self.output_of_surface(&surface);
-            let description = output_description(self, output.as_ref());
-            object.preferred_changed(identity_for(&description));
-        }
+        // Feedback is per surface, and the surfaces that care are the ones on
+        // this output — which is what re-evaluating them all works out, while
+        // staying silent for the rest.
+        self.notify_surface_colour();
     }
 }

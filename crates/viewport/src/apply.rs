@@ -352,6 +352,13 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
             state.space.raise_element(&window, false);
         }
     }
+
+    // A window that just crossed onto another monitor is being shown in a
+    // different colour space than the one it was drawing for. Nothing else
+    // notices: the outputs themselves did not change, so `notify_output_colour`
+    // never runs, and a client that asked once would keep the answer it got on
+    // the screen it started on.
+    state.notify_surface_colour();
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {
