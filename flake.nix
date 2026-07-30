@@ -6,6 +6,23 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
+  nixConfig = {
+    extra-substituters = [
+      "https://codebam-nix-cache.storage.googleapis.com"
+      "https://storage.googleapis.com/codebam-nix-cache"
+    ];
+    extra-trusted-substituters = [
+      "https://codebam-nix-cache.storage.googleapis.com"
+      "https://storage.googleapis.com/codebam-nix-cache"
+    ];
+    # Signed by the key gcp-cache-fill pulls from GCP Secret Manager
+    # (secret: nix-cache-signing-key). Without this the bucket's narinfos are
+    # rejected as unsigned and the substituter is silently useless.
+    extra-trusted-public-keys = [
+      "codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0="
+    ];
+  };
+
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
@@ -431,12 +448,38 @@
       # as unsigned. That failure is silent, and looks exactly like a cache
       # that has nothing in it.
       # ----------------------------------------------------------------------
-      # Kept as a no-op so an existing import does not break. The GCS bucket
-      # it configured belonged to the GCP builder, which is gone: it only ever
-      # held runtime closures, so a `dev` output was never in it and anything
-      # compiling against WebKit rebuilt it from source anyway. Builds happen
-      # on nixbuild.net now, which caches what it builds, outputs and all.
-      nixosModules.cache = { ... }: { };
+      nixosModules.cache = { config, lib, ... }:
+        let
+          cfg = config.programs.viewport;
+          substituters = [
+            "https://codebam-nix-cache.storage.googleapis.com"
+            "https://storage.googleapis.com/codebam-nix-cache"
+          ];
+        in
+        {
+          # `or false` because either module can be imported without the other,
+          # so either option may be undefined here.
+          config = lib.mkIf ((cfg.enable or false) || (cfg.portals.enable or false)) {
+            nix.settings = {
+              extra-substituters = substituters;
+              trusted-substituters = substituters;
+              # Signed by the key gcp-cache-fill pulls from GCP Secret Manager
+              # (secret: nix-cache-signing-key).
+              extra-trusted-public-keys = [
+                "codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0="
+              ];
+            };
+          };
+        };
+
+      # ----------------------------------------------------------------------
+      # NixOS module: session entry + seatd, so viewport can be picked from a
+      # display manager or launched straight from a TTY.
+      # ----------------------------------------------------------------------
+      # Portal wiring, on its own so it can be imported without adopting the
+      # session module. Getting screen sharing working is four lines of routing
+      # that nobody should have to rediscover: a browser's getDisplayMedia
+      # simply rejects, and no log anywhere names a portal or a desktop.
       nixosModules.portal = { config, lib, pkgs, ... }:
         {
           imports = [ self.nixosModules.cache ];
