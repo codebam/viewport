@@ -39,7 +39,7 @@ libc = "0.2"
 # honour — the async flip flag lives inside the atomic commit smithay
 # builds, and nothing upstream reaches it.
 git = "https://github.com/codebam/smithay.git"
-rev = "94de05432fe0ad24b43fe1e91cf1493587b62e86"
+rev = "05f547517656d938af9c49305919619a49f50b2f"
 default-features = false
 # wayland_frontend is what ImportDmaWl and ImportMemWl need — they take a
 # wl_buffer. It is behind a feature so the renderer stays usable without a

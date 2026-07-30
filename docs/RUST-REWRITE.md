@@ -237,8 +237,9 @@ cannot see the workspaces, which are the shell's and are not published —
 ## Why smithay is a fork
 
 `crates/*/Cargo.toml` point at github.com/codebam/smithay rather than upstream,
-for two patches: `DrmCompositor::set_allow_tearing`, and a hook that lets the
-compositor see keys from a virtual keyboard.
+for three patches: `DrmCompositor::set_allow_tearing`, a hook that lets the
+compositor see keys from a virtual keyboard, and one line of errno in the
+drm-lease pre-flight.
 
 The second is `VirtualKeyboardKeyFilter`, on branch `virtual-keyboard-filter`.
 Keys from `zwp_virtual_keyboard_v1` went straight to the focused client, so
@@ -252,6 +253,13 @@ keymap it uploaded, and against the seat's it would mean another key — and bot
 the modified symbol and the one at level 0, because a chord is written
 "Mod4+Shift+q" and the key part of it is `q`. The default keeps nothing, so a
 compositor that does not implement it sees no change. Also upstreamable.
+
+The third is smaller: `drm_lease`'s pre-flight opens the primary node and drops
+master, tolerating EINVAL as "this fd never had master". On kernel 7.1 with
+amdgpu that case answers EACCES instead — permission checked before state — so
+no lease global was created at all here. Measured by calling DROP_MASTER on a
+fresh fd directly. A fd that really is master still drops it, so tolerating
+EACCES hides nothing.
 
 Tearing is an asynchronous page flip — the frame lands as soon as the hardware
 takes it rather than at the next vblank — and the flag for it lives inside the
@@ -308,15 +316,20 @@ otherwise upstreamable, and the fork should go away when it lands.
 Nothing in the compositor's own behaviour, as far as this list knows. What is
 left is protocols nobody here has needed yet:
 
-- `drm-lease` — handing an output to a client whole, which is a VR headset.
-  In Smithay, and nobody here has one to test against.
-
 `ext-workspace` is done, and was the interesting one: the compositor did not
 know what the workspaces *were*. They are the shell's, so the IPC grew a
 message in each direction — `workspace.list` in, `workspace.request` out — and
 `crates/viewport/src/workspace.rs` relays between that and the protocol. The
 shell remains the only thing that decides what a workspace is or which one is
 showing. `cargo run -p viewport --example workspaces` is what a bar sees.
+
+`drm-lease` is done too, with the caveat that nobody here has a headset: a
+connector marked `non-desktop` is not driven as a monitor but offered for
+lease, and a client that takes one gets the connector, a free CRTC and that
+CRTC's primary plane. `cargo run -p viewport --example leases` shows what a VR
+runtime sees — on a machine with no headset, a device that hands over a DRM fd
+and offers nothing, which is the right answer rather than a failure. The lease
+*request* path has never run against real hardware and is the part to distrust.
 
 Done since, all four by delegation to what Smithay ships:
 `xdg-toplevel-icon` — a window says what it looks like in a list, and the icon

@@ -136,6 +136,19 @@ pub struct Surface {
 
 /// Everything the DRM backend holds.
 pub struct Udev {
+    /// `wp-drm-lease-v1`: handing a whole connector to a client.
+    ///
+    /// A headset is not a monitor — the compositor cannot composite for it,
+    /// because the client is the only thing that knows how to warp for the
+    /// lenses and when to submit for the display's own timing. So the
+    /// connector is leased out whole and the compositor stops touching it.
+    ///
+    /// `None` if the global could not be created, which is not fatal: it
+    /// leaves a session where nothing can lease, and everything else works.
+    pub lease_state: Option<smithay::wayland::drm_lease::DrmLeaseState>,
+    /// Leases handed out. Dropping one revokes it, so they are kept here for
+    /// as long as the client holds them.
+    pub leases: Vec<smithay::wayland::drm_lease::DrmLease>,
     pub session: LibSeatSession,
     pub renderer: VulkanRenderer,
     pub manager: Manager,
@@ -255,7 +268,22 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         state.shell_ping = Some(ping);
     }
 
+    // The lease global, one per DRM device. Non-fatal if it cannot be made:
+    // no client can lease, and everything else is unaffected.
+    let lease_state = match smithay::wayland::drm_lease::DrmLeaseState::new::<ViewportState>(
+        &state.display_handle,
+        &card,
+    ) {
+        Ok(lease_state) => Some(lease_state),
+        Err(e) => {
+            tracing::warn!("no drm-lease global on {card:?}: {e}");
+            None
+        }
+    };
+
     state.udev = Some(Udev {
+        lease_state,
+        leases: Vec::new(),
         session,
         renderer,
         manager,
@@ -467,6 +495,15 @@ impl ViewportState {
             .filter(|info| info.state() == connector::State::Connected)
             .collect();
 
+        // Worked out here, while the device is borrowed for reading, because
+        // offering one for lease needs the lease state — which is a mutable
+        // borrow of the same `udev`.
+        let leasable: std::collections::HashSet<connector::Handle> = connectors
+            .iter()
+            .filter(|info| non_desktop(device, info.handle()))
+            .map(|info| info.handle())
+            .collect();
+
         tracing::info!("{} connected connector(s)", connectors.len());
 
         // CRTCs already driving something. Without this the second monitor
@@ -482,6 +519,22 @@ impl ViewportState {
                 connector.interface().as_str(),
                 connector.interface_id()
             );
+
+            // A headset says so with the `non-desktop` property, and the right
+            // thing to do with one is nothing: no output, no mode set, no
+            // compositing. It is offered for lease instead, and a client that
+            // knows how to drive it takes the whole connector.
+            if leasable.contains(&connector.handle()) {
+                if let Some(lease) = udev.lease_state.as_mut() {
+                    tracing::info!("{name}: non-desktop, offered for lease");
+                    lease.add_connector::<ViewportState>(
+                        connector.handle(),
+                        name.clone(),
+                        format!("{name} (non-desktop)"),
+                    );
+                }
+                continue;
+            }
 
             // Already up, from an earlier pass.
             if udev
@@ -1141,4 +1194,28 @@ fn free_crtc(
 /// libseat error.
 pub fn available() -> bool {
     Path::new("/dev/dri").exists()
+}
+
+/// Whether a connector is something the compositor should not drive.
+///
+/// The `non-desktop` property is how a head-mounted display says it is not a
+/// monitor: driving it as one puts the desktop on a screen strapped to
+/// somebody's face, at the wrong projection, and takes the connector away from
+/// the client that could have used it properly. Absent property means an
+/// ordinary display, which is every other connector on every other machine.
+fn non_desktop(device: &DrmDevice, connector: connector::Handle) -> bool {
+    use smithay::reexports::drm::control::Device as _;
+
+    let Ok(properties) = device.get_properties(connector) else {
+        return false;
+    };
+    for (handle, value) in properties {
+        let Ok(info) = device.get_property(handle) else {
+            continue;
+        };
+        if info.name().to_str() == Ok("non-desktop") {
+            return value != 0;
+        }
+    }
+    false
 }

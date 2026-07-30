@@ -935,3 +935,105 @@ impl crate::workspace::WorkspaceOutputs for ViewportState {
         self.space.outputs().cloned().collect()
     }
 }
+
+/// Handing a connector to a client whole, with `wp-drm-lease-v1`.
+///
+/// The client is a VR runtime: it knows the headset's timing and its lens
+/// distortion, and the compositor knows neither, so the honest thing is to
+/// stop pretending it is a monitor and lease it the hardware. A lease is a
+/// connector, a CRTC to drive it, and that CRTC's primary plane; dropping the
+/// `DrmLease` revokes it, which is why they are held for as long as the client
+/// keeps them.
+///
+/// Untested against a headset — there is not one here. The connectors offered
+/// are those marked `non-desktop`, and on a machine with none of those this
+/// advertises a global with nothing in it, which is the correct description of
+/// a machine with nothing to lease.
+impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
+    fn drm_lease_state(
+        &mut self,
+        _node: smithay::backend::drm::DrmNode,
+    ) -> &mut smithay::wayland::drm_lease::DrmLeaseState {
+        // One device, so one state — and this is only reached for a node that
+        // has a global, which only the device that made one has.
+        self.udev
+            .as_mut()
+            .and_then(|udev| udev.lease_state.as_mut())
+            .expect("a lease request for a node with no lease state")
+    }
+
+    fn lease_request(
+        &mut self,
+        _node: smithay::backend::drm::DrmNode,
+        request: smithay::wayland::drm_lease::DrmLeaseRequest,
+    ) -> Result<
+        smithay::wayland::drm_lease::DrmLeaseBuilder,
+        smithay::wayland::drm_lease::LeaseRejected,
+    > {
+        use smithay::reexports::drm::control::Device as _;
+        use smithay::wayland::drm_lease::{DrmLeaseBuilder, LeaseRejected};
+
+        let Some(udev) = self.udev.as_mut() else {
+            return Err(LeaseRejected::default());
+        };
+        let device = udev.manager.device();
+        let mut builder = DrmLeaseBuilder::new(device);
+
+        // A CRTC that is not already driving one of this compositor's outputs,
+        // and is legal for the connector asking. Handing over a CRTC that is
+        // scanning out the desktop would take the desktop with it.
+        let taken: std::collections::HashSet<_> = udev.surfaces.keys().copied().collect();
+        let Ok(resources) = device.resource_handles() else {
+            return Err(LeaseRejected::default());
+        };
+
+        for connector in request.connectors {
+            let Ok(info) = device.get_connector(connector, false) else {
+                return Err(LeaseRejected::default());
+            };
+            let crtc = info
+                .encoders()
+                .iter()
+                .filter_map(|handle| device.get_encoder(*handle).ok())
+                .flat_map(|encoder| resources.filter_crtcs(encoder.possible_crtcs()))
+                .find(|crtc| !taken.contains(crtc));
+            let Some(crtc) = crtc else {
+                tracing::warn!("a lease was asked for with no free crtc to drive it");
+                return Err(LeaseRejected::default());
+            };
+            let Ok(planes) = device.planes(&crtc) else {
+                return Err(LeaseRejected::default());
+            };
+            // The claim is what stops the compositor's own allocator taking
+            // the plane back while the client has it.
+            let Some(claim) = device.claim_plane(planes.primary[0].handle, crtc) else {
+                tracing::warn!("the primary plane for a leased crtc could not be claimed");
+                return Err(LeaseRejected::default());
+            };
+
+            builder.add_connector(connector);
+            builder.add_crtc(crtc);
+            builder.add_plane(planes.primary[0].handle, claim);
+        }
+
+        Ok(builder)
+    }
+
+    fn new_active_lease(
+        &mut self,
+        _node: smithay::backend::drm::DrmNode,
+        lease: smithay::wayland::drm_lease::DrmLease,
+    ) {
+        tracing::info!("a drm lease is active: {}", lease.id());
+        if let Some(udev) = self.udev.as_mut() {
+            udev.leases.push(lease);
+        }
+    }
+
+    fn lease_destroyed(&mut self, _node: smithay::backend::drm::DrmNode, lease_id: u32) {
+        tracing::info!("a drm lease ended: {lease_id}");
+        if let Some(udev) = self.udev.as_mut() {
+            udev.leases.retain(|lease| lease.id() != lease_id);
+        }
+    }
+}
