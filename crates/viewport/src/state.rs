@@ -3929,34 +3929,34 @@ impl ViewportState {
                     wake(true);
                 }
             }
-            // Current *and* pending. A commit that is blocked on its own
-            // barrier never applies, so that barrier never reaches the current
-            // half — and it is exactly the barrier that has to be signalled to
-            // let the commit through. Taking only the current one releases the
-            // first frame and then waits forever for a commit that is waiting
-            // for it, which is what a terminal frozen on its first frame looks
-            // like from the outside.
-            let mut fifo = states.cached_state.get::<FifoBarrierCachedState>();
-            // Signalled where they lie, rather than taken out. The barrier is
-            // an Arc, so every copy of it is the same flag — and the copy the
-            // *next* commit will wait on is the one in the pending half.
-            // Taking the current one leaves that copy behind, still unsignalled
-            // if it was cloned after the take.
-            if let Some(barrier) = fifo.current().barrier.as_ref() {
-                if !barrier.is_signaled() {
-                    barrier.signal();
-                    tracing::trace!("fifo: a barrier released");
-                    released.set(true);
-                    wake(true);
-                }
-            }
-            if let Some(barrier) = fifo.pending().barrier.as_ref() {
-                if !barrier.is_signaled() {
-                    barrier.signal();
-                    tracing::trace!("fifo: a barrier released");
-                    released.set(true);
-                    wake(true);
-                }
+            // The current half, taken out. This is what `wayland::fifo`
+            // documents and what anvil does, and both halves of that matter.
+            //
+            // Taken, because a barrier left in place is found again on the next
+            // round, already signalled, and reported as nothing released —
+            // which is what `QUIET` counts, and enough of those stop the clock
+            // under a client that is still waiting.
+            //
+            // Current only, because pending is where the pre-commit hook looks
+            // for the barrier to hand the *next* commit, and it skips blocking
+            // outright if what it finds is already signalled
+            // (`wayland/fifo/mod.rs:257`). Signalling pending is therefore not
+            // a belt-and-braces release: it is switching the pacing off. The
+            // barrier a blocked commit is waiting on is not lost by leaving
+            // pending alone — Smithay carries it in the transaction and puts it
+            // in the current half when that commit applies, which is the round
+            // this signals it in.
+            let barrier = states
+                .cached_state
+                .get::<FifoBarrierCachedState>()
+                .current()
+                .barrier
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.signal();
+                tracing::trace!("fifo: a barrier released");
+                released.set(true);
+                wake(true);
             }
         };
 
@@ -4129,7 +4129,14 @@ impl ViewportState {
         // needs: the deadlines that could not be seen have all passed, or
         // there were none. A commit is the only thing that can make a new one,
         // and a commit arms this again.
-        if self.barrier_quiet < Self::QUIET {
+        //
+        // Unless something is still waiting. `QUIET` is a backstop for
+        // commit-timing, whose deadlines Smithay keeps private so an empty
+        // round cannot be told from a finished one — but fifo *can* be seen,
+        // and a fifo client's blocked commit never reaches `commit()` to arm
+        // this again. Letting the count stop the clock under one is how a
+        // terminal ends up waiting on a compositor that has stopped looking.
+        if self.barrier_quiet < Self::QUIET || self.barriers_outstanding() {
             self.arm_barrier_tick();
         }
     }

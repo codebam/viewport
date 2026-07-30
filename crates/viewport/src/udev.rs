@@ -909,6 +909,22 @@ impl ViewportState {
             surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
         };
 
+        // Which screen each surface was actually drawn on, written down before
+        // anything asks.
+        //
+        // `surface_primary_scanout_output` reads state that nothing else in
+        // this compositor writes, so without this it answers `None` for every
+        // surface — and a surface that is on no output is left out of the
+        // feedback entirely. The result is a compositor that advertises
+        // `wp_presentation` and never once says a frame was presented.
+        //
+        // For a client that waits on frame callbacks that is invisible. For one
+        // pacing itself on presentation it is fatal, and that is every client
+        // that presents through Mesa: rio committed nine frames here and was
+        // told about none of them, then stopped. Measured 2026-07-30 with
+        // WAYLAND_DEBUG on a frozen terminal — nine commits, zero `presented`.
+        self.update_scanout_outputs(output, states);
+
         let mut feedback =
             smithay::desktop::utils::OutputPresentationFeedback::new(output);
         for window in self.space.elements() {
@@ -932,6 +948,66 @@ impl ViewportState {
             );
         }
         feedback
+    }
+
+    /// Record which output each surface was drawn on for this frame.
+    ///
+    /// Smithay keeps this per surface and offers it back through
+    /// `surface_primary_scanout_output`, which presentation feedback, dmabuf
+    /// feedback and frame-callback throttling all ask. Nothing wrote it, so all
+    /// three were working from `None`.
+    ///
+    /// The comparison is Smithay's default: of the outputs a surface is on, the
+    /// one showing the most of it wins, and a surface put straight on a plane
+    /// beats a composited one. That is the answer a client pacing itself wants
+    /// — "where is this actually being shown" — rather than "where might it be".
+    fn update_scanout_outputs(
+        &self,
+        output: &smithay::output::Output,
+        states: &smithay::backend::renderer::element::RenderElementStates,
+    ) {
+        use smithay::backend::renderer::element::default_primary_scanout_output_compare;
+        use smithay::desktop::utils::update_surface_primary_scanout_output;
+
+        for window in self.space.elements() {
+            window.with_surfaces(|surface, surface_states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    surface_states,
+                    None,
+                    states,
+                    default_primary_scanout_output_compare,
+                );
+            });
+        }
+        for layer in smithay::desktop::layer_map_for_output(output).layers() {
+            layer.with_surfaces(|surface, surface_states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    output,
+                    surface_states,
+                    None,
+                    states,
+                    default_primary_scanout_output_compare,
+                );
+            });
+        }
+        for lock in self.lock_surfaces.values() {
+            smithay::desktop::utils::with_surfaces_surface_tree(
+                lock.wl_surface(),
+                |surface, surface_states| {
+                    update_surface_primary_scanout_output(
+                        surface,
+                        output,
+                        surface_states,
+                        None,
+                        states,
+                        default_primary_scanout_output_compare,
+                    );
+                },
+            );
+        }
     }
 
     /// A frame finished scanning out, so the next one may be drawn.
