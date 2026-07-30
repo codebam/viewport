@@ -2230,6 +2230,8 @@ dependencies = [
  "viewport-ipc",
  "viewport-vulkan",
  "viewport-web",
+ "wayland-client",
+ "wayland-protocols",
  "xcursor",
  "zbus",
  "zvariant",

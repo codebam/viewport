@@ -38,6 +38,10 @@ async-channel = "2"
 pkg-config = "0.3"
 
 [dev-dependencies]
+# For `examples/workspaces.rs`, which is a client rather than the compositor:
+# what an external bar sees through ext-workspace-v1.
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 serde_json.workspace = true
 
 # Pinned to a revision rather than the 0.7.0 release: the release predates the

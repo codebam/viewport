@@ -443,6 +443,10 @@ pub struct ViewportState {
     /// another client's behalf is parented to the window that asked for it
     /// rather than floating loose.
     pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
+    /// The shell's workspaces, mirrored for `ext-workspace-v1`. Empty until
+    /// the shell says otherwise, which is the truthful description of a
+    /// desktop whose workspaces nobody has published.
+    pub workspace_state: crate::workspace::WorkspaceState,
     /// Held because dropping it takes the global with it.
     pub _security_context_state: smithay::wayland::security_context::SecurityContextState,
     /// What a window says it looks like in a list. Held because dropping it
@@ -618,6 +622,7 @@ impl ViewportState {
         let xdg_activation_state =
             smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
         let xdg_foreign_state = smithay::wayland::xdg_foreign::XdgForeignState::new::<Self>(&dh);
+        let workspace_state = crate::workspace::WorkspaceState::new::<Self>(&dh);
         let security_context_state =
             smithay::wayland::security_context::SecurityContextState::new::<Self, _>(
                 &dh,
@@ -804,6 +809,7 @@ impl ViewportState {
             lock_surfaces: std::collections::HashMap::new(),
             xdg_activation_state,
             xdg_foreign_state,
+            workspace_state,
             _security_context_state: security_context_state,
             _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
             _xwayland_keyboard_grab_state: xwayland_keyboard_grab_state,

@@ -116,6 +116,20 @@ pub enum Request {
     #[serde(rename = "notification.expire")]
     NotificationExpire { id: u32 },
 
+    /// The shell's workspaces, whole, whenever they change.
+    ///
+    /// Workspaces are the shell's: it decides how many there are, what they
+    /// are called and which is on which screen, and the compositor has never
+    /// needed to know. `ext-workspace-v1` is a client asking to be told, so
+    /// the shell says, and the compositor relays. Sent whole rather than as a
+    /// diff because the shell already has the list and reconciling two
+    /// halves of one is how they drift apart.
+    #[serde(rename = "workspace.list")]
+    WorkspaceList {
+        #[serde(default)]
+        workspaces: Vec<Workspace>,
+    },
+
     #[serde(rename = "output.configure")]
     OutputConfigure(OutputConfigure),
 
@@ -233,6 +247,31 @@ pub struct Resolved {
     pub box_: Box,
     pub scale: f64,
     pub clip: Option<Box>,
+}
+
+/// One of the shell's workspaces, as an outside client sees it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Workspace {
+    /// The shell's own identifier, stable for the life of the workspace. It
+    /// goes out on the wire as `ext_workspace_handle_v1.id`, which is what a
+    /// bar uses to tell one workspace from another across a restart.
+    pub id: String,
+    /// What to show. Absent is allowed by the protocol; a name nobody set is
+    /// better empty than invented.
+    #[serde(default)]
+    pub name: String,
+    /// Which screen it belongs to, by output name. Absent means it belongs to
+    /// no screen in particular, which the protocol expresses as a workspace in
+    /// no group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default)]
+    pub urgent: bool,
+    /// The protocol's third state: exists, is not shown, is not urgent.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

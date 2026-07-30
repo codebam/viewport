@@ -29,6 +29,7 @@ socat - UNIX:$VIEWPORT_SOCKET
 | `view.removed` | `id` |
 | `view.focused` | `id` (`0` means the shell itself holds focus) |
 | `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `hdr`, `hdr_capable`, `scale`, `transform`, `modes[]` |
+| `workspace.request` | `action` (`activate`, `deactivate`, `assign`, `remove`, `create`), optional `id`, `name`, `output` — a client outside the shell asked for something through `ext-workspace-v1`. See [Workspaces](#workspaces) |
 | `shell.command` | `command`, `args[]` — a keybinding forwarded for the shell to act on |
 | `session.restore` | `state` (whatever was last saved, or empty) |
 | `status.update` | `cpu`, `memory`, `load`, `net_rx`, `net_tx`, `disk_free`, `disk_total` |
@@ -65,6 +66,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `notification.dismiss` | `id` |
 | `notification.expire` | `id` |
 | `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |
+| `workspace.list` | `workspaces[]` with `id`, `name`, optional `output`, `active`, `urgent`, `hidden` — the whole list, whenever it changes. See [Workspaces](#workspaces) |
 | `output.confirm` | — cancels the pending revert; see below |
 | `output.hdr` | optional `name` (default: active output), optional `enabled` (absent toggles) |
 | `output.active` | `name` — which output the shell considers active |
@@ -364,3 +366,50 @@ The chosen mode is logged at startup with its refresh rate, which the line used
 to omit — the omission is how a monitor sits at 60Hz unnoticed. Applied when an
 output appears; `output.configure` or any `wlr-output-management` client
 changes it afterwards.
+
+
+## Workspaces
+
+Workspaces are the shell's. The compositor does not create them, name them or
+switch them, and until `workspace.list` arrives it does not know they exist —
+which is why `ext_workspace_manager_v1` on a fresh session publishes an empty
+world rather than a wrong one.
+
+The shell sends the whole list whenever it changes:
+
+```json
+{"type":"workspace.list","workspaces":[
+  {"id":"1","name":"one","output":"DP-1","active":true},
+  {"id":"2","name":"two","output":"DP-1"},
+  {"id":"3","name":"three","output":"DP-3","active":true,"urgent":true}]}
+```
+
+`id` is the shell's own and has to be stable for the life of the workspace: it
+goes out as `ext_workspace_handle_v1.id`, which is how a bar tells one
+workspace from another across its own restart. `output` names the screen, and
+becomes the group the workspace sits in; a workspace with no output is in no
+group, which the protocol allows. Whole rather than a diff, because the shell
+already has the list and reconciling two halves of one is how they drift.
+
+Requests come back the other way. A bar that clicks a workspace produces:
+
+```json
+{"type":"workspace.request","action":"activate","id":"2"}
+```
+
+and the shell does whatever that means to it — nothing has happened in the
+compositor yet. Whatever the shell decides shows up in the next
+`workspace.list`, which is what the bar redraws from. A shell that ignores
+these messages publishes a list that cannot be changed from outside, which is
+an honest description of a shell that has not implemented them.
+
+`create` carries `name` and `output` instead of `id`, because the workspace it
+asks for does not exist yet. `assign` carries both `id` and the `output` to
+move it to.
+
+To see what a bar sees:
+
+```sh
+cargo run -p viewport --example workspaces
+cargo run -p viewport --example workspaces -- --activate 2
+```

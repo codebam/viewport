@@ -42,6 +42,29 @@ pub enum Event {
     #[serde(rename = "view.focused")]
     ViewFocused { id: u32 },
 
+    /// A client outside the shell asked for something to happen to a
+    /// workspace, through `ext-workspace-v1`.
+    ///
+    /// Forwarded rather than acted on: the workspaces are the shell's, so a
+    /// request to switch to one is a request *of the shell*, which does it and
+    /// says so with the next `workspace.list`. A shell that ignores these is a
+    /// desktop where an external bar can list workspaces and not switch them,
+    /// which is the honest result of ignoring them.
+    ///
+    /// `action` is one of `activate`, `deactivate`, `assign`, `remove` or
+    /// `create`. `id` names the workspace for all but `create`, which carries
+    /// `name` and the `output` to make it on.
+    #[serde(rename = "workspace.request")]
+    WorkspaceRequest {
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
+
     #[serde(rename = "config")]
     Config(Config),
 

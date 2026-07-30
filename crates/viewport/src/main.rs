@@ -42,6 +42,7 @@ mod status;
 mod tearing;
 mod udev;
 mod views;
+mod workspace;
 mod watchdog;
 mod winit;
 

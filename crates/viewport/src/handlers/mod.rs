@@ -878,3 +878,60 @@ impl smithay::wayland::security_context::SecurityContextHandler for ViewportStat
         }
     }
 }
+
+/// The workspaces, which belong to the shell.
+///
+/// Nothing is decided here: a request from a client outside the shell is
+/// forwarded as `workspace.request`, the shell does whatever it does with it,
+/// and the next `workspace.list` says what happened. A shell that ignores the
+/// message publishes a list nobody can change, which is a fair description of
+/// a shell that has not implemented it.
+impl crate::workspace::WorkspaceHandler for ViewportState {
+    fn workspace_state(&mut self) -> &mut crate::workspace::WorkspaceState {
+        &mut self.workspace_state
+    }
+
+    fn workspace_asked(&mut self, ask: crate::workspace::Ask) {
+        use crate::workspace::Ask;
+        let event = match ask {
+            Ask::Activate(id) => viewport_ipc::event::Event::WorkspaceRequest {
+                action: "activate".to_owned(),
+                id: Some(id),
+                name: None,
+                output: None,
+            },
+            Ask::Deactivate(id) => viewport_ipc::event::Event::WorkspaceRequest {
+                action: "deactivate".to_owned(),
+                id: Some(id),
+                name: None,
+                output: None,
+            },
+            Ask::Remove(id) => viewport_ipc::event::Event::WorkspaceRequest {
+                action: "remove".to_owned(),
+                id: Some(id),
+                name: None,
+                output: None,
+            },
+            Ask::Assign { id, output } => viewport_ipc::event::Event::WorkspaceRequest {
+                action: "assign".to_owned(),
+                id: Some(id),
+                name: None,
+                output: Some(output),
+            },
+            Ask::Create { output, name } => viewport_ipc::event::Event::WorkspaceRequest {
+                action: "create".to_owned(),
+                id: None,
+                name: Some(name),
+                output: Some(output),
+            },
+        };
+        tracing::debug!("workspace request out: {event:?}");
+        self.notify(&event);
+    }
+}
+
+impl crate::workspace::WorkspaceOutputs for ViewportState {
+    fn workspace_outputs(&self) -> Vec<smithay::output::Output> {
+        self.space.outputs().cloned().collect()
+    }
+}

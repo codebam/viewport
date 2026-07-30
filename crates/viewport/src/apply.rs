@@ -136,6 +136,29 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             state.notify(&event);
         }
 
+        Request::WorkspaceList { workspaces } => {
+            // The shell's list, whole. Publishing it is the compositor's only
+            // part in workspaces; see `crate::workspace`.
+            tracing::info!(
+                "workspaces: {} from the shell{}",
+                workspaces.len(),
+                workspaces
+                    .iter()
+                    .map(|w| format!(
+                        " [{} {:?}{}{}]",
+                        w.id,
+                        w.name,
+                        w.output.as_deref().map(|o| format!(" on {o}")).unwrap_or_default(),
+                        if w.active { " active" } else { "" }
+                    ))
+                    .collect::<String>()
+            );
+            let outputs: Vec<_> = state.space.outputs().cloned().collect();
+            let dh = state.display_handle.clone();
+            state
+                .workspace_state
+                .set::<ViewportState>(&dh, &outputs, workspaces);
+        }
         Request::OutputConfigure(config) => output_configure(state, config),
 
         Request::OutputActive { name } => state.active_output = Some(name),

@@ -183,3 +183,14 @@ load-bearing rather than optional, each for a non-obvious reason:
 | `ext-image-copy-capture` + `wlr-screencopy` | screenshots from inside the session — the only way to see the desktop once it owns the display |
 | `virtual-keyboard` | `wtype`, accessibility tools, and injecting keystrokes in tests |
 | `primary-selection` | middle-click paste |
+
+## ext-workspace-v1
+
+Implemented in `crates/viewport/src/workspace.rs`, and a relay rather than a
+source: the workspaces belong to the shell, arrive over `workspace.list`, and a
+client's request leaves as `workspace.request`. Wire bindings come from
+`wayland-protocols`' staging set, so there is no XML here for it.
+
+`ext_workspace_manager_v1.commit` is honoured as a batch — requests are held
+against the manager that received them and forwarded in order — because a bar
+that assigns a workspace and activates it in one commit means both.

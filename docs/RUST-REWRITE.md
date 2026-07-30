@@ -287,14 +287,15 @@ otherwise upstreamable, and the fork should go away when it lands.
 Nothing in the compositor's own behaviour, as far as this list knows. What is
 left is protocols nobody here has needed yet:
 
-- `ext-workspace` — external bars cannot see the workspaces. Not in Smithay
-  either, and not merely unwritten: the compositor does not know what the
-  workspaces *are*. They are the shell's, kept in `data/shell/*.js`, and the
-  IPC carries no message that names them. Publishing them means the shell
-  telling the compositor its list first, which is a protocol change before it
-  is a Wayland one.
 - `drm-lease` — handing an output to a client whole, which is a VR headset.
   In Smithay, and nobody here has one to test against.
+
+`ext-workspace` is done, and was the interesting one: the compositor did not
+know what the workspaces *were*. They are the shell's, so the IPC grew a
+message in each direction — `workspace.list` in, `workspace.request` out — and
+`crates/viewport/src/workspace.rs` relays between that and the protocol. The
+shell remains the only thing that decides what a workspace is or which one is
+showing. `cargo run -p viewport --example workspaces` is what a bar sees.
 
 Done since, all four by delegation to what Smithay ships:
 `xdg-toplevel-icon` — a window says what it looks like in a list, and the icon
