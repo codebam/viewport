@@ -49,6 +49,16 @@ depends=(
 optdepends=(
   'xorg-xwayland: X11 clients'
   'xdg-desktop-portal-gtk: the portal interfaces the compositor does not answer itself'
+  # The renderer is Vulkan and there is no fallback to GLES or pixman, so a
+  # machine with the loader and no driver behind it fails with "Failed to load
+  # the Vulkan library" — which names the library rather than the missing
+  # driver. Real hardware has one of these already; a virtual machine usually
+  # does not.
+  'vulkan-radeon: AMD hardware'
+  'vulkan-intel: Intel hardware'
+  'nvidia-utils: NVIDIA hardware'
+  'vulkan-virtio: a virtual machine with 3D acceleration'
+  'vulkan-swrast: a virtual machine without it, in software'
 )
 
 makedepends=(
