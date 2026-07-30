@@ -43,6 +43,8 @@ use crate::views::{Views, NO_VIEW};
 /// Getting this wrong is a session with no shell at all: grey where the
 /// wallpaper and the bar should be, and a load error naming a file in whatever
 /// directory the login shell started in.
+// Only the web engine's paths use this; dead, honestly, without it.
+#[cfg_attr(not(feature = "wpe"), allow(dead_code))]
 pub fn shipped_asset(relative: &str) -> String {
     if let Ok(exe) = std::env::current_exe() {
         // One more parent than looks right: a wrapped binary is
@@ -166,6 +168,8 @@ pub struct ViewportState {
     /// Whether opening a Vulkan renderer for the shell's copy has already
     /// failed, so it is not attempted once per frame for the rest of the
     /// session.
+    // Only the web engine's paths use this; dead, honestly, without it.
+    #[cfg_attr(not(feature = "wpe"), allow(dead_code))]
     pub shell_copy_refused: bool,
     /// The size the shell was last told it is, so a layout change that does
     /// not alter it costs nothing.
@@ -257,13 +261,15 @@ pub struct ViewportState {
     /// Held rather than dropped, because dropping it takes the global down —
     /// and without the global the hint is never set, so every dialog is back to
     /// being inferred from whether it has a parent.
-    pub xdg_dialog_state: smithay::wayland::shell::xdg::dialog::XdgDialogState,
+    pub _xdg_dialog_state: smithay::wayland::shell::xdg::dialog::XdgDialogState,
     /// xdg-system-bell: a client asking the desktop to make a noise.
-    pub system_bell_state: smithay::wayland::xdg_system_bell::XdgSystemBellState,
+    pub _system_bell_state: smithay::wayland::xdg_system_bell::XdgSystemBellState,
     /// xdg-toplevel-tag: what a client calls its own windows, so a session can
     /// tell two of them apart.
-    pub toplevel_tag_state: smithay::wayland::xdg_toplevel_tag::XdgToplevelTagManager,
+    pub _toplevel_tag_state: smithay::wayland::xdg_toplevel_tag::XdgToplevelTagManager,
     /// wp-pointer-warp: a client moving the pointer inside its own surface.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub pointer_warp_state: smithay::wayland::pointer_warp::PointerWarpManager,
     /// wlr-layer-shell: bars, launchers, notification daemons. Not the
     /// shell's business — a layer surface asks for an edge, not a layout.
@@ -279,6 +285,8 @@ pub struct ViewportState {
     pub ext_data_control_state:
         smithay::wayland::selection::ext_data_control::DataControlState,
     /// Something asking the session not to go idle — a video player.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
     /// Clients that want to know when the session went idle, rather than
     /// asking the compositor to act on it.
@@ -290,23 +298,35 @@ pub struct ViewportState {
 
     /// Buffer scaling and cropping, which a client uses to present a video at
     /// one size from a buffer of another without a copy.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub viewporter_state: smithay::wayland::viewporter::ViewporterState,
     /// When a frame actually reached the screen, which is what a video player
     /// synchronises audio against.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub presentation_state: smithay::wayland::presentation::PresentationState,
     /// A one-pixel buffer, so a client can fill a region with a colour without
     /// allocating one.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub single_pixel_state:
         smithay::wayland::single_pixel_buffer::SinglePixelBufferState,
     /// Fractional scaling: a client drawing at 1.25 rather than at 1 or 2.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub fractional_scale_state:
         smithay::wayland::fractional_scale::FractionalScaleManagerState,
 
     /// Pointer capture, and the relative motion a game reads instead of a
     /// position. Both are needed together: a lock with no relative motion
     /// leaves a game unable to turn at all.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub pointer_constraints_state:
         smithay::wayland::pointer_constraints::PointerConstraintsState,
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub relative_pointer_state:
         smithay::wayland::relative_pointer::RelativePointerManagerState,
     /// ext-foreign-toplevel-list-v1: the window list, for anything outside the
@@ -316,6 +336,8 @@ pub struct ViewportState {
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     /// wlr-screencopy: screenshots and recording. Smithay implements it
     /// nowhere, so the dispatch is in `screencopy.rs`.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub screencopy_state: crate::screencopy::ScreencopyState,
     /// cursor-shape-v1: a client naming a cursor rather than drawing one.
     ///
@@ -355,6 +377,8 @@ pub struct ViewportState {
     /// ext-image-capture-source-v1 and ext-image-copy-capture-v1: the
     /// standardised replacement for wlr-screencopy, and what a current
     /// xdg-desktop-portal reaches for first.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub image_capture_source_state:
         smithay::wayland::image_capture_source::ImageCaptureSourceState,
     pub output_capture_source_state:
@@ -464,10 +488,14 @@ pub struct ViewportState {
     /// — the part that was missing the first time — `tick_barriers` keeps a
     /// clock running while any barrier is outstanding, because a blocked
     /// commit produces no damage and this compositor draws on damage.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub fifo_state: Option<smithay::wayland::fifo::FifoManagerState>,
     /// wp-commit-timing: a client asking for a commit to take effect at a
     /// particular time rather than at once. Blocked the same way, released in
     /// the same place, and kept alive by the same tick.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub commit_timing_state: Option<smithay::wayland::commit_timing::CommitTimingManagerState>,
     /// Whether a barrier tick is already armed, so a hundred commits do not
     /// arm a hundred timers.
@@ -528,9 +556,13 @@ pub struct ViewportState {
     pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
     /// zxdg_decoration_manager_v1. Held only so the global outlives the
     /// display; every decision it drives is in the handler.
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub xdg_decoration_state:
         smithay::wayland::shell::xdg::decoration::XdgDecorationState,
     pub shm_state: ShmState,
+    // Kept alive rather than read: dropping the state withdraws the global.
+    #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
@@ -551,11 +583,11 @@ impl ViewportState {
         let color_management =
             crate::color_management::ColorManagementState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
-        let xdg_dialog_state =
+        let _xdg_dialog_state =
             smithay::wayland::shell::xdg::dialog::XdgDialogState::new::<Self>(&dh);
-        let system_bell_state =
+        let _system_bell_state =
             smithay::wayland::xdg_system_bell::XdgSystemBellState::new::<Self>(&dh);
-        let toplevel_tag_state =
+        let _toplevel_tag_state =
             smithay::wayland::xdg_toplevel_tag::XdgToplevelTagManager::new::<Self>(&dh);
         let pointer_warp_state =
             smithay::wayland::pointer_warp::PointerWarpManager::new::<Self>(&dh);
@@ -838,9 +870,9 @@ impl ViewportState {
             color_management,
             compositor_state,
             xdg_shell_state,
-            xdg_dialog_state,
-            system_bell_state,
-            toplevel_tag_state,
+            _xdg_dialog_state,
+            _system_bell_state,
+            _toplevel_tag_state,
             pointer_warp_state,
             layer_shell_state,
             screencopy_state,
@@ -1040,7 +1072,6 @@ impl ViewportState {
             // start from the surface's — which is what `Space::element_under`
             // returns and what reading the map location instead got wrong, by
             // exactly the width of the shadow.
-            use smithay::desktop::space::SpaceElement as _;
             let render_location = location - window.geometry().loc;
             if let Some((surface, at)) =
                 window.surface_under(pos - render_location.to_f64(), WindowSurfaceType::ALL)
@@ -2669,7 +2700,7 @@ impl ViewportState {
 
     /// Carry out what the portal asked for.
     pub fn handle_screencast(&mut self, message: crate::screencast::portal::Message) {
-        use crate::screencast::portal::{Message, Started};
+        use crate::screencast::portal::Message;
 
         match message {
             Message::Start { types, reply } => self.open_screencast_picker(types, reply),
@@ -3485,7 +3516,6 @@ impl ViewportState {
                 .into(),
             damage: self.shell_damage.snapshot(),
             id: self.shell_element_id.clone(),
-            overlay_ids: self.shell_overlay_ids.clone(),
         });
         #[cfg(not(feature = "wpe"))]
         let shell = None;
@@ -3903,7 +3933,7 @@ impl ViewportState {
             std::cell::RefCell::new(Vec::new());
 
         let release = |surface: &WlSurface, states: &smithay::wayland::compositor::SurfaceData| {
-            let mut wake = |signalled: bool| {
+            let wake = |signalled: bool| {
                 if !signalled {
                     return;
                 }

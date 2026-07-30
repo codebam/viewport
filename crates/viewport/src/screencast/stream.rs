@@ -101,21 +101,6 @@ impl Drop for Memory {
     }
 }
 
-/// PipeWire's own file descriptor, so calloop can wait on it.
-///
-/// Wrapped because calloop wants something that owns its descriptor and
-/// PipeWire's belongs to the loop; this borrows it for the lifetime of the
-/// source, which is the lifetime of the connection.
-pub struct LoopFd(pub std::os::fd::RawFd);
-
-impl std::os::fd::AsFd for LoopFd {
-    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        // SAFETY: the descriptor belongs to the PipeWire loop, which outlives
-        // the event source: dropping the connection removes the source first.
-        unsafe { std::os::fd::BorrowedFd::borrow_raw(self.0) }
-    }
-}
-
 /// A stream a client is watching.
 pub struct Stream {
     pub stream: pw::stream::StreamRc,

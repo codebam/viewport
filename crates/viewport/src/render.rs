@@ -73,8 +73,6 @@ pub struct Shell {
     pub damage: DamageSnapshot<i32, BufferCoord>,
     /// Stable for the life of the compositor, for the same reason.
     pub id: Id,
-    /// One per copy drawn above the windows, each needing an id of its own.
-    pub overlay_ids: Vec<Id>,
 }
 
 /// One window, and everything about drawing it that is not the window itself.

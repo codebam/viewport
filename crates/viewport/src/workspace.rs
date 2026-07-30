@@ -110,10 +110,6 @@ impl WorkspaceState {
         Self::default()
     }
 
-    pub fn workspaces(&self) -> &[Workspace] {
-        &self.workspaces
-    }
-
     /// Replace the list with the shell's, and tell everyone watching.
     ///
     /// One `done` per client at the end: that is the protocol's transaction

@@ -14,8 +14,6 @@
 // monitor in is ordinary and unplugging a GPU is not.
 
 use std::collections::HashMap;
-use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{anyhow, Context as _, Result};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
@@ -27,13 +25,6 @@ use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType}
 use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::texture::TextureRenderElement;
-use smithay::backend::renderer::element::AsRenderElements as _;
-#[cfg(feature = "wpe")]
-use smithay::backend::renderer::element::Kind;
-#[cfg(feature = "wpe")]
-use smithay::backend::renderer::Renderer as _;
-use smithay::desktop::Window;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent};
@@ -41,7 +32,7 @@ use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::drm::control::{connector, crtc, Device as _, ModeTypeFlags};
 use smithay::reexports::rustix::fs::OFlags;
-use smithay::utils::{DeviceFd, Physical, Point, Rectangle};
+use smithay::utils::DeviceFd;
 
 use viewport_vulkan::{Device as VulkanDevice, VulkanRenderer};
 
@@ -184,10 +175,6 @@ impl Gpu {
             Gpu::Placeholder => Default::default(),
         }
     }
-
-    pub fn is_vulkan(&self) -> bool {
-        matches!(self, Gpu::Vulkan(_))
-    }
 }
 
 pub struct Udev {
@@ -208,7 +195,7 @@ pub struct Udev {
     pub renderer: Gpu,
     pub manager: Manager,
     pub surfaces: HashMap<crtc::Handle, Surface>,
-    pub node: DrmNode,
+    pub _node: DrmNode,
     /// True while the outputs are off because the session went idle.
     pub blanked: bool,
     /// False between a VT switch away and the switch back. Every device fd is
@@ -390,7 +377,7 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
         renderer,
         manager,
         surfaces: HashMap::new(),
-        node: card,
+        _node: card,
         blanked: false,
         active: true,
     });
@@ -413,7 +400,6 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
     // Now that there is a renderer, clients can be told which formats they may
     // allocate — and on which GPU.
     {
-        use smithay::backend::renderer::ImportDma as _;
         let formats = state
             .udev
             .as_ref()
@@ -434,7 +420,6 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
     // Allocation happens there, and it is the node a client may open without
     // being the session's master.
     {
-        use smithay::backend::renderer::ImportDma as _;
         let formats: Vec<_> = state
             .udev
             .as_ref()
@@ -850,47 +835,6 @@ impl ViewportState {
         for crtc in started {
             self.render(crtc);
         }
-    }
-
-    /// Layer surfaces for one output, split above and below the windows.
-    ///
-    /// Overlay and top go in front — a lock screen, a launcher, a bar — and
-    /// background and bottom go behind. Both are returned in output-local
-    /// physical coordinates, which is the space every element is drawn in.
-    fn layers_for(
-        &self,
-        crtc: &crtc::Handle,
-        scale: f64,
-    ) -> (
-        Vec<(smithay::desktop::LayerSurface, Point<i32, Physical>)>,
-        Vec<(smithay::desktop::LayerSurface, Point<i32, Physical>)>,
-    ) {
-        use smithay::wayland::shell::wlr_layer::Layer;
-
-        let Some(output) = self
-            .udev
-            .as_ref()
-            .and_then(|udev| udev.surfaces.get(crtc))
-            .map(|surface| surface.output.clone())
-        else {
-            return (Vec::new(), Vec::new());
-        };
-
-        let map = smithay::desktop::layer_map_for_output(&output);
-        let mut above = Vec::new();
-        let mut below = Vec::new();
-        for layer in map.layers() {
-            let Some(geometry) = map.layer_geometry(layer) else {
-                continue;
-            };
-            let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
-            let entry = (layer.clone(), location);
-            match layer.layer() {
-                Layer::Overlay | Layer::Top => above.push(entry),
-                Layer::Background | Layer::Bottom => below.push(entry),
-            }
-        }
-        (above, below)
     }
 
 
@@ -1571,15 +1515,6 @@ fn free_crtc(
         }
     }
     None
-}
-
-/// Whether a DRM device is present at all.
-///
-/// Used to decide whether the udev backend is worth trying before the session
-/// is opened, so a machine with no GPU gets a clear message rather than a
-/// libseat error.
-pub fn available() -> bool {
-    Path::new("/dev/dri").exists()
 }
 
 /// Whether a connector is something the compositor should not drive.

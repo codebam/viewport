@@ -58,8 +58,6 @@ impl ScreencopyState {
 
 /// What the compositor has to be able to do for a copy to happen.
 pub trait ScreencopyHandler {
-    fn screencopy_state(&mut self) -> &mut ScreencopyState;
-
     /// Remember that this frame wants a copy of `state.output`.
     ///
     /// The copy itself happens the next time that output is drawn, because

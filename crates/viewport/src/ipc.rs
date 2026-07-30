@@ -12,7 +12,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
@@ -122,10 +122,6 @@ impl Ipc {
             clients: HashMap::new(),
             next_client: 1,
         })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Send to every connected client.

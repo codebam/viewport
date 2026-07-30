@@ -36,6 +36,10 @@ impl Framer {
     }
 
     /// Bytes held back waiting for a newline.
+    ///
+    /// Only the tests read this — it is how they check that a partial line is
+    /// actually being kept rather than dropped — but that is a real reader.
+    #[allow(dead_code)]
     pub fn pending(&self) -> usize {
         self.buf.len()
     }

@@ -39,7 +39,7 @@ use smithay::reexports::wayland_server::{
 };
 use smithay::wayland::compositor::with_states;
 
-pub use viewport_vulkan::color::{description_for, SurfaceColor};
+pub use viewport_vulkan::color::SurfaceColor;
 use viewport_vulkan::color::{Description, Primaries, TransferFunction};
 
 /// The version of the protocol this implements.

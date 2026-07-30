@@ -22,7 +22,7 @@ use smithay::reexports::wayland_protocols_wlr::output_power_management::v1::serv
     zwlr_output_power_v1::{self, Mode, ZwlrOutputPowerV1},
 };
 use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
 };
 
 /// What the compositor has to be able to do for the request to mean anything.

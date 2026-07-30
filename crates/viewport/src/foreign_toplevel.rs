@@ -140,49 +140,6 @@ impl ForeignToplevelState {
         }
     }
 
-    /// Which outputs it is on.
-    ///
-    /// Sent as the difference rather than the whole set: the protocol has
-    /// enter and leave, not "these are the outputs", so re-sending every enter
-    /// would have a taskbar counting one window twice.
-    pub fn set_outputs(&mut self, id: u32, outputs: &[Output]) {
-        let Some(toplevel) = self.toplevels.get_mut(&id) else {
-            return;
-        };
-        let gone: Vec<Output> = toplevel
-            .outputs
-            .iter()
-            .filter(|output| !outputs.contains(output))
-            .cloned()
-            .collect();
-        let arrived: Vec<Output> = outputs
-            .iter()
-            .filter(|output| !toplevel.outputs.contains(output))
-            .cloned()
-            .collect();
-        if gone.is_empty() && arrived.is_empty() {
-            return;
-        }
-        toplevel.outputs = outputs.to_vec();
-
-        for handle in self.handles.get(&id).into_iter().flatten() {
-            let Some(client) = handle.client() else {
-                continue;
-            };
-            for output in &gone {
-                for resource in output.client_outputs(&client) {
-                    handle.output_leave(&resource);
-                }
-            }
-            for output in &arrived {
-                for resource in output.client_outputs(&client) {
-                    handle.output_enter(&resource);
-                }
-            }
-            handle.done();
-        }
-    }
-
     /// It is gone.
     ///
     /// `closed` rather than a silent destroy: a client that is not told keeps

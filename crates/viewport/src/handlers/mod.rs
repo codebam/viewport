@@ -108,9 +108,6 @@ impl smithay::input::tablet::TabletSeatHandler for ViewportState {
 impl OutputHandler for ViewportState {}
 
 impl crate::screencopy::ScreencopyHandler for ViewportState {
-    fn screencopy_state(&mut self) -> &mut crate::screencopy::ScreencopyState {
-        &mut self.screencopy_state
-    }
 
     fn queue_copy(
         &mut self,

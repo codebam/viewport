@@ -15,13 +15,15 @@ use anyhow::{Context, Result};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::{
-    Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, TextureMapping,
+    Bind, Color32F, ExportMem, Frame, Offscreen, Renderer,
 };
 use smithay::utils::{Buffer as BufferCoord, Physical, Point, Rectangle, Size, Transform};
 
 use viewport_vulkan::{VulkanRenderer, VulkanTexture};
 
 /// Where to write the shell's own buffer, if anywhere.
+// Only the web engine's paths use this; dead, honestly, without it.
+#[cfg_attr(not(feature = "wpe"), allow(dead_code))]
 pub fn target() -> Option<std::path::PathBuf> {
     std::env::var_os("VIEWPORT_DUMP_SHELL").map(std::path::PathBuf::from)
 }
@@ -97,6 +99,8 @@ where
 ///
 /// A full-screen copy per shell frame is the price. The shell paints when the
 /// desktop changes rather than continuously, so it is not a per-frame cost.
+// Only the web engine's paths use this; dead, honestly, without it.
+#[cfg_attr(not(feature = "wpe"), allow(dead_code))]
 pub fn copy_texture(
     renderer: &mut VulkanRenderer,
     texture: &VulkanTexture,
@@ -124,6 +128,8 @@ pub fn copy_texture(
 }
 
 /// Allocate an image the compositor owns, for [`copy_texture`].
+// Only the web engine's paths use this; dead, honestly, without it.
+#[cfg_attr(not(feature = "wpe"), allow(dead_code))]
 pub fn owned_image(
     renderer: &mut VulkanRenderer,
     size: Size<i32, Physical>,
@@ -141,6 +147,8 @@ pub fn owned_image(
 /// otherwise work be refused, so it usually cannot be read back directly.
 /// Drawing it into an offscreen we allocated is the same thing an output does
 /// and is always available.
+// Only the web engine's paths use this; dead, honestly, without it.
+#[cfg_attr(not(feature = "wpe"), allow(dead_code))]
 pub fn shell_frame(
     renderer: &mut VulkanRenderer,
     texture: &VulkanTexture,

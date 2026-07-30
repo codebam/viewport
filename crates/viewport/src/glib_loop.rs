@@ -45,6 +45,9 @@ unsafe impl Sync for GSourceFuncs {}
 /// `sizeof(GSource)` for itself, so anything after that is ours. The header is
 /// opaque, hence the byte array — its size comes from GLib at runtime rather
 /// than being assumed here.
+// Never constructed: this only names the shape GLib allocates for us, and the
+// allocation comes from `g_source_new`.
+#[allow(dead_code)]
 #[repr(C)]
 struct WaylandSource {
     // Filled by GLib. Sized at runtime; see SOURCE_SIZE.
