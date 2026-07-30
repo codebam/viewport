@@ -366,6 +366,91 @@ work a binding or answer the screen-share chooser; the fork carries a hook
 (`VirtualKeyboardKeyFilter`) that offers each key to the compositor first, with
 the keysym resolved against the virtual keyboard's own keymap.
 
+## Parity, and when the C tree goes
+
+"Every Rust module lands with the C file it replaces named in its header
+comment. They get deleted once parity lands" is above, and until now *parity*
+was not defined anywhere. Here is the definition, chosen because it is the one
+that can be run rather than argued about.
+
+**The C integration tests are the specification.** `tests/capture.test.sh`,
+`tests/lock.test.sh` and `tests/output-order.test.sh` each take the compositor
+binary as their first argument. They start it `--headless`, drive it over the
+control socket with real clients, and check what came back — they do not care
+which language wrote it. Point them at the Rust binary and the answer is a
+number.
+
+Making that possible needed one change: the scripts find the socket by grepping
+`WAYLAND_DISPLAY=` out of the startup log, because libwayland picks the name
+and there is no way to ask for a particular one. `src/main.c:304` prints it in
+that shape and the Rust build printed only the bare name, so every one of these
+tests failed at "the compositor did not come up" without ever reaching what it
+meant to test. `crates/viewport/src/main.rs` now prints the same shape.
+
+The three JS tests (`shell-*`, `kiosk`) are not part of this. They exercise
+`data/shell/`, which is the product and outlives both compositors.
+
+### Where it actually stands
+
+Run against both binaries on one machine, 2026-07-30 — an AMD workstation, no
+display attached to the headless runs:
+
+| test | C | Rust |
+|---|---|---|
+| `capture-tiling` | pass | **fail** |
+| `output-order` | pass | **fail** |
+| `session-lock-crash` | fail | fail |
+
+`session-lock-crash` fails for both and is not evidence of anything: it wants a
+renderer that a headless run on this machine does not give it. CI runs it
+against lavapipe, which is where its result means something.
+
+The other two are real, and they are different in kind.
+
+**`capture-tiling` is a decision, not a gap.** The test client binds
+`ext_foreign_toplevel_image_capture_source_manager_v1` and the Rust build does
+not advertise it. That is deliberate and already written down at
+`crates/viewport/src/handlers/mod.rs:255`: a source is a thing that can be
+captured, this compositor offers outputs, and a window captured apart from the
+desktop loses the frame the shell drew around it — which is not what the picker
+showed the user. Windows are offered through the screencast portal instead,
+which composites them with their frames.
+
+So this test encodes a C-era answer that the rewrite reversed on purpose.
+Before `src/` goes, one of two things has to happen: the rewrite advertises the
+global (Smithay ships `ToplevelCaptureSourceState`, so it is small) and the
+decision above is withdrawn, or the test is rewritten to capture through the
+portal. It cannot just stay red.
+
+**`output-order` is a gap, and the error message is wrong about it.**
+`output.test_add` is rejected with "headless hotplug is only available under
+`--headless`" — from `crates/viewport/src/apply.rs:215`, which rejects it
+unconditionally, including under `--headless`. `crates/viewport/src/headless.rs`
+opens by saying `output.test_add` is what the headless backend exists for. One
+of those two files is lying and it is `apply.rs`.
+
+Without it there is no way to hotplug a second headless output, so nothing
+tests the enumeration order that `output.layout` hands the shell — the order
+the bar's fallbacks read as "leftmost display". That order has been wrong
+before.
+
+### The checklist
+
+`src/` and `include/` can be deleted when, and not before:
+
+1. `capture.test.sh`, `lock.test.sh` and `output-order.test.sh` pass against
+   the Rust binary — or a test has been rewritten, with the reason recorded
+   here, as `capture-tiling` will need.
+2. `meson.build` no longer needs to build a compositor: the `shell-*`, `kiosk`
+   and `unit` targets stay, and the C sources they compile against are gone or
+   moved.
+3. The sanitizer job has an equivalent. ASan over the C compositor is what
+   caught the output-outlives-its-surface family of bugs more than once;
+   Rust rules out the use-after-free but not the logic that led to it, so what
+   replaces that job is a question to answer rather than a box to tick.
+4. `.github/workflows/ci.yml` no longer has a job gated on `COMPOSITOR_CI`
+   because it needs wlroots.
+
 ## Notifications, and where they come from
 
 Nothing on a Linux desktop sends a notification to the compositor: they go over

@@ -90,13 +90,20 @@ impl Compositor {
     /// Waits for it: the line is written during startup and a client pointed
     /// at a display that does not exist yet fails for a reason that has
     /// nothing to do with what is being tested.
+    ///
+    /// `WAYLAND_DISPLAY=<name>`, which is the same thing the shell scripts in
+    /// tests/ grep for and the same shape the C build prints — one contract
+    /// for both suites rather than two. Matching a bare word starting with
+    /// `wayland-` would also hit Smithay's own `Created new socket
+    /// name=Some("wayland-2")`, which is a different line that happens to
+    /// agree.
     fn wayland_display(&self) -> Option<String> {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             if let Ok(log) = std::fs::read_to_string(&self.log) {
                 if let Some(name) = log
                     .split_whitespace()
-                    .find(|word| word.starts_with("wayland-"))
+                    .find_map(|word| word.strip_prefix("WAYLAND_DISPLAY="))
                 {
                     return Some(
                         name.trim_end_matches(|c: char| !c.is_alphanumeric())

@@ -184,8 +184,15 @@ fn main() -> Result<()> {
     // DISPLAY. It arrives asynchronously; the variable is set when it does.
     state.start_xwayland(&event_loop.handle());
 
+    // `WAYLAND_DISPLAY=<name>` spelled out, not just the name: the socket is
+    // chosen by libwayland and there is no way to ask for a particular one, so
+    // the integration tests in tests/ start the compositor and grep this line
+    // out of its log to find out where to connect. The C build prints it in
+    // the same shape, which is what lets tests/capture.test.sh and
+    // tests/lock.test.sh run against either binary unchanged — and that is the
+    // form parity has to take before src/ can be deleted.
     tracing::info!(
-        "viewport {} on {} (smithay rewrite)",
+        "viewport {} on WAYLAND_DISPLAY={} (smithay rewrite)",
         env!("CARGO_PKG_VERSION"),
         state.socket_name.to_string_lossy()
     );
