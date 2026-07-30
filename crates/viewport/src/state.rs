@@ -4052,7 +4052,7 @@ impl ViewportState {
     /// Near enough because this paces a fallback clock rather than the display
     /// itself: a barrier released a millisecond late is a frame late at worst,
     /// and the alternative is no frame ever.
-    fn frame_interval(&self) -> std::time::Duration {
+    pub fn frame_interval(&self) -> std::time::Duration {
         self.space
             .outputs()
             .filter_map(|output| output.current_mode())

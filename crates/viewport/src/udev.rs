@@ -825,6 +825,30 @@ impl ViewportState {
         if let Err(e) = surface.drm_output.frame_submitted() {
             tracing::warn!("frame_submitted: {e}");
         }
+
+        // Anything blocked waiting for this frame: a client pacing itself with
+        // wp-fifo, or timing a commit with wp-commit-timing.
+        //
+        // Here rather than in `render`, because this is where the frame
+        // actually reached the screen — which is what those protocols are
+        // about — and because releasing on every render attempt is a loop:
+        // the release applies the commit it was holding, the commit marks the
+        // output dirty, the render releases again. With a terminal that paces
+        // itself that was nine thousand renders a second on a screen where
+        // nothing was moving.
+        let output = self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.surfaces.get(&crtc))
+            .map(|surface| surface.output.clone());
+        if let Some(output) = output {
+            let at = self.start_time.elapsed();
+            self.release_frame_barriers(&output, at);
+        }
+        // And if anything is still waiting, keep a clock on it: a blocked
+        // commit makes no damage, so without this nothing would draw again.
+        self.arm_barrier_tick();
+
         self.render(crtc);
     }
 
@@ -1077,40 +1101,33 @@ impl ViewportState {
             }
         }
 
-        // Anything blocked waiting for this frame: a client pacing itself with
-        // wp-fifo, or timing a commit with wp-commit-timing. Released before
-        // the frame callbacks, because both are about *this* frame having
-        // happened.
-        self.release_frame_barriers(&output, start);
-        // And if anything is still waiting — a barrier set by the commit this
-        // frame just drew — keep a clock on it. Without this the next blocked
-        // commit produces no damage and nothing draws again.
-        self.arm_barrier_tick();
-
-        // Frame callbacks, and only when a frame actually went out.
+        // Frame callbacks, at most one per refresh per surface.
         //
-        // A callback means "the frame you drew has been dealt with, draw the
-        // next one". Sending it after a render that found nothing to draw
-        // tells a client to paint a frame that changes nothing, whose commit
-        // marks the output dirty, whose render finds nothing to draw, which
-        // sends another callback: a loop between compositor and client that
-        // runs as fast as both can manage. With a browser and a terminal open
-        // that was ten thousand renders a second and a core of CPU, all of it
-        // logged as "nothing to draw".
+        // A callback means "draw the next one", and sending one after a render
+        // that found nothing to draw invites a frame that changes nothing,
+        // whose commit marks the output dirty, whose render finds nothing to
+        // draw, which sends another callback — a loop between compositor and
+        // client that runs as fast as both can manage. With a browser and a
+        // terminal open that was ten thousand renders a second and a core of
+        // CPU, all of it logged as "nothing to draw".
         //
-        // A client with something new to show commits it, and the commit is
-        // what asks for the frame — no invitation needed.
-        if !submitted {
-            return;
-        }
+        // Withholding them entirely is worse, and was tried: a client that
+        // paints only when invited never paints again, so the desktop takes
+        // input and shows nothing — a freeze that looks like a hang and is
+        // not. The throttle is the answer to both. Smithay skips a surface
+        // that already had a callback within it, so a client that wants to
+        // paint every frame still can, and one waiting on an invitation still
+        // gets one.
+        let throttle = Some(self.frame_interval());
+        let _ = submitted;
 
         for window in self.space.elements() {
-            window.send_frame(&output, start, Some(Duration::ZERO), |_, _| {
+            window.send_frame(&output, start, throttle, |_, _| {
                 Some(output.clone())
             });
         }
         for layer in smithay::desktop::layer_map_for_output(&output).layers() {
-            layer.send_frame(&output, start, Some(Duration::ZERO), |_, _| {
+            layer.send_frame(&output, start, throttle, |_, _| {
                 Some(output.clone())
             });
         }
@@ -1123,7 +1140,7 @@ impl ViewportState {
                 lock.wl_surface(),
                 &output,
                 start,
-                Some(Duration::ZERO),
+                throttle,
                 |_, _| Some(output.clone()),
             );
         }
