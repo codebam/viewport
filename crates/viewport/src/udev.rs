@@ -875,12 +875,13 @@ impl ViewportState {
         // it was ever scanned out; the request is remembered and the vblank
         // draws it.
         if surface.pending {
-            // This screen, not every screen. A client painting flat out keeps
-            // one output's flip in the air, and marking the whole desktop for
-            // the retry had the other monitor attempting a frame each time and
-            // finding nothing — thousands of them a second, for a window it
-            // does not show.
-            self.dirty_outputs.insert(crtc);
+            // Nothing to remember. The flip in the air ends in a vblank, and
+            // `on_vblank` draws this output again as its last act — so asking
+            // for a frame here only means asking again immediately, and again,
+            // for as long as the flip takes. That is a busy loop with a
+            // compositor at one core and a log full of "nothing to draw"; it
+            // was previously spread over every output by the global flag,
+            // which made it look like the *other* monitor's problem.
             return;
         }
 
