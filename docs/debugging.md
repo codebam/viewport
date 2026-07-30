@@ -113,3 +113,39 @@ before rendering, both leave the user at a black screen and both are invisible
 to `load-failed`. On timeout the compositor loads `fallback.html`, which speaks
 the same IPC — windows opened while offline are still tiled, listed and
 closable.
+
+
+## Running it in a virtual machine
+
+It does not work in a plain one, and the reasons are worth knowing before
+somebody spends an evening on it. Tested against a QEMU guest running current
+Arch, with the package from `packaging/arch/smithay`.
+
+**Software Vulkan cannot drive it.** `vulkan-swrast` (lavapipe) installs and
+`vulkaninfo` is happy, but the renderer needs
+`VK_EXT_image_drm_format_modifier` to hand buffers to KMS and lavapipe does not
+implement it. The compositor says so and stops:
+
+    llvmpipe (LLVM 22.1.8, 256 bits) is missing VK_EXT_image_drm_format_modifier
+
+**Accelerated Vulkan through virtio-gpu aborts.** With
+`-device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=2G` and `vulkan-virtio` in
+the guest, the guest sees the host's GPU through Venus, the compositor gets as
+far as setting a mode on `Virtual-1` — and then the *driver* calls `abort()`
+five frames deep inside `libvulkan_virtio.so`, with nothing printed. That is
+not this compositor failing a check; it is the driver ending the process.
+
+Two smaller things the same guest showed, both fixed:
+
+- A virtual machine usually has two DRM devices — the firmware's VGA and the
+  virtio-gpu — and the seat calls the VGA primary. Scanning out on one device
+  while drawing on another is a black screen at best, so the card is chosen by
+  whether a Vulkan device claims it before falling back to what the seat says.
+- Neither lavapipe nor Venus exposes a DRM node at all, so *no* card can match
+  in a virtual machine. Refusing to start on that basis is wrong — the renderer
+  imports buffers through `VK_EXT_external_memory_dma_buf` and does not need to
+  own the display — so a mismatch is now a warning rather than an exit.
+
+So: real hardware, or a GPU passed through with vfio. A guest with virtio-gpu
+is not enough today, and the thing standing in the way is the Venus driver
+rather than anything here.

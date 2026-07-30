@@ -57,8 +57,12 @@ optdepends=(
   'vulkan-radeon: AMD hardware'
   'vulkan-intel: Intel hardware'
   'nvidia-utils: NVIDIA hardware'
-  'vulkan-virtio: a virtual machine with 3D acceleration'
-  'vulkan-swrast: a virtual machine without it, in software'
+  # Neither of these is enough to run it in a virtual machine today — software
+  # Vulkan is missing VK_EXT_image_drm_format_modifier and Venus aborts inside
+  # the driver. See docs/debugging.md. They are listed because they are what a
+  # nested or headless run wants.
+  'vulkan-virtio: a guest with 3D acceleration (see docs/debugging.md first)'
+  'vulkan-swrast: software Vulkan, for tests rather than a session'
 )
 
 makedepends=(

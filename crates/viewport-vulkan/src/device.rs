@@ -81,6 +81,24 @@ impl Device {
     ///
     /// `node` is normally the render node the compositor already has open —
     /// `/dev/dri/renderD128` and friends.
+    /// Open the GPU exposing `node`, and nothing else.
+    ///
+    /// The compositor asks this of each card before choosing one, because
+    /// falling back to another device is right once a card has been picked and
+    /// wrong while picking: a machine with a VGA that cannot render and a
+    /// virtio-gpu that can should use the second, not the first with the
+    /// second's renderer.
+    pub fn for_node_exactly(instance: &Instance, node: &DrmNode) -> Result<Self> {
+        let physical = PhysicalDevice::enumerate(instance)
+            .context("vkEnumeratePhysicalDevices")?
+            .find(|device| {
+                matches!(device.render_node(), Ok(Some(n)) if n == *node)
+                    || matches!(device.primary_node(), Ok(Some(n)) if n == *node)
+            })
+            .ok_or_else(|| anyhow!("no Vulkan device exposes {node:?}"))?;
+        Self::open(physical)
+    }
+
     pub fn for_node(instance: &Instance, node: &DrmNode) -> Result<Self> {
         let devices: Vec<PhysicalDevice> = PhysicalDevice::enumerate(instance)
             .context("vkEnumeratePhysicalDevices")?

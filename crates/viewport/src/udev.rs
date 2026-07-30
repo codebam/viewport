@@ -173,16 +173,63 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
     // for KMS gets as far as a permission error that looks like a session
     // problem. Vulkan wants the render node, because that is the one that
     // needs no DRM master.
-    let card = primary_gpu(&seat)
+    // The GPU the seat calls primary, unless nothing can render for it.
+    //
+    // A virtual machine commonly has two: the firmware's VGA, which has a
+    // display and no Vulkan, and a virtio-gpu, which has both. The seat calls
+    // the first one primary, and picking it means scanning out on one device
+    // while drawing on another — which on this machine got as far as a black
+    // screen and a driver abort. So the candidates are ranked by whether a
+    // Vulkan device actually exposes them, and only then by what the seat
+    // thinks.
+    let candidates: Vec<DrmNode> = primary_gpu(&seat)
         .ok()
         .flatten()
-        .or_else(|| all_gpus(&seat).ok()?.into_iter().next())
-        .and_then(|path| DrmNode::from_path(path).ok())
-        .and_then(|node| match node.ty() {
+        .into_iter()
+        .chain(all_gpus(&seat).unwrap_or_default())
+        .filter_map(|path| DrmNode::from_path(path).ok())
+        .filter_map(|node| match node.ty() {
             NodeType::Primary => Some(node),
             _ => node.node_with_type(NodeType::Primary)?.ok(),
         })
-        .ok_or_else(|| anyhow!("no GPU with a primary node found for seat {seat}"))?;
+        .collect();
+    if candidates.is_empty() {
+        return Err(anyhow!("no GPU with a primary node found for seat {seat}"));
+    }
+
+    let renders_for = |card: &DrmNode| -> bool {
+        let Ok(instance) = smithay::backend::vulkan::Instance::new(
+            smithay::backend::vulkan::version::Version::VERSION_1_3,
+            None,
+        ) else {
+            return false;
+        };
+        let render = card
+            .node_with_type(NodeType::Render)
+            .and_then(|node| node.ok())
+            .unwrap_or(*card);
+        VulkanDevice::for_node_exactly(&instance, &render).is_ok()
+    };
+
+    let card = candidates
+        .iter()
+        .find(|card| renders_for(card))
+        .copied()
+        .unwrap_or_else(|| {
+            // Nothing matched. The fallback in `for_node` will draw on
+            // whatever Vulkan device there is, which is right for a machine
+            // with one GPU and a software renderer and wrong for nothing.
+            tracing::warn!(
+                "no GPU has a Vulkan device of its own; going with what the seat calls primary"
+            );
+            candidates[0]
+        });
+    if candidates.len() > 1 {
+        tracing::info!(
+            "{} GPUs; drawing and scanning out on {card:?}",
+            candidates.len()
+        );
+    }
 
     // Same card, the node Vulkan should use.
     let render = card
