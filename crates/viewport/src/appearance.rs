@@ -237,10 +237,7 @@ struct Portal {
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Settings")]
 impl Portal {
-    fn read_all(
-        &self,
-        _namespaces: Vec<String>,
-    ) -> HashMap<String, HashMap<String, OwnedValue>> {
+    fn read_all(&self, _namespaces: Vec<String>) -> HashMap<String, HashMap<String, OwnedValue>> {
         read_all(&self.settings.lock().unwrap())
     }
 

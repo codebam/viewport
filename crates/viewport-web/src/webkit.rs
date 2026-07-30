@@ -261,8 +261,7 @@ impl WebView {
 
     /// Run a script in the page.
     pub fn evaluate(&self, script: &str) -> Result<()> {
-        let script =
-            CString::new(script).map_err(|_| anyhow!("the script contains a nul byte"))?;
+        let script = CString::new(script).map_err(|_| anyhow!("the script contains a nul byte"))?;
         // SAFETY: -1 means "nul-terminated"; the remaining pointers are
         // optional and null here, and no callback is registered because
         // nothing needs the result.

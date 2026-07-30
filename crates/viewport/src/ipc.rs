@@ -64,10 +64,7 @@ impl Ipc {
         }
     }
 
-    pub fn new(
-        path: PathBuf,
-        loop_handle: &LoopHandle<'static, ViewportState>,
-    ) -> Result<Self> {
+    pub fn new(path: PathBuf, loop_handle: &LoopHandle<'static, ViewportState>) -> Result<Self> {
         // sockaddr_un.sun_path is 108 bytes on Linux including the terminator.
         // Checking here rather than letting bind() fail turns "path must be
         // shorter than SUN_LEN" into something that names the path
@@ -84,8 +81,8 @@ impl Ipc {
         // otherwise make bind() fail with EADDRINUSE forever.
         let _ = std::fs::remove_file(&path);
 
-        let listener = UnixListener::bind(&path)
-            .with_context(|| format!("bind {}", path.display()))?;
+        let listener =
+            UnixListener::bind(&path).with_context(|| format!("bind {}", path.display()))?;
         listener.set_nonblocking(true)?;
 
         // bind() creates the node world-accessible and the chmod only narrows
@@ -212,18 +209,20 @@ impl ViewportState {
         self.ipc.next_client += 1;
 
         let source = Generic::new(Shared(stream.clone()), Interest::BOTH, Mode::Level);
-        let token = match self.loop_handle.insert_source(source, move |readiness, shared, state| {
-            if readiness.writable {
-                if let Some(client) = state.ipc.clients.get_mut(&id) {
-                    client.flush();
+        let token = match self
+            .loop_handle
+            .insert_source(source, move |readiness, shared, state| {
+                if readiness.writable {
+                    if let Some(client) = state.ipc.clients.get_mut(&id) {
+                        client.flush();
+                    }
                 }
-            }
-            if readiness.readable {
-                state.ipc_read(id, &shared.0);
-            }
-            state.ipc.reap(&state.loop_handle.clone());
-            Ok(PostAction::Continue)
-        }) {
+                if readiness.readable {
+                    state.ipc_read(id, &shared.0);
+                }
+                state.ipc.reap(&state.loop_handle.clone());
+                Ok(PostAction::Continue)
+            }) {
             Ok(token) => token,
             Err(e) => {
                 tracing::warn!("could not register control client: {e}");

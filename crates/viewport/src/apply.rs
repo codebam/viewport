@@ -43,7 +43,10 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // own layout on the fullscreen state — hiding toolbars, switching
             // a video to a fullscreen presentation — and never learns about it
             // from a configure alone.
-            let Some(toplevel) = state.views.get(id).and_then(|v| v.window.toplevel().cloned())
+            let Some(toplevel) = state
+                .views
+                .get(id)
+                .and_then(|v| v.window.toplevel().cloned())
             else {
                 return;
             };
@@ -93,15 +96,24 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             state.notify_focus(NO_VIEW);
         }
 
-        Request::ScreencastRect { x, y, width, height } => {
+        Request::ScreencastRect {
+            x,
+            y,
+            width,
+            height,
+        } => {
             // The older, single-rectangle form of `shell.overlay`. A zero size
             // is the shell saying there is nothing above the windows now.
-            let rects = if width > 0 && height > 0 { {
+            let rects = if width > 0 && height > 0 {
+                {
                     vec![smithay::utils::Rectangle::new(
                         (x, y).into(),
                         (width, height).into(),
                     )]
-                } } else { Default::default() };
+                }
+            } else {
+                Default::default()
+            };
             state.set_shell_overlays(rects);
         }
 
@@ -161,7 +173,10 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                         " [{} {:?}{}{}]",
                         w.id,
                         w.name,
-                        w.output.as_deref().map(|o| format!(" on {o}")).unwrap_or_default(),
+                        w.output
+                            .as_deref()
+                            .map(|o| format!(" on {o}"))
+                            .unwrap_or_default(),
                         if w.active { " active" } else { "" }
                     ))
                     .collect::<String>()
@@ -238,12 +253,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 Some(binding) => {
                     // Replaced rather than appended, so re-registering a chord
                     // does not leave the older one shadowing it.
-                    state
-                        .bindings
-                        .retain(|existing| {
-                            existing.modifiers != binding.modifiers
-                                || existing.keysym != binding.keysym
-                        });
+                    state.bindings.retain(|existing| {
+                        existing.modifiers != binding.modifiers || existing.keysym != binding.keysym
+                    });
                     state.bindings.push(binding);
                 }
                 None => reject(state, "bind.add", &format!("{chord}={action}")),
@@ -346,7 +358,11 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
     // focus, as it does in C (`src/xdg_shell.c:940`), so the focused window
     // goes back on top.
     if state.focused != layout.id {
-        if let Some(window) = state.views.get(state.focused).map(|view| view.window.clone()) {
+        if let Some(window) = state
+            .views
+            .get(state.focused)
+            .map(|view| view.window.clone())
+        {
             state.space.raise_element(&window, false);
         }
     }
@@ -398,10 +414,7 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         })
     });
 
-    let scale = config
-        .scale
-        .filter(|s| *s > 0.0)
-        .map(Scale::Fractional);
+    let scale = config.scale.filter(|s| *s > 0.0).map(Scale::Fractional);
     let transform = config.transform.map(to_smithay_transform);
     // Said out loud, because a rotated output has three sizes that must agree
     // and only one of them is visible from any given place: the mode the panel

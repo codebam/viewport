@@ -149,7 +149,6 @@ pub struct Frame {
     pub locked_blank: bool,
 }
 
-
 /// Turn a [`Frame`] into elements, front to back.
 ///
 /// The order is the whole layering policy: pointer, then anything on an
@@ -303,10 +302,7 @@ where
                         .to_f64()
                         .to_physical(scale)
                         .to_i32_round();
-                let drawn = render_elements_from_surface_tree::<
-                    _,
-                    WaylandSurfaceRenderElement<R>,
-                >(
+                let drawn = render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
                     renderer,
                     popup.wl_surface(),
                     at,
@@ -514,7 +510,11 @@ pub fn window_placement(
         .to_i32_round();
     let clip = clip.map(|clip| {
         Rectangle::<i32, Logical>::new(
-            (clip.loc.x - output_geometry.loc.x, clip.loc.y - output_geometry.loc.y).into(),
+            (
+                clip.loc.x - output_geometry.loc.x,
+                clip.loc.y - output_geometry.loc.y,
+            )
+                .into(),
             clip.size,
         )
         .to_f64()

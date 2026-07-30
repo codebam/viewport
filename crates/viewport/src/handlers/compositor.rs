@@ -6,8 +6,7 @@ use smithay::reexports::wayland_server::{Client, Resource as _};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states,
-    BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
-    SurfaceAttributes,
+    BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
@@ -163,7 +162,6 @@ impl CompositorHandler for ViewportState {
         // clock that releases it starts here rather than at the next frame,
         // because there may not be a next frame.
         self.arm_barrier_tick();
-
     }
 }
 
@@ -290,9 +288,8 @@ impl ViewportState {
         // a rectangle is invisible for ever, and a shell that has stopped
         // answering gives no other sign — the session looks like a black
         // screen with a working keyboard.
-        let timer = smithay::reexports::calloop::timer::Timer::from_duration(
-            crate::watchdog::TIMEOUT,
-        );
+        let timer =
+            smithay::reexports::calloop::timer::Timer::from_duration(crate::watchdog::TIMEOUT);
         if let Err(e) = self.loop_handle.insert_source(timer, move |_, _, state| {
             state.watchdog_fire(id);
             smithay::reexports::calloop::timer::TimeoutAction::Drop

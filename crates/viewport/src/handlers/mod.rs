@@ -40,7 +40,11 @@ impl SeatHandler for ViewportState {
     /// Kept rather than acted on: what is drawn is decided at render time,
     /// because the same status has to produce a different image on an output
     /// with a different scale.
-    fn cursor_image(&mut self, _seat: &Seat<Self>, image: smithay::input::pointer::CursorImageStatus) {
+    fn cursor_image(
+        &mut self,
+        _seat: &Seat<Self>,
+        image: smithay::input::pointer::CursorImageStatus,
+    ) {
         self.cursor_status = image;
         // The pointer changing shape is a visible change with no other reason
         // to draw a frame behind it.
@@ -108,7 +112,6 @@ impl smithay::input::tablet::TabletSeatHandler for ViewportState {
 impl OutputHandler for ViewportState {}
 
 impl crate::screencopy::ScreencopyHandler for ViewportState {
-
     fn queue_copy(
         &mut self,
         frame: &smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
@@ -243,9 +246,7 @@ impl crate::foreign_toplevel::ForeignToplevelHandler for ViewportState {
 }
 
 impl smithay::wayland::drm_syncobj::DrmSyncobjHandler for ViewportState {
-    fn drm_syncobj_state(
-        &mut self,
-    ) -> Option<&mut smithay::wayland::drm_syncobj::DrmSyncobjState> {
+    fn drm_syncobj_state(&mut self) -> Option<&mut smithay::wayland::drm_syncobj::DrmSyncobjState> {
         self.syncobj_state.as_mut()
     }
 }
@@ -310,16 +311,18 @@ impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for ViewportS
             output.name(),
             size.w,
             size.h,
-            if self.capture_dmabuf_constraints().is_some() { "yes" } else { "no" }
+            if self.capture_dmabuf_constraints().is_some() {
+                "yes"
+            } else {
+                "no"
+            }
         );
         Some(smithay::wayland::image_copy_capture::BufferConstraints {
             size: (size.w, size.h).into(),
             // Shared memory only, as with screencopy: a client asking for a
             // picture has to be able to read the pixels, and XRGB rather than
             // ARGB because a screenshot has no transparency to carry.
-            shm: vec![
-                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb8888,
-            ],
+            shm: vec![smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb8888],
             // And a dmabuf where there is a GPU to allocate on. A recorder
             // needs this one: shared memory means reading every pixel back
             // across the bus per frame, which is affordable for a screenshot
@@ -337,10 +340,7 @@ impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for ViewportS
         self.capture_sessions.push(session);
     }
 
-    fn session_destroyed(
-        &mut self,
-        session: smithay::wayland::image_copy_capture::SessionRef,
-    ) {
+    fn session_destroyed(&mut self, session: smithay::wayland::image_copy_capture::SessionRef) {
         self.capture_sessions.retain(|held| **held != session);
     }
 
@@ -412,9 +412,7 @@ impl crate::gamma::GammaControlHandler for ViewportState {
 }
 
 impl crate::output_management::OutputManagementHandler for ViewportState {
-    fn output_management_state(
-        &mut self,
-    ) -> &mut crate::output_management::OutputManagementState {
+    fn output_management_state(&mut self) -> &mut crate::output_management::OutputManagementState {
         &mut self.output_management_state
     }
 
@@ -432,9 +430,7 @@ impl crate::output_management::OutputManagementHandler for ViewportState {
 }
 
 /// Middle-click paste: a second clipboard, separate from the ordinary one.
-impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler
-    for ViewportState
-{
+impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler for ViewportState {
     fn primary_selection_state(
         &mut self,
     ) -> &mut smithay::wayland::selection::primary_selection::PrimarySelectionState {
@@ -484,7 +480,9 @@ impl smithay::wayland::idle_inhibit::IdleInhibitHandler for ViewportState {
 /// Clients that want to know the session went idle rather than asking the
 /// compositor to do something about it — a chat program marking you away.
 impl smithay::wayland::idle_notify::IdleNotifierHandler for ViewportState {
-    fn idle_notifier_state(&mut self) -> &mut smithay::wayland::idle_notify::IdleNotifierState<Self> {
+    fn idle_notifier_state(
+        &mut self,
+    ) -> &mut smithay::wayland::idle_notify::IdleNotifierState<Self> {
         &mut self.idle_notifier_state
     }
 }
@@ -573,12 +571,7 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
         let Some(origin) = self
             .space
             .elements()
-            .find(|window| {
-                window
-                    .wl_surface()
-                    .map(|s| &*s == surface)
-                    .unwrap_or(false)
-            })
+            .find(|window| window.wl_surface().map(|s| &*s == surface).unwrap_or(false))
             .and_then(|window| self.space.element_geometry(window))
             .map(|geometry| geometry.loc)
         else {
@@ -624,14 +617,11 @@ impl smithay::wayland::dmabuf::DmabufHandler for ViewportState {
         // Imported now rather than at first use, because the answer the client
         // is waiting for is whether this buffer is usable at all — and a
         // failure discovered mid-frame has nowhere to go.
-        let imported = self
-            .udev
-            .as_mut()
-            .map(|udev| {
-                crate::with_gpu!(&mut udev.renderer, |renderer| renderer
-                    .import_dmabuf(&dmabuf, None)
-                    .is_ok())
-            });
+        let imported = self.udev.as_mut().map(|udev| {
+            crate::with_gpu!(&mut udev.renderer, |renderer| renderer
+                .import_dmabuf(&dmabuf, None)
+                .is_ok())
+        });
         match imported {
             Some(true) | None => {
                 let _ = notifier.successful::<ViewportState>();
@@ -690,7 +680,10 @@ crate::delegate_tearing_control!(ViewportState);
 /// literally. Implementing the trait is what makes the global exist, which is
 /// what stops a client treating its absence as an error.
 impl smithay::wayland::xdg_system_bell::XdgSystemBellHandler for ViewportState {
-    fn ring(&mut self, surface: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>) {
+    fn ring(
+        &mut self,
+        surface: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    ) {
         tracing::debug!("bell from {surface:?}");
     }
 }

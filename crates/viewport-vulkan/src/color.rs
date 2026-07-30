@@ -213,11 +213,7 @@ impl Primaries {
         let w = xyz(self.white);
 
         // Solve [r g b] * s = w for the per-column scale factors.
-        let m = [
-            [r[0], g[0], b[0]],
-            [r[1], g[1], b[1]],
-            [r[2], g[2], b[2]],
-        ];
+        let m = [[r[0], g[0], b[0]], [r[1], g[1], b[1]], [r[2], g[2], b[2]]];
         let s = match invert(&m) {
             Some(inverse) => multiply_vector(&inverse, w),
             // Degenerate primaries. Returning the identity keeps the renderer
@@ -434,7 +430,10 @@ mod tests {
             primaries: Primaries::BT2020,
             reference_luminance: 203.0,
         };
-        assert_eq!(luminance_scale(&hdr, &Description::default()), 10_000.0 / 203.0);
+        assert_eq!(
+            luminance_scale(&hdr, &Description::default()),
+            10_000.0 / 203.0
+        );
     }
 
     #[test]

@@ -15,8 +15,8 @@
 // announced, and are drawn where they say.
 
 use smithay::desktop::Window;
-use smithay::wayland::seat::WaylandFocus as _;
 use smithay::utils::{Logical, Rectangle};
+use smithay::wayland::seat::WaylandFocus as _;
 use smithay::wayland::selection::SelectionTarget;
 use smithay::xwayland::xwm::{Reorder, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
@@ -254,12 +254,7 @@ impl XwmHandler for ViewportState {
     }
 
     /// An X client copied something: offer it to Wayland clients.
-    fn new_selection(
-        &mut self,
-        _xwm: XwmId,
-        selection: SelectionTarget,
-        mime_types: Vec<String>,
-    ) {
+    fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
         use smithay::wayland::selection::data_device::set_data_device_selection;
         use smithay::wayland::selection::primary_selection::set_primary_selection;
 

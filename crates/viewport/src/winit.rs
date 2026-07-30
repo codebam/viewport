@@ -24,8 +24,8 @@ pub fn init(
     event_loop: &mut EventLoop<'static, ViewportState>,
     state: &mut ViewportState,
 ) -> anyhow::Result<()> {
-    let (mut backend, winit) = winit::init::<GlesRenderer>()
-        .map_err(|e| anyhow::anyhow!("winit backend: {e}"))?;
+    let (mut backend, winit) =
+        winit::init::<GlesRenderer>().map_err(|e| anyhow::anyhow!("winit backend: {e}"))?;
 
     let mode = Mode {
         size: backend.window_size(),
@@ -58,7 +58,12 @@ pub fn init(
     // real hardware.
     {
         use smithay::backend::renderer::ImportDma as _;
-        let formats: Vec<_> = backend.renderer().dmabuf_formats().iter().copied().collect();
+        let formats: Vec<_> = backend
+            .renderer()
+            .dmabuf_formats()
+            .iter()
+            .copied()
+            .collect();
         let node = smithay::backend::egl::EGLDevice::device_for_display(
             backend.renderer().egl_context().display(),
         )

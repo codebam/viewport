@@ -192,7 +192,11 @@ impl Gpu {
             None if extensions.contains("EGL_KHR_no_config_context") => unsafe {
                 khronos_egl::Config::from_ptr(std::ptr::null_mut())
             },
-            None => return Err(anyhow!("no ES3-renderable EGL config and no_config_context is unsupported")),
+            None => {
+                return Err(anyhow!(
+                    "no ES3-renderable EGL config and no_config_context is unsupported"
+                ))
+            }
         };
 
         let context = egl
@@ -350,7 +354,12 @@ impl Gpu {
     pub fn allocate(&self, width: u32, height: u32) -> Result<Dmabuf> {
         let bo: BufferObject<()> = self
             .gbm
-            .create_buffer_object(width, height, gbm::Format::Argb8888, BufferObjectFlags::RENDERING)
+            .create_buffer_object(
+                width,
+                height,
+                gbm::Format::Argb8888,
+                BufferObjectFlags::RENDERING,
+            )
             .context("gbm_bo_create")?;
 
         // Multi-plane buffers would need every plane's fd; nothing allocated
@@ -625,7 +634,11 @@ mod tests {
                 glow::PixelPackData::Slice(Some(&mut pixels)),
             );
         }
-        assert_eq!(pixels, [0, 255, 0, 255], "framebuffer did not take the clear");
+        assert_eq!(
+            pixels,
+            [0, 255, 0, 255],
+            "framebuffer did not take the clear"
+        );
     }
 
     #[test]

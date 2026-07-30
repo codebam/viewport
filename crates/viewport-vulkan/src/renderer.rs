@@ -810,7 +810,8 @@ impl Bind<Dmabuf> for VulkanRenderer {
         {
             Some((_, image)) => image.clone(),
             None => {
-                let image = std::sync::Arc::new(Image::import(&self.device, target, Purpose::Render)?);
+                let image =
+                    std::sync::Arc::new(Image::import(&self.device, target, Purpose::Render)?);
                 self.targets.push((target.weak(), image.clone()));
                 image
             }
@@ -1170,9 +1171,7 @@ impl<'frame, 'buffer> VulkanFrame<'frame, 'buffer> {
         // the framebuffer untouched.
         let rects: Vec<Rectangle<i32, Physical>> = clipped
             .into_iter()
-            .map(|rect| {
-                crate::transform::framebuffer_rect(rect, self.output_size, self.transform)
-            })
+            .map(|rect| crate::transform::framebuffer_rect(rect, self.output_size, self.transform))
             .collect();
 
         rects
@@ -1229,7 +1228,11 @@ impl Frame for VulkanFrame<'_, '_> {
         self.renderer.context_id.clone()
     }
 
-    fn clear(&mut self, color: Color32F, at: &[Rectangle<i32, Physical>]) -> Result<(), Self::Error> {
+    fn clear(
+        &mut self,
+        color: Color32F,
+        at: &[Rectangle<i32, Physical>],
+    ) -> Result<(), Self::Error> {
         // A solid draw rather than vkCmdClearAttachments: the blend state is
         // already right, and for an opaque colour — which is what a clear
         // always is in practice — the result is identical.
@@ -1486,7 +1489,6 @@ mod tests {
         allocator: smithay::backend::allocator::gbm::GbmAllocator<std::fs::File>,
     }
 
-
     fn harness() -> Option<Harness> {
         let TestGpu { device, node } = require_gpu()?;
         let allocator = gbm_allocator(&node)?;
@@ -1576,7 +1578,10 @@ mod tests {
             .expect("render");
 
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 0.0, 0.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         frame
             .draw_solid(
@@ -1615,7 +1620,10 @@ mod tests {
             .expect("render");
 
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 0.0, 0.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         frame
             .render_texture_from_to(
@@ -1631,7 +1639,11 @@ mod tests {
         let _ = frame.finish().expect("finish");
         drop(framebuffer);
 
-        assert_eq!(pixel(&target, 32, 32), [255, 0, 0, 255], "middle of texture");
+        assert_eq!(
+            pixel(&target, 32, 32),
+            [255, 0, 0, 255],
+            "middle of texture"
+        );
         assert_eq!(pixel(&target, 8, 8), [0, 0, 0, 255], "outside it");
     }
 
@@ -1679,7 +1691,10 @@ mod tests {
             .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 0.0, 1.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         frame
             .render_texture_from_to(
@@ -1848,10 +1863,10 @@ mod tests {
         // unknown", which always reports full damage and would make every
         // assertion below pass regardless.
         let render = |h: &mut Harness,
-                          tracker: &mut OutputDamageTracker,
-                          target: &mut Dmabuf,
-                          bag: &DamageBag<i32, BufferCoord>,
-                          age: usize| {
+                      tracker: &mut OutputDamageTracker,
+                      target: &mut Dmabuf,
+                      bag: &DamageBag<i32, BufferCoord>,
+                      age: usize| {
             let el = element(bag, &h.renderer);
             let mut framebuffer = h.renderer.bind(target).expect("bind");
             let result = tracker
@@ -2024,7 +2039,10 @@ mod tests {
             .expect("render");
         // Red underneath, so a transparent draw is obvious rather than black.
         frame
-            .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([1.0, 0.0, 0.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         frame
             .render_texture_from_to(
@@ -2072,7 +2090,10 @@ mod tests {
             .render(&mut framebuffer, (64, 64).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 0.0, 1.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
 
         // A frame around a hole, as the visible part of the shell is when a
@@ -2207,7 +2228,10 @@ mod tests {
         );
 
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 0.0, 0.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         frame
             .draw_solid(
@@ -2220,7 +2244,11 @@ mod tests {
         drop(framebuffer);
 
         // Green is byte 1.
-        assert_eq!(pixel(&target, 29, 2), [0, 255, 0, 255], "inside the rotated strip");
+        assert_eq!(
+            pixel(&target, 29, 2),
+            [0, 255, 0, 255],
+            "inside the rotated strip"
+        );
         assert_eq!(pixel(&target, 4, 2), [0, 0, 0, 255], "left of it");
 
         // The two pixels where a rotated and an unrotated draw disagree.
@@ -2258,7 +2286,10 @@ mod tests {
                 .render(&mut framebuffer, (32, 32).into(), transform)
                 .unwrap_or_else(|e| panic!("{transform:?}: {e}"));
             frame
-                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+                .clear(
+                    Color32F::from([1.0, 0.0, 0.0, 1.0]),
+                    &all(frame.output_size().w, frame.output_size().h),
+                )
                 .expect("clear");
             let _ = frame.finish().expect("finish");
             drop(framebuffer);
@@ -2287,7 +2318,10 @@ mod tests {
             .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 0.0, 0.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         frame
             .draw_solid(
@@ -2336,7 +2370,10 @@ mod tests {
             .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 0.0, 1.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         let _ = frame.finish().expect("finish");
 
@@ -2377,7 +2414,11 @@ mod tests {
             )
             .expect("copy_texture");
         let out = h.renderer.map_texture(&mapping).expect("map");
-        assert_eq!(&out[0..4], &[0, 255, 0, 255], "green survived the round trip");
+        assert_eq!(
+            &out[0..4],
+            &[0, 255, 0, 255],
+            "green survived the round trip"
+        );
     }
 
     /// Readability of an imported buffer follows its modifier, not a guess.
@@ -2433,7 +2474,10 @@ mod tests {
                 .render(&mut framebuffer, (64, 64).into(), Transform::Normal)
                 .expect("render");
             frame
-                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+                .clear(
+                    Color32F::from([1.0, 0.0, 0.0, 1.0]),
+                    &all(frame.output_size().w, frame.output_size().h),
+                )
                 .expect("clear");
             frame.finish().expect("finish")
         };
@@ -2456,7 +2500,10 @@ mod tests {
             .render(&mut framebuffer, (64, 64).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 1.0, 0.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         let after = frame.finish().expect("finish");
         after.wait().expect("wait");
@@ -2511,7 +2558,10 @@ mod tests {
             .render(&mut framebuffer, (16, 16).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 0.0, 0.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         frame
             .render_texture_from_to(
@@ -2608,10 +2658,7 @@ mod tests {
         let Some(mut h) = harness() else { return };
         let source = buffer(&mut h.allocator, 8, 8);
         let texture = h.renderer.import_dmabuf(&source, None).expect("import");
-        assert_eq!(
-            *texture.description(),
-            crate::color::Description::default()
-        );
+        assert_eq!(*texture.description(), crate::color::Description::default());
         assert_eq!(
             *h.renderer.output_description(),
             crate::color::Description::default()
@@ -2625,12 +2672,9 @@ mod tests {
         let Some(mut h) = harness() else { return };
         assert!(!h.renderer.can_allocate());
 
-        let error = Offscreen::<Dmabuf>::create_buffer(
-            &mut h.renderer,
-            Fourcc::Argb8888,
-            (16, 16).into(),
-        )
-        .expect_err("a renderer without an allocator cannot create buffers");
+        let error =
+            Offscreen::<Dmabuf>::create_buffer(&mut h.renderer, Fourcc::Argb8888, (16, 16).into())
+                .expect_err("a renderer without an allocator cannot create buffers");
         assert!(error.to_string().contains("allocator"), "{error}");
     }
 
@@ -2645,8 +2689,7 @@ mod tests {
         let Some(allocator) = gbm_allocator(&node) else {
             return;
         };
-        let mut renderer =
-            VulkanRenderer::with_allocator(&device, allocator).expect("renderer");
+        let mut renderer = VulkanRenderer::with_allocator(&device, allocator).expect("renderer");
         assert!(renderer.can_allocate());
 
         let mut created =
@@ -2661,7 +2704,10 @@ mod tests {
             .render(&mut framebuffer, (32, 16).into(), Transform::Normal)
             .expect("render");
         frame
-            .clear(Color32F::from([0.0, 1.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+            .clear(
+                Color32F::from([0.0, 1.0, 0.0, 1.0]),
+                &all(frame.output_size().w, frame.output_size().h),
+            )
             .expect("clear");
         let _ = frame.finish().expect("finish");
     }
@@ -2683,8 +2729,7 @@ mod tests {
         let Some(allocator) = gbm_allocator(&node) else {
             return;
         };
-        let mut renderer =
-            VulkanRenderer::with_allocator(&device, allocator).expect("renderer");
+        let mut renderer = VulkanRenderer::with_allocator(&device, allocator).expect("renderer");
 
         let size: smithay::utils::Size<i32, smithay::utils::Buffer> = (32, 16).into();
         let mut target =
@@ -2708,11 +2753,7 @@ mod tests {
         }
 
         let mapping = renderer
-            .copy_framebuffer(
-                &framebuffer,
-                Rectangle::from_size(size),
-                Fourcc::Xrgb8888,
-            )
+            .copy_framebuffer(&framebuffer, Rectangle::from_size(size), Fourcc::Xrgb8888)
             .expect("reading back the same format it was rendered in");
         let pixels = renderer.map_texture(&mapping).expect("map");
         assert_eq!(pixels.len(), 32 * 16 * 4);
@@ -2759,7 +2800,10 @@ mod tests {
                 .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
                 .expect("render");
             frame
-                .clear(Color32F::from([1.0, 0.0, 0.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+                .clear(
+                    Color32F::from([1.0, 0.0, 0.0, 1.0]),
+                    &all(frame.output_size().w, frame.output_size().h),
+                )
                 .expect("clear");
             let _ = frame.finish().expect("finish");
         }
@@ -2772,7 +2816,10 @@ mod tests {
                 .render(&mut framebuffer, (32, 32).into(), Transform::Normal)
                 .expect("render");
             frame
-                .clear(Color32F::from([0.0, 0.0, 1.0, 1.0]), &all(frame.output_size().w, frame.output_size().h))
+                .clear(
+                    Color32F::from([0.0, 0.0, 1.0, 1.0]),
+                    &all(frame.output_size().w, frame.output_size().h),
+                )
                 .expect("clear");
             let _ = frame.finish().expect("finish");
         }
@@ -2797,10 +2844,18 @@ mod tests {
         drop(from);
 
         // Red where the blit landed, blue everywhere else.
-        assert_eq!(pixel(&target, 24, 24), [0, 0, 255, 255], "the blitted region");
+        assert_eq!(
+            pixel(&target, 24, 24),
+            [0, 0, 255, 255],
+            "the blitted region"
+        );
         assert_eq!(pixel(&target, 4, 4), [255, 0, 0, 255], "untouched");
         // Non-destructive: the source still holds red.
-        assert_eq!(pixel(&source, 4, 4), [0, 0, 255, 255], "the source survived");
+        assert_eq!(
+            pixel(&source, 4, 4),
+            [0, 0, 255, 255],
+            "the source survived"
+        );
     }
 
     #[test]

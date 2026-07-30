@@ -17,8 +17,7 @@ use std::path::PathBuf;
 pub fn path() -> Option<PathBuf> {
     let dir = match std::env::var("XDG_STATE_HOME") {
         Ok(dir) if !dir.is_empty() => PathBuf::from(dir).join("viewport"),
-        _ => PathBuf::from(std::env::var("HOME").ok()?)
-            .join(".local/state/viewport"),
+        _ => PathBuf::from(std::env::var("HOME").ok()?).join(".local/state/viewport"),
     };
 
     if let Err(e) = std::fs::create_dir_all(&dir) {

@@ -42,7 +42,9 @@ pub struct Frame<'a> {
 
 impl std::fmt::Debug for Frame<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Frame").field("target", self.target).finish()
+        f.debug_struct("Frame")
+            .field("target", self.target)
+            .finish()
     }
 }
 
@@ -76,8 +78,7 @@ impl<'a> Frame<'a> {
 
         // Claim everything before touching it. Until these run the images
         // belong to whoever allocated them.
-        let mut barriers =
-            Vec::with_capacity(sources.len() + 1);
+        let mut barriers = Vec::with_capacity(sources.len() + 1);
         barriers.push(target.acquire_barrier(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL));
         for source in sources {
             anyhow::ensure!(
@@ -105,11 +106,13 @@ impl<'a> Frame<'a> {
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .store_op(vk::AttachmentStoreOp::STORE);
         attachment = match clear {
-            Some(color) => attachment
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue { float32: color },
-                }),
+            Some(color) => {
+                attachment
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .clear_value(vk::ClearValue {
+                        color: vk::ClearColorValue { float32: color },
+                    })
+            }
             // A partial redraw needs what was already there.
             None => attachment.load_op(vk::AttachmentLoadOp::LOAD),
         };
@@ -169,10 +172,8 @@ impl<'a> Frame<'a> {
     fn push(&self, dst: Rect, src: Rect, color: Color, alpha: f32) -> Push {
         use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
 
-        let size = Size::<i32, Physical>::from((
-            self.target.width() as i32,
-            self.target.height() as i32,
-        ));
+        let size =
+            Size::<i32, Physical>::from((self.target.width() as i32, self.target.height() as i32));
         let position = crate::transform::position(
             Rectangle::new(
                 Point::from((dst[0] as i32, dst[1] as i32)),
@@ -434,14 +435,8 @@ mod tests {
         let target = Image::import(&h.device, &dmabuf, Purpose::Render).expect("import");
 
         for color in [[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]] {
-            clear_and_wait(
-                &h.device,
-                &mut h.commands,
-                &mut h.pipelines,
-                &target,
-                color,
-            )
-            .expect("clear");
+            clear_and_wait(&h.device, &mut h.commands, &mut h.pipelines, &target, color)
+                .expect("clear");
         }
 
         // Blue is byte 0.
@@ -474,8 +469,16 @@ mod tests {
         // either side of each edge — a quad that is off by one or flipped
         // vertically fails here rather than looking plausible.
         assert_eq!(pixel(&dmabuf, 0, 0), [0, 255, 0, 255], "top-left corner");
-        assert_eq!(pixel(&dmabuf, 31, 31), [0, 255, 0, 255], "inside, far corner");
-        assert_eq!(pixel(&dmabuf, 32, 0), [0, 0, 0, 255], "just right of the quad");
+        assert_eq!(
+            pixel(&dmabuf, 31, 31),
+            [0, 255, 0, 255],
+            "inside, far corner"
+        );
+        assert_eq!(
+            pixel(&dmabuf, 32, 0),
+            [0, 0, 0, 255],
+            "just right of the quad"
+        );
         assert_eq!(pixel(&dmabuf, 0, 32), [0, 0, 0, 255], "just below the quad");
         assert_eq!(pixel(&dmabuf, 63, 63), [0, 0, 0, 255], "opposite corner");
     }
@@ -503,19 +506,22 @@ mod tests {
         )
         .expect("begin");
         frame
-            .draw_texture(
-                [16.0, 16.0, 32.0, 32.0],
-                [0.0, 0.0, 1.0, 1.0],
-                &source,
-                1.0,
-            )
+            .draw_texture([16.0, 16.0, 32.0, 32.0], [0.0, 0.0, 1.0, 1.0], &source, 1.0)
             .expect("draw");
         frame.finish().expect("finish");
         h.commands.wait(Duration::from_secs(5)).expect("wait");
 
         // Blue where the texture landed, black outside it.
-        assert_eq!(pixel(&dmabuf, 32, 32), [255, 0, 0, 255], "middle of the texture");
-        assert_eq!(pixel(&dmabuf, 17, 17), [255, 0, 0, 255], "inside, near corner");
+        assert_eq!(
+            pixel(&dmabuf, 32, 32),
+            [255, 0, 0, 255],
+            "middle of the texture"
+        );
+        assert_eq!(
+            pixel(&dmabuf, 17, 17),
+            [255, 0, 0, 255],
+            "inside, near corner"
+        );
         assert_eq!(pixel(&dmabuf, 8, 8), [0, 0, 0, 255], "above-left of it");
         assert_eq!(pixel(&dmabuf, 60, 60), [0, 0, 0, 255], "below-right of it");
     }

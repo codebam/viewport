@@ -41,7 +41,11 @@ impl WlrLayerShellHandler for ViewportState {
         let output = wl_output
             .as_ref()
             .and_then(Output::from_resource)
-            .or_else(|| self.active_output.as_deref().and_then(|n| self.output_by_name(n)))
+            .or_else(|| {
+                self.active_output
+                    .as_deref()
+                    .and_then(|n| self.output_by_name(n))
+            })
             .or_else(|| self.space.outputs().next().cloned());
         let Some(output) = output else {
             // Nothing to attach it to. Closing says so rather than leaving the
@@ -87,7 +91,11 @@ impl WlrLayerShellHandler for ViewportState {
         self.needs_render = true;
     }
 
-    fn new_popup(&mut self, _parent: WlrLayerSurface, surface: smithay::wayland::shell::xdg::PopupSurface) {
+    fn new_popup(
+        &mut self,
+        _parent: WlrLayerSurface,
+        surface: smithay::wayland::shell::xdg::PopupSurface,
+    ) {
         // A launcher's completion list. Tracked like any other popup; it is
         // positioned against its parent, which is not a window this compositor
         // has a rectangle for.
@@ -154,8 +162,7 @@ impl ViewportState {
             layer_map_for_output(output)
                 .layer_for_surface(surface, smithay::desktop::WindowSurfaceType::TOPLEVEL)
                 .map(|layer| {
-                    layer.cached_state().keyboard_interactivity
-                        == KeyboardInteractivity::Exclusive
+                    layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
                 })
                 .unwrap_or(false)
         });
@@ -177,7 +184,10 @@ impl ViewportState {
     /// A bar that reserved the top of the screen has taken that space away
     /// from the shell, which is the only thing that places windows — so this
     /// is what `output.layout` has to carry rather than the whole rectangle.
-    pub fn usable_area(&self, output: &Output) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+    pub fn usable_area(
+        &self,
+        output: &Output,
+    ) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
         let geometry = self.space.output_geometry(output).unwrap_or_default();
         let mut usable = layer_map_for_output(output).non_exclusive_zone();
         // The map works in output-local coordinates; the shell works in the

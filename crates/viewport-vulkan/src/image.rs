@@ -91,8 +91,8 @@ impl Image {
         let size = buffer.size();
         let (width, height) = (size.w as u32, size.h as u32);
 
-        let vk_format = format::to_vulkan(fourcc)
-            .ok_or_else(|| anyhow!("no Vulkan format for {fourcc:?}"))?;
+        let vk_format =
+            format::to_vulkan(fourcc).ok_or_else(|| anyhow!("no Vulkan format for {fourcc:?}"))?;
 
         // Refuse a modifier the device did not advertise rather than letting
         // vkCreateImage fail with something less informative.
@@ -101,11 +101,16 @@ impl Image {
             .iter()
             .find(|s| u64::from(s.modifier) == modifier)
             .ok_or_else(|| {
-                anyhow!("{} does not support {fourcc:?} with modifier {modifier:#x}", device.name())
+                anyhow!(
+                    "{} does not support {fourcc:?} with modifier {modifier:#x}",
+                    device.name()
+                )
             })?;
         match purpose {
             Purpose::Sample if !support.sampling => {
-                return Err(anyhow!("{fourcc:?} modifier {modifier:#x} cannot be sampled"))
+                return Err(anyhow!(
+                    "{fourcc:?} modifier {modifier:#x} cannot be sampled"
+                ))
             }
             Purpose::Render if !support.rendering => {
                 return Err(anyhow!(
@@ -198,7 +203,10 @@ impl Image {
             .context("vkGetMemoryFdPropertiesKHR")?;
 
             let memory_type = device
-                .memory_type(requirements.memory_type_bits, fd_properties.memory_type_bits)
+                .memory_type(
+                    requirements.memory_type_bits,
+                    fd_properties.memory_type_bits,
+                )
                 .ok_or_else(|| anyhow!("no memory type can back this dmabuf"))?;
 
             // vkAllocateMemory consumes the fd on success, so hand it a copy.
@@ -316,8 +324,8 @@ impl Image {
             let allocate = vk::MemoryAllocateInfo::default()
                 .allocation_size(requirements.size)
                 .memory_type_index(memory_type);
-            let memory = unsafe { handle.allocate_memory(&allocate, None) }
-                .context("vkAllocateMemory")?;
+            let memory =
+                unsafe { handle.allocate_memory(&allocate, None) }.context("vkAllocateMemory")?;
 
             if let Err(e) = unsafe { handle.bind_image_memory(image, memory, 0) } {
                 unsafe { handle.free_memory(memory, None) };

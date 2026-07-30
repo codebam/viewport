@@ -136,8 +136,8 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
     };
     // The line and column come from serde_json, which is what makes a
     // misplaced comma findable rather than "config is invalid".
-    let file: File = serde_json::from_str(&text)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    let file: File =
+        serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
     Ok(Some(file))
 }
 
@@ -206,11 +206,9 @@ pub fn pick_mode(
     modes: &[smithay::reexports::drm::control::Mode],
     config: &OutputConfig,
 ) -> Option<smithay::reexports::drm::control::Mode> {
-    let fastest = |candidates: &mut dyn Iterator<Item = &smithay::reexports::drm::control::Mode>| {
-        candidates
-            .max_by_key(|mode| mode.vrefresh())
-            .copied()
-    };
+    let fastest = |candidates: &mut dyn Iterator<
+        Item = &smithay::reexports::drm::control::Mode,
+    >| { candidates.max_by_key(|mode| mode.vrefresh()).copied() };
 
     if let Some(spec) = config.mode.as_deref() {
         let (size, rate) = match spec.split_once('@') {
@@ -276,7 +274,15 @@ mod tests {
     fn a_mode_string_that_is_not_one_is_refused() {
         // Rather than becoming a zero, which is a real refresh rate to a mode
         // search and would silently match nothing.
-        for bad in ["", "2560", "2560x", "x1440", "2560x1440@", "0x1440", "2560x1440@0"] {
+        for bad in [
+            "",
+            "2560",
+            "2560x",
+            "x1440",
+            "2560x1440@",
+            "0x1440",
+            "2560x1440@0",
+        ] {
             assert_eq!(parse_mode(bad), None, "{bad:?} should not parse");
         }
     }
@@ -294,9 +300,8 @@ mod tests {
         // A config written for a later version has to keep working. Refusing
         // it means a compositor that will not start over a key it does not
         // need.
-        let file: File =
-            serde_json::from_str(r#"{"terminal":"foot","invented_later":true}"#)
-                .expect("should parse");
+        let file: File = serde_json::from_str(r#"{"terminal":"foot","invented_later":true}"#)
+            .expect("should parse");
         assert_eq!(file.terminal.as_deref(), Some("foot"));
     }
 

@@ -149,8 +149,14 @@ mod tests {
         // The mapping everyone gets wrong. DRM names channels from the least
         // significant byte, Vulkan names them in memory order, so the two read
         // in opposite directions.
-        assert_eq!(to_vulkan(Fourcc::Argb8888), Some(vk::Format::B8G8R8A8_UNORM));
-        assert_eq!(to_vulkan(Fourcc::Abgr8888), Some(vk::Format::R8G8B8A8_UNORM));
+        assert_eq!(
+            to_vulkan(Fourcc::Argb8888),
+            Some(vk::Format::B8G8R8A8_UNORM)
+        );
+        assert_eq!(
+            to_vulkan(Fourcc::Abgr8888),
+            Some(vk::Format::R8G8B8A8_UNORM)
+        );
     }
 
     #[test]

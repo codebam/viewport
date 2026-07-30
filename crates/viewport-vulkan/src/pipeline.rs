@@ -151,7 +151,10 @@ impl Pipelines {
             // SPIR-V is a stream of u32 and the create info wants it as such.
             // include_bytes! gives a byte slice whose alignment is only 1, so
             // it has to be copied rather than cast.
-            anyhow::ensure!(bytes.len().is_multiple_of(4), "SPIR-V is not a whole number of words");
+            anyhow::ensure!(
+                bytes.len().is_multiple_of(4),
+                "SPIR-V is not a whole number of words"
+            );
             let words: Vec<u32> = bytes
                 .chunks_exact(4)
                 .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -174,8 +177,8 @@ impl Pipelines {
             .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
-        let sampler = unsafe { handle.create_sampler(&sampler_info, None) }
-            .context("vkCreateSampler")?;
+        let sampler =
+            unsafe { handle.create_sampler(&sampler_info, None) }.context("vkCreateSampler")?;
 
         let binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
@@ -309,10 +312,9 @@ impl Pipelines {
             .layout(self.layout)
             .push_next(&mut rendering);
 
-        let pipelines = unsafe {
-            handle.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
-        }
-        .map_err(|(_, e)| anyhow::Error::from(e).context("vkCreateGraphicsPipelines"))?;
+        let pipelines =
+            unsafe { handle.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None) }
+                .map_err(|(_, e)| anyhow::Error::from(e).context("vkCreateGraphicsPipelines"))?;
 
         Ok(pipelines[0])
     }
@@ -375,7 +377,10 @@ mod tests {
             ("solid.frag", SOLID_FRAG),
             ("texture.frag", TEXTURE_FRAG),
         ] {
-            assert!(bytes.len() % 4 == 0, "{name} is not a whole number of words");
+            assert!(
+                bytes.len() % 4 == 0,
+                "{name} is not a whole number of words"
+            );
             let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             assert_eq!(magic, 0x0723_0203, "{name} is not SPIR-V");
         }

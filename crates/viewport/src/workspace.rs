@@ -32,7 +32,9 @@ use std::collections::{BTreeSet, HashMap};
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1, GroupCapabilities},
-    ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1, State as HandleState, WorkspaceCapabilities},
+    ext_workspace_handle_v1::{
+        self, ExtWorkspaceHandleV1, State as HandleState, WorkspaceCapabilities,
+    },
     ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
 };
 use smithay::reexports::wayland_server::{
@@ -50,9 +52,15 @@ pub enum Ask {
     Activate(String),
     Deactivate(String),
     /// Move a workspace to the group that stands for this output.
-    Assign { id: String, output: String },
+    Assign {
+        id: String,
+        output: String,
+    },
     Remove(String),
-    Create { output: String, name: String },
+    Create {
+        output: String,
+        name: String,
+    },
 }
 
 /// What the compositor has to be able to do for a request to mean anything.
@@ -115,12 +123,8 @@ impl WorkspaceState {
     /// One `done` per client at the end: that is the protocol's transaction
     /// boundary, and a bar redrawing per event would flicker through
     /// half-states on every switch.
-    pub fn set<D>(
-        &mut self,
-        dh: &DisplayHandle,
-        outputs: &[Output],
-        workspaces: Vec<Workspace>,
-    ) where
+    pub fn set<D>(&mut self, dh: &DisplayHandle, outputs: &[Output], workspaces: Vec<Workspace>)
+    where
         D: Dispatch<ExtWorkspaceGroupHandleV1, GroupData>
             + Dispatch<ExtWorkspaceHandleV1, HandleData>
             + 'static,

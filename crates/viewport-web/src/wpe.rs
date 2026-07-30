@@ -220,7 +220,6 @@ impl Display {
         unsafe { viewport_shim_frame_done(self.inner, token.0) };
     }
 
-
     pub fn resize(&self, width: u32, height: u32) {
         // SAFETY: as above.
         unsafe { viewport_shim_display_resize(self.inner, width, height) };

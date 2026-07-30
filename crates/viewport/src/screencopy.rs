@@ -18,6 +18,7 @@
 
 use std::sync::Mutex;
 
+use smithay::output::Output;
 use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
     zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
@@ -26,7 +27,6 @@ use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
-use smithay::output::Output;
 use smithay::utils::{Physical, Rectangle};
 
 /// What a client asked for.
@@ -123,9 +123,8 @@ where
                     let frame = data_init.init(
                         frame,
                         FrameState {
-                            output: Output::from_resource(&output).unwrap_or_else(|| {
-                                unreachable!("checked above")
-                            }),
+                            output: Output::from_resource(&output)
+                                .unwrap_or_else(|| unreachable!("checked above")),
                             region: Rectangle::default(),
                             overlay_cursor: false,
                             copied: Mutex::new(true),

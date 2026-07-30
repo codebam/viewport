@@ -66,7 +66,10 @@ impl SessionLockHandler for ViewportState {
             return;
         };
         let Some(geometry) = self.space.output_geometry(&output) else {
-            tracing::error!("a lock surface arrived for {} which is not mapped", output.name());
+            tracing::error!(
+                "a lock surface arrived for {} which is not mapped",
+                output.name()
+            );
             return;
         };
         tracing::info!("lock surface on {}", output.name());
@@ -139,7 +142,10 @@ impl ViewportState {
     ///
     /// Called when one commits: focusing at `new_surface` would be too early,
     /// since the client has not acknowledged its size and has nothing to show.
-    pub fn focus_lock_surface(&mut self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {
+    pub fn focus_lock_surface(
+        &mut self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) {
         if !self.locked {
             return;
         }

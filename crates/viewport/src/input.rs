@@ -11,9 +11,10 @@
 // and cannot go stale mid-animation.
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-    GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _,
-    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
+    GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend,
+    InputEvent, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+    TouchEvent,
 };
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{
@@ -21,8 +22,8 @@ use smithay::input::pointer::{
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
     GestureSwipeUpdateEvent, MotionEvent,
 };
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::input::tablet::{TabletDescriptor, TabletSeatTrait as _};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 /// The two buttons a drag can start with, as libinput numbers them.
@@ -222,9 +223,7 @@ impl ViewportState {
                                 // lock along with the compositor. Forwarded
                                 // rather than swallowed, so Ctrl+Alt+Backspace
                                 // still reaches the lock screen as keys.
-                                if state.locked
-                                    && !matches!(action, Action::SwitchVt(_))
-                                {
+                                if state.locked && !matches!(action, Action::SwitchVt(_)) {
                                     return FilterResult::Forward;
                                 }
                                 // Remembered so the release is swallowed too;
@@ -260,9 +259,7 @@ impl ViewportState {
                             ) {
                                 Some(bound) => {
                                     state.suppressed_keys.push(keysym);
-                                    FilterResult::Intercept(Some(Action::Bound(
-                                        bound.clone(),
-                                    )))
+                                    FilterResult::Intercept(Some(Action::Bound(bound.clone())))
                                 }
                                 // To the page, which is the only thing left
                                 // that could want it. Intercepted rather than
@@ -538,12 +535,7 @@ impl ViewportState {
                         self.pointer_grabbed_by_shell = true;
                     }
                     let at = pointer.current_location();
-                    self.shell_pointer_button(
-                        at,
-                        event.button_code(),
-                        pressed,
-                        event.time_msec(),
-                    );
+                    self.shell_pointer_button(at, event.button_code(), pressed, event.time_msec());
                 }
                 if !pressed {
                     self.pointer_grabbed_by_shell = false;
@@ -617,8 +609,7 @@ impl ViewportState {
             InputEvent::DeviceAdded { device } => {
                 use smithay::backend::input::Device as _;
                 if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
-                    let descriptor =
-                        TabletDescriptor::from(&device);
+                    let descriptor = TabletDescriptor::from(&device);
                     let dh = self.display_handle.clone();
                     self.seat.tablet_seat().add_wp_tablet(&dh, &descriptor);
                     tracing::info!("tablet: {}", descriptor.name);
@@ -628,9 +619,7 @@ impl ViewportState {
                 use smithay::backend::input::Device as _;
                 if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
                     let seat = self.seat.tablet_seat();
-                    seat.remove_tablet(
-                        &TabletDescriptor::from(&device),
-                    );
+                    seat.remove_tablet(&TabletDescriptor::from(&device));
                     // The tools belong to the tablets. With none left there is
                     // nothing for a tool to be on, and a client holding one
                     // would be told about pressure from a device that is in a
@@ -697,16 +686,17 @@ impl ViewportState {
                 let time = event.time_msec();
                 let dh = self.display_handle.clone();
                 let seat = self.seat.tablet_seat();
-                let tablet = seat.get_tablet(
-                    &TabletDescriptor::from(&event.device()),
-                );
+                let tablet = seat.get_tablet(&TabletDescriptor::from(&event.device()));
                 let tool = seat.get_tool(&event.tool());
                 let tool = match tool {
                     Some(tool) => tool,
                     // First sight of this pen. A tablet reports its tools as
                     // they arrive rather than up front, because a pen is not
                     // plugged in.
-                    None => self.seat.tablet_seat().add_wp_tool(self, &dh, &event.tool()),
+                    None => self
+                        .seat
+                        .tablet_seat()
+                        .add_wp_tool(self, &dh, &event.tool()),
                 };
                 let Some(tablet) = tablet else {
                     return;
@@ -1061,7 +1051,8 @@ impl ViewportState {
                     toplevel.send_close();
                 }
             }
-            Bound::Reload => {
+            Bound::Reload =>
+            {
                 #[cfg(feature = "wpe")]
                 if let Some(shell) = self.shell.as_ref() {
                     shell.view.reload();
@@ -1346,7 +1337,10 @@ impl ViewportState {
     fn pointer_constraint(
         &self,
         pointer: &smithay::input::pointer::PointerHandle<Self>,
-        under: Option<&(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)>,
+        under: Option<&(
+            WlSurface,
+            smithay::utils::Point<f64, smithay::utils::Logical>,
+        )>,
     ) -> (bool, Option<Confinement>) {
         use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 
@@ -1402,7 +1396,10 @@ impl ViewportState {
 /// Only the ones that changed: the protocol is a delta, and reporting an
 /// unchanged pressure every event makes a stroke look like it was pressed
 /// evenly when it was not.
-fn axis_frame<E: smithay::backend::input::TabletToolEvent<I>, I: smithay::backend::input::InputBackend>(
+fn axis_frame<
+    E: smithay::backend::input::TabletToolEvent<I>,
+    I: smithay::backend::input::InputBackend,
+>(
     event: &E,
 ) -> smithay::input::tablet::tool::AxisFrame {
     smithay::input::tablet::tool::AxisFrame {
@@ -1501,12 +1498,7 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
         // still q, so matching the modified symbol would look for Q and never
         // find it.
         let unmodified = raw_keysym.unwrap_or(keysym).raw();
-        match crate::binding::match_binding(
-            &self.bindings,
-            &mods,
-            unmodified,
-            &self.binding_mode,
-        ) {
+        match crate::binding::match_binding(&self.bindings, &mods, unmodified, &self.binding_mode) {
             Some(bound) => {
                 let bound = bound.clone();
                 self.suppressed_keys.push(keysym);

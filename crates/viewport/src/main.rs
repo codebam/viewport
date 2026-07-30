@@ -11,14 +11,14 @@ mod apply;
 mod binding;
 // Not gated on the web engine: an output composite is worth capturing
 // whatever is drawing into it.
-mod dump;
 mod color_management;
 mod config;
 mod cursor;
+mod dump;
 mod focus;
 mod foreign_toplevel;
-mod gamma;
 mod framing;
+mod gamma;
 #[cfg(feature = "wpe")]
 mod glib_loop;
 mod handlers;
@@ -42,9 +42,9 @@ mod status;
 mod tearing;
 mod udev;
 mod views;
-mod workspace;
 mod watchdog;
 mod winit;
+mod workspace;
 
 use anyhow::Result;
 use smithay::reexports::calloop::EventLoop;
@@ -86,7 +86,10 @@ fn main() -> Result<()> {
     let config_path = explicit.clone().or_else(config::default_path);
     let config = match config_path.as_deref().map(config::load) {
         Some(Ok(Some(file))) => {
-            tracing::info!("loaded config from {}", config_path.as_ref().unwrap().display());
+            tracing::info!(
+                "loaded config from {}",
+                config_path.as_ref().unwrap().display()
+            );
             file
         }
         Some(Ok(None)) => {
@@ -115,15 +118,19 @@ fn main() -> Result<()> {
     // `viewport` from a TTY fail with "winit backend: Failed to initialize an
     // event loop", which names the backend it should not have chosen rather
     // than the missing flag.
-    let nested = std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var_os("DISPLAY").is_some();
+    let nested =
+        std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
     let drm = drm || (!headless && !nested);
     if drm {
         tracing::info!("drm backend");
         udev::init(&mut event_loop, &mut state)?;
     } else if headless {
-        let width = flag(&args, "--width").and_then(|v| v.parse().ok()).unwrap_or(1920);
-        let height = flag(&args, "--height").and_then(|v| v.parse().ok()).unwrap_or(1080);
+        let width = flag(&args, "--width")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1920);
+        let height = flag(&args, "--height")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1080);
         headless::init(&mut event_loop, &mut state, width, height)?;
     } else {
         tracing::info!("nested backend, inside an existing session");
@@ -407,8 +414,7 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 /// and failure is fine: a session with neither systemd nor D-Bus wants no part
 /// of this and works regardless.
 fn export_session_environment() {
-    const VARIABLES: [&str; 3] =
-        ["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
+    const VARIABLES: [&str; 3] = ["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
 
     let commands: [(&str, Vec<&str>); 2] = [
         (

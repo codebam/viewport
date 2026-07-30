@@ -220,7 +220,10 @@ pub struct Udev {
 }
 
 /// Bring up the backend.
-pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut ViewportState) -> Result<()> {
+pub fn init(
+    event_loop: &mut EventLoop<'static, ViewportState>,
+    state: &mut ViewportState,
+) -> Result<()> {
     let (session, notifier) = LibSeatSession::new().context("opening a libseat session")?;
     let seat = session.seat();
 
@@ -300,7 +303,11 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
     // settings are not in its log cannot be compared with another one.
     tracing::info!(
         "scanout {}",
-        if frame_flags().is_empty() { "off" } else { "on" }
+        if frame_flags().is_empty() {
+            "off"
+        } else {
+            "on"
+        }
     );
 
     let mut session = session;
@@ -466,11 +473,9 @@ pub fn init(event_loop: &mut EventLoop<'static, ViewportState>, state: &mut View
             .map(|udev| udev.manager.device().device_fd().clone());
         if let Some(import_device) = import_device {
             if smithay::wayland::drm_syncobj::supports_syncobj_eventfd(&import_device) {
-                state.syncobj_state =
-                    Some(smithay::wayland::drm_syncobj::DrmSyncobjState::new::<ViewportState>(
-                        &state.display_handle,
-                        import_device,
-                    ));
+                state.syncobj_state = Some(smithay::wayland::drm_syncobj::DrmSyncobjState::new::<
+                    ViewportState,
+                >(&state.display_handle, import_device));
                 tracing::info!("explicit sync is available on this gpu");
             } else {
                 tracing::info!("this gpu has no syncobj eventfd; implicit sync only");
@@ -602,11 +607,13 @@ fn open_device(
 /// EGL rather than Vulkan, which is what makes it work where Vulkan cannot:
 /// virgl in a guest exposes GL through the GBM platform, and this is the path
 /// the nested backend has always used.
-fn gles_renderer(gbm: &GbmDevice<DrmDeviceFd>) -> Result<smithay::backend::renderer::gles::GlesRenderer> {
+fn gles_renderer(
+    gbm: &GbmDevice<DrmDeviceFd>,
+) -> Result<smithay::backend::renderer::gles::GlesRenderer> {
     let display = unsafe { smithay::backend::egl::EGLDisplay::new(gbm.clone()) }
         .context("opening an EGL display on the GBM device")?;
-    let context = smithay::backend::egl::EGLContext::new(&display)
-        .context("creating an EGL context")?;
+    let context =
+        smithay::backend::egl::EGLContext::new(&display).context("creating an EGL context")?;
     // SAFETY: the context is current on this thread for the renderer's life,
     // which is the compositor's — the DRM path is single-threaded.
     unsafe { smithay::backend::renderer::gles::GlesRenderer::new(context) }
@@ -708,9 +715,8 @@ impl ViewportState {
                 .output_config
                 .get(&name)
                 .or_else(|| self.output_config.get("*"));
-            let chosen = wanted.and_then(|config| {
-                crate::config::pick_mode(connector.modes(), config)
-            });
+            let chosen =
+                wanted.and_then(|config| crate::config::pick_mode(connector.modes(), config));
             if let Some(mode) = chosen.as_ref() {
                 tracing::info!(
                     "{name}: {}x{}@{} from the configuration",
@@ -719,11 +725,15 @@ impl ViewportState {
                     mode.vrefresh()
                 );
             }
-            let Some(mode) = chosen.as_ref().or_else(|| connector
-                .modes()
-                .iter()
-                .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-                .or_else(|| connector.modes().first()))
+            let Some(mode) = chosen
+                .as_ref()
+                .or_else(|| {
+                    connector
+                        .modes()
+                        .iter()
+                        .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+                        .or_else(|| connector.modes().first())
+                })
                 .copied()
             else {
                 continue;
@@ -853,7 +863,6 @@ impl ViewportState {
         }
     }
 
-
     /// Everyone waiting to hear that this output's frame reached the screen.
     ///
     /// Walked from the elements that were actually drawn, so a surface handed
@@ -885,8 +894,7 @@ impl ViewportState {
         // WAYLAND_DEBUG on a frozen terminal — nine commits, zero `presented`.
         self.update_scanout_outputs(output, states);
 
-        let mut feedback =
-            smithay::desktop::utils::OutputPresentationFeedback::new(output);
+        let mut feedback = smithay::desktop::utils::OutputPresentationFeedback::new(output);
         for window in self.space.elements() {
             if self.space.outputs_for_element(window).contains(output) {
                 window.take_presentation_feedback(
@@ -902,9 +910,7 @@ impl ViewportState {
             layer.take_presentation_feedback(
                 &mut feedback,
                 surface_primary_scanout_output,
-                |surface, _| {
-                    surface_presentation_feedback_flags_from_states(surface, None, states)
-                },
+                |surface, _| surface_presentation_feedback_flags_from_states(surface, None, states),
             );
         }
         feedback
@@ -1138,7 +1144,6 @@ impl ViewportState {
         self.udev = Some(udev);
     }
 
-
     /// One frame, with whichever renderer the device chose.
     ///
     /// Split out so the body is written once and compiled for both: the
@@ -1213,7 +1218,11 @@ impl ViewportState {
                 "{}: tearing {}{}",
                 output.name(),
                 if wants_tearing { "on" } else { "off" },
-                if honoured { "" } else { " (this display cannot, so it will not)" }
+                if honoured {
+                    ""
+                } else {
+                    " (this display cannot, so it will not)"
+                }
             );
         }
 
@@ -1382,23 +1391,14 @@ impl ViewportState {
                 // hands over; under GLES a share takes the shared-memory path,
                 // so there is nothing to resize here.
                 self.resize_casts(None::<&mut VulkanRenderer>);
-                self.feed_casts::<_, <R as Captures>::Buffer>(
-                    output,
-                    renderer,
-                );
+                self.feed_casts::<_, <R as Captures>::Buffer>(output, renderer);
             }
         }
 
         if !self.pending_copies.is_empty() || !self.pending_capture_frames.is_empty() {
             {
-                self.service_screencopy::<_, <R as Captures>::Buffer>(
-                    output,
-                    renderer,
-                );
-                self.service_image_capture::<_, <R as Captures>::Buffer>(
-                    output,
-                    renderer,
-                );
+                self.service_screencopy::<_, <R as Captures>::Buffer>(output, renderer);
+                self.service_image_capture::<_, <R as Captures>::Buffer>(output, renderer);
             }
         }
 
@@ -1423,14 +1423,10 @@ impl ViewportState {
         let _ = submitted;
 
         for window in self.space.elements() {
-            window.send_frame(output, start, throttle, |_, _| {
-                Some(output.clone())
-            });
+            window.send_frame(output, start, throttle, |_, _| Some(output.clone()));
         }
         for layer in smithay::desktop::layer_map_for_output(output).layers() {
-            layer.send_frame(output, start, throttle, |_, _| {
-                Some(output.clone())
-            });
+            layer.send_frame(output, start, throttle, |_, _| Some(output.clone()));
         }
         // The lock screen too. It is not in the space and not a layer surface,
         // so nothing else reaches it — and a locker that never gets a frame
@@ -1449,8 +1445,6 @@ impl ViewportState {
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();
     }
-
-
 
     /// The VT was switched away from. Every device fd is about to be revoked.
     pub fn on_session_paused(&mut self) {
@@ -1508,7 +1502,6 @@ fn frame_flags() -> FrameFlags {
         _ => FrameFlags::DEFAULT,
     }
 }
-
 
 /// A CRTC this connector can drive that nothing else is using.
 fn free_crtc(

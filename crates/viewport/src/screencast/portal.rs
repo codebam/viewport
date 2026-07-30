@@ -262,7 +262,13 @@ impl ScreenCast {
         // hand it over without blocking on this end having got there first.
         let (sender, receiver) = async_channel::bounded(1);
         let started = match self
-            .ask(Message::Start { types, reply: sender }, receiver)
+            .ask(
+                Message::Start {
+                    types,
+                    reply: sender,
+                },
+                receiver,
+            )
             .await
         {
             Ok(started) => started,
@@ -413,10 +419,7 @@ pub fn watch_frontend(
                     if let Some(node) = node {
                         let _ = sender.send(Message::Close { node });
                     }
-                    if let Err(e) = connection
-                        .object_server()
-                        .remove::<SessionObject, _>(&path)
-                    {
+                    if let Err(e) = connection.object_server().remove::<SessionObject, _>(&path) {
                         tracing::warn!("could not take an abandoned session off the bus: {e}");
                     }
                 }

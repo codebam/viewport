@@ -106,9 +106,10 @@ impl ImportMemWl for VulkanRenderer {
         // The closure returns a Result so a bad buffer is reported rather than
         // panicking inside someone else's callback.
         let imported = with_buffer_contents(buffer, |pointer, len, data| {
-            let fourcc = smithay::wayland::shm::shm_format_to_fourcc(data.format).ok_or_else(
-                || Error::Unsupported(format!("no fourcc for shm format {:?}", data.format)),
-            )?;
+            let fourcc =
+                smithay::wayland::shm::shm_format_to_fourcc(data.format).ok_or_else(|| {
+                    Error::Unsupported(format!("no fourcc for shm format {:?}", data.format))
+                })?;
 
             let (width, height) = (data.width.max(0) as usize, data.height.max(0) as usize);
             if width == 0 || height == 0 {
@@ -263,7 +264,10 @@ mod tests {
     fn a_long_history_is_replaced_by_the_whole_buffer() {
         let whole = rect(0, 0, 100, 100);
         let missed: Vec<_> = (0..MAX_PENDING as i32).map(|i| rect(i, 0, 1, 1)).collect();
-        assert_eq!(plan_upload(&[rect(0, 0, 5, 5)], &missed, whole), vec![whole]);
+        assert_eq!(
+            plan_upload(&[rect(0, 0, 5, 5)], &missed, whole),
+            vec![whole]
+        );
     }
 
     #[test]
@@ -271,7 +275,10 @@ mod tests {
         // 2x2, stride exactly the row length.
         let src: Vec<u8> = (0..16).collect();
         let out = repack(&src, 0, 8, 2, 2).expect("repack");
-        assert!(matches!(out, std::borrow::Cow::Borrowed(_)), "needlessly copied");
+        assert!(
+            matches!(out, std::borrow::Cow::Borrowed(_)),
+            "needlessly copied"
+        );
         assert_eq!(&*out, &src[..]);
     }
 
@@ -285,7 +292,10 @@ mod tests {
         src.extend_from_slice(&[0, 0, 0, 0]);
 
         let out = repack(&src, 0, 12, 2, 2).expect("repack");
-        assert!(matches!(out, std::borrow::Cow::Owned(_)), "should have copied");
+        assert!(
+            matches!(out, std::borrow::Cow::Owned(_)),
+            "should have copied"
+        );
         assert_eq!(
             &*out,
             &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]

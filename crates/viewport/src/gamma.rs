@@ -160,8 +160,7 @@ where
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
-        let zwlr_gamma_control_manager_v1::Request::GetGammaControl { id, output } = request
-        else {
+        let zwlr_gamma_control_manager_v1::Request::GetGammaControl { id, output } = request else {
             return;
         };
 

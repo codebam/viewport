@@ -5,14 +5,12 @@
 use std::ffi::OsString;
 use std::sync::Arc;
 
+use smithay::backend::renderer::{Bind, ExportMem, Offscreen, Renderer};
 use smithay::desktop::{PopupManager, Space, Window, WindowSurfaceType};
 use smithay::input::{Seat, SeatState};
-use smithay::backend::renderer::{Bind, ExportMem, Offscreen, Renderer};
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
-use smithay::reexports::calloop::{
-    EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction,
-};
+use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle, Resource as _};
@@ -218,10 +216,7 @@ pub struct ViewportState {
     /// ever — so the outputs go quiet after the first frame while WebKit
     /// carries on painting into buffers nobody draws.
     #[cfg(feature = "wpe")]
-    pub shell_damage: smithay::backend::renderer::utils::DamageBag<
-        i32,
-        smithay::utils::Buffer,
-    >,
+    pub shell_damage: smithay::backend::renderer::utils::DamageBag<i32, smithay::utils::Buffer>,
 
     /// The pointer image: the client's own surface where one is set, the
     /// theme's otherwise. Nothing draws a cursor unless this says what.
@@ -279,19 +274,16 @@ pub struct ViewportState {
     pub primary_selection_state:
         smithay::wayland::selection::primary_selection::PrimarySelectionState,
     /// Clipboard managers, which need to watch selections they do not own.
-    pub data_control_state:
-        smithay::wayland::selection::wlr_data_control::DataControlState,
+    pub data_control_state: smithay::wayland::selection::wlr_data_control::DataControlState,
     /// ext-data-control-v1: the same, standardised.
-    pub ext_data_control_state:
-        smithay::wayland::selection::ext_data_control::DataControlState,
+    pub ext_data_control_state: smithay::wayland::selection::ext_data_control::DataControlState,
     /// Something asking the session not to go idle — a video player.
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
     pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
     /// Clients that want to know when the session went idle, rather than
     /// asking the compositor to act on it.
-    pub idle_notifier_state:
-        smithay::wayland::idle_notify::IdleNotifierState<Self>,
+    pub idle_notifier_state: smithay::wayland::idle_notify::IdleNotifierState<Self>,
     /// Surfaces that have been asked to hold idle off. Kept because a dead or
     /// hidden one must stop counting, and the client will not say so.
     pub idle_inhibitors: Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
@@ -310,30 +302,25 @@ pub struct ViewportState {
     /// allocating one.
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
-    pub single_pixel_state:
-        smithay::wayland::single_pixel_buffer::SinglePixelBufferState,
+    pub single_pixel_state: smithay::wayland::single_pixel_buffer::SinglePixelBufferState,
     /// Fractional scaling: a client drawing at 1.25 rather than at 1 or 2.
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
-    pub fractional_scale_state:
-        smithay::wayland::fractional_scale::FractionalScaleManagerState,
+    pub fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState,
 
     /// Pointer capture, and the relative motion a game reads instead of a
     /// position. Both are needed together: a lock with no relative motion
     /// leaves a game unable to turn at all.
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
-    pub pointer_constraints_state:
-        smithay::wayland::pointer_constraints::PointerConstraintsState,
+    pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
-    pub relative_pointer_state:
-        smithay::wayland::relative_pointer::RelativePointerManagerState,
+    pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     /// ext-foreign-toplevel-list-v1: the window list, for anything outside the
     /// compositor. The shell already knows every window because it is drawing
     /// them; a taskbar or a switcher written as an ordinary client does not.
-    pub foreign_toplevel_state:
-        smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
+    pub foreign_toplevel_state: smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     /// wlr-screencopy: screenshots and recording. Smithay implements it
     /// nowhere, so the dispatch is in `screencopy.rs`.
     // Kept alive rather than read: dropping the state withdraws the global.
@@ -372,19 +359,16 @@ pub struct ViewportState {
     /// compositor only as a popup to place.
     pub _text_input_state: smithay::wayland::text_input::TextInputManagerState,
     pub _input_method_state: smithay::wayland::input_method::InputMethodManagerState,
-    pub _virtual_keyboard_state:
-        smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState,
+    pub _virtual_keyboard_state: smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState,
     /// ext-image-capture-source-v1 and ext-image-copy-capture-v1: the
     /// standardised replacement for wlr-screencopy, and what a current
     /// xdg-desktop-portal reaches for first.
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
-    pub image_capture_source_state:
-        smithay::wayland::image_capture_source::ImageCaptureSourceState,
+    pub image_capture_source_state: smithay::wayland::image_capture_source::ImageCaptureSourceState,
     pub output_capture_source_state:
         smithay::wayland::image_capture_source::OutputCaptureSourceState,
-    pub image_copy_capture_state:
-        smithay::wayland::image_copy_capture::ImageCopyCaptureState,
+    pub image_copy_capture_state: smithay::wayland::image_copy_capture::ImageCopyCaptureState,
     /// The capture sessions, held for the same reason as the sources: a
     /// dropped session sends `stopped` to its client, so letting one go is
     /// telling a recorder the compositor has stopped capturing.
@@ -404,8 +388,7 @@ pub struct ViewportState {
     )>,
     /// Capture frames waiting for the renderer, exactly as screencopy's are:
     /// the copy happens where the renderer is, which is inside a backend.
-    pub pending_capture_frames:
-        Vec<(Output, smithay::wayland::image_copy_capture::Frame)>,
+    pub pending_capture_frames: Vec<(Output, smithay::wayland::image_copy_capture::Frame)>,
     /// linux-drm-syncobj-v1: a client saying when its buffer is ready rather
     /// than the kernel guessing. Absent on a GPU that cannot do it, and on
     /// the nested backend, which has no DRM device of its own.
@@ -558,8 +541,7 @@ pub struct ViewportState {
     /// display; every decision it drives is in the handler.
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
-    pub xdg_decoration_state:
-        smithay::wayland::shell::xdg::decoration::XdgDecorationState,
+    pub xdg_decoration_state: smithay::wayland::shell::xdg::decoration::XdgDecorationState,
     pub shm_state: ShmState,
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
@@ -588,8 +570,7 @@ impl ViewportState {
         let loop_handle = event_loop.handle();
 
         let compositor_state = CompositorState::new::<Self>(&dh);
-        let color_management =
-            crate::color_management::ColorManagementState::new::<Self>(&dh);
+        let color_management = crate::color_management::ColorManagementState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let _xdg_dialog_state =
             smithay::wayland::shell::xdg::dialog::XdgDialogState::new::<Self>(&dh);
@@ -633,8 +614,7 @@ impl ViewportState {
         // are added to the seat as libinput reports them, because a client is
         // told about each device and there is no honest way to describe one
         // that is not plugged in.
-        let tablet_state =
-            smithay::wayland::tablet_manager::TabletManagerState::new::<Self>(&dh);
+        let tablet_state = smithay::wayland::tablet_manager::TabletManagerState::new::<Self>(&dh);
         // Touchpad gestures. A client that cannot see them has no way to tell
         // a two-finger scroll from a three-finger swipe, because everything
         // else it is sent is scroll.
@@ -644,16 +624,15 @@ impl ViewportState {
         // A virtual machine and a remote desktop both need Mod4 to reach the
         // session inside them rather than the one around it.
         let keyboard_shortcuts_inhibit_state =
-            smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState::new::<
-                Self,
-            >(&dh);
+            smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState::new::<Self>(
+                &dh,
+            );
         let text_input_state =
             smithay::wayland::text_input::TextInputManagerState::new::<Self>(&dh);
-        let input_method_state =
-            smithay::wayland::input_method::InputMethodManagerState::new::<Self, _>(
-                &dh,
-                |_client| true,
-            );
+        let input_method_state = smithay::wayland::input_method::InputMethodManagerState::new::<
+            Self,
+            _,
+        >(&dh, |_client| true);
         let virtual_keyboard_state =
             smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState::new::<Self, _>(
                 &dh,
@@ -666,8 +645,7 @@ impl ViewportState {
             smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(&dh);
         // What a surface is showing — video, a game — which is what a
         // compositor would decide tearing and refresh from.
-        let content_type_state =
-            smithay::wayland::content_type::ContentTypeState::new::<Self>(&dh);
+        let content_type_state = smithay::wayland::content_type::ContentTypeState::new::<Self>(&dh);
         // A multiplier a client applies to its own surface. Smithay's surface
         // element reads it while building the render element, so honouring it
         // is the global and nothing else.
@@ -742,11 +720,9 @@ impl ViewportState {
         // separated "the pacing protocols" from "everything else" in a minute,
         // after a day of reading code that did not.
         let pacing = std::env::var("VIEWPORT_FIFO").as_deref() != Ok("0");
-        let fifo_state =
-            pacing.then(|| smithay::wayland::fifo::FifoManagerState::new::<Self>(&dh));
-        let commit_timing_state = pacing.then(|| {
-            smithay::wayland::commit_timing::CommitTimingManagerState::new::<Self>(&dh)
-        });
+        let fifo_state = pacing.then(|| smithay::wayland::fifo::FifoManagerState::new::<Self>(&dh));
+        let commit_timing_state = pacing
+            .then(|| smithay::wayland::commit_timing::CommitTimingManagerState::new::<Self>(&dh));
         let workspace_state = crate::workspace::WorkspaceState::new::<Self>(&dh);
         let security_context_state =
             smithay::wayland::security_context::SecurityContextState::new::<Self, _>(
@@ -787,9 +763,7 @@ impl ViewportState {
 
         // The control socket is named after the Wayland display, so it has to
         // wait until the display exists.
-        let path = socket_path.unwrap_or_else(|| {
-            Ipc::default_path(socket_name.to_str())
-        });
+        let path = socket_path.unwrap_or_else(|| Ipc::default_path(socket_name.to_str()));
         let ipc = Ipc::new(path, &loop_handle)?;
 
         Ok(Self {
@@ -1145,8 +1119,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         if self.pending_copies.is_empty() {
@@ -1194,8 +1167,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         if self.pending_capture_frames.is_empty() {
@@ -1231,8 +1203,9 @@ impl ViewportState {
                 Ok(dmabuf) => {
                     self.render_output_into(&frame_output, dmabuf.clone(), false, renderer)
                 }
-                Err(_) => self
-                    .copy_output_into::<R, B>(&frame_output, region, false, &buffer, renderer),
+                Err(_) => {
+                    self.copy_output_into::<R, B>(&frame_output, region, false, &buffer, renderer)
+                }
             };
             match result {
                 Ok(()) => {
@@ -1277,8 +1250,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         let mut frame = self.frame_for(output);
@@ -1342,8 +1314,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         self.copy_output_into::<R, B>(
@@ -1376,8 +1347,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         let pixels = self.read_output_pixels::<R, B>(output, region, overlay_cursor, renderer)?;
@@ -1434,8 +1404,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         let mut frame = self.frame_for(output);
@@ -1713,11 +1682,7 @@ impl ViewportState {
     /// the only answer a client has. mpv reads it to work out which screen it is
     /// on and where to go fullscreen; with two monitors both claiming the origin
     /// it picks by the accident of enumeration order.
-    pub fn map_output_at(
-        &mut self,
-        output: &Output,
-        location: impl Into<Point<i32, Logical>>,
-    ) {
+    pub fn map_output_at(&mut self, output: &Output, location: impl Into<Point<i32, Logical>>) {
         let location = location.into();
         self.space.map_output(output, location);
         output.change_current_state(None, None, None, Some(location));
@@ -1773,7 +1738,10 @@ impl ViewportState {
             .use_mode(
                 drm_mode,
                 renderer,
-                &smithay::backend::drm::output::DrmOutputRenderElements::<_, crate::render::OutputElement<_>>::new(),
+                &smithay::backend::drm::output::DrmOutputRenderElements::<
+                    _,
+                    crate::render::OutputElement<_>,
+                >::new(),
             )
             .map_err(|e| e.to_string()));
         match result {
@@ -1914,11 +1882,7 @@ impl ViewportState {
     /// call that does not have to join the commit putting a frame on screen,
     /// and a gamma change that waited for a page flip would be a colour shift
     /// that only lands when something moves.
-    pub fn set_output_gamma(
-        &mut self,
-        output: &Output,
-        ramp: Option<&crate::gamma::Ramp>,
-    ) -> bool {
+    pub fn set_output_gamma(&mut self, output: &Output, ramp: Option<&crate::gamma::Ramp>) -> bool {
         let name = output.name();
         match ramp {
             Some(ramp) => {
@@ -2038,7 +2002,10 @@ impl ViewportState {
             if !matches!(format.code, Fourcc::Xrgb8888 | Fourcc::Argb8888) {
                 continue;
             }
-            formats.entry(format.code).or_default().push(format.modifier);
+            formats
+                .entry(format.code)
+                .or_default()
+                .push(format.modifier);
         }
         if formats.is_empty() {
             return None;
@@ -2260,8 +2227,7 @@ impl ViewportState {
             // describes to the consumer: four bytes a pixel, no alpha, because
             // a screen is opaque and a consumer that reads the fourth byte as
             // alpha shows a transparent picture.
-            match renderer
-                .create_buffer(smithay::backend::allocator::Fourcc::Xrgb8888, buffer_size)
+            match renderer.create_buffer(smithay::backend::allocator::Fourcc::Xrgb8888, buffer_size)
             {
                 Ok(target) => targets.push(target),
                 Err(e) => {
@@ -2297,8 +2263,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         if self.casts.is_empty() {
@@ -2329,7 +2294,10 @@ impl ViewportState {
                 && matches!(&cast.source, crate::screencast::Source::Output(o) if o == output)
         });
         if watching_output {
-            if let Some(size) = output.current_mode().map(|mode| output.current_transform().transform_size(mode.size)) {
+            if let Some(size) = output
+                .current_mode()
+                .map(|mode| output.current_transform().transform_size(mode.size))
+            {
                 let region = smithay::utils::Rectangle::from_size((size.w, size.h).into());
                 // The cursor is drawn in: this is a picture of a screen rather
                 // than a screenshot of one, and a share without a pointer is
@@ -2397,9 +2365,9 @@ impl ViewportState {
         source: &crate::screencast::Source,
     ) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
         match source {
-            crate::screencast::Source::Output(output) => {
-                output.current_mode().map(|mode| output.current_transform().transform_size(mode.size))
-            }
+            crate::screencast::Source::Output(output) => output
+                .current_mode()
+                .map(|mode| output.current_transform().transform_size(mode.size)),
             crate::screencast::Source::Window(id) => {
                 let view = self.views.get(*id)?;
                 let geometry = self.space.element_geometry(&view.window)?;
@@ -2441,7 +2409,10 @@ impl ViewportState {
             };
             let mut casts = std::mem::take(&mut self.casts);
             if let (Some(cast), Some(pipewire)) = (casts.get_mut(at), self.pipewire.as_ref()) {
-                if let Err(e) = cast.stream.renegotiate(size, targets, &pipewire.thread_loop) {
+                if let Err(e) = cast
+                    .stream
+                    .renegotiate(size, targets, &pipewire.thread_loop)
+                {
                     tracing::warn!("could not resize a screencast: {e}");
                 }
             }
@@ -2463,8 +2434,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         const RATE: std::time::Duration = std::time::Duration::from_millis(33);
@@ -2557,8 +2527,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         let (elements, size) = self.window_elements(id, renderer)?;
@@ -2597,22 +2566,20 @@ impl ViewportState {
     /// a window did not ask to share whatever is covering it. Drawn at the
     /// window's origin so the shadow a client draws outside its geometry falls
     /// off the edge rather than shifting the picture.
-    fn window_elements<R>(
-        &mut self,
-        id: u32,
-        renderer: &mut R,
-    ) -> Result<WindowElements<R>, String>
+    fn window_elements<R>(&mut self, id: u32, renderer: &mut R) -> Result<WindowElements<R>, String>
     where
         R: Renderer + smithay::backend::renderer::ImportAll,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
     {
         use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
         use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
         use smithay::backend::renderer::element::Kind;
         use smithay::wayland::seat::WaylandFocus as _;
 
-        let view = self.views.get(id).ok_or_else(|| "no such window".to_owned())?;
+        let view = self
+            .views
+            .get(id)
+            .ok_or_else(|| "no such window".to_owned())?;
         let window = view.window.clone();
         let geometry = window.geometry();
         let size: smithay::utils::Size<i32, smithay::utils::Physical> =
@@ -2651,8 +2618,7 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
-        <R as smithay::backend::renderer::RendererSuper>::TextureId:
-            Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         let (elements, size) = self.window_elements(id, renderer)?;
@@ -3163,10 +3129,9 @@ impl ViewportState {
             .map(|view| view.id)
             .collect();
 
-        for placed in crate::watchdog::columns(
-            &ids,
-            (origin.0, origin.1, width as i32, height as i32),
-        ) {
+        for placed in
+            crate::watchdog::columns(&ids, (origin.0, origin.1, width as i32, height as i32))
+        {
             // Through the ordinary layout path, so a window ends up configured
             // and mapped exactly as the shell would have done it.
             crate::apply::apply(
@@ -3322,13 +3287,15 @@ impl ViewportState {
             let request = viewport_ipc::request::OutputConfigure {
                 name: name.clone(),
                 enabled: None,
-                mode: mode.map(|(width, height, refresh)| viewport_ipc::request::ModeRequest {
-                    width,
-                    height,
-                    // Zero means "any rate at this resolution", which is what
-                    // a mode string without one asks for.
-                    refresh: refresh.unwrap_or(0),
-                }),
+                mode: mode.map(
+                    |(width, height, refresh)| viewport_ipc::request::ModeRequest {
+                        width,
+                        height,
+                        // Zero means "any rate at this resolution", which is what
+                        // a mode string without one asks for.
+                        refresh: refresh.unwrap_or(0),
+                    },
+                ),
                 scale: want.scale,
                 transform: want.transform.as_deref().and_then(parse_transform),
                 adaptive_sync: None,
@@ -3410,25 +3377,16 @@ impl ViewportState {
                 let overlay_ids: [smithay::backend::renderer::element::Id; 4] = view
                     .map(|view| view.overlay_ids.clone())
                     .unwrap_or_else(|| {
-                        std::array::from_fn(|_| {
-                            smithay::backend::renderer::element::Id::new()
-                        })
+                        std::array::from_fn(|_| smithay::backend::renderer::element::Id::new())
                     });
-                let clip = view
-                    .and_then(|view| view.clip)
-                    .map(|clip| {
-                        Rectangle::<i32, Logical>::new(
-                            (clip.x, clip.y).into(),
-                            (clip.width, clip.height).into(),
-                        )
-                    });
-                let (location, clip) = crate::render::window_placement(
-                    window,
-                    layout,
-                    output_geometry,
-                    clip,
-                    scale,
-                );
+                let clip = view.and_then(|view| view.clip).map(|clip| {
+                    Rectangle::<i32, Logical>::new(
+                        (clip.x, clip.y).into(),
+                        (clip.width, clip.height).into(),
+                    )
+                });
+                let (location, clip) =
+                    crate::render::window_placement(window, layout, output_geometry, clip, scale);
 
                 // The shell's border for this window, where it has said one
                 // has to be drawn above whatever is underneath — as four
@@ -3450,9 +3408,8 @@ impl ViewportState {
                                 );
                                 // A side of no thickness is a border the shell
                                 // did not draw on that edge.
-                                (side.width > 0 && side.height > 0).then(|| {
-                                    (id, local.to_f64().to_physical(scale).to_i32_round())
-                                })
+                                (side.width > 0 && side.height > 0)
+                                    .then(|| (id, local.to_f64().to_physical(scale).to_i32_round()))
                             })
                             .collect()
                     })
@@ -3507,18 +3464,21 @@ impl ViewportState {
         let cursor = self.cursor_for(output, output_geometry, scale);
 
         #[cfg(feature = "wpe")]
-        let shell = self.shell_owned.as_ref().map(|(buffer, _)| crate::render::Shell {
-            buffer: buffer.clone(),
-            // Negative of the output's position: the shell is one buffer
-            // across the whole layout.
-            location: (
-                -output_geometry.loc.x as f64 * scale,
-                -output_geometry.loc.y as f64 * scale,
-            )
-                .into(),
-            damage: self.shell_damage.snapshot(),
-            id: self.shell_element_id.clone(),
-        });
+        let shell = self
+            .shell_owned
+            .as_ref()
+            .map(|(buffer, _)| crate::render::Shell {
+                buffer: buffer.clone(),
+                // Negative of the output's position: the shell is one buffer
+                // across the whole layout.
+                location: (
+                    -output_geometry.loc.x as f64 * scale,
+                    -output_geometry.loc.y as f64 * scale,
+                )
+                    .into(),
+                damage: self.shell_damage.snapshot(),
+                id: self.shell_element_id.clone(),
+            });
         #[cfg(not(feature = "wpe"))]
         let shell = None;
 
@@ -3533,7 +3493,10 @@ impl ViewportState {
             .enumerate()
             .filter_map(|(at, rect)| {
                 let local = smithay::utils::Rectangle::<i32, Logical>::new(
-                    (rect.loc.x - output_geometry.loc.x, rect.loc.y - output_geometry.loc.y)
+                    (
+                        rect.loc.x - output_geometry.loc.x,
+                        rect.loc.y - output_geometry.loc.y,
+                    )
                         .into(),
                     rect.size,
                 );
@@ -3604,7 +3567,10 @@ impl ViewportState {
             }
             CursorImageStatus::Named(shape) => {
                 let millis = self.start_time.elapsed().as_millis() as u32;
-                match self.cursor_theme.image(shape.name(), scale.ceil() as i32, millis) {
+                match self
+                    .cursor_theme
+                    .image(shape.name(), scale.ceil() as i32, millis)
+                {
                     Some((buffer, hotspot)) => {
                         crate::render::Cursor::Image(buffer, local.to_i32_round() - hotspot)
                     }
@@ -3653,7 +3619,10 @@ impl ViewportState {
         let display_handle = self.display_handle.clone();
         let handle = loop_handle.clone();
         let inserted = loop_handle.insert_source(xwayland, move |event, _, state| match event {
-            XWaylandEvent::Ready { x11_socket, display_number } => {
+            XWaylandEvent::Ready {
+                x11_socket,
+                display_number,
+            } => {
                 match X11Wm::start_wm(handle.clone(), &display_handle, x11_socket, client.clone()) {
                     Ok(wm) => {
                         state.xwm = Some(wm);
@@ -4490,7 +4459,11 @@ impl ViewportState {
     /// A plain `fn` rather than a closure so that the tick body stays a named
     /// method — these run a frame apart from everything else and are easier to
     /// find when they are not anonymous.
-    fn create_tick(&mut self, what: &'static str, run: fn(&mut Self)) -> Option<std::os::fd::OwnedFd> {
+    fn create_tick(
+        &mut self,
+        what: &'static str,
+        run: fn(&mut Self),
+    ) -> Option<std::os::fd::OwnedFd> {
         use smithay::reexports::rustix::time::{timerfd_create, TimerfdClockId, TimerfdFlags};
 
         let fd = match timerfd_create(
@@ -4640,7 +4613,8 @@ impl ViewportState {
                 .set_state(previous, false, fullscreen);
         }
         let fullscreen = self.view_is_fullscreen(id);
-        self.foreign_management_state.set_state(id, true, fullscreen);
+        self.foreign_management_state
+            .set_state(id, true, fullscreen);
 
         let event = Event::ViewFocused { id };
         self.notify(&event);
@@ -4670,8 +4644,7 @@ pub struct ClientState {
     /// carries what the sandbox said about itself. Nothing is refused on the
     /// strength of it yet — the point of the protocol is that a compositor
     /// *can* tell, and a compositor that cannot tell has no way to start.
-    pub security_context:
-        Option<smithay::wayland::security_context::SecurityContext>,
+    pub security_context: Option<smithay::wayland::security_context::SecurityContext>,
 }
 
 impl ClientData for ClientState {
@@ -4724,37 +4697,41 @@ impl ViewportState {
         // once rather than guessed at.
         if self.shell_renderer.is_none() && !self.shell_copy_refused {
             let make = || -> anyhow::Result<viewport_vulkan::VulkanRenderer> {
-            let instance = smithay::backend::vulkan::Instance::new(
-                smithay::backend::vulkan::version::Version::VERSION_1_3,
-                None,
-            )
-            .map_err(|e| anyhow::anyhow!("creating a vulkan instance for the shell: {e}"))?;
-            let device = viewport_vulkan::Device::for_node(&instance, render)
-                .map_err(|e| anyhow::anyhow!("opening a vulkan device for the shell: {e}"))?;
-            // With an allocator: the copy needs somewhere of its own to draw
-            // into, and a renderer without one cannot make an offscreen at
-            // all — which presents as "no image to copy the shell's frame
-            // into" on the first frame.
-            //
-            // The render node opens directly rather than through the session:
-            // it needs no DRM master, which is the whole difference between it
-            // and the card node.
-            let path = render
-                .dev_path()
-                .ok_or_else(|| anyhow::anyhow!("the render node has no device path"))?;
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .map_err(|e| anyhow::anyhow!("opening {} for the shell: {e}", path.display()))?;
-            let gbm = smithay::backend::allocator::gbm::GbmDevice::new(file)
-                .map_err(|e| anyhow::anyhow!("creating a gbm device for the shell: {e}"))?;
-            let allocator = smithay::backend::allocator::gbm::GbmAllocator::new(
-                gbm,
-                smithay::backend::allocator::gbm::GbmBufferFlags::RENDERING,
-            );
-            let renderer = viewport_vulkan::VulkanRenderer::with_allocator(&device, allocator)
-                .map_err(|e| anyhow::anyhow!("creating a vulkan renderer for the shell: {e}"))?;
+                let instance = smithay::backend::vulkan::Instance::new(
+                    smithay::backend::vulkan::version::Version::VERSION_1_3,
+                    None,
+                )
+                .map_err(|e| anyhow::anyhow!("creating a vulkan instance for the shell: {e}"))?;
+                let device = viewport_vulkan::Device::for_node(&instance, render)
+                    .map_err(|e| anyhow::anyhow!("opening a vulkan device for the shell: {e}"))?;
+                // With an allocator: the copy needs somewhere of its own to draw
+                // into, and a renderer without one cannot make an offscreen at
+                // all — which presents as "no image to copy the shell's frame
+                // into" on the first frame.
+                //
+                // The render node opens directly rather than through the session:
+                // it needs no DRM master, which is the whole difference between it
+                // and the card node.
+                let path = render
+                    .dev_path()
+                    .ok_or_else(|| anyhow::anyhow!("the render node has no device path"))?;
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .map_err(|e| {
+                        anyhow::anyhow!("opening {} for the shell: {e}", path.display())
+                    })?;
+                let gbm = smithay::backend::allocator::gbm::GbmDevice::new(file)
+                    .map_err(|e| anyhow::anyhow!("creating a gbm device for the shell: {e}"))?;
+                let allocator = smithay::backend::allocator::gbm::GbmAllocator::new(
+                    gbm,
+                    smithay::backend::allocator::gbm::GbmBufferFlags::RENDERING,
+                );
+                let renderer = viewport_vulkan::VulkanRenderer::with_allocator(&device, allocator)
+                    .map_err(|e| {
+                        anyhow::anyhow!("creating a vulkan renderer for the shell: {e}")
+                    })?;
                 Ok(renderer)
             };
             match make() {
@@ -4773,7 +4750,11 @@ impl ViewportState {
             .shell_renderer
             .as_ref()
             .map(|renderer| renderer.dmabuf_formats())
-            .or_else(|| self.udev.as_ref().map(|udev| udev.renderer.dmabuf_formats()))
+            .or_else(|| {
+                self.udev
+                    .as_ref()
+                    .map(|udev| udev.renderer.dmabuf_formats())
+            })
             .unwrap_or_default()
             .iter()
             .map(|format| (format.code as u32, u64::from(format.modifier)))
@@ -4802,14 +4783,8 @@ impl ViewportState {
         );
 
         tracing::info!("starting the shell at {url}, {}x{}", size.0, size.1);
-        let shell = crate::shell::Shell::start(
-            &card_path,
-            &render_path,
-            &formats,
-            size,
-            &url,
-            console,
-        )?;
+        let shell =
+            crate::shell::Shell::start(&card_path, &render_path, &formats, size, &url, console)?;
         if let Some(ping) = self.shell_ping.clone() {
             shell.wake_with(ping);
         }
@@ -4857,16 +4832,13 @@ impl ViewportState {
                     // WebKit actually painted is the one thing the log cannot
                     // say, and it is the difference between an empty right
                     // half and a right half put on screen wrongly.
-                    if let (Some(path), Some(udev)) =
-                        (crate::dump::target(), self.udev.as_mut())
-                    {
+                    if let (Some(path), Some(udev)) = (crate::dump::target(), self.udev.as_mut()) {
                         if self.shell_owned.is_none() {
                             // The dump path is Vulkan's: it is a diagnostic
                             // for the renderer that has colour management, and
                             // teaching it a second one buys nothing.
                             if let crate::udev::Gpu::Vulkan(renderer) = &mut udev.renderer {
-                                if let Err(e) =
-                                    crate::dump::shell_frame(renderer, &texture, &path)
+                                if let Err(e) = crate::dump::shell_frame(renderer, &texture, &path)
                                 {
                                     tracing::error!("could not dump the shell's frame: {e:#}");
                                 }
@@ -4878,7 +4850,11 @@ impl ViewportState {
                     // more than changed costs a composite; reporting none at
                     // all stops the output.
                     self.shell_damage.add([smithay::utils::Rectangle::from_size(
-                        (pending.buffer.width() as i32, pending.buffer.height() as i32).into(),
+                        (
+                            pending.buffer.width() as i32,
+                            pending.buffer.height() as i32,
+                        )
+                            .into(),
                     )]);
                     // Into an image of our own, because the buffer goes back
                     // to WebKit below and WebKit will paint into it again.
@@ -4886,8 +4862,11 @@ impl ViewportState {
                     // is drawing, which alternates with whatever it drew last
                     // — a picture that changes without the compositor asking,
                     // which is what flicker is.
-                    let size: smithay::utils::Size<i32, smithay::utils::Physical> =
-                        (pending.buffer.width() as i32, pending.buffer.height() as i32).into();
+                    let size: smithay::utils::Size<i32, smithay::utils::Physical> = (
+                        pending.buffer.width() as i32,
+                        pending.buffer.height() as i32,
+                    )
+                        .into();
                     let owned = match self.shell_owned.take() {
                         Some((buffer, at)) if at == size => Some((buffer, at)),
                         // First frame, or the layout changed under it.
@@ -4943,9 +4922,7 @@ impl ViewportState {
                 shell.frame_release(token);
             }
         }
-
     }
-
 
     /// Tell the shell how big it is.
     ///
@@ -5028,5 +5005,3 @@ pub struct PointerDrag {
     /// second does not ask for a thousand relayouts.
     pub sent: Option<std::time::Instant>,
 }
-
-

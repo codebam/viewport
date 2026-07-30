@@ -209,10 +209,7 @@ impl GlibLoop {
         // SAFETY: the source is allocated by GLib to our requested size, and
         // the region past its header is ours to write.
         unsafe {
-            let source = g_source_new(
-                &FUNCS,
-                SOURCE_HEADER + std::mem::size_of::<Bridge>() as u32,
-            );
+            let source = g_source_new(&FUNCS, SOURCE_HEADER + std::mem::size_of::<Bridge>() as u32);
             if source.is_null() {
                 return Err(anyhow::anyhow!("g_source_new returned NULL"));
             }

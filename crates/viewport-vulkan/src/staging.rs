@@ -51,8 +51,8 @@ impl Staging {
             let allocate = vk::MemoryAllocateInfo::default()
                 .allocation_size(requirements.size)
                 .memory_type_index(memory_type);
-            let memory = unsafe { handle.allocate_memory(&allocate, None) }
-                .context("vkAllocateMemory")?;
+            let memory =
+                unsafe { handle.allocate_memory(&allocate, None) }.context("vkAllocateMemory")?;
 
             if let Err(e) = unsafe { handle.bind_buffer_memory(buffer, memory, 0) } {
                 unsafe { handle.free_memory(memory, None) };

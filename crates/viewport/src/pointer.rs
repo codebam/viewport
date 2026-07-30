@@ -119,7 +119,11 @@ mod tests {
         // Otherwise confinement never settles.
         let region = [rect(0, 0, 100, 100)];
         let snapped = confine(&region, (150.0, 150.0).into()).expect("outside");
-        assert_eq!(confine(&region, snapped), None, "snapped to a point still outside");
+        assert_eq!(
+            confine(&region, snapped),
+            None,
+            "snapped to a point still outside"
+        );
     }
 
     #[test]

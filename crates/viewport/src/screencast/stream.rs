@@ -177,11 +177,7 @@ impl Stream {
         if !self.streaming.load(std::sync::atomic::Ordering::Relaxed) {
             return false;
         }
-        needs_renegotiation(
-            *self.agreed.lock().unwrap(),
-            self.renegotiated,
-            size,
-        )
+        needs_renegotiation(*self.agreed.lock().unwrap(), self.renegotiated, size)
     }
 
     /// Agree a new format, at the size the source is now.
@@ -291,7 +287,12 @@ impl Stream {
         *chunk.offset_mut() = layout.offset;
     }
 
-    pub fn push(&mut self, pixels: &[u8], size: Size<i32, Physical>, loop_: &pw::thread_loop::ThreadLoop) {
+    pub fn push(
+        &mut self,
+        pixels: &[u8],
+        size: Size<i32, Physical>,
+        loop_: &pw::thread_loop::ThreadLoop,
+    ) {
         self.last = Some(std::time::Instant::now());
         // The loop's thread is dispatching this stream; touching its buffers
         // without the lock races with it.
@@ -384,10 +385,9 @@ impl Pipewire {
         // SAFETY: the loop is created before it is started, and every call
         // into it below takes its lock — which is the contract the binding
         // marks unsafe for.
-        let thread_loop = unsafe {
-            pw::thread_loop::ThreadLoopRc::new(Some("viewport-screencast"), None)
-        }
-        .map_err(|e| anyhow::anyhow!("creating a pipewire loop: {e}"))?;
+        let thread_loop =
+            unsafe { pw::thread_loop::ThreadLoopRc::new(Some("viewport-screencast"), None) }
+                .map_err(|e| anyhow::anyhow!("creating a pipewire loop: {e}"))?;
 
         // Everything below runs with the loop held, which is the contract:
         // the thread is already dispatching, and touching its objects without
@@ -498,7 +498,11 @@ impl Pipewire {
                 chose_dmabuf.store(chosen.is_some(), Ordering::Relaxed);
                 tracing::debug!(
                     "screencast: sharing through {}",
-                    if chosen.is_some() { "a dma-buf" } else { "shared memory" }
+                    if chosen.is_some() {
+                        "a dma-buf"
+                    } else {
+                        "shared memory"
+                    }
                 );
 
                 match buffer_params(size, chosen) {
@@ -619,7 +623,6 @@ impl Pipewire {
         })
     }
 }
-
 
 /// The first plane of a PipeWire buffer, if it has one.
 ///
@@ -967,7 +970,10 @@ mod tests {
     #[test]
     fn a_shared_memory_format_carries_none() {
         let described = video_format(size(), None).expect("a format");
-        assert_eq!(property(&described, spa::sys::SPA_FORMAT_VIDEO_modifier), None);
+        assert_eq!(
+            property(&described, spa::sys::SPA_FORMAT_VIDEO_modifier),
+            None
+        );
 
         let pod = spa::pod::Pod::from_bytes(&described).expect("a pod");
         assert!(!carries_modifier(pod));
@@ -1028,10 +1034,18 @@ mod tests {
             layout: None,
         };
         let just_now = std::time::Instant::now();
-        assert!(!needs_renegotiation(agreed, Some(just_now), (1280, 720).into()));
+        assert!(!needs_renegotiation(
+            agreed,
+            Some(just_now),
+            (1280, 720).into()
+        ));
 
         let a_while_ago = just_now - Stream::SETTLE - std::time::Duration::from_millis(1);
-        assert!(needs_renegotiation(agreed, Some(a_while_ago), (1280, 720).into()));
+        assert!(needs_renegotiation(
+            agreed,
+            Some(a_while_ago),
+            (1280, 720).into()
+        ));
     }
 
     /// The driver's stride, not the packed width.

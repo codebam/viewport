@@ -178,7 +178,11 @@ pub fn properties(
     let want = if enabled { "BT2020_RGB" } else { "Default" };
     let colorspace_value = enum_value(device, colorspace, want)?;
 
-    Some((vec![colorspace, metadata], vec![colorspace_value, 0], enabled))
+    Some((
+        vec![colorspace, metadata],
+        vec![colorspace_value, 0],
+        enabled,
+    ))
 }
 
 /// Switch a connector into or out of HDR.

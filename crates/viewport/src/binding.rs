@@ -155,9 +155,7 @@ fn parse_action(action: &str) -> Action {
     match action.split_once(' ') {
         Some(("exec", rest)) => Action::Exec(rest.trim().to_owned()),
         Some(("shell", rest)) => Action::Shell(rest.trim().to_owned()),
-        Some(("focus", rest)) if !rest.trim().is_empty() => {
-            Action::Focus(rest.trim().to_owned())
-        }
+        Some(("focus", rest)) if !rest.trim().is_empty() => Action::Focus(rest.trim().to_owned()),
         Some(("mode", rest)) if !rest.trim().is_empty() => {
             let name = rest.trim();
             // "mode default" leaves whatever mode is active, which is what
@@ -292,7 +290,11 @@ pub fn defaults(terminal: &str, menu: &str, scrolling: bool) -> Vec<Binding> {
         // Tiling: the compositor answers it geometrically. Scrolling: the
         // column you want is usually scrolled off the screen, so only the
         // shell can (`src/binding.c:391`).
-        let focus = if scrolling { "shell layout.focus" } else { "focus" };
+        let focus = if scrolling {
+            "shell layout.focus"
+        } else {
+            "focus"
+        };
         specs.push(format!("Mod4+{}={focus} {}", letters[i], directions[i]));
         specs.push(format!("Mod4+{}={focus} {}", arrows[i], directions[i]));
         specs.push(format!(
@@ -307,7 +309,9 @@ pub fn defaults(terminal: &str, menu: &str, scrolling: bool) -> Vec<Binding> {
 
     // Workspaces.
     for workspace in 1..=9 {
-        specs.push(format!("Mod4+{workspace}=shell workspace.switch {workspace}"));
+        specs.push(format!(
+            "Mod4+{workspace}=shell workspace.switch {workspace}"
+        ));
         specs.push(format!(
             "Mod4+Shift+{workspace}=shell workspace.move {workspace}"
         ));
@@ -480,8 +484,7 @@ mod tests {
         let outside = match_binding(&bindings, &plain, keysyms::KEY_h, "").expect("outside");
         assert_eq!(outside, &Action::Shell("layout.focus left".to_owned()));
 
-        let inside =
-            match_binding(&bindings, &plain, keysyms::KEY_h, "resize").expect("inside");
+        let inside = match_binding(&bindings, &plain, keysyms::KEY_h, "resize").expect("inside");
         assert_eq!(inside, &Action::Shell("layout.resize left".to_owned()));
 
         // And a mode with nothing bound in it swallows nothing: the key
@@ -522,7 +525,11 @@ mod tests {
         // 26 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", "wmenu-run", false);
-        assert_eq!(bindings.len(), 26 + 16 + 18 + 11 + 1, "a default failed to parse");
+        assert_eq!(
+            bindings.len(),
+            26 + 16 + 18 + 11 + 1,
+            "a default failed to parse"
+        );
 
         // Scrolling has no resize mode to enter — a column does not share
         // space with its neighbours — and six column bindings instead.
@@ -539,9 +546,7 @@ mod tests {
                 .iter()
                 // The ordinary keymap: resize mode binds h as well, and it is
                 // a different question with a different answer.
-                .find(|b| {
-                    b.mode.is_empty() && b.keysym == keysyms::KEY_h && !b.modifiers.shift
-                })
+                .find(|b| b.mode.is_empty() && b.keysym == keysyms::KEY_h && !b.modifiers.shift)
                 .map(|b| b.action.clone())
         };
         // Tiling: the compositor answers it, because it is a question about

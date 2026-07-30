@@ -39,10 +39,16 @@ impl Compositor {
 
     /// With extra environment, for the settings that only arrive that way.
     fn start_with(tag: &str, env: &[(&str, &std::path::Path)]) -> Self {
-        let socket = PathBuf::from(format!("/tmp/viewport-test-{}-{tag}.sock", std::process::id()));
+        let socket = PathBuf::from(format!(
+            "/tmp/viewport-test-{}-{tag}.sock",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&socket);
 
-        let log = PathBuf::from(format!("/tmp/viewport-test-{}-{tag}.log", std::process::id()));
+        let log = PathBuf::from(format!(
+            "/tmp/viewport-test-{}-{tag}.log",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&log);
         let stderr = std::fs::File::create(&log).expect("could not create the log");
 
@@ -92,7 +98,10 @@ impl Compositor {
                     .split_whitespace()
                     .find(|word| word.starts_with("wayland-"))
                 {
-                    return Some(name.trim_end_matches(|c: char| !c.is_alphanumeric()).to_owned());
+                    return Some(
+                        name.trim_end_matches(|c: char| !c.is_alphanumeric())
+                            .to_owned(),
+                    );
                 }
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -206,11 +215,7 @@ fn a_config_file_reaches_the_shell() {
     let dir = std::env::temp_dir().join("viewport-config-integration");
     std::fs::create_dir_all(dir.join("viewport")).expect("mkdir");
     let path = dir.join("viewport/config.json");
-    std::fs::write(
-        &path,
-        r#"{"layout":"scrolling","logo":false,"bar":"auto"}"#,
-    )
-    .expect("write");
+    std::fs::write(&path, r#"{"layout":"scrolling","logo":false,"bar":"auto"}"#).expect("write");
 
     let compositor = Compositor::start_with("config-file", &[("XDG_CONFIG_HOME", &dir)]);
     let mut client = compositor.connect();
@@ -403,11 +408,19 @@ fn a_type_that_is_not_a_string_cannot_reach_dispatch() {
     let compositor = Compositor::start("badtype");
     let mut client = compositor.connect();
 
-    for message in [r#"{"type":5}"#, r#"{"type":null}"#, r#"{"type":{}}"#, r#"{}"#] {
+    for message in [
+        r#"{"type":5}"#,
+        r#"{"type":null}"#,
+        r#"{"type":{}}"#,
+        r#"{}"#,
+    ] {
         client.send(message);
         let error = client.wait_for("error");
         assert_eq!(error["context"], "ipc", "{message}");
-        assert_eq!(error["message"], "missing or non-string 'type'", "{message}");
+        assert_eq!(
+            error["message"], "missing or non-string 'type'",
+            "{message}"
+        );
     }
 }
 

@@ -60,7 +60,11 @@ pub fn require_gpu() -> Option<TestGpu> {
 /// testing, not a Vulkan image round-tripped through itself.
 pub fn gbm_allocator(node: &DrmNode) -> Option<GbmAllocator<std::fs::File>> {
     let path = node.dev_path().unwrap_or_else(|| RENDER_NODE.into());
-    let file = match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+    {
         Ok(file) => file,
         Err(e) => {
             skip(&format!("could not open {} ({e})", path.display()));

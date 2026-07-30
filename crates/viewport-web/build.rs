@@ -49,7 +49,9 @@ fn main() {
 
     // -Wall on our own file only. WPE's headers generate plenty of warnings
     // that are not ours to fix, so they are not turned into errors here.
-    build.flag_if_supported("-Wall").flag_if_supported("-Wextra");
+    build
+        .flag_if_supported("-Wall")
+        .flag_if_supported("-Wextra");
     // The vfunc signatures are WPE's, and several take arguments this shim has
     // no use for.
     build.flag_if_supported("-Wno-unused-parameter");

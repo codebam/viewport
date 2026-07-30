@@ -17,8 +17,8 @@
 use std::sync::{Arc, Mutex};
 
 use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
     protocol::wl_registry::{self, WlRegistry},
+    Connection, Dispatch, Proxy, QueueHandle,
 };
 use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
@@ -62,8 +62,7 @@ impl Dispatch<WlRegistry, ()> for App {
         } = event
         {
             if interface == "ext_workspace_manager_v1" {
-                state.manager =
-                    Some(registry.bind::<ExtWorkspaceManagerV1, _, _>(name, 1, qh, ()));
+                state.manager = Some(registry.bind::<ExtWorkspaceManagerV1, _, _>(name, 1, qh, ()));
             }
         }
     }

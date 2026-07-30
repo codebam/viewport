@@ -138,7 +138,6 @@ pub struct Status {
     at: Option<Instant>,
 }
 
-
 impl Status {
     /// Read everything once.
     ///
@@ -240,8 +239,14 @@ intr 12345
 
     #[test]
     fn cpu_is_the_share_of_the_delta_that_was_not_idle() {
-        let previous = CpuTimes { total: 1000, idle: 800 };
-        let current = CpuTimes { total: 1100, idle: 850 };
+        let previous = CpuTimes {
+            total: 1000,
+            idle: 800,
+        };
+        let current = CpuTimes {
+            total: 1100,
+            idle: 850,
+        };
         // 100 ticks passed, 50 of them idle.
         assert_eq!(cpu_percent(previous, current), Some(50.0));
     }
@@ -250,8 +255,20 @@ intr 12345
     fn counters_going_backwards_are_not_a_delta() {
         // /proc/stat should never go backwards, but a suspended machine and a
         // reset counter both look like this and neither is 4 billion percent.
-        let previous = CpuTimes { total: 1000, idle: 500 };
-        assert_eq!(cpu_percent(previous, CpuTimes { total: 900, idle: 400 }), None);
+        let previous = CpuTimes {
+            total: 1000,
+            idle: 500,
+        };
+        assert_eq!(
+            cpu_percent(
+                previous,
+                CpuTimes {
+                    total: 900,
+                    idle: 400
+                }
+            ),
+            None
+        );
     }
 
     #[test]

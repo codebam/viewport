@@ -207,8 +207,18 @@ const ALIASES: &[&[&str]] = &[
     &["not-allowed", "crossed_circle", "forbidden"],
     &["grab", "openhand"],
     &["grabbing", "closedhand", "dnd-none"],
-    &["ns-resize", "size_ver", "v_double_arrow", "sb_v_double_arrow"],
-    &["ew-resize", "size_hor", "h_double_arrow", "sb_h_double_arrow"],
+    &[
+        "ns-resize",
+        "size_ver",
+        "v_double_arrow",
+        "sb_v_double_arrow",
+    ],
+    &[
+        "ew-resize",
+        "size_hor",
+        "h_double_arrow",
+        "sb_h_double_arrow",
+    ],
 ];
 
 /// Where the pointer may go: the union of every mapped output.

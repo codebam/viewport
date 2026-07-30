@@ -136,10 +136,7 @@ impl Device {
         // Said loudly, because every frame is then drawn on the CPU and copied,
         // and somebody wondering why their desktop is slow deserves the reason
         // in the log rather than a guess.
-        let physical = devices
-            .into_iter()
-            .next()
-            .expect("checked non-empty above");
+        let physical = devices.into_iter().next().expect("checked non-empty above");
         tracing::warn!(
             "no Vulkan device exposes {node:?}; falling back to {}. \
              Every frame will be drawn without the display's own GPU, which is \
@@ -226,8 +223,7 @@ impl Device {
         let external_memory_fd = ash::khr::external_memory_fd::Device::new(instance, &device);
         let dynamic_rendering = ash::khr::dynamic_rendering::Device::new(instance, &device);
         let push_descriptor = ash::khr::push_descriptor::Device::new(instance, &device);
-        let external_semaphore_fd =
-            ash::khr::external_semaphore_fd::Device::new(instance, &device);
+        let external_semaphore_fd = ash::khr::external_semaphore_fd::Device::new(instance, &device);
 
         let has_timeline_semaphores = enabled.contains(&vk::KHR_TIMELINE_SEMAPHORE_NAME)
             || physical.api_version() >= Version::VERSION_1_2;

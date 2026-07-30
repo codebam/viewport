@@ -427,12 +427,16 @@ mod tests {
     fn unit_variants_need_no_fields() {
         assert_eq!(parse(r#"{"type":"quit"}"#), Request::Quit);
         assert_eq!(parse(r#"{"type":"view.query"}"#), Request::ViewQuery);
-        assert_eq!(parse(r#"{"type":"output.confirm"}"#), Request::OutputConfirm);
+        assert_eq!(
+            parse(r#"{"type":"output.confirm"}"#),
+            Request::OutputConfirm
+        );
     }
 
     #[test]
     fn layout_geometry_is_flattened_not_nested() {
-        let request = parse(r#"{"type":"view.layout","id":3,"x":10,"y":20,"width":800,"height":600}"#);
+        let request =
+            parse(r#"{"type":"view.layout","id":3,"x":10,"y":20,"width":800,"height":600}"#);
         let Request::ViewLayout(layout) = request else {
             panic!("wrong variant");
         };
@@ -457,7 +461,8 @@ mod tests {
 
     #[test]
     fn degenerate_layout_is_dropped() {
-        let Request::ViewLayout(layout) = parse(r#"{"type":"view.layout","id":3,"width":0}"#) else {
+        let Request::ViewLayout(layout) = parse(r#"{"type":"view.layout","id":3,"width":0}"#)
+        else {
             panic!("wrong variant");
         };
         assert!(layout.resolve(Box::new(0, 0, 100, 100)).is_none());

@@ -42,7 +42,12 @@ pub fn init(
         },
     );
     let _global = output.create_global::<ViewportState>(&state.display_handle);
-    output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+    output.change_current_state(
+        Some(mode),
+        Some(Transform::Normal),
+        None,
+        Some((0, 0).into()),
+    );
     output.set_preferred(mode);
     state.space.map_output(&output, (0, 0));
     state.active_output = Some(output.name());

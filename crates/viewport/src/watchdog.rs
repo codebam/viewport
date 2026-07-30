@@ -75,9 +75,27 @@ mod tests {
         assert_eq!(
             placed,
             vec![
-                Placement { id: 1, x: 0, y: 0, width: 300, height: 600 },
-                Placement { id: 2, x: 300, y: 0, width: 300, height: 600 },
-                Placement { id: 3, x: 600, y: 0, width: 300, height: 600 },
+                Placement {
+                    id: 1,
+                    x: 0,
+                    y: 0,
+                    width: 300,
+                    height: 600
+                },
+                Placement {
+                    id: 2,
+                    x: 300,
+                    y: 0,
+                    width: 300,
+                    height: 600
+                },
+                Placement {
+                    id: 3,
+                    x: 600,
+                    y: 0,
+                    width: 300,
+                    height: 600
+                },
             ]
         );
     }

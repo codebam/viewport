@@ -125,9 +125,7 @@ impl View {
         if let Some(toplevel) = self.window.toplevel() {
             return Some(toplevel.wl_surface().clone());
         }
-        self.window
-            .x11_surface()
-            .and_then(|x11| x11.wl_surface())
+        self.window.x11_surface().and_then(|x11| x11.wl_surface())
     }
 
     pub fn title(&self) -> String {
@@ -255,7 +253,9 @@ impl View {
         use smithay::wayland::shell::xdg::dialog::ToplevelDialogHint;
         if self
             .role_attribute(|attrs| attrs.dialog_hint)
-            .is_some_and(|hint| matches!(hint, ToplevelDialogHint::Dialog | ToplevelDialogHint::Modal))
+            .is_some_and(|hint| {
+                matches!(hint, ToplevelDialogHint::Dialog | ToplevelDialogHint::Modal)
+            })
         {
             return true;
         }
@@ -333,9 +333,7 @@ impl Views {
             clip: None,
             tag: None,
             frame: None,
-            overlay_ids: std::array::from_fn(|_| {
-                smithay::backend::renderer::element::Id::new()
-            }),
+            overlay_ids: std::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
             opacity: 1.0,
             configured: None,
             foreign: None,

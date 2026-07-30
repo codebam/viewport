@@ -246,7 +246,11 @@ mod tests {
         // this wrong.
         let flat = vec!["default".to_owned(), "Open".to_owned(), "orphan".to_owned()];
         let actions = parse_actions(&flat);
-        assert_eq!(actions.len(), 1, "the orphan should not have become a button");
+        assert_eq!(
+            actions.len(),
+            1,
+            "the orphan should not have become a button"
+        );
     }
 
     #[test]
@@ -264,10 +268,7 @@ mod tests {
     #[test]
     fn urgency_is_read_from_the_hint() {
         let mut hints = HashMap::new();
-        hints.insert(
-            "urgency".to_owned(),
-            zvariant::OwnedValue::from(2u8),
-        );
+        hints.insert("urgency".to_owned(), zvariant::OwnedValue::from(2u8));
         assert_eq!(urgency(&hints), 2);
     }
 
@@ -277,10 +278,7 @@ mod tests {
         // refusing would silently make every one of their notifications
         // normal.
         let mut hints = HashMap::new();
-        hints.insert(
-            "urgency".to_owned(),
-            zvariant::OwnedValue::from(2u32),
-        );
+        hints.insert("urgency".to_owned(), zvariant::OwnedValue::from(2u32));
         assert_eq!(urgency(&hints), 2);
     }
 }

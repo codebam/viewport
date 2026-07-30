@@ -14,8 +14,8 @@
 use std::sync::{Arc, Mutex};
 
 use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
     protocol::wl_registry::{self, WlRegistry},
+    Connection, Dispatch, Proxy, QueueHandle,
 };
 use wayland_protocols::wp::drm_lease::v1::client::{
     wp_drm_lease_connector_v1::{self, WpDrmLeaseConnectorV1},
@@ -90,14 +90,9 @@ impl Dispatch<WpDrmLeaseConnectorV1, ()> for App {
         let object = connector.id().protocol_id();
         let mut seen = state.seen.lock().unwrap();
         if !seen.connectors.iter().any(|c| c.0 == object) {
-            seen.connectors
-                .push((object, String::new(), String::new()));
+            seen.connectors.push((object, String::new(), String::new()));
         }
-        let entry = seen
-            .connectors
-            .iter_mut()
-            .find(|c| c.0 == object)
-            .unwrap();
+        let entry = seen.connectors.iter_mut().find(|c| c.0 == object).unwrap();
         match event {
             wp_drm_lease_connector_v1::Event::Name { name } => entry.1 = name,
             wp_drm_lease_connector_v1::Event::Description { description } => entry.2 = description,

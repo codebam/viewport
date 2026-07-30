@@ -99,7 +99,9 @@ pub fn nearest(
         // window in the layout wins outright.
         return candidates
             .iter()
-            .min_by(|a, b| distance(a.centre(), (0.0, 0.0)).total_cmp(&distance(b.centre(), (0.0, 0.0))))
+            .min_by(|a, b| {
+                distance(a.centre(), (0.0, 0.0)).total_cmp(&distance(b.centre(), (0.0, 0.0)))
+            })
             .map(|c| c.id);
     };
 
@@ -119,7 +121,11 @@ pub fn nearest(
         // The gap between the two edges that face each other. Negative means
         // the candidate is behind, or overlapping, which is not "in that
         // direction" either way.
-        let gap = if forward { start - from_end } else { from_start - end };
+        let gap = if forward {
+            start - from_end
+        } else {
+            from_start - end
+        };
         if gap < 0 {
             continue;
         }

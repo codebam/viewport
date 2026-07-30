@@ -35,9 +35,9 @@ pub mod staging;
 pub mod sync;
 pub mod transform;
 
+pub mod renderer;
 #[cfg(feature = "wayland")]
 pub mod wayland;
-pub mod renderer;
 
 #[cfg(test)]
 mod test_support;

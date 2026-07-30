@@ -173,8 +173,9 @@ impl Commands {
     /// retired.
     pub fn wait_on(&mut self, fd: OwnedFd) -> Result<()> {
         let handle = self.device.handle();
-        let semaphore = unsafe { handle.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }
-            .context("vkCreateSemaphore")?;
+        let semaphore =
+            unsafe { handle.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }
+                .context("vkCreateSemaphore")?;
 
         let info = vk::ImportSemaphoreFdInfoKHR::default()
             .semaphore(semaphore)

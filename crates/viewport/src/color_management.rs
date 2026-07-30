@@ -19,6 +19,7 @@
 
 use std::sync::Mutex;
 
+use smithay::output::Output;
 use smithay::reexports::wayland_protocols::wp::color_management::v1::server::{
     wp_color_management_output_v1::{self, WpColorManagementOutputV1},
     wp_color_management_surface_feedback_v1::{self, WpColorManagementSurfaceFeedbackV1},
@@ -31,7 +32,6 @@ use smithay::reexports::wayland_protocols::wp::color_management::v1::server::{
     wp_image_description_info_v1::WpImageDescriptionInfoV1,
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
-use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
@@ -989,7 +989,10 @@ mod tests {
         assert_eq!(min, (MIN_LUMINANCE * 10_000.0) as u32);
         assert_eq!(max, PQ_PEAK as u32);
         assert_eq!(reference, hdr_description().reference_luminance as u32);
-        assert!(reference < max, "reference white above the encodable maximum");
+        assert!(
+            reference < max,
+            "reference white above the encodable maximum"
+        );
 
         // And the target pair: minimum then maximum, the panel rather than the
         // encoding.
@@ -1038,8 +1041,14 @@ mod tests {
         let description = hdr_description();
         assert_eq!(description.transfer, TransferFunction::Pq);
         assert_eq!(description.primaries, Primaries::BT2020);
-        assert_eq!(named_transfer(description.transfer), Some(WireTransferFunction::St2084Pq));
-        assert_eq!(named_primaries(&description.primaries), Some(WirePrimaries::Bt2020));
+        assert_eq!(
+            named_transfer(description.transfer),
+            Some(WireTransferFunction::St2084Pq)
+        );
+        assert_eq!(
+            named_primaries(&description.primaries),
+            Some(WirePrimaries::Bt2020)
+        );
     }
 
     #[test]
@@ -1096,7 +1105,10 @@ mod tests {
             identity_for(&Description::default()),
             identity_for(&Description::default())
         );
-        assert_eq!(identity_for(&hdr_description()), identity_for(&hdr_description()));
+        assert_eq!(
+            identity_for(&hdr_description()),
+            identity_for(&hdr_description())
+        );
         assert_ne!(
             identity_for(&Description::default()),
             identity_for(&hdr_description())

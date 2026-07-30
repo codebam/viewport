@@ -75,11 +75,7 @@ impl Idle {
         // Still the keystroke that asked for this. Nothing is reset either,
         // not only the wake suppressed: treating the chord as activity would
         // also re-arm the deadlines it just pre-empted.
-        if self.blanked
-            && self
-                .blanked_at
-                .is_some_and(|at| at.elapsed() < BLANK_GRACE)
-        {
+        if self.blanked && self.blanked_at.is_some_and(|at| at.elapsed() < BLANK_GRACE) {
             return false;
         }
 
@@ -198,12 +194,18 @@ mod tests {
         assert_eq!(idle.tick(&s, Duration::from_secs(299)), Actions::default());
         assert_eq!(
             idle.tick(&s, Duration::from_secs(300)),
-            Actions { lock: true, blank: false }
+            Actions {
+                lock: true,
+                blank: false
+            }
         );
         assert_eq!(idle.tick(&s, Duration::from_secs(400)), Actions::default());
         assert_eq!(
             idle.tick(&s, Duration::from_secs(600)),
-            Actions { lock: false, blank: true }
+            Actions {
+                lock: false,
+                blank: true
+            }
         );
         assert_eq!(idle.tick(&s, Duration::from_secs(900)), Actions::default());
     }
@@ -223,7 +225,10 @@ mod tests {
         // And both deadlines can fire again.
         assert_eq!(
             idle.tick(&s, Duration::from_secs(5)),
-            Actions { lock: true, blank: true }
+            Actions {
+                lock: true,
+                blank: true
+            }
         );
     }
 
@@ -239,7 +244,10 @@ mod tests {
         idle.set_inhibited(false);
         assert_eq!(
             idle.tick(&s, Duration::from_secs(600)),
-            Actions { lock: true, blank: true }
+            Actions {
+                lock: true,
+                blank: true
+            }
         );
     }
 
@@ -279,7 +287,10 @@ mod tests {
         let s = settings(None, Some(1));
         assert_eq!(
             idle.tick(&s, Duration::from_secs(5)),
-            Actions { lock: false, blank: true }
+            Actions {
+                lock: false,
+                blank: true
+            }
         );
         assert!(idle.activity(), "the deadline's blank made the user wait");
         assert!(!idle.blanked());

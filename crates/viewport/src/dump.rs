@@ -14,9 +14,7 @@
 use anyhow::{Context, Result};
 
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::{
-    Bind, Color32F, ExportMem, Frame, Offscreen, Renderer,
-};
+use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
 use smithay::utils::{Buffer as BufferCoord, Physical, Point, Rectangle, Size, Transform};
 
 use viewport_vulkan::{VulkanRenderer, VulkanTexture};
@@ -68,7 +66,13 @@ where
     {
         let mut framebuffer = renderer.bind(&mut target).context("binding it")?;
         tracker
-            .render_output(renderer, &mut framebuffer, 0, elements, Color32F::from(clear))
+            .render_output(
+                renderer,
+                &mut framebuffer,
+                0,
+                elements,
+                Color32F::from(clear),
+            )
             .map_err(|e| anyhow::anyhow!("compositing the dump: {e:?}"))?;
 
         let mapping = renderer
@@ -78,10 +82,7 @@ where
                 Fourcc::Argb8888,
             )
             .context("reading it back")?;
-        let (w, h) = (
-            mapping.width(),
-            mapping.height(),
-        );
+        let (w, h) = (mapping.width(), mapping.height());
         let pixels = renderer.map_texture(&mapping).context("mapping it")?;
         write_ppm(path, w, h, pixels)?;
     }
@@ -171,7 +172,10 @@ pub fn shell_frame(
         // Magenta, so "WebKit painted nothing here" and "the shell painted
         // black here" are not the same picture in the dump either.
         frame
-            .clear(Color32F::from([1.0, 0.0, 1.0, 1.0]), &[Rectangle::from_size(size)])
+            .clear(
+                Color32F::from([1.0, 0.0, 1.0, 1.0]),
+                &[Rectangle::from_size(size)],
+            )
             .context("clearing")?;
         frame
             .render_texture_at(

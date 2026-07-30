@@ -230,7 +230,10 @@ mod tests {
             framebuffer,
             transform,
         );
-        assert!(close(affine.apply(0.0, 0.0), (1.0, -1.0)), "top-left goes right");
+        assert!(
+            close(affine.apply(0.0, 0.0), (1.0, -1.0)),
+            "top-left goes right"
+        );
         // And the whole quad still covers the whole framebuffer.
         for (u, v) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
             let (x, y) = affine.apply(u, v);

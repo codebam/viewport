@@ -127,9 +127,7 @@ impl OutputManagementState {
     /// nothing calls this then.
     pub fn advertise<D>(&mut self, dh: &DisplayHandle, heads: &[Head])
     where
-        D: Dispatch<ZwlrOutputHeadV1, HeadData>
-            + Dispatch<ZwlrOutputModeV1, ModeData>
-            + 'static,
+        D: Dispatch<ZwlrOutputHeadV1, HeadData> + Dispatch<ZwlrOutputModeV1, ModeData> + 'static,
     {
         self.serial = self.serial.wrapping_add(1);
         // Zero is not a serial a client would ever be handed, so it stays free
@@ -371,8 +369,7 @@ where
             zwlr_output_manager_v1::Request::Stop => {
                 manager.finished();
                 let managed = state.output_management_state();
-                if let Some((_, data)) =
-                    managed.managers.iter().find(|(other, _)| other == manager)
+                if let Some((_, data)) = managed.managers.iter().find(|(other, _)| other == manager)
                 {
                     data.lock().unwrap().stopped = true;
                 }
@@ -473,8 +470,7 @@ where
             }
             zwlr_output_configuration_v1::Request::Apply
             | zwlr_output_configuration_v1::Request::Test => {
-                let test_only =
-                    matches!(request, zwlr_output_configuration_v1::Request::Test);
+                let test_only = matches!(request, zwlr_output_configuration_v1::Request::Test);
                 {
                     let mut used = data.used.lock().unwrap();
                     if *used {
@@ -508,8 +504,7 @@ where
     }
 }
 
-impl<D> Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData, D>
-    for OutputManagementState
+impl<D> Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData, D> for OutputManagementState
 where
     D: Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData> + 'static,
 {

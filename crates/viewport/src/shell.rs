@@ -21,8 +21,8 @@ use smithay::backend::allocator::dmabuf::{Dmabuf, DmabufFlags};
 use smithay::backend::allocator::{Fourcc, Modifier};
 
 use viewport_ipc::Event;
-use viewport_web::wpe::{Display, FrameSink, FrameToken};
 use viewport_web::webkit::{MessageSink, WebView};
+use viewport_web::wpe::{Display, FrameSink, FrameToken};
 use viewport_web::Frame;
 
 /// A painted frame, waiting to be drawn.
