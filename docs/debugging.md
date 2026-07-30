@@ -146,6 +146,22 @@ Two smaller things the same guest showed, both fixed:
   imports buffers through `VK_EXT_external_memory_dma_buf` and does not need to
   own the display — so a mismatch is now a warning rather than an exit.
 
-So: real hardware, or a GPU passed through with vfio. A guest with virtio-gpu
-is not enough today, and the thing standing in the way is the Venus driver
-rather than anything here.
+**It runs on OpenGL instead.** virgl gives a guest hardware GL through the GBM
+platform, which is what the nested backend has always drawn with, so the DRM
+path takes it when Vulkan cannot serve the display. A plain
+`-device virtio-gpu-gl-pci` guest — no Venus, no `vulkan-virtio` — brings up a
+desktop, and a terminal in it composites and reads back:
+
+    qemu-system-x86_64 -enable-kvm -m 4096 -smp 4 -cpu host \
+      -drive file=arch.qcow2,if=virtio \
+      -device virtio-gpu-gl-pci -display egl-headless
+
+`VIEWPORT_RENDERER=gles` or `--renderer gles` asks for it outright, and
+`VIEWPORT_RENDERER=vulkan` refuses the fallback so that a machine which should
+be using Vulkan says why it is not.
+
+What a guest gives up: colour management and HDR, which are the Vulkan
+renderer's; DMA-BUF screen sharing, which takes the shared-memory path instead;
+and the copy of the shell's frame, without which WebKit's next paint can land
+in the buffer being sampled and the shell can flicker. All three are warned
+about once and none of them stop a session.
