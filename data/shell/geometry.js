@@ -378,6 +378,18 @@ function relayoutAll() {
     /* Auto draws the bar over the windows rather than above them, so revealing
        it does not resize anything. */
     output.el.classList.toggle('bar-auto', barMode === 'auto');
+    /* And the compositor has to be told, or it is drawn over nothing. The
+       shell is one buffer *under* the clients: a bar given no room of its own
+       lands behind every window on the output, which looks like it covers
+       their borders — those are drawn by the shell — and stops dead at the
+       edge of the client's own surface. Naming the rectangle gets this buffer
+       drawn again, cropped to the bar, in front.
+       Only under 'auto': the other modes reserve space, so nothing is over
+       anything and there is nothing to lift. */
+    const barFloats = barMode === 'auto'
+      && !hidden
+      && !(fullscreenHere && !overviewActive);
+    setOverlay(`bar:${name}`, barFloats ? output.barEl : null);
     renderBar(name);
   }
 

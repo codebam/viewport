@@ -67,6 +67,7 @@ function syncOutputs(list) {
         name: info.name,
         el,
         windowsEl: el.querySelector('.windows'),
+        barEl: el.querySelector('.bar'),
         emptyEl: el.querySelector('.empty'),
         workspacesEl: el.querySelector('.workspaces'),
         taskbarEl: el.querySelector('.taskbar'),
