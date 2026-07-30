@@ -212,16 +212,31 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
-        Request::OutputTestAdd => reject(
-            state,
-            "output.test_add",
-            "headless hotplug is only available under --headless",
-        ),
-        Request::OutputTestRemove { .. } => reject(
-            state,
-            "output.test_remove",
-            "headless hotplug is only available under --headless",
-        ),
+        // Both go through the same path a real hotplug takes — map or unmap in
+        // the `Space`, then tell the shell — so what the tests exercise is the
+        // code a monitor being plugged in runs, not a simulation of it.
+        Request::OutputTestAdd => match crate::headless::add(state) {
+            Some(_) => state.notify_output_layout(),
+            None => reject(
+                state,
+                "output.test_add",
+                "headless hotplug is only available under --headless",
+            ),
+        },
+        Request::OutputTestRemove { name } => {
+            if crate::headless::remove(state, name.as_deref()) {
+                state.notify_output_layout();
+            } else {
+                reject(
+                    state,
+                    "output.test_remove",
+                    // Two different noes, deliberately not distinguished: a
+                    // caller that gets this back cannot act differently on
+                    // "wrong backend" than on "no such output".
+                    "no such headless output",
+                );
+            }
+        }
 
         // The shell drew the notification, so the shell is what knows the user
         // pressed a button or dismissed it. All three end the notification;

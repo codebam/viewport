@@ -139,6 +139,13 @@ pub struct ViewportState {
     /// The DRM backend, when running on real hardware rather than nested.
     pub udev: Option<crate::udev::Udev>,
 
+    /// The headless backend's virtual outputs, when there is one.
+    ///
+    /// `Some` under `--headless` and nowhere else, which is what makes it the
+    /// answer to "may this instance hotplug an output" — `output.test_add`
+    /// exists so a test can plug a second monitor in without owning one.
+    pub headless: Option<crate::headless::Headless>,
+
     /// Keys whose press was intercepted, so the matching release can be too.
     pub suppressed_keys: Vec<smithay::input::keyboard::Keysym>,
 
@@ -814,6 +821,7 @@ impl ViewportState {
             overview: false,
             active_output: None,
             udev: None,
+            headless: None,
             suppressed_keys: Vec::new(),
             bindings: crate::binding::defaults(
                 &std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
