@@ -230,6 +230,20 @@ pub struct OutputInfo {
 
     pub enabled: bool,
 
+    /// The output the shell last called active: where a new window opens, and
+    /// what "the screen" means to anything outside the shell — a screenshot
+    /// tool has no other way to ask, because `output.active` only ever went
+    /// the other way.
+    ///
+    /// Worked out when the layout is built, so a `output.query` answers with
+    /// the current one. A client that only listens to broadcasts sees the
+    /// value from whenever the layout last changed.
+    ///
+    /// Defaulted: a session from before this field existed still parses, and
+    /// says no output is active rather than refusing the whole event.
+    #[serde(default)]
+    pub active: bool,
+
     /// Position and size in the output layout.
     pub x: i32,
     pub y: i32,
@@ -361,6 +375,7 @@ mod tests {
                 model: String::new(),
                 serial: String::new(),
                 enabled: true,
+                active: true,
                 x: 0,
                 y: 0,
                 width: 2560,

@@ -4188,6 +4188,12 @@ impl ViewportState {
                     model: props.model,
                     serial: String::new(),
                     enabled: true,
+                    // The shell owns this — it tracks the pointer and keyboard
+                    // focus, and tells the compositor. Reporting it back is
+                    // what lets anything else ask which screen the user is on:
+                    // a screenshot tool otherwise has to guess, and guessing
+                    // over two monitors means capturing both.
+                    active: self.active_output.as_deref() == Some(output.name().as_str()),
                     x: geometry.loc.x,
                     y: geometry.loc.y,
                     width: geometry.size.w,

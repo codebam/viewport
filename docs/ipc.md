@@ -28,7 +28,7 @@ socat - UNIX:$VIEWPORT_SOCKET
 | `view.props` | `id`, `title`, `app_id` |
 | `view.removed` | `id` |
 | `view.focused` | `id` (`0` means the shell itself holds focus) |
-| `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `hdr`, `hdr_capable`, `scale`, `transform`, `modes[]` |
+| `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `active` (the one the shell last named through `output.active`), `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `hdr`, `hdr_capable`, `scale`, `transform`, `modes[]` |
 | `workspace.request` | `action` (`activate`, `deactivate`, `assign`, `remove`, `create`), optional `id`, `name`, `output` — a client outside the shell asked for something through `ext-workspace-v1`. See [Workspaces](#workspaces) |
 | `shell.command` | `command`, `args[]` — a keybinding forwarded for the shell to act on |
 | `session.restore` | `state` (whatever was last saved, or empty) |
