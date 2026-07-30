@@ -104,6 +104,50 @@ jobs:
             $(pkg-config --cflags --libs json-glib-1.0)
           ./unit-test
 
+  # The Rust rewrite: fmt, clippy and the whole test suite, on every push.
+  #
+  # This runs unassisted for the same reason the shell job does — it needs
+  # nothing that a hosted runner cannot substitute in seconds. The web engine
+  # is behind the `wpe` feature, off by default, and crates/viewport-web's
+  # build.rs only probes pkg-config when it is on, so `cargo test --workspace`
+  # links Smithay, DRM, libinput and libseat and no WebKit at all. `.#rust` is
+  # the devshell that carries exactly that and nothing else; `.#default` would
+  # drag in wlroots, WPE and a Servo recipe and put this job behind the same
+  # cache gate as the compositor ones.
+  #
+  # -D warnings rather than a bare clippy run: the point is that a warning
+  # fails the build. The three lints that are deliberate carry an #[allow] and
+  # a comment saying why, which is the form an exception should take.
+  rust:
+    name: Rust rewrite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v4
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      # One `nix develop` for all three, so the shell is realised once. Split
+      # into separate steps and each would pay for it again.
+      #
+      # Ordered cheapest-first: a formatting diff is a one-line fix and there
+      # is no reason to spend a compile finding it. `set -euo pipefail` because
+      # a bare multi-line run: stops at the last command's status, which would
+      # let a clippy failure through whenever the tests passed.
+      - name: Format, lint and test
+        run: |
+          nix develop .#rust --command bash -euo pipefail -c '
+            cargo fmt --all --check
+            cargo clippy --workspace --all-targets -- -D warnings
+            cargo test --workspace
+          '
+
+      # The `wpe` half is not built here — it is the part that needs WebKit —
+      # so nothing above would catch a lint or a type error inside
+      # `#[cfg(feature = "wpe")]`. The compositor job below builds
+      # .#viewport-smithay, which turns the feature on, and that is where those
+      # show up. It is gated on the cache; this job is not.
+
   # Builds .#wpewebkit on its own and pushes the closure to Cachix, so that the
   # compositor and sanitizer jobs have something to substitute. Never runs on a
   # push: it is workflow_dispatch, plus a weekly refresh.
@@ -266,6 +310,20 @@ jobs:
 
       - name: Build
         run: nix build --print-build-logs .#viewport
+
+      # The Rust rewrite with the web engine turned on. The `rust` job above
+      # builds the default features, which leaves everything inside
+      # `#[cfg(feature = "wpe")]` uncompiled — the shell, the DMA-BUF import,
+      # the whole reason the compositor exists. Nothing else in this file
+      # type-checks it.
+      #
+      # Here rather than in that job because `wpe` is what pulls in WebKit, so
+      # this is gated on the same populated cache as everything else on this
+      # runner. Its own tests stay off: buildRustPackage runs them in the nix
+      # sandbox, which has neither a GPU nor a socket, and the `rust` job has
+      # already run the suite outside it.
+      - name: Build the Rust rewrite with the web engine
+        run: nix build --print-build-logs .#viewport-smithay
 
       # Only the Wayland tests here; the shell job already covered the rest,
       # and running them twice would just make a node-less runner look green.

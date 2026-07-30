@@ -254,8 +254,9 @@
           '';
 
           # The suite needs a GPU for the renderer tests and a socket for the
-          # compositor ones; the sandbox has neither. `cargo test` on a machine
-          # with both is what covers this.
+          # compositor ones; the sandbox has neither. The `rust` job in
+          # .github/workflows/ci.yml runs `cargo test --workspace` outside the
+          # sandbox, which is what covers this.
           doCheck = false;
 
           meta = with pkgs.lib; {
@@ -319,6 +320,62 @@
             "kiosk"
           ];
         });
+
+        # --------------------------------------------------------------------
+        # The Rust rewrite, and nothing else.
+        #
+        # `devShells.default` carries wlroots, WPE WebKit and a Servo build
+        # recipe, which is right for a workstation and wrong for CI: the WebKit
+        # derivation is a four-hour build that no binary cache has, and it is
+        # the reason the compositor jobs in .github/workflows/ci.yml are gated
+        # behind a repository variable.
+        #
+        # `cargo test --workspace` needs none of it. The web engine is behind
+        # the `wpe` feature, off by default, and crates/viewport-web/build.rs
+        # only probes pkg-config when it is on — so the default build is
+        # Smithay, DRM, libinput and libseat, all of which substitute in
+        # seconds. That is what makes a Rust job affordable on an unassisted
+        # hosted runner, which in turn is what gets these 34k lines tested on
+        # every push.
+        # --------------------------------------------------------------------
+        devShells.rust = pkgs.mkShell {
+          packages = with pkgs; [
+            rustc
+            cargo
+            rustfmt
+            clippy
+            pkg-config
+            # drm-sys and input-sys generate their bindings with bindgen, which
+            # needs libclang and the C headers found for it.
+            rustPlatform.bindgenHook
+
+            libdrm
+            libgbm
+            libinput
+            seatd
+            udev
+            wayland
+            wayland-protocols
+            libxkbcommon
+            pipewire
+          ];
+
+          # As in the default shell: viewport-web links libgbm, and smithay's
+          # wayland_frontend pulls in xkbcommon, both at build time.
+          LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [ pkgs.libgbm pkgs.libxkbcommon ]}";
+
+          shellHook = ''
+            # ash dlopens libvulkan.so.1 and winit dlopens libwayland-client;
+            # the viewport-vulkan tests that ask for a device skip themselves
+            # without one, but they have to get as far as the dlopen to do it.
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+              pkgs.vulkan-loader
+              pkgs.wayland
+              pkgs.libxkbcommon
+              pkgs.libgbm
+            ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          '';
+        };
 
         devShells.default = pkgs.mkShell {
           packages = nativeDeps ++ runtimeDeps ++ (with pkgs; [
