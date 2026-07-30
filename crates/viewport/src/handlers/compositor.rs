@@ -152,6 +152,11 @@ impl CompositorHandler for ViewportState {
         // 120Hz on one monitor had the other attempting a frame per commit for
         // nothing.
         self.mark_dirty_for_surface(surface);
+        // Whether or not it painted, this client is awake, so keep the
+        // invitations going. A commit that carried no damage is often exactly
+        // a client acknowledging a configure and waiting to be told when to
+        // draw.
+        self.arm_frame_clock();
 
         // If this commit set a fifo barrier or a commit timer, the *next* one
         // is going to block, and a blocked commit makes no damage to draw. The

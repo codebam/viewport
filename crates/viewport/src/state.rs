@@ -472,6 +472,11 @@ pub struct ViewportState {
     /// Whether a barrier tick is already armed, so a hundred commits do not
     /// arm a hundred timers.
     pub barrier_tick: bool,
+    /// A frame-callback tick is already armed.
+    pub frame_clock: bool,
+    /// A client committed while the tick was armed, so tick once more after it
+    /// fires. This is what lets the clock stop when the desktop goes quiet.
+    pub frame_clock_wanted: bool,
     /// How many ticks in a row have released nothing.
     pub barrier_quiet: u32,
     /// The shell's workspaces, mirrored for `ext-workspace-v1`. Empty until
@@ -507,6 +512,7 @@ pub struct ViewportState {
     pub data_device_state: DataDeviceState,
     pub seat: Seat<Self>,
 }
+
 
 impl ViewportState {
     pub fn new(
@@ -855,6 +861,8 @@ impl ViewportState {
             fifo_state,
             commit_timing_state,
             barrier_tick: false,
+            frame_clock: false,
+            frame_clock_wanted: false,
             barrier_quiet: 0,
             _security_context_state: security_context_state,
             _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
@@ -4243,6 +4251,82 @@ impl ViewportState {
     /// Called from the outer loop rather than from wherever the change
     /// happened, so a commit that touches five subsurfaces costs one frame
     /// instead of five.
+
+    /// Invite the surfaces on an output to draw their next frame.
+    ///
+    /// Split out of the render pass because a frame callback is not a thing
+    /// that happens *because* the compositor drew. It is the compositor
+    /// saying "now would be a good time", and a client that paints only when
+    /// invited has no other way to hear it.
+    pub fn send_frame_callbacks(&mut self, output: &Output, at: std::time::Duration) {
+        let throttle = Some(self.frame_interval());
+        for window in self.space.elements() {
+            window.send_frame(output, at, throttle, |_, _| Some(output.clone()));
+        }
+        for layer in smithay::desktop::layer_map_for_output(output).layers() {
+            layer.send_frame(output, at, throttle, |_, _| Some(output.clone()));
+        }
+        for lock in self.lock_surfaces.values() {
+            smithay::desktop::utils::send_frames_surface_tree(
+                lock.wl_surface(),
+                output,
+                at,
+                throttle,
+                |_, _| Some(output.clone()),
+            );
+        }
+    }
+
+    /// Keep inviting clients to draw for as long as any of them is drawing.
+    ///
+    /// Frame callbacks used to go out only at the end of a render pass, which
+    /// worked by accident: the compositor rendered thousands of times a second
+    /// whether or not anything had changed, so every client was invited
+    /// constantly. Once renders were held to actual damage that engine went
+    /// away, and with it every invitation — a client waiting on a callback to
+    /// paint never painted, so it never made damage, so no render happened and
+    /// no callback went out. The desktop froze solid and came back only on
+    /// input, which forced a frame by another route.
+    ///
+    /// So the invitations get their own clock. It ticks at the refresh rate
+    /// while clients are committing and stops when they stop, which is the
+    /// difference between a frame clock and the busy loop it replaces.
+    pub fn arm_frame_clock(&mut self) {
+        if self.frame_clock {
+            // Already ticking. Ask for one more tick after this one, so a
+            // client that is still going keeps being invited.
+            self.frame_clock_wanted = true;
+            return;
+        }
+        self.frame_clock = true;
+        let timer =
+            smithay::reexports::calloop::timer::Timer::from_duration(self.frame_interval());
+        if let Err(e) = self.loop_handle.insert_source(timer, move |_, _, state| {
+            state.frame_clock = false;
+            let at = state.start_time.elapsed();
+            let outputs: Vec<Output> = state.space.outputs().cloned().collect();
+            for output in &outputs {
+                state.send_frame_callbacks(output, at);
+            }
+            // A new frame is a new answer: whatever found nothing last time
+            // may find something now.
+            if let Some(udev) = state.udev.as_mut() {
+                for surface in udev.surfaces.values_mut() {
+                    surface.idle = false;
+                }
+            }
+            state.render_if_needed();
+            let _ = state.display_handle.flush_clients();
+            if std::mem::take(&mut state.frame_clock_wanted) {
+                state.arm_frame_clock();
+            }
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        }) {
+            tracing::warn!("frame clock: {e}");
+            self.frame_clock = false;
+        }
+    }
+
     pub fn render_if_needed(&mut self) {
         let all = std::mem::take(&mut self.needs_render);
         let some = std::mem::take(&mut self.dirty_outputs);

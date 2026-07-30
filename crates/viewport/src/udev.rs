@@ -140,6 +140,10 @@ pub struct Surface {
     /// visible as flicker whenever a client repaints quickly, like a terminal
     /// being typed into.
     pub pending: bool,
+    /// This output looked and found nothing to draw, and nothing has happened
+    /// since that could change the answer. Cleared by the frame clock and by a
+    /// vblank, which are the two things that can.
+    pub idle: bool,
     /// When this output was last drawn into, for holding attempts to one a
     /// frame.
     pub last_attempt: Option<std::time::Instant>,
@@ -843,6 +847,7 @@ impl ViewportState {
                             _global: global,
                             drawn: false,
                             dumped: false,
+                            idle: false,
                             last_attempt: None,
                             deferred: false,
                             hdr: false,
@@ -977,6 +982,7 @@ impl ViewportState {
         // this screen from ever drawing again, so the vblank clears it. An
         // extra timer that finds nothing to do is the harmless failure.
         surface.deferred = false;
+        surface.idle = false;
         // A vblank is the start of a new frame period, so the render this
         // vblank drives is never a repeat of the last one and must not be
         // held back. Throttling it costs the whole refresh — the flip misses
@@ -1401,6 +1407,7 @@ impl ViewportState {
             // vblank, and the vblank draws the next one. Only the empty pass
             // repeats without limit, and only the empty pass is timed.
             Ok(_) => {
+                surface.idle = true;
                 surface.last_attempt = Some(std::time::Instant::now());
                 tracing::debug!("{}: nothing to draw", output.name());
             }

@@ -163,9 +163,35 @@ be using Vulkan says why it is not.
 ## Render churn, and why the throttle is off
 
 The compositor attempts far more renders a second than the screen can show, and
-most find nothing to draw. Counted on a 240Hz machine: 2,679 damage events a
-second, of which **2,679 were the compositor's own `render_if_needed`** and a
-few hundred the browser. The loop is ours, and it is still open.
+most find nothing to draw. Counted on a 240Hz machine with a video playing:
+Firefox commits **17,232 times a second**, which becomes 23,432 output-dirty
+marks and 7,843 render passes, against 240 vblanks, at around 60% of a core.
+
+An earlier note here blamed the compositor's own `render_if_needed`, on the
+strength of a counter that sat above that function's early return and so
+counted calls that did nothing. Calls are cheap; the passes are not. The churn
+is client commits, one render each.
+
+Four ways of not doing that work have been tried and all four cost more than
+they saved. Recorded so they are not tried again in the same form:
+
+- Holding attempts to one a frame, anchored to the last attempt. Merges any two
+  commits sharing a window, which halves a client already at panel rate.
+- Skipping commits that attached no buffer and asked for no damage, read after
+  `on_commit_buffer_handler` has already taken both. Every paint looks empty
+  and the client freezes on one frame.
+- The same read before that call, and again over the whole surface tree to
+  catch sync subsurfaces. Still misses paints; video goes stale.
+- Suppressing a second pass on an output that just found nothing, until the
+  frame clock clears it. Correct only if something always comes back for the
+  output — and with no client committing, nothing armed the clock, so the
+  screen stayed dirty and never drew.
+
+What is genuinely fixed is that frame callbacks no longer depend on a render
+happening. They have their own clock (`arm_frame_clock`), which ticks at the
+refresh rate while clients are committing and stops when they stop. Without it
+any damage-driven rendering deadlocks: no damage, no render, no callback, and a
+client that paints only when invited never paints again.
 
 `VIEWPORT_COALESCE=1` holds attempts to one a frame. It takes the compositor
 from roughly half a core to a twentieth of one — and costs smooth video, which
