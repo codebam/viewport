@@ -73,8 +73,8 @@ pub struct Shell {
     pub damage: DamageSnapshot<i32, BufferCoord>,
     /// Stable for the life of the compositor, for the same reason.
     pub id: Id,
-    /// For the copy drawn above the windows, which needs an id of its own.
-    pub overlay_id: Id,
+    /// One per copy drawn above the windows, each needing an id of its own.
+    pub overlay_ids: Vec<Id>,
 }
 
 /// One window, and everything about drawing it that is not the window itself.
@@ -131,9 +131,10 @@ pub struct Frame {
     /// physical coordinates, and nothing if there is none.
     ///
     /// The shell is one buffer under everything, so this is how anything it
-    /// draws can be in front: the same texture, a second time, cropped to the
-    /// piece that belongs on top.
-    pub overlay: Option<Rectangle<i32, Physical>>,
+    /// draws can be in front: the same texture, once per rectangle, cropped to
+    /// the piece that belongs on top. A notification and a chooser can be up
+    /// at the same time, which is why it is a list.
+    pub overlay: Vec<(Id, Rectangle<i32, Physical>)>,
     pub cursor: Cursor,
     pub scale: f64,
     /// The lock screen for this output, if the session is locked.
@@ -249,11 +250,14 @@ where
     // again and cropped to the part that has to be in front. A chooser asking
     // which window to share cannot be behind the windows it is asking about,
     // and the shell has no way to be in front on its own.
-    if let (Some(shell), Some(crop)) = (frame.shell.as_ref(), frame.overlay) {
-        if let Some(element) = shell_element(renderer, shell, shell.overlay_id.clone()) {
-            // Cropped away to nothing is a chooser on another monitor, not a
-            // fault.
-            if let Some(cropped) = CropRenderElement::from_element(element, scale, crop) {
+    if let Some(shell) = frame.shell.as_ref() {
+        for (id, crop) in &frame.overlay {
+            let Some(element) = shell_element(renderer, shell, id.clone()) else {
+                break;
+            };
+            // Cropped away to nothing is a notification on another monitor,
+            // not a fault.
+            if let Some(cropped) = CropRenderElement::from_element(element, scale, *crop) {
                 elements.push(OutputElement::from(cropped));
             }
         }

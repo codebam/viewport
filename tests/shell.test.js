@@ -1092,9 +1092,13 @@ if (mode === 'scrolling') {
 
   /* The compositor cannot draw the chooser above the windows without being
      told which part of the shell it is. */
-  const rect = sent.filter((m) => m.type === 'screencast.rect').at(-1);
+  /* `shell.overlay` carries every rectangle that floats above the windows —
+     the chooser here, a notification elsewhere — so the check is that one of
+     them is the dialog rather than that the message exists. */
+  const overlay = sent.filter((m) => m.type === 'shell.overlay').at(-1);
   check('the shell says where the dialog is',
-    rect !== undefined && rect.width > 0 && rect.height > 0);
+    overlay !== undefined
+      && overlay.rects.some((r) => r.width > 0 && r.height > 0));
 
   emit({ type: 'screencast.pick.done', id: 7 });
   check('the chooser goes away when it is answered',
@@ -1102,9 +1106,9 @@ if (mode === 'scrolling') {
   check('and takes its rows with it', screencastEl.children.length === 0);
   /* Otherwise the compositor goes on drawing that piece of the shell over
      whatever is there now. */
-  const gone = sent.filter((m) => m.type === 'screencast.rect').at(-1);
+  const gone = sent.filter((m) => m.type === 'shell.overlay').at(-1);
   check('and tells the compositor there is nothing on top now',
-    gone.width === 0 && gone.height === 0);
+    gone !== undefined && gone.rects.length === 0);
 }
 
 emit({ type: 'view.removed', id: 1 });

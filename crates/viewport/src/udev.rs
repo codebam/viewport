@@ -954,6 +954,9 @@ impl ViewportState {
             }
         }
 
+        // Whether this call put a frame in the air, which decides whether the
+        // clients on this output are invited to draw another one.
+        let mut submitted = false;
         let result = surface.drm_output.render_frame(
             &mut udev.renderer,
             &elements,
@@ -1018,6 +1021,7 @@ impl ViewportState {
                         self.dirty_outputs.insert(crtc);
                     }
                 } else {
+                    submitted = true;
                     surface.pending = true;
                     if !surface.drawn {
                         surface.drawn = true;
@@ -1083,7 +1087,23 @@ impl ViewportState {
         // commit produces no damage and nothing draws again.
         self.arm_barrier_tick();
 
-        // Frame callbacks: a client will not paint again until it gets one.
+        // Frame callbacks, and only when a frame actually went out.
+        //
+        // A callback means "the frame you drew has been dealt with, draw the
+        // next one". Sending it after a render that found nothing to draw
+        // tells a client to paint a frame that changes nothing, whose commit
+        // marks the output dirty, whose render finds nothing to draw, which
+        // sends another callback: a loop between compositor and client that
+        // runs as fast as both can manage. With a browser and a terminal open
+        // that was ten thousand renders a second and a core of CPU, all of it
+        // logged as "nothing to draw".
+        //
+        // A client with something new to show commits it, and the commit is
+        // what asks for the frame — no invitation needed.
+        if !submitted {
+            return;
+        }
+
         for window in self.space.elements() {
             window.send_frame(&output, start, Some(Duration::ZERO), |_, _| {
                 Some(output.clone())

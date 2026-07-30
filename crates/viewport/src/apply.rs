@@ -94,16 +94,31 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         }
 
         Request::ScreencastRect { x, y, width, height } => {
-            // A zero size is the shell saying there is nothing above the
-            // windows now, which is the ordinary case.
-            state.shell_overlay = (width > 0 && height > 0).then(|| {
-                smithay::utils::Rectangle::new((x, y).into(), (width, height).into())
-            });
-            // The stack changed without anything committing, and a desktop
-            // nobody is touching produces no damage of its own — so without
-            // this the chooser appears on the next frame something else
-            // happens to cause, which on an idle desktop is none.
-            state.needs_render = true;
+            // The older, single-rectangle form of `shell.overlay`. A zero size
+            // is the shell saying there is nothing above the windows now.
+            let rects = (width > 0 && height > 0)
+                .then(|| {
+                    vec![smithay::utils::Rectangle::new(
+                        (x, y).into(),
+                        (width, height).into(),
+                    )]
+                })
+                .unwrap_or_default();
+            state.set_shell_overlays(rects);
+        }
+
+        Request::ShellOverlay { rects } => {
+            let rects = rects
+                .into_iter()
+                .filter(|rect| rect.width > 0 && rect.height > 0)
+                .map(|rect| {
+                    smithay::utils::Rectangle::new(
+                        (rect.x, rect.y).into(),
+                        (rect.width, rect.height).into(),
+                    )
+                })
+                .collect();
+            state.set_shell_overlays(rects);
         }
 
         Request::ShellOverview { active } => {

@@ -138,16 +138,7 @@ function renderScreencastPicker() {
  * than the whole screen: what is being chosen between is the windows, and
  * covering them to ask about them would be a strange way to ask. */
 function reportScreencastRect(dialog) {
-  if (!dialog) {
-    send({ type: 'screencast.rect', x: 0, y: 0, width: 0, height: 0 });
-    return;
-  }
-  const rect = dialog.getBoundingClientRect();
-  send({
-    type: 'screencast.rect',
-    x: Math.round(rect.left),
-    y: Math.round(rect.top),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
-  });
+  /* One of several things that can float now, so it goes through the shared
+     list rather than owning the compositor's single slot. */
+  setOverlay('screencast', dialog);
 }

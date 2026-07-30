@@ -190,7 +190,10 @@ pub struct ViewportState {
     ///
     /// Its own, because the damage tracker keys on the id and one element
     /// appearing twice under a single id is a frame it cannot describe.
-    pub shell_overlay_id: smithay::backend::renderer::element::Id,
+    /// One id per overlay rectangle, stable by position for as long as the
+    /// list is that long: a render element whose id changes every frame tells
+    /// the damage tracker everything is new.
+    pub shell_overlay_ids: Vec<smithay::backend::renderer::element::Id>,
     /// Where the shell drew something that has to be above the windows, in the
     /// layout's own coordinates.
     ///
@@ -198,7 +201,7 @@ pub struct ViewportState {
     /// bottom of everything — the windows are painted into holes in it — so
     /// anything it draws is behind them by construction, which for a dialog
     /// asking a question is the one place that will not do.
-    pub shell_overlay: Option<smithay::utils::Rectangle<i32, Logical>>,
+    pub shell_overlays: Vec<smithay::utils::Rectangle<i32, Logical>>,
     /// What changed in the shell's buffer since the last frame.
     ///
     /// Required, not an optimisation. With a stable id the damage tracker
@@ -770,8 +773,8 @@ impl ViewportState {
             shell_frames: 0,
             #[cfg(feature = "wpe")]
             shell_element_id: smithay::backend::renderer::element::Id::new(),
-            shell_overlay_id: smithay::backend::renderer::element::Id::new(),
-            shell_overlay: None,
+            shell_overlay_ids: Vec::new(),
+            shell_overlays: Vec::new(),
             #[cfg(feature = "wpe")]
             shell_damage: Default::default(),
 
@@ -3355,26 +3358,33 @@ impl ViewportState {
                 .into(),
             damage: self.shell_damage.snapshot(),
             id: self.shell_element_id.clone(),
-            overlay_id: self.shell_overlay_id.clone(),
+            overlay_ids: self.shell_overlay_ids.clone(),
         });
         #[cfg(not(feature = "wpe"))]
         let shell = None;
 
         // The part of the shell that goes above the windows, in this output's
         // own physical coordinates.
-        let overlay = self.shell_overlay.and_then(|rect| {
-            let local = smithay::utils::Rectangle::<i32, Logical>::new(
-                (rect.loc.x - output_geometry.loc.x, rect.loc.y - output_geometry.loc.y).into(),
-                rect.size,
-            );
-            // Nothing of it on this monitor: the chooser is drawn on one of
-            // them and the others carry on as they were.
-            let visible = smithay::utils::Rectangle::from_size(
-                (output_geometry.size.w, output_geometry.size.h).into(),
-            );
-            local.intersection(visible)?;
-            Some(local.to_f64().to_physical(scale).to_i32_round())
-        });
+        let visible = smithay::utils::Rectangle::<i32, Logical>::from_size(
+            (output_geometry.size.w, output_geometry.size.h).into(),
+        );
+        let overlay: Vec<_> = self
+            .shell_overlays
+            .iter()
+            .enumerate()
+            .filter_map(|(at, rect)| {
+                let local = smithay::utils::Rectangle::<i32, Logical>::new(
+                    (rect.loc.x - output_geometry.loc.x, rect.loc.y - output_geometry.loc.y)
+                        .into(),
+                    rect.size,
+                );
+                // Nothing of it on this monitor: a notification is drawn on one
+                // of them and the others carry on as they were.
+                local.intersection(visible)?;
+                let id = self.shell_overlay_ids.get(at)?.clone();
+                Some((id, local.to_f64().to_physical(scale).to_i32_round()))
+            })
+            .collect();
 
         crate::render::Frame {
             layers_above,
@@ -3966,6 +3976,27 @@ impl ViewportState {
             tracing::warn!("arming the barrier tick: {e}");
             self.barrier_tick = false;
         }
+    }
+
+    /// Replace the list of shell rectangles that float above the windows.
+    ///
+    /// Ids are kept by position and only minted when the list grows, because a
+    /// render element with a new id every frame tells the damage tracker that
+    /// everything changed.
+    pub fn set_shell_overlays(&mut self, rects: Vec<smithay::utils::Rectangle<i32, Logical>>) {
+        if self.shell_overlays == rects {
+            return;
+        }
+        while self.shell_overlay_ids.len() < rects.len() {
+            self.shell_overlay_ids
+                .push(smithay::backend::renderer::element::Id::new());
+        }
+        self.shell_overlays = rects;
+        // The stack changed without anything committing, and a desktop nobody
+        // is touching produces no damage of its own — so without this the
+        // notification appears on the next frame something else happens to
+        // cause, which on an idle desktop is none.
+        self.needs_render = true;
     }
 
     /// Ask for a frame on whichever screens show this surface.

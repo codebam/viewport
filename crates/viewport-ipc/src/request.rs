@@ -116,6 +116,22 @@ pub enum Request {
     #[serde(rename = "notification.expire")]
     NotificationExpire { id: u32 },
 
+    /// Where the shell has drawn something that belongs above the windows.
+    ///
+    /// The shell is one buffer *under* the clients, so anything it draws over
+    /// one is behind it by construction — a notification, the screen-share
+    /// chooser, anything else that floats. Naming the rectangles lets the
+    /// compositor draw the same buffer again, cropped to each, in front.
+    ///
+    /// Sent whole: the list replaces whatever was there, and an empty list
+    /// means nothing floats now. `screencast.rect` is the older single-rectangle
+    /// form of this and still works.
+    #[serde(rename = "shell.overlay")]
+    ShellOverlay {
+        #[serde(default)]
+        rects: Vec<OverlayRect>,
+    },
+
     /// The shell's workspaces, whole, whenever they change.
     ///
     /// Workspaces are the shell's: it decides how many there are, what they
@@ -247,6 +263,15 @@ pub struct Resolved {
     pub box_: Box,
     pub scale: f64,
     pub clip: Option<Box>,
+}
+
+/// A rectangle of the shell that belongs above the windows.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OverlayRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 /// One of the shell's workspaces, as an outside client sees it.

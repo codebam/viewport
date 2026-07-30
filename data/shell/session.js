@@ -287,6 +287,9 @@ function showNotification(message) {
       ? setTimeout(() => dropNotification(message.id, true), ms)
       : null,
   });
+  /* The stack grew, so where it is has changed. Reported after the entry
+     is registered, because the rectangle is measured from the DOM. */
+  reportNotificationRect();
 }
 
 /* Remove one from the screen. `expired` distinguishes a timer running out from
@@ -298,8 +301,16 @@ function dropNotification(id, expired) {
   clearTimeout(entry.timer);
   entry.el.remove();
   notifications.delete(id);
+  reportNotificationRect();
 
   if (expired) send({ type: 'notification.expire', id });
+}
+
+/* Where the notifications are, so the compositor can draw them above the
+   windows. Nothing when there are none: the container is still there, and a
+   rectangle of empty shell drawn over a window would be a hole in it. */
+function reportNotificationRect() {
+  setOverlay('notifications', notifications.size ? notificationsEl : null);
 }
 
 /* The first rule matching a window, or null.

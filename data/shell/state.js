@@ -168,6 +168,39 @@ function clearOverviewState() {
 
 const outputsEl = document.getElementById('outputs');
 const notificationsEl = document.getElementById('notifications');
+
+/* What the shell has drawn that belongs above the windows.
+ *
+ * The shell is one buffer *under* the clients, so anything it draws over a
+ * window is behind it — a notification arrived, was drawn, and was covered by
+ * whatever happened to be open. Naming the rectangles lets the compositor draw
+ * this same buffer again, cropped to each, in front.
+ *
+ * Keyed by what put it there, so a notification and the screen-share chooser
+ * can both float without either forgetting the other. */
+const overlays = new Map();
+
+function setOverlay(name, el) {
+  const rect = el?.getBoundingClientRect();
+  if (!rect || rect.width < 1 || rect.height < 1) {
+    if (!overlays.delete(name)) return;
+  } else {
+    const next = {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+    const previous = overlays.get(name);
+    if (previous
+      && previous.x === next.x && previous.y === next.y
+      && previous.width === next.width && previous.height === next.height) {
+      return;
+    }
+    overlays.set(name, next);
+  }
+  send({ type: 'shell.overlay', rects: [...overlays.values()] });
+}
 const screencastEl = document.getElementById('screencast');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
