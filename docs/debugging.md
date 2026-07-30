@@ -160,6 +160,27 @@ desktop, and a terminal in it composites and reads back:
 `VIEWPORT_RENDERER=vulkan` refuses the fallback so that a machine which should
 be using Vulkan says why it is not.
 
+## Render churn, and why the throttle is off
+
+The compositor attempts far more renders a second than the screen can show, and
+most find nothing to draw. Counted on a 240Hz machine: 2,679 damage events a
+second, of which **2,679 were the compositor's own `render_if_needed`** and a
+few hundred the browser. The loop is ours, and it is still open.
+
+`VIEWPORT_COALESCE=1` holds attempts to one a frame. It takes the compositor
+from roughly half a core to a twentieth of one — and costs smooth video, which
+is why it is off by default. Holding an attempt for the rest of the frame
+merges any two commits that land in the same 4.17ms window, and a client
+already drawing at the panel's rate has every frame land in a window with
+another, so it is halved: 189 frames a second reaching a 240Hz screen became 92,
+and the video visibly juddered.
+
+The lesson for anything that changes pacing: CPU and delivered frames move in
+opposite directions, and only one of them is visible to a person. Count frames
+actually submitted per output rather than renders avoided, and have someone
+watch a video. A "renders finding nothing: 7,316/s → 73/s" line looks like a
+total win while real frames are going in the bin with the wasted ones.
+
 What a guest gives up: colour management and HDR, which are the Vulkan
 renderer's; DMA-BUF screen sharing, which takes the shared-memory path instead;
 and the copy of the shell's frame, without which WebKit's next paint can land
