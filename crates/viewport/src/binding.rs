@@ -38,6 +38,14 @@ pub enum Action {
     /// Not the shell's: a client's colour scheme is answered over D-Bus by the
     /// settings portal, which the shell has no way to reach.
     Appearance,
+    /// Run the locker now, rather than waiting for `idle.lock_after`.
+    ///
+    /// The same locker the deadline would run, so there is one place to
+    /// configure it and no second answer to what locking means here
+    /// (`src/binding.c:614`).
+    Lock,
+    /// Turn the screens off now, rather than waiting for `idle.blank_after`.
+    Blank,
     /// Hand the rest to the shell as a `shell.command`.
     ///
     /// The default for anything this does not implement itself, because the
@@ -165,6 +173,12 @@ fn parse_action(action: &str) -> Action {
             "exit" => Action::Exit,
             "reload" => Action::Reload,
             "appearance toggle" => Action::Appearance,
+            // Both of these are in `defaults` below, so leaving them out did
+            // not make them unbound — it made them fall through to the shell,
+            // which has no `lock` or `blank` verb and drops what it does not
+            // recognise. Two built-in chords that did nothing, silently.
+            "lock" => Action::Lock,
+            "blank" => Action::Blank,
             // Everything else is the shell's, including `focus left` and the
             // layout verbs.
             other => Action::Shell(other.to_owned()),
@@ -325,6 +339,31 @@ pub fn match_binding<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_and_blank_are_the_compositors_own() {
+        // Neither is the shell's to do: one spawns the configured locker and
+        // the other turns the panels off, and the shell can reach neither.
+        // Falling through to `Action::Shell` is not a dead key in any visible
+        // way — the message goes out, nothing recognises it, nothing happens.
+        assert_eq!(parse_action("lock"), Action::Lock);
+        assert_eq!(parse_action("blank"), Action::Blank);
+    }
+
+    #[test]
+    fn the_default_lock_and_blank_chords_are_bound_to_something_real() {
+        // `defaults` has always listed both. What it produced was two entries
+        // whose action was a shell verb that does not exist.
+        let bindings = defaults("foot", "wmenu-run", false);
+        assert!(
+            bindings.iter().any(|b| b.action == Action::Lock),
+            "no binding produces Action::Lock"
+        );
+        assert!(
+            bindings.iter().any(|b| b.action == Action::Blank),
+            "no binding produces Action::Blank"
+        );
+    }
 
     #[test]
     fn a_chord_parses_into_modifiers_and_a_key() {

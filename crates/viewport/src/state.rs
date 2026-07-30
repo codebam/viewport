@@ -3157,23 +3157,40 @@ impl ViewportState {
         let elapsed = self.idle.since.elapsed();
         let actions = self.idle.tick(&self.idle_settings, elapsed);
         if actions.lock {
-            match self.idle_settings.lock_command.clone() {
-                Some(command) => {
-                    tracing::info!("idle for {}s; locking", elapsed.as_secs());
-                    crate::input::spawn(&command);
-                }
-                // Nothing to run. Said once per idle period rather than
-                // silently doing nothing, because "lock_after" with no
-                // "lock_command" looks like it should work.
-                None => tracing::warn!(
-                    "idle.lock_after passed but no idle.lock_command is set"
-                ),
-            }
+            tracing::info!("idle for {}s; locking", elapsed.as_secs());
+            self.lock_session();
         }
         if actions.blank {
             tracing::info!("idle for {}s; blanking", elapsed.as_secs());
+            // Already flagged by `tick`, so only the screens are left to turn
+            // off — `blank_screens` would be a no-op on the flag and is not
+            // used here to keep the deadline's bookkeeping in one place.
             self.set_outputs_enabled(false);
         }
+    }
+
+    /// Run the configured locker.
+    ///
+    /// Shared by the idle deadline and the `lock` binding so there is one
+    /// answer to what locking means, as in `src/binding.c:614`.
+    pub fn lock_session(&mut self) {
+        match self.idle_settings.lock_command.clone() {
+            Some(command) => crate::input::spawn(&command),
+            // Nothing to run. Said rather than silently doing nothing, because
+            // a `lock` binding with no `idle.lock_command` looks like it should
+            // work — and from the keyboard there is no deadline to blame.
+            None => tracing::warn!("lock: no idle.lock_command is set; nothing to run"),
+        }
+    }
+
+    /// Turn the screens off now.
+    ///
+    /// Flagged as though the deadline had done it, so the next input brings
+    /// them back through the same path. Blanking without that leaves no way to
+    /// undo it short of a deadline that has already fired.
+    pub fn blank_screens(&mut self) {
+        self.idle.force_blank();
+        self.set_outputs_enabled(false);
     }
 
     /// Apply the config file's `outputs` block, once the outputs exist.

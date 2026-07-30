@@ -34,12 +34,22 @@ pub struct Actions {
     pub blank: bool,
 }
 
+/// How long a blank ignores input before anything can undo it.
+///
+/// Blanking is reachable from a key chord, and a chord is at least two events:
+/// the press that asks for it and the release that follows. Without this the
+/// release is activity, activity wakes the screens, and the binding appears to
+/// do nothing at all (`src/idle.c:53`).
+const BLANK_GRACE: Duration = Duration::from_millis(500);
+
 /// How long since the last input, and what has already fired.
 #[derive(Debug)]
 pub struct Idle {
     pub since: Instant,
     locked: bool,
     blanked: bool,
+    /// When the screens went dark, for [`BLANK_GRACE`].
+    blanked_at: Option<Instant>,
     /// Something is holding idle off — a video player, usually.
     inhibited: bool,
 }
@@ -50,6 +60,7 @@ impl Default for Idle {
             since: Instant::now(),
             locked: false,
             blanked: false,
+            blanked_at: None,
             inhibited: false,
         }
     }
@@ -61,10 +72,22 @@ impl Idle {
     /// Returns whether the screens were blanked and need bringing back, which
     /// is the one thing activity has to undo rather than merely reset.
     pub fn activity(&mut self) -> bool {
+        // Still the keystroke that asked for this. Nothing is reset either,
+        // not only the wake suppressed: treating the chord as activity would
+        // also re-arm the deadlines it just pre-empted.
+        if self.blanked
+            && self
+                .blanked_at
+                .is_some_and(|at| at.elapsed() < BLANK_GRACE)
+        {
+            return false;
+        }
+
         self.since = Instant::now();
         self.locked = false;
         let was_blanked = self.blanked;
         self.blanked = false;
+        self.blanked_at = None;
         was_blanked
     }
 
@@ -84,6 +107,7 @@ impl Idle {
     /// (`src/idle.c:154`).
     pub fn force_blank(&mut self) {
         self.blanked = true;
+        self.blanked_at = Some(Instant::now());
     }
 
     /// What to do, given how long it has been.
@@ -110,6 +134,12 @@ impl Idle {
         if let Some(after) = settings.blank_after.filter(|a| *a > 0) {
             if !self.blanked && seconds >= after {
                 self.blanked = true;
+                // Deliberately not stamped, though `src/idle.c:147` stamps it.
+                // The grace exists to swallow the release of the chord that
+                // asked for a blank, and a deadline fires after a stretch of no
+                // input at all — there is no release in flight to swallow. All
+                // it would buy here is up to half a second of black screen
+                // after the mouse has already moved.
                 actions.blank = true;
             }
         }
@@ -215,7 +245,38 @@ mod tests {
         let mut idle = Idle::default();
         idle.force_blank();
         assert!(idle.blanked());
+
+        std::thread::sleep(BLANK_GRACE + Duration::from_millis(50));
         assert!(idle.activity());
+        assert!(!idle.blanked());
+    }
+
+    #[test]
+    fn the_keystroke_that_blanked_does_not_immediately_unblank() {
+        // `blank` is reachable from a chord, and a chord is at least a press
+        // and a release. Without the grace the release is activity, activity
+        // wakes the screens, and the binding looks like a dead key — which is
+        // the whole reason the C build carries `BLANK_GRACE_USEC`.
+        let mut idle = Idle::default();
+        idle.force_blank();
+
+        assert!(!idle.activity(), "the release woke the screens back up");
+        assert!(idle.blanked(), "and it cleared the flag on the way past");
+    }
+
+    #[test]
+    fn a_deadline_blank_wakes_on_the_first_input() {
+        // The asymmetry is the point: no keystroke asked for this one, so
+        // there is no release in flight and nothing to wait out. Sharing the
+        // grace here would mean a screen that stays black for half a second
+        // after the mouse has already moved.
+        let mut idle = Idle::default();
+        let s = settings(None, Some(1));
+        assert_eq!(
+            idle.tick(&s, Duration::from_secs(5)),
+            Actions { lock: false, blank: true }
+        );
+        assert!(idle.activity(), "the deadline's blank made the user wait");
         assert!(!idle.blanked());
     }
 }

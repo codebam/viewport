@@ -1079,6 +1079,14 @@ impl ViewportState {
                 self.dark_mode = !self.appearance.is_dark();
                 self.appearance.set_dark(self.dark_mode);
             }
+            Bound::Lock => {
+                tracing::info!("lock binding");
+                self.lock_session();
+            }
+            Bound::Blank => {
+                tracing::info!("blank binding");
+                self.blank_screens();
+            }
             Bound::Shell(command) => {
                 // Split on whitespace so the shell gets a verb and arguments
                 // rather than a string it has to parse again.
