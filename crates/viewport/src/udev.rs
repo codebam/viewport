@@ -70,6 +70,26 @@ type Feedback = Option<smithay::desktop::utils::OutputPresentationFeedback>;
 
 type Manager = DrmOutputManager<GbmAllocator<DrmDeviceFd>, Exporter, Feedback, DrmDeviceFd>;
 
+/// Whether render attempts are held to one a frame. Off unless asked for.
+///
+/// It saves a great deal of CPU and costs smooth video, so it is not on by
+/// default. Holding an attempt for the rest of the frame merges any two
+/// commits that land in the same 4.17ms window, and a client already drawing
+/// at the panel's rate has every one of its frames land in a window with
+/// another — which halves it. Measured on a 240Hz panel: 189 frames a second
+/// reaching the screen with this off, 92 with it on, and a video that visibly
+/// judders.
+///
+/// The waste it was written for turned out not to be the clients. Of 2,679
+/// damage events a second, 2,679 came from the compositor's own
+/// `render_if_needed` and a few hundred from the browser. Throttling the
+/// browser was treating the symptom of a loop that is ours; that loop is the
+/// thing to fix, and when it is fixed this has nothing left to do.
+fn coalescing_wanted() -> bool {
+    static WANTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WANTED.get_or_init(|| std::env::var("VIEWPORT_COALESCE").as_deref() == Ok("1"))
+}
+
 /// One CRTC being driven.
 pub struct Surface {
     pub output: Output,
@@ -967,7 +987,14 @@ impl ViewportState {
             .output
             .current_mode()
             .map(|mode| {
-                std::time::Duration::from_secs_f64(1_000.0 / mode.refresh.max(1) as f64 / 1_000.0)
+                // `refresh` is millihertz, so the period in seconds is
+                // 1000/refresh. Dividing by a further thousand told every
+                // client the screen ran at 240,000Hz, and a browser pacing
+                // video on presentation feedback answered that by giving up
+                // and falling back to a slow timer — a video at five frames a
+                // second on a 240Hz panel, whenever nothing else was waking
+                // the compositor.
+                std::time::Duration::from_secs_f64(1_000.0 / mode.refresh.max(1) as f64)
             })
             .unwrap_or_else(|| std::time::Duration::from_millis(16));
         match surface.drm_output.frame_submitted() {
@@ -1178,7 +1205,7 @@ impl ViewportState {
             .current_mode()
             .map(|mode| std::time::Duration::from_nanos(1_000_000_000_000 / mode.refresh.max(1) as u64))
             .unwrap_or_else(|| std::time::Duration::from_millis(16));
-        if let Some(at) = surface.last_attempt {
+        if let Some(at) = surface.last_attempt.filter(|_| coalescing_wanted()) {
             let waited = at.elapsed();
             if waited < interval {
                 if !surface.deferred {
@@ -1210,7 +1237,6 @@ impl ViewportState {
                 return;
             }
         }
-        surface.last_attempt = Some(std::time::Instant::now());
 
         // Tearing, if one window covers this output and asked for it. Set
         // before the frame is built, because it changes how the frame that is
@@ -1369,7 +1395,15 @@ impl ViewportState {
             // queued there is no vblank, so rendering stops until something
             // asks for it again. Correct for a static screen, and worth saying
             // out loud because it looks identical to being stuck.
-            Ok(_) => tracing::debug!("{}: nothing to draw", output.name()),
+            //
+            // This is also the only pass worth holding back. A pass
+            // that submits does not need holding: the flip it queued ends in a
+            // vblank, and the vblank draws the next one. Only the empty pass
+            // repeats without limit, and only the empty pass is timed.
+            Ok(_) => {
+                surface.last_attempt = Some(std::time::Instant::now());
+                tracing::debug!("{}: nothing to draw", output.name());
+            }
             Err(e) => tracing::warn!("render_frame: {e}"),
         }
 
