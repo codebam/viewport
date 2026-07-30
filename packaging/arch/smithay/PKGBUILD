@@ -18,7 +18,7 @@ license=('GPL-3.0-or-later')
 
 # The commit this package was cut from. A tag would be nicer; there is not one
 # yet, and a moving branch in a PKGBUILD is not a package anyone can reproduce.
-_commit=8a86067af420efb01efc6573c6c70fce4b666d39
+_commit=35356e515e4cfcd4060d34d44a10ae17a86ccb8e
 
 depends=(
   'wayland'
