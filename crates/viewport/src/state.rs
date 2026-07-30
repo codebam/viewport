@@ -163,6 +163,10 @@ pub struct ViewportState {
     /// buffers it owns. Independent of the backend — see `start_shell`.
     #[cfg(feature = "wpe")]
     pub shell_renderer: Option<viewport_vulkan::VulkanRenderer>,
+    /// Whether opening a Vulkan renderer for the shell's copy has already
+    /// failed, so it is not attempted once per frame for the rest of the
+    /// session.
+    pub shell_copy_refused: bool,
     /// The size the shell was last told it is, so a layout change that does
     /// not alter it costs nothing.
     #[cfg(feature = "wpe")]
@@ -767,6 +771,7 @@ impl ViewportState {
             shell_size: None,
             #[cfg(feature = "wpe")]
             shell_renderer: None,
+            shell_copy_refused: false,
             #[cfg(feature = "wpe")]
             shell_owned: None,
             #[cfg(feature = "wpe")]
@@ -4359,7 +4364,14 @@ impl ViewportState {
         // about the output, and nesting under another compositor has no DRM
         // renderer at all. Both backends then import the copy into whatever
         // they draw with, which is what lets the nested one show the desktop.
-        if self.shell_renderer.is_none() {
+        // Best-effort, because a machine without a usable Vulkan device still
+        // has a desktop to show. Without it the shell's frame is not copied
+        // into an image of the compositor's own, so WebKit's next paint lands
+        // in the buffer being sampled — the shell can flicker. That is worse
+        // than the copy and better than no session, and it is said out loud
+        // once rather than guessed at.
+        if self.shell_renderer.is_none() && !self.shell_copy_refused {
+            let make = || -> anyhow::Result<viewport_vulkan::VulkanRenderer> {
             let instance = smithay::backend::vulkan::Instance::new(
                 smithay::backend::vulkan::version::Version::VERSION_1_3,
                 None,
@@ -4391,14 +4403,26 @@ impl ViewportState {
             );
             let renderer = viewport_vulkan::VulkanRenderer::with_allocator(&device, allocator)
                 .map_err(|e| anyhow::anyhow!("creating a vulkan renderer for the shell: {e}"))?;
-            self.shell_renderer = Some(renderer);
+                Ok(renderer)
+            };
+            match make() {
+                Ok(renderer) => self.shell_renderer = Some(renderer),
+                Err(e) => {
+                    tracing::warn!(
+                        "no Vulkan renderer to copy the shell's frame with ({e:#}); \
+                         the shell may flicker"
+                    );
+                    self.shell_copy_refused = true;
+                }
+            }
         }
 
         let formats: Vec<(u32, u64)> = self
             .shell_renderer
             .as_ref()
-            .expect("just created")
-            .dmabuf_formats()
+            .map(|renderer| renderer.dmabuf_formats())
+            .or_else(|| self.udev.as_ref().map(|udev| udev.renderer.dmabuf_formats()))
+            .unwrap_or_default()
             .iter()
             .map(|format| (format.code as u32, u64::from(format.modifier)))
             .collect();
