@@ -441,11 +441,29 @@ is why the C build passes these tests on a machine with no display, and why the
 CI job points `VK_DRIVER_FILES` at lavapipe.
 
 So the last parity item is: give the headless backend a renderer. It is not a
-capture change, and it is worth stating as its own piece of work — an offscreen
-`VulkanRenderer` with no DRM node to hang off, plus a render pass for outputs
-nothing scans out. Everything that composites without a display depends on it:
-these two tests, `session-lock-crash`, and any future test that wants to look
-at a pixel in CI.
+capture change and is worth doing as its own piece of work. Everything that
+composites without a display depends on it — these two tests,
+`session-lock-crash`, and any future test that wants to look at a pixel in CI.
+
+**Which renderer is the decision, and it is not the obvious one.** Vulkan is
+what this compositor draws with everywhere else, and Smithay's
+`VulkanAllocator::new(phd, usage)` would give it offscreen targets with no GBM
+device and no DRM node, so it looks like a short path. It is not, because of
+where these tests have to run: `VulkanAllocator` allocates through
+`VK_EXT_image_drm_format_modifier`, lavapipe does not have it — the same reason
+`Gpu::Gles` exists at all, see `udev.rs` — and a GitHub-hosted runner has no
+`/dev/dri`. A Vulkan headless backend would pass on this workstation and fail
+in CI, which is the half that matters for a test.
+
+GLES is the answer instead: surfaceless EGL, and `GlesRenderbuffer` as the
+offscreen target, which needs no DMA-BUF at all. That is already the pair the
+nested backend uses —
+
+    winit.rs: state.service_image_capture::<_, GlesRenderbuffer>(...)
+
+— and it is what software Mesa serves without a device node. The work is the
+EGL bring-up and a render pass for outputs nothing scans out, not the capture
+paths, which are generic over the renderer already.
 
 ### The checklist
 
