@@ -188,6 +188,23 @@ impl XwmHandler for ViewportState {
         // compositor to resize it has asked the wrong party.
     }
 
+    /// An X11 client asking to go fullscreen — a game, usually.
+    ///
+    /// `XwmHandler` gives these an empty default, so leaving them out was not
+    /// neutral: every X11 fullscreen request was accepted by the trait and
+    /// dropped on the floor. The window kept its frame and the client was never
+    /// told otherwise, because nothing set the property back.
+    ///
+    /// The layout is the shell's, as on the Wayland side. What belongs here is
+    /// saying yes to the client and passing the state on.
+    fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.answer_x11_fullscreen(&window, true);
+    }
+
+    fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.answer_x11_fullscreen(&window, false);
+    }
+
     fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
 
     /// Whether an X client may read the Wayland clipboard.
@@ -280,6 +297,36 @@ impl XwmHandler for ViewportState {
                     clear_primary_selection(&dh, &self.seat);
                 }
             }
+        }
+    }
+}
+
+impl ViewportState {
+    /// Grant an X11 fullscreen request and tell the shell.
+    ///
+    /// The property has to be set back on the window whatever the shell then
+    /// does with the layout: it is how the client learns the request was
+    /// granted, and a toolkit that never sees it changed goes on drawing its
+    /// own decorations over a window it believes is still framed.
+    fn answer_x11_fullscreen(&mut self, window: &X11Surface, fullscreen: bool) {
+        if let Err(e) = window.set_fullscreen(fullscreen) {
+            tracing::warn!("could not set fullscreen on an X11 window: {e}");
+            return;
+        }
+        let Some(surface) = window.wl_surface() else {
+            // No surface yet, so no view and nothing announced. The state is
+            // on the window now and `wants_fullscreen` reads it back when the
+            // window is finally announced.
+            return;
+        };
+        let Some(view) = self.views.find_by_surface(&surface) else {
+            return;
+        };
+        let (id, mapped) = (view.id, view.mapped);
+        self.foreign_management_state
+            .set_state(id, self.focused == id, fullscreen);
+        if mapped {
+            self.notify_fullscreen(id, fullscreen);
         }
     }
 }

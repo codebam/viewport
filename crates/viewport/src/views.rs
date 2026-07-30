@@ -175,6 +175,28 @@ impl View {
         (size.w, size.h)
     }
 
+    /// Whether this window wants to open fullscreen.
+    ///
+    /// Asked at the moment a window is announced, because that is the first
+    /// point the shell can act on the answer. Both spellings are read here
+    /// rather than remembered from a request: an X11 client sets a property and
+    /// never calls into the compositor at all, so there is no request to have
+    /// remembered.
+    pub fn wants_fullscreen(&self) -> bool {
+        if let Some(toplevel) = self.window.toplevel() {
+            use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+            // The pending state, which is what the compositor has decided and
+            // configured for. The current state is only what the client has
+            // acknowledged, and at announce time it usually has not yet.
+            return toplevel
+                .with_pending_state(|pending| pending.states.contains(State::Fullscreen));
+        }
+        if let Some(x11) = self.window.x11_surface() {
+            return x11.is_fullscreen();
+        }
+        false
+    }
+
     /// Whether this window would rather float than be tiled.
     ///
     /// The compositor can see these signals and the shell cannot, which is why

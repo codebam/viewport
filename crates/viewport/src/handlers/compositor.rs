@@ -232,6 +232,11 @@ impl ViewportState {
             return;
         };
         view.mapped = true;
+        // What the client asked for before it had anywhere to be told about.
+        // Read here rather than trusted from the earlier request, because an
+        // X11 window never made a request at all — it carries the state as a
+        // property and nothing calls into the compositor about it.
+        let fullscreen = view.wants_fullscreen();
         let added = view.added(output, false);
 
         // What the client actually handed over. Whether a window is opaque is
@@ -257,6 +262,13 @@ impl ViewportState {
         let id = added.id;
         let (title, app_id) = (added.title.clone(), added.app_id.clone());
         self.notify(&Event::ViewAdded(added));
+
+        // After the announcement, never before: this is the same command the
+        // runtime path sends, and it only means anything once the shell has a
+        // window to apply it to.
+        if fullscreen {
+            self.notify_fullscreen(id, true);
+        }
 
         // Announce it outside the compositor too, now that it has a title and
         // an app id — before that there is nothing worth listing.

@@ -308,9 +308,30 @@ impl ViewportState {
         let Some(view) = self.views.find_by_surface(surface.wl_surface()) else {
             return;
         };
-        let id = view.id;
+        let (id, mapped) = (view.id, view.mapped);
         self.foreign_management_state
             .set_state(id, self.focused == id, fullscreen);
+        // Only once the shell knows the window exists.
+        //
+        // A client is allowed to ask for fullscreen before its first commit —
+        // mpv --fullscreen and most games do — and that is well before the
+        // window is announced. The command went out anyway, naming a view the
+        // shell had never heard of, so it was dropped; then `view.added`
+        // arrived carrying no fullscreen state and the window opened in a
+        // frame. The announce path re-sends this once there is something to
+        // send it about.
+        if mapped {
+            self.notify_fullscreen(id, fullscreen);
+        }
+    }
+
+    /// Tell the shell a window's fullscreen state.
+    ///
+    /// The layout is the shell's, so this is the whole of what the compositor
+    /// does about fullscreen — the rectangle comes back as an ordinary
+    /// `view.layout`. Shared by the xdg and X11 paths so both windows mean the
+    /// same thing by it.
+    pub(crate) fn notify_fullscreen(&mut self, id: u32, fullscreen: bool) {
         self.notify(&Event::ShellCommand {
             command: "window.fullscreen.set".to_owned(),
             args: vec![id.to_string(), u8::from(fullscreen).to_string()],
