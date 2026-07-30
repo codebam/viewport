@@ -1014,6 +1014,16 @@ impl ViewportState {
             }
         }
 
+        // Anything blocked waiting for this frame: a client pacing itself with
+        // wp-fifo, or timing a commit with wp-commit-timing. Released before
+        // the frame callbacks, because both are about *this* frame having
+        // happened.
+        self.release_frame_barriers(&output, start);
+        // And if anything is still waiting — a barrier set by the commit this
+        // frame just drew — keep a clock on it. Without this the next blocked
+        // commit produces no damage and nothing draws again.
+        self.arm_barrier_tick();
+
         // Frame callbacks: a client will not paint again until it gets one.
         for window in self.space.elements() {
             window.send_frame(&output, start, Some(Duration::ZERO), |_, _| {

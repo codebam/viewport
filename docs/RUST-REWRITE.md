@@ -198,15 +198,36 @@ and `color-management-v1`.
 Also implemented, from what Smithay ships: `xdg-system-bell`,
 `xdg-toplevel-tag` and `wp-pointer-warp`.
 
-**`wp-fifo` and `wp-commit-timing` are deliberately absent.** Both block a
-client's commit until the compositor releases it, and this compositor renders on
-demand: a blocked commit produces no damage, no damage means no frame, and no
-frame means nothing signals the barrier. They were implemented, released where
-the frame callbacks are sent, and taken out again after a terminal drew one
-frame and froze — `painted 800x490 for a rectangle of 2540x1420`, then six
-hundred lines of `nothing to draw`. Honouring them needs a render tick that runs
-while any barrier is outstanding, which is a change to how the compositor
-decides to draw at all.
+**`wp-fifo` and `wp-commit-timing` are back, and this time they work.** Both
+block a client's commit until the compositor releases it, and the first attempt
+advertised them and froze every client that used them. Three things were wrong,
+and only the first was the one the removal commit predicted:
+
+1. **Nothing re-examined the blocked commit.** `Barrier::signal` sets a flag; the
+   commit it was holding sits in a queue that is only looked at again when the
+   compositor calls `CompositorClientState::blocker_cleared`. Without that call
+   the client commits for ever and the compositor applies none of them — which
+   from the outside is a window frozen on its first frame while the client is
+   busy and healthy. `WAYLAND_DEBUG=1` on the client is what showed it: a steady
+   stream of `set_barrier`, `wait_barrier`, `commit`, and nothing coming back.
+2. **The deadline was measured against the wrong clock.** A commit timer's
+   timestamp is CLOCK_MONOTONIC; `release_frame_barriers` was handing it time
+   since the compositor started, which is smaller by the machine's uptime, so
+   every deadline was in the future and every timed commit blocked for ever.
+3. **The clock stopped when the drawing did**, which is the one that was
+   foreseen. `arm_barrier_tick` runs a timer at the refresh interval while any
+   surface is using either protocol, so a barrier is released even on a frame
+   that has nothing to draw. It stops after a second of releasing nothing, and a
+   commit starts it again — an idle desktop with no such client ticks not at
+   all.
+
+Verified with `vkcube`, which uses both through Mesa's Vulkan WSI: 1170 commits
+applied and 600 barriers released in ten seconds, against one commit and a
+frozen cube before. `MESA_VK_WSI_PRESENT_MODE=immediate` is what proves the
+protocols are the difference rather than something else about the client.
+
+`VIEWPORT_FIFO=0` withdraws both globals without a rebuild, because these two
+have frozen every client that used them once already.
 
 Still not implemented, all present in Smithay: `ext-workspace` — external bars
 cannot see the workspaces, which are the shell's and are not published —

@@ -148,6 +148,13 @@ impl CompositorHandler for ViewportState {
         // to carry this to an output — the window would update only when
         // something unrelated caused a frame.
         self.needs_render = true;
+
+        // If this commit set a fifo barrier or a commit timer, the *next* one
+        // is going to block, and a blocked commit makes no damage to draw. The
+        // clock that releases it starts here rather than at the next frame,
+        // because there may not be a next frame.
+        self.arm_barrier_tick();
+
     }
 }
 

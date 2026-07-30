@@ -443,6 +443,25 @@ pub struct ViewportState {
     /// another client's behalf is parented to the window that asked for it
     /// rather than floating loose.
     pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
+    /// wp-fifo: a client asking for its frames to be paced by the display
+    /// rather than drawn as fast as it can manage.
+    ///
+    /// A client that waits on a barrier is *blocked* until the compositor
+    /// signals it, so advertising this and never signalling is a client that
+    /// paints once and stops. It is signalled in `release_frame_barriers`, and
+    /// — the part that was missing the first time — `tick_barriers` keeps a
+    /// clock running while any barrier is outstanding, because a blocked
+    /// commit produces no damage and this compositor draws on damage.
+    pub fifo_state: Option<smithay::wayland::fifo::FifoManagerState>,
+    /// wp-commit-timing: a client asking for a commit to take effect at a
+    /// particular time rather than at once. Blocked the same way, released in
+    /// the same place, and kept alive by the same tick.
+    pub commit_timing_state: Option<smithay::wayland::commit_timing::CommitTimingManagerState>,
+    /// Whether a barrier tick is already armed, so a hundred commits do not
+    /// arm a hundred timers.
+    pub barrier_tick: bool,
+    /// How many ticks in a row have released nothing.
+    pub barrier_quiet: u32,
     /// The shell's workspaces, mirrored for `ext-workspace-v1`. Empty until
     /// the shell says otherwise, which is the truthful description of a
     /// desktop whose workspaces nobody has published.
@@ -622,6 +641,15 @@ impl ViewportState {
         let xdg_activation_state =
             smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
         let xdg_foreign_state = smithay::wayland::xdg_foreign::XdgForeignState::new::<Self>(&dh);
+        // VIEWPORT_FIFO=0 turns them off again, because these two froze every
+        // client that used them once before and the way back should not need a
+        // rebuild.
+        let pacing = std::env::var("VIEWPORT_FIFO").as_deref() != Ok("0");
+        let fifo_state =
+            pacing.then(|| smithay::wayland::fifo::FifoManagerState::new::<Self>(&dh));
+        let commit_timing_state = pacing.then(|| {
+            smithay::wayland::commit_timing::CommitTimingManagerState::new::<Self>(&dh)
+        });
         let workspace_state = crate::workspace::WorkspaceState::new::<Self>(&dh);
         let security_context_state =
             smithay::wayland::security_context::SecurityContextState::new::<Self, _>(
@@ -810,6 +838,10 @@ impl ViewportState {
             xdg_activation_state,
             xdg_foreign_state,
             workspace_state,
+            fifo_state,
+            commit_timing_state,
+            barrier_tick: false,
+            barrier_quiet: 0,
             _security_context_state: security_context_state,
             _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
             _xwayland_keyboard_grab_state: xwayland_keyboard_grab_state,
@@ -3675,6 +3707,269 @@ impl ViewportState {
             None => bindings.extend(crate::binding::defaults(&terminal, &menu, scrolling)),
         }
         self.bindings = bindings;
+    }
+
+    /// How many empty ticks before the barrier clock stops. A second at sixty
+    /// hertz, and a commit starts it again.
+    const QUIET: u32 = 60;
+
+    /// Let go of everything a client is waiting on for this frame.
+    ///
+    /// Two protocols block a commit until the compositor says so: wp-fifo,
+    /// where a client asks to be paced by the display, and wp-commit-timing,
+    /// where it asks for a commit to land at a particular time. Both are the
+    /// compositor's to release, and a client whose barrier is never signalled
+    /// does not simply lose the feature — it never paints again.
+    ///
+    /// Called where the frame callbacks are sent, which is the moment the
+    /// frame this surface is part of has been handed to the display.
+    pub fn release_frame_barriers(&mut self, output: &Output, frame_target: std::time::Duration) {
+        let _ = self.released_frame_barriers(output, frame_target);
+    }
+
+    /// The same, reporting whether anything was actually let go.
+    ///
+    /// The tick needs to know: a round that releases nothing is a round that
+    /// did not need to happen, and enough of those in a row means the clock
+    /// can stop.
+    pub fn released_frame_barriers(
+        &mut self,
+        output: &Output,
+        frame_target: std::time::Duration,
+    ) -> bool {
+        use smithay::desktop::utils::with_surfaces_surface_tree;
+        use smithay::utils::Time;
+        use smithay::wayland::commit_timing::CommitTimerBarrierStateUserData;
+        use smithay::wayland::fifo::FifoBarrierCachedState;
+
+        // The clock the *client* set its deadline on, which is CLOCK_MONOTONIC
+        // and not this compositor's uptime. `frame_target` is time since the
+        // compositor started — smaller than the real clock by however long the
+        // machine has been up — so using it means every deadline is in the
+        // future for ever and every timed commit blocks until the client gives
+        // up. That is a client frozen on its first frame, and it looks exactly
+        // like the fifo barrier not being signalled.
+        let _ = frame_target;
+        let now = smithay::reexports::rustix::time::clock_gettime(
+            smithay::reexports::rustix::time::ClockId::Monotonic,
+        );
+        let target: Time<smithay::utils::Monotonic> =
+            std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32).into();
+        let released = std::cell::Cell::new(false);
+        let woken: std::cell::RefCell<Vec<smithay::reexports::wayland_server::Client>> =
+            std::cell::RefCell::new(Vec::new());
+
+        let release = |surface: &WlSurface, states: &smithay::wayland::compositor::SurfaceData| {
+            let mut wake = |signalled: bool| {
+                if !signalled {
+                    return;
+                }
+                if let Some(client) = surface.client() {
+                    let mut woken = woken.borrow_mut();
+                    if !woken.iter().any(|c| c.id() == client.id()) {
+                        woken.push(client);
+                    }
+                }
+            };
+            if let Some(mut timer) = states
+                .data_map
+                .get::<CommitTimerBarrierStateUserData>()
+                .map(|timer| timer.lock().unwrap())
+            {
+                if timer.signal_until(target) {
+                    tracing::trace!("commit-timing: a deadline reached");
+                    released.set(true);
+                    wake(true);
+                }
+            }
+            // Current *and* pending. A commit that is blocked on its own
+            // barrier never applies, so that barrier never reaches the current
+            // half — and it is exactly the barrier that has to be signalled to
+            // let the commit through. Taking only the current one releases the
+            // first frame and then waits forever for a commit that is waiting
+            // for it, which is what a terminal frozen on its first frame looks
+            // like from the outside.
+            let mut fifo = states.cached_state.get::<FifoBarrierCachedState>();
+            // Signalled where they lie, rather than taken out. The barrier is
+            // an Arc, so every copy of it is the same flag — and the copy the
+            // *next* commit will wait on is the one in the pending half.
+            // Taking the current one leaves that copy behind, still unsignalled
+            // if it was cloned after the take.
+            if let Some(barrier) = fifo.current().barrier.as_ref() {
+                if !barrier.is_signaled() {
+                    barrier.signal();
+                    tracing::trace!("fifo: a barrier released");
+                    released.set(true);
+                    wake(true);
+                }
+            }
+            if let Some(barrier) = fifo.pending().barrier.as_ref() {
+                if !barrier.is_signaled() {
+                    barrier.signal();
+                    tracing::trace!("fifo: a barrier released");
+                    released.set(true);
+                    wake(true);
+                }
+            }
+        };
+
+        for window in self.space.elements() {
+            window.with_surfaces(&release);
+        }
+        for layer in smithay::desktop::layer_map_for_output(output).layers() {
+            layer.with_surfaces(&release);
+        }
+        for lock in self.lock_surfaces.values() {
+            with_surfaces_surface_tree(lock.wl_surface(), &release);
+        }
+        // The part that makes any of it work. Signalling a barrier only sets a
+        // flag; the commit it was blocking sits in a queue that nothing looks
+        // at again until the compositor says a blocker cleared. Without this
+        // the client commits for ever and the compositor applies none of them,
+        // which from the outside is a window frozen on its first frame while
+        // the client is busy and healthy.
+        let woken = woken.into_inner();
+        if !woken.is_empty() {
+            let dh = self.display_handle.clone();
+            for client in woken {
+                if let Some(data) = client.get_data::<crate::state::ClientState>() {
+                    data.compositor_state.blocker_cleared(self, &dh);
+                }
+            }
+        }
+        released.get()
+    }
+
+    /// Whether anything is waiting on a barrier, as far as can be told.
+    ///
+    /// A fifo barrier sits in the surface's current state from the commit that
+    /// set it until the compositor takes it, so it can be seen directly. A
+    /// commit timer cannot: Smithay keeps its deadlines private and offers no
+    /// way to ask whether any are left. So a surface that has ever used one
+    /// counts as waiting, and `arm_barrier_tick` stops re-arming after a
+    /// stretch of ticks that release nothing — the next commit starts the
+    /// clock again, which is the only moment a new deadline can appear.
+    pub fn barriers_outstanding(&self) -> bool {
+        use smithay::wayland::commit_timing::CommitTimerBarrierStateUserData;
+        use smithay::wayland::fifo::{FifoBarrierCachedState, FifoCachedState};
+
+        let mut waiting = false;
+        {
+            let mut look =
+                |_surface: &WlSurface, states: &smithay::wayland::compositor::SurfaceData| {
+                    if waiting {
+                        return;
+                    }
+                    // Not "is a barrier sitting here" — that misses the case
+                    // this whole tick exists for. A commit blocked on a barrier
+                    // has had that barrier taken out of the surface state by
+                    // the pre-commit hook and handed to the blocker, so the
+                    // surface looks empty at exactly the moment the client is
+                    // stuck. What it does not hide is that the client asked
+                    // for fifo at all, which is in `FifoCachedState`.
+                    //
+                    // So: a surface that uses either protocol keeps the clock
+                    // running. A fifo client wants a frame every refresh
+                    // anyway, and the frame is what carries the callback and
+                    // the presentation feedback it is waiting on.
+                    let mut fifo_request = states.cached_state.get::<FifoCachedState>();
+                    let asks_for_fifo = {
+                        let pending = *fifo_request.pending();
+                        let current = *fifo_request.current();
+                        pending.set_barrier
+                            || pending.wait_barrier
+                            || current.set_barrier
+                            || current.wait_barrier
+                    };
+                    let mut fifo = states.cached_state.get::<FifoBarrierCachedState>();
+                    if asks_for_fifo
+                        || fifo.current().barrier.is_some()
+                        || fifo.pending().barrier.is_some()
+                        || states
+                            .data_map
+                            .get::<CommitTimerBarrierStateUserData>()
+                            .is_some()
+                    {
+                        waiting = true;
+                    }
+                };
+            for window in self.space.elements() {
+                window.with_surfaces(&mut look);
+            }
+        }
+        waiting
+    }
+
+    /// Keep a clock running while a client is blocked on a barrier.
+    ///
+    /// This is the half that was missing when these two protocols were first
+    /// advertised and then withdrawn. The compositor draws when there is
+    /// damage; a blocked commit produces none, so the frame that would have
+    /// released the barrier never happens and the client waits for a
+    /// compositor that is waiting for the client. Six hundred lines of
+    /// "nothing to draw" and a terminal frozen on its first frame.
+    ///
+    /// So while anything is outstanding, a timer runs at roughly the refresh
+    /// interval, signals what is due, and asks for a frame. Once nothing is
+    /// waiting the timer stops, and an idle desktop goes back to drawing
+    /// nothing at all.
+    pub fn arm_barrier_tick(&mut self) {
+        if self.barrier_tick {
+            return;
+        }
+        if !self.barriers_outstanding() {
+            return;
+        }
+        self.barrier_tick = true;
+        let interval = self.frame_interval();
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(interval);
+        if let Err(e) = self.loop_handle.insert_source(timer, move |_, _, state| {
+            state.barrier_tick = false;
+            let at = state.start_time.elapsed();
+            let outputs: Vec<Output> = state.space.outputs().cloned().collect();
+            let mut released = false;
+            for output in &outputs {
+                released |= state.released_frame_barriers(output, at);
+            }
+            // Only when something was let go. Releasing a barrier applies the
+            // commit it was blocking, and an applied commit is damage, and
+            // damage is what asks for a frame — so the frame arrives without
+            // being demanded here. Asking anyway drew every output at the
+            // refresh rate for as long as one client used the protocol, which
+            // on a second monitor with nothing on it is pure heat.
+            if released {
+                state.needs_render = true;
+                state.barrier_quiet = 0;
+            } else {
+                state.barrier_quiet = state.barrier_quiet.saturating_add(1);
+            }
+            // A tick that has released nothing for a second is a tick nobody
+            // needs: the deadlines that could not be seen have all passed, or
+            // there were none. A commit is the only thing that can make a new
+            // one, and a commit arms this again.
+            if state.barrier_quiet < Self::QUIET {
+                state.arm_barrier_tick();
+            }
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        }) {
+            tracing::warn!("arming the barrier tick: {e}");
+            self.barrier_tick = false;
+        }
+    }
+
+    /// How long one frame lasts on the fastest output, near enough.
+    ///
+    /// Near enough because this paces a fallback clock rather than the display
+    /// itself: a barrier released a millisecond late is a frame late at worst,
+    /// and the alternative is no frame ever.
+    fn frame_interval(&self) -> std::time::Duration {
+        self.space
+            .outputs()
+            .filter_map(|output| output.current_mode())
+            .map(|mode| mode.refresh.max(1) as u64)
+            .max()
+            .map(|refresh| std::time::Duration::from_nanos(1_000_000_000_000 / refresh))
+            .unwrap_or_else(|| std::time::Duration::from_millis(16))
     }
 
     pub fn notify_output_layout(&mut self) {

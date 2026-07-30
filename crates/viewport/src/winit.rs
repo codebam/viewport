@@ -213,6 +213,10 @@ pub fn init(
                 // acknowledged; the same discipline applies to clients, and
                 // this is where their frame callbacks fire.
                 let at = state.start_time.elapsed();
+                // Once, not once per window: this walks every surface on the
+                // output already.
+                state.release_frame_barriers(&output, at);
+                state.arm_barrier_tick();
                 state.space.elements().for_each(|window| {
                     window.send_frame(&output, at, Some(Duration::ZERO), |_, _| {
                         Some(output.clone())
