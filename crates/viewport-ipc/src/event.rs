@@ -30,6 +30,13 @@ pub enum Event {
         id: u32,
         title: String,
         app_id: String,
+        /// What the window says it looks like in a list, from
+        /// `xdg-toplevel-icon`: a name to look up in the icon theme. Absent
+        /// when the client has not said, which is most of them — omitted from
+        /// the wire entirely rather than sent as null, so a shell written
+        /// against the older message sees exactly what it saw before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
     },
 
     #[serde(rename = "view.focused")]
@@ -378,6 +385,7 @@ mod tests {
                 id: 1,
                 title: String::new(),
                 app_id: String::new(),
+                icon: None,
             }),
             json(&Event::ViewFocused { id: 1 }),
             json(&Event::Config(Config {

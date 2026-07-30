@@ -768,3 +768,113 @@ impl smithay::wayland::pointer_warp::PointerWarpHandler for ViewportState {
 }
 
 smithay::delegate_dispatch2!(ViewportState);
+
+/// A surface exported by one client and imported by another.
+///
+/// Pure bookkeeping: Smithay tracks the handles and resolves an imported
+/// surface to the exported one, and the only thing a compositor has to supply
+/// is where that lives. What it buys is a dialog opened on another client's
+/// behalf — a portal's file chooser, most often — being parented to the window
+/// that asked rather than floating loose in the middle of the desktop.
+impl smithay::wayland::xdg_foreign::XdgForeignHandler for ViewportState {
+    fn xdg_foreign_state(&mut self) -> &mut smithay::wayland::xdg_foreign::XdgForeignState {
+        &mut self.xdg_foreign_state
+    }
+}
+
+/// What a window says it looks like in a list.
+///
+/// The icon arrives as a name to look up in the theme, or as buffers the
+/// client drew, and lands in the surface's cached state on commit. The shell
+/// draws the taskbar and the overview, so it is told the name and looks it up
+/// itself; the buffers are ignored, because handing the page a Wayland buffer
+/// means a copy per icon per frame and the name is what a themed desktop
+/// wants anyway.
+impl smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for ViewportState {
+    fn set_icon(
+        &mut self,
+        _toplevel: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel,
+        wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) {
+        // The icon is in the surface's *cached* state, which is where it lands
+        // on commit — the protocol says the request is pending until then.
+        let icon = smithay::wayland::compositor::with_states(&wl_surface, |states| {
+            states
+                .cached_state
+                .get::<smithay::wayland::xdg_toplevel_icon::ToplevelIconCachedState>()
+                .current()
+                .icon_name()
+                .map(|name| name.to_owned())
+        });
+
+        let Some(view) = self.views.find_by_surface_mut(&wl_surface) else {
+            return;
+        };
+        if view.icon == icon {
+            return;
+        }
+        view.icon = icon.clone();
+        tracing::debug!("view {}: icon {icon:?}", view.id);
+        // The same path a title change takes, so the icon reaches the outside
+        // window list along with everything else that describes the window.
+        self.notify_props(&wl_surface);
+    }
+}
+
+/// An X11 client that wants every key.
+///
+/// Games and virtual machines ask for this so that the chords they use inside
+/// themselves are not taken by the desktop around them. The grab itself is
+/// Smithay's; what it needs from here is which focus target the X11 surface
+/// belongs to, which is the surface itself — this compositor's keyboard focus
+/// is a `WlSurface`, and an X11 window has one like any other client.
+impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for ViewportState {
+    fn keyboard_focus_for_xsurface(
+        &self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> Option<Self::KeyboardFocus> {
+        Some(surface.clone())
+    }
+}
+
+/// A sandbox asking for a socket of its own.
+///
+/// Flatpak and its like create one of these, hand the socket to the sandboxed
+/// application, and every client that connects through it arrives tagged with
+/// what the sandbox said about itself. The compositor does not act on the tag
+/// yet — nothing here refuses a request on the strength of it — but the tag is
+/// the part that cannot be added afterwards: a client that connected on the
+/// ordinary socket is indistinguishable from any other for the rest of its
+/// life.
+///
+/// The listener is a calloop source, so it goes into the same loop as the
+/// compositor's own socket and produces streams the same way.
+impl smithay::wayland::security_context::SecurityContextHandler for ViewportState {
+    fn context_created(
+        &mut self,
+        source: smithay::wayland::security_context::SecurityContextListenerSource,
+        context: smithay::wayland::security_context::SecurityContext,
+    ) {
+        tracing::info!(
+            "a security context: engine {:?}, app {:?}",
+            context.sandbox_engine,
+            context.app_id
+        );
+        let inserted = self
+            .loop_handle
+            .insert_source(source, move |client_stream, _, state| {
+                if let Err(e) = state.display_handle.insert_client(
+                    client_stream,
+                    std::sync::Arc::new(crate::state::ClientState {
+                        security_context: Some(context.clone()),
+                        ..Default::default()
+                    }),
+                ) {
+                    tracing::warn!("a sandboxed client could not be let in: {e}");
+                }
+            });
+        if let Err(e) = inserted {
+            tracing::warn!("listening for a sandbox's clients: {e}");
+        }
+    }
+}

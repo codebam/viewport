@@ -284,14 +284,37 @@ otherwise upstreamable, and the fork should go away when it lands.
 
 ### Still open
 
-- **The shell receives no input.** `viewport-web` exposes `post()` and nothing
-  in the other direction, so every `mousedown` handler in `data/shell/*.js` is
-  dead code: the notification close button and its actions, the taskbar,
-  overview drag-and-drop, and the screen-share chooser, which is keyboard-only
-  in consequence. The largest single gap, and it is load-bearing for a set of
-  features that read as finished.
-- **Mod4 and the left button do not move a tiled window.** The shell's
-  `moveByDelta` returns early unless the window floats.
+Nothing in the compositor's own behaviour, as far as this list knows. What is
+left is protocols nobody here has needed yet:
+
+- `ext-workspace` — external bars cannot see the workspaces. Not in Smithay
+  either, and not merely unwritten: the compositor does not know what the
+  workspaces *are*. They are the shell's, kept in `data/shell/*.js`, and the
+  IPC carries no message that names them. Publishing them means the shell
+  telling the compositor its list first, which is a protocol change before it
+  is a Wayland one.
+- `drm-lease` — handing an output to a client whole, which is a VR headset.
+  In Smithay, and nobody here has one to test against.
+
+Done since, all four by delegation to what Smithay ships:
+`xdg-toplevel-icon` — a window says what it looks like in a list, and the icon
+name reaches the shell as an optional `icon` on `view.props`, so the taskbar
+and the overview can draw one; `security-context` — a client that connected
+through a sandbox's socket is tagged with what the sandbox said, and a
+sandboxed client cannot create sandboxes of its own; `xdg-foreign` — a surface
+one client can hand to another by name, so a portal's dialog is parented to
+the window that asked; and `xwayland-keyboard-grab` — an X11 client that wants
+every key, which is games and virtual machines. That last global is only
+advertised to Xwayland (Smithay's `can_view`), so it does not appear in
+`wayland-info` and its absence there is not a fault.
+
+Three things this list called open have been done, and are noted because the
+list said otherwise for long enough to be worth contradicting on the record:
+the shell **does** receive input (`shell_pointer_motion`, `shell_pointer_button`
+and `shell_pointer_axis` in `input.rs`, and keys through `Action::Web`, all of
+which become real `WPEEvent`s in `crates/viewport-web/shim/viewport-shim.c`); a
+screencast **does** renegotiate; and Mod4 with the left button **does** move a
+tiled window, by floating it where it already is, which is what sway does.
 
 Output rotation works, on all eight transforms, verified on the panel rather
 than only in a capture. It did not for a long time, and the way the tests said

@@ -262,7 +262,7 @@ impl ViewportState {
         }
     }
 
-    fn notify_props(&mut self, surface: &WlSurface) {
+    pub(crate) fn notify_props(&mut self, surface: &WlSurface) {
         let Some(view) = self.views.find_by_surface(surface) else {
             return;
         };
@@ -280,10 +280,12 @@ impl ViewportState {
         }
         let id = view.id;
         self.foreign_management_state.update(id, &title, &app_id);
+        let icon = view.icon.clone();
         let event = Event::ViewProps {
             id,
             title,
             app_id,
+            icon,
         };
         self.notify(&event);
     }

@@ -439,6 +439,18 @@ pub struct ViewportState {
     /// xdg-activation. A launcher needs the global to exist before it will
     /// draw at all, quite apart from what activation is for.
     pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
+    /// A surface one client can hand to another by name, so a dialog opened on
+    /// another client's behalf is parented to the window that asked for it
+    /// rather than floating loose.
+    pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
+    /// Held because dropping it takes the global with it.
+    pub _security_context_state: smithay::wayland::security_context::SecurityContextState,
+    /// What a window says it looks like in a list. Held because dropping it
+    /// takes the global with it.
+    pub _xdg_toplevel_icon_manager: smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager,
+    /// An X11 client asking for every key — a game, or a virtual machine.
+    pub _xwayland_keyboard_grab_state:
+        smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState,
     /// linux-dmabuf. Created without a global here: the formats a client may
     /// use are the renderer's, and there is no renderer until a backend has
     /// started. See `advertise_dmabuf`.
@@ -605,6 +617,23 @@ impl ViewportState {
             );
         let xdg_activation_state =
             smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
+        let xdg_foreign_state = smithay::wayland::xdg_foreign::XdgForeignState::new::<Self>(&dh);
+        let security_context_state =
+            smithay::wayland::security_context::SecurityContextState::new::<Self, _>(
+                &dh,
+                // A sandboxed client must not be able to hand out sandboxes of
+                // its own: that is how a restriction gets laundered into none.
+                |client| {
+                    client
+                        .get_data::<ClientState>()
+                        .map(|data| data.security_context.is_none())
+                        .unwrap_or(true)
+                },
+            );
+        let xdg_toplevel_icon_manager =
+            smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager::new::<Self>(&dh);
+        let xwayland_keyboard_grab_state =
+            smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabState::new::<Self>(&dh);
         let dmabuf_state = smithay::wayland::dmabuf::DmabufState::new();
         let xwayland_shell_state =
             smithay::wayland::xwayland_shell::XWaylandShellState::new::<Self>(&dh);
@@ -774,6 +803,10 @@ impl ViewportState {
             lock_warned: false,
             lock_surfaces: std::collections::HashMap::new(),
             xdg_activation_state,
+            xdg_foreign_state,
+            _security_context_state: security_context_state,
+            _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
+            _xwayland_keyboard_grab_state: xwayland_keyboard_grab_state,
             dmabuf_state,
             xwm: None,
             xdisplay: None,
@@ -3852,6 +3885,12 @@ impl ViewportState {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    /// Set when the client connected through a socket a sandbox asked for, and
+    /// carries what the sandbox said about itself. Nothing is refused on the
+    /// strength of it yet — the point of the protocol is that a compositor
+    /// *can* tell, and a compositor that cannot tell has no way to start.
+    pub security_context:
+        Option<smithay::wayland::security_context::SecurityContext>,
 }
 
 impl ClientData for ClientState {

@@ -30,6 +30,10 @@ pub struct View {
     /// shown. Until then the shell is not told about it at all.
     pub mapped: bool,
 
+    /// The icon name the client set through `xdg-toplevel-icon`, if it set
+    /// one. The shell looks it up in the theme; nothing here draws it.
+    pub icon: Option<String>,
+
     /// The shell has given it a rectangle, so it is in the `Space`. A window
     /// can be mapped without being placed — that is the whole window between
     /// `view.added` going out and `view.layout` coming back.
@@ -300,6 +304,7 @@ impl Views {
             id,
             window,
             mapped: false,
+            icon: None,
             placed: false,
             box_: Box::new(0, 0, 0, 0),
             visible: true,
