@@ -112,29 +112,14 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         let state = &mut *bridge.state;
         let _ = event_loop.dispatch(Some(Duration::ZERO), state);
 
-        // Anything that changed needs a frame before we block, for the same
-        // reason: vblank drives rendering and vblank stops when nothing is
-        // submitted.
+        // Draw what is owed before GLib blocks, for the same reason: vblank
+        // drives rendering and vblank stops when nothing is submitted.
         //
-        // Arming rather than rendering. This runs once per batch of dispatched
-        // events, which with a browser open is some thousands of times a
-        // second, and rendering here made each commit its own render pass:
-        // 17,232 commits became 7,843 passes against 240 vblanks. The clock
-        // renders once a frame with everything that arrived in between, which
-        // is what wlroots does and why sway answers the same traffic with 240.
-        state.arm_frame_clock();
-
-        // And draw what is already owed, before GLib blocks.
-        //
-        // Rendering from the frame clock instead — batching every commit that
-        // arrived since the last tick into one pass — measures far cheaper,
-        // 9% of a core against 81% with a video playing. It is not here
-        // because it breaks a quiet desktop: with nothing else generating fd
-        // traffic the tick does not arrive, and a terminal shows nothing of
-        // what is typed into it until something else wakes the loop. Handing
-        // GLib the clock's deadline as the poll timeout was not enough, and
-        // reporting readiness from `prepare` or `check` as well broke input
-        // outright. See docs/debugging.md.
+        // The frame clock is deliberately not armed here. It arms itself from
+        // the commit that gives it something to do, and arming it on every
+        // pass through the loop would mean re-arming it immediately after each
+        // of its own ticks — a clock running at the refresh rate for the life
+        // of the session, on a desktop with nothing on it.
         state.render_if_needed();
 
         // Push pending events out to clients before GLib blocks
@@ -152,7 +137,12 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         let _ = state.display_handle.flush_clients();
     }
     if !timeout.is_null() {
-        // Nothing here needs waking on a timer; the fd does that.
+        // Nothing here needs waking on a timer. The one thing that used to —
+        // the frame clock, whose tick is the only thing that invites a client
+        // to paint when the screen is otherwise still — is armed on a timerfd,
+        // and a timerfd is an fd like any other: it makes calloop's epoll
+        // readable and GLib wakes for it. A calloop timer would not have, and
+        // that is what froze a terminal until the mouse moved.
         *timeout = -1;
     }
     0
@@ -181,8 +171,6 @@ unsafe extern "C" fn dispatch(
     if let Err(e) = event_loop.dispatch(Some(Duration::ZERO), state) {
         tracing::error!("calloop dispatch failed: {e}");
     }
-
-    state.arm_frame_clock();
 
     // Whatever that produced, out to the clients. GLib may block before
     // prepare runs again, and a reply left in a buffer is a client left

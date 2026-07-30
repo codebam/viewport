@@ -181,25 +181,46 @@ and the compositor went from 87% of a core to 10% with the video still smooth.
 This is what wlroots does, and why sway answers the same traffic without the
 heat.
 
-The obstacle is the GLib bridge. GLib owns the blocking wait, so a calloop timer
-only fires if GLib comes back round to let calloop dispatch it, and `prepare`
-sets `*timeout = -1` — sleep until an fd speaks. That is harmless while the
-frame is rendered inline in `prepare`, which is why it is still done that way.
-Move the render into the clock and a desktop with nothing else generating fd
-traffic stops drawing: a terminal shows nothing of what is typed into it until
-something unrelated wakes the loop. With a browser open it looks fine, which is
-how it passed a first test.
+The obstacle was the GLib bridge, and it is gone. GLib owns the blocking wait
+and watches calloop's epoll fd as a single source, so a calloop timer only fires
+if GLib comes back round to let calloop dispatch it — and calloop keeps its
+timers in a wheel it consults while *it* is the one waiting. A wheel entry is
+not an fd, so it is invisible to the poll that is actually blocking. `prepare`
+setting `*timeout = -1` was not the cause, only the thing that made it obvious.
 
-Three ways round it, none sufficient:
+The frame clock is now armed on a **timerfd**, watched as an ordinary calloop
+`Generic` source. An expiring timerfd makes the epoll fd readable like any other
+event, so GLib wakes for it. `crates/viewport/tests/frame_clock.rs` runs the
+experiment both ways and is the record: a timerfd wakes an outer poll, a calloop
+`Timer` does not.
 
-- Hand GLib the clock's deadline as the poll timeout. The tick still does not
-  arrive on a quiet desktop, and the reason is not yet understood — the clock
-  ticks 199 times a second when measured with the browser stopped, so the timer
-  is firing and something else is missing.
+Ways round it that were tried before that and did not work, so they are not
+tried again:
+
+- Hand GLib the clock's deadline as the poll timeout. The clock ticked — 199
+  times a second with the browser stopped — and the desktop still froze, which
+  never made sense at the time and still doesn't; the timerfd made the question
+  moot.
 - Return readiness from `prepare` when the frame is due. Broke input outright.
 - Report the same from `check`. Also broke input.
 
-Whatever fixes this has to be verified with **every other client closed**, not
+This also fixes a freeze that had nothing to do with the render pacing, and was
+the reason the clock mattered before the pacing change ever landed. Frame
+callbacks are throttled to one per surface per refresh. A client that commits
+just after a callback went out is refused the next one, and the only thing that
+was going to come back and offer it again was the clock tick — which never
+arrived. That is a terminal that stops updating until the mouse moves or another
+window happens to wake the loop. Two smaller pieces go with it:
+
+- `prepare` and `dispatch` no longer arm the clock on every pass. With a tick
+  that actually fires, arming there re-arms the clock immediately after each of
+  its own ticks, and it never stops. Commits arm it, which is where the work
+  comes from.
+- A tick remembers whether one was asked for while it was pending
+  (`frame_pending`) and arms one more, so the surface whose invitation this tick
+  was too early to send gets it on the next one rather than never.
+
+Whatever touches this has to be verified with **every other client closed**, not
 just with a video playing.
 
 Four earlier attempts cost more than they saved, all by trying to do less work
