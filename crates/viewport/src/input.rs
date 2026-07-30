@@ -1478,15 +1478,15 @@ fn axis_frame<E: smithay::backend::input::TabletToolEvent<I>, I: smithay::backen
 /// own keymap before offering it here — the client picked the keycode out of a
 /// keymap it uploaded, and against the seat's it would mean another key.
 ///
-/// Only the modified symbol is available, so a chord written with Shift is
-/// matched by the symbol the shift produces rather than the one under it. That
-/// is right for the chooser and for the plain chords, and wrong for a binding
-/// like "Mod4+Shift+q" driven this way.
+/// The chooser reads the modified symbol, because that is the key it is named
+/// by; a binding reads the unmodified one, because a chord is written
+/// "Mod4+Shift+q" — the shift is in the modifiers and the key is still q.
 impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportState {
     fn virtual_keyboard_key(
         &mut self,
         _seat: &smithay::input::Seat<Self>,
         keysym: Keysym,
+        raw_keysym: Option<Keysym>,
         mods: ModifiersState,
         _keycode: u32,
         state: smithay::reexports::wayland_server::protocol::wl_keyboard::KeyState,
@@ -1542,10 +1542,15 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
             return false;
         }
 
+        // The *unmodified* symbol, as the physical path uses. A chord is
+        // written "Mod4+Shift+q": the shift is in the modifiers and the key is
+        // still q, so matching the modified symbol would look for Q and never
+        // find it.
+        let unmodified = raw_keysym.unwrap_or(keysym).raw();
         match crate::binding::match_binding(
             &self.bindings,
             &mods,
-            keysym.raw(),
+            unmodified,
             &self.binding_mode,
         ) {
             Some(bound) => {

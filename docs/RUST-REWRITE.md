@@ -216,7 +216,21 @@ cannot see the workspaces, which are the shell's and are not published —
 ## Why smithay is a fork
 
 `crates/*/Cargo.toml` point at github.com/codebam/smithay rather than upstream,
-for one patch: `DrmCompositor::set_allow_tearing`.
+for two patches: `DrmCompositor::set_allow_tearing`, and a hook that lets the
+compositor see keys from a virtual keyboard.
+
+The second is `VirtualKeyboardKeyFilter`, on branch `virtual-keyboard-filter`.
+Keys from `zwp_virtual_keyboard_v1` went straight to the focused client, so
+nothing the compositor does with a key applied to them: `wtype hello` typed and
+`wtype -M logo -k Return` did nothing at all, and the screen-share chooser could
+only be answered by hand. wlroots delivers the same events as a keyboard on the
+seat, which is the behaviour anything driving a session by script expects. The
+hook offers each key to the compositor first, with the keysym resolved against
+the virtual keyboard's own keymap — the client picked the keycode out of a
+keymap it uploaded, and against the seat's it would mean another key — and both
+the modified symbol and the one at level 0, because a chord is written
+"Mod4+Shift+q" and the key part of it is `q`. The default keeps nothing, so a
+compositor that does not implement it sees no change. Also upstreamable.
 
 Tearing is an asynchronous page flip — the frame lands as soon as the hardware
 takes it rather than at the next vblank — and the flag for it lives inside the
@@ -276,16 +290,23 @@ otherwise upstreamable, and the fork should go away when it lands.
   overview drag-and-drop, and the screen-share chooser, which is keyboard-only
   in consequence. The largest single gap, and it is load-bearing for a set of
   features that read as finished.
-- **A screencast does not renegotiate.** The PipeWire format is agreed once at
-  `Start`, so a window that is resized while it is being shared drops every
-  frame from then on and the share freezes on its last good one.
 - **Mod4 and the left button do not move a tiled window.** The shell's
   `moveByDelta` returns early unless the window floats.
-All eight output transforms are implemented in `crates/viewport-vulkan/src/
-transform.rs` and tested against the GPU, and `DrmOutput::render_frame` applies
-the output's own transform, so a rotated monitor is driven the same as any
-other. (An earlier revision of this list said otherwise on the strength of a
-grep that matched a string inside a test of error *formatting*.)
+
+Output rotation works, on all eight transforms, verified on the panel rather
+than only in a capture. It did not for a long time, and the way the tests said
+otherwise is worth reading before trusting a test in this area:
+`docs/ROTATION.md`.
+
+A screencast renegotiates now — `Stream::renegotiate`, with a settle of 250ms
+so that dragging a window's edge does not allocate three screens' worth of
+buffers per frame of the drag.
+
+Keys from a virtual keyboard reach the compositor. `zwp_virtual_keyboard_v1`
+sends them straight to the focused client, so `wtype` could type and could not
+work a binding or answer the screen-share chooser; the fork carries a hook
+(`VirtualKeyboardKeyFilter`) that offers each key to the compositor first, with
+the keysym resolved against the virtual keyboard's own keymap.
 
 ## Notifications, and where they come from
 

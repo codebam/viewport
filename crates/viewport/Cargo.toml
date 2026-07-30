@@ -50,7 +50,7 @@ serde_json.workspace = true
 # honour — the async flip flag lives inside the atomic commit smithay
 # builds, and nothing upstream reaches it.
 git = "https://github.com/codebam/smithay.git"
-rev = "c1fbf9398f91e257e489caae94eab3c5d6822fe8"
+rev = "94de05432fe0ad24b43fe1e91cf1493587b62e86"
 default-features = false
 features = [
     "backend_winit",
