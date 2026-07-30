@@ -40,9 +40,41 @@ showing rather than going dark. The bar shows `HDR` while an output is in it —
 otherwise the picture changes and nothing says why, and a monitor left in HDR
 by a mis-hit key looks like a broken colour profile rather than a setting.
 
-Only the features wlroots 0.20 actually implements are advertised: parametric
-image descriptions, PQ and BT.2020. sRGB is deliberately not advertised — the
-protocol treats it as always supported.
+Only the features this renderer actually implements are advertised: parametric
+image descriptions, named primaries and named luminances. ICC profiles, power
+curves and arbitrary chromaticities are refused rather than accepted and
+ignored, and mastering metadata is accepted and dropped, because tone mapping
+is not done here.
+
+What an output says about itself follows what it is being driven as. An output
+in HDR describes itself as BT.2020 with PQ, and its *target* volume — the pair
+a client reads to decide whether the screen can go above reference white —
+carries a maximum above it rather than equal to it. Both halves matter and
+neither is decoration: Chrome asks the output for its image description once,
+when it connects, and will not offer a page an HDR display without a target
+maximum above reference white. Reporting the SDR numbers on a screen already in
+HDR is why a 4K HDR video played its SDR rendition on a monitor that was in HDR
+at the time.
+
+The peak that maximum reports is 1000 cd/m² and it is not measured. The
+connector's metadata blob carries zeroes for the mastering display, so there is
+no panel figure to pass on, and some number above reference white has to be
+sent or the answer reads as "no headroom". 1000 is what HDR10 is graded
+against.
+
+Switching an output notifies every client holding a
+`wp_color_management_output_v1` for it, and every surface on it holding
+feedback. Image descriptions are immutable, so the event only says *ask again* —
+but without it a client keeps whatever it fetched at startup for as long as it
+runs, and `Mod4+Shift+p` moves the screen into a colour space nothing on it
+knows about.
+
+The other direction is the surface's own description, and it reaches the shader
+through `ImportDmaWl`/`ImportMemWl` rather than `ImportDma`: those are the only
+import calls handed the surface the buffer came from, so they are the only
+place a description recorded against a surface can be attached to the texture
+made from its buffer. Recording it anywhere else means recording it and then
+decoding the buffer as sRGB anyway.
 
 ## Notifications
 

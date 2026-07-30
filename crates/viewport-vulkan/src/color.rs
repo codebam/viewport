@@ -297,6 +297,36 @@ impl Default for Description {
     }
 }
 
+/// The description a surface has declared, or `None` for "assume sRGB".
+///
+/// It lives here rather than beside the protocol code because the renderer is
+/// what has to read it. A buffer arrives through `ImportDmaWl`/`ImportMemWl`,
+/// which are handed the surface's `SurfaceData` and nothing else; a type
+/// defined in the compositor crate could not be looked up from there, and the
+/// description would have been recorded and then never used — which is what
+/// happened.
+#[derive(Debug, Default)]
+pub struct SurfaceColor(pub std::sync::Mutex<Option<Description>>);
+
+/// What a surface's buffers contain, or the sRGB default.
+///
+/// The default is not a guess so much as the protocol's own answer: a client
+/// that has not said anything is required to be treated as sRGB.
+pub fn description_for(
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> Description {
+    smithay::wayland::compositor::with_states(surface, |states| description_in(states))
+}
+
+/// The same, from a surface's state rather than the surface.
+pub fn description_in(states: &smithay::wayland::compositor::SurfaceData) -> Description {
+    states
+        .data_map
+        .get::<SurfaceColor>()
+        .and_then(|color| color.0.lock().ok().and_then(|held| *held))
+        .unwrap_or_default()
+}
+
 impl Description {
     /// Convert one encoded RGB triple into another description's encoding.
     ///
