@@ -82,17 +82,53 @@ impl Device {
     /// `node` is normally the render node the compositor already has open —
     /// `/dev/dri/renderD128` and friends.
     pub fn for_node(instance: &Instance, node: &DrmNode) -> Result<Self> {
-        let physical = PhysicalDevice::enumerate(instance)
+        let devices: Vec<PhysicalDevice> = PhysicalDevice::enumerate(instance)
             .context("vkEnumeratePhysicalDevices")?
-            .find(|device| {
-                // A device may expose a primary node, a render node, or both.
-                // Matching either is what makes this work whether the caller
-                // opened /dev/dri/card1 or /dev/dri/renderD128.
-                matches!(device.render_node(), Ok(Some(n)) if n == *node)
-                    || matches!(device.primary_node(), Ok(Some(n)) if n == *node)
-            })
-            .ok_or_else(|| anyhow!("no Vulkan device exposes {node:?}"))?;
+            .collect();
+        if devices.is_empty() {
+            return Err(anyhow!(
+                "no Vulkan device at all. The renderer is Vulkan and falls back \n\
+                 to nothing, so a driver has to be installed: mesa's vulkan-radeon \n\
+                 or vulkan-intel on real hardware, vulkan-virtio in a virtual \n\
+                 machine with 3D acceleration, or vulkan-swrast to render in \n\
+                 software."
+            ));
+        }
 
+        let matching = devices.iter().find(|device| {
+            // A device may expose a primary node, a render node, or both.
+            // Matching either is what makes this work whether the caller
+            // opened /dev/dri/card1 or /dev/dri/renderD128.
+            matches!(device.render_node(), Ok(Some(n)) if n == *node)
+                || matches!(device.primary_node(), Ok(Some(n)) if n == *node)
+        });
+
+        if let Some(physical) = matching {
+            return Self::open(physical.clone());
+        }
+
+        // Nothing owns the display's node. A software renderer is the usual
+        // reason: lavapipe exposes no DRM node at all, so it can never match,
+        // and a virtual machine without 3D acceleration has nothing else. It
+        // can still draw — it imports the compositor's buffers through
+        // VK_EXT_external_memory_dma_buf like any other device — so refusing
+        // here means refusing to start on every such machine, which is what
+        // it did.
+        //
+        // Said loudly, because every frame is then drawn on the CPU and copied,
+        // and somebody wondering why their desktop is slow deserves the reason
+        // in the log rather than a guess.
+        let physical = devices
+            .into_iter()
+            .next()
+            .expect("checked non-empty above");
+        tracing::warn!(
+            "no Vulkan device exposes {node:?}; falling back to {}. \
+             Every frame will be drawn without the display's own GPU, which is \
+             correct but slow — install the driver for this device (vulkan-virtio \
+             for a virtual machine with 3D acceleration) to avoid it.",
+            physical.name()
+        );
         Self::open(physical)
     }
 
