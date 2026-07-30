@@ -59,24 +59,8 @@ const SCANOUT_FORMATS: &[Fourcc] = &[
     Fourcc::Xrgb8888,
 ];
 
-smithay::backend::renderer::element::render_elements! {
-    /// Everything one output draws.
-    ///
-    /// Two kinds, because the shell is not a Wayland client: it is a texture
-    /// imported straight from WebKit's DMA-BUF, sharing nothing with a
-    /// surface but the renderer it is sampled by.
-    pub OutputElement<=VulkanRenderer>;
-    Surface=WaylandSurfaceRenderElement<VulkanRenderer>,
-    /// A window cropped to the hole the shell drew for it. The shell measures
-    /// that hole in its own DOM and it is not always the window's rectangle —
-    /// during an open animation the window slides up from under the bar, and
-    /// in a scrolling layout a column is half off the screen.
-    CroppedSurface=smithay::backend::renderer::element::utils::CropRenderElement<
-        WaylandSurfaceRenderElement<VulkanRenderer>,
-    >,
-    Shell=TextureRenderElement<viewport_vulkan::VulkanTexture>,
-    Cursor=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<VulkanRenderer>,
-}
+// The element list is `crate::render::OutputElement`, generic over the
+// renderer so the DRM path can use either.
 
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 
@@ -135,6 +119,47 @@ pub struct Surface {
 }
 
 /// Everything the DRM backend holds.
+/// The renderer the DRM path draws with.
+///
+/// Vulkan wherever it can: it is the one with colour management and explicit
+/// sync. GLES exists for the machines Vulkan cannot serve — a virtual machine,
+/// where software Vulkan lacks `VK_EXT_image_drm_format_modifier` and Venus
+/// aborts inside its own driver, while virgl gives OpenGL ES on the GBM
+/// platform and works. Without this a guest shows nothing at all.
+pub enum Gpu {
+    Vulkan(VulkanRenderer),
+    Gles(smithay::backend::renderer::gles::GlesRenderer),
+}
+
+/// Do the same thing with whichever renderer this is.
+///
+/// The body is written once and compiled twice, which is what keeps the two
+/// paths honest: anything that works for one has to type-check for the other.
+#[macro_export]
+macro_rules! with_gpu {
+    ($gpu:expr, |$renderer:ident| $body:expr) => {
+        match $gpu {
+            $crate::udev::Gpu::Vulkan($renderer) => $body,
+            $crate::udev::Gpu::Gles($renderer) => $body,
+        }
+    };
+}
+
+impl Gpu {
+    /// The formats a client may hand over, whichever renderer this is.
+    pub fn dmabuf_formats(&self) -> smithay::backend::allocator::format::FormatSet {
+        use smithay::backend::renderer::ImportDma as _;
+        match self {
+            Gpu::Vulkan(renderer) => renderer.dmabuf_formats(),
+            Gpu::Gles(renderer) => renderer.dmabuf_formats(),
+        }
+    }
+
+    pub fn is_vulkan(&self) -> bool {
+        matches!(self, Gpu::Vulkan(_))
+    }
+}
+
 pub struct Udev {
     /// `wp-drm-lease-v1`: handing a whole connector to a client.
     ///
@@ -150,7 +175,7 @@ pub struct Udev {
     /// as long as the client holds them.
     pub leases: Vec<smithay::wayland::drm_lease::DrmLease>,
     pub session: LibSeatSession,
-    pub renderer: VulkanRenderer,
+    pub renderer: Gpu,
     pub manager: Manager,
     pub surfaces: HashMap<crtc::Handle, Surface>,
     pub node: DrmNode,
@@ -765,7 +790,7 @@ impl ViewportState {
         &mut self,
         output_geometry: Option<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
         scale: f64,
-    ) -> Vec<OutputElement> {
+    ) -> Vec<crate::render::OutputElement<VulkanRenderer>> {
         use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
         use smithay::input::pointer::CursorImageStatus;
 
@@ -812,7 +837,7 @@ impl ViewportState {
                     smithay::backend::renderer::element::Kind::Cursor,
                 )
                 .into_iter()
-                .map(OutputElement::from)
+                .map(crate::render::OutputElement::from)
                 .collect()
             }
 
@@ -847,7 +872,7 @@ impl ViewportState {
                     smithay::backend::renderer::element::Kind::Cursor,
                 )
                 .ok()
-                .map(OutputElement::from)
+                .map(crate::render::OutputElement::from)
                 .into_iter()
                 .collect()
             }
