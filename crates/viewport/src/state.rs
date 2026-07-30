@@ -569,6 +569,14 @@ pub struct ViewportState {
     pub seat: Seat<Self>,
 }
 
+/// The surfaces one window is drawn from, and the size they cover.
+///
+/// Generic over the renderer because `with_gpu!` compiles every render body
+/// twice, once per backend.
+type WindowElements<R> = (
+    Vec<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<R>>,
+    smithay::utils::Size<i32, smithay::utils::Physical>,
+);
 
 impl ViewportState {
     pub fn new(
@@ -2593,13 +2601,7 @@ impl ViewportState {
         &mut self,
         id: u32,
         renderer: &mut R,
-    ) -> Result<
-        (
-            Vec<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<R>>,
-            smithay::utils::Size<i32, smithay::utils::Physical>,
-        ),
-        String,
-    >
+    ) -> Result<WindowElements<R>, String>
     where
         R: Renderer + smithay::backend::renderer::ImportAll,
         <R as smithay::backend::renderer::RendererSuper>::TextureId:
@@ -4407,12 +4409,6 @@ impl ViewportState {
         }
     }
 
-    /// Draw any output that has something new to show.
-    ///
-    /// Called from the outer loop rather than from wherever the change
-    /// happened, so a commit that touches five subsurfaces costs one frame
-    /// instead of five.
-
     /// Invite the surfaces on an output to draw their next frame.
     ///
     /// Split out of the render pass because a frame callback is not a thing
@@ -4597,6 +4593,11 @@ impl ViewportState {
         }
     }
 
+    /// Draw any output that has something new to show.
+    ///
+    /// Called from the outer loop rather than from wherever the change
+    /// happened, so a commit that touches five subsurfaces costs one frame
+    /// instead of five.
     pub fn render_if_needed(&mut self) {
         let all = std::mem::take(&mut self.needs_render);
         let some = std::mem::take(&mut self.dirty_outputs);

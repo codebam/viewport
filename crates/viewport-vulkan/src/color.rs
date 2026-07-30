@@ -72,7 +72,7 @@ impl TransferFunction {
                 const M1: f32 = 0.159_301_76;
                 const M2: f32 = 78.843_75;
                 const C1: f32 = 0.835_937_5;
-                const C2: f32 = 18.851_562_5;
+                const C2: f32 = 18.851_563;
                 const C3: f32 = 18.687_5;
 
                 let value = value.clamp(0.0, 1.0);
@@ -116,7 +116,7 @@ impl TransferFunction {
                 const M1: f32 = 0.159_301_76;
                 const M2: f32 = 78.843_75;
                 const C1: f32 = 0.835_937_5;
-                const C2: f32 = 18.851_562_5;
+                const C2: f32 = 18.851_563;
                 const C3: f32 = 18.687_5;
 
                 let value = value.max(0.0);
@@ -315,7 +315,7 @@ pub struct SurfaceColor(pub std::sync::Mutex<Option<Description>>);
 pub fn description_for(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
 ) -> Description {
-    smithay::wayland::compositor::with_states(surface, |states| description_in(states))
+    smithay::wayland::compositor::with_states(surface, description_in)
 }
 
 /// The same, from a surface's state rather than the surface.

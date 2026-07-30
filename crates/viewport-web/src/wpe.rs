@@ -260,6 +260,11 @@ impl Display {
         };
     }
 
+    // Eight, because the C entry point in `shim/viewport-shim.c` takes eight.
+    // Bundling them into a struct here would mean unpacking it again one line
+    // later, and the wrapper is worth more when it reads like the thing it
+    // wraps.
+    #[allow(clippy::too_many_arguments)]
     pub fn pointer_axis(
         &self,
         time_msec: u32,

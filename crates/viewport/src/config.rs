@@ -192,6 +192,70 @@ pub fn parse_mode(text: &str) -> Option<(i32, i32, Option<i32>)> {
     Some((width, height, rate))
 }
 
+/// The mode a configuration block asks for, if the connector offers it.
+///
+/// `"mode": "2560x1440@240"` names one exactly; without a rate it is the
+/// fastest mode of that size, because a resolution alone almost always means
+/// "that size, as fast as it goes". `"max_refresh": true` is the same question
+/// without a size: the fastest mode the display has.
+///
+/// A rate is matched to the nearest whole hertz. The kernel reports 239765
+/// millihertz where a person writes 240, and a configuration that has to be
+/// exact to three decimal places is a configuration nobody can write.
+pub fn pick_mode(
+    modes: &[smithay::reexports::drm::control::Mode],
+    config: &OutputConfig,
+) -> Option<smithay::reexports::drm::control::Mode> {
+    let fastest = |candidates: &mut dyn Iterator<Item = &smithay::reexports::drm::control::Mode>| {
+        candidates
+            .max_by_key(|mode| mode.vrefresh())
+            .copied()
+    };
+
+    if let Some(spec) = config.mode.as_deref() {
+        let (size, rate) = match spec.split_once('@') {
+            Some((size, rate)) => (size, rate.trim().parse::<f64>().ok()),
+            None => (spec, None),
+        };
+        let (width, height) = size.trim().split_once('x')?;
+        let width: u16 = width.trim().parse().ok()?;
+        let height: u16 = height.trim().parse().ok()?;
+        let matching = modes.iter().filter(|mode| mode.size() == (width, height));
+
+        return match rate {
+            Some(rate) => {
+                let wanted = rate.round() as u32;
+                matching
+                    .clone()
+                    .find(|mode| mode.vrefresh() == wanted)
+                    .copied()
+                    .or_else(|| {
+                        // Nothing at that rate. The size is the part the user
+                        // can see, so it wins, and the miss is said out loud.
+                        let closest = fastest(&mut matching.clone());
+                        if closest.is_some() {
+                            tracing::warn!(
+                                "no {width}x{height}@{wanted} mode; using the fastest {width}x{height}"
+                            );
+                        }
+                        closest
+                    })
+            }
+            None => fastest(&mut matching.clone()),
+        };
+    }
+
+    if config.max_refresh == Some(true) {
+        // The fastest mode at the largest size, rather than the fastest mode
+        // outright: a display will happily offer 360Hz at a resolution nobody
+        // wants to use.
+        let widest = modes.iter().map(|mode| mode.size()).max()?;
+        return fastest(&mut modes.iter().filter(|mode| mode.size() == widest));
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,68 +399,4 @@ mod tests {
         assert!(error.contains("line"), "{error}");
         let _ = std::fs::remove_file(&path);
     }
-}
-
-/// The mode a configuration block asks for, if the connector offers it.
-///
-/// `"mode": "2560x1440@240"` names one exactly; without a rate it is the
-/// fastest mode of that size, because a resolution alone almost always means
-/// "that size, as fast as it goes". `"max_refresh": true` is the same question
-/// without a size: the fastest mode the display has.
-///
-/// A rate is matched to the nearest whole hertz. The kernel reports 239765
-/// millihertz where a person writes 240, and a configuration that has to be
-/// exact to three decimal places is a configuration nobody can write.
-pub fn pick_mode(
-    modes: &[smithay::reexports::drm::control::Mode],
-    config: &OutputConfig,
-) -> Option<smithay::reexports::drm::control::Mode> {
-    let fastest = |candidates: &mut dyn Iterator<Item = &smithay::reexports::drm::control::Mode>| {
-        candidates
-            .max_by_key(|mode| mode.vrefresh())
-            .copied()
-    };
-
-    if let Some(spec) = config.mode.as_deref() {
-        let (size, rate) = match spec.split_once('@') {
-            Some((size, rate)) => (size, rate.trim().parse::<f64>().ok()),
-            None => (spec, None),
-        };
-        let (width, height) = size.trim().split_once('x')?;
-        let width: u16 = width.trim().parse().ok()?;
-        let height: u16 = height.trim().parse().ok()?;
-        let matching = modes.iter().filter(|mode| mode.size() == (width, height));
-
-        return match rate {
-            Some(rate) => {
-                let wanted = rate.round() as u32;
-                matching
-                    .clone()
-                    .find(|mode| mode.vrefresh() == wanted)
-                    .copied()
-                    .or_else(|| {
-                        // Nothing at that rate. The size is the part the user
-                        // can see, so it wins, and the miss is said out loud.
-                        let closest = fastest(&mut matching.clone());
-                        if closest.is_some() {
-                            tracing::warn!(
-                                "no {width}x{height}@{wanted} mode; using the fastest {width}x{height}"
-                            );
-                        }
-                        closest
-                    })
-            }
-            None => fastest(&mut matching.clone()),
-        };
-    }
-
-    if config.max_refresh == Some(true) {
-        // The fastest mode at the largest size, rather than the fastest mode
-        // outright: a display will happily offer 360Hz at a resolution nobody
-        // wants to use.
-        let widest = modes.iter().map(|mode| mode.size()).max()?;
-        return fastest(&mut modes.iter().filter(|mode| mode.size() == widest));
-    }
-
-    None
 }

@@ -181,40 +181,6 @@ pub fn properties(
     Some((vec![colorspace, metadata], vec![colorspace_value, 0], enabled))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_metadata_blob_is_the_size_the_kernel_expects() {
-        // The kernel reads these bytes directly. A struct that is the wrong
-        // size is refused; one that is the right size with the fields in the
-        // wrong order is not — it is simply believed.
-        //
-        // 4 for the outer type, then the infoframe: two bytes of eotf and
-        // descriptor, six coordinates of four bytes, and four luminance
-        // fields — 30, rounded to 32 by the u32's alignment.
-        assert_eq!(std::mem::size_of::<HdrMetadataInfoframe>(), 26);
-        assert_eq!(std::mem::size_of::<HdrOutputMetadata>(), 32);
-    }
-
-    #[test]
-    fn the_blob_asks_for_pq_and_leaves_the_rest_unset() {
-        let bytes = hdr_metadata_bytes();
-        assert_eq!(bytes.len(), 32);
-        // metadata_type is the first u32 and must be zero: it is the only type
-        // the kernel defines.
-        assert_eq!(&bytes[0..4], &[0, 0, 0, 0]);
-        // Then eotf, which is 2 for ST 2084.
-        assert_eq!(bytes[4], EOTF_ST2084);
-        // Static metadata type 1.
-        assert_eq!(bytes[5], 0);
-        // Everything after is the mastering display's own numbers, left unset
-        // so the display's capabilities are used rather than invented ones.
-        assert!(bytes[6..].iter().all(|b| *b == 0), "luminance was invented");
-    }
-}
-
 /// Switch a connector into or out of HDR.
 ///
 /// One atomic commit carrying both properties, tested before it is kept: a
@@ -265,4 +231,38 @@ pub fn set(
     }
 
     result.map_err(|e| anyhow::anyhow!("the display refused HDR: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_metadata_blob_is_the_size_the_kernel_expects() {
+        // The kernel reads these bytes directly. A struct that is the wrong
+        // size is refused; one that is the right size with the fields in the
+        // wrong order is not — it is simply believed.
+        //
+        // 4 for the outer type, then the infoframe: two bytes of eotf and
+        // descriptor, six coordinates of four bytes, and four luminance
+        // fields — 30, rounded to 32 by the u32's alignment.
+        assert_eq!(std::mem::size_of::<HdrMetadataInfoframe>(), 26);
+        assert_eq!(std::mem::size_of::<HdrOutputMetadata>(), 32);
+    }
+
+    #[test]
+    fn the_blob_asks_for_pq_and_leaves_the_rest_unset() {
+        let bytes = hdr_metadata_bytes();
+        assert_eq!(bytes.len(), 32);
+        // metadata_type is the first u32 and must be zero: it is the only type
+        // the kernel defines.
+        assert_eq!(&bytes[0..4], &[0, 0, 0, 0]);
+        // Then eotf, which is 2 for ST 2084.
+        assert_eq!(bytes[4], EOTF_ST2084);
+        // Static metadata type 1.
+        assert_eq!(bytes[5], 0);
+        // Everything after is the mastering display's own numbers, left unset
+        // so the display's capabilities are used rather than invented ones.
+        assert!(bytes[6..].iter().all(|b| *b == 0), "luminance was invented");
+    }
 }

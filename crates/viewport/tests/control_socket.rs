@@ -172,7 +172,7 @@ fn output_query_answers_with_the_headless_output() {
     assert_eq!(output["usable_height"], 1080);
     // The empty-string convention, never null.
     assert_eq!(output["serial"], "");
-    assert!(output["modes"].as_array().unwrap().len() >= 1);
+    assert!(!output["modes"].as_array().unwrap().is_empty());
 }
 
 #[test]

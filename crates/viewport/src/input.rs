@@ -1271,64 +1271,6 @@ impl ViewportState {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn modifiers(ctrl: bool, alt: bool) -> ModifiersState {
-        ModifiersState {
-            ctrl,
-            alt,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn every_vt_switch_keysym_maps_to_its_number() {
-        // xkb emits these only when Ctrl+Alt is held, so no modifier check is
-        // needed — but the arithmetic has to be right or Ctrl+Alt+F3 switches
-        // to the wrong terminal.
-        for vt in 1..=12i32 {
-            let raw = keysyms::KEY_XF86Switch_VT_1 + (vt as u32 - 1);
-            assert_eq!(
-                shortcut(&modifiers(false, false), Keysym::new(raw)),
-                Some(Action::SwitchVt(vt)),
-                "VT {vt}"
-            );
-        }
-    }
-
-    #[test]
-    fn quit_needs_both_modifiers() {
-        // Backspace alone is a key clients need. Swallowing it would make
-        // every text field in every application unusable.
-        let backspace = Keysym::new(keysyms::KEY_BackSpace);
-        assert_eq!(shortcut(&modifiers(false, false), backspace), None);
-        assert_eq!(shortcut(&modifiers(true, false), backspace), None);
-        assert_eq!(shortcut(&modifiers(false, true), backspace), None);
-        assert_eq!(
-            shortcut(&modifiers(true, true), backspace),
-            Some(Action::Quit)
-        );
-    }
-
-    #[test]
-    fn ordinary_keys_are_left_alone() {
-        // The compositor keeps two chords and forwards everything else; a
-        // greedy match here would be invisible until an application lost a
-        // keystroke.
-        for raw in [
-            keysyms::KEY_a,
-            keysyms::KEY_Return,
-            keysyms::KEY_F1,
-            keysyms::KEY_Tab,
-            keysyms::KEY_space,
-        ] {
-            assert_eq!(shortcut(&modifiers(true, true), Keysym::new(raw)), None);
-        }
-    }
-}
-
 impl ViewportState {
     /// Move focus to the neighbouring window, or step through them.
     ///
@@ -1385,6 +1327,16 @@ impl ViewportState {
     }
 }
 
+/// The region a confined pointer is held inside, and the surface's origin in
+/// layout coordinates.
+///
+/// Both are needed together because the region is surface-local and the
+/// pointer is not.
+type Confinement = (
+    Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
+    smithay::utils::Point<i32, smithay::utils::Logical>,
+);
+
 impl ViewportState {
     /// Whether the surface under the pointer has captured it, and to what.
     ///
@@ -1395,13 +1347,7 @@ impl ViewportState {
         &self,
         pointer: &smithay::input::pointer::PointerHandle<Self>,
         under: Option<&(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)>,
-    ) -> (
-        bool,
-        Option<(
-            Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
-            smithay::utils::Point<i32, smithay::utils::Logical>,
-        )>,
-    ) {
+    ) -> (bool, Option<Confinement>) {
         use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 
         let Some((surface, origin)) = under else {
@@ -1568,6 +1514,64 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
                 true
             }
             None => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn modifiers(ctrl: bool, alt: bool) -> ModifiersState {
+        ModifiersState {
+            ctrl,
+            alt,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn every_vt_switch_keysym_maps_to_its_number() {
+        // xkb emits these only when Ctrl+Alt is held, so no modifier check is
+        // needed — but the arithmetic has to be right or Ctrl+Alt+F3 switches
+        // to the wrong terminal.
+        for vt in 1..=12i32 {
+            let raw = keysyms::KEY_XF86Switch_VT_1 + (vt as u32 - 1);
+            assert_eq!(
+                shortcut(&modifiers(false, false), Keysym::new(raw)),
+                Some(Action::SwitchVt(vt)),
+                "VT {vt}"
+            );
+        }
+    }
+
+    #[test]
+    fn quit_needs_both_modifiers() {
+        // Backspace alone is a key clients need. Swallowing it would make
+        // every text field in every application unusable.
+        let backspace = Keysym::new(keysyms::KEY_BackSpace);
+        assert_eq!(shortcut(&modifiers(false, false), backspace), None);
+        assert_eq!(shortcut(&modifiers(true, false), backspace), None);
+        assert_eq!(shortcut(&modifiers(false, true), backspace), None);
+        assert_eq!(
+            shortcut(&modifiers(true, true), backspace),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn ordinary_keys_are_left_alone() {
+        // The compositor keeps two chords and forwards everything else; a
+        // greedy match here would be invisible until an application lost a
+        // keystroke.
+        for raw in [
+            keysyms::KEY_a,
+            keysyms::KEY_Return,
+            keysyms::KEY_F1,
+            keysyms::KEY_Tab,
+            keysyms::KEY_space,
+        ] {
+            assert_eq!(shortcut(&modifiers(true, true), Keysym::new(raw)), None);
         }
     }
 }

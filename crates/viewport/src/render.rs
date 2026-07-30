@@ -51,9 +51,11 @@ smithay::backend::renderer::element::render_elements! {
 }
 
 /// The pointer image, resolved but not yet imported.
+#[derive(Default)]
 pub enum Cursor {
     /// Nothing to draw: a client asked for the pointer to be hidden, or it is
     /// on another output.
+    #[default]
     Hidden,
     /// A client's own surface, and the hotspot it declared.
     Surface(WlSurface, Point<i32, Physical>),
@@ -147,11 +149,6 @@ pub struct Frame {
     pub locked_blank: bool,
 }
 
-impl Default for Cursor {
-    fn default() -> Self {
-        Self::Hidden
-    }
-}
 
 /// Turn a [`Frame`] into elements, front to back.
 ///

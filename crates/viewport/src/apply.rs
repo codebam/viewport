@@ -96,14 +96,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         Request::ScreencastRect { x, y, width, height } => {
             // The older, single-rectangle form of `shell.overlay`. A zero size
             // is the shell saying there is nothing above the windows now.
-            let rects = (width > 0 && height > 0)
-                .then(|| {
+            let rects = if width > 0 && height > 0 { {
                     vec![smithay::utils::Rectangle::new(
                         (x, y).into(),
                         (width, height).into(),
                     )]
-                })
-                .unwrap_or_default();
+                } } else { Default::default() };
             state.set_shell_overlays(rects);
         }
 
@@ -403,7 +401,7 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     let scale = config
         .scale
         .filter(|s| *s > 0.0)
-        .map(|s| Scale::Fractional(s));
+        .map(Scale::Fractional);
     let transform = config.transform.map(to_smithay_transform);
     // Said out loud, because a rotated output has three sizes that must agree
     // and only one of them is visible from any given place: the mode the panel

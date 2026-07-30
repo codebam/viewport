@@ -121,9 +121,18 @@ pub struct Surface {
 /// where software Vulkan lacks `VK_EXT_image_drm_format_modifier` and Venus
 /// aborts inside its own driver, while virgl gives OpenGL ES on the GBM
 /// platform and works. Without this a guest shows nothing at all.
+// 352 bytes against a boxed 8 is the remaining spread, and clippy still asks.
+// Boxing Vulkan too would put an indirection on every renderer access in the
+// path that runs every frame, to save a memcpy that is already down from 6432
+// bytes to 352.
+#[allow(clippy::large_enum_variant)]
 pub enum Gpu {
     Vulkan(VulkanRenderer),
-    Gles(smithay::backend::renderer::gles::GlesRenderer),
+    /// Boxed because `GlesRenderer` is 6432 bytes against Vulkan's 352, and an
+    /// enum is as large as its largest variant. Every render pass moves this
+    /// out and back — see `Placeholder` — so the difference is a memcpy per
+    /// frame per output, not a one-off.
+    Gles(Box<smithay::backend::renderer::gles::GlesRenderer>),
     /// Only ever here while the real renderer is on the stack: a call that
     /// borrows the rest of `Udev` cannot borrow the renderer out of it at the
     /// same time, so it is moved out and put back.
@@ -157,7 +166,14 @@ macro_rules! with_gpu {
     ($gpu:expr, |$renderer:ident| $body:expr) => {
         match $gpu {
             $crate::udev::Gpu::Vulkan($renderer) => $body,
-            $crate::udev::Gpu::Gles($renderer) => $body,
+            // Reborrowed through the `Box` so the body sees `&mut GlesRenderer`
+            // and not `&mut Box<GlesRenderer>` — `Box` forwards inherent
+            // methods but not trait impls, so without this the two arms would
+            // stop type-checking against the same body.
+            $crate::udev::Gpu::Gles(boxed) => {
+                let $renderer = &mut **boxed;
+                $body
+            }
             $crate::udev::Gpu::Placeholder => {
                 panic!("the renderer was used while it was moved out")
             }
@@ -536,7 +552,7 @@ fn open_device(
     let renderer = match asked.as_str() {
         "gles" | "gl" | "opengl" => {
             tracing::info!("VIEWPORT_RENDERER={asked}: the OpenGL renderer");
-            Gpu::Gles(gles_renderer(&gbm)?)
+            Gpu::Gles(Box::new(gles_renderer(&gbm)?))
         }
         _ => {
             let vulkan = VulkanDevice::for_node(&instance, render)
@@ -556,7 +572,7 @@ fn open_device(
                     // shows nothing, which is worse than one without colour
                     // management.
                     tracing::warn!("no usable Vulkan renderer ({e:#}); falling back to OpenGL");
-                    Gpu::Gles(gles_renderer(&gbm)?)
+                    Gpu::Gles(Box::new(gles_renderer(&gbm)?))
                 }
             }
         }
@@ -593,8 +609,8 @@ fn gles_renderer(gbm: &GbmDevice<DrmDeviceFd>) -> Result<smithay::backend::rende
         .context("creating an EGL context")?;
     // SAFETY: the context is current on this thread for the renderer's life,
     // which is the compositor's — the DRM path is single-threaded.
-    Ok(unsafe { smithay::backend::renderer::gles::GlesRenderer::new(context) }
-        .context("creating the OpenGL renderer")?)
+    unsafe { smithay::backend::renderer::gles::GlesRenderer::new(context) }
+        .context("creating the OpenGL renderer")
 }
 
 impl ViewportState {
@@ -1367,7 +1383,7 @@ impl ViewportState {
                 // so there is nothing to resize here.
                 self.resize_casts(None::<&mut VulkanRenderer>);
                 self.feed_casts::<_, <R as Captures>::Buffer>(
-                    &output,
+                    output,
                     renderer,
                 );
             }
@@ -1376,11 +1392,11 @@ impl ViewportState {
         if !self.pending_copies.is_empty() || !self.pending_capture_frames.is_empty() {
             {
                 self.service_screencopy::<_, <R as Captures>::Buffer>(
-                    &output,
+                    output,
                     renderer,
                 );
                 self.service_image_capture::<_, <R as Captures>::Buffer>(
-                    &output,
+                    output,
                     renderer,
                 );
             }
@@ -1407,12 +1423,12 @@ impl ViewportState {
         let _ = submitted;
 
         for window in self.space.elements() {
-            window.send_frame(&output, start, throttle, |_, _| {
+            window.send_frame(output, start, throttle, |_, _| {
                 Some(output.clone())
             });
         }
-        for layer in smithay::desktop::layer_map_for_output(&output).layers() {
-            layer.send_frame(&output, start, throttle, |_, _| {
+        for layer in smithay::desktop::layer_map_for_output(output).layers() {
+            layer.send_frame(output, start, throttle, |_, _| {
                 Some(output.clone())
             });
         }
@@ -1423,7 +1439,7 @@ impl ViewportState {
         for lock in self.lock_surfaces.values() {
             smithay::desktop::utils::send_frames_surface_tree(
                 lock.wl_surface(),
-                &output,
+                output,
                 start,
                 throttle,
                 |_, _| Some(output.clone()),

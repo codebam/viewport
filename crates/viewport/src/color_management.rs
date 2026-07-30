@@ -183,218 +183,6 @@ pub fn next_identity() -> u32 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_named_curves_this_renderer_has_all_map() {
-        // Everything advertised must map, or a client would pick something
-        // that is then rejected at create time.
-        for wire in supported_transfer_functions() {
-            assert!(
-                transfer_from_wire(*wire).is_some(),
-                "advertised {wire:?} but cannot map it"
-            );
-        }
-        for wire in supported_primaries() {
-            assert!(
-                primaries_from_wire(*wire).is_some(),
-                "advertised {wire:?} but cannot map it"
-            );
-        }
-    }
-
-    #[test]
-    fn unsupported_curves_are_refused_rather_than_substituted() {
-        // Silently treating an unknown curve as sRGB produces a picture that
-        // looks right and is not.
-        assert_eq!(transfer_from_wire(WireTransferFunction::St240), None);
-        assert_eq!(transfer_from_wire(WireTransferFunction::Log100), None);
-        assert_eq!(primaries_from_wire(WirePrimaries::Ntsc), None);
-        assert_eq!(primaries_from_wire(WirePrimaries::Cie1931Xyz), None);
-    }
-
-    #[test]
-    fn srgb_and_ext_srgb_share_a_curve() {
-        // ext-sRGB is sRGB's curve extended beyond 0..1; the encoding is the
-        // same, so the same decode applies.
-        assert_eq!(
-            transfer_from_wire(WireTransferFunction::Srgb),
-            transfer_from_wire(WireTransferFunction::ExtSrgb)
-        );
-    }
-
-    #[test]
-    fn identities_are_unique_and_never_reused() {
-        let a = next_identity();
-        let b = next_identity();
-        assert_ne!(a, b);
-        assert!(b > a);
-    }
-
-    #[test]
-    fn an_sdr_output_leaves_a_client_no_headroom_to_aim_at() {
-        // mpv's arithmetic, from video/out/wayland_common.c, reproduced because
-        // the numbers this compositor sends are only correct in terms of what a
-        // client does with them.
-        //
-        // It rescales the target luminances onto libplacebo's fixed reference
-        // white, then compares the maximum against it. Anything other than
-        // equality means headroom, and headroom means it re-encodes into PQ for
-        // an HDR display that is not there — while never telling the compositor,
-        // which goes on decoding those buffers as sRGB. That is the washed-out
-        // picture, and it is reachable from nothing but these three numbers.
-        const SDR_WHITE: f32 = 203.0;
-        const HDR_BLACK: f32 = 0.005;
-
-        let description = Description::default();
-        let min = MIN_LUMINANCE;
-        let reference = description.reference_luminance;
-        // What `target_luminance` carries: the same maximum, not a multiple.
-        let target_max = reference;
-
-        let scale = (SDR_WHITE - HDR_BLACK) / (reference - min);
-        let rescaled = (target_max - min) * scale + HDR_BLACK;
-
-        assert!(
-            (rescaled - SDR_WHITE).abs() < 1e-2,
-            "an SDR output rescaled to {rescaled}, which mpv reads as HDR headroom"
-        );
-    }
-
-    #[test]
-    fn the_luminances_go_out_in_the_order_the_protocol_takes_them() {
-        // min, max, reference — not min, reference, max. The last two are the
-        // same number for every SDR description, so the wrong order is
-        // invisible until something is HDR and then says its reference white
-        // is 10,000 cd/m².
-        let (min, max, reference) = luminance_args(&hdr_description());
-        assert_eq!(min, (MIN_LUMINANCE * 10_000.0) as u32);
-        assert_eq!(max, PQ_PEAK as u32);
-        assert_eq!(reference, hdr_description().reference_luminance as u32);
-        assert!(reference < max, "reference white above the encodable maximum");
-
-        // And the target pair: minimum then maximum, the panel rather than the
-        // encoding.
-        let (target_min, target_max) = target_luminance_args(&hdr_description());
-        assert_eq!(target_min, min);
-        assert_eq!(target_max, HDR_PEAK_LUMINANCE as u32);
-    }
-
-    #[test]
-    fn the_minimum_luminance_survives_the_wire_units() {
-        // Ten-thousandths, not thousandths and not whole cd/m². Getting this
-        // wrong moves the black point a client is told about by a factor of ten,
-        // and it is the divisor in the rescale above.
-        assert_eq!((MIN_LUMINANCE * 10_000.0) as u32, 2_000);
-    }
-
-    #[test]
-    fn an_hdr_output_leaves_a_client_headroom_to_aim_at() {
-        // The other half of the test above, and the bug this pair exists for:
-        // an output already switched into HDR reported the SDR numbers, so
-        // every client did this arithmetic and concluded there was no headroom
-        // — Chrome then offered the page an SDR display and played the SDR
-        // rendition of an HDR video on a screen that was in HDR.
-        const SDR_WHITE: f32 = 203.0;
-        const HDR_BLACK: f32 = 0.005;
-
-        let description = hdr_description();
-        let min = MIN_LUMINANCE;
-        let reference = description.reference_luminance;
-        let target_max = displayable_peak(&description);
-
-        let scale = (SDR_WHITE - HDR_BLACK) / (reference - min);
-        let rescaled = (target_max - min) * scale + HDR_BLACK;
-
-        assert!(
-            rescaled > SDR_WHITE,
-            "an HDR output rescaled to {rescaled}, which a client reads as no headroom"
-        );
-    }
-
-    #[test]
-    fn an_hdr_output_is_described_as_what_it_is_driven_as() {
-        // These three are what `udev::render` hands the renderer for an output
-        // in HDR. A client told anything else is drawing for a screen that is
-        // not the one in front of it.
-        let description = hdr_description();
-        assert_eq!(description.transfer, TransferFunction::Pq);
-        assert_eq!(description.primaries, Primaries::BT2020);
-        assert_eq!(named_transfer(description.transfer), Some(WireTransferFunction::St2084Pq));
-        assert_eq!(named_primaries(&description.primaries), Some(WirePrimaries::Bt2020));
-    }
-
-    #[test]
-    fn pq_encodes_to_ten_thousand_however_bright_the_panel_is() {
-        // The encodable maximum is fixed by ST 2084; the displayable one is
-        // the panel. Sending the panel's figure as the encoding maximum would
-        // tell a client its PQ values are clipped at 1000, which they are not.
-        let hdr = hdr_description();
-        assert_eq!(encodable_peak(&hdr), 10_000.0);
-        assert_eq!(displayable_peak(&hdr), HDR_PEAK_LUMINANCE);
-
-        // SDR has no separate volume: reference white is both.
-        let sdr = Description::default();
-        assert_eq!(encodable_peak(&sdr), sdr.reference_luminance);
-        assert_eq!(displayable_peak(&sdr), sdr.reference_luminance);
-    }
-
-    #[test]
-    fn a_window_across_two_screens_belongs_to_the_one_it_is_most_on() {
-        // The rule `output_of_surface` applies, on the geometry rather than
-        // through the compositor: a window wide enough to cross a monitor edge
-        // overlaps both, and the first one listed is not an answer — it flips
-        // with output order and calls a window nine tenths on the HDR screen
-        // an SDR one.
-        use smithay::utils::{Physical, Rectangle};
-        let dp1: Rectangle<i32, Physical> = Rectangle::new((0, 0).into(), (2560, 1440).into());
-        let dp3: Rectangle<i32, Physical> = Rectangle::new((2560, 0).into(), (2560, 1440).into());
-
-        let overlap = |window: Rectangle<i32, Physical>, screen: Rectangle<i32, Physical>| {
-            screen
-                .intersection(window)
-                .map(|shared| shared.size.w as i64 * shared.size.h as i64)
-                .unwrap_or(0)
-        };
-
-        // Mostly on the right-hand screen: 560 wide on one, 840 on the other.
-        let straddling: Rectangle<i32, Physical> =
-            Rectangle::new((2000, 100).into(), (1400, 800).into());
-        assert!(overlap(straddling, dp3) > overlap(straddling, dp1));
-
-        // Entirely on the left: the other screen must not be the answer at all.
-        let left: Rectangle<i32, Physical> = Rectangle::new((100, 100).into(), (800, 600).into());
-        assert!(overlap(left, dp1) > 0);
-        assert_eq!(overlap(left, dp3), 0);
-    }
-
-    #[test]
-    fn the_same_description_always_has_the_same_identity() {
-        // A client compares identities to decide whether its surface already
-        // matches the output. A fresh number per request makes every match
-        // look like a mismatch, and makes the identity announced by
-        // `preferred_changed` disagree with the one handed back afterwards.
-        assert_eq!(
-            identity_for(&Description::default()),
-            identity_for(&Description::default())
-        );
-        assert_eq!(identity_for(&hdr_description()), identity_for(&hdr_description()));
-        assert_ne!(
-            identity_for(&Description::default()),
-            identity_for(&hdr_description())
-        );
-    }
-
-    #[test]
-    fn a_surface_that_said_nothing_is_srgb() {
-        // Not a guess: the protocol requires it.
-        assert_eq!(Description::default().transfer, TransferFunction::Srgb);
-        assert_eq!(Description::default().primaries, Primaries::SRGB);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Protocol plumbing
 //
@@ -570,7 +358,7 @@ impl Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<CreatorParams>> for Viewp
                 // overflows a u32 above about 429,000 cd/m², which is a number
                 // a client is free to send and which would otherwise panic the
                 // compositor rather than fail the request.
-                if reference_lum > max_lum || min_lum as u32 >= max_lum.saturating_mul(10_000) {
+                if reference_lum > max_lum || min_lum >= max_lum.saturating_mul(10_000) {
                     creator.post_error(
                         Error::InvalidLuminance,
                         "the reference luminance exceeds the maximum",
@@ -1108,5 +896,217 @@ impl ViewportState {
         // this output — which is what re-evaluating them all works out, while
         // staying silent for the rest.
         self.notify_surface_colour();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_named_curves_this_renderer_has_all_map() {
+        // Everything advertised must map, or a client would pick something
+        // that is then rejected at create time.
+        for wire in supported_transfer_functions() {
+            assert!(
+                transfer_from_wire(*wire).is_some(),
+                "advertised {wire:?} but cannot map it"
+            );
+        }
+        for wire in supported_primaries() {
+            assert!(
+                primaries_from_wire(*wire).is_some(),
+                "advertised {wire:?} but cannot map it"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_curves_are_refused_rather_than_substituted() {
+        // Silently treating an unknown curve as sRGB produces a picture that
+        // looks right and is not.
+        assert_eq!(transfer_from_wire(WireTransferFunction::St240), None);
+        assert_eq!(transfer_from_wire(WireTransferFunction::Log100), None);
+        assert_eq!(primaries_from_wire(WirePrimaries::Ntsc), None);
+        assert_eq!(primaries_from_wire(WirePrimaries::Cie1931Xyz), None);
+    }
+
+    #[test]
+    fn srgb_and_ext_srgb_share_a_curve() {
+        // ext-sRGB is sRGB's curve extended beyond 0..1; the encoding is the
+        // same, so the same decode applies.
+        assert_eq!(
+            transfer_from_wire(WireTransferFunction::Srgb),
+            transfer_from_wire(WireTransferFunction::ExtSrgb)
+        );
+    }
+
+    #[test]
+    fn identities_are_unique_and_never_reused() {
+        let a = next_identity();
+        let b = next_identity();
+        assert_ne!(a, b);
+        assert!(b > a);
+    }
+
+    #[test]
+    fn an_sdr_output_leaves_a_client_no_headroom_to_aim_at() {
+        // mpv's arithmetic, from video/out/wayland_common.c, reproduced because
+        // the numbers this compositor sends are only correct in terms of what a
+        // client does with them.
+        //
+        // It rescales the target luminances onto libplacebo's fixed reference
+        // white, then compares the maximum against it. Anything other than
+        // equality means headroom, and headroom means it re-encodes into PQ for
+        // an HDR display that is not there — while never telling the compositor,
+        // which goes on decoding those buffers as sRGB. That is the washed-out
+        // picture, and it is reachable from nothing but these three numbers.
+        const SDR_WHITE: f32 = 203.0;
+        const HDR_BLACK: f32 = 0.005;
+
+        let description = Description::default();
+        let min = MIN_LUMINANCE;
+        let reference = description.reference_luminance;
+        // What `target_luminance` carries: the same maximum, not a multiple.
+        let target_max = reference;
+
+        let scale = (SDR_WHITE - HDR_BLACK) / (reference - min);
+        let rescaled = (target_max - min) * scale + HDR_BLACK;
+
+        assert!(
+            (rescaled - SDR_WHITE).abs() < 1e-2,
+            "an SDR output rescaled to {rescaled}, which mpv reads as HDR headroom"
+        );
+    }
+
+    #[test]
+    fn the_luminances_go_out_in_the_order_the_protocol_takes_them() {
+        // min, max, reference — not min, reference, max. The last two are the
+        // same number for every SDR description, so the wrong order is
+        // invisible until something is HDR and then says its reference white
+        // is 10,000 cd/m².
+        let (min, max, reference) = luminance_args(&hdr_description());
+        assert_eq!(min, (MIN_LUMINANCE * 10_000.0) as u32);
+        assert_eq!(max, PQ_PEAK as u32);
+        assert_eq!(reference, hdr_description().reference_luminance as u32);
+        assert!(reference < max, "reference white above the encodable maximum");
+
+        // And the target pair: minimum then maximum, the panel rather than the
+        // encoding.
+        let (target_min, target_max) = target_luminance_args(&hdr_description());
+        assert_eq!(target_min, min);
+        assert_eq!(target_max, HDR_PEAK_LUMINANCE as u32);
+    }
+
+    #[test]
+    fn the_minimum_luminance_survives_the_wire_units() {
+        // Ten-thousandths, not thousandths and not whole cd/m². Getting this
+        // wrong moves the black point a client is told about by a factor of ten,
+        // and it is the divisor in the rescale above.
+        assert_eq!((MIN_LUMINANCE * 10_000.0) as u32, 2_000);
+    }
+
+    #[test]
+    fn an_hdr_output_leaves_a_client_headroom_to_aim_at() {
+        // The other half of the test above, and the bug this pair exists for:
+        // an output already switched into HDR reported the SDR numbers, so
+        // every client did this arithmetic and concluded there was no headroom
+        // — Chrome then offered the page an SDR display and played the SDR
+        // rendition of an HDR video on a screen that was in HDR.
+        const SDR_WHITE: f32 = 203.0;
+        const HDR_BLACK: f32 = 0.005;
+
+        let description = hdr_description();
+        let min = MIN_LUMINANCE;
+        let reference = description.reference_luminance;
+        let target_max = displayable_peak(&description);
+
+        let scale = (SDR_WHITE - HDR_BLACK) / (reference - min);
+        let rescaled = (target_max - min) * scale + HDR_BLACK;
+
+        assert!(
+            rescaled > SDR_WHITE,
+            "an HDR output rescaled to {rescaled}, which a client reads as no headroom"
+        );
+    }
+
+    #[test]
+    fn an_hdr_output_is_described_as_what_it_is_driven_as() {
+        // These three are what `udev::render` hands the renderer for an output
+        // in HDR. A client told anything else is drawing for a screen that is
+        // not the one in front of it.
+        let description = hdr_description();
+        assert_eq!(description.transfer, TransferFunction::Pq);
+        assert_eq!(description.primaries, Primaries::BT2020);
+        assert_eq!(named_transfer(description.transfer), Some(WireTransferFunction::St2084Pq));
+        assert_eq!(named_primaries(&description.primaries), Some(WirePrimaries::Bt2020));
+    }
+
+    #[test]
+    fn pq_encodes_to_ten_thousand_however_bright_the_panel_is() {
+        // The encodable maximum is fixed by ST 2084; the displayable one is
+        // the panel. Sending the panel's figure as the encoding maximum would
+        // tell a client its PQ values are clipped at 1000, which they are not.
+        let hdr = hdr_description();
+        assert_eq!(encodable_peak(&hdr), 10_000.0);
+        assert_eq!(displayable_peak(&hdr), HDR_PEAK_LUMINANCE);
+
+        // SDR has no separate volume: reference white is both.
+        let sdr = Description::default();
+        assert_eq!(encodable_peak(&sdr), sdr.reference_luminance);
+        assert_eq!(displayable_peak(&sdr), sdr.reference_luminance);
+    }
+
+    #[test]
+    fn a_window_across_two_screens_belongs_to_the_one_it_is_most_on() {
+        // The rule `output_of_surface` applies, on the geometry rather than
+        // through the compositor: a window wide enough to cross a monitor edge
+        // overlaps both, and the first one listed is not an answer — it flips
+        // with output order and calls a window nine tenths on the HDR screen
+        // an SDR one.
+        use smithay::utils::{Physical, Rectangle};
+        let dp1: Rectangle<i32, Physical> = Rectangle::new((0, 0).into(), (2560, 1440).into());
+        let dp3: Rectangle<i32, Physical> = Rectangle::new((2560, 0).into(), (2560, 1440).into());
+
+        let overlap = |window: Rectangle<i32, Physical>, screen: Rectangle<i32, Physical>| {
+            screen
+                .intersection(window)
+                .map(|shared| shared.size.w as i64 * shared.size.h as i64)
+                .unwrap_or(0)
+        };
+
+        // Mostly on the right-hand screen: 560 wide on one, 840 on the other.
+        let straddling: Rectangle<i32, Physical> =
+            Rectangle::new((2000, 100).into(), (1400, 800).into());
+        assert!(overlap(straddling, dp3) > overlap(straddling, dp1));
+
+        // Entirely on the left: the other screen must not be the answer at all.
+        let left: Rectangle<i32, Physical> = Rectangle::new((100, 100).into(), (800, 600).into());
+        assert!(overlap(left, dp1) > 0);
+        assert_eq!(overlap(left, dp3), 0);
+    }
+
+    #[test]
+    fn the_same_description_always_has_the_same_identity() {
+        // A client compares identities to decide whether its surface already
+        // matches the output. A fresh number per request makes every match
+        // look like a mismatch, and makes the identity announced by
+        // `preferred_changed` disagree with the one handed back afterwards.
+        assert_eq!(
+            identity_for(&Description::default()),
+            identity_for(&Description::default())
+        );
+        assert_eq!(identity_for(&hdr_description()), identity_for(&hdr_description()));
+        assert_ne!(
+            identity_for(&Description::default()),
+            identity_for(&hdr_description())
+        );
+    }
+
+    #[test]
+    fn a_surface_that_said_nothing_is_srgb() {
+        // Not a guess: the protocol requires it.
+        assert_eq!(Description::default().transfer, TransferFunction::Srgb);
+        assert_eq!(Description::default().primaries, Primaries::SRGB);
     }
 }

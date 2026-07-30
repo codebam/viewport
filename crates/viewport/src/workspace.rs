@@ -203,7 +203,7 @@ impl WorkspaceState {
             if let Some(wl_output) = outputs
                 .iter()
                 .find(|o| &o.name() == output)
-                .and_then(|o| o.client_outputs(&client).into_iter().next())
+                .and_then(|o| o.client_outputs(&client).next())
             {
                 group.output_enter(&wl_output);
             }

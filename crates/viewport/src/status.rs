@@ -130,6 +130,7 @@ pub fn rate(previous: u64, current: u64, seconds: f64) -> f64 {
 }
 
 /// Samples the machine, keeping what it needs to turn counters into rates.
+#[derive(Default)]
 pub struct Status {
     cpu: CpuTimes,
     rx: u64,
@@ -137,16 +138,6 @@ pub struct Status {
     at: Option<Instant>,
 }
 
-impl Default for Status {
-    fn default() -> Self {
-        Self {
-            cpu: CpuTimes::default(),
-            rx: 0,
-            tx: 0,
-            at: None,
-        }
-    }
-}
 
 impl Status {
     /// Read everything once.

@@ -61,7 +61,7 @@ pub struct Mailbox {
 /// The shell, once it is running.
 pub struct Shell {
     pub view: WebView,
-    pub display: std::sync::Arc<Display>,
+    pub display: std::rc::Rc<Display>,
     pub mailbox: Rc<RefCell<Mailbox>>,
 }
 
@@ -133,7 +133,7 @@ impl Shell {
     ) -> Result<Self> {
         let mailbox = Rc::new(RefCell::new(Mailbox::default()));
 
-        let display = std::sync::Arc::new(Display::new(
+        let display = std::rc::Rc::new(Display::new(
             primary_node,
             render_node,
             formats,
@@ -178,7 +178,7 @@ impl Shell {
     pub fn take_frame(&self) -> Option<Pending> {
         self.mailbox
             .try_borrow_mut()
-            .and_then(|mut mailbox| Ok(mailbox.frame.take()))
+            .map(|mut mailbox| mailbox.frame.take())
             .unwrap_or(None)
     }
 

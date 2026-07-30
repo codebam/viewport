@@ -1387,6 +1387,9 @@ impl Frame for VulkanFrame<'_, '_> {
         self.transform
     }
 
+    // Returning `logical_size` from something called `output_size` is the
+    // point, not a slip: see below.
+    #[allow(clippy::misnamed_getters)]
     fn output_size(&self) -> Size<i32, Physical> {
         // The transformed size, as GLES reports it (`gles/mod.rs` swaps the
         // axes before storing it). A caller that clears
@@ -1823,7 +1826,7 @@ mod tests {
         let mut bag: DamageBag<i32, BufferCoord> = DamageBag::default();
         let mut target = buffer(&mut h.allocator, 32, 32);
 
-        let mut element = |bag: &DamageBag<i32, BufferCoord>, renderer: &VulkanRenderer| {
+        let element = |bag: &DamageBag<i32, BufferCoord>, renderer: &VulkanRenderer| {
             TextureRenderElement::from_texture_with_damage(
                 id.clone(),
                 renderer.context_id(),
@@ -1844,7 +1847,7 @@ mod tests {
         // The buffer age matters: 0 means "the contents of this buffer are
         // unknown", which always reports full damage and would make every
         // assertion below pass regardless.
-        let mut render = |h: &mut Harness,
+        let render = |h: &mut Harness,
                           tracker: &mut OutputDamageTracker,
                           target: &mut Dmabuf,
                           bag: &DamageBag<i32, BufferCoord>,
@@ -2356,8 +2359,7 @@ mod tests {
         let Some(mut h) = harness() else { return };
 
         // Allocated by this renderer, so it always has transfer support.
-        let pixels: Vec<u8> = std::iter::repeat([0u8, 255, 0, 255])
-            .take(8 * 8)
+        let pixels: Vec<u8> = std::iter::repeat_n([0u8, 255, 0, 255], 8 * 8)
             .flatten()
             .collect();
         let shm = h
@@ -2491,8 +2493,7 @@ mod tests {
         value: u8,
     ) -> [u8; 4] {
         // A texture holding one known value, opaque.
-        let pixels: Vec<u8> = std::iter::repeat([value, value, value, 255])
-            .take(8 * 8)
+        let pixels: Vec<u8> = std::iter::repeat_n([value, value, value, 255], 8 * 8)
             .flatten()
             .collect();
         let texture = h

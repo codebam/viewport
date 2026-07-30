@@ -42,6 +42,11 @@ const SYNC_NATIVE_FENCE: khronos_egl::Enum = 0x3144;
 /// `EGL_NO_NATIVE_FENCE_FD_ANDROID`
 const NO_NATIVE_FENCE_FD: i32 = -1;
 
+/// What `eglGetProcAddress` hands back: every entry point, signature erased.
+///
+/// Named so the transmutes below can say what they are transmuting *from*.
+type ProcAddress = extern "system" fn();
+
 type EglGetPlatformDisplay =
     unsafe extern "C" fn(khronos_egl::Enum, *mut c_void, *const isize) -> *mut c_void;
 type EglCreateImageKhr = unsafe extern "C" fn(
@@ -211,20 +216,25 @@ impl Gpu {
             })
         });
 
-        let create_image: EglCreateImageKhr = unsafe {
-            std::mem::transmute(
+        // `get_proc_address` erases every entry point to the same `extern
+        // "system" fn()`, so the signature has to be put back by hand. Naming
+        // the source type on the transmute rather than leaving it inferred is
+        // what makes a wrong destination type a compile error instead of a
+        // call through a mismatched ABI.
+        let create_image = unsafe {
+            std::mem::transmute::<ProcAddress, EglCreateImageKhr>(
                 egl.get_proc_address("eglCreateImageKHR")
                     .ok_or_else(|| anyhow!("no eglCreateImageKHR"))?,
             )
         };
-        let destroy_image: EglDestroyImageKhr = unsafe {
-            std::mem::transmute(
+        let destroy_image = unsafe {
+            std::mem::transmute::<ProcAddress, EglDestroyImageKhr>(
                 egl.get_proc_address("eglDestroyImageKHR")
                     .ok_or_else(|| anyhow!("no eglDestroyImageKHR"))?,
             )
         };
-        let image_target_texture: GlEglImageTargetTexture2dOes = unsafe {
-            std::mem::transmute(
+        let image_target_texture = unsafe {
+            std::mem::transmute::<ProcAddress, GlEglImageTargetTexture2dOes>(
                 egl.get_proc_address("glEGLImageTargetTexture2DOES")
                     .ok_or_else(|| anyhow!("no glEGLImageTargetTexture2DOES"))?,
             )
@@ -242,9 +252,11 @@ impl Gpu {
             ) {
                 (Some(create), Some(destroy), Some(dup)) => unsafe {
                     Some(FenceFunctions {
-                        create_sync: std::mem::transmute::<_, EglCreateSyncKhr>(create),
-                        destroy_sync: std::mem::transmute::<_, EglDestroySyncKhr>(destroy),
-                        dup_fd: std::mem::transmute::<_, EglDupNativeFenceFdAndroid>(dup),
+                        create_sync: std::mem::transmute::<ProcAddress, EglCreateSyncKhr>(create),
+                        destroy_sync: std::mem::transmute::<ProcAddress, EglDestroySyncKhr>(
+                            destroy,
+                        ),
+                        dup_fd: std::mem::transmute::<ProcAddress, EglDupNativeFenceFdAndroid>(dup),
                     })
                 },
                 _ => None,

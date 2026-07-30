@@ -123,7 +123,12 @@ pub struct WebView {
     // Kept alive as long as the signal handler can fire.
     _sink: Box<Box<dyn MessageSink>>,
     // The display must outlive the view.
-    _display: std::sync::Arc<Display>,
+    //
+    // `Rc` and not `Arc`: `Display` wraps a raw WPE pointer and is neither
+    // `Send` nor `Sync`, and everything that touches it runs on the thread
+    // holding the GLib main context. An `Arc` would only pay for atomics it
+    // cannot make sound anyway.
+    _display: std::rc::Rc<Display>,
 }
 
 impl WebView {
@@ -133,7 +138,7 @@ impl WebView {
     /// during startup otherwise renders nothing and says nothing, and the
     /// compositor just shows an empty desktop.
     pub fn new(
-        display: std::sync::Arc<Display>,
+        display: std::rc::Rc<Display>,
         sink: Box<dyn MessageSink>,
         console: bool,
     ) -> Result<Self> {

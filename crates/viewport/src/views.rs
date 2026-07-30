@@ -128,7 +128,6 @@ impl View {
         self.window
             .x11_surface()
             .and_then(|x11| x11.wl_surface())
-            .map(|surface| surface.clone())
     }
 
     pub fn title(&self) -> String {

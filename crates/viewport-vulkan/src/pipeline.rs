@@ -14,7 +14,6 @@
 // with the glslangValidator line in each shader's header comment.
 
 use std::collections::HashMap;
-use std::ffi::CStr;
 
 use anyhow::{Context as _, Result};
 use ash::vk;
@@ -152,7 +151,7 @@ impl Pipelines {
             // SPIR-V is a stream of u32 and the create info wants it as such.
             // include_bytes! gives a byte slice whose alignment is only 1, so
             // it has to be copied rather than cast.
-            anyhow::ensure!(bytes.len() % 4 == 0, "SPIR-V is not a whole number of words");
+            anyhow::ensure!(bytes.len().is_multiple_of(4), "SPIR-V is not a whole number of words");
             let words: Vec<u32> = bytes
                 .chunks_exact(4)
                 .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -238,7 +237,7 @@ impl Pipelines {
 
     fn build(&self, format: vk::Format, kind: Kind) -> Result<vk::Pipeline> {
         let handle = self.device.handle();
-        let entry = CStr::from_bytes_with_nul(b"main\0").unwrap();
+        let entry = c"main";
 
         let fragment = match kind {
             Kind::Solid => self.solid,
