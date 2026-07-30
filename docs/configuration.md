@@ -311,3 +311,33 @@ direction from where windows are on screen, and the column you are reaching for
 is usually scrolled off it. Both models share one tree — the strip's columns are
 the workspace root's children — so switching `layout` and reloading rearranges
 what is open rather than discarding it.
+
+
+## Outputs
+
+The `outputs` block is keyed by connector name — `DP-1`, `HDMI-A-1`, what
+`wlr-randr` prints — and says how that screen should be brought up.
+
+```json
+"outputs": {
+  "DP-1": { "mode": "2560x1440@240" },
+  "DP-3": { "max_refresh": true, "transform": "90" }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `mode` | `"WIDTHxHEIGHT"` or `"WIDTHxHEIGHT@RATE"`. A string, always: `"mode": 5` reads back as absent rather than being rounded into something |
+| `max_refresh` | The fastest mode at the largest size the display offers |
+| `scale`, `transform`, `hdr`, `x`, `y` | As the same names elsewhere |
+
+**A preferred mode is often not the fastest one.** A 240Hz panel commonly
+advertises 120Hz as preferred, and a compositor that takes the display's word
+for it runs at half the rate the monitor was bought for — which is what this
+one did until these keys were honoured. `"max_refresh": true` is the short way
+to say "as fast as it goes"; `mode` with a rate is the exact way.
+
+The rate is matched to the nearest whole hertz, because the kernel reports
+239765 millihertz where a person writes 240. A size that exists at no such rate
+uses the fastest mode of that size and says so in the log — the resolution is
+the part you can see.

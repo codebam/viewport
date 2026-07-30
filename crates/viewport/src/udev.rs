@@ -64,7 +64,11 @@ const SCANOUT_FORMATS: &[Fourcc] = &[
 
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 
-type Manager = DrmOutputManager<GbmAllocator<DrmDeviceFd>, Exporter, (), DrmDeviceFd>;
+/// What rides along with a queued frame: the clients waiting to be told when
+/// it reached the screen.
+type Feedback = Option<smithay::desktop::utils::OutputPresentationFeedback>;
+
+type Manager = DrmOutputManager<GbmAllocator<DrmDeviceFd>, Exporter, Feedback, DrmDeviceFd>;
 
 /// One CRTC being driven.
 pub struct Surface {
@@ -72,7 +76,7 @@ pub struct Surface {
     /// The connector this CRTC is driving, so a second pass can tell an
     /// output that is already up from one that still needs a CRTC.
     pub connector: connector::Handle,
-    pub drm_output: DrmOutput<GbmAllocator<DrmDeviceFd>, Exporter, (), DrmDeviceFd>,
+    pub drm_output: DrmOutput<GbmAllocator<DrmDeviceFd>, Exporter, Feedback, DrmDeviceFd>,
     /// The global handed to clients, dropped when the connector goes.
     _global: smithay::reexports::wayland_server::backend::GlobalId,
     /// Whether anything has been put on this output yet. Logged once, because
@@ -688,12 +692,30 @@ impl ViewportState {
                 continue;
             }
 
-            // The mode the display says it prefers, or the first it lists.
-            let Some(mode) = connector
+            // What the configuration asks for, then what the display prefers.
+            //
+            // A panel's preferred mode is often not its fastest: a 240Hz
+            // monitor advertises 120Hz as preferred and then runs at half its
+            // rate for anyone who never says otherwise. `"mode": "2560x1440@240"`
+            // or `"max_refresh": true` is how the C build was told, and this is
+            // where it is honoured.
+            let wanted = self.output_config.get(&name);
+            let chosen = wanted.and_then(|config| {
+                crate::config::pick_mode(connector.modes(), config)
+            });
+            if let Some(mode) = chosen.as_ref() {
+                tracing::info!(
+                    "{name}: {}x{}@{} from the configuration",
+                    mode.size().0,
+                    mode.size().1,
+                    mode.vrefresh()
+                );
+            }
+            let Some(mode) = chosen.as_ref().or_else(|| connector
                 .modes()
                 .iter()
                 .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-                .or_else(|| connector.modes().first())
+                .or_else(|| connector.modes().first()))
                 .copied()
             else {
                 continue;
@@ -860,6 +882,46 @@ impl ViewportState {
     }
 
 
+    /// Everyone waiting to hear that this output's frame reached the screen.
+    ///
+    /// Walked from the elements that were actually drawn, so a surface handed
+    /// straight to a plane is reported as scanned out rather than composited —
+    /// which is the difference a client pacing itself by presentation cares
+    /// about.
+    fn presentation_feedback(
+        &self,
+        output: &smithay::output::Output,
+        states: &smithay::backend::renderer::element::RenderElementStates,
+    ) -> smithay::desktop::utils::OutputPresentationFeedback {
+        use smithay::desktop::utils::{
+            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
+        };
+
+        let mut feedback =
+            smithay::desktop::utils::OutputPresentationFeedback::new(output);
+        for window in self.space.elements() {
+            if self.space.outputs_for_element(window).contains(output) {
+                window.take_presentation_feedback(
+                    &mut feedback,
+                    surface_primary_scanout_output,
+                    |surface, _| {
+                        surface_presentation_feedback_flags_from_states(surface, None, states)
+                    },
+                );
+            }
+        }
+        for layer in smithay::desktop::layer_map_for_output(output).layers() {
+            layer.take_presentation_feedback(
+                &mut feedback,
+                surface_primary_scanout_output,
+                |surface, _| {
+                    surface_presentation_feedback_flags_from_states(surface, None, states)
+                },
+            );
+        }
+        feedback
+    }
+
     /// A frame finished scanning out, so the next one may be drawn.
     pub fn on_vblank(
         &mut self,
@@ -875,8 +937,50 @@ impl ViewportState {
         };
         // The flip happened, so this output may be drawn into again.
         surface.pending = false;
-        if let Err(e) = surface.drm_output.frame_submitted() {
-            tracing::warn!("frame_submitted: {e}");
+        let refresh = surface
+            .output
+            .current_mode()
+            .map(|mode| {
+                std::time::Duration::from_secs_f64(1_000.0 / mode.refresh.max(1) as f64 / 1_000.0)
+            })
+            .unwrap_or_else(|| std::time::Duration::from_millis(16));
+        match surface.drm_output.frame_submitted() {
+            // The frame is on the screen, and this is the moment the clients
+            // that asked were waiting for. A compositor that advertises
+            // wp_presentation and never answers leaves anything pacing itself
+            // by presentation — a browser, most visibly — with no idea when
+            // its last frame landed.
+            Ok(Some(Some(mut feedback))) => {
+                let now = smithay::reexports::rustix::time::clock_gettime(
+                    smithay::reexports::rustix::time::ClockId::Monotonic,
+                );
+                let clock = std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32);
+                let (sequence, flags) = match metadata.as_ref() {
+                    Some(metadata) => (
+                        metadata.sequence,
+                        match metadata.time {
+                            smithay::backend::drm::DrmEventTime::Monotonic(_) => {
+                                smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync
+                                    | smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::HwClock
+                                    | smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::HwCompletion
+                            }
+                            _ => smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
+                        },
+                    ),
+                    None => (
+                        0,
+                        smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
+                    ),
+                };
+                feedback.presented::<_, smithay::utils::Monotonic>(
+                    clock,
+                    smithay::wayland::presentation::Refresh::Fixed(refresh),
+                    sequence as u64,
+                    flags,
+                );
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("frame_submitted: {e}"),
         }
 
         // Anything blocked waiting for this frame: a client pacing itself with
@@ -1123,7 +1227,18 @@ impl ViewportState {
 
         match result {
             Ok(rendered) if !rendered.is_empty => {
-                if let Err(e) = surface.drm_output.queue_frame(()) {
+                // Who asked to be told when this frame is on screen. Taken
+                // from the very elements that were drawn, so a surface that
+                // was scanned out directly is reported as such.
+                // From the `udev` handed in: the caller took it out of `self`
+                // so the renderer could be borrowed, and reaching for
+                // `self.udev` here finds nothing and skips the flip — which is
+                // a screen that never comes up at all.
+                let feedback = self.presentation_feedback(output, &rendered.states);
+                let Some(surface) = udev.surfaces.get_mut(&crtc) else {
+                    return;
+                };
+                if let Err(e) = surface.drm_output.queue_frame(Some(feedback)) {
                     // The vblank that would have driven the next frame never
                     // arrives, so a failure here stops the output for good
                     // rather than dropping one frame.
