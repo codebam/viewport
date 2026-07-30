@@ -1569,7 +1569,7 @@ impl ViewportState {
                 self.output_reshaped(&output);
             }
             if let Some(position) = change.position {
-                self.space.map_output(&output, (position.x, position.y));
+                self.map_output_at(&output, (position.x, position.y));
             }
             if let Some(vrr) = change.adaptive_sync {
                 self.set_output_adaptive_sync(&output, vrr);
@@ -1619,6 +1619,27 @@ impl ViewportState {
             "re-placed {count} view(s); the space holds {}",
             self.space.elements().count()
         );
+    }
+
+    /// Put an output at a position, in the layout and in what clients are told.
+    ///
+    /// `Space::map_output` alone moves the output for the compositor's own
+    /// layout and leaves `wl_output.geometry` saying whatever it said before,
+    /// which for every output here was the `(0, 0)` it was created at. A client
+    /// asking where the monitors are then gets them all stacked on the origin.
+    ///
+    /// There is no xdg-output global to paper over it either, so `wl_output` is
+    /// the only answer a client has. mpv reads it to work out which screen it is
+    /// on and where to go fullscreen; with two monitors both claiming the origin
+    /// it picks by the accident of enumeration order.
+    pub fn map_output_at(
+        &mut self,
+        output: &Output,
+        location: impl Into<Point<i32, Logical>>,
+    ) {
+        let location = location.into();
+        self.space.map_output(output, location);
+        output.change_current_state(None, None, None, Some(location));
     }
 
     /// Program a mode on the hardware, not only in the description of it.
@@ -1727,7 +1748,7 @@ impl ViewportState {
                 .map(|geometry| geometry.loc.x + geometry.size.w)
                 .max()
                 .unwrap_or(0);
-            self.space.map_output(output, (x, 0));
+            self.map_output_at(output, (x, 0));
         } else {
             self.space.unmap_output(output);
         }
@@ -4183,7 +4204,7 @@ impl ViewportState {
     /// fixed for a tool nobody was using and unfixed for the one being tested.
     pub fn output_reshaped(&mut self, output: &Output) {
         if let Some(loc) = self.space.output_geometry(output).map(|g| g.loc) {
-            self.space.map_output(output, loc);
+            self.map_output_at(output, loc);
         }
         smithay::desktop::layer_map_for_output(output).arrange();
 

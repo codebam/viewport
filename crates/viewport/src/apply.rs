@@ -425,13 +425,13 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         let current = state.space.output_geometry(&output).unwrap_or_default();
         let x = config.x.unwrap_or(current.loc.x);
         let y = config.y.unwrap_or(current.loc.y);
-        state.space.map_output(&output, (x, y));
+        state.map_output_at(&output, (x, y));
         state.output_reshaped(&output);
     } else if config.x.is_some() || config.y.is_some() {
         let current = state.space.output_geometry(&output).unwrap_or_default();
         let x = config.x.unwrap_or(current.loc.x);
         let y = config.y.unwrap_or(current.loc.y);
-        state.space.map_output(&output, (x, y));
+        state.map_output_at(&output, (x, y));
     }
 
     state.notify_output_layout();

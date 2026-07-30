@@ -804,7 +804,12 @@ impl ViewportState {
                         .unwrap_or(0);
 
                     tracing::info!("{name}: {}x{} at x={x}", mode.size().0, mode.size().1);
+                    // `map_output_at` inlined: `udev` is borrowed for the whole
+                    // arm, so taking `&mut self` again here does not compile.
+                    // Both halves still have to happen, or the second monitor
+                    // tells clients it is at the origin like the first.
                     self.space.map_output(&output, (x, 0));
+                    output.change_current_state(None, None, None, Some((x, 0).into()));
                     if self.active_output.is_none() {
                         self.active_output = Some(name);
                     }
