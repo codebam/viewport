@@ -1462,3 +1462,99 @@ fn axis_frame<E: smithay::backend::input::TabletToolEvent<I>, I: smithay::backen
             .then(|| (event.wheel_delta(), event.wheel_delta_discrete())),
     }
 }
+
+/// Keys from a virtual keyboard, given the same reading as keys from a real
+/// one.
+///
+/// `zwp_virtual_keyboard_v1` hands its keys straight to the focused client, so
+/// nothing a compositor does with a key applies to them: `wtype Return` types
+/// into a terminal, and `wtype -k Return` at a chooser that has taken the
+/// keyboard does nothing at all, because the chooser is a decision made in the
+/// filter these keys never pass through. Under wlroots the same events arrive
+/// as a keyboard on the seat and do reach the compositor, which is the
+/// behaviour anything driving a session by script expects.
+///
+/// The hook this implements resolves the keysym against the virtual keyboard's
+/// own keymap before offering it here — the client picked the keycode out of a
+/// keymap it uploaded, and against the seat's it would mean another key.
+///
+/// Only the modified symbol is available, so a chord written with Shift is
+/// matched by the symbol the shift produces rather than the one under it. That
+/// is right for the chooser and for the plain chords, and wrong for a binding
+/// like "Mod4+Shift+q" driven this way.
+impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportState {
+    fn virtual_keyboard_key(
+        &mut self,
+        _seat: &smithay::input::Seat<Self>,
+        keysym: Keysym,
+        mods: ModifiersState,
+        _keycode: u32,
+        state: smithay::reexports::wayland_server::protocol::wl_keyboard::KeyState,
+        _time: u32,
+    ) -> bool {
+        use smithay::reexports::wayland_server::protocol::wl_keyboard::KeyState;
+
+        if state != KeyState::Pressed {
+            // The release of a key whose press was kept. A client that saw
+            // only the release would think the key was stuck.
+            if let Some(at) = self.suppressed_keys.iter().position(|k| *k == keysym) {
+                self.suppressed_keys.remove(at);
+                return true;
+            }
+            return false;
+        }
+
+        // A client holding a shortcut inhibitor gets everything, exactly as it
+        // does from the real keyboard.
+        if self.shortcuts_inhibited() {
+            return false;
+        }
+
+        // The chooser owns the keyboard while it is up, and owns it here too:
+        // a keystroke that fell through would go to whatever was focused
+        // before the share was asked for.
+        if self.picker.is_some() {
+            let pick = match keysym {
+                Keysym::Escape => Some(Pick::Cancel),
+                Keysym::Return | Keysym::KP_Enter | Keysym::space => Some(Pick::Confirm),
+                Keysym::Up | Keysym::k => Some(Pick::Step(-1)),
+                Keysym::Down | Keysym::j | Keysym::Tab => Some(Pick::Step(1)),
+                _ => None,
+            };
+            self.suppressed_keys.push(keysym);
+            self.handle_action(pick.map(Action::Pick).unwrap_or(Action::Swallow));
+            return true;
+        }
+
+        if let Some(action) = shortcut(&mods, keysym) {
+            if self.locked && !matches!(action, Action::SwitchVt(_)) {
+                return false;
+            }
+            self.suppressed_keys.push(keysym);
+            self.handle_action(action);
+            return true;
+        }
+
+        // No binding fires while locked — one that spawns a terminal would put
+        // it on top of the lock screen — but the key still goes to the client,
+        // because the client is the lock screen and the key is the password.
+        if self.locked {
+            return false;
+        }
+
+        match crate::binding::match_binding(
+            &self.bindings,
+            &mods,
+            keysym.raw(),
+            &self.binding_mode,
+        ) {
+            Some(bound) => {
+                let bound = bound.clone();
+                self.suppressed_keys.push(keysym);
+                self.handle_action(Action::Bound(bound));
+                true
+            }
+            None => false,
+        }
+    }
+}

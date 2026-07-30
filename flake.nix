@@ -198,7 +198,7 @@
             # dependency has no crates.io hash to check against, so its
             # contents are pinned here instead.
             outputHashes = {
-              "smithay-0.7.0" = "sha256-nUTQ/4oqC+0/F/FiuSCIq/ykVFuQ8NnMhO5q4Vf+ab8=";
+              "smithay-0.7.0" = "sha256-/dVaTn7LQZRk/FJ1BnOEi9YMYXObdIZKRaFK1cxd3Ww=";
             };
           };
 
