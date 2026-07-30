@@ -87,12 +87,6 @@ pub struct Surface {
     dumped: bool,
     /// Whether this output has been switched into HDR.
     pub hdr: bool,
-    /// When a frame was last attempted, so a client committing faster than the
-    /// screen refreshes does not cost a render each time.
-    pub last_attempt: Option<std::time::Instant>,
-    /// Whether a deferred render is already waiting for this output's frame
-    /// interval to pass.
-    pub coalescing: bool,
     /// Whether this output's backlight is on. Off means DPMS off — the panel
     /// sleeps — while the output keeps its place in the layout.
     pub powered: bool,
@@ -126,6 +120,12 @@ pub struct Surface {
     /// visible as flicker whenever a client repaints quickly, like a terminal
     /// being typed into.
     pub pending: bool,
+    /// When this output was last drawn into, for holding attempts to one a
+    /// frame.
+    pub last_attempt: Option<std::time::Instant>,
+    /// A held attempt has a timer behind it, so a burst of commits arms one
+    /// timer rather than thousands.
+    pub deferred: bool,
 }
 
 /// Everything the DRM backend holds.
@@ -824,7 +824,7 @@ impl ViewportState {
                             drawn: false,
                             dumped: false,
                             last_attempt: None,
-                            coalescing: false,
+                            deferred: false,
                             hdr: false,
                             powered: true,
                             tearing: false,
@@ -952,6 +952,17 @@ impl ViewportState {
         };
         // The flip happened, so this output may be drawn into again.
         surface.pending = false;
+        // A held attempt cannot outlive a frame. If its timer were ever lost —
+        // dropped loop source, torn-down output — the flag alone would stop
+        // this screen from ever drawing again, so the vblank clears it. An
+        // extra timer that finds nothing to do is the harmless failure.
+        surface.deferred = false;
+        // A vblank is the start of a new frame period, so the render this
+        // vblank drives is never a repeat of the last one and must not be
+        // held back. Throttling it costs the whole refresh — the flip misses
+        // its window and the screen runs at half rate, which is a video that
+        // judders rather than a compositor that idles.
+        surface.last_attempt = None;
         let refresh = surface
             .output
             .current_mode()
@@ -1150,6 +1161,56 @@ impl ViewportState {
             // which made it look like the *other* monitor's problem.
             return;
         }
+
+        // One attempt per frame, whatever the clients do. Firefox commits some
+        // thousands of times a second on this machine, and every commit used
+        // to become a whole render pass that mostly found nothing to draw. A
+        // screen shows one frame per vblank; the rest of that work is heat.
+        //
+        // The attempt is deferred rather than dropped. Dropping it loses the
+        // last commit of a burst — the one nothing follows, and the one the
+        // eye is actually waiting on.
+        // This output's own frame time. A 60Hz screen beside a 240Hz one must
+        // not be held to the fast one's interval, nor the fast one to the
+        // slow one's.
+        let interval = surface
+            .output
+            .current_mode()
+            .map(|mode| std::time::Duration::from_nanos(1_000_000_000_000 / mode.refresh.max(1) as u64))
+            .unwrap_or_else(|| std::time::Duration::from_millis(16));
+        if let Some(at) = surface.last_attempt {
+            let waited = at.elapsed();
+            if waited < interval {
+                if !surface.deferred {
+                    surface.deferred = true;
+                    let timer = smithay::reexports::calloop::timer::Timer::from_duration(
+                        interval - waited,
+                    );
+                    if self
+                        .loop_handle
+                        .insert_source(timer, move |_, _, state| {
+                            // Cleared first, and whatever happens next: a
+                            // surface left holding this flag with no timer
+                            // behind it would never draw again.
+                            if let Some(surface) = state
+                                .udev
+                                .as_mut()
+                                .and_then(|udev| udev.surfaces.get_mut(&crtc))
+                            {
+                                surface.deferred = false;
+                            }
+                            state.render(crtc);
+                            smithay::reexports::calloop::timer::TimeoutAction::Drop
+                        })
+                        .is_err()
+                    {
+                        surface.deferred = false;
+                    }
+                }
+                return;
+            }
+        }
+        surface.last_attempt = Some(std::time::Instant::now());
 
         // Tearing, if one window covers this output and asked for it. Set
         // before the frame is built, because it changes how the frame that is

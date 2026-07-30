@@ -4035,7 +4035,6 @@ impl ViewportState {
                 ) as &'static str
             })
             .unwrap_or("unknown");
-        crate::state::note_dirty(who);
         let mut root = surface.clone();
         while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
             root = parent;
@@ -4061,7 +4060,6 @@ impl ViewportState {
     /// everything if the output has no CRTC here, which is the nested backend
     /// and the moment between a monitor arriving and being brought up.
     pub fn mark_output_dirty(&mut self, output: &Output) {
-        crate::state::note_dirty("output");
         let crtc = self.udev.as_ref().and_then(|udev| {
             udev.surfaces
                 .iter()
@@ -4246,7 +4244,6 @@ impl ViewportState {
     /// happened, so a commit that touches five subsurfaces costs one frame
     /// instead of five.
     pub fn render_if_needed(&mut self) {
-        crate::state::note_dirty("render_if_needed");
         let all = std::mem::take(&mut self.needs_render);
         let some = std::mem::take(&mut self.dirty_outputs);
         if !all && some.is_empty() {
@@ -4678,28 +4675,3 @@ pub struct PointerDrag {
 }
 
 
-/// Where the dirt comes from, counted and said out loud once a second.
-///
-/// Temporary, for a loop that has outlasted two guesses: the compositor draws
-/// thousands of frames a second that find nothing, with every client idle, and
-/// the only honest way to find out who is asking is to count the askers.
-pub fn note_dirty(who: &'static str) {
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-    static TALLY: Mutex<Option<(Instant, Vec<(&'static str, u64)>)>> = Mutex::new(None);
-    let mut tally = TALLY.lock().unwrap();
-    let (since, counts) = tally.get_or_insert_with(|| (Instant::now(), Vec::new()));
-    match counts.iter_mut().find(|(name, _)| *name == who) {
-        Some((_, n)) => *n += 1,
-        None => counts.push((who, 1)),
-    }
-    if since.elapsed() >= Duration::from_secs(1) {
-        let line = counts
-            .iter()
-            .map(|(name, n)| format!("{name}={n}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        tracing::info!("dirty in the last second: {line}");
-        *tally = Some((Instant::now(), Vec::new()));
-    }
-}
