@@ -375,6 +375,9 @@ function relayoutAll() {
       ? (output.barHidden && !logoHeld)
       : output.barHidden;
     output.el.classList.toggle('bar-hidden', hidden);
+    /* Auto draws the bar over the windows rather than above them, so revealing
+       it does not resize anything. */
+    output.el.classList.toggle('bar-auto', barMode === 'auto');
     renderBar(name);
   }
 

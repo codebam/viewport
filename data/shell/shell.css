@@ -100,6 +100,9 @@ body {
   background: var(--bar-bg);
   border-bottom: 1px solid var(--bar-border);
   user-select: none;
+  /* Above the windows, because under 'auto' it is drawn over them rather than
+     given room of its own. */
+  z-index: 3;
 }
 
 .desktop.bar-hidden .bar,
@@ -184,6 +187,16 @@ body {
 }
 
 .desktop.bar-hidden .windows {
+  inset: var(--rsv-top) var(--rsv-right) var(--rsv-bottom) var(--rsv-left);
+}
+
+/* Under 'auto' the bar comes and goes with Mod4, and the windows do not move
+   for it. Reserving room would mean every window on the output resized twice
+   for each glance at the clock — the tiling area recomputed, every client sent
+   a new size, and the whole desktop reflowing on a key that was meant to
+   reveal something. It floats over them instead, which is what a bar that
+   appears for a moment should do. */
+.desktop.bar-auto .windows {
   inset: var(--rsv-top) var(--rsv-right) var(--rsv-bottom) var(--rsv-left);
 }
 
