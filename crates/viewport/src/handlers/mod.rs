@@ -119,15 +119,27 @@ impl WaylandDndGrabHandler for ViewportState {
 /// dispatch asks for this. The focus type is the same surface every other input
 /// uses, which is right — a pen points at a window like anything else.
 ///
-/// What is still missing is the cursor: there is one `cursor_status` on the
-/// state and it belongs to the pointer, so a tool naming its own image has
-/// nowhere to put it and is ignored. A drawing program asking for a crosshair
-/// while the pen is down gets the ordinary arrow. Fixing it means a second
-/// status for the tool and a rule in `cursor_for` for which of the two wins.
-/// Not advertising cursor-shape instead would cost every ordinary client its
-/// named cursors, which is much the worse trade.
+/// The image is kept apart from the pointer's. They are two devices sharing one
+/// visible cursor, and a drawing application setting a crosshair for the pen
+/// has said nothing about what the mouse should be; folding them into one
+/// status would let each overwrite the other's choice. `cursor_for` decides
+/// which is showing, and the pen wins while it is in proximity because it is
+/// the device being used.
 impl smithay::input::tablet::TabletSeatHandler for ViewportState {
     type ToolFocus = WlSurface;
+
+    fn tablet_tool_image(
+        &mut self,
+        _tool: &smithay::backend::input::TabletToolDescriptor,
+        image: smithay::input::pointer::CursorImageStatus,
+    ) {
+        // Not filtered by which tool: there is one cursor on screen, and the
+        // last tool to say something is the one being drawn with.
+        self.tablet_cursor_status = Some(image);
+        // Same reason the pointer's own callback does it — the picture
+        // changing is a visible change with nothing else to prompt a frame.
+        self.needs_render = true;
+    }
 }
 
 impl OutputHandler for ViewportState {}

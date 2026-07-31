@@ -256,6 +256,23 @@ pub fn clamp(
     ))
 }
 
+/// Which of the two cursor images is the one on screen.
+///
+/// A pen and a mouse are two devices sharing one cursor, and each may name its
+/// own picture. The pen wins while it is in proximity, because it is the device
+/// being used: an application asking for a crosshair means it for the hand that
+/// is drawing, and it has said nothing about the mouse.
+///
+/// `tablet` is `None` once the pen leaves proximity, which is what hands the
+/// cursor back rather than stranding a crosshair under a pointer that has moved
+/// somewhere else.
+pub fn active_image(
+    tablet: Option<&smithay::input::pointer::CursorImageStatus>,
+    pointer: &smithay::input::pointer::CursorImageStatus,
+) -> smithay::input::pointer::CursorImageStatus {
+    tablet.cloned().unwrap_or_else(|| pointer.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +343,38 @@ mod tests {
         // the origin for the whole session.
         let to = Point::from((10.0, 10.0));
         assert_eq!(clamp(&[], (0.0, 0.0).into(), to), to);
+    }
+
+    #[test]
+    fn the_pen_wins_while_it_is_in_proximity() {
+        use smithay::input::pointer::CursorImageStatus;
+        // A drawing application asking for a crosshair means it for the hand
+        // that is drawing. Before this the tool's image was dropped and the
+        // ordinary arrow was drawn over the tablet.
+        let pointer = CursorImageStatus::default_named();
+        let pen = CursorImageStatus::Hidden;
+        assert_eq!(
+            active_image(Some(&pen), &pointer),
+            CursorImageStatus::Hidden
+        );
+    }
+
+    #[test]
+    fn lifting_the_pen_hands_the_cursor_back() {
+        use smithay::input::pointer::CursorImageStatus;
+        // None is what proximity-out sets. Leaving the pen's choice up would
+        // strand it under a pointer that has moved somewhere else entirely.
+        let pointer = CursorImageStatus::default_named();
+        assert_eq!(active_image(None, &pointer), pointer);
+    }
+
+    #[test]
+    fn a_pen_that_asked_for_nothing_does_not_hide_the_pointer() {
+        use smithay::input::pointer::CursorImageStatus;
+        // The two are separate statuses precisely so neither overwrites the
+        // other: with no tool image the pointer's own choice is untouched,
+        // whatever it happens to be.
+        let pointer = CursorImageStatus::Hidden;
+        assert_eq!(active_image(None, &pointer), CursorImageStatus::Hidden);
     }
 }

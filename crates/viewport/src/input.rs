@@ -729,13 +729,22 @@ impl ViewportState {
                             time,
                         },
                     ),
-                    smithay::backend::input::ProximityState::Out => tool.proximity_out(
-                        self,
-                        &smithay::input::tablet::tool::ProximityOutEvent {
-                            serial: SERIAL_COUNTER.next_serial(),
-                            time,
-                        },
-                    ),
+                    smithay::backend::input::ProximityState::Out => {
+                        // The pen has been lifted away, so whatever it asked
+                        // the cursor to look like is no longer the answer:
+                        // the mouse is the device in use again and has its own
+                        // idea. Left set, a crosshair would follow a pointer
+                        // that has moved somewhere else entirely.
+                        self.tablet_cursor_status = None;
+                        self.needs_render = true;
+                        tool.proximity_out(
+                            self,
+                            &smithay::input::tablet::tool::ProximityOutEvent {
+                                serial: SERIAL_COUNTER.next_serial(),
+                                time,
+                            },
+                        )
+                    }
                 }
                 tool.frame(self, time);
             }

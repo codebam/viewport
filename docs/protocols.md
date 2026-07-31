@@ -166,11 +166,12 @@ cursor jumps to where the pen lands rather than moving relative to where it was,
 and touching the tablet focuses what is under the pen — otherwise drawing in a
 window would mean clicking it with a mouse first.
 
-One thing is not carried through: a tool's *own* cursor image. There is a single
-cursor status and it belongs to the pointer, so a tool naming an image has
-nowhere to put it and is ignored — a drawing program that asks for a crosshair
-while the pen is down still gets the ordinary arrow. The shape it asks for is
-the only part that goes missing; position, pressure, tilt and focus all arrive.
+A tool's own cursor image is carried through as well. The pen and the mouse are
+two devices sharing one visible cursor, so they keep separate images and the pen
+wins while it is in proximity — an application asking for a crosshair means it
+for the hand that is drawing, and has said nothing about what the mouse should
+be. Lifting the pen away clears it and hands the cursor back, which is what
+stops a crosshair being stranded under a pointer that has moved somewhere else.
 
 ## Touch
 

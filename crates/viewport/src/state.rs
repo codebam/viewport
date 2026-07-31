@@ -239,6 +239,18 @@ pub struct ViewportState {
     /// The pointer image: the client's own surface where one is set, the
     /// theme's otherwise. Nothing draws a cursor unless this says what.
     pub cursor_status: smithay::input::pointer::CursorImageStatus,
+
+    /// What a tablet tool asked its cursor to be, while it is in proximity.
+    ///
+    /// Separate from `cursor_status`, and not a replacement for it: the pen
+    /// and the mouse are two devices sharing one visible cursor, and a
+    /// drawing application setting a crosshair for the pen has said nothing
+    /// about what the mouse should look like. Set on `set_cursor` from the
+    /// tool, and cleared when the pen leaves proximity — a pen lifted away
+    /// from the tablet is no longer the thing choosing the picture, and
+    /// leaving its choice up would strand a crosshair under a mouse that has
+    /// moved somewhere else entirely.
+    pub tablet_cursor_status: Option<smithay::input::pointer::CursorImageStatus>,
     /// The xcursor theme, loaded on first use.
     pub cursor_theme: crate::cursor::Theme,
     /// Whether the missing-theme warning has been said. Once is a diagnosis;
@@ -892,6 +904,7 @@ impl ViewportState {
             shell_damage: Default::default(),
 
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
+            tablet_cursor_status: None,
             cursor_theme: crate::cursor::Theme::new(),
             cursor_warned: false,
             last_layout: None,
@@ -3749,7 +3762,10 @@ impl ViewportState {
         }
         let local = (at - output_geometry.loc.to_f64()).to_physical(scale);
 
-        match self.cursor_status.clone() {
+        let status =
+            crate::cursor::active_image(self.tablet_cursor_status.as_ref(), &self.cursor_status);
+
+        match status {
             CursorImageStatus::Hidden => crate::render::Cursor::Hidden,
             CursorImageStatus::Surface(surface) => {
                 let hotspot = smithay::wayland::compositor::with_states(&surface, |states| {
