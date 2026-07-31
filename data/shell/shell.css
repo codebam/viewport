@@ -22,10 +22,18 @@
      colour alone does not get there while a gradient still glows over it. */
   --glow-1: #263047;
   --glow-2: #1d2a2a;
+  /* How far the corners are pulled back down. Transparent turns the vignette
+     off outright, which is the setting for a panel where the darkest thing
+     available is already black. */
+  --vignette: #0000004d;
   --bar-bg: #0f1116e6;
   --bar-border: #ffffff12;
   --border: #2a3040;
   --border-focus: #7aa2f7;
+  /* The edge under the pointer. One value, because a thumbnail, a tab and a
+     notification being pointed at are the same event and should not each have
+     picked their own grey. */
+  --border-hover: #55617d;
   --text: #e7e9ee;
   --muted: #8b92a3;
   --gap: 8px;
@@ -33,17 +41,83 @@
   --radius: 6px;
   --tab: 24px;
 
+  /* --radius is the corner of a window or a panel. These two are the same
+     idea at the other sizes the shell already used — 4px on every button,
+     tab and label, 8px on the tutorial block — written as literals in a dozen
+     places before they were named. A theme that wants a squarer or rounder
+     desktop has to be able to reach all three from one file. */
+  --radius-sm: 4px;
+  --radius-lg: 8px;
+
+  /* Translucent fills, for anything that sits *on* a surface rather than
+     beside it: a button in the bar, the divider under the pointer. White at a
+     low alpha rather than a colour, so they take on whatever is behind them
+     instead of fighting it — which is what lets the same three values work
+     over the bar's near-black and over the wallpaper's blue wash. */
+  --fill: #ffffff0d;
+  --fill-hover: #ffffff14;
+  --fill-active: #ffffff24;
+
+  /* An opaque panel — a tab, a notification's buttons — and the same panel
+     when it is the one in force. */
+  --surface: #1b1f28;
+  --surface-hi: #232a38;
+
+  /* Two steps of elevation and nothing between them: a thing is either lying
+     on the desktop or lifted off it. Both are cheap to *hold* — a shadow is
+     painted into the layer once and repainted only when it changes — and
+     neither is animated on anything that covers much of the screen, because
+     interpolating a blur means re-blurring every frame it runs. */
+  --shadow-1: 0 .25rem .75rem #0006;
+  --shadow-2: 0 .5rem 1.5rem #0008;
+
+  /* Accents that are not the frame colour: multi-selection, and anything
+     asking to be dealt with. */
+  --select: #bb9af7;
+  --urgent: #f7768e;
+
+  /* The two accents at the alpha a ring or a glow wants. Literals so they
+     survive an engine without color-mix(); see the @supports below, which
+     derives them from the accent itself wherever that exists. */
+  --focus-tint: #7aa2f733;
+  --select-tint: #bb9af788;
+
   /* Short enough that it never feels like waiting, long enough to read as
      motion rather than a jump. Ease-out: fast off the mark, settling at the
      end, which is what makes a short duration feel unhurried. */
   --anim: 130ms;
+  /* The same curve over a longer distance. A notification crossing an inch of
+     screen and a window frame changing colour in place are not the same
+     gesture, and giving the larger one the shorter duration is what makes it
+     look like it was cut off. Only entrances use it: nothing that runs on
+     every focus change is allowed to take this long. */
+  --anim-slow: 180ms;
   --ease: cubic-bezier(.2, .8, .2, 1);
 }
 
+/* var() substitution that produces an invalid value drops the whole
+   declaration rather than falling back to the property's previous value — so
+   the derivation has to be the upgrade and the literal the default, and not
+   the other way round. Where color-mix() exists, a theme that sets
+   --border-focus alone gets a matching ring instead of the stock blue one
+   around its own frame colour.
+
+   This is the one thing in the file that cannot be checked from the
+   stylesheet: whether the engine has color-mix() is a fact about the build. */
+@supports (color: color-mix(in srgb, red 20%, transparent)) {
+  :root {
+    --focus-tint: color-mix(in srgb, var(--border-focus) 20%, transparent);
+    --select-tint: color-mix(in srgb, var(--select) 53%, transparent);
+  }
+}
+
 /* Motion is decoration. Anyone who has asked the system for less of it gets
-   none, and the layout still works exactly the same. */
+   none, and the layout still works exactly the same. Zeroing both durations
+   covers every transition in the file; the keyframed entrances are switched
+   off by name further down, because a zero-length animation can still show its
+   from-state for the frame it occupies. */
 @media (prefers-reduced-motion: reduce) {
-  :root { --anim: 0ms; }
+  :root { --anim: 0ms; --anim-slow: 0ms; }
 }
 
 * { box-sizing: border-box; }
@@ -63,8 +137,16 @@ html, body {
 
 body {
   /* The compositor clears to transparent and the web view is the bottom
-     layer, so this gradient is the actual desktop background. */
+     layer, so this gradient is the actual desktop background.
+
+     The first layer is a vignette and is listed first because that is what
+     puts it on top: it pulls the corners back down towards --bg so the two
+     washes read as light falling on the desktop rather than as two coloured
+     patches with a hard outer edge. It costs one more gradient in a paint that
+     happens when the page is sized and then never again — the wallpaper has no
+     moving parts, so an idle desktop repaints none of this. */
   background:
+    radial-gradient(120% 95% at 50% 45%, transparent 45%, var(--vignette)),
     radial-gradient(70rem 50rem at 20% -10%, var(--glow-1), transparent),
     radial-gradient(50rem 40rem at 90% 110%, var(--glow-2), transparent),
     var(--bg);
@@ -98,6 +180,13 @@ body {
   justify-content: space-between;
   padding: 0 .5rem;
   background: var(--bar-bg);
+  /* A hairline of light along the top edge. This is the whole difference
+     between a strip that reads as a surface with an edge and one that reads as
+     a rectangle of darker wallpaper — and it is one gradient, painted with the
+     bar and repainted only when the bar itself is.
+
+     After the shorthand above, which would otherwise reset it. */
+  background-image: linear-gradient(#ffffff0a, #ffffff00 40%);
   border-bottom: 1px solid var(--bar-border);
   user-select: none;
   /* Above the windows, because under 'auto' it is drawn over them rather than
@@ -121,15 +210,31 @@ body {
   min-width: 1.9rem;
   padding: .1rem .45rem;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
   font: inherit;
   cursor: pointer;
+  /* Switching workspace is the most frequent thing anyone does here, and the
+     pill jumping between buttons is what tells them it happened. Colour only:
+     nothing here moves, so this runs entirely within the bar's own strip and
+     touches no window's geometry. */
+  transition:
+    background-color var(--anim) var(--ease),
+    box-shadow var(--anim) var(--ease),
+    opacity var(--anim) var(--ease),
+    color var(--anim) var(--ease);
 }
 
-.workspaces button:hover { background: #ffffff14; }
-.workspaces button.active { background: var(--border-focus); color: #10141c; }
+.workspaces button:hover { background: var(--fill-hover); color: var(--text); }
+.workspaces button.active {
+  background: var(--border-focus);
+  color: #10141c;
+  /* The pill is the only saturated thing in the bar, and a glow the width of
+     the pill itself is what stops it looking pasted on. Small enough that the
+     region repainted while it moves is the button and a few pixels round it. */
+  box-shadow: 0 0 .5rem var(--focus-tint);
+}
 /* Hosted by the other monitor: it exists, but not here. */
 .workspaces button.elsewhere { opacity: .45; }
 
@@ -138,7 +243,7 @@ body {
   gap: .25rem;
   margin-left: .5rem;
   padding-left: .5rem;
-  border-left: 1px solid #ffffff14;
+  border-left: 1px solid var(--fill-hover);
 }
 
 .taskbar button {
@@ -148,24 +253,43 @@ body {
   text-overflow: ellipsis;
   padding: .1rem .5rem;
   border: 0;
-  border-radius: 4px;
-  background: #ffffff0d;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
   color: var(--muted);
   font: inherit;
   cursor: pointer;
+  transition:
+    background-color var(--anim) var(--ease),
+    color var(--anim) var(--ease);
 }
 
-.taskbar button.focused { background: #ffffff24; color: var(--text); }
+/* Written above .focused rather than below it: the two are equally specific,
+   so whichever comes last wins, and a window being focused matters more than
+   the pointer happening to be resting on its name. */
+.taskbar button:hover { background: var(--fill-hover); color: var(--text); }
 
-/* Active binding mode, e.g. RESIZE. Hidden in the default mode. */
+.taskbar button.focused { background: var(--fill-active); color: var(--text); }
+
+/* Active binding mode, e.g. RESIZE. Hidden in the default mode.
+ *
+ * It appears because a key was pressed and the keyboard now means something
+ * else, which is worth a beat of motion: `display` cannot be transitioned, so
+ * the entrance is keyframed. It runs once, on a state the user just entered
+ * deliberately, and the badge is a couple of centimetres of bar. */
 .mode {
   padding: .1rem .5rem;
-  border-radius: 4px;
-  background: #f7768e;
+  border-radius: var(--radius-sm);
+  background: var(--urgent);
   color: #10141c;
   font-weight: bold;
+  animation: mode-in var(--anim) var(--ease);
 }
 .mode[hidden] { display: none; }
+
+@keyframes mode-in {
+  from { opacity: 0; transform: scale(.88); }
+  to { opacity: 1; transform: none; }
+}
 
 .module { color: var(--muted); padding: 0 .35rem; white-space: nowrap; }
 .module.clock { color: var(--text); }
@@ -226,11 +350,16 @@ body {
 .divider {
   flex: 0 0 var(--gap);
   align-self: stretch;
+  /* Rounded and transitioned while it is still invisible, so the fill below
+     fades up already the right shape instead of snapping in as a hard-edged
+     bar and then rounding off. */
+  border-radius: 3px;
+  transition: background-color var(--anim) var(--ease);
 }
 
 .split.horizontal > .divider { cursor: col-resize; }
 .split.vertical > .divider { cursor: row-resize; }
-.divider:hover { background: #ffffff14; border-radius: 3px; }
+.divider:hover { background: var(--fill-hover); }
 
 /* ---------------------------------------------------------------------
  * Tabbed and stacked containers
@@ -260,8 +389,8 @@ body {
   height: var(--tab);
   padding: 0 .5rem;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: #1b1f28;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   color: var(--muted);
   font: inherit;
   font-size: .78rem;
@@ -270,13 +399,34 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
+  /* Cycling tabs is a keyboard gesture with no motion of its own — the strip
+     does not move, one title lights and another goes out — so without this the
+     only feedback is a frame appearing somewhere else entirely. Colour on a
+     24px strip: the repaint is the strip. */
+  transition:
+    background-color var(--anim) var(--ease),
+    border-color var(--anim) var(--ease),
+    color var(--anim) var(--ease);
 }
 
 .split.stacked > .tabs > .tab { flex: 0 0 var(--tab); }
 
+/* Above .active for the same reason the taskbar's hover is: equal specificity,
+   and the tab on show should not lose its accent to the pointer passing over
+   it. */
+.tab:hover {
+  border-color: var(--border-hover);
+  background: var(--surface-hi);
+  color: var(--text);
+}
+
 .tab.active {
   border-color: var(--border-focus);
-  background: #232a38;
+  background: var(--surface-hi);
+  /* Lit from above, which is the same trick as the bar's top hairline and the
+     only thing separating the tab on show from a tab merely being pointed at
+     once both have the brighter surface. */
+  background-image: linear-gradient(var(--fill-hover), #ffffff00 70%);
   color: var(--text);
 }
 
@@ -308,9 +458,15 @@ body {
   /* Dim the wallpaper so the thumbnails read as a layer above the desktop
      rather than as more windows on it. */
   background: #0b0d12cc;
-  animation: overview-in 140ms cubic-bezier(.2, .8, .2, 1);
+  animation: overview-in var(--anim-slow) var(--ease);
 }
 
+/* Opacity and nothing else, deliberately. Every miniature in here contains
+   real client surfaces, positioned from rects the shell measures with
+   getBoundingClientRect — so a transform anywhere above them is not a visual
+   effect at all, it is a stream of new geometry for the compositor to apply to
+   every window on every workspace, for as long as the animation runs. A fade
+   is free by comparison: it changes no rectangle. */
 @keyframes overview-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -330,15 +486,19 @@ body {
 }
 
 .thumb:hover {
-  border-color: #55617d;
+  border-color: var(--border-hover);
   background: #141821;
+  /* Lifted, rather than scaled: see the note on overview-in. A shadow moves no
+     rectangle, so the windows inside stay exactly where the compositor was
+     last told they are. */
+  box-shadow: var(--shadow-1);
 }
 
 /* The workspace you are on, and the one the pointer is over, are different
    things and both worth seeing at a glance. */
 .thumb.current {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 1px var(--border-focus), 0 .5rem 1.5rem #0006;
+  box-shadow: 0 0 0 1px var(--border-focus), var(--shadow-2);
 }
 
 /* An empty workspace should say so rather than looking like a failed render. */
@@ -361,13 +521,18 @@ body {
   z-index: 2;
   min-width: 1.25rem;
   padding: .05rem .35rem;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #0b0d12cc;
   font-size: .72rem;
   line-height: 1.4;
   text-align: center;
   color: var(--muted);
   pointer-events: none;
+  /* So the number turns over with the cell it labels rather than a frame
+     before or after it. */
+  transition:
+    background-color var(--anim) var(--ease),
+    color var(--anim) var(--ease);
 }
 
 .thumb.current .thumb-label {
@@ -388,11 +553,17 @@ body {
 }
 
 /* Windows in a thumbnail are miniatures: their focus ring would be a thick
-   coloured band at this size, and their shadows just mud. */
+   coloured band at this size, and their shadows just mud.
+
+   `outline: none` and not `outline-color: transparent`, and this matters: the
+   focus ring further down sets only the *colour*, so switching the style off
+   here kills the ring whatever colour a state later in the file gives it, and
+   the two rules never have to be ordered against each other. */
 .thumb .window {
   border-width: 1px;
   border-radius: 3px;
   box-shadow: none;
+  outline: none;
   cursor: grab;
 }
 
@@ -459,6 +630,21 @@ body {
   overflow: hidden;
   display: flex;
 
+  /* The focus ring, declared here in its off state so that focusing a window
+     interpolates a colour rather than switching a style on.
+     `outline-style` is not animatable — a ring declared only on .focused would
+     appear and vanish instantly while the border beside it faded — and an
+     outline is drawn outside the border box without occupying any, so this
+     changes no rectangle and nothing is sent to the compositor for it.
+
+     A ring and not a glow, on purpose. A blurred shadow around a tiled window
+     spends most of its blur underneath the neighbouring window's hole, where
+     the compositor paints the client over the top and none of it is ever seen
+     — so the paint that survives is the couple of pixels in the gap, which is
+     exactly what a 1px outline draws for the cost of a rectangle. */
+  outline: 1px solid transparent;
+  outline-offset: 1px;
+
   /* What actually moves. `flex-grow` covers tiled windows sharing a split;
      left/top/width/height cover floating ones, which are positioned. The
      compositor follows along because the shell resamples geometry every frame
@@ -470,6 +656,7 @@ body {
     top var(--anim) var(--ease),
     width var(--anim) var(--ease),
     height var(--anim) var(--ease),
+    outline-color var(--anim) var(--ease),
     border-color var(--anim) var(--ease);
 }
 
@@ -482,10 +669,14 @@ body {
    the cursor lags it by the whole duration and feels like ice. */
 .window.dragging { transition: none; }
 
-.window.focused { border-color: var(--border-focus); }
+.window.focused {
+  border-color: var(--border-focus);
+  outline-color: var(--focus-tint);
+}
 .window.selected {
-  border-color: #bb9af7;
-  box-shadow: 0 0 12px #bb9af788;
+  border-color: var(--select);
+  outline-color: var(--select-tint);
+  box-shadow: 0 0 12px var(--select-tint);
 }
 
 /* Floating windows are marked in the taskbar so the list still reflects the
@@ -500,7 +691,35 @@ body {
   background: transparent;
 }
 
-/* Fullscreen covers the output entirely, bar included, like sway. */
+/* Floating: positioned rather than laid out, and above everything tiled. The
+   rect itself comes from inline styles the shell sets per window. */
+.window.floating {
+  position: absolute;
+  z-index: 5;
+  /* Lifted off the desktop, which is the only thing distinguishing a floating
+     window from a tiled one that happens to be somewhere unusual. It keeps its
+     focus ring from .focused above: an outline and a shadow are separate
+     properties, so neither state has to know about the other. */
+  box-shadow: var(--shadow-2);
+
+  /* The rect describes the hole, not the frame around it.
+     
+     Everything else here is border-box, and a floating window's size comes
+     from what the client asked for — so a border-box rect made the hole two
+     pixels smaller on each side than the client wanted. A client that can be
+     resized simply took the smaller size; one that cannot — an about box, a
+     password prompt, anything with a fixed size — ignored the configure,
+     stayed as big as it was, and had its right and bottom edges cropped
+     against a hole it never agreed to. */
+  box-sizing: content-box;
+}
+
+/* Fullscreen covers the output entirely, bar included, like sway.
+ *
+ * Below .floating, and that is the point of where it sits: the two selectors
+ * are equally specific, so source order alone decides which z-index a floating
+ * window that goes fullscreen ends up with. Written above, as it was, the 5
+ * won and the 10 here had never once applied to anything. */
 .window.fullscreen {
   position: absolute;
   /* !important because a floating window carries its rect as inline style, and
@@ -514,25 +733,13 @@ body {
   z-index: 10;
   border: 0;
   border-radius: 0;
-}
-
-/* Floating: positioned rather than laid out, and above everything tiled. The
-   rect itself comes from inline styles the shell sets per window. */
-.window.floating {
-  position: absolute;
-  z-index: 5;
-  box-shadow: 0 .5rem 1.5rem #0008;
-
-  /* The rect describes the hole, not the frame around it.
-     
-     Everything else here is border-box, and a floating window's size comes
-     from what the client asked for — so a border-box rect made the hole two
-     pixels smaller on each side than the client wanted. A client that can be
-     resized simply took the smaller size; one that cannot — an about box, a
-     password prompt, anything with a fixed size — ignored the configure,
-     stayed as big as it was, and had its right and bottom edges cropped
-     against a hole it never agreed to. */
-  box-sizing: content-box;
+  /* Nothing painted at all. A fullscreen window is a hole the size of the
+     output: a ring or a shadow around it either falls off the edge of the
+     screen or is drawn under the client — and the shadow in particular would
+     otherwise be the one .floating just set, since a window that goes
+     fullscreen from a float keeps that class. */
+  outline: none;
+  box-shadow: none;
 }
 
 /* Hidden on another workspace: kept in the DOM so the client stays alive. */
@@ -561,6 +768,13 @@ body {
   margin-bottom: .9rem;
   color: var(--text);
   opacity: .8;
+  /* A wash of the accent behind the mark, so it sits in the wallpaper rather
+     than on it. A filter over four square centimetres of a page that is not
+     changing: it is applied when the mark is painted and never again, because
+     an empty desktop submits no frames. Nothing here pulses — this is the
+     resting state of the machine, and anything that animated forever would
+     mean a compositor that never goes quiet. */
+  filter: drop-shadow(0 0 1.5rem var(--focus-tint));
 }
 .empty[hidden] { display: none; }
 
@@ -575,8 +789,12 @@ html.no-tutorial .empty .tutorial { display: none; }
 .empty pre {
   margin-top: .75rem;
   padding: .6rem .9rem;
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: #0d0f13;
+  /* An inset hairline rather than a border: a border would make the block two
+     pixels wider and taller than it is now, and the edge is wanted for the
+     look of the thing, not for the room. */
+  box-shadow: inset 0 0 0 1px var(--fill);
   font-size: .85rem;
   text-align: left;
 }
@@ -610,9 +828,15 @@ html.no-tutorial .empty .tutorial { display: none; }
   border-left: 3px solid var(--border-focus);
   border-radius: var(--radius);
   background: #161a22f2;
-  box-shadow: 0 .5rem 1.5rem #0007;
+  /* The shadow that falls outside #notifications is cropped away when the
+     compositor redraws this strip in front of a window — see the note on
+     .screencast-dialog, which is the same problem. Kept because most of it
+     lands inside the column, and deliberately not grown on hover, where the
+     part that would be added is exactly the part that gets cut off. */
+  box-shadow: var(--shadow-2);
   cursor: pointer;
-  animation: notification-in 160ms cubic-bezier(.2, .8, .2, 1);
+  animation: notification-in var(--anim-slow) var(--ease);
+  transition: border-color var(--anim) var(--ease);
 }
 
 @keyframes notification-in {
@@ -620,14 +844,18 @@ html.no-tutorial .empty .tutorial { display: none; }
   to { opacity: 1; transform: none; }
 }
 
+/* Something arrived and is about to be dismissed by clicking it, so it is
+   worth saying which one the pointer would take. */
+.notification:hover { border-color: var(--border-hover); }
+
 @media (prefers-reduced-motion: reduce) {
-  .notification { animation: none; }
+  .notification, .overview, .mode, .screencast-dialog { animation: none; }
 }
 
 /* Low urgency recedes; critical asks to be dealt with and, per the
    specification, never expires on its own. */
 .notification.urgency-0 { border-left-color: #4a5165; opacity: .9; }
-.notification.urgency-2 { border-left-color: #f7768e; }
+.notification.urgency-2 { border-left-color: var(--urgent); }
 
 .notification-head {
   display: flex;
@@ -652,6 +880,7 @@ html.no-tutorial .empty .tutorial { display: none; }
   line-height: 1;
   cursor: pointer;
   padding: 0 .15rem;
+  transition: color var(--anim) var(--ease);
 }
 
 .notification-close:hover { color: var(--text); }
@@ -678,15 +907,21 @@ html.no-tutorial .empty .tutorial { display: none; }
   flex: 1 1 auto;
   padding: .25rem .5rem;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: #1b1f28;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   color: var(--text);
   font: inherit;
   font-size: .8rem;
   cursor: pointer;
+  transition:
+    background-color var(--anim) var(--ease),
+    border-color var(--anim) var(--ease);
 }
 
-.notification-actions button:hover { border-color: var(--border-focus); }
+.notification-actions button:hover {
+  border-color: var(--border-focus);
+  background: var(--surface-hi);
+}
 
 /* ------------------------------------------------------------------------
  * The screen-share chooser
@@ -726,8 +961,22 @@ html.no-tutorial .empty .tutorial { display: none; }
      thing asking the question.
 
      No shadow, because the compositor draws this cropped to the dialog and a
-     shadow falling outside that would be cut off square. */
+     shadow falling outside that would be cut off square. An inset hairline can
+     do the same job from inside the crop, and costs no room because it is not
+     a border. */
   background: #161a22;
+  box-shadow: inset 0 0 0 1px var(--fill);
+
+  /* Opacity only, for the same reason as the crop above: the rect handed to
+     the compositor is measured off this element, so a dialog that scaled or
+     slid in would be drawn against a stale rectangle for the length of the
+     animation. Fading changes no rectangle at all. */
+  animation: dialog-in var(--anim-slow) var(--ease);
+}
+
+@keyframes dialog-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .screencast-title {
@@ -751,13 +1000,20 @@ html.no-tutorial .empty .tutorial { display: none; }
   padding: .4rem .55rem;
   border: 1px solid transparent;
   border-radius: var(--radius);
+  /* The highlight is moved with the arrow keys, one row at a time, and a list
+     where the lit row teleports is markedly harder to follow than one where it
+     slides its colour across. A dozen rows of text: the repaint is the two
+     rows that changed. */
+  transition:
+    background-color var(--anim) var(--ease),
+    border-color var(--anim) var(--ease);
 }
 
 /* The highlight, which is the whole interface: there is no pointer here, so
    the only thing telling somebody what Enter will do is which row is lit. */
 .screencast-source.selected {
   border-color: var(--border-focus);
-  background: #ffffff14;
+  background: var(--fill-hover);
 }
 
 .screencast-label {

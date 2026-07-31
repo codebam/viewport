@@ -1323,19 +1323,20 @@ if (mode === 'scrolling') {
     sheet.value(floaty.el, 'left') === '0' &&
     sheet.value(floaty.el, 'top') === '0' &&
     sheet.value(floaty.el, 'width') === 'auto');
-  /* Never *below* a floating window, rather than above one, because on this
-     stylesheet the two tie: `.window.fullscreen` asks for 10 and
-     `.window.floating` for 5, the two selectors are equally specific, and
-     floating is written further down the file — so a floating window that goes
-     fullscreen is left on the floating layer and the 10 never applies.
+  /* Above the floating layer, and this is the whole of what decides it:
+     `.window.fullscreen` asks for 10 and `.window.floating` for 5, the two
+     selectors are equally specific, and nothing but source order separates
+     them. Written the other way round — as they were, fullscreen first — the 5
+     won and the 10 had never once applied to anything.
 
-     Nothing shows today, because a fullscreen window paints nothing at all:
+     Which showed nowhere, because a fullscreen window painted nothing at all:
      its border is gone, its hole is transparent, and client surfaces are
-     stacked by the compositor rather than by anything the shell says. The day
-     the fullscreen rule paints something, this is where it will be drawn under
-     a dialog left open behind it. */
-  check('and never below a floating window',
-    Number(sheet.value(floaty.el, 'z-index')) >= floatingLayer);
+     stacked by the compositor rather than by anything the shell says. It
+     paints something now — the rule switches off the shadow a floating window
+     brings with it — and a window declaring a layer it does not get is worth
+     failing on whether or not this year's stylesheet can show it. */
+  check('and above a floating window rather than merely level with it',
+    Number(sheet.value(floaty.el, 'z-index')) > floatingLayer);
   check('the gap goes with it: fullscreen means the whole output',
     sheet.value(output.windowsEl, 'padding-top') === '0' &&
     sheet.value(output.windowsEl, 'top') === '0');
