@@ -13,8 +13,7 @@
 // calloop dispatch that already holds `&mut ViewportState`. So frames land in
 // a queue and are picked up at the top of the next render.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use smithay::backend::allocator::dmabuf::{Dmabuf, DmabufFlags};
@@ -65,18 +64,18 @@ pub struct Mailbox {
 pub struct Shell {
     pub view: WebView,
     pub display: std::rc::Rc<Display>,
-    pub mailbox: Rc<RefCell<Mailbox>>,
+    pub mailbox: Arc<Mutex<Mailbox>>,
     /// What the shell was started from, kept for [`Shell::restart`]: a web
     /// process that died during the initial load leaves the view with no URI
     /// of its own to reload.
     url: String,
 }
 
-struct Frames(Rc<RefCell<Mailbox>>);
+struct Frames(Arc<Mutex<Mailbox>>);
 
 impl FrameSink for Frames {
     fn frame(&mut self, frame: Frame, token: FrameToken) -> bool {
-        let Ok(mut mailbox) = self.0.try_borrow_mut() else {
+        let Ok(mut mailbox) = self.0.try_lock() else {
             // Re-entered, which should not happen on one thread. Refusing is
             // better than blocking WebKit forever.
             tracing::error!("the frame mailbox was already borrowed");
@@ -105,11 +104,11 @@ impl FrameSink for Frames {
     }
 }
 
-struct Messages(Rc<RefCell<Mailbox>>);
+struct Messages(Arc<Mutex<Mailbox>>);
 
 impl MessageSink for Messages {
     fn message(&mut self, json: &str) {
-        if let Ok(mut mailbox) = self.0.try_borrow_mut() {
+        if let Ok(mut mailbox) = self.0.try_lock() {
             mailbox.messages.push(json.to_owned());
             if let Some(ping) = mailbox.ping.as_ref() {
                 ping.ping();
@@ -118,12 +117,12 @@ impl MessageSink for Messages {
     }
 }
 
-struct Crashes(Rc<RefCell<Mailbox>>);
+struct Crashes(Arc<Mutex<Mailbox>>);
 
 impl CrashSink for Crashes {
     fn terminated(&mut self, reason: Termination) {
         tracing::error!("the shell died: {reason}");
-        if let Ok(mut mailbox) = self.0.try_borrow_mut() {
+        if let Ok(mut mailbox) = self.0.try_lock() {
             // The frames in flight belonged to the process that just died.
             // Handing their tokens back would release buffers into a pool
             // that no longer exists, so they are dropped instead — `FrameToken`
@@ -139,12 +138,11 @@ impl CrashSink for Crashes {
     }
 }
 
-// SAFETY: all three are only ever used on the thread that drives GLib, which
-// is the compositor's thread. The Send bound on the sink traits exists for
-// callers that do move them between threads; this one does not.
-unsafe impl Send for Frames {}
-unsafe impl Send for Messages {}
-unsafe impl Send for Crashes {}
+// No `unsafe impl Send` for the three sinks any more: each holds nothing but
+// an `Arc<Mutex<Mailbox>>`, and every field of `Mailbox` is `Send` on its own,
+// so the compiler grants it. That matters beyond tidiness — the reason they
+// were sound before was that everything stayed on one thread, and the shell is
+// on its way to a thread of its own.
 
 impl Shell {
     /// Start the shell on `render_node`, showing `url`.
@@ -160,7 +158,7 @@ impl Shell {
         url: &str,
         console: bool,
     ) -> Result<Self> {
-        let mailbox = Rc::new(RefCell::new(Mailbox::default()));
+        let mailbox = Arc::new(Mutex::new(Mailbox::default()));
 
         let display = std::rc::Rc::new(Display::new(
             primary_node,
@@ -193,7 +191,7 @@ impl Shell {
     /// Whether the web process has died since this was last asked.
     pub fn take_termination(&self) -> Option<Termination> {
         self.mailbox
-            .try_borrow_mut()
+            .try_lock()
             .map(|mut mailbox| mailbox.terminated.take())
             .unwrap_or(None)
     }
@@ -216,7 +214,7 @@ impl Shell {
 
     /// Wake the event loop whenever the page posts something.
     pub fn wake_with(&self, ping: smithay::reexports::calloop::ping::Ping) {
-        if let Ok(mut mailbox) = self.mailbox.try_borrow_mut() {
+        if let Ok(mut mailbox) = self.mailbox.try_lock() {
             mailbox.ping = Some(ping);
         }
     }
@@ -224,7 +222,7 @@ impl Shell {
     /// Take everything the page has said since the last drain.
     pub fn take_messages(&self) -> Vec<String> {
         self.mailbox
-            .try_borrow_mut()
+            .try_lock()
             .map(|mut mailbox| std::mem::take(&mut mailbox.messages))
             .unwrap_or_default()
     }
@@ -232,7 +230,7 @@ impl Shell {
     /// Take the newest painted frame, if there is one.
     pub fn take_frame(&self) -> Option<Pending> {
         self.mailbox
-            .try_borrow_mut()
+            .try_lock()
             .map(|mut mailbox| mailbox.frame.take())
             .unwrap_or(None)
     }
@@ -251,7 +249,7 @@ impl Shell {
     /// Frames that were superseded before anything drew them.
     pub fn take_stale(&self) -> Vec<FrameToken> {
         self.mailbox
-            .try_borrow_mut()
+            .try_lock()
             .map(|mut mailbox| std::mem::take(&mut mailbox.stale))
             .unwrap_or_default()
     }
