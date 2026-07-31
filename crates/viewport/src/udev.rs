@@ -38,6 +38,41 @@ use viewport_vulkan::{Device as VulkanDevice, VulkanRenderer};
 
 use crate::state::ViewportState;
 
+/// What `VIEWPORT_GPU` asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    /// Nothing was asked for; rank the candidates as usual.
+    Ranked,
+    /// This one, by index into the candidates.
+    Named(usize),
+    /// Something was asked for and no GPU matches it.
+    NotFound,
+}
+
+/// Which candidate a `VIEWPORT_GPU` value names.
+///
+/// Matched as a substring of the device path, so `card1`, `renderD129` and a
+/// whole `/dev/dri/by-path/...` all work — nobody remembers which form a
+/// particular machine calls its GPUs, and the useful ones are not
+/// interchangeable between reboots.
+///
+/// `NotFound` rather than silently ranking, because a value that matches
+/// nothing is a mistake worth reporting: the alternative is a hybrid laptop
+/// running on the wrong GPU while the variable that was supposed to fix it
+/// sits in the environment doing nothing.
+pub fn gpu_named(paths: &[Option<String>], wanted: Option<&str>) -> Choice {
+    let Some(wanted) = wanted.map(str::trim).filter(|w| !w.is_empty()) else {
+        return Choice::Ranked;
+    };
+    match paths
+        .iter()
+        .position(|path| path.as_deref().is_some_and(|p| p.contains(wanted)))
+    {
+        Some(at) => Choice::Named(at),
+        None => Choice::NotFound,
+    }
+}
+
 /// The formats a scanout buffer may use, in preference order.
 ///
 /// Ten-bit first because it is strictly better where the display takes it, and
@@ -272,10 +307,46 @@ pub fn init(
         VulkanDevice::for_node_exactly(&instance, &render).is_ok()
     };
 
-    let card = candidates
+    // Which GPU, when there is more than one and the ranking picks wrong.
+    //
+    // A hybrid laptop is the case: an integrated GPU driving the panel and a
+    // discrete one that is faster, and the answer depends on whether you want
+    // battery or frames — which is a preference, not something the compositor
+    // can read off the hardware. Both are ranked identically here, so the
+    // choice fell to whichever the seat happened to list first, and there was
+    // no way to say otherwise.
+    //
+    // Matched on the device path, by substring, so `card1`, `renderD129` and a
+    // full `/dev/dri/by-path/...` all work.
+    let wanted = std::env::var("VIEWPORT_GPU").ok().filter(|s| !s.is_empty());
+    let paths: Vec<Option<String>> = candidates
         .iter()
-        .find(|card| renders_for(card))
-        .copied()
+        .map(|card| card.dev_path().map(|p| p.to_string_lossy().into_owned()))
+        .collect();
+    let chosen = match gpu_named(&paths, wanted.as_deref()) {
+        Choice::Ranked => None,
+        Choice::Named(at) => Some(candidates[at]),
+        Choice::NotFound => {
+            // Named and not found: say which, and what there was to choose
+            // from. Falling through in silence is how someone ends up
+            // convinced the variable does nothing.
+            tracing::warn!(
+                "VIEWPORT_GPU={} matches no GPU on this seat; there is {}. \
+                 Choosing as though it were unset.",
+                wanted.as_deref().unwrap_or(""),
+                paths
+                    .iter()
+                    .flatten()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            None
+        }
+    };
+
+    let card = chosen
+        .or_else(|| candidates.iter().find(|card| renders_for(card)).copied())
         .unwrap_or_else(|| {
             // Nothing matched. The fallback in `for_node` will draw on
             // whatever Vulkan device there is, which is right for a machine
@@ -285,10 +356,25 @@ pub fn init(
             );
             candidates[0]
         });
+
+    // Always when there is a choice to be had, not only in passing: on a
+    // machine where the wrong one was picked this line is the whole diagnosis,
+    // and it names the variable that changes it.
     if candidates.len() > 1 {
+        let listed: Vec<String> = candidates
+            .iter()
+            .filter_map(|c| c.dev_path())
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         tracing::info!(
-            "{} GPUs; drawing and scanning out on {card:?}",
-            candidates.len()
+            "{} GPUs ({}); drawing and scanning out on {card:?}{}",
+            candidates.len(),
+            listed.join(", "),
+            if chosen.is_some() {
+                " as VIEWPORT_GPU asked"
+            } else {
+                ". Set VIEWPORT_GPU to a device path to choose another"
+            }
         );
     }
 
@@ -1559,4 +1645,66 @@ fn non_desktop(device: &DrmDevice, connector: connector::Handle) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paths(list: &[&str]) -> Vec<Option<String>> {
+        list.iter().map(|p| Some((*p).to_owned())).collect()
+    }
+
+    #[test]
+    fn nothing_asked_for_leaves_the_ranking_alone() {
+        // The single-GPU path, and the default everywhere: this must not
+        // change what the compositor already did.
+        let cards = paths(&["/dev/dri/card0", "/dev/dri/card1"]);
+        assert_eq!(gpu_named(&cards, None), Choice::Ranked);
+        assert_eq!(gpu_named(&cards, Some("")), Choice::Ranked);
+        assert_eq!(gpu_named(&cards, Some("   ")), Choice::Ranked);
+    }
+
+    #[test]
+    fn a_hybrid_laptop_can_name_the_gpu_it_wants() {
+        // The case this exists for. Both GPUs rank identically, so which one
+        // was used came down to the order the seat listed them.
+        let cards = paths(&["/dev/dri/card0", "/dev/dri/card1"]);
+        assert_eq!(gpu_named(&cards, Some("card1")), Choice::Named(1));
+        assert_eq!(gpu_named(&cards, Some("card0")), Choice::Named(0));
+    }
+
+    #[test]
+    fn any_form_of_the_path_matches() {
+        // Nobody remembers whether a given machine calls it card1 or
+        // renderD129, and the by-path names are the only stable ones.
+        let cards = paths(&[
+            "/dev/dri/by-path/pci-0000:00:02.0-card",
+            "/dev/dri/by-path/pci-0000:01:00.0-card",
+        ]);
+        assert_eq!(gpu_named(&cards, Some("0000:01:00.0")), Choice::Named(1));
+        assert_eq!(
+            gpu_named(&cards, Some("pci-0000:00:02.0")),
+            Choice::Named(0)
+        );
+    }
+
+    #[test]
+    fn a_name_that_matches_nothing_is_reported_not_ignored() {
+        // Silently ranking would leave a hybrid laptop on the wrong GPU with
+        // the variable meant to fix it sitting in the environment doing
+        // nothing — which is indistinguishable from the feature not existing.
+        let cards = paths(&["/dev/dri/card0"]);
+        assert_eq!(gpu_named(&cards, Some("card9")), Choice::NotFound);
+        assert_eq!(gpu_named(&[], Some("card0")), Choice::NotFound);
+    }
+
+    #[test]
+    fn a_card_with_no_path_is_skipped_rather_than_matched() {
+        // dev_path() is an Option, and a None must not be treated as a match
+        // for everything — that would pick an unnameable device.
+        let cards = vec![None, Some("/dev/dri/card1".to_owned())];
+        assert_eq!(gpu_named(&cards, Some("card1")), Choice::Named(1));
+        assert_eq!(gpu_named(&cards, Some("card0")), Choice::NotFound);
+    }
 }

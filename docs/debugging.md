@@ -148,6 +148,36 @@ is; WebKit paints nothing into a view of no size, and a shell that is never told
 would load and then sit there. The window list is rebuilt by the shell itself
 through `view.query`, which is the same path a manual reload already used.
 
+## More than one GPU
+
+There is no PRIME support. The compositor opens exactly one card, ignores GPU
+hotplug, and does not use Smithay's `GpuManager` — so an output attached to a
+second GPU is not driven at all. This is absent by construction rather than
+unoptimised, and it is not a small change: `Udev` holds one renderer, one output
+manager and one node, and multi-GPU means per-device state plus cross-device
+buffer copies for every secondary output.
+
+What is here is the choice of *which* GPU, which is the part that bites on a
+hybrid laptop. The candidates are ranked by whether a Vulkan device actually
+exposes them and then by what the seat calls primary — and where both GPUs pass
+that test, which one gets used came down to the order the seat listed them.
+That is a preference (battery or frames), not something the hardware answers.
+
+```
+VIEWPORT_GPU=card1 viewport
+```
+
+names one. Matched as a substring of the device path, so `card1`, `renderD129`
+or a whole `/dev/dri/by-path/pci-0000:01:00.0-card` all work — the by-path names
+are the only ones stable across reboots. A value matching nothing is reported
+and then ignored, rather than silently falling back: that combination is
+indistinguishable from the variable not existing, which is the state this was
+added from.
+
+The startup log names every GPU it found and which it took whenever there is
+more than one, so the wrong choice is visible without guessing.
+
+
 ## A video player dying with "Invalid stride"
 
 Under heavy load — twelve 4K streams at once — a player using the zero-copy
