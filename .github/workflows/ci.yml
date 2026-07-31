@@ -221,6 +221,41 @@ jobs:
       # Its own tests stay off — buildRustPackage would run them inside the nix
       # sandbox, which has neither a GPU nor a socket, and the steps above have
       # already run the suite outside it.
+      # Stop before spending four hours discovering the cache went stale.
+      #
+      # The step below is affordable only because WPE WebKit substitutes. If it
+      # ever does not — flake.lock moves the nixpkgs input, the bucket is
+      # garbage-collected, a signature stops verifying — nix says nothing and
+      # starts compiling, and a hosted runner does not fail on that quickly. It
+      # has 14 GB of disk against a 20-40 GB build tree, so it grinds for hours
+      # and then dies on ENOSPC, which reads as an infrastructure fault rather
+      # than the cache miss it is.
+      #
+      # `--dry-run` says what nix is about to do. Anything named between "will
+      # be built" and "will be fetched" is a source build, so wpewebkit
+      # appearing there is the failure, caught in seconds with the reason
+      # attached.
+      #
+      # Note the two outputs: `out` is what gets linked and `dev` is what
+      # pkg-config reads, they are siblings rather than one containing the
+      # other, and a cache holding only the first still triggers a full
+      # rebuild. That is exactly how this was discovered.
+      - name: Refuse to build WPE WebKit
+        run: |
+          plan=$(nix build --dry-run .#viewport-smithay --log-format raw 2>&1)
+          building=$(printf '%s\n' "$plan" \
+            | sed -n '/will be built/,/will be fetched/p' \
+            | grep wpewebkit || true)
+          if [ -n "$building" ]; then
+            printf '%s\n' "$building"
+            echo "::error::WPE WebKit is not substitutable from the binary" \
+                 "cache, so this run would build it from source — hours, and" \
+                 "more disk than this runner has. Check that both the out and" \
+                 "dev outputs of .#wpewebkit are in the cache."
+            exit 1
+          fi
+          echo "wpewebkit substitutes; not building it"
+
       - name: Build with the web engine
         run: nix build --print-build-logs .#viewport-smithay
 
