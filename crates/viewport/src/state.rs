@@ -192,6 +192,17 @@ pub struct ViewportState {
     /// and then nothing" and "painting normally" are the same still picture.
     #[cfg(feature = "wpe")]
     pub shell_frames: u64,
+    /// How many times the shell has been restarted after its web process
+    /// died, and when the run of restarts began.
+    ///
+    /// Both, because a restart limit on its own is wrong in each direction: a
+    /// desktop up for a week that has crashed five times over that week is
+    /// healthy, and one that crashes five times in five seconds is a page that
+    /// cannot load and must not be retried forever. The window separates them.
+    #[cfg(feature = "wpe")]
+    pub shell_restarts: u32,
+    #[cfg(feature = "wpe")]
+    pub shell_restart_window: Option<std::time::Instant>,
     /// The shell element's identity, stable for the life of the compositor.
     ///
     /// A fresh `Id` per frame would make every damage tracker treat the shell
@@ -863,6 +874,10 @@ impl ViewportState {
             shell_owned: None,
             #[cfg(feature = "wpe")]
             shell_frames: 0,
+            #[cfg(feature = "wpe")]
+            shell_restarts: 0,
+            #[cfg(feature = "wpe")]
+            shell_restart_window: None,
             #[cfg(feature = "wpe")]
             shell_element_id: smithay::backend::renderer::element::Id::new(),
             shell_overlay_ids: Vec::new(),
@@ -5068,6 +5083,77 @@ impl ViewportState {
             for token in shell.take_stale() {
                 shell.frame_release(token);
             }
+        }
+    }
+
+    /// Bring the shell back after WebKit's web process died.
+    ///
+    /// The web process is not the compositor's, so its death is survivable —
+    /// but nothing recovers on its own. WebKit leaves the view blank and stops
+    /// painting, and on a desktop whose entire UI is that view the result is
+    /// indistinguishable from a compositor that has hung: the last frame stays
+    /// on screen forever and no click does anything.
+    ///
+    /// The last painted frame is deliberately left up while the reload runs.
+    /// It is the compositor's own copy, not WebKit's memory, so it is safe to
+    /// keep, and a transient crash then costs a second of a stale bar rather
+    /// than a black screen. It is cleared only when recovery is given up on,
+    /// where a frozen picture would be a lie about the state of the desktop.
+    pub fn restart_shell(&mut self, reason: viewport_web::webkit::Termination) {
+        use crate::shell::Recovery;
+
+        if !reason.is_recoverable() {
+            tracing::warn!("not restarting the shell: {reason}");
+            return;
+        }
+
+        let attempt = crate::shell::budget(
+            &mut self.shell_restarts,
+            &mut self.shell_restart_window,
+            std::time::Instant::now(),
+        );
+
+        let attempt = match attempt {
+            Recovery::Restart(attempt) => attempt,
+            Recovery::GiveUp(count) => {
+                // The desktop is gone either way; what stopping preserves is a
+                // machine that can still be logged into and read the log.
+                tracing::error!(
+                    "the shell has died {count} times in {:?}; giving up",
+                    crate::shell::RESTART_WINDOW
+                );
+                // Dropping the copy takes the shell out of the element list,
+                // and the damage tracker repaints what it covered because the
+                // element it knew is gone. Nothing has to be added to
+                // `shell_damage`: that bag is only read while there is a
+                // buffer to describe.
+                self.shell_owned = None;
+                self.needs_render = true;
+                return;
+            }
+        };
+
+        tracing::warn!("restarting the shell after {reason} (attempt {attempt})");
+
+        // The new process is a fresh page: it has painted nothing, said
+        // nothing, and knows nothing about the layout. Everything derived from
+        // the old one has to go with it, or the log claims a shell that is
+        // talking and painting while the screen shows neither.
+        self.shell_frames = 0;
+        self.shell_announced = false;
+        self.shell_size = None;
+
+        let restarted = self.shell.as_ref().map(|shell| shell.restart());
+        match restarted {
+            Some(Ok(())) => {
+                // Unconditionally, because `shell_size` was just cleared:
+                // WebKit paints nothing into a view of no size, and a restarted
+                // process that is never told its size loads the page and then
+                // sits there.
+                self.resize_shell();
+            }
+            Some(Err(e)) => tracing::error!("could not restart the shell: {e:#}"),
+            None => {}
         }
     }
 

@@ -21,7 +21,7 @@ use smithay::backend::allocator::dmabuf::{Dmabuf, DmabufFlags};
 use smithay::backend::allocator::{Fourcc, Modifier};
 
 use viewport_ipc::Event;
-use viewport_web::webkit::{MessageSink, WebView};
+use viewport_web::webkit::{CrashSink, MessageSink, Termination, WebView};
 use viewport_web::wpe::{Display, FrameSink, FrameToken};
 use viewport_web::Frame;
 
@@ -56,6 +56,9 @@ pub struct Mailbox {
     /// callback that dropped them cannot reach the display, which is why they
     /// are queued rather than released on the spot.
     pub stale: Vec<FrameToken>,
+    /// WebKit's web process died. Latest reason only: a second death before
+    /// the first has been acted on says nothing new.
+    pub terminated: Option<Termination>,
 }
 
 /// The shell, once it is running.
@@ -63,6 +66,10 @@ pub struct Shell {
     pub view: WebView,
     pub display: std::rc::Rc<Display>,
     pub mailbox: Rc<RefCell<Mailbox>>,
+    /// What the shell was started from, kept for [`Shell::restart`]: a web
+    /// process that died during the initial load leaves the view with no URI
+    /// of its own to reload.
+    url: String,
 }
 
 struct Frames(Rc<RefCell<Mailbox>>);
@@ -111,11 +118,33 @@ impl MessageSink for Messages {
     }
 }
 
-// SAFETY: both are only ever used on the thread that drives GLib, which is the
-// compositor's thread. The Send bound on the sink traits exists for callers
-// that do move them between threads; this one does not.
+struct Crashes(Rc<RefCell<Mailbox>>);
+
+impl CrashSink for Crashes {
+    fn terminated(&mut self, reason: Termination) {
+        tracing::error!("the shell died: {reason}");
+        if let Ok(mut mailbox) = self.0.try_borrow_mut() {
+            // The frames in flight belonged to the process that just died.
+            // Handing their tokens back would release buffers into a pool
+            // that no longer exists, so they are dropped instead — `FrameToken`
+            // is deliberately not `Drop`, which makes that a leak of a handle
+            // whose owner is already gone rather than a call into freed memory.
+            mailbox.frame = None;
+            mailbox.stale.clear();
+            mailbox.terminated = Some(reason);
+            if let Some(ping) = mailbox.ping.as_ref() {
+                ping.ping();
+            }
+        }
+    }
+}
+
+// SAFETY: all three are only ever used on the thread that drives GLib, which
+// is the compositor's thread. The Send bound on the sink traits exists for
+// callers that do move them between threads; this one does not.
 unsafe impl Send for Frames {}
 unsafe impl Send for Messages {}
+unsafe impl Send for Crashes {}
 
 impl Shell {
     /// Start the shell on `render_node`, showing `url`.
@@ -143,6 +172,7 @@ impl Shell {
         let view = WebView::new(
             display.clone(),
             Box::new(Messages(mailbox.clone())),
+            Box::new(Crashes(mailbox.clone())),
             console,
         )?;
         // Size, map, focus, then load — the order the C build settled on.
@@ -156,7 +186,32 @@ impl Shell {
             view,
             display,
             mailbox,
+            url: url.to_owned(),
         })
+    }
+
+    /// Whether the web process has died since this was last asked.
+    pub fn take_termination(&self) -> Option<Termination> {
+        self.mailbox
+            .try_borrow_mut()
+            .map(|mut mailbox| mailbox.terminated.take())
+            .unwrap_or(None)
+    }
+
+    /// Bring the shell back after its web process died.
+    ///
+    /// Loading rather than reloading: `reload` on a view whose process died
+    /// during the initial load has nothing to reload, and this is exactly the
+    /// case a shell that crashes on startup produces. WebKit spawns a fresh
+    /// web process for the load, so the `WebKitWebView` itself — and every
+    /// signal connected to it — survives.
+    pub fn restart(&self) -> Result<()> {
+        let url = self.view.uri().unwrap_or_else(|| self.url.clone());
+        self.view.load(&url)?;
+        // The new process starts with a view of no size, exactly as a fresh
+        // one does, and paints nothing until told otherwise.
+        self.display.show();
+        Ok(())
     }
 
     /// Wake the event loop whenever the page posts something.
@@ -208,6 +263,50 @@ impl Shell {
     }
 }
 
+/// How many restarts inside [`RESTART_WINDOW`] before giving up.
+pub const RESTART_LIMIT: u32 = 5;
+
+/// A crash this long after a run of them started begins a new run.
+pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What to do about a web process that has just died.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recovery {
+    /// Restart, and this is which attempt of the current run it is.
+    Restart(u32),
+    /// The run has used up its budget. Retrying a page that cannot load is an
+    /// infinite loop that spawns a process each time round.
+    GiveUp(u32),
+}
+
+/// Decide whether a crash is worth restarting for, and update the run.
+///
+/// Split out from the compositor because the judgement is the whole point and
+/// it is otherwise only reachable by crashing a real WebKit. A plain restart
+/// limit is wrong in both directions: a desktop up for a week that has crashed
+/// five times over that week is healthy, and one that crashes five times in
+/// five seconds is a page that cannot load. The window is what tells them
+/// apart — a crash far enough after the run began starts a new run.
+pub fn budget(
+    restarts: &mut u32,
+    window: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Recovery {
+    match *window {
+        Some(began) if now.duration_since(began) < RESTART_WINDOW => *restarts += 1,
+        _ => {
+            *window = Some(now);
+            *restarts = 1;
+        }
+    }
+
+    if *restarts > RESTART_LIMIT {
+        Recovery::GiveUp(*restarts)
+    } else {
+        Recovery::Restart(*restarts)
+    }
+}
+
 /// Describe a WebKit frame as a Smithay `Dmabuf`.
 fn to_dmabuf(frame: &Frame) -> Result<Dmabuf> {
     let code = Fourcc::try_from(frame.format)
@@ -230,4 +329,88 @@ fn to_dmabuf(frame: &Frame) -> Result<Dmabuf> {
     builder
         .build()
         .ok_or_else(|| anyhow::anyhow!("the frame did not describe a complete buffer"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Drive `budget` over a list of offsets from a fixed start.
+    fn run(offsets: &[Duration]) -> Vec<Recovery> {
+        let start = Instant::now();
+        let mut restarts = 0;
+        let mut window = None;
+        offsets
+            .iter()
+            .map(|offset| budget(&mut restarts, &mut window, start + *offset))
+            .collect()
+    }
+
+    #[test]
+    fn a_first_crash_is_restarted() {
+        assert_eq!(run(&[Duration::ZERO]), vec![Recovery::Restart(1)]);
+    }
+
+    #[test]
+    fn a_page_that_cannot_load_is_given_up_on() {
+        // A shell that throws during startup crashes as fast as it can be
+        // spawned. Without the limit that is an infinite loop that forks.
+        let burst: Vec<_> = (0..RESTART_LIMIT + 2)
+            .map(|n| Duration::from_millis(u64::from(n) * 100))
+            .collect();
+        let outcome = run(&burst);
+        assert_eq!(
+            outcome[..RESTART_LIMIT as usize],
+            (1..=RESTART_LIMIT)
+                .map(Recovery::Restart)
+                .collect::<Vec<_>>()
+        );
+        assert!(matches!(
+            outcome[RESTART_LIMIT as usize],
+            Recovery::GiveUp(_)
+        ));
+    }
+
+    #[test]
+    fn crashes_spread_out_never_use_up_the_budget() {
+        // A desktop up for a week that has crashed once a day is healthy. A
+        // plain counter would give up on it on the sixth day.
+        let spread: Vec<_> = (0..20)
+            .map(|n| RESTART_WINDOW * (n + 1) + Duration::from_secs(1))
+            .collect();
+        assert!(run(&spread)
+            .iter()
+            .all(|outcome| *outcome == Recovery::Restart(1)));
+    }
+
+    #[test]
+    fn a_quiet_spell_starts_the_run_over() {
+        // Four crashes, then quiet, then four more: eight in total, which a
+        // plain counter would have given up on.
+        let mut offsets: Vec<_> = (0..4).map(Duration::from_secs).collect();
+        offsets.extend((0..4).map(|n| RESTART_WINDOW + Duration::from_secs(n + 10)));
+        let outcome = run(&offsets);
+        assert_eq!(
+            outcome,
+            vec![
+                Recovery::Restart(1),
+                Recovery::Restart(2),
+                Recovery::Restart(3),
+                Recovery::Restart(4),
+                Recovery::Restart(1),
+                Recovery::Restart(2),
+                Recovery::Restart(3),
+                Recovery::Restart(4),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_termination_asked_for_is_not_a_crash() {
+        // Something wanted the process gone; restarting would fight it.
+        assert!(!Termination::TerminatedByApi.is_recoverable());
+        assert!(Termination::Crashed.is_recoverable());
+        assert!(Termination::ExceededMemoryLimit.is_recoverable());
+    }
 }

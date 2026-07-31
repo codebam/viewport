@@ -86,6 +86,7 @@ extern "C" {
     ) -> GBool;
     fn webkit_web_view_load_uri(view: *mut c_void, uri: *const c_char);
     fn webkit_web_view_reload_bypass_cache(view: *mut c_void);
+    fn webkit_web_view_get_uri(view: *mut c_void) -> *const c_char;
     fn webkit_web_view_get_wpe_view(view: *mut c_void) -> *mut c_void;
     fn wpe_view_buffer_released(view: *mut c_void, buffer: *mut c_void);
     fn webkit_web_view_get_settings(view: *mut c_void) -> *mut c_void;
@@ -116,12 +117,65 @@ pub trait MessageSink: Send {
     fn message(&mut self, json: &str);
 }
 
+/// Why WebKit's web process went away.
+///
+/// The values are `WebKitWebProcessTerminationReason`, which is part of the
+/// library's public ABI; anything unrecognised is treated as a crash, because
+/// the recovery is the same and refusing to act on an enum variant added in a
+/// later WebKit would leave the desktop dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Termination {
+    Crashed,
+    ExceededMemoryLimit,
+    TerminatedByApi,
+}
+
+impl Termination {
+    fn from_raw(reason: u32) -> Self {
+        match reason {
+            1 => Self::ExceededMemoryLimit,
+            2 => Self::TerminatedByApi,
+            _ => Self::Crashed,
+        }
+    }
+
+    /// Whether the compositor should try to bring the shell back.
+    ///
+    /// A crash or an OOM kill is something to recover from. A termination
+    /// asked for through the API is not: something wanted the process gone,
+    /// and reloading would fight it.
+    pub fn is_recoverable(self) -> bool {
+        !matches!(self, Self::TerminatedByApi)
+    }
+}
+
+impl std::fmt::Display for Termination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Crashed => "the web process crashed",
+            Self::ExceededMemoryLimit => "the web process exceeded its memory limit",
+            Self::TerminatedByApi => "the web process was terminated by an API call",
+        })
+    }
+}
+
+/// Told when WebKit's web process dies.
+///
+/// The web process is not the compositor's process, so its death is survivable
+/// — but nothing recovers on its own. WebKit leaves the view blank and stops
+/// painting, which on a desktop whose entire UI is that view is
+/// indistinguishable from a compositor that has hung.
+pub trait CrashSink: Send {
+    fn terminated(&mut self, reason: Termination);
+}
+
 /// A WebKit web view rendering into our WPE display.
 pub struct WebView {
     view: *mut c_void,
     manager: *mut c_void,
     // Kept alive as long as the signal handler can fire.
     _sink: Box<Box<dyn MessageSink>>,
+    _crash: Box<Box<dyn CrashSink>>,
     // The display must outlive the view.
     //
     // `Rc` and not `Arc`: `Display` wraps a raw WPE pointer and is neither
@@ -140,6 +194,7 @@ impl WebView {
     pub fn new(
         display: std::rc::Rc<Display>,
         sink: Box<dyn MessageSink>,
+        crash: Box<dyn CrashSink>,
         console: bool,
     ) -> Result<Self> {
         // SAFETY: the display handle is valid for the lifetime of `display`,
@@ -154,6 +209,9 @@ impl WebView {
 
         let mut sink = Box::new(sink);
         let user = &mut *sink as *mut Box<dyn MessageSink> as *mut c_void;
+
+        let mut crash = Box::new(crash);
+        let crash_user = &mut *crash as *mut Box<dyn CrashSink> as *mut c_void;
 
         // SAFETY: every call below is a plain GObject function on objects
         // this owns, with arguments that outlive the call.
@@ -218,6 +276,22 @@ impl WebView {
                 return Err(anyhow!("the web view could not be created"));
             }
 
+            // Connected on the view rather than the content manager, because
+            // this is the view's signal — and only once the view exists, which
+            // is why it is here and not up with the message handler.
+            let terminated = CString::new("web-process-terminated").unwrap();
+            g_signal_connect_data(
+                view,
+                terminated.as_ptr(),
+                Some(std::mem::transmute::<
+                    unsafe extern "C" fn(*mut c_void, u32, *mut c_void),
+                    unsafe extern "C" fn(),
+                >(on_web_process_terminated)),
+                crash_user,
+                None,
+                0,
+            );
+
             if console {
                 let settings = webkit_web_view_get_settings(view);
                 if !settings.is_null() {
@@ -229,6 +303,7 @@ impl WebView {
                 view,
                 manager,
                 _sink: sink,
+                _crash: crash,
                 _display: display,
             })
         }
@@ -278,6 +353,22 @@ impl WebView {
             );
         }
         Ok(())
+    }
+
+    /// What the view is showing, if anything.
+    ///
+    /// Needed after a crash: reloading is not enough on its own, because a web
+    /// process that died mid-load leaves the view with nothing to reload.
+    pub fn uri(&self) -> Option<String> {
+        // SAFETY: `view` is valid. The string is WebKit's and stays valid
+        // until the view navigates, which cannot happen across this copy.
+        unsafe {
+            let uri = webkit_web_view_get_uri(self.view);
+            if uri.is_null() {
+                return None;
+            }
+            Some(CStr::from_ptr(uri).to_string_lossy().into_owned())
+        }
     }
 
     /// Reload, ignoring the HTTP cache. The escape hatch for a shell being
@@ -361,6 +452,20 @@ unsafe extern "C" fn on_script_message(
             sink.message(json);
         }
         g_free(text as *mut c_void);
+    }));
+}
+
+/// The `web-process-terminated` handler.
+unsafe extern "C" fn on_web_process_terminated(_view: *mut c_void, reason: u32, user: *mut c_void) {
+    if user.is_null() {
+        return;
+    }
+
+    // A panic must not unwind into C — and this one runs while WebKit is
+    // already handling a death, which is the worst place to add a second.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sink = &mut *(user as *mut Box<dyn CrashSink>);
+        sink.terminated(Termination::from_raw(reason));
     }));
 }
 

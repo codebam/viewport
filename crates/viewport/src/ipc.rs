@@ -297,6 +297,17 @@ impl ViewportState {
             return;
         }
 
+        // Before the messages: a shell whose process has died has nothing
+        // further to say, and anything still queued was posted by a page that
+        // no longer exists.
+        if let Some(reason) = self
+            .shell
+            .as_ref()
+            .and_then(|shell| shell.take_termination())
+        {
+            self.restart_shell(reason);
+        }
+
         // Taken up front so nothing holds a borrow of `self` across the
         // dispatch, which needs it mutably.
         let messages = self
