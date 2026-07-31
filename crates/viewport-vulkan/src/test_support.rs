@@ -79,3 +79,92 @@ pub fn gbm_allocator(node: &DrmNode) -> Option<GbmAllocator<std::fs::File>> {
         }
     }
 }
+
+/// A linear NV12 buffer of `width` x `height`, built over one allocation.
+///
+/// gbm will not allocate NV12 — Mesa's implementation only does the
+/// single-plane render formats — so a real decoder frame cannot be produced
+/// from it. What can is the layout: one allocation holding both planes,
+/// described the way a decoder describes it. That is precisely what the import
+/// has to understand, and gbm was only ever standing in for it.
+pub fn linear_nv12(
+    allocator: &mut GbmAllocator<std::fs::File>,
+    width: u32,
+    height: u32,
+) -> Option<smithay::backend::allocator::dmabuf::Dmabuf> {
+    use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf, DmabufFlags};
+    use smithay::backend::allocator::{Allocator, Fourcc, Modifier};
+
+    // 4:2:0 chroma is half-height, so the two planes together are one and a
+    // half times the picture. R8 because the bytes are all that matter here:
+    // this is one allocation, and NV12 is how it gets read.
+    let rows = height + height / 2;
+    let backing = match allocator.create_buffer(width, rows, Fourcc::R8, &[Modifier::Linear]) {
+        Ok(buffer) => buffer,
+        Err(e) => {
+            skip(&format!("gbm cannot allocate the backing store ({e})"));
+            return None;
+        }
+    };
+    let backing = backing.export().expect("export");
+    let stride = backing.strides().next().expect("a stride");
+    let fd = backing.handles().next().expect("an fd");
+
+    let mut builder = Dmabuf::builder(
+        (width as i32, height as i32),
+        Fourcc::Nv12,
+        Modifier::Linear,
+        DmabufFlags::empty(),
+    );
+    // Luma first, the interleaved chroma directly after it — which is what
+    // makes this NV12 rather than two unrelated planes.
+    builder.add_plane(fd.try_clone_to_owned().expect("dup"), 0, stride);
+    builder.add_plane(
+        fd.try_clone_to_owned().expect("dup"),
+        stride * height,
+        stride,
+    );
+    Some(builder.build().expect("dmabuf builder"))
+}
+
+/// Fill an NV12 buffer with one colour, in the encoding the sampler expects.
+///
+/// `luma` is Y', `chroma` is (Cb, Cr) — narrow range, so 16..235 for luma and
+/// 128 for neutral chroma.
+pub fn fill_nv12(
+    buffer: &smithay::backend::allocator::dmabuf::Dmabuf,
+    height: u32,
+    luma: u8,
+    chroma: (u8, u8),
+) {
+    use smithay::backend::allocator::dmabuf::{DmabufMappingMode, DmabufSyncFlags};
+    let stride = buffer.strides().next().expect("stride") as usize;
+    let chroma_offset = buffer.offsets().nth(1).expect("a second plane") as usize;
+
+    buffer
+        .sync_plane(0, DmabufSyncFlags::START | DmabufSyncFlags::WRITE)
+        .expect("sync start");
+    let mapping = buffer
+        .map_plane(0, DmabufMappingMode::WRITE)
+        .expect("map write");
+    // SAFETY: the mapping is valid and writable for its own length, and
+    // nothing else holds it.
+    let bytes =
+        unsafe { std::slice::from_raw_parts_mut(mapping.ptr() as *mut u8, mapping.length()) };
+
+    for row in 0..height as usize {
+        let at = row * stride;
+        bytes[at..at + stride].fill(luma);
+    }
+    // Half the rows, and Cb and Cr interleaved along each of them.
+    for row in 0..(height as usize) / 2 {
+        let at = chroma_offset + row * stride;
+        for pair in bytes[at..at + stride].chunks_exact_mut(2) {
+            pair[0] = chroma.0;
+            pair[1] = chroma.1;
+        }
+    }
+
+    drop(mapping);
+    let _ = buffer.sync_plane(0, DmabufSyncFlags::END | DmabufSyncFlags::WRITE);
+}

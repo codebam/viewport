@@ -61,12 +61,39 @@ pub const MINIMUM_VERSION: Version = Version::VERSION_1_2;
 #[derive(Clone)]
 pub struct Device(Arc<Inner>);
 
+/// What distinguishes one YCbCr conversion from another.
+///
+/// The Vulkan format alone is not enough. The same NV12 buffer decodes to
+/// different colours depending on which matrix and which range it was encoded
+/// with, and the conversion object bakes both in — so a conversion is cached
+/// per combination rather than per format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct YcbcrKey {
+    pub format: vk::Format,
+    pub model: vk::SamplerYcbcrModelConversion,
+    pub range: vk::SamplerYcbcrRange,
+    pub x_offset: vk::ChromaLocation,
+    pub y_offset: vk::ChromaLocation,
+    pub filter: vk::Filter,
+    /// Whether the two chroma components are exchanged — NV21 and YVU420
+    /// against NV12 and YUV420.
+    pub swapped_chroma: bool,
+}
+
 struct Inner {
     physical: PhysicalDevice,
     device: ash::Device,
     queue: vk::Queue,
     queue_family: u32,
     has_timeline_semaphores: bool,
+    has_ycbcr: bool,
+
+    /// Conversions are device-level objects shared by the image views that
+    /// sample through them and the immutable samplers that describe them to a
+    /// pipeline. Both sides have to name the *same* object — a second
+    /// conversion with identical parameters is a different object as far as
+    /// Vulkan is concerned — so they live here rather than in either.
+    conversions: std::sync::Mutex<std::collections::HashMap<YcbcrKey, vk::SamplerYcbcrConversion>>,
 
     /// Loaded once. Each of these is a table of function pointers fetched with
     /// vkGetDeviceProcAddr, so building one per import would be pure overhead.
@@ -210,12 +237,32 @@ impl Device {
         let mut dynamic_rendering =
             vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
 
+        // Core since 1.1, and still optional there: a device may report the
+        // multi-planar formats and refuse to sample them. Asked about first,
+        // because enabling a feature the device does not have makes
+        // vkCreateDevice fail outright — which would cost every machine
+        // without it a renderer, to gain video import on the ones with it.
+        let mut ycbcr_supported = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default();
+        let mut features = vk::PhysicalDeviceFeatures2::default().push_next(&mut ycbcr_supported);
+        unsafe { instance.get_physical_device_features2(handle, &mut features) };
+        let has_ycbcr = ycbcr_supported.sampler_ycbcr_conversion == vk::TRUE;
+        if !has_ycbcr {
+            tracing::warn!(
+                "{} cannot sample multi-planar YUV; hardware-decoded video will \
+                 be converted on the CPU before it can be imported",
+                physical.name()
+            );
+        }
+        let mut ycbcr = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
+            .sampler_ycbcr_conversion(has_ycbcr);
+
         let queue_infos = [queue_info];
         let create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&enabled_ptrs)
             .push_next(&mut timeline)
-            .push_next(&mut dynamic_rendering);
+            .push_next(&mut dynamic_rendering)
+            .push_next(&mut ycbcr);
 
         let device = unsafe { instance.create_device(handle, &create_info, None) }
             .context("vkCreateDevice")?;
@@ -240,6 +287,8 @@ impl Device {
             queue,
             queue_family,
             has_timeline_semaphores,
+            has_ycbcr,
+            conversions: std::sync::Mutex::new(std::collections::HashMap::new()),
             external_memory_fd,
             dynamic_rendering,
             push_descriptor,
@@ -261,6 +310,64 @@ impl Device {
 
     pub fn external_semaphore_fd(&self) -> &ash::khr::external_semaphore_fd::Device {
         &self.0.external_semaphore_fd
+    }
+
+    /// Whether multi-planar YUV can be sampled at all on this device.
+    pub fn has_ycbcr(&self) -> bool {
+        self.0.has_ycbcr
+    }
+
+    /// The conversion for `key`, creating it the first time it is asked for.
+    ///
+    /// Shared rather than per-image because an image view and the immutable
+    /// sampler a pipeline is built around have to name the same object, and
+    /// because a video is thousands of frames through one conversion.
+    pub fn ycbcr_conversion(&self, key: YcbcrKey) -> Result<vk::SamplerYcbcrConversion> {
+        anyhow::ensure!(
+            self.0.has_ycbcr,
+            "{} cannot sample multi-planar YUV",
+            self.name()
+        );
+
+        let mut conversions = self
+            .0
+            .conversions
+            .lock()
+            .map_err(|_| anyhow!("the conversion cache is poisoned"))?;
+        if let Some(conversion) = conversions.get(&key) {
+            return Ok(*conversion);
+        }
+
+        // The swizzle exchanges the two chroma components, which is the only
+        // difference between NV12 and NV21 — see `format::chroma_swizzle`.
+        let components = if key.swapped_chroma {
+            vk::ComponentMapping {
+                r: vk::ComponentSwizzle::B,
+                g: vk::ComponentSwizzle::IDENTITY,
+                b: vk::ComponentSwizzle::R,
+                a: vk::ComponentSwizzle::IDENTITY,
+            }
+        } else {
+            vk::ComponentMapping::default()
+        };
+
+        let info = vk::SamplerYcbcrConversionCreateInfo::default()
+            .format(key.format)
+            .ycbcr_model(key.model)
+            .ycbcr_range(key.range)
+            .components(components)
+            .x_chroma_offset(key.x_offset)
+            .y_chroma_offset(key.y_offset)
+            .chroma_filter(key.filter)
+            // Let the driver reconstruct chroma however it likes. Forcing it
+            // requires a format feature most do not advertise, and the gain is
+            // a sharper chroma edge nobody can see at video resolutions.
+            .force_explicit_reconstruction(false);
+
+        let conversion = unsafe { self.0.device.create_sampler_ycbcr_conversion(&info, None) }
+            .context("vkCreateSamplerYcbcrConversion")?;
+        conversions.insert(key, conversion);
+        Ok(conversion)
     }
 
     /// The index of a memory type satisfying `requirements` and allowed by
@@ -346,6 +453,14 @@ impl Drop for Inner {
             // Everything submitted has to have finished before the device goes
             // away; the alternative is a use-after-free inside the driver.
             let _ = self.device.device_wait_idle();
+            // Before the device, and after the views and samplers that named
+            // them — both of which hold a `Device` and so are dropped first.
+            if let Ok(conversions) = self.conversions.get_mut() {
+                for conversion in conversions.values() {
+                    self.device
+                        .destroy_sampler_ycbcr_conversion(*conversion, None);
+                }
+            }
             self.device.destroy_device(None);
         }
     }

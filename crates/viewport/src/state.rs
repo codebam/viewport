@@ -4898,6 +4898,12 @@ impl ViewportState {
             })
             .unwrap_or_default()
             .iter()
+            // Colour only. The importable set now includes the YUV formats a
+            // video decoder produces, and WebKit picks whatever it is offered:
+            // a shell allocated as NV12 would be a desktop painted into a luma
+            // plane, which imports without complaint and looks like a
+            // greyscale smear.
+            .filter(|format| !viewport_vulkan::format::is_yuv(format.code))
             .map(|format| (format.code as u32, u64::from(format.modifier)))
             .collect();
         anyhow::ensure!(!formats.is_empty(), "the renderer imports no dmabuf format");

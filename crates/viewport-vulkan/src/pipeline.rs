@@ -125,6 +125,35 @@ pub enum Kind {
     Texture,
 }
 
+/// Everything a textured draw has to bind, resolved together.
+///
+/// One struct rather than three accessors because for a YUV texture the three
+/// are not independent: the sampler carries the conversion, the set layout has
+/// that sampler baked into it as an immutable sampler, and the pipeline is
+/// built against that layout. Mixing one draw's sampler with another's layout
+/// is undefined behaviour that happens to work on the driver it was written on.
+#[derive(Debug, Clone, Copy)]
+pub struct Bound {
+    pub pipeline: vk::Pipeline,
+    pub layout: vk::PipelineLayout,
+    /// Ignored by the driver when the binding's sampler is immutable, and
+    /// filled in anyway so the write is the same shape either way.
+    pub sampler: vk::Sampler,
+}
+
+/// The objects behind one YCbCr conversion.
+///
+/// A conversion cannot be swapped in at draw time: Vulkan requires the sampler
+/// that carries it to be immutable in the descriptor set layout, which makes it
+/// part of the pipeline layout and so part of the pipeline. Every distinct
+/// conversion therefore needs its own chain of these — which is fine, because a
+/// desktop plays video in one or two formats at a time.
+struct Ycbcr {
+    sampler: vk::Sampler,
+    set_layout: vk::DescriptorSetLayout,
+    layout: vk::PipelineLayout,
+}
+
 /// Shader modules, the sampler, and the layouts — everything that does not
 /// depend on the format being rendered into.
 pub struct Pipelines {
@@ -140,7 +169,14 @@ pub struct Pipelines {
     /// Pipelines are tied to the format they render into, and a compositor
     /// renders into whatever its outputs and clients happen to use. Built on
     /// demand and kept, because there are only ever a handful of formats.
-    by_format: HashMap<(vk::Format, Kind), vk::Pipeline>,
+    ///
+    /// The third part of the key is which YCbCr conversion the source is
+    /// sampled through, because that changes the pipeline layout.
+    by_format: HashMap<(vk::Format, Kind, Option<crate::device::YcbcrKey>), vk::Pipeline>,
+
+    /// One entry per conversion in use. Built the first time a video frame in
+    /// that format is drawn.
+    ycbcr: HashMap<crate::device::YcbcrKey, Ycbcr>,
 }
 
 impl Pipelines {
@@ -216,6 +252,7 @@ impl Pipelines {
             set_layout,
             layout,
             by_format: HashMap::new(),
+            ycbcr: HashMap::new(),
         })
     }
 
@@ -229,16 +266,133 @@ impl Pipelines {
 
     /// The pipeline for this kind of draw into this format, building it if it
     /// has not been needed before.
+    ///
+    /// For the ordinary layout only. A textured draw goes through
+    /// [`Pipelines::texture`], which also resolves the sampler and the layout —
+    /// they are not independent once a YCbCr conversion is involved.
     pub fn get(&mut self, format: vk::Format, kind: Kind) -> Result<vk::Pipeline> {
-        if let Some(pipeline) = self.by_format.get(&(format, kind)) {
+        self.pipeline(format, kind, None, self.layout)
+    }
+
+    /// Everything a textured draw of `source` into `target` has to bind.
+    pub fn texture(&mut self, target: vk::Format, source: &crate::Image) -> Result<Bound> {
+        let Some(key) = source.ycbcr() else {
+            return Ok(Bound {
+                pipeline: self.get(target, Kind::Texture)?,
+                layout: self.layout,
+                sampler: self.sampler,
+            });
+        };
+
+        // Copied out rather than borrowed: building the pipeline below needs
+        // `self` mutably, and these are handles.
+        let Ycbcr {
+            sampler, layout, ..
+        } = *self.conversion(key)?;
+        let pipeline = self.pipeline(target, Kind::Texture, Some(key), layout)?;
+        Ok(Bound {
+            pipeline,
+            layout,
+            sampler,
+        })
+    }
+
+    /// The sampler, set layout and pipeline layout for one conversion.
+    fn conversion(&mut self, key: crate::device::YcbcrKey) -> Result<&Ycbcr> {
+        if self.ycbcr.contains_key(&key) {
+            return Ok(&self.ycbcr[&key]);
+        }
+
+        let handle = self.device.handle();
+        let conversion = self.device.ycbcr_conversion(key)?;
+
+        // The filter has to be the conversion's own: Vulkan requires the two
+        // to agree unless the format advertises otherwise, and `YcbcrKey`
+        // already resolved which one this device can do.
+        let mut conversion_info = vk::SamplerYcbcrConversionInfo::default().conversion(conversion);
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(key.filter)
+            .min_filter(key.filter)
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .push_next(&mut conversion_info);
+        let sampler = unsafe { handle.create_sampler(&sampler_info, None) }
+            .context("vkCreateSampler for a YCbCr conversion")?;
+
+        let built = (|| -> Result<(vk::DescriptorSetLayout, vk::PipelineLayout)> {
+            // Immutable, which is what a conversion requires. It is why this
+            // cannot share the ordinary set layout: that one lets the draw
+            // choose its sampler, and a conversion may not be chosen.
+            let samplers = [sampler];
+            let binding = vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                .immutable_samplers(&samplers);
+            let bindings = [binding];
+            let set_layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+                .flags(vk::DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR_KHR)
+                .bindings(&bindings);
+            let set_layout = unsafe { handle.create_descriptor_set_layout(&set_layout_info, None) }
+                .context("vkCreateDescriptorSetLayout")?;
+
+            let push_range = vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+                .offset(0)
+                .size(std::mem::size_of::<Push>() as u32);
+            let set_layouts = [set_layout];
+            let ranges = [push_range];
+            let layout_info = vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(&set_layouts)
+                .push_constant_ranges(&ranges);
+            match unsafe { handle.create_pipeline_layout(&layout_info, None) } {
+                Ok(layout) => Ok((set_layout, layout)),
+                Err(e) => {
+                    unsafe { handle.destroy_descriptor_set_layout(set_layout, None) };
+                    Err(anyhow::Error::from(e).context("vkCreatePipelineLayout"))
+                }
+            }
+        })();
+
+        let (set_layout, layout) = match built {
+            Ok(pair) => pair,
+            Err(e) => {
+                unsafe { handle.destroy_sampler(sampler, None) };
+                return Err(e);
+            }
+        };
+
+        Ok(self.ycbcr.entry(key).or_insert(Ycbcr {
+            sampler,
+            set_layout,
+            layout,
+        }))
+    }
+
+    fn pipeline(
+        &mut self,
+        format: vk::Format,
+        kind: Kind,
+        key: Option<crate::device::YcbcrKey>,
+        layout: vk::PipelineLayout,
+    ) -> Result<vk::Pipeline> {
+        if let Some(pipeline) = self.by_format.get(&(format, kind, key)) {
             return Ok(*pipeline);
         }
-        let pipeline = self.build(format, kind)?;
-        self.by_format.insert((format, kind), pipeline);
+        let pipeline = self.build(format, kind, layout)?;
+        self.by_format.insert((format, kind, key), pipeline);
         Ok(pipeline)
     }
 
-    fn build(&self, format: vk::Format, kind: Kind) -> Result<vk::Pipeline> {
+    fn build(
+        &self,
+        format: vk::Format,
+        kind: Kind,
+        layout: vk::PipelineLayout,
+    ) -> Result<vk::Pipeline> {
         let handle = self.device.handle();
         let entry = c"main";
 
@@ -309,7 +463,7 @@ impl Pipelines {
             .multisample_state(&multisample)
             .color_blend_state(&blend)
             .dynamic_state(&dynamic)
-            .layout(self.layout)
+            .layout(layout)
             .push_next(&mut rendering);
 
         let pipelines =
@@ -335,6 +489,15 @@ impl Drop for Pipelines {
             let _ = handle.device_wait_idle();
             for pipeline in self.by_format.values() {
                 handle.destroy_pipeline(*pipeline, None);
+            }
+            // Before the ordinary layout, and in this order within each: a
+            // layout may not outlive the pipelines built against it, and a
+            // sampler may not outlive the set layout that holds it immutably.
+            // The conversions themselves belong to the device.
+            for ycbcr in self.ycbcr.values() {
+                handle.destroy_pipeline_layout(ycbcr.layout, None);
+                handle.destroy_descriptor_set_layout(ycbcr.set_layout, None);
+                handle.destroy_sampler(ycbcr.sampler, None);
             }
             handle.destroy_pipeline_layout(self.layout, None);
             handle.destroy_descriptor_set_layout(self.set_layout, None);

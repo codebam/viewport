@@ -56,8 +56,15 @@ impl Purpose {
 pub struct Image {
     device: Device,
     image: vk::Image,
-    memory: vk::DeviceMemory,
+    /// One entry per distinct allocation behind the image. A single-plane
+    /// buffer, and a multi-planar one whose planes are offsets into one
+    /// allocation, both have exactly one; only a disjoint import has more.
+    memory: Vec<vk::DeviceMemory>,
     view: vk::ImageView,
+    /// Set when this image is sampled through a YCbCr conversion, which the
+    /// pipeline has to know because the conversion decides the sampler and
+    /// the sampler is immutable in the descriptor set layout.
+    ycbcr: Option<crate::device::YcbcrKey>,
 
     width: u32,
     height: u32,
@@ -106,7 +113,17 @@ impl Image {
                     device.name()
                 )
             })?;
+        let yuv = format::is_yuv(fourcc);
         match purpose {
+            Purpose::Sample if yuv && !support.ycbcr_sampling() => {
+                // `sampling` on a multi-planar format only says the planes can
+                // be read. Assembling them into colour is a separate feature,
+                // and a device that cannot do it would otherwise produce a
+                // greyscale video with no error anywhere.
+                return Err(anyhow!(
+                    "{fourcc:?} modifier {modifier:#x} cannot be sampled through a YCbCr conversion"
+                ));
+            }
             Purpose::Sample if !support.sampling => {
                 return Err(anyhow!(
                     "{fourcc:?} modifier {modifier:#x} cannot be sampled"
@@ -119,15 +136,26 @@ impl Image {
             }
             _ => {}
         }
+        if yuv && purpose == Purpose::Render {
+            return Err(anyhow!("{fourcc:?} cannot be a render target"));
+        }
+        if yuv && !device.has_ycbcr() {
+            return Err(anyhow!("{} cannot sample multi-planar YUV", device.name()));
+        }
 
         // Take the transfer usages the modifier actually advertises, and no
         // more. That is what makes read-back and blitting work where the
         // driver allows them without breaking imports where it does not.
+        //
+        // Never for YUV: a copy involving a multi-planar image names one plane
+        // aspect at a time, and every caller here treats a transfer as covering
+        // the whole image. Claiming the usage would make those calls compile,
+        // pass, and copy a third of the picture.
         let mut usage = purpose.usage();
-        if support.transfer_src {
+        if support.transfer_src && !yuv {
             usage |= vk::ImageUsageFlags::TRANSFER_SRC;
         }
-        if support.transfer_dst {
+        if support.transfer_dst && !yuv {
             usage |= vk::ImageUsageFlags::TRANSFER_DST;
         }
 
@@ -136,6 +164,29 @@ impl Image {
             return Err(anyhow!(
                 "buffer has {planes} plane(s), modifier {modifier:#x} describes {}",
                 support.planes
+            ));
+        }
+
+        // How many allocations are actually behind the planes.
+        //
+        // A hardware decoder usually hands over one buffer with the planes at
+        // different offsets, which binds as a single allocation. Some hand over
+        // one fd per plane, which is a disjoint image and binds one allocation
+        // per plane — a different code path, different create flags, and a
+        // different bind call. The fds cannot be compared directly, because
+        // two fds onto the same buffer are two different numbers; the
+        // underlying object is what matters, and that is what the inode of the
+        // DMA-BUF identifies.
+        let allocations = distinct_allocations(buffer)?;
+        // The number of *distinct* allocations, not of planes: two planes at
+        // two offsets into one buffer both map to allocation 0, and that is
+        // the common case.
+        let distinct = allocations.iter().copied().max().unwrap_or(0) + 1;
+        let disjoint = distinct > 1;
+        if disjoint && !support.disjoint {
+            return Err(anyhow!(
+                "{fourcc:?} modifier {modifier:#x} spans {distinct} separate allocations, \
+                 which this device cannot bind disjointly"
             ));
         }
 
@@ -159,7 +210,7 @@ impl Image {
             .plane_layouts(&layouts);
         let mut external = vk::ExternalMemoryImageCreateInfo::default().handle_types(HANDLE_TYPE);
 
-        let create_info = vk::ImageCreateInfo::default()
+        let mut create_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(vk_format)
             .extent(vk::Extent3D {
@@ -179,75 +230,69 @@ impl Image {
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .push_next(&mut modifier_info)
             .push_next(&mut external);
+        if disjoint {
+            create_info = create_info.flags(vk::ImageCreateFlags::DISJOINT);
+        }
 
         let handle = device.handle();
         let image = unsafe { handle.create_image(&create_info, None) }.context("vkCreateImage")?;
 
+        // The conversion has to exist before the view, which names it, and it
+        // is the same object the pipeline's immutable sampler will name.
+        let ycbcr = if yuv {
+            match ycbcr_key(device, fourcc, vk_format, height, support) {
+                Ok(key) => Some(key),
+                Err(e) => {
+                    unsafe { handle.destroy_image(image, None) };
+                    return Err(e);
+                }
+            }
+        } else {
+            None
+        };
+
         // From here on every early return has to clean up what came before it.
-        let result = (|| -> Result<(vk::DeviceMemory, vk::ImageView)> {
-            let requirements = unsafe { handle.get_image_memory_requirements(image) };
+        let result = (|| -> Result<(Vec<vk::DeviceMemory>, vk::ImageView)> {
+            let memory = if disjoint {
+                bind_disjoint(device, image, buffer, &allocations)?
+            } else {
+                vec![bind_whole(device, image, buffer)?]
+            };
 
-            // The driver says which memory types this specific fd can back.
-            let plane_fd = buffer
-                .handles()
-                .next()
-                .ok_or_else(|| anyhow!("dmabuf has no planes"))?;
-            let mut fd_properties = vk::MemoryFdPropertiesKHR::default();
-            unsafe {
-                device.external_memory_fd().get_memory_fd_properties(
-                    HANDLE_TYPE,
-                    plane_fd.as_raw_fd(),
-                    &mut fd_properties,
-                )
-            }
-            .context("vkGetMemoryFdPropertiesKHR")?;
+            let mut conversion_info = ycbcr
+                .map(|key| device.ycbcr_conversion(key))
+                .transpose()
+                .inspect_err(|_| {
+                    for memory in &memory {
+                        unsafe { handle.free_memory(*memory, None) };
+                    }
+                })?
+                .map(|conversion| vk::SamplerYcbcrConversionInfo::default().conversion(conversion));
 
-            let memory_type = device
-                .memory_type(
-                    requirements.memory_type_bits,
-                    fd_properties.memory_type_bits,
-                )
-                .ok_or_else(|| anyhow!("no memory type can back this dmabuf"))?;
-
-            // vkAllocateMemory consumes the fd on success, so hand it a copy.
-            let owned: OwnedFd = plane_fd.try_clone_to_owned().context("dup dmabuf fd")?;
-
-            let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
-            let mut import = vk::ImportMemoryFdInfoKHR::default()
-                .handle_type(HANDLE_TYPE)
-                .fd(owned.as_raw_fd());
-            let allocate = vk::MemoryAllocateInfo::default()
-                .allocation_size(requirements.size)
-                .memory_type_index(memory_type)
-                .push_next(&mut dedicated)
-                .push_next(&mut import);
-
-            let memory =
-                unsafe { handle.allocate_memory(&allocate, None) }.context("vkAllocateMemory")?;
-            // Ownership passed to Vulkan; dropping it here would close a fd
-            // the driver still holds.
-            std::mem::forget(owned);
-
-            if let Err(e) = unsafe { handle.bind_image_memory(image, memory, 0) } {
-                unsafe { handle.free_memory(memory, None) };
-                return Err(anyhow::Error::from(e).context("vkBindImageMemory"));
-            }
-
-            let view_info = vk::ImageViewCreateInfo::default()
+            let mut view_info = vk::ImageViewCreateInfo::default()
                 .image(image)
                 .view_type(vk::ImageViewType::TYPE_2D)
                 .format(vk_format)
                 .subresource_range(vk::ImageSubresourceRange {
+                    // COLOR, not the per-plane aspects: the view is of the
+                    // whole image, and the conversion is what turns the planes
+                    // underneath it into one sample.
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
                     layer_count: 1,
                 });
+            if let Some(info) = conversion_info.as_mut() {
+                view_info = view_info.push_next(info);
+            }
+
             let view = match unsafe { handle.create_image_view(&view_info, None) } {
                 Ok(view) => view,
                 Err(e) => {
-                    unsafe { handle.free_memory(memory, None) };
+                    for memory in &memory {
+                        unsafe { handle.free_memory(*memory, None) };
+                    }
                     return Err(anyhow::Error::from(e).context("vkCreateImageView"));
                 }
             };
@@ -268,6 +313,7 @@ impl Image {
             image,
             memory,
             view,
+            ycbcr,
             width,
             height,
             format: vk_format,
@@ -364,8 +410,11 @@ impl Image {
         Ok(Self {
             device: device.clone(),
             image,
-            memory,
+            memory: vec![memory],
             view,
+            // Allocated images are what shm buffers are copied into, and that
+            // copy targets ordinary colour.
+            ycbcr: None,
             width,
             height,
             format: vk_format,
@@ -405,6 +454,15 @@ impl Image {
 
     pub fn has_alpha(&self) -> bool {
         self.has_alpha
+    }
+
+    /// The conversion this image is sampled through, if it is YUV.
+    ///
+    /// The pipeline needs it: a conversion makes the sampler immutable in the
+    /// descriptor set layout, so an image sampled through one cannot use the
+    /// ordinary texture pipeline.
+    pub fn ycbcr(&self) -> Option<crate::device::YcbcrKey> {
+        self.ycbcr
     }
 
     pub fn purpose(&self) -> Purpose {
@@ -523,6 +581,258 @@ impl Image {
     }
 }
 
+/// One entry per plane: which distinct allocation it lives in.
+///
+/// `[0, 0]` is a two-plane buffer packed into one DMA-BUF, which is what a
+/// hardware decoder normally produces. `[0, 1]` is one DMA-BUF per plane, which
+/// has to be bound disjointly.
+fn distinct_allocations(buffer: &Dmabuf) -> Result<Vec<usize>> {
+    // Two fds onto the same buffer are two different numbers, so the fds
+    // cannot be compared. The DMA-BUF itself is a file on an anonymous
+    // filesystem, and its inode identifies it — which is how everything else
+    // that has to answer this question answers it.
+    let mut identities: Vec<(u64, u64)> = Vec::new();
+    let mut which = Vec::new();
+    for fd in buffer.handles() {
+        // SAFETY: `fd` is a valid borrowed descriptor for the length of the
+        // loop body, and `stat` is fully written on success.
+        let identity = unsafe {
+            let mut stat: libc::stat = std::mem::zeroed();
+            if libc::fstat(fd.as_raw_fd(), &mut stat) != 0 {
+                return Err(anyhow::Error::from(std::io::Error::last_os_error())
+                    .context("fstat on a dmabuf plane"));
+            }
+            (stat.st_dev as u64, stat.st_ino as u64)
+        };
+        which.push(match identities.iter().position(|seen| *seen == identity) {
+            Some(index) => index,
+            None => {
+                identities.push(identity);
+                identities.len() - 1
+            }
+        });
+    }
+    if which.is_empty() {
+        return Err(anyhow!("dmabuf has no planes"));
+    }
+    Ok(which)
+}
+
+/// Import a plane's fd and allocate the memory behind it.
+///
+/// `requirements` differs between the whole-image and per-plane cases, which is
+/// the only reason this is a parameter rather than read here.
+fn import_plane(
+    device: &Device,
+    image: vk::Image,
+    fd: std::os::fd::BorrowedFd<'_>,
+    requirements: vk::MemoryRequirements,
+) -> Result<vk::DeviceMemory> {
+    // The driver says which memory types this specific fd can back.
+    let mut fd_properties = vk::MemoryFdPropertiesKHR::default();
+    unsafe {
+        device.external_memory_fd().get_memory_fd_properties(
+            HANDLE_TYPE,
+            fd.as_raw_fd(),
+            &mut fd_properties,
+        )
+    }
+    .context("vkGetMemoryFdPropertiesKHR")?;
+
+    let memory_type = device
+        .memory_type(
+            requirements.memory_type_bits,
+            fd_properties.memory_type_bits,
+        )
+        .ok_or_else(|| anyhow!("no memory type can back this dmabuf"))?;
+
+    // vkAllocateMemory consumes the fd on success, so hand it a copy.
+    let owned: OwnedFd = fd.try_clone_to_owned().context("dup dmabuf fd")?;
+
+    let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+    let mut import = vk::ImportMemoryFdInfoKHR::default()
+        .handle_type(HANDLE_TYPE)
+        .fd(owned.as_raw_fd());
+    let allocate = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(memory_type)
+        .push_next(&mut dedicated)
+        .push_next(&mut import);
+
+    let memory =
+        unsafe { device.handle().allocate_memory(&allocate, None) }.context("vkAllocateMemory")?;
+    // Ownership passed to Vulkan; dropping it here would close a fd the driver
+    // still holds.
+    std::mem::forget(owned);
+    Ok(memory)
+}
+
+/// Bind an image whose planes all live in one allocation.
+fn bind_whole(device: &Device, image: vk::Image, buffer: &Dmabuf) -> Result<vk::DeviceMemory> {
+    let handle = device.handle();
+    let requirements = unsafe { handle.get_image_memory_requirements(image) };
+    let fd = buffer
+        .handles()
+        .next()
+        .ok_or_else(|| anyhow!("dmabuf has no planes"))?;
+    let memory = import_plane(device, image, fd, requirements)?;
+    if let Err(e) = unsafe { handle.bind_image_memory(image, memory, 0) } {
+        unsafe { handle.free_memory(memory, None) };
+        return Err(anyhow::Error::from(e).context("vkBindImageMemory"));
+    }
+    Ok(memory)
+}
+
+/// Bind an image whose planes live in separate allocations.
+///
+/// Every plane is asked about separately — its memory requirements are its
+/// own — and all of them are bound in one call, which is what
+/// `vkBindImageMemory2` is for. The aspect is `MEMORY_PLANE_i`, not `PLANE_i`:
+/// with a DRM modifier the memory planes are what the modifier lays out, and
+/// for a compressed format there are more of them than there are colour planes.
+fn bind_disjoint(
+    device: &Device,
+    image: vk::Image,
+    buffer: &Dmabuf,
+    allocations: &[usize],
+) -> Result<Vec<vk::DeviceMemory>> {
+    const ASPECTS: [vk::ImageAspectFlags; 4] = [
+        vk::ImageAspectFlags::MEMORY_PLANE_0_EXT,
+        vk::ImageAspectFlags::MEMORY_PLANE_1_EXT,
+        vk::ImageAspectFlags::MEMORY_PLANE_2_EXT,
+        vk::ImageAspectFlags::MEMORY_PLANE_3_EXT,
+    ];
+
+    let handle = device.handle();
+    let fds: Vec<_> = buffer.handles().collect();
+    let count = allocations.len();
+    anyhow::ensure!(
+        count <= ASPECTS.len(),
+        "a dmabuf with {count} planes is more than Vulkan describes"
+    );
+
+    let mut memories: Vec<vk::DeviceMemory> = Vec::with_capacity(count);
+    let free_all = |memories: &[vk::DeviceMemory]| {
+        for memory in memories {
+            unsafe { handle.free_memory(*memory, None) };
+        }
+    };
+
+    for (plane, aspect) in ASPECTS.iter().enumerate().take(count) {
+        let mut plane_info = vk::ImagePlaneMemoryRequirementsInfo::default().plane_aspect(*aspect);
+        let info = vk::ImageMemoryRequirementsInfo2::default()
+            .image(image)
+            .push_next(&mut plane_info);
+        let mut requirements = vk::MemoryRequirements2::default();
+        unsafe { handle.get_image_memory_requirements2(&info, &mut requirements) };
+
+        match import_plane(device, image, fds[plane], requirements.memory_requirements) {
+            Ok(memory) => memories.push(memory),
+            Err(e) => {
+                free_all(&memories);
+                return Err(e);
+            }
+        }
+    }
+
+    // Built in two passes because each bind holds a pointer into its own plane
+    // info, and those have to outlive the call.
+    let mut plane_infos: Vec<vk::BindImagePlaneMemoryInfo> = ASPECTS
+        .iter()
+        .take(count)
+        .map(|aspect| vk::BindImagePlaneMemoryInfo::default().plane_aspect(*aspect))
+        .collect();
+    let binds: Vec<vk::BindImageMemoryInfo> = plane_infos
+        .iter_mut()
+        .zip(&memories)
+        .map(|(plane_info, memory)| {
+            vk::BindImageMemoryInfo::default()
+                .image(image)
+                .memory(*memory)
+                .memory_offset(0)
+                .push_next(plane_info)
+        })
+        .collect();
+
+    if let Err(e) = unsafe { handle.bind_image_memory2(&binds) } {
+        free_all(&memories);
+        return Err(anyhow::Error::from(e).context("vkBindImageMemory2"));
+    }
+    Ok(memories)
+}
+
+/// The conversion a YUV buffer of this shape needs.
+///
+/// Neither the matrix nor the range is carried by a DMA-BUF, so both are
+/// inferred. Height decides the matrix, which is the same rule every video
+/// stack uses: anything of standard-definition height predates BT.709 and was
+/// almost certainly encoded with BT.601, and everything taller was not. The
+/// range is taken as narrow because that is what broadcast and every hardware
+/// decoder default to; a full-range buffer read as narrow comes out slightly
+/// washed out rather than wrong.
+///
+/// The siting is not a guess: it is whichever of the two the device says it can
+/// reconstruct, preferring the one the MPEG family actually uses.
+fn ycbcr_key(
+    device: &Device,
+    fourcc: smithay::backend::allocator::Fourcc,
+    vk_format: vk::Format,
+    height: u32,
+    support: &format::ModifierSupport,
+) -> Result<crate::device::YcbcrKey> {
+    use smithay::backend::allocator::Fourcc;
+
+    // 576 is PAL's active height, the tallest standard-definition format.
+    let model = if height <= 576 {
+        vk::SamplerYcbcrModelConversion::YCBCR_601
+    } else {
+        vk::SamplerYcbcrModelConversion::YCBCR_709
+    };
+
+    // Horizontally the MPEG family sites chroma on the left-hand luma sample.
+    let x_offset = if support.cosited_chroma {
+        vk::ChromaLocation::COSITED_EVEN
+    } else {
+        vk::ChromaLocation::MIDPOINT
+    };
+    // Vertically, only a 4:2:0 format has a choice to make: without vertical
+    // subsampling the chroma sample sits on the luma row by definition, and
+    // saying anything else is invalid.
+    let subsampled_vertically = matches!(
+        fourcc,
+        Fourcc::Nv12 | Fourcc::Nv21 | Fourcc::Yuv420 | Fourcc::Yvu420 | Fourcc::P010 | Fourcc::P016
+    );
+    let y_offset = if subsampled_vertically && support.midpoint_chroma {
+        vk::ChromaLocation::MIDPOINT
+    } else {
+        vk::ChromaLocation::COSITED_EVEN
+    };
+
+    // Chroma is filtered linearly only where the device says it can be. Where
+    // it cannot, luma has to drop to nearest with it — Vulkan requires the two
+    // filters to match, and a mismatch is invalid usage rather than a
+    // best-effort.
+    let filter = if support.linear_chroma {
+        vk::Filter::LINEAR
+    } else {
+        vk::Filter::NEAREST
+    };
+
+    let key = crate::device::YcbcrKey {
+        format: vk_format,
+        model,
+        range: vk::SamplerYcbcrRange::ITU_NARROW,
+        x_offset,
+        y_offset,
+        filter,
+        swapped_chroma: matches!(fourcc, Fourcc::Nv21 | Fourcc::Yvu420),
+    };
+    // Created here rather than at first draw so a device that cannot make it
+    // fails the import, where the error names the buffer.
+    device.ycbcr_conversion(key)?;
+    Ok(key)
+}
+
 impl std::fmt::Debug for Image {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Image")
@@ -542,7 +852,12 @@ impl Drop for Image {
             let _ = handle.device_wait_idle();
             handle.destroy_image_view(self.view, None);
             handle.destroy_image(self.image, None);
-            handle.free_memory(self.memory, None);
+            for memory in &self.memory {
+                handle.free_memory(*memory, None);
+            }
+            // The conversion is not freed here: it is the device's, shared
+            // with every other image of this format and with the sampler the
+            // pipeline was built around.
         }
     }
 }
@@ -550,10 +865,10 @@ impl Drop for Image {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{gbm_allocator, require_gpu, TestGpu};
+    use crate::test_support::{gbm_allocator, linear_nv12, require_gpu, TestGpu};
 
     use smithay::backend::allocator::dmabuf::AsDmabuf;
-    use smithay::backend::allocator::{Allocator, Fourcc};
+    use smithay::backend::allocator::{Allocator, Fourcc, Modifier};
 
     #[test]
     fn a_gbm_buffer_can_be_imported_as_a_sampleable_image() {
@@ -659,6 +974,178 @@ mod tests {
         // ownership transfer the driver has to honour.
         let second = image.acquire_barrier(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         assert_eq!(second.src_queue_family_index, device.queue_family());
+    }
+
+    /// Whether this device can sample NV12 at all, and would let a test that
+    /// ran mean anything.
+    fn nv12_is_sampleable(device: &Device) -> bool {
+        if !device.has_ycbcr() {
+            crate::test_support::skip("the device cannot sample YUV");
+            return false;
+        }
+        let linear = format::modifiers(device.physical(), Fourcc::Nv12)
+            .into_iter()
+            .any(|s| s.modifier == Modifier::Linear && s.ycbcr_sampling());
+        if !linear {
+            crate::test_support::skip("no YCbCr-sampleable linear NV12");
+        }
+        linear
+    }
+
+    #[test]
+    fn an_nv12_buffer_imports_as_one_image_sampled_through_a_conversion() {
+        // The whole point of the multi-planar path: a frame shaped like what a
+        // hardware decoder produces, imported without a CPU convert. Before
+        // this it was refused at `to_vulkan`, and every video player fell back
+        // to converting each frame on the CPU.
+        let Some(TestGpu { device, node }) = require_gpu() else {
+            return;
+        };
+        let mut allocator = match gbm_allocator(&node) {
+            Some(allocator) => allocator,
+            None => return,
+        };
+        if !nv12_is_sampleable(&device) {
+            return;
+        }
+        let Some(dmabuf) = linear_nv12(&mut allocator, 256, 64) else {
+            return;
+        };
+        assert_eq!(dmabuf.num_planes(), 2, "NV12 is two planes");
+
+        let image = Image::import(&device, &dmabuf, Purpose::Sample).expect("import");
+        assert_eq!((image.width(), image.height()), (256, 64));
+        assert_eq!(image.format(), vk::Format::G8_B8R8_2PLANE_420_UNORM);
+        // No alpha, so it composites opaque rather than blending against
+        // undefined bytes.
+        assert!(!image.has_alpha());
+        // The conversion is what makes it sample as colour, and the pipeline
+        // reads this to pick the layout with the matching immutable sampler.
+        let key = image
+            .ycbcr()
+            .expect("an NV12 image must carry a conversion");
+        assert_eq!(key.format, vk::Format::G8_B8R8_2PLANE_420_UNORM);
+        assert!(!key.swapped_chroma);
+        assert_eq!(key.range, vk::SamplerYcbcrRange::ITU_NARROW);
+        assert_ne!(image.view(), vk::ImageView::null());
+    }
+
+    #[test]
+    fn standard_definition_gets_the_matrix_it_was_encoded_with() {
+        // 601 below PAL's active height, 709 above it. Using one matrix for
+        // both is the difference between correct colour and a green cast on
+        // everything old, and neither the buffer nor the protocol says which.
+        let Some(TestGpu { device, node }) = require_gpu() else {
+            return;
+        };
+        let mut allocator = match gbm_allocator(&node) {
+            Some(allocator) => allocator,
+            None => return,
+        };
+        if !nv12_is_sampleable(&device) {
+            return;
+        }
+
+        let Some(sd) = linear_nv12(&mut allocator, 256, 480) else {
+            return;
+        };
+        let sd = Image::import(&device, &sd, Purpose::Sample).expect("import");
+        assert_eq!(
+            sd.ycbcr().expect("a conversion").model,
+            vk::SamplerYcbcrModelConversion::YCBCR_601
+        );
+
+        let Some(hd) = linear_nv12(&mut allocator, 256, 720) else {
+            return;
+        };
+        let hd = Image::import(&device, &hd, Purpose::Sample).expect("import");
+        assert_eq!(
+            hd.ycbcr().expect("a conversion").model,
+            vk::SamplerYcbcrModelConversion::YCBCR_709
+        );
+    }
+
+    #[test]
+    fn a_video_frame_is_never_offered_as_a_render_target() {
+        // Nothing composites *into* YUV, and an image the rest of the renderer
+        // treats as an RGB colour attachment is one it will happily clear and
+        // blend in a colour space that does not exist.
+        let Some(TestGpu { device, node }) = require_gpu() else {
+            return;
+        };
+        let mut allocator = match gbm_allocator(&node) {
+            Some(allocator) => allocator,
+            None => return,
+        };
+        if !nv12_is_sampleable(&device) {
+            return;
+        }
+        let Some(dmabuf) = linear_nv12(&mut allocator, 256, 64) else {
+            return;
+        };
+
+        let error = Image::import(&device, &dmabuf, Purpose::Render)
+            .expect_err("YUV must not be a render target");
+        let message = error.to_string();
+        assert!(
+            message.contains("render target") || message.contains("cannot be rendered into"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn an_imported_video_frame_cannot_be_copied_out_of() {
+        // A copy on a multi-planar image names one plane aspect at a time, and
+        // every transfer in this renderer covers the whole image. Claiming the
+        // usage would make a screenshot of a video succeed and return a third
+        // of the picture.
+        let Some(TestGpu { device, node }) = require_gpu() else {
+            return;
+        };
+        let mut allocator = match gbm_allocator(&node) {
+            Some(allocator) => allocator,
+            None => return,
+        };
+        if !nv12_is_sampleable(&device) {
+            return;
+        }
+        let Some(dmabuf) = linear_nv12(&mut allocator, 256, 64) else {
+            return;
+        };
+
+        let image = Image::import(&device, &dmabuf, Purpose::Sample).expect("import");
+        assert!(!image.is_readable());
+        assert!(!image.is_writable());
+    }
+
+    #[test]
+    fn planes_in_one_allocation_are_not_mistaken_for_a_disjoint_image() {
+        // The two planes are two fds onto the same buffer, which are two
+        // different numbers. Comparing the descriptors would call this disjoint
+        // and bind each plane its own allocation — on a device that mostly does
+        // not support disjoint at all, so the import would simply fail.
+        let Some(TestGpu { device, node }) = require_gpu() else {
+            return;
+        };
+        let mut allocator = match gbm_allocator(&node) {
+            Some(allocator) => allocator,
+            None => return,
+        };
+        if !nv12_is_sampleable(&device) {
+            return;
+        }
+        let Some(dmabuf) = linear_nv12(&mut allocator, 256, 64) else {
+            return;
+        };
+
+        let fds: Vec<_> = dmabuf.handles().map(|fd| fd.as_raw_fd()).collect();
+        assert_eq!(fds.len(), 2);
+        assert_ne!(fds[0], fds[1], "the planes must be separate descriptors");
+        assert_eq!(
+            distinct_allocations(&dmabuf).expect("stat"),
+            vec![0, 0],
+            "both planes live in one allocation"
+        );
     }
 
     #[test]

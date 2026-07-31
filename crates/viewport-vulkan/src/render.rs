@@ -224,13 +224,16 @@ impl<'a> Frame<'a> {
         texture: &Image,
         alpha: f32,
     ) -> Result<()> {
-        let pipeline = self.pipelines.get(self.target.format(), Kind::Texture)?;
+        // Pipeline, layout and sampler together: for a YUV texture the sampler
+        // carries the conversion and the layout is built around it, so they
+        // cannot be resolved separately.
+        let bound = self.pipelines.texture(self.target.format(), texture)?;
         // White tint: the texture's own colours, scaled by alpha.
         let push = self.push(dst, src, [1.0, 1.0, 1.0, 1.0], alpha);
         let handle = self.device.handle();
 
         let image_info = vk::DescriptorImageInfo::default()
-            .sampler(self.pipelines.sampler())
+            .sampler(bound.sampler)
             .image_view(texture.view())
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         let infos = [image_info];
@@ -240,19 +243,19 @@ impl<'a> Frame<'a> {
             .image_info(&infos);
 
         unsafe {
-            handle.cmd_bind_pipeline(self.buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            handle.cmd_bind_pipeline(self.buffer, vk::PipelineBindPoint::GRAPHICS, bound.pipeline);
             // Pushed straight into the command buffer: no pool, no allocation,
             // no recycling between frames.
             self.device.push_descriptor().cmd_push_descriptor_set(
                 self.buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipelines.layout(),
+                bound.layout,
                 0,
                 &[write],
             );
             handle.cmd_push_constants(
                 self.buffer,
-                self.pipelines.layout(),
+                bound.layout,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 0,
                 push.as_bytes(),
@@ -524,6 +527,80 @@ mod tests {
         );
         assert_eq!(pixel(&dmabuf, 8, 8), [0, 0, 0, 255], "above-left of it");
         assert_eq!(pixel(&dmabuf, 60, 60), [0, 0, 0, 255], "below-right of it");
+    }
+
+    #[test]
+    fn an_nv12_texture_is_converted_to_colour_as_it_is_sampled() {
+        // End to end, which is the only place the YCbCr path can be checked:
+        // the conversion lives in the sampler, the sampler is immutable in the
+        // descriptor set layout, and the layout is baked into the pipeline. A
+        // mismatch anywhere in that chain is undefined behaviour rather than an
+        // error, so nothing short of drawing a frame and reading the pixels
+        // back proves it was assembled correctly.
+        let Some(mut h) = harness() else { return };
+        if !h.device.has_ycbcr() {
+            skip("the device cannot sample YUV");
+            return;
+        }
+        if !format::modifiers(h.device.physical(), Fourcc::Nv12)
+            .into_iter()
+            .any(|s| s.modifier == Modifier::Linear && s.ycbcr_sampling())
+        {
+            skip("no YCbCr-sampleable linear NV12");
+            return;
+        }
+
+        let Some(source_buffer) = crate::test_support::linear_nv12(&mut h.allocator, 64, 64) else {
+            return;
+        };
+        // Y' at half scale with chroma pushed all the way to blue. Narrow
+        // range, so 128 is the neutral chroma and 16..235 is the luma range.
+        //
+        // BT.709 puts this at roughly R 130, G 107, B clipped to 255 — the
+        // point being that blue dominates. A conversion with Cb and Cr the
+        // wrong way round produces red instead, which is the mistake this is
+        // here to catch.
+        crate::test_support::fill_nv12(&source_buffer, 64, 128, (240, 128));
+        let source = Image::import(&h.device, &source_buffer, Purpose::Sample).expect("import src");
+        assert!(source.ycbcr().is_some(), "NV12 must carry a conversion");
+
+        let dmabuf = linear_buffer(&mut h.allocator, 64, 64);
+        let target = Image::import(&h.device, &dmabuf, Purpose::Render).expect("import dst");
+
+        let mut frame = Frame::begin(
+            &h.device,
+            &mut h.commands,
+            &mut h.pipelines,
+            &target,
+            Some([0.0, 0.0, 0.0, 1.0]),
+            &[&source],
+        )
+        .expect("begin");
+        frame
+            .draw_texture([0.0, 0.0, 64.0, 64.0], [0.0, 0.0, 1.0, 1.0], &source, 1.0)
+            .expect("draw");
+        frame.finish().expect("finish");
+        h.commands.wait(Duration::from_secs(5)).expect("wait");
+
+        // B, G, R, A in memory.
+        let [blue, green, red, alpha] = pixel(&dmabuf, 32, 32);
+        assert_eq!(alpha, 255, "YUV has no alpha, so it composites opaque");
+        assert!(
+            blue > 200,
+            "blue should dominate, got b={blue} g={green} r={red}"
+        );
+        assert!(
+            red < blue - 60,
+            "red must not dominate — that is Cb and Cr swapped; \
+             got b={blue} g={green} r={red}"
+        );
+        // Greyscale in all three channels would mean the chroma plane was
+        // never read at all, which is what happens when a multi-planar buffer
+        // is imported as if it were single-plane.
+        assert!(
+            blue.abs_diff(green) > 40,
+            "the chroma plane was not sampled: b={blue} g={green} r={red}"
+        );
     }
 
     #[test]

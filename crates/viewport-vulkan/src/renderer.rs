@@ -372,9 +372,20 @@ impl ImportDma for VulkanRenderer {
     }
 
     fn has_dmabuf_format(&self, format: Format) -> bool {
+        // The same rule `importable` applies, and it has to stay the same
+        // rule: a format advertised there and refused here is a client whose
+        // buffer is rejected after a successful negotiation.
+        let yuv = format::is_yuv(format.code);
         format::modifiers(self.device.physical(), format.code)
             .into_iter()
-            .any(|s| s.modifier == format.modifier && s.sampling && s.planes == 1)
+            .any(|s| {
+                s.modifier == format.modifier
+                    && if yuv {
+                        s.ycbcr_sampling()
+                    } else {
+                        s.sampling && s.planes == 1
+                    }
+            })
     }
 
     fn import_dmabuf(
@@ -1339,18 +1350,20 @@ impl Frame for VulkanFrame<'_, '_> {
             .with_opaque(!texture.image.has_alpha());
 
         let target_format = self.framebuffer.image.format();
-        let pipeline = self
+        // Pipeline, layout and sampler together: a YUV texture is sampled
+        // through a conversion, which makes its sampler immutable in the set
+        // layout and so ties all three to each other.
+        let bound = self
             .renderer
             .pipelines
-            .get(target_format, crate::pipeline::Kind::Texture)?;
-        let layout = self.renderer.pipelines.layout();
-        let sampler = self.renderer.pipelines.sampler();
+            .texture(target_format, &texture.image)?;
+        let layout = bound.layout;
         let buffer = self.command_buffer();
         let device = self.renderer.device.clone();
         let handle = device.handle();
 
         let image_info = vk::DescriptorImageInfo::default()
-            .sampler(sampler)
+            .sampler(bound.sampler)
             .image_view(texture.image.view())
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         let infos = [image_info];
@@ -1360,7 +1373,7 @@ impl Frame for VulkanFrame<'_, '_> {
             .image_info(&infos);
 
         unsafe {
-            handle.cmd_bind_pipeline(buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            handle.cmd_bind_pipeline(buffer, vk::PipelineBindPoint::GRAPHICS, bound.pipeline);
             device.push_descriptor().cmd_push_descriptor_set(
                 buffer,
                 vk::PipelineBindPoint::GRAPHICS,

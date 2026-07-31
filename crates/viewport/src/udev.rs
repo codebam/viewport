@@ -443,10 +443,21 @@ pub fn init(
     // Allocation happens there, and it is the node a client may open without
     // being the session's master.
     {
+        // Colour only. A capture buffer is copied *into*, and the importable
+        // set now carries the YUV formats a video decoder produces — which can
+        // be sampled and not written. Offering one would let a client allocate
+        // a buffer every capture then fails against.
         let formats: Vec<_> = state
             .udev
             .as_ref()
-            .map(|udev| udev.renderer.dmabuf_formats().iter().copied().collect())
+            .map(|udev| {
+                udev.renderer
+                    .dmabuf_formats()
+                    .iter()
+                    .copied()
+                    .filter(|format| !viewport_vulkan::format::is_yuv(format.code))
+                    .collect()
+            })
             .unwrap_or_default();
         state.capture_gpu = render
             .node_with_type(NodeType::Render)
