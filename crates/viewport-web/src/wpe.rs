@@ -122,6 +122,24 @@ impl FrameToken {
     pub fn as_ptr(&self) -> *mut c_void {
         self.0
     }
+
+    /// Wrap a handle again, for an acknowledgement that does not own it.
+    ///
+    /// Acknowledging a frame and releasing it are different things: the first
+    /// says it reached the screen and leaves the buffer on loan, the second
+    /// gives the buffer back. Only the second consumes the token. With the
+    /// engine on its own thread the acknowledgement has to be sent as a
+    /// message, and a message owns what it carries — so this exists to make a
+    /// second handle to a buffer the caller is still holding.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must be one this type handed out, and the buffer must not
+    /// have been released. Two tokens for one buffer must not both be passed
+    /// to `frame_release`.
+    pub unsafe fn from_ptr(ptr: *mut c_void) -> Self {
+        Self(ptr)
+    }
 }
 
 // SAFETY: the pointer is an opaque WPEBuffer handle that is only ever passed

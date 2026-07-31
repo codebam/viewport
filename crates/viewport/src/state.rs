@@ -3309,9 +3309,10 @@ impl ViewportState {
             self.load_timeout_ms
         );
         if let Some(shell) = self.shell.as_ref() {
-            if let Err(e) = shell.view.load(&url) {
-                tracing::error!("the fallback would not load either: {e:#}");
-            }
+            // Fire and forget: the load happens on the web thread, so there is
+            // no error to catch here. One that fails says so in the log from
+            // there.
+            shell.load(&url);
         }
     }
 
@@ -5437,7 +5438,7 @@ impl ViewportState {
         );
         if let Some(shell) = self.shell.as_ref() {
             tracing::info!("shell size {}x{}", size.0, size.1);
-            shell.display.resize(size.0, size.1);
+            shell.resize(size.0, size.1);
         }
     }
 }

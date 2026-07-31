@@ -7,12 +7,31 @@
 // a Vulkan image — the path `viewport_vulkan::Image::import` already takes for
 // client buffers, because a frame from WebKit is not special.
 //
-// Frames arrive on the GLib thread, which is the compositor's thread, so
-// nothing here is shared across threads. What it cannot do is reach into the
-// compositor directly: the frame callback runs inside WebKit, underneath a
-// calloop dispatch that already holds `&mut ViewportState`. So frames land in
-// a queue and are picked up at the top of the next render.
+// WebKit runs on a thread of its own, with a GMainContext of its own, and the
+// compositor never enters GLib at all. `WebView` and `Display` live there and
+// are never touched from outside it; everything the compositor wants done to
+// them is a [`Command`] posted to that thread.
+//
+// The other direction was already a queue and stays one. A frame callback runs
+// inside WebKit underneath whatever WebKit is doing, and cannot reach into
+// `&mut ViewportState` — so frames and messages land in the [`Mailbox`] and a
+// calloop ping wakes the compositor to collect them.
+//
+// Two things follow from the split and are easy to get wrong:
+//
+// A `FrameToken` is an opaque `WPEBuffer` handle. It is produced on the web
+// thread, travels to the compositor inside the mailbox, and comes back as
+// `FrameDone` or `FrameRelease` — so it crosses threads twice. That is sound
+// because nothing outside the web thread ever dereferences it: the compositor
+// holds it and hands it back, and only the web thread passes it to the shim.
+//
+// And a command is asynchronous where the call it replaced was not. Nothing
+// here returns a value from WebKit, which is what makes that safe; `restart`
+// used to read `view.uri()` and now the web thread reads it, because that is
+// the only thread allowed to.
 
+use std::collections::VecDeque;
+use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -60,15 +79,106 @@ pub struct Mailbox {
     pub terminated: Option<Termination>,
 }
 
+/// What the compositor asks the web thread to do.
+///
+/// Data only. Anything that would need a value back out of WebKit does not
+/// belong here, because there is nowhere to return it to — the compositor is
+/// not waiting.
+enum Command {
+    /// An IPC event, already serialised, for the page.
+    Post(String),
+    /// This frame reached the screen; WebKit may schedule the next paint.
+    Done(FrameToken),
+    /// Nothing samples this buffer any more; it goes back to WebKit's pool.
+    Release(FrameToken),
+    /// The web process died; load the page again.
+    Restart,
+    /// The desktop changed shape.
+    Resize(u32, u32),
+    /// Load a page, replacing whatever is there.
+    Load(String),
+    /// Reload the current page, for the keybinding that does it.
+    Reload,
+    /// Input, on its way to the page. All plain numbers, which is what makes
+    /// the crossing free: nothing here borrows anything of WebKit's.
+    PointerMotion {
+        time: u32,
+        x: f64,
+        y: f64,
+        modifiers: u32,
+    },
+    PointerButton {
+        time: u32,
+        x: f64,
+        y: f64,
+        button: u32,
+        pressed: bool,
+        modifiers: u32,
+    },
+    PointerAxis {
+        time: u32,
+        x: f64,
+        y: f64,
+        dx: f64,
+        dy: f64,
+        precise: bool,
+        modifiers: u32,
+    },
+    KeyboardKey {
+        time: u32,
+        keycode: u32,
+        keysym: u32,
+        pressed: bool,
+        modifiers: u32,
+    },
+    /// Stop the loop and let the thread end.
+    Quit,
+}
+
+/// A `GMainContext` pointer, sendable because the two calls made on it from
+/// another thread — `wakeup` and `unref` — are the two GLib documents as
+/// thread-safe.
+struct Context(*mut c_void);
+
+// SAFETY: see above. Every other use of this pointer is on the web thread.
+unsafe impl Send for Context {}
+unsafe impl Sync for Context {}
+
+/// The queue the compositor posts into and the web thread drains.
+struct Commands {
+    queue: Mutex<VecDeque<Command>>,
+    context: Context,
+}
+
+impl Commands {
+    fn send(&self, command: Command) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.push_back(command);
+        }
+        // Wakes a `g_main_context_iteration` that is blocked in poll. This is
+        // the whole reason no GSource is needed for the command channel:
+        // `g_main_context_wakeup` is thread-safe by contract.
+        unsafe { g_main_context_wakeup(self.context.0) };
+    }
+}
+
+extern "C" {
+    fn g_main_context_new() -> *mut c_void;
+    fn g_main_context_push_thread_default(context: *mut c_void);
+    fn g_main_context_pop_thread_default(context: *mut c_void);
+    fn g_main_context_iteration(context: *mut c_void, may_block: i32) -> i32;
+    fn g_main_context_wakeup(context: *mut c_void);
+    fn g_main_context_unref(context: *mut c_void);
+}
+
 /// The shell, once it is running.
+///
+/// A handle. The engine itself is on the other side of [`Commands`].
 pub struct Shell {
-    pub view: WebView,
-    pub display: std::rc::Rc<Display>,
     pub mailbox: Arc<Mutex<Mailbox>>,
-    /// What the shell was started from, kept for [`Shell::restart`]: a web
-    /// process that died during the initial load leaves the view with no URI
-    /// of its own to reload.
-    url: String,
+    commands: Arc<Commands>,
+    /// Joined on drop, so the thread does not outlive the compositor.
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 struct Frames(Arc<Mutex<Mailbox>>);
@@ -160,32 +270,53 @@ impl Shell {
     ) -> Result<Self> {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
 
-        let display = std::rc::Rc::new(Display::new(
-            primary_node,
-            render_node,
-            formats,
-            Box::new(Frames(mailbox.clone())),
-        )?);
+        // Made here and handed over, so the compositor has something to wake
+        // before the thread has finished starting.
+        let context = Context(unsafe { g_main_context_new() });
+        anyhow::ensure!(!context.0.is_null(), "g_main_context_new returned NULL");
+        let commands = Arc::new(Commands {
+            queue: Mutex::new(VecDeque::new()),
+            context,
+        });
 
-        let view = WebView::new(
-            display.clone(),
-            Box::new(Messages(mailbox.clone())),
-            Box::new(Crashes(mailbox.clone())),
-            console,
-        )?;
-        // Size, map, focus, then load — the order the C build settled on.
-        // Loading into an unmapped view of no size means the page runs and
-        // never produces a frame.
-        display.resize(size.0, size.1);
-        display.show();
-        view.load(url)?;
+        // Owned by the thread, because every one of them is WebKit's.
+        let primary_node = primary_node.to_owned();
+        let render_node = render_node.to_owned();
+        let formats = formats.to_vec();
+        let url = url.to_owned();
+        let (ready, started) = std::sync::mpsc::channel::<Result<(), String>>();
 
-        Ok(Self {
-            view,
-            display,
-            mailbox,
-            url: url.to_owned(),
-        })
+        let theirs = commands.clone();
+        let post = mailbox.clone();
+        let thread = std::thread::Builder::new()
+            .name("viewport-shell".to_owned())
+            .spawn(move || {
+                web_thread(
+                    theirs,
+                    post,
+                    primary_node,
+                    render_node,
+                    formats,
+                    size,
+                    url,
+                    console,
+                    ready,
+                )
+            })
+            .map_err(|e| anyhow::anyhow!("spawning the shell thread: {e}"))?;
+
+        // The engine has to be up before the compositor is told it is: a
+        // failure here is "no shell", and it has to come back as an error
+        // rather than as a desktop that never paints.
+        match started.recv() {
+            Ok(Ok(())) => Ok(Self {
+                mailbox,
+                commands,
+                thread: Some(thread),
+            }),
+            Ok(Err(e)) => Err(anyhow::anyhow!(e)),
+            Err(_) => Err(anyhow::anyhow!("the shell thread stopped before starting")),
+        }
     }
 
     /// Whether the web process has died since this was last asked.
@@ -203,13 +334,96 @@ impl Shell {
     /// case a shell that crashes on startup produces. WebKit spawns a fresh
     /// web process for the load, so the `WebKitWebView` itself — and every
     /// signal connected to it — survives.
+    ///
+    /// The URI is read on the web thread now. It has to be: asking a
+    /// `WebKitWebView` anything from another thread is exactly the sort of
+    /// call this split exists to prevent.
     pub fn restart(&self) -> Result<()> {
-        let url = self.view.uri().unwrap_or_else(|| self.url.clone());
-        self.view.load(&url)?;
-        // The new process starts with a view of no size, exactly as a fresh
-        // one does, and paints nothing until told otherwise.
-        self.display.show();
+        self.commands.send(Command::Restart);
         Ok(())
+    }
+
+    /// Tell the shell how big the desktop is.
+    pub fn resize(&self, width: u32, height: u32) {
+        self.commands.send(Command::Resize(width, height));
+    }
+
+    /// Show a different page.
+    pub fn load(&self, url: &str) {
+        self.commands.send(Command::Load(url.to_owned()));
+    }
+
+    /// Reload what is showing.
+    pub fn reload(&self) {
+        self.commands.send(Command::Reload);
+    }
+
+    pub fn pointer_motion(&self, time: u32, x: f64, y: f64, modifiers: u32) {
+        self.commands.send(Command::PointerMotion {
+            time,
+            x,
+            y,
+            modifiers,
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn pointer_button(
+        &self,
+        time: u32,
+        x: f64,
+        y: f64,
+        button: u32,
+        pressed: bool,
+        modifiers: u32,
+    ) {
+        self.commands.send(Command::PointerButton {
+            time,
+            x,
+            y,
+            button,
+            pressed,
+            modifiers,
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn pointer_axis(
+        &self,
+        time: u32,
+        x: f64,
+        y: f64,
+        dx: f64,
+        dy: f64,
+        precise: bool,
+        modifiers: u32,
+    ) {
+        self.commands.send(Command::PointerAxis {
+            time,
+            x,
+            y,
+            dx,
+            dy,
+            precise,
+            modifiers,
+        });
+    }
+
+    pub fn keyboard_key(
+        &self,
+        time: u32,
+        keycode: u32,
+        keysym: u32,
+        pressed: bool,
+        modifiers: u32,
+    ) {
+        self.commands.send(Command::KeyboardKey {
+            time,
+            keycode,
+            keysym,
+            pressed,
+            modifiers,
+        });
     }
 
     /// Wake the event loop whenever the page posts something.
@@ -238,12 +452,16 @@ impl Shell {
     /// Acknowledge a frame: it reached the screen, so WebKit's frame clock
     /// may schedule the next paint. The buffer stays on loan.
     pub fn frame_done(&self, token: &FrameToken) {
-        self.display.frame_done(token);
+        // SAFETY: a second handle to a buffer the caller still owns, for a
+        // message that only acknowledges it. The caller's token is what gets
+        // released later; this one is dropped by the web thread.
+        let token = unsafe { FrameToken::from_ptr(token.as_ptr()) };
+        self.commands.send(Command::Done(token));
     }
 
     /// Give a frame's buffer back to WebKit's pool, once nothing samples it.
     pub fn frame_release(&self, token: FrameToken) {
-        self.view.frame_release(&token);
+        self.commands.send(Command::Release(token));
     }
 
     /// Frames that were superseded before anything drew them.
@@ -257,8 +475,148 @@ impl Shell {
     /// Send an event to the page.
     pub fn post(&self, event: &Event) -> Result<()> {
         let json = viewport_ipc::to_string(event)?;
-        self.view.post(&json)
+        self.commands.send(Command::Post(json));
+        Ok(())
     }
+}
+
+impl Drop for Shell {
+    fn drop(&mut self) {
+        // Asked to stop, then waited for: the thread owns WebKit, and
+        // returning from here while it is still running would leave a web
+        // process attached to a compositor that has gone.
+        self.commands.send(Command::Quit);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        // After the join, so nothing is iterating it.
+        unsafe { g_main_context_unref(self.commands.context.0) };
+    }
+}
+
+/// The web thread: WebKit, its context, and nothing else.
+#[allow(clippy::too_many_arguments)]
+fn web_thread(
+    commands: Arc<Commands>,
+    mailbox: Arc<Mutex<Mailbox>>,
+    primary_node: std::path::PathBuf,
+    render_node: std::path::PathBuf,
+    formats: Vec<(u32, u64)>,
+    size: (u32, u32),
+    url: String,
+    console: bool,
+    ready: std::sync::mpsc::Sender<Result<(), String>>,
+) {
+    let context = commands.context.0;
+    // Before anything is created: WebKit attaches what it makes to the
+    // thread-default context, and this is the thread that will iterate it.
+    unsafe { g_main_context_push_thread_default(context) };
+
+    let engine = (|| -> Result<(std::rc::Rc<Display>, WebView)> {
+        let display = std::rc::Rc::new(Display::new(
+            &primary_node,
+            &render_node,
+            &formats,
+            Box::new(Frames(mailbox.clone())),
+        )?);
+        let view = WebView::new(
+            display.clone(),
+            Box::new(Messages(mailbox.clone())),
+            Box::new(Crashes(mailbox.clone())),
+            console,
+        )?;
+        // Size, map, focus, then load — the order the C build settled on.
+        // Loading into an unmapped view of no size means the page runs and
+        // never produces a frame.
+        display.resize(size.0, size.1);
+        display.show();
+        view.load(&url)?;
+        Ok((display, view))
+    })();
+
+    let (display, view) = match engine {
+        Ok(engine) => {
+            let _ = ready.send(Ok(()));
+            engine
+        }
+        Err(e) => {
+            let _ = ready.send(Err(format!("{e:#}")));
+            unsafe { g_main_context_pop_thread_default(context) };
+            return;
+        }
+    };
+
+    loop {
+        // Blocks until GLib has something, or until `Commands::send` wakes it.
+        unsafe { g_main_context_iteration(context, 1) };
+
+        let drained: Vec<Command> = match commands.queue.lock() {
+            Ok(mut queue) => queue.drain(..).collect(),
+            Err(_) => break,
+        };
+        for command in drained {
+            match command {
+                Command::Post(json) => {
+                    if let Err(e) = view.post(&json) {
+                        tracing::warn!("could not post to the shell: {e:#}");
+                    }
+                }
+                Command::Done(token) => display.frame_done(&token),
+                Command::Release(token) => view.frame_release(&token),
+                Command::Resize(width, height) => display.resize(width, height),
+                Command::Load(url) => {
+                    if let Err(e) = view.load(&url) {
+                        tracing::error!("could not load {url} in the shell: {e:#}");
+                    }
+                }
+                Command::Reload => view.reload(),
+                Command::PointerMotion {
+                    time,
+                    x,
+                    y,
+                    modifiers,
+                } => display.pointer_motion(time, x, y, modifiers),
+                Command::PointerButton {
+                    time,
+                    x,
+                    y,
+                    button,
+                    pressed,
+                    modifiers,
+                } => display.pointer_button(time, x, y, button, pressed, modifiers),
+                Command::PointerAxis {
+                    time,
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    precise,
+                    modifiers,
+                } => display.pointer_axis(time, x, y, dx, dy, precise, modifiers),
+                Command::KeyboardKey {
+                    time,
+                    keycode,
+                    keysym,
+                    pressed,
+                    modifiers,
+                } => display.keyboard_key(time, keycode, keysym, pressed, modifiers),
+                Command::Restart => {
+                    let url = view.uri().unwrap_or_else(|| url.clone());
+                    if let Err(e) = view.load(&url) {
+                        tracing::error!("could not restart the shell: {e:#}");
+                    }
+                    // The new process starts with a view of no size, exactly
+                    // as a fresh one does, and paints nothing until told.
+                    display.show();
+                }
+                Command::Quit => {
+                    unsafe { g_main_context_pop_thread_default(context) };
+                    return;
+                }
+            }
+        }
+    }
+    unsafe { g_main_context_pop_thread_default(context) };
 }
 
 /// How many restarts inside [`RESTART_WINDOW`] before giving up.

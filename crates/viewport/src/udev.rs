@@ -819,7 +819,11 @@ pub fn init(
         frame_log: FrameLog::from_env(),
         last_vblank: None,
     });
-    if state.udev.as_ref().is_some_and(|udev| udev.frame_log.is_some()) {
+    if state
+        .udev
+        .as_ref()
+        .is_some_and(|udev| udev.frame_log.is_some())
+    {
         tracing::info!("VIEWPORT_FRAME_LOG is set: reporting frame pacing once a second");
     }
 

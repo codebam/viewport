@@ -1107,7 +1107,7 @@ impl ViewportState {
             {
                 #[cfg(feature = "wpe")]
                 if let Some(shell) = self.shell.as_ref() {
-                    shell.view.reload();
+                    shell.reload();
                 }
             }
             Bound::Mode(mode) => {
@@ -1165,7 +1165,7 @@ impl ViewportState {
         let modifiers = self.shell_modifiers();
         #[cfg(feature = "wpe")]
         if let Some(shell) = self.shell.as_ref() {
-            shell.display.pointer_motion(time, x, y, modifiers);
+            shell.pointer_motion(time, x, y, modifiers);
         }
         let _ = (x, y, time, modifiers);
     }
@@ -1180,9 +1180,7 @@ impl ViewportState {
         let modifiers = self.shell_modifiers();
         #[cfg(feature = "wpe")]
         if let Some(shell) = self.shell.as_ref() {
-            shell
-                .display
-                .pointer_button(time, at.x, at.y, button, pressed, modifiers);
+            shell.pointer_button(time, at.x, at.y, button, pressed, modifiers);
         }
         let _ = (at, button, pressed, time, modifiers);
     }
@@ -1198,9 +1196,7 @@ impl ViewportState {
         let modifiers = self.shell_modifiers();
         #[cfg(feature = "wpe")]
         if let Some(shell) = self.shell.as_ref() {
-            shell
-                .display
-                .pointer_axis(time, at.x, at.y, dx, dy, precise, modifiers);
+            shell.pointer_axis(time, at.x, at.y, dx, dy, precise, modifiers);
         }
         let _ = (at, dx, dy, precise, time, modifiers);
     }
@@ -1208,7 +1204,7 @@ impl ViewportState {
     fn shell_keyboard_key(&mut self, key: WebKey) {
         #[cfg(feature = "wpe")]
         if let Some(shell) = self.shell.as_ref() {
-            shell.display.keyboard_key(
+            shell.keyboard_key(
                 key.time,
                 key.keycode,
                 key.keysym,

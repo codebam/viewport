@@ -172,11 +172,7 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         let _ = state.display_handle.flush_clients();
         let flushed = since(at);
 
-        if let Some(log) = state
-            .udev
-            .as_mut()
-            .and_then(|udev| udev.frame_log.as_mut())
-        {
+        if let Some(log) = state.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
             log.loop_turns += 1;
             log.flushes += 1;
             log.dispatch_nanos += dispatched;
@@ -233,11 +229,7 @@ unsafe extern "C" fn dispatch(
 
     if let Some(started) = started {
         let spent = started.elapsed().as_nanos() as u64;
-        if let Some(log) = state
-            .udev
-            .as_mut()
-            .and_then(|udev| udev.frame_log.as_mut())
-        {
+        if let Some(log) = state.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
             log.source_dispatches += 1;
             log.source_nanos += spent;
         }
