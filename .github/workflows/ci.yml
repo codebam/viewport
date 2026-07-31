@@ -1,17 +1,32 @@
-# Four jobs, because only one of them can run on a hosted runner unassisted.
+# Five jobs. Two run on every push; three want something a hosted runner has
+# not got.
 #
-# The layout engine is plain JavaScript and needs nothing but node, so it is
-# tested on every push in about a minute. The compositor cannot be: linking it
-# needs WPE WebKit, flake.nix builds that from the upstream tarball with an
-# overridden src, and no binary cache has that derivation. A GitHub-hosted
-# ubuntu-latest runner has 4 vCPUs, 16 GB of RAM and 14 GB of disk — a WebKit
-# build tree is 20-40 GB, so the job does not run out of time, it runs out of
-# disk. See the compositor job below for the three ways to enable it.
+# `shell` and `rust` are unassisted. The layout engine is plain JavaScript and
+# needs nothing but node. The Rust rewrite needs no WPE WebKit either — the web
+# engine is behind a non-default feature — and its headless backend renders
+# through surfaceless EGL, so it runs the Wayland integration tests on a
+# machine with no GPU at all.
 #
-# The wpewebkit-cache job is what makes the cheapest of those three routes
-# cheap: flake.nix exposes the engine as its own package output, so it can be
-# built once, on demand, into a binary cache that every other job then
-# substitutes from. It is never triggered by a push.
+# The other three want WebKit, a DRM render node, or both:
+#
+#   - WebKit is no longer the obstacle it was. flake.nix builds it from an
+#     upstream tarball with an overridden src, which no public cache has, and
+#     a hosted runner has 14 GB of disk against a 20-40 GB build tree — it runs
+#     out of disk rather than time. But the project's own bucket now carries
+#     it, every job here is configured to substitute from it, and
+#     `nix build .#viewport` takes about a minute as a result.
+#
+#   - A DRM render node still is. The wlroots compositor in src/ cannot start
+#     without one: `wlr_renderer_autocreate` enumerates /dev/dri/renderD* and a
+#     hosted runner has none. Pointing Vulkan at lavapipe does not help — that
+#     supplies a device, not a DRM fd — which was assumed here for a long time
+#     and was never true, because these jobs sat behind a repository variable
+#     from the day they were written. The meson tests now detect the node and
+#     skip rather than fail; set COMPOSITOR_RUNNER to a machine with a GPU and
+#     they run themselves.
+#
+# The wpewebkit-cache job builds the engine on demand and pushes it to Cachix.
+# It is never triggered by a push.
 name: CI
 
 on:
@@ -349,26 +364,29 @@ jobs:
           chmod 700 "$RUNNER_TEMP/xdg-runtime"
           echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
 
-      # A hosted runner has no GPU and no /dev/dri, and src/main.c defaults
-      # WLR_RENDERER to vulkan. With no ICD on disk the loader enumerates no
-      # device, the headless compositor dies before it publishes a socket, and
-      # every Wayland test fails on "the compositor did not come up". Mesa
-      # ships lavapipe, a software Vulkan device. Forcing pixman instead is
-      # not an option — it has no DRM fd and the web engine needs one, which
-      # is the reason tests/lock.test.sh leaves the renderer alone.
+      # Only on a runner that has a GPU, which is the only kind that gets past
+      # the test gate below — and there the point is to use the *real* driver.
+      #
+      # This step used to run unconditionally, on the theory that lavapipe
+      # made a GPU unnecessary. It does not, and worse, forcing it on a
+      # machine that does have one would break the case that works: lavapipe
+      # exposes no DRM node, and wlroots wants a DRM fd rather than merely a
+      # Vulkan device. So this now picks the host's own ICD and only exists
+      # to be explicit about which device is in use.
       #
       # VK_ICD_FILENAMES is the older spelling of VK_DRIVER_FILES; which one
-      # is read depends on the loader version, so set both.
-      - name: Point Vulkan at a software device
+      # is read depends on the loader version, so both were set. Neither is
+      # set now — the loader's own search finds the driver that owns the node
+      # wlroots is going to open, and naming one by hand can only disagree
+      # with it.
+      - name: Report the render device
         run: |
-          mesa=$(nix build --no-link --print-out-paths nixpkgs#mesa)
-          icd=$(find "$mesa" -name 'lvp_icd*.json' | head -1)
-          if [ -z "$icd" ]; then
-            echo "no lavapipe ICD in $mesa" >&2
-            exit 1
+          set -- /dev/dri/renderD*
+          if [ -e "$1" ]; then
+            echo "render nodes: $*"
+          else
+            echo "no render node; the wlroots tests below will skip"
           fi
-          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
-          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
 
       - name: Build
         run: nix build --print-build-logs .#viewport
@@ -389,8 +407,38 @@ jobs:
 
       # Only the Wayland tests here; the shell job already covered the rest,
       # and running them twice would just make a node-less runner look green.
+      # Only where there is a DRM render node, which a hosted runner has not
+      # got.
+      #
+      # The step above this one used to claim lavapipe made these runnable
+      # anywhere. It does not: an ICD gives you a Vulkan *device*, and wlroots
+      # separately wants a DRM fd — `wlr_renderer_autocreate` enumerates
+      # /dev/dri/renderD* and finds nothing, so the compositor exits before it
+      # publishes a socket and all three tests fail in 0.15s with
+      #
+      #   [render/wlr_renderer.c:130] Failed to find any DRM render node
+      #
+      # That was never true, and nobody found out because this job sat behind
+      # a repository variable from the day it was written until 2026-07-30.
+      # Forcing pixman is not the escape either — the web engine needs a DRM fd
+      # of its own, which is why tests/lock.test.sh leaves the renderer alone.
+      #
+      # Skipping rather than failing, and detected rather than declared: point
+      # COMPOSITOR_RUNNER at a machine with a GPU and these run themselves,
+      # with no second variable to remember to set.
+      #
+      # The Rust rewrite runs the same three scripts unassisted in the `rust`
+      # job — its headless backend renders through surfaceless EGL and never
+      # asks for a device node — so this is coverage deferred, not lost.
       - name: Test
         run: |
+          set -- /dev/dri/renderD*
+          if [ ! -e "$1" ]; then
+            echo "::notice::no DRM render node on this runner; the wlroots" \
+                 "compositor cannot start, so the Wayland tests are skipped." \
+                 "Set COMPOSITOR_RUNNER to a machine with a GPU to run them."
+            exit 0
+          fi
           nix develop --command bash -euo pipefail -c '
             meson setup build
             meson test -C build --print-errorlogs \
@@ -454,19 +502,19 @@ jobs:
           chmod 700 "$RUNNER_TEMP/xdg-runtime"
           echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
 
-      # See the compositor job for why this is vulkan and not pixman. It
-      # matters more here: pixman cannot bring the compositor up at all, so a
-      # sanitizer job that fell back to it would report nothing forever.
-      - name: Point Vulkan at a software device
+      # See the compositor job. Same story: lavapipe was named here by hand and
+      # could not have worked, because wlroots wants a DRM fd rather than
+      # merely a Vulkan device. It matters more here — pixman cannot bring the
+      # compositor up at all, so a sanitizer job that fell back to it would
+      # report nothing forever.
+      - name: Report the render device
         run: |
-          mesa=$(nix build --no-link --print-out-paths nixpkgs#mesa)
-          icd=$(find "$mesa" -name 'lvp_icd*.json' | head -1)
-          if [ -z "$icd" ]; then
-            echo "no lavapipe ICD in $mesa" >&2
-            exit 1
+          set -- /dev/dri/renderD*
+          if [ -e "$1" ]; then
+            echo "render nodes: $*"
+          else
+            echo "no render node; the sanitizer run below will skip"
           fi
-          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
-          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
 
       # build-asan is the directory scripts/asan-hotplug.sh expects, so the
       # tree CI produces is the tree a maintainer already knows how to drive.
@@ -474,8 +522,18 @@ jobs:
       # b_lundef=false is not optional: meson passes -Wl,--no-undefined by
       # default, and the sanitizer runtimes leave interposed symbols to be
       # resolved at load time, so the link fails without it.
+      # Same gate as the job above, for the same reason: no DRM render node,
+      # no wlroots compositor, and a sanitizer finds nothing in a process that
+      # exits during renderer setup.
       - name: Test
         run: |
+          set -- /dev/dri/renderD*
+          if [ ! -e "$1" ]; then
+            echo "::notice::no DRM render node on this runner; the wlroots" \
+                 "compositor cannot start, so the sanitizer run is skipped." \
+                 "Set COMPOSITOR_RUNNER to a machine with a GPU to run it."
+            exit 0
+          fi
           nix develop --command bash -euo pipefail -c '
             meson setup build-asan \
               -Db_sanitize=address,undefined -Db_lundef=false
