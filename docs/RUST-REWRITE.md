@@ -484,12 +484,11 @@ default hook before it is caught, so the diagnosis is not swallowed.
    replaces that job is a question to answer rather than a box to tick.
 4. `.github/workflows/ci.yml` no longer has a job gated on `COMPOSITOR_CI`
    because it needs wlroots.
-5. Those tests run on every push against the Rust binary. They can: the
-   clients they drive — `tests/paint-client.c`, `capture-client.c`,
-   `lock-client.c` — link `wayland-client` and the generated protocol sources
-   and nothing else, and the compositor they start now needs no device node.
-   That puts the whole suite on an unassisted runner beside the `rust` job,
-   which is where it stops being something a person remembers to do.
+5. ~~Those tests run on every push against the Rust binary.~~ Done. The
+   `rust` job runs `scripts/integration.sh`, which compiles the clients
+   directly — they link `wayland-client` and the generated protocol sources
+   and nothing else — and drives a default-features binary with no WebKit in
+   it. Unassisted, because the compositor no longer needs a device node.
 
 ## Notifications, and where they come from
 

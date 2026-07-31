@@ -349,6 +349,13 @@
             # needs libclang and the C headers found for it.
             rustPlatform.bindgenHook
 
+            # scripts/integration.sh compiles the Wayland clients that
+            # tests/capture.test.sh and tests/lock.test.sh drive. They need a
+            # C compiler and the marshalling code for the protocols they
+            # speak, and nothing else — no wlroots, no WebKit, which is what
+            # keeps the whole integration suite on an unassisted runner.
+            wayland-scanner
+
             libdrm
             libgbm
             libinput

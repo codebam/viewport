@@ -142,6 +142,35 @@ jobs:
             cargo test --workspace
           '
 
+      # The Wayland integration tests — capture, session lock, output order —
+      # against the binary just built. These are what "parity" means in
+      # docs/RUST-REWRITE.md, and until now the only thing that ran them
+      # against this compositor was a person remembering to.
+      #
+      # Unassisted for two reasons that both had to become true. The clients
+      # they drive link wayland-client and the generated marshalling code and
+      # nothing else, so scripts/integration.sh compiles them directly rather
+      # than through meson, which would want wlroots at setup time. And the
+      # compositor no longer needs a device node: its headless backend renders
+      # through a surfaceless EGL display, which on a runner with no /dev/dri
+      # is Mesa's software rasteriser.
+      #
+      # The default-features binary, deliberately — no `wpe`, so no WebKit.
+      # The shell is not under test here; a headless compositor without one
+      # falls back to a built-in layout after 2500ms, which is what these
+      # clients are placed by.
+      - name: Wayland integration tests
+        env:
+          # No GPU on a hosted runner, so this is where it lands anyway.
+          # Named rather than left to chance: a machine that does have one
+          # would otherwise test a different driver than CI does.
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          nix develop .#rust --command bash -euo pipefail -c '
+            cargo build --bin viewport
+            scripts/integration.sh target/debug/viewport
+          '
+
       # The `wpe` half is not built here — it is the part that needs WebKit —
       # so nothing above would catch a lint or a type error inside
       # `#[cfg(feature = "wpe")]`. The compositor job below builds
