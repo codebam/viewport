@@ -738,7 +738,7 @@ impl smithay::wayland::dmabuf::DmabufHandler for ViewportState {
         // is waiting for is whether this buffer is usable at all — and a
         // failure discovered mid-frame has nowhere to go.
         let imported = self.udev.as_mut().map(|udev| {
-            crate::with_gpu!(&mut udev.renderer, |renderer| renderer
+            crate::with_gpu!(&mut udev.primary_mut().renderer, |renderer| renderer
                 .import_dmabuf(&dmabuf, None)
                 .is_ok())
         });
@@ -1090,13 +1090,14 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         let Some(udev) = self.udev.as_mut() else {
             return Err(LeaseRejected::default());
         };
-        let device = udev.manager.device();
+        let device = udev.primary().manager.device();
         let mut builder = DrmLeaseBuilder::new(device);
 
         // A CRTC that is not already driving one of this compositor's outputs,
         // and is legal for the connector asking. Handing over a CRTC that is
         // scanning out the desktop would take the desktop with it.
-        let taken: std::collections::HashSet<_> = udev.surfaces.keys().copied().collect();
+        let taken: std::collections::HashSet<_> =
+            udev.ids().into_iter().map(|id| id.crtc).collect();
         let Ok(resources) = device.resource_handles() else {
             return Err(LeaseRejected::default());
         };

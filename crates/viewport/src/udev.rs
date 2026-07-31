@@ -228,6 +228,35 @@ impl Gpu {
     }
 }
 
+/// Which output, across every GPU.
+///
+/// A `crtc::Handle` is only unique within the device that issued it, so two
+/// GPUs routinely hand out the same value. Keyed on the handle alone — which
+/// is what this was before there was more than one device — a vblank from the
+/// second GPU redraws an output on the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OutputId {
+    /// Index into `Udev::devices`. Stable: devices are pushed at startup and
+    /// never removed, because unplugging a GPU is not a thing this handles.
+    pub device: usize,
+    pub crtc: crtc::Handle,
+}
+
+/// One GPU, and everything hanging off it.
+///
+/// Every GPU gets its own renderer rather than one renderer drawing for all of
+/// them. A buffer is only cheap on the device that allocated it, so the
+/// alternative is rendering on the primary and copying each frame across PCIe
+/// to whatever is scanning it out.
+pub struct Device {
+    pub node: DrmNode,
+    /// The render node, for the Vulkan device and for dmabuf feedback.
+    pub render_node: DrmNode,
+    pub renderer: Gpu,
+    pub manager: Manager,
+    pub surfaces: HashMap<crtc::Handle, Surface>,
+}
+
 pub struct Udev {
     /// `wp-drm-lease-v1`: handing a whole connector to a client.
     ///
@@ -243,15 +272,73 @@ pub struct Udev {
     /// as long as the client holds them.
     pub leases: Vec<smithay::wayland::drm_lease::DrmLease>,
     pub session: LibSeatSession,
-    pub renderer: Gpu,
-    pub manager: Manager,
-    pub surfaces: HashMap<crtc::Handle, Surface>,
-    pub _node: DrmNode,
+    /// Every GPU being driven. `devices[0]` is the one the shell and the
+    /// clients are told about — where buffers are allocated by default — and
+    /// the rest drive their own outputs with their own renderers.
+    pub devices: Vec<Device>,
     /// True while the outputs are off because the session went idle.
     pub blanked: bool,
     /// False between a VT switch away and the switch back. Every device fd is
     /// revoked in that window, so committing a frame would fail.
     pub active: bool,
+}
+
+impl Udev {
+    /// The GPU everything defaults to: where the shell allocates, what clients
+    /// are told about, and the one a single-GPU machine has.
+    pub fn primary(&self) -> &Device {
+        &self.devices[0]
+    }
+
+    pub fn primary_mut(&mut self) -> &mut Device {
+        &mut self.devices[0]
+    }
+
+    /// Every output on every GPU.
+    pub fn outputs(&self) -> impl Iterator<Item = (OutputId, &Surface)> {
+        self.devices.iter().enumerate().flat_map(|(device, gpu)| {
+            gpu.surfaces.iter().map(move |(crtc, surface)| {
+                (
+                    OutputId {
+                        device,
+                        crtc: *crtc,
+                    },
+                    surface,
+                )
+            })
+        })
+    }
+
+    pub fn surface(&self, id: OutputId) -> Option<&Surface> {
+        self.devices.get(id.device)?.surfaces.get(&id.crtc)
+    }
+
+    pub fn surface_mut(&mut self, id: OutputId) -> Option<&mut Surface> {
+        self.devices.get_mut(id.device)?.surfaces.get_mut(&id.crtc)
+    }
+
+    /// Just the surfaces, when which GPU they are on does not matter.
+    pub fn surfaces(&self) -> impl Iterator<Item = &Surface> {
+        self.devices.iter().flat_map(|gpu| gpu.surfaces.values())
+    }
+
+    pub fn surfaces_mut(&mut self) -> impl Iterator<Item = &mut Surface> {
+        self.devices
+            .iter_mut()
+            .flat_map(|gpu| gpu.surfaces.values_mut())
+    }
+
+    /// Every output's id, for iterating without holding a borrow.
+    pub fn ids(&self) -> Vec<OutputId> {
+        self.outputs().map(|(id, _)| id).collect()
+    }
+
+    /// Find which output drives a given smithay `Output`.
+    pub fn id_of(&self, output: &Output) -> Option<OutputId> {
+        self.outputs()
+            .find(|(_, surface)| surface.output == *output)
+            .map(|(id, _)| id)
+    }
 }
 
 /// Bring up the backend.
@@ -424,7 +511,7 @@ pub fn init(
     event_loop
         .handle()
         .insert_source(drm_notifier, move |event, metadata, state| match event {
-            DrmEvent::VBlank(crtc) => state.on_vblank(crtc, metadata),
+            DrmEvent::VBlank(crtc) => state.on_vblank(OutputId { device: 0, crtc }, metadata),
             DrmEvent::Error(error) => tracing::error!("drm: {error}"),
         })
         .map_err(|e| anyhow!("inserting the drm source: {e}"))?;
@@ -483,13 +570,110 @@ pub fn init(
         lease_state,
         leases: Vec::new(),
         session,
-        renderer,
-        manager,
-        surfaces: HashMap::new(),
-        _node: card,
+        // The GPU chosen above is device 0: what the shell allocates on, what
+        // clients are told about, and on a single-GPU machine the only one.
+        // Secondary GPUs are opened below, once this exists to hang them off.
+        devices: vec![Device {
+            node: card,
+            render_node: render,
+            renderer,
+            manager,
+            surfaces: HashMap::new(),
+        }],
         blanked: false,
         active: true,
     });
+
+    // Every other GPU on the seat.
+    //
+    // Each gets its own renderer and its own output manager, and drives the
+    // connectors wired to it. That is what makes a monitor on the second card
+    // light up at all — before this the compositor opened one device and the
+    // rest of the machine's outputs did not exist as far as it was concerned.
+    //
+    // Rendering happens on the GPU that scans out, rather than drawing
+    // everything on the primary and copying across: a buffer is only cheap on
+    // the device that allocated it. The cost is that a client buffer allocated
+    // on the primary has to be importable by the secondary, which is what the
+    // shared modifiers are for — where it cannot be, that surface does not
+    // appear on that screen rather than the session failing.
+    //
+    // A GPU that cannot be opened is skipped with a warning. One card failing
+    // is a monitor that stays dark; refusing to start is every monitor dark.
+    for other in candidates.iter().filter(|c| **c != card) {
+        let other_render = other
+            .node_with_type(NodeType::Render)
+            .and_then(|node| node.ok())
+            .unwrap_or(*other);
+
+        let Some(udev) = state.udev.as_mut() else {
+            break;
+        };
+        match open_device(&mut udev.session, other, &other_render) {
+            Ok((manager, renderer, notifier)) => {
+                let index = udev.devices.len();
+                udev.devices.push(Device {
+                    node: *other,
+                    render_node: other_render,
+                    renderer,
+                    manager,
+                    surfaces: HashMap::new(),
+                });
+                tracing::info!("gpu {index}: {other:?} also driving outputs");
+
+                // Its vblanks carry its own index, because a crtc handle only
+                // means something on the device that issued it.
+                if let Err(e) = event_loop.handle().insert_source(
+                    notifier,
+                    move |event, metadata, state: &mut ViewportState| match event {
+                        DrmEvent::VBlank(crtc) => state.on_vblank(
+                            OutputId {
+                                device: index,
+                                crtc,
+                            },
+                            metadata,
+                        ),
+                        DrmEvent::Error(e) => tracing::error!("drm error on gpu {index}: {e}"),
+                    },
+                ) {
+                    tracing::warn!(
+                        "gpu {index}: no vblank source ({e}); its outputs will not draw"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("{other:?} could not be opened ({e:#}); its outputs stay dark");
+            }
+        }
+    }
+
+    if let Some(udev) = state.udev.as_ref() {
+        if udev.devices.len() > 1 {
+            let summary: Vec<String> = udev
+                .devices
+                .iter()
+                .enumerate()
+                .map(|(i, gpu)| {
+                    format!(
+                        "{i}: {} (render {})",
+                        gpu.node
+                            .dev_path()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| format!("{:?}", gpu.node)),
+                        gpu.render_node
+                            .dev_path()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| format!("{:?}", gpu.render_node)),
+                    )
+                })
+                .collect();
+            tracing::info!(
+                "driving {} GPUs — {}",
+                udev.devices.len(),
+                summary.join(", ")
+            );
+        }
+    }
 
     // Claim DRM master before anything is committed.
     //
@@ -499,7 +683,7 @@ pub fn init(
     // afterwards fails with EPERM — which presents as a screen that stops
     // updating rather than as anything anyone would connect to permissions.
     if let Some(udev) = state.udev.as_mut() {
-        if let Err(e) = udev.manager.lock().activate(false) {
+        if let Err(e) = udev.primary_mut().manager.lock().activate(false) {
             tracing::error!("could not claim drm master: {e}");
         } else {
             tracing::info!("drm master claimed");
@@ -512,7 +696,14 @@ pub fn init(
         let formats = state
             .udev
             .as_ref()
-            .map(|udev| udev.renderer.dmabuf_formats().iter().copied().collect())
+            .map(|udev| {
+                udev.primary()
+                    .renderer
+                    .dmabuf_formats()
+                    .iter()
+                    .copied()
+                    .collect()
+            })
             .unwrap_or_default();
         state.advertise_dmabuf(Some(render.dev_id()), formats);
     }
@@ -537,7 +728,8 @@ pub fn init(
             .udev
             .as_ref()
             .map(|udev| {
-                udev.renderer
+                udev.primary()
+                    .renderer
                     .dmabuf_formats()
                     .iter()
                     .copied()
@@ -567,7 +759,7 @@ pub fn init(
         let import_device = state
             .udev
             .as_ref()
-            .map(|udev| udev.manager.device().device_fd().clone());
+            .map(|udev| udev.primary().manager.device().device_fd().clone());
         if let Some(import_device) = import_device {
             if smithay::wayland::drm_syncobj::supports_syncobj_eventfd(&import_device) {
                 state.syncobj_state = Some(smithay::wayland::drm_syncobj::DrmSyncobjState::new::<
@@ -719,7 +911,24 @@ fn gles_renderer(
 
 impl ViewportState {
     /// Walk the connectors and bring up anything newly connected.
+    /// Re-scan every GPU's connectors.
+    ///
+    /// Each device is scanned on its own: a connector belongs to the card it is
+    /// wired to, and so does the CRTC that will drive it. Nothing is shared
+    /// between them except the layout the outputs end up in.
     pub fn on_connectors_changed(&mut self) {
+        let count = self
+            .udev
+            .as_ref()
+            .map(|udev| udev.devices.len())
+            .unwrap_or(0);
+        for index in 0..count {
+            self.scan_device(index);
+        }
+    }
+
+    /// One GPU's connectors.
+    fn scan_device(&mut self, index: usize) {
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
@@ -729,12 +938,15 @@ impl ViewportState {
             // came back anyway.
             return;
         }
+        if index >= udev.devices.len() {
+            return;
+        }
 
         // Outputs brought up by this pass, so the first frame can be kicked
         // once the borrow on `udev` is released.
-        let mut started: Vec<crtc::Handle> = Vec::new();
+        let mut started: Vec<OutputId> = Vec::new();
 
-        let device = udev.manager.device();
+        let device = udev.devices[index].manager.device();
         let Ok(resources) = device.resource_handles() else {
             tracing::error!("could not read drm resources");
             return;
@@ -763,7 +975,7 @@ impl ViewportState {
         // then drops it silently — which is exactly what happened on the first
         // two-monitor run.
         let mut taken: std::collections::HashSet<crtc::Handle> =
-            udev.surfaces.keys().copied().collect();
+            udev.ids().into_iter().map(|id| id.crtc).collect();
 
         for connector in connectors {
             let name = format!(
@@ -789,11 +1001,7 @@ impl ViewportState {
             }
 
             // Already up, from an earlier pass.
-            if udev
-                .surfaces
-                .values()
-                .any(|s| s.connector == connector.handle())
-            {
+            if udev.surfaces().any(|s| s.connector == connector.handle()) {
                 continue;
             }
 
@@ -836,7 +1044,9 @@ impl ViewportState {
                 continue;
             };
 
-            let Some(crtc) = free_crtc(&udev.manager, &resources, &connector, &taken) else {
+            let Some(crtc) =
+                free_crtc(&udev.devices[index].manager, &resources, &connector, &taken)
+            else {
                 // Every CRTC this connector can reach is driving something
                 // else. Real on hardware with more outputs than CRTCs, and
                 // worth saying rather than skipping in silence.
@@ -876,9 +1086,11 @@ impl ViewportState {
             // The manager is borrowed for the whole call, so the renderer
             // cannot come out of `udev` at the same time — it is taken and put
             // back around the two arms.
-            let mut renderer = std::mem::replace(&mut udev.renderer, Gpu::Placeholder);
+            let mut renderer =
+                std::mem::replace(&mut udev.devices[index].renderer, Gpu::Placeholder);
             let result = crate::with_gpu!(&mut renderer, |r| {
-                udev.manager
+                udev.devices[index]
+                    .manager
                     .lock()
                     .initialize_output::<_, WaylandSurfaceRenderElement<_>>(
                         crtc,
@@ -891,7 +1103,7 @@ impl ViewportState {
                     )
                     .map_err(|e| e.to_string())
             });
-            udev.renderer = renderer;
+            udev.devices[index].renderer = renderer;
 
             match result {
                 Ok(drm_output) => {
@@ -921,7 +1133,7 @@ impl ViewportState {
                     if self.active_output.is_none() {
                         self.active_output = Some(name);
                     }
-                    udev.surfaces.insert(
+                    udev.devices[index].surfaces.insert(
                         crtc,
                         Surface {
                             output,
@@ -939,7 +1151,12 @@ impl ViewportState {
                             pending: false,
                         },
                     );
-                    started.push(crtc);
+                    // Device 0: this scan walks the primary GPU. When the
+                    // other GPUs are scanned they push their own index.
+                    started.push(OutputId {
+                        device: index,
+                        crtc,
+                    });
                 }
                 Err(e) => tracing::warn!("{name}: could not initialise: {e}"),
             }
@@ -1076,14 +1293,17 @@ impl ViewportState {
     /// A frame finished scanning out, so the next one may be drawn.
     pub fn on_vblank(
         &mut self,
-        crtc: crtc::Handle,
+        id: OutputId,
         metadata: &mut Option<smithay::backend::drm::DrmEventMetadata>,
     ) {
         let _ = metadata;
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
-        let Some(surface) = udev.surfaces.get_mut(&crtc) else {
+        // By device as well as crtc: a handle is only unique within the GPU
+        // that issued it, so a vblank from the second would otherwise land on
+        // an output of the first.
+        let Some(surface) = udev.surface_mut(id) else {
             return;
         };
         // The flip happened, so this output may be drawn into again.
@@ -1163,7 +1383,7 @@ impl ViewportState {
         let output = self
             .udev
             .as_ref()
-            .and_then(|udev| udev.surfaces.get(&crtc))
+            .and_then(|udev| udev.surface(id))
             .map(|surface| surface.output.clone());
         if let Some(output) = output {
             let at = self.start_time.elapsed();
@@ -1173,17 +1393,17 @@ impl ViewportState {
         // commit makes no damage, so without this nothing would draw again.
         self.arm_barrier_tick();
 
-        self.render(crtc);
+        self.render(id);
     }
 
     /// Draw one output.
-    pub fn render(&mut self, crtc: crtc::Handle) {
+    pub fn render(&mut self, id: OutputId) {
         let start = self.start_time.elapsed();
 
         let Some(output) = self
             .udev
             .as_ref()
-            .and_then(|udev| udev.surfaces.get(&crtc))
+            .and_then(|udev| udev.surface(id))
             .map(|surface| surface.output.clone())
         else {
             return;
@@ -1205,17 +1425,12 @@ impl ViewportState {
         // Out of the struct and onto the stack: the call below borrows the rest
         // of `udev` and all of `self`, which it cannot do while the renderer is
         // still a field of one of them.
-        let mut gpu = std::mem::replace(&mut udev.renderer, Gpu::Placeholder);
+        let mut gpu = std::mem::replace(&mut udev.primary_mut().renderer, Gpu::Placeholder);
         // Colour management belongs to the Vulkan renderer; GLES draws in the
         // output's own space, so an HDR screen driven by it gets the ordinary
         // one — the honest result of that renderer not having the transforms.
         if let Gpu::Vulkan(renderer) = &mut gpu {
-            let description = if udev
-                .surfaces
-                .get(&crtc)
-                .map(|surface| surface.hdr)
-                .unwrap_or(false)
-            {
+            let description = if udev.surface(id).map(|surface| surface.hdr).unwrap_or(false) {
                 viewport_vulkan::color::Description {
                     primaries: viewport_vulkan::color::Primaries::BT2020,
                     transfer: viewport_vulkan::color::TransferFunction::Pq,
@@ -1229,7 +1444,7 @@ impl ViewportState {
         crate::with_gpu!(&mut gpu, |renderer| self.render_pass(
             &mut udev,
             renderer,
-            crtc,
+            id,
             &output,
             frame,
             wants_tearing,
@@ -1237,7 +1452,7 @@ impl ViewportState {
             start,
             &mut pending_dump,
         ));
-        udev.renderer = gpu;
+        udev.primary_mut().renderer = gpu;
         self.udev = Some(udev);
     }
 
@@ -1251,7 +1466,7 @@ impl ViewportState {
         &mut self,
         udev: &mut Udev,
         renderer: &mut R,
-        crtc: crtc::Handle,
+        id: OutputId,
         output: &smithay::output::Output,
         frame: crate::render::Frame,
         wants_tearing: bool,
@@ -1274,7 +1489,7 @@ impl ViewportState {
         if !udev.active {
             return;
         }
-        let Some(surface) = udev.surfaces.get_mut(&crtc) else {
+        let Some(surface) = udev.surface_mut(id) else {
             return;
         };
         if !surface.powered {
@@ -1398,7 +1613,7 @@ impl ViewportState {
                 // `self.udev` here finds nothing and skips the flip — which is
                 // a screen that never comes up at all.
                 let feedback = self.presentation_feedback(output, &rendered.states);
-                let Some(surface) = udev.surfaces.get_mut(&crtc) else {
+                let Some(surface) = udev.surface_mut(id) else {
                     return;
                 };
                 if let Err(e) = surface.drm_output.queue_frame(Some(feedback)) {
@@ -1441,7 +1656,7 @@ impl ViewportState {
                                 surface.tearing_failures
                             );
                         }
-                        self.dirty_outputs.insert(crtc);
+                        self.dirty_outputs.insert(id);
                     }
                 } else {
                     submitted = true;
@@ -1468,7 +1683,7 @@ impl ViewportState {
         }
 
         if *pending_dump {
-            self.dirty_outputs.insert(crtc);
+            self.dirty_outputs.insert(id);
         }
 
         // Screenshots, now that the frame this output shows has been drawn.
@@ -1549,7 +1764,7 @@ impl ViewportState {
             return;
         };
         udev.active = false;
-        udev.manager.pause();
+        udev.primary_mut().manager.pause();
         tracing::info!("session paused");
     }
 
@@ -1560,24 +1775,24 @@ impl ViewportState {
             return;
         };
         udev.active = true;
-        if let Err(e) = udev.manager.lock().activate(true) {
+        if let Err(e) = udev.primary_mut().manager.lock().activate(true) {
             tracing::error!("reactivating drm: {e}");
         }
         tracing::info!("session resumed");
 
         // Another compositor had the screens while we were away, so nothing
         // in the damage history describes what is on them now.
-        for surface in udev.surfaces.values_mut() {
+        for surface in udev.surfaces_mut() {
             surface.drm_output.reset_buffers();
             surface.pending = false;
         }
 
-        let crtcs: Vec<crtc::Handle> = udev.surfaces.keys().copied().collect();
+        let crtcs: Vec<OutputId> = udev.ids();
         // The kernel reset every gamma ramp when the session was handed over,
         // and the client that set one has no way to know.
         self.restore_gamma();
-        for crtc in crtcs {
-            self.render(crtc);
+        for id in crtcs {
+            self.render(id);
         }
     }
 }

@@ -150,15 +150,31 @@ through `view.query`, which is the same path a manual reload already used.
 
 ## More than one GPU
 
-There is no PRIME support. The compositor opens exactly one card, ignores GPU
-hotplug, and does not use Smithay's `GpuManager` — so an output attached to a
-second GPU is not driven at all. This is absent by construction rather than
-unoptimised, and it is not a small change: `Udev` holds one renderer, one output
-manager and one node, and multi-GPU means per-device state plus cross-device
-buffer copies for every secondary output.
+Every GPU on the seat is opened, and each drives the connectors wired to it —
+so a monitor on the second card lights up rather than not existing. Each has its
+own renderer and its own output manager, and draws its own outputs: a buffer is
+only cheap on the device that allocated it, so the alternative is drawing
+everything on the primary and copying each frame across PCIe.
 
-What is here is the choice of *which* GPU, which is the part that bites on a
-hybrid laptop. The candidates are ranked by whether a Vulkan device actually
+The cost of that choice is that a client buffer allocated against the primary
+has to be importable by the secondary, which is what a shared modifier is for.
+Where it cannot be, that surface does not appear on that screen — the session
+carries on. A GPU that cannot be opened at all is skipped with a warning, on the
+same reasoning: one card failing is a monitor that stays dark, and refusing to
+start is every monitor dark.
+
+Outputs are addressed by `OutputId { device, crtc }` rather than by CRTC alone.
+A `crtc::Handle` is only unique within the device that issued it, and two GPUs
+routinely hand out the same value — keyed on the handle by itself, a vblank from
+the second card redraws an output on the first.
+
+Still missing: GPU hotplug (plugging a monitor into an already-open card is
+handled; plugging in a card is not), and any sharing of a rendered frame between
+devices. **Untested on real multi-GPU hardware** — it was written on a machine
+with one GPU, where every secondary path is unreachable.
+
+Which GPU is primary — the one clients and the shell allocate against — is the
+part that bites on a hybrid laptop. The candidates are ranked by whether a Vulkan device actually
 exposes them and then by what the seat calls primary — and where both GPUs pass
 that test, which one gets used came down to the order the seat listed them.
 That is a preference (battery or frames), not something the hardware answers.

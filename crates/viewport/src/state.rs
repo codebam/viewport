@@ -273,7 +273,7 @@ pub struct ViewportState {
     /// means all of them, and stays the answer for anything that changes the
     /// desktop as a whole; this is for the cases that know better, such as a
     /// pacing barrier released for one screen's windows.
-    pub dirty_outputs: std::collections::HashSet<smithay::reexports::drm::control::crtc::Handle>,
+    pub dirty_outputs: std::collections::HashSet<crate::udev::OutputId>,
 
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
@@ -1656,7 +1656,7 @@ impl ViewportState {
             .collect();
 
         if let Some(udev) = self.udev.as_ref() {
-            for surface in udev.surfaces.values().filter(|surface| !surface.enabled) {
+            for surface in udev.surfaces().filter(|surface| !surface.enabled) {
                 heads.push(crate::output_management::Head {
                     output: surface.output.clone(),
                     enabled: false,
@@ -1846,9 +1846,8 @@ impl ViewportState {
             // Nested, where the mode is the host window's to decide.
             return;
         };
-        let Some((&crtc, connector)) = udev
-            .surfaces
-            .iter()
+        let Some((id, connector)) = udev
+            .outputs()
             .find(|(_, surface)| surface.output == *output)
             .map(|(crtc, surface)| (crtc, surface.connector))
         else {
@@ -1858,7 +1857,7 @@ impl ViewportState {
         // The kernel takes a modeline from the connector's own list rather
         // than numbers, so the one it offered has to be found again.
         use smithay::reexports::drm::control::Device as _;
-        let device = udev.manager.device();
+        let device = udev.primary_mut().manager.device();
         let Ok(info) = device.get_connector(connector, false) else {
             return;
         };
@@ -1872,14 +1871,17 @@ impl ViewportState {
             return;
         };
 
-        let Some(surface) = udev.surfaces.get_mut(&crtc) else {
+        let Some(device) = udev.devices.get_mut(id.device) else {
+            return;
+        };
+        let Some(surface) = device.surfaces.get_mut(&id.crtc) else {
             return;
         };
         // No render elements: this is a modeset, and the frame after it is
         // drawn by the ordinary loop. Passing the current ones would only
         // matter for keeping other outputs lit through a bandwidth
         // renegotiation, and they are redrawn a moment later anyway.
-        let result = crate::with_gpu!(&mut udev.renderer, |renderer| surface
+        let result = crate::with_gpu!(&mut device.renderer, |renderer| surface
             .drm_output
             .use_mode(
                 drm_mode,
@@ -1920,8 +1922,7 @@ impl ViewportState {
                 .udev
                 .as_ref()
                 .map(|udev| {
-                    udev.surfaces
-                        .values()
+                    udev.surfaces()
                         .find(|surface| surface.output == *output)
                         .map(|surface| surface.enabled == enabled)
                         .unwrap_or(true)
@@ -1952,8 +1953,7 @@ impl ViewportState {
             return;
         };
         let Some(surface) = udev
-            .surfaces
-            .values_mut()
+            .surfaces_mut()
             .find(|surface| surface.output == *output)
         else {
             return;
@@ -1984,8 +1984,7 @@ impl ViewportState {
             return;
         };
         let Some(surface) = udev
-            .surfaces
-            .values_mut()
+            .surfaces_mut()
             .find(|surface| surface.output == *output)
         else {
             return;
@@ -2013,12 +2012,15 @@ impl ViewportState {
         use smithay::reexports::drm::control::Device as _;
 
         let udev = self.udev.as_ref()?;
-        let crtc = udev
-            .surfaces
-            .iter()
-            .find(|(_, surface)| surface.output == *output)
-            .map(|(crtc, _)| *crtc)?;
-        let length = udev.manager.device().get_crtc(crtc).ok()?.gamma_length();
+        let id = udev.id_of(output)?;
+        let length = udev
+            .devices
+            .get(id.device)?
+            .manager
+            .device()
+            .get_crtc(id.crtc)
+            .ok()?
+            .gamma_length();
         (length > 0).then_some(length)
     }
 
@@ -2063,18 +2065,16 @@ impl ViewportState {
         let Some(udev) = self.udev.as_ref() else {
             return false;
         };
-        let Some(crtc) = udev
-            .surfaces
-            .iter()
-            .find(|(_, surface)| surface.output == *output)
-            .map(|(crtc, _)| *crtc)
-        else {
+        let Some(id) = udev.id_of(output) else {
             return false;
         };
-        match udev
+        let Some(device) = udev.devices.get(id.device) else {
+            return false;
+        };
+        match device
             .manager
             .device()
-            .set_gamma(crtc, &ramp.red, &ramp.green, &ramp.blue)
+            .set_gamma(id.crtc, &ramp.red, &ramp.green, &ramp.blue)
         {
             Ok(()) => true,
             Err(e) => {
@@ -2224,8 +2224,7 @@ impl ViewportState {
             return;
         };
         let Some(surface) = udev
-            .surfaces
-            .values_mut()
+            .surfaces_mut()
             .find(|surface| surface.output == *output)
         else {
             return;
@@ -2260,8 +2259,7 @@ impl ViewportState {
         self.udev
             .as_ref()
             .and_then(|udev| {
-                udev.surfaces
-                    .values()
+                udev.surfaces()
                     .find(|surface| surface.output == *output)
                     .map(|surface| surface.powered)
             })
@@ -2339,7 +2337,7 @@ impl ViewportState {
         // DMA-BUF targets come from the Vulkan renderer's allocator; GLES has
         // no `Offscreen<Dmabuf>`, so a screen share under it takes the
         // shared-memory path instead of handing buffers over.
-        let targets = match &mut udev.renderer {
+        let targets = match &mut udev.primary_mut().renderer {
             crate::udev::Gpu::Vulkan(renderer) => Self::allocate_cast_targets(renderer, size),
             _ => Vec::new(),
         };
@@ -3119,8 +3117,7 @@ impl ViewportState {
         self.udev
             .as_ref()
             .map(|udev| {
-                udev.surfaces
-                    .values()
+                udev.surfaces()
                     .any(|surface| surface.output.name() == name && surface.hdr)
             })
             .unwrap_or(false)
@@ -3137,11 +3134,13 @@ impl ViewportState {
             .as_ref()
             .and_then(|udev| {
                 let connector = udev
-                    .surfaces
-                    .values()
+                    .surfaces()
                     .find(|surface| surface.output.name() == name)?
                     .connector;
-                Some(crate::hdr::capable(udev.manager.device(), connector))
+                Some(crate::hdr::capable(
+                    udev.primary().manager.device(),
+                    connector,
+                ))
             })
             .unwrap_or(false)
     }
@@ -3157,21 +3156,20 @@ impl ViewportState {
             anyhow::bail!("HDR needs the drm backend");
         };
         let Some((crtc, connector)) = udev
-            .surfaces
-            .iter()
+            .outputs()
             .find(|(_, surface)| surface.output.name() == name)
-            .map(|(crtc, surface)| (*crtc, surface.connector))
+            .map(|(id, surface)| (id, surface.connector))
         else {
             anyhow::bail!("no such output");
         };
 
-        let device = udev.manager.device();
+        let device = udev.primary_mut().manager.device();
         if !crate::hdr::capable(device, connector) {
             anyhow::bail!("the display does not offer BT.2020 with PQ metadata");
         }
         crate::hdr::set(device, connector, enabled)?;
 
-        if let Some(surface) = udev.surfaces.get_mut(&crtc) {
+        if let Some(surface) = udev.surface_mut(crtc) {
             surface.hdr = enabled;
         }
         tracing::info!("{name}: HDR {}", if enabled { "on" } else { "off" });
@@ -3219,7 +3217,7 @@ impl ViewportState {
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
-        for surface in udev.surfaces.values_mut() {
+        for surface in udev.surfaces_mut() {
             let result = surface
                 .drm_output
                 .with_compositor(|compositor| compositor.use_vrr(enabled));
@@ -3258,7 +3256,7 @@ impl ViewportState {
             // queued frame. But vblank cannot provide one — nothing has been
             // queued since the screens went off — so the frame has to be asked
             // for.
-            for surface in udev.surfaces.values_mut() {
+            for surface in udev.surfaces_mut() {
                 surface.pending = false;
                 // Everything that was on screen went with the blanking, and
                 // the damage history does not know it. Without this the screen
@@ -3269,7 +3267,7 @@ impl ViewportState {
             return;
         }
 
-        for surface in udev.surfaces.values_mut() {
+        for surface in udev.surfaces_mut() {
             // DPMS off and every plane disabled, rather than a black frame: a
             // black frame still lights the panel, and the point is that the
             // monitor sleeps.
@@ -3886,8 +3884,7 @@ impl ViewportState {
             return Some(output);
         }
         self.udev.as_ref().and_then(|udev| {
-            udev.surfaces
-                .values()
+            udev.surfaces()
                 .find(|surface| surface.output.name() == name)
                 .map(|surface| surface.output.clone())
         })
@@ -4432,10 +4429,9 @@ impl ViewportState {
     pub fn mark_output_dirty(&mut self, output: &Output) {
         self.arm_frame_clock();
         let crtc = self.udev.as_ref().and_then(|udev| {
-            udev.surfaces
-                .iter()
+            udev.outputs()
                 .find(|(_, surface)| &surface.output == output)
-                .map(|(crtc, _)| *crtc)
+                .map(|(id, _)| id)
         });
         match crtc {
             Some(crtc) => {
@@ -4572,7 +4568,7 @@ impl ViewportState {
         smithay::desktop::layer_map_for_output(output).arrange();
 
         if let Some(udev) = self.udev.as_mut() {
-            for surface in udev.surfaces.values_mut() {
+            for surface in udev.surfaces_mut() {
                 if surface.output == *output {
                     surface.drm_output.reset_buffers();
                     // `pending` is not cleared here, though the VT-switch path
@@ -4825,10 +4821,9 @@ impl ViewportState {
             .udev
             .as_ref()
             .map(|udev| {
-                udev.surfaces
-                    .keys()
-                    .copied()
-                    .filter(|crtc| all || some.contains(crtc))
+                udev.ids()
+                    .into_iter()
+                    .filter(|id| all || some.contains(id))
                     .collect()
             })
             .unwrap_or_default();
@@ -4990,7 +4985,7 @@ impl ViewportState {
             .or_else(|| {
                 self.udev
                     .as_ref()
-                    .map(|udev| udev.renderer.dmabuf_formats())
+                    .map(|udev| udev.primary().renderer.dmabuf_formats())
             })
             .unwrap_or_default()
             .iter()
@@ -5080,7 +5075,9 @@ impl ViewportState {
                             // The dump path is Vulkan's: it is a diagnostic
                             // for the renderer that has colour management, and
                             // teaching it a second one buys nothing.
-                            if let crate::udev::Gpu::Vulkan(renderer) = &mut udev.renderer {
+                            if let crate::udev::Gpu::Vulkan(renderer) =
+                                &mut udev.primary_mut().renderer
+                            {
                                 if let Err(e) = crate::dump::shell_frame(renderer, &texture, &path)
                                 {
                                     tracing::error!("could not dump the shell's frame: {e:#}");
