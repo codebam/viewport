@@ -254,6 +254,103 @@ pub fn pick_mode(
     None
 }
 
+/// Turn what someone typed after `--url` into something WebKit will load.
+///
+/// Two things go wrong otherwise, and both look identical from the outside —
+/// an empty desktop, with the fallback page eventually taking over:
+///
+///   a bare path      `--url /home/me/shell/index.html` is the obvious thing
+///                    to type and is not a URL. WebKit is handed it verbatim
+///                    and has no scheme to resolve it with.
+///
+///   a space          `file:///home/me/Telegram Desktop/index.html` is not a
+///                    valid URI. A space has to be `%20`; unencoded, the URL
+///                    is rejected or truncated at the space, and the shell
+///                    that does load is not the one that was asked for.
+///
+/// A path is made absolute, checked, and encoded. A URL already carrying a
+/// scheme is left alone apart from its spaces, because everything else in it
+/// may be deliberately encoded already and re-encoding would turn `%20` into
+/// `%2520`.
+pub fn shell_url(value: &str) -> anyhow::Result<String> {
+    let trimmed = value.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "--url was given nothing to load");
+
+    if let Some((scheme, rest)) = trimmed.split_once("://") {
+        let encoded = format!("{scheme}://{}", rest.replace(' ', "%20"));
+        // Only a local file can be checked, and only a local file is worth
+        // checking: a http:// shell that is not up yet is a waiting game, not
+        // a mistake.
+        if scheme == "file" {
+            let path = std::path::PathBuf::from(percent_decode(rest));
+            anyhow::ensure!(path.exists(), "--url: {} does not exist", path.display());
+        }
+        return Ok(encoded);
+    }
+
+    // No scheme, so it is a path — which is what someone types when they have
+    // just unpacked a package and is pointing at the file they can see.
+    let path = std::path::Path::new(trimmed);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    anyhow::ensure!(
+        absolute.exists(),
+        "--url: {} does not exist",
+        absolute.display()
+    );
+    Ok(format!(
+        "file://{}",
+        encode_path(&absolute.to_string_lossy())
+    ))
+}
+
+/// Percent-encode everything a path may contain that a URI may not.
+///
+/// `/` is kept, because it is the path separator rather than data. Everything
+/// outside the unreserved set goes, which over-encodes a little — `@` and `+`
+/// would have been legal — and is never wrong.
+fn encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for byte in path.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Undo percent-encoding, so an encoded path can be checked on disk.
+///
+/// Anything that is not a well-formed escape is passed through, because this
+/// only feeds an existence check — a wrong guess there produces a worse error
+/// message, not a worse outcome.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +500,64 @@ mod tests {
         assert!(error.contains("bad.json"), "{error}");
         assert!(error.contains("line"), "{error}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_space_in_the_path_is_encoded() {
+        // The case this exists for: a package unpacked under "Telegram
+        // Desktop". Unencoded, the URL is not a URI at all and the shell that
+        // loads is not the one that was named.
+        let dir = std::env::temp_dir().join("viewport url test/shell");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("index.html");
+        std::fs::write(&file, "<html></html>").expect("write");
+
+        let url = shell_url(&format!("file://{}", file.display())).expect("a file that exists");
+        assert!(!url.contains(' '), "a space survived: {url}");
+        assert!(url.contains("%20"), "the space was not encoded: {url}");
+
+        // And the same file named as a plain path, which is what someone types.
+        let from_path = shell_url(&file.to_string_lossy()).expect("a path that exists");
+        assert!(from_path.starts_with("file:///"), "{from_path}");
+        assert!(from_path.contains("%20"), "{from_path}");
+
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("viewport url test"));
+    }
+
+    #[test]
+    fn a_missing_file_is_named_rather_than_silently_ignored() {
+        // Falling back to the default shell here is what made a typo look like
+        // a compositor that ignores --url.
+        let error = shell_url("/definitely/not/here/index.html").expect_err("missing");
+        assert!(error.to_string().contains("does not exist"), "{error}");
+
+        let error = shell_url("file:///definitely/not/here/index.html").expect_err("missing");
+        assert!(error.to_string().contains("does not exist"), "{error}");
+    }
+
+    #[test]
+    fn an_already_encoded_url_is_not_encoded_twice() {
+        // %20 becoming %2520 would break a URL that was already correct.
+        let dir = std::env::temp_dir().join("viewport url test2/a b");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("index.html");
+        std::fs::write(&file, "x").expect("write");
+
+        let encoded = format!("file://{}", file.display().to_string().replace(' ', "%20"));
+        let url = shell_url(&encoded).expect("exists");
+        assert!(!url.contains("%2520"), "double-encoded: {url}");
+        assert_eq!(url, encoded);
+
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("viewport url test2"));
+    }
+
+    #[test]
+    fn a_remote_url_is_left_alone_and_not_checked_on_disk() {
+        // An http shell that is not up yet is a waiting game, not a mistake.
+        assert_eq!(
+            shell_url("http://localhost:8000/index.html").expect("remote"),
+            "http://localhost:8000/index.html"
+        );
+        assert!(shell_url("").is_err(), "nothing to load");
     }
 }

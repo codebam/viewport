@@ -62,6 +62,7 @@ fn main() -> Result<()> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
+    warn_about_unknown_options(&args);
     let socket_path = flag(&args, "--socket").map(std::path::PathBuf::from);
     // No renderer and no window: everything but drawing, for tests and CI.
     let headless = args.iter().any(|a| a == "--headless");
@@ -111,6 +112,16 @@ fn main() -> Result<()> {
 
     let mut state = ViewportState::new(&mut event_loop, display, socket_path)?;
     state.apply_config(config);
+    // After the config, so the flag wins — the same rule `--renderer` follows,
+    // and for the same reason: naming it on the command line is the more
+    // deliberate of the two. Failing here rather than falling back, because a
+    // shell that was asked for by name and cannot be loaded is a mistake to
+    // report, not a reason to quietly start a different one.
+    if let Some(url) = flag(&args, "--url") {
+        let resolved = config::shell_url(url)?;
+        tracing::info!("shell url from the command line: {resolved}");
+        state.shell_url = Some(resolved);
+    }
     // Which backend, when nobody said.
     //
     // A compositor started from a TTY has no display to nest in, and one
@@ -396,9 +407,47 @@ fn main() -> Result<()> {
 }
 
 /// The value after `name` on the command line.
+/// The value of `--name value`, or of `--name=value`.
+///
+/// Both forms, because both are what people type and the second used to be
+/// accepted silently and ignored — `--url=/path` set nothing, started the
+/// default shell, and said nothing about why.
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    if let Some(joined) = args
+        .iter()
+        .find_map(|a| a.strip_prefix(name)?.strip_prefix('='))
+    {
+        return Some(joined);
+    }
     let at = args.iter().position(|a| a == name)?;
     args.get(at + 1).map(String::as_str)
+}
+
+/// Every option the compositor understands, so an unrecognised one can be
+/// named rather than ignored.
+const OPTIONS: &[&str] = &[
+    "--socket",
+    "--headless",
+    "--drm",
+    "--renderer",
+    "--config",
+    "--width",
+    "--height",
+    "--exit-after",
+    "--url",
+];
+
+/// Say so when an option is not one of ours.
+///
+/// Unknown arguments were dropped in silence, so a misremembered flag looked
+/// exactly like a flag that had been honoured and done nothing.
+fn warn_about_unknown_options(args: &[String]) {
+    for arg in args.iter().skip(1).filter(|a| a.starts_with("--")) {
+        let name = arg.split_once('=').map(|(n, _)| n).unwrap_or(arg);
+        if !OPTIONS.contains(&name) {
+            tracing::warn!("unknown option {name}; it has been ignored");
+        }
+    }
 }
 
 /// Hand the session's environment to the user services, which this compositor
