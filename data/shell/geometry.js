@@ -286,6 +286,30 @@ function fadeIn(id) {
   requestAnimationFrame(step);
 }
 
+/* Fade in every window a relayout has just brought on screen.
+ *
+ * Switching workspace replaced one set of windows with another between two
+ * frames: the departing ones vanished and the arriving ones were simply there,
+ * which is the one moment on this desktop where nothing moves and everything
+ * changes.
+ *
+ * Only the arrivals are faded. Fading the departures out would mean keeping
+ * them rendered after the workspace stopped being the one on screen, and two
+ * workspaces' windows visible at once is a worse thing to look at than a
+ * switch that is merely quick — the same reason the tabbed containers do not
+ * animate their switch either.
+ *
+ * `before` is the set of windows that were on screen; anything rendered now
+ * and missing from it has just arrived. Taking the difference rather than
+ * fading everything matters on a switch between two workspaces that share a
+ * window, which stays put and should not blink. */
+function fadeInArrivals(before) {
+  if (reducedMotion()) return;
+  for (const id of renderedIds) {
+    if (!before.has(id)) fadeIn(id);
+  }
+}
+
 /* How long the class below is left on. It only has to outlast the animation
  * shell.css runs off it: once that has finished the element is already showing
  * its resting style, so removing the class late changes nothing on screen and

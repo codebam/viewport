@@ -816,6 +816,40 @@ if (mode === 'scrolling') {
   emit({ type: 'shell.command', command: 'workspace.back', args: [] });
   check('workspace.back goes to the previous one', output.workspace === home);
 
+  /* Switching used to replace one set of windows with another between two
+   * frames — the one moment here where nothing moves and everything changes.
+   * The arrivals are faded in over IPC, because their contents are surfaces
+   * the compositor draws and no stylesheet in the shell can touch them. */
+  {
+    /* `home` is where the windows are and `away` is empty, so the arrival is
+       on the way back — leaving is the direction with nothing to fade. */
+    const root = globalThis.__shell.workspaces.get(home);
+    const onHome = new Set(root ? globalThis.__shell.dynamicOrderForTest(root) : []);
+
+    emit({ type: 'shell.command', command: 'workspace.switch', args: [String(away)] });
+    const mark = sent.length;
+    emit({ type: 'shell.command', command: 'workspace.switch', args: [String(home)] });
+
+    const faded = sent.slice(mark).filter((m) => m.type === 'view.opacity');
+    check('switching workspace fades the arriving windows in', faded.length > 0);
+    check('the fade starts from nothing', faded.some((m) => m.opacity === 0));
+    check('and finishes fully opaque', faded.some((m) => m.opacity === 1));
+    check('nothing off this workspace was faded',
+      faded.every((m) => onHome.has(m.id)));
+  }
+
+  {
+    /* Switching to a workspace with nothing on it fades nothing: there is
+       nothing to arrive, and a stray opacity message would be sent to a window
+       that is not on screen. */
+    const empty = home === 7 ? 9 : 7;
+    const mark = sent.length;
+    emit({ type: 'shell.command', command: 'workspace.switch', args: [String(empty)] });
+    check('an empty workspace fades nothing',
+      !sent.slice(mark).some((m) => m.type === 'view.opacity'));
+    emit({ type: 'shell.command', command: 'workspace.switch', args: [String(home)] });
+  }
+
   /* A workspace with nothing before it does not move anywhere. */
   const fresh = home === 8 ? 7 : 8;
   emit({ type: 'shell.command', command: 'workspace.switch', args: [String(fresh)] });

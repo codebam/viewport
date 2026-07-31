@@ -296,6 +296,16 @@ Fading a window in cannot be done in CSS for the same reason, so it is tweened
 in the shell and sent as `view.opacity`, which the compositor applies to the
 surface itself. `prefers-reduced-motion` disables all of it.
 
+Switching workspace is the one moment where nothing moves and everything
+changes: one set of windows is replaced by another between two frames, so there
+is no motion to interpolate. The arriving windows are faded in through the same
+`view.opacity` tween. Only the arrivals — fading the departures out would mean
+keeping them rendered after their workspace stopped being the one on screen,
+and two workspaces' windows visible at once looks worse than a switch that is
+merely quick. It is the difference against what was on screen before, not every
+window on the destination, so a window the two workspaces share stays put
+instead of blinking.
+
 Closing a window hands focus to its neighbour rather than to whatever is first
 on the workspace, and the two layouts want different neighbours. In the strip it
 is the column to the left — the strip has a direction, and being dropped at its

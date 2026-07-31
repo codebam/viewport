@@ -166,7 +166,13 @@ function switchWorkspace(name, n) {
   output.previous = output.workspace;
   output.workspace = n;
   setActiveOutput(name);
+
+  /* What was on screen before the switch, so the windows that arrive can be
+     faded in and the ones this workspace shares with the last are left alone. */
+  const before = new Set(renderedIds);
   relayoutAll();
+  fadeInArrivals(before);
+
   focusFirstOn(name);
 }
 
