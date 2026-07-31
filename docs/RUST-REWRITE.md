@@ -468,6 +468,27 @@ window-lifecycle test is worth more than one that refuses to start, and those
 are most of what runs headless. The panic message reaches the log through the
 default hook before it is caught, so the diagnosis is not swallowed.
 
+That optionality is also how the first CI run failed *quietly enough to read*:
+the compositor came up, `output-order` passed, and the three tests that want
+pixels reported `FAIL a frame arrives`, with the reason a few lines earlier.
+
+    Missing extensions: ["EGL_MESA_platform_surfaceless"]
+    Unable to find suitable EGL platform
+
+Not because the runner's mesa lacks the extension. libEGL.so.1 is libglvnd, a
+dispatch library with no driver of its own: it loads one named by a JSON file
+in `/usr/share/glvnd/egl_vendor.d` or `/run/opengl-driver/...`. NixOS has the
+second and a GitHub runner has neither, so no vendor was loaded, so there were
+no EGL client extensions *at all* — and "no vendor" is reported as "that
+platform is unsupported". It is the kind of failure that looks like a driver
+problem and is a search-path problem, which is why it worked on a workstation
+and not in CI.
+
+`devShells.rust` sets `__EGL_VENDOR_LIBRARY_DIRS` to this flake's own mesa.
+That variable *replaces* the default search path rather than adding to it, so
+the shell renders through the driver the flake pins and not whatever the host
+happens to have — reproducible on a runner and on a workstation alike.
+
 ### The checklist
 
 `src/` and `include/` can be deleted when, and not before:

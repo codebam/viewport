@@ -379,6 +379,27 @@
           # wayland_frontend pulls in xkbcommon, both at build time.
           LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [ pkgs.libgbm pkgs.libxkbcommon ]}";
 
+          # Where libglvnd looks for an EGL driver.
+          #
+          # This is the whole reason the capture tests can run on a hosted
+          # runner. libglvnd is a dispatch library: libEGL.so.1 provides no
+          # driver of its own, it loads one named by a JSON file in
+          # /usr/share/glvnd/egl_vendor.d or /run/opengl-driver/... — and a
+          # GitHub runner has neither, while NixOS has the second, which is
+          # why this worked on a workstation and failed in CI.
+          #
+          # With no vendor loaded there are no EGL client extensions at all,
+          # so the failure is not "surfaceless is unsupported" but "nothing
+          # supports anything":
+          #
+          #   Missing extensions: ["EGL_MESA_platform_surfaceless"]
+          #   Unable to find suitable EGL platform
+          #
+          # Naming our own mesa fixes it and makes it reproducible: the shell
+          # renders through the driver this flake pins rather than whatever
+          # the host happens to have installed.
+          __EGL_VENDOR_LIBRARY_DIRS = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
+
           shellHook = ''
             # ash dlopens libvulkan.so.1 and winit dlopens libwayland-client;
             # the viewport-vulkan tests that ask for a device skip themselves
