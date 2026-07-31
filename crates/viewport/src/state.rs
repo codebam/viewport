@@ -770,8 +770,14 @@ impl ViewportState {
         // separated "the pacing protocols" from "everything else" in a minute,
         // after a day of reading code that did not.
         let pacing = std::env::var("VIEWPORT_FIFO").as_deref() != Ok("0");
+        // Separately, because the two are different protocols and a client
+        // uses both: Mesa sets a fifo barrier *and* a commit-timing deadline
+        // on the same frame. Turning them off together says the pacing
+        // protocols are involved and stops there, which is where the last
+        // bisect ran out of resolution.
+        let timing = pacing && std::env::var("VIEWPORT_COMMIT_TIMING").as_deref() != Ok("0");
         let fifo_state = pacing.then(|| smithay::wayland::fifo::FifoManagerState::new::<Self>(&dh));
-        let commit_timing_state = pacing
+        let commit_timing_state = timing
             .then(|| smithay::wayland::commit_timing::CommitTimingManagerState::new::<Self>(&dh));
         let workspace_state = crate::workspace::WorkspaceState::new::<Self>(&dh);
         let security_context_state =
@@ -4131,9 +4137,29 @@ impl ViewportState {
         let now = smithay::reexports::rustix::time::clock_gettime(
             smithay::reexports::rustix::time::ClockId::Monotonic,
         );
+        // The deadline to compare against is the frame this round is about to
+        // draw, which is the *next* refresh — not this instant.
+        //
+        // A commit-timing deadline says "do not show this before T". The frame
+        // being built now is the one that will be presented at the next
+        // vblank, so what belongs in it is everything due by then. Comparing
+        // against the present moment instead holds a commit aimed at the next
+        // vblank until that vblank has already happened, so it misses the
+        // frame it was aimed at and goes in the one after.
+        //
+        // Mesa aims exactly there — one refresh ahead — on every frame, so
+        // every frame was arriving a frame late, and any jitter in when this
+        // round ran turned "late" into "a whole refresh late". That is the
+        // client sitting at five sixths of the rate: with commit-timing off
+        // and fifo left on, the same client goes from 204.1fps to 239.2 of a
+        // possible 239.76.
+        let refresh = self.frame_interval();
         let target: Time<smithay::utils::Monotonic> =
-            std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32).into();
+            (std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32) + refresh).into();
         let released = std::cell::Cell::new(false);
+        // Counted rather than just flagged: `released` answers "was this round
+        // worth running", and what the pacing question needs is how many.
+        let signalled = std::cell::Cell::new(0u32);
         let woken: std::cell::RefCell<Vec<smithay::reexports::wayland_server::Client>> =
             std::cell::RefCell::new(Vec::new());
 
@@ -4187,6 +4213,7 @@ impl ViewportState {
                 barrier.signal();
                 tracing::trace!("fifo: a barrier released");
                 released.set(true);
+                signalled.set(signalled.get() + 1);
                 wake(true);
             }
         };
@@ -4202,6 +4229,13 @@ impl ViewportState {
         }
         for lock in self.lock_surfaces.values() {
             with_surfaces_surface_tree(lock.wl_surface(), &release);
+        }
+        // After the walks, so the closure's borrows are done with.
+        let signalled = signalled.get();
+        if signalled > 0 {
+            if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+                log.barriers += signalled;
+            }
         }
         // The part that makes any of it work. Signalling a barrier only sets a
         // flag; the commit it was blocking sits in a queue that nothing looks
@@ -4336,13 +4370,64 @@ impl ViewportState {
     /// One turn of the barrier tick: let go of whatever is due.
     fn release_barriers(&mut self) {
         self.barrier_tick = false;
+        if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+            log.barrier_ticks += 1;
+        }
+
+        // Not while the vblank is doing it.
+        //
+        // A fifo barrier says "the frame this commit made has been shown", so
+        // the moment to signal it is the vblank that showed it. This tick is
+        // for a desk where no frame is being submitted and so no vblank is
+        // coming — a client blocked on a barrier makes no damage, which makes
+        // no frame, which makes no vblank to lift it.
+        //
+        // Left running alongside the vblank it does not add safety, it takes
+        // the job over. It fires part way through the frame period and takes
+        // the barrier before the frame it belongs to has been presented, so
+        // the vblank arrives to an empty queue and does nothing — measured at
+        // 60Hz: 50 barriers a second, every one of them released here and none
+        // at the vblank, with ten vblanks a second finding nothing to do.
+        //
+        // The client is then paced by this timer rather than by the screen,
+        // and this timer is armed after its own work, so it is always slower.
+        // That is the whole of a client sitting at five sixths of the refresh
+        // rate at every rate tried — 50.4 of 60, 101.8 of 120, 203.4 of 240 —
+        // while the compositor flipped on every single vblank at under 2% of
+        // a core.
+        //
+        // Still re-armed below, so it takes over within two frames if the
+        // chain really does stop.
+        let vblank_driven = self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.last_vblank)
+            .is_some_and(|at| at.elapsed() < self.frame_interval() * 2);
+        if vblank_driven {
+            self.arm_barrier_tick();
+            return;
+        }
+
         let at = self.start_time.elapsed();
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
         let mut released = false;
         for output in &outputs {
+            // Counted before the call, so what it adds to `barriers` can be
+            // told apart afterwards: this is the tick's share of the releases,
+            // and under a client painting flat out it should be nearly none.
+            let before = self
+                .udev
+                .as_ref()
+                .and_then(|udev| udev.frame_log.as_ref())
+                .map(|log| log.barriers);
             if self.released_frame_barriers(output, at) {
                 released = true;
                 self.mark_output_dirty(output);
+            }
+            if let Some(before) = before {
+                if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+                    log.barriers_at_tick += log.barriers.saturating_sub(before);
+                }
             }
         }
         // Only when something was let go. Releasing a barrier applies the
@@ -4618,7 +4703,56 @@ impl ViewportState {
     /// saying "now would be a good time", and a client that paints only when
     /// invited has no other way to hear it.
     pub fn send_frame_callbacks(&mut self, output: &Output, at: std::time::Duration) {
-        let throttle = Some(self.frame_interval());
+        // Half a frame, not a whole one.
+        //
+        // Smithay drops an invitation unless more than `throttle` has passed
+        // since the last one, strictly greater. Set to the refresh period
+        // exactly, that is a knife edge laid on top of a clock that jitters:
+        // an invitation arriving a microsecond early is not held back, it is
+        // thrown away, and the client waits an entire further frame.
+        //
+        // What that cost was a constant fraction rather than a constant
+        // amount, which is what made it so hard to read as a timing bug. A
+        // client that drew on every invitation got 50.3fps of 60, 101.8 of
+        // 120, and 203.4 of 239.76 — 85% at every rate, while the compositor
+        // sat at 3.6% of a core and flipped on every single vblank. It was
+        // never short of time. It was being told to draw five times out of
+        // six.
+        //
+        // Half a period leaves the throttle doing its actual job — an
+        // occluded surface still cannot be invited faster than twice a frame —
+        // without standing exactly where the jitter falls.
+        let throttle = Some(self.frame_interval() / 2);
+
+        // Who was actually waiting to be told. Counted before the send,
+        // because the send is what empties the queue. See `FrameLog::wanted`.
+        if self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.frame_log.as_ref())
+            .is_some()
+        {
+            use smithay::wayland::compositor::SurfaceAttributes;
+            let mut waiting = 0u32;
+            for window in self.space.elements() {
+                let mut asked = false;
+                window.with_surfaces(|_, states| {
+                    let queued = states
+                        .cached_state
+                        .get::<SurfaceAttributes>()
+                        .current()
+                        .frame_callbacks
+                        .len();
+                    asked |= queued > 0;
+                });
+                if asked {
+                    waiting += 1;
+                }
+            }
+            if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+                log.wanted += waiting;
+            }
+        }
         for window in self.space.elements() {
             window.send_frame(output, at, throttle, |_, _| Some(output.clone()));
         }
@@ -4780,8 +4914,36 @@ impl ViewportState {
 
         let at = self.start_time.elapsed();
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
-        for output in &outputs {
-            self.send_frame_callbacks(output, at);
+
+        // Only when no vblank is doing it.
+        //
+        // `on_vblank` invites the clients on an output the moment its frame
+        // reaches the screen, which is the right moment and the right rate.
+        // This clock exists for when that is not happening at all — nested,
+        // headless, or a desktop so still that nothing has been submitted and
+        // so no vblank is coming. Sending from both is not redundancy: the
+        // client is asked twice per frame period and paints twice, and the
+        // compositor shows one of the two. A 60Hz screen measured a client at
+        // 120fps with half of its work discarded before anyone saw it.
+        //
+        // Two frame periods of slack, so this takes over promptly when the
+        // chain really has stopped without racing it when it has not.
+        let vblank_driven = self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.last_vblank)
+            .is_some_and(|at| at.elapsed() < self.frame_interval() * 2);
+        if !vblank_driven {
+            for output in &outputs {
+                self.send_frame_callbacks(output, at);
+            }
+        }
+        // Counted before the render, because this is the moment the clock is
+        // about to do a vblank's job: every render driven from here is a
+        // flip-vblank-flip chain that had stopped and is being restarted, and
+        // this clock is slower than the screen. See `FrameLog`.
+        if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+            log.restarts += 1;
         }
         // One render for everything that happened since the last tick.
         self.render_if_needed();

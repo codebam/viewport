@@ -300,6 +300,170 @@ pub struct Udev {
     /// False between a VT switch away and the switch back. Every device fd is
     /// revoked in that window, so committing a frame would fail.
     pub active: bool,
+    /// Frame pacing counters. `None` unless `VIEWPORT_FRAME_LOG` is set.
+    pub frame_log: Option<FrameLog>,
+    /// When the last vblank arrived, on any output.
+    ///
+    /// Read by the frame clock to tell whether it is needed. A vblank chain
+    /// that is running invites clients at exactly the refresh rate, and the
+    /// clock inviting them again on top of that is not a safety net, it is a
+    /// second invitation: the client paints twice per frame and the
+    /// compositor shows one of them. Measured on a 60Hz screen, a client
+    /// drawing 120 frames a second and half of them thrown away.
+    pub last_vblank: Option<std::time::Instant>,
+}
+
+/// Why a client on a 240Hz screen gets 204 frames a second.
+///
+/// Counting rather than reasoning, because reasoning has already been wrong
+/// once here: moving frame callbacks onto the vblank was supposed to fix the
+/// shortfall and changed it by 0.3%.
+///
+/// The question these answer is which of two stories is true. Either the
+/// vblanks arrive at the refresh rate and something drops frames between
+/// them — `vblanks` will read ~240 and `flips` less — or the chain of
+/// flip-vblank-flip is itself stalling, in which case `vblanks` reads ~204
+/// too, and `empty` and `restarts` say what broke it. DRM only sends a vblank
+/// event for a flip that was submitted, so a frame with nothing to draw ends
+/// the chain until something restarts it, and the only thing that restarts it
+/// is the frame clock — whose period is the refresh interval plus however
+/// long its own tick took.
+///
+/// Off unless asked for. The counters themselves are a handful of increments,
+/// but the summary is a log line a second, and a benchmark should not measure
+/// a compositor that is writing about itself.
+#[derive(Debug, Default)]
+pub struct FrameLog {
+    /// Vblank events that arrived.
+    pub vblanks: u32,
+    /// Flips queued. One per vblank is a chain that is keeping up.
+    pub flips: u32,
+    /// Render passes that reached the renderer and found nothing changed.
+    /// Each one ends the chain: no flip, so no vblank to drive the next.
+    pub empty: u32,
+    /// Render attempts that returned before building a frame because one was
+    /// already in the air. Expected to be large — it is every commit a client
+    /// makes between two frames — and cheap.
+    pub skipped_pending: u32,
+    /// Render attempts that returned because the output was off.
+    pub skipped_off: u32,
+    /// Renders driven by the frame clock rather than by a vblank. This is the
+    /// chain being restarted, and the drift enters here.
+    pub restarts: u32,
+    /// Client surface commits. Equal to the client's frame rate by
+    /// definition — one commit per frame it finishes — and here as the thing
+    /// the two counters below are read against.
+    pub commits: u32,
+    /// Windows that had a frame callback queued when an invitation went out.
+    ///
+    /// This is the discriminator, and it is the number I should have gone
+    /// looking for three theories ago. A client asks for a callback when it
+    /// commits, and paints when it arrives. So at each frame:
+    ///
+    ///   `wanted` ≈ vblanks  — the client is asking every frame and being
+    ///                         answered; if it still only paints 5 times in 6
+    ///                         the invitation path is innocent and what is
+    ///                         holding it up is on the buffer side, most
+    ///                         likely waiting on one the compositor has not
+    ///                         released.
+    ///   `wanted` ≈ commits  — the client is *not* asking at some frames,
+    ///                         because it has not committed yet, and the
+    ///                         question moves to what it is blocked on.
+    ///
+    /// Either way this stops the guessing: every counter above measures the
+    /// compositor's own frames, and all of them have read perfect while the
+    /// client sat at five sixths of the refresh rate.
+    pub wanted: u32,
+    /// Fifo barriers signalled. This is the invitation for a client pacing
+    /// itself with `wp_fifo_v1`, which is every client painting through Mesa —
+    /// vkcube among them, which asks for no frame callbacks at all.
+    ///
+    /// Read against `flips`: a barrier per flip is a client being let go once
+    /// per frame shown, which is the whole of what fifo promises.
+    pub barriers: u32,
+    /// Turns of the barrier tick — the timer that releases barriers when no
+    /// vblank is coming. Like the frame clock it is armed after its own work,
+    /// so it runs slower than the screen; unlike the frame clock it has never
+    /// been measured. If barriers are being released from here rather than
+    /// from the vblank while a client is painting, that is the same drift in
+    /// a second place.
+    pub barrier_ticks: u32,
+    /// Vblanks that found no barrier to release.
+    ///
+    /// Ten a second on a sixty hertz screen, and they are the missing frames.
+    /// What this cannot say on its own is why: either the client had not
+    /// committed yet, or it had and something released the barrier before this
+    /// vblank could — which is what `barriers_at_tick` is for.
+    pub vblanks_without_barrier: u32,
+    /// Barriers released by the tick rather than by a vblank.
+    ///
+    /// The tick exists for a desk where nothing is being submitted, so under a
+    /// client painting flat out this should be nearly zero. If it is not, the
+    /// two are racing for the same job and the drifting one is winning some of
+    /// the time — which would put the client's rate on the tick's period
+    /// rather than the screen's, and the tick is armed after its own work.
+    pub barriers_at_tick: u32,
+    /// The longest gap between consecutive vblanks in this window.
+    pub worst_gap: std::time::Duration,
+    /// Gaps longer than one and a half refresh periods: a frame period that
+    /// went by with nothing on it.
+    pub stalls: u32,
+    /// When this window started, and when the last vblank was.
+    pub since: Option<std::time::Instant>,
+    pub last_vblank: Option<std::time::Instant>,
+}
+
+impl FrameLog {
+    /// Enabled by `VIEWPORT_FRAME_LOG`, which is read once.
+    pub fn from_env() -> Option<Self> {
+        std::env::var_os("VIEWPORT_FRAME_LOG").map(|_| Self::default())
+    }
+
+    /// One line a second, then start again.
+    ///
+    /// Rates rather than totals: "204 vblanks, 204 flips" against a 240Hz
+    /// screen is the whole answer, and it is only legible per second.
+    fn report_if_due(&mut self, refresh: std::time::Duration) {
+        let now = std::time::Instant::now();
+        let since = *self.since.get_or_insert(now);
+        let elapsed = now.duration_since(since);
+        if elapsed < std::time::Duration::from_secs(1) {
+            return;
+        }
+        let per_second = |count: u32| f64::from(count) / elapsed.as_secs_f64();
+        let expected = if refresh.is_zero() {
+            0.0
+        } else {
+            1.0 / refresh.as_secs_f64()
+        };
+        tracing::info!(
+            "frames: {:.1} vblanks/s of {:.1} possible, {:.1} flips/s, {:.1} client commits/s, \
+             {:.1} windows waiting on a callback/s, {:.1} fifo barriers released/s \
+             ({:.1} of them by the tick), {:.1} vblanks with no barrier/s, \
+             {:.1} barrier ticks/s, {:.1} empty/s, \
+             {} stalls (worst gap {:.2}ms), {:.1} clock restarts/s, \
+             {:.0} skipped for a flip in the air, {:.0} skipped for an output that is off",
+            per_second(self.vblanks),
+            expected,
+            per_second(self.flips),
+            per_second(self.commits),
+            per_second(self.wanted),
+            per_second(self.barriers),
+            per_second(self.barriers_at_tick),
+            per_second(self.vblanks_without_barrier),
+            per_second(self.barrier_ticks),
+            per_second(self.empty),
+            self.stalls,
+            self.worst_gap.as_secs_f64() * 1000.0,
+            per_second(self.restarts),
+            per_second(self.skipped_pending),
+            per_second(self.skipped_off),
+        );
+        let last = self.last_vblank;
+        *self = Self::default();
+        self.since = Some(now);
+        self.last_vblank = last;
+    }
 }
 
 impl Udev {
@@ -602,7 +766,12 @@ pub fn init(
         }],
         blanked: false,
         active: true,
+        frame_log: FrameLog::from_env(),
+        last_vblank: None,
     });
+    if state.udev.as_ref().is_some_and(|udev| udev.frame_log.is_some()) {
+        tracing::info!("VIEWPORT_FRAME_LOG is set: reporting frame pacing once a second");
+    }
 
     // Every other GPU on the seat.
     //
@@ -1494,6 +1663,36 @@ impl ViewportState {
         };
         // The flip happened, so this output may be drawn into again.
         surface.pending = false;
+        let vblank_refresh = surface
+            .output
+            .current_mode()
+            .map(|mode| std::time::Duration::from_secs_f64(1_000.0 / mode.refresh.max(1) as f64))
+            .unwrap_or_default();
+        // The chain is alive; the frame clock can stay out of the way.
+        udev.last_vblank = Some(std::time::Instant::now());
+
+        // Between the two `surface_mut` calls on purpose: that borrow holds
+        // all of `udev`, and the counters live in `udev` too. The surface is
+        // taken again below rather than held across this.
+        if let Some(log) = udev.frame_log.as_mut() {
+            let now = std::time::Instant::now();
+            log.vblanks += 1;
+            if let Some(previous) = log.last_vblank.replace(now) {
+                let gap = now.duration_since(previous);
+                if gap > log.worst_gap {
+                    log.worst_gap = gap;
+                }
+                // A gap of more than one and a half periods means a whole
+                // frame period went by with nothing on it.
+                if !vblank_refresh.is_zero() && gap > vblank_refresh.mul_f64(1.5) {
+                    log.stalls += 1;
+                }
+            }
+            log.report_if_due(vblank_refresh);
+        }
+        let Some(surface) = udev.surface_mut(id) else {
+            return;
+        };
         // A held attempt cannot outlive a frame. If its timer were ever lost —
         // dropped loop source, torn-down output — the flag alone would stop
         // this screen from ever drawing again, so the vblank clears it. An
@@ -1524,26 +1723,46 @@ impl ViewportState {
             // by presentation — a browser, most visibly — with no idea when
             // its last frame landed.
             Ok(Some(Some(mut feedback))) => {
-                let now = smithay::reexports::rustix::time::clock_gettime(
-                    smithay::reexports::rustix::time::ClockId::Monotonic,
-                );
-                let clock = std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32);
-                let (sequence, flags) = match metadata.as_ref() {
-                    Some(metadata) => (
-                        metadata.sequence,
-                        match metadata.time {
-                            smithay::backend::drm::DrmEventTime::Monotonic(_) => {
-                                smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync
-                                    | smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::HwClock
-                                    | smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::HwCompletion
-                            }
-                            _ => smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
-                        },
-                    ),
-                    None => (
-                        0,
-                        smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
-                    ),
+                // A software clock read here, not `metadata.time`, and that is
+                // not an oversight — it was tried.
+                //
+                // The reasoning for the hardware timestamp is sound on its
+                // face: this reads the clock after the event has been queued,
+                // delivered and dispatched, so it runs late by a varying
+                // amount, and it is sent with `HwClock` set, which tells the
+                // client it came from the display. Clients schedule from it.
+                //
+                // Measured, it makes things worse. Feeding `metadata.time`
+                // through instead moved 240Hz from 198.0fps to 206.9 — and
+                // took 60Hz from a steady 50.4 to 35.9 and then 43.2 across
+                // two runs, with the compositor itself dropping to 42-48
+                // vblanks a second and reporting 6-9 stalls where it had been
+                // flipping on every vblank with none. Unstable, not just
+                // slower, and instability is worse than the constant shortfall
+                // it was meant to fix.
+                //
+                // So this stays until there is an explanation for that, rather
+                // than a second guess at it. The `HwClock` flag below is
+                // wrong — it is claiming a provenance this number does not
+                // have — and that is worth fixing on its own, but it is not
+                // worth fixing blind.
+                let fallback = {
+                    let now = smithay::reexports::rustix::time::clock_gettime(
+                        smithay::reexports::rustix::time::ClockId::Monotonic,
+                    );
+                    std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32)
+                };
+                use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
+                let (clock, sequence, flags) = match metadata.as_ref() {
+                    Some(metadata) => match metadata.time {
+                        smithay::backend::drm::DrmEventTime::Monotonic(_) => (
+                            fallback,
+                            metadata.sequence,
+                            Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
+                        ),
+                        _ => (fallback, metadata.sequence, Kind::Vsync),
+                    },
+                    None => (fallback, 0, Kind::Vsync),
                 };
                 feedback.presented::<_, smithay::utils::Monotonic>(
                     clock,
@@ -1573,7 +1792,47 @@ impl ViewportState {
             .map(|surface| surface.output.clone());
         if let Some(output) = output {
             let at = self.start_time.elapsed();
+            // Counted by the change in the barrier tally rather than by what
+            // the call returns: it returns true for a commit-timing deadline
+            // as well, and with one of those signalled on most frames this
+            // read zero while ten vblanks a second were finding no *fifo*
+            // barrier at all. A counter that agrees with the bug is worse than
+            // no counter.
+            let before = self
+                .udev
+                .as_ref()
+                .and_then(|udev| udev.frame_log.as_ref())
+                .map(|log| log.barriers);
             self.release_frame_barriers(&output, at);
+            if let Some(before) = before {
+                if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+                    if log.barriers == before {
+                        log.vblanks_without_barrier += 1;
+                    }
+                }
+            }
+
+            // And invite the clients on this output to draw the next one.
+            //
+            // This is the moment a frame reached the screen, so it is the
+            // moment to ask for the frame after it: a client waiting on a
+            // frame callback is paced by whatever sends it, and until this
+            // existed the only thing that sent one was the frame clock.
+            //
+            // That clock is a timer re-armed after its own tick — callbacks,
+            // render, flush, then `now + interval` — so its period is the
+            // refresh interval plus however long that took. Always a little
+            // slower than the screen, so a client that draws on every
+            // invitation still misses a vblank now and then, and the shortfall
+            // does not depend on the rate: 102.3fps of 120, and 204.1 of
+            // 239.76, are both 85% of the vblanks on the floor. It was not a
+            // capacity problem — the compositor was at 3.6% of a core and the
+            // GPU at 3.8% while dropping them — it was asking late.
+            //
+            // The clock stays, because it is what restarts a desktop where
+            // nothing is committing and so no vblank is coming. It is the
+            // fallback now rather than the pacer.
+            self.send_frame_callbacks(&output, at);
         }
         // And if anything is still waiting, keep a clock on it: a blocked
         // commit makes no damage, so without this nothing would draw again.
@@ -1594,6 +1853,39 @@ impl ViewportState {
         else {
             return;
         };
+
+        // Nothing can come of this frame, so do not build it.
+        //
+        // These three are checked again in `render_pass`, which is where they
+        // have always been — but everything between here and there ran first:
+        // the shell's frame imported, and `frame_for` walking the layer map
+        // and the space and cloning every element into a fresh list, all to be
+        // dropped on the far side of the check.
+        //
+        // That is invisible while clients paint at the refresh rate and
+        // ruinous when one does not. A client in IMMEDIATE or MAILBOX commits
+        // as fast as buffers come back — thirteen thousand times a second —
+        // and every one of those commits marks its output dirty, which drives
+        // a full frame build that ended here. Against 120 flips a second that
+        // is 13,600 frames built and thrown away, and it measured as four
+        // times sway's CPU for the same client throughput.
+        let skip = self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.surface(id))
+            .map(|surface| (!surface.powered || !surface.enabled, surface.pending));
+        if let Some((off, pending)) = skip {
+            if off || pending {
+                if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+                    if off {
+                        log.skipped_off += 1;
+                    } else {
+                        log.skipped_pending += 1;
+                    }
+                }
+                return;
+            }
+        }
 
         // Everything the frame needs, worked out before the renderer is
         // borrowed — and shared with the nested backend, which is what keeps
@@ -1863,9 +2155,22 @@ impl ViewportState {
             // vblank, and the vblank draws the next one. Only the empty pass
             // repeats without limit, and only the empty pass is timed.
             Ok(_) => {
+                // The chain ends here: no flip means no vblank, so nothing
+                // will drive the next frame until something asks again.
+                if let Some(log) = udev.frame_log.as_mut() {
+                    log.empty += 1;
+                }
                 tracing::debug!("{}: nothing to draw", output.name());
             }
             Err(e) => tracing::warn!("render_frame: {e}"),
+        }
+
+        // After the match, not inside it: the arm that queues the flip holds a
+        // mutable borrow of the surface, and that borrow is of all of `udev`.
+        if submitted {
+            if let Some(log) = udev.frame_log.as_mut() {
+                log.flips += 1;
+            }
         }
 
         if *pending_dump {

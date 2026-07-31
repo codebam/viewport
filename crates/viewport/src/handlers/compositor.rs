@@ -122,6 +122,11 @@ impl CompositorHandler for ViewportState {
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
 
+        // How fast the clients are actually painting. See `FrameLog`.
+        if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+            log.commits += 1;
+        }
+
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
