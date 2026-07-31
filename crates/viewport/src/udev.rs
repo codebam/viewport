@@ -136,6 +136,13 @@ pub struct Surface {
     /// a re-scan of the device, but nothing is drawn on it and its planes are
     /// cleared so the panel actually sleeps.
     pub enabled: bool,
+    /// What a client should allocate against for a surface on this output,
+    /// including which formats could go straight to a display plane.
+    ///
+    /// Per output rather than per GPU, because the scanout half is per CRTC:
+    /// the formats come from this output's primary plane, and a neighbouring
+    /// monitor on the same card can have a different set.
+    pub feedback: Option<smithay::wayland::dmabuf::DmabufFeedback>,
     /// A frame is queued and has not been scanned out yet.
     ///
     /// One frame in flight per output, which is what anvil arranges by
@@ -938,6 +945,62 @@ fn device_feedback(
     }
 }
 
+/// Feedback for one output: what to allocate, and what could reach a plane.
+///
+/// Two tranches. The main one names this GPU's render node and everything its
+/// renderer can import, which is what makes a buffer usable at all. The
+/// preferred one carries `Scanout` and the formats this output's primary plane
+/// actually accepts, which is what lets a fullscreen buffer go straight to the
+/// display controller instead of through a composite.
+///
+/// The scanout formats are intersected with what the renderer can import. A
+/// format the plane takes and the compositor cannot read is no use: the moment
+/// anything overlaps that surface it has to be composited, and a buffer that
+/// cannot be sampled has nowhere to go. Advertising it would trade a rare
+/// zero-copy frame for a window that vanishes when a notification appears over
+/// it.
+fn output_feedback(
+    render_node: &DrmNode,
+    device_node: &DrmNode,
+    render_formats: &[smithay::backend::allocator::Format],
+    plane_formats: &smithay::backend::allocator::format::FormatSet,
+) -> Option<smithay::wayland::dmabuf::DmabufFeedback> {
+    use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
+
+    if render_formats.is_empty() {
+        return None;
+    }
+    let scanout: Vec<_> = plane_formats
+        .iter()
+        .filter(|format| render_formats.contains(format))
+        .copied()
+        .collect();
+
+    let builder = smithay::wayland::dmabuf::DmabufFeedbackBuilder::new(
+        render_node.dev_id(),
+        render_formats.to_vec(),
+    );
+    let builder = if scanout.is_empty() {
+        builder
+    } else {
+        builder.add_preference_tranche(
+            device_node.dev_id(),
+            TrancheFlags::Scanout,
+            scanout,
+            // Every protocol version: the tranche is useful to anything that
+            // understands feedback at all.
+            0..=u32::MAX,
+        )
+    };
+    match builder.build() {
+        Ok(feedback) => Some(feedback),
+        Err(e) => {
+            tracing::warn!("{device_node:?}: no per-output dmabuf feedback ({e})");
+            None
+        }
+    }
+}
+
 /// An OpenGL ES renderer on the same GBM device.
 ///
 /// EGL rather than Vulkan, which is what makes it work where Vulkan cannot:
@@ -1180,12 +1243,32 @@ impl ViewportState {
                     if self.active_output.is_none() {
                         self.active_output = Some(name);
                     }
+                    // This output's own plane formats, for the scanout
+                    // tranche. Read here because it is the only place the
+                    // DrmOutput exists before it is handed over.
+                    let plane_formats =
+                        drm_output.with_compositor(|c| c.surface().plane_info().formats.clone());
+                    let render_formats: Vec<_> =
+                        crate::with_gpu!(&mut udev.devices[index].renderer, |r| {
+                            smithay::backend::renderer::ImportDma::dmabuf_formats(r)
+                                .iter()
+                                .copied()
+                                .collect()
+                        });
+                    let feedback = output_feedback(
+                        &udev.devices[index].render_node,
+                        &udev.devices[index].node,
+                        &render_formats,
+                        &plane_formats,
+                    );
+
                     udev.devices[index].surfaces.insert(
                         crtc,
                         Surface {
                             output,
                             connector: connector.handle(),
                             drm_output,
+                            feedback,
                             _global: global,
                             drawn: false,
                             dumped: false,
@@ -1302,11 +1385,22 @@ impl ViewportState {
         let Some(udev) = self.udev.as_ref() else {
             return;
         };
-        // The GPU displaying this output, and what it can import.
+        // This output's own feedback where there is one, because only that
+        // carries the scanout tranche — which formats could reach this
+        // monitor's plane rather than being composited. The device's is the
+        // fallback: right about which GPU to allocate against, silent about
+        // scanout.
+        let Some(id) = udev.id_of(output) else {
+            return;
+        };
         let Some(feedback) = udev
-            .id_of(output)
-            .and_then(|id| udev.devices.get(id.device))
-            .and_then(|device| device.feedback.as_ref())
+            .surface(id)
+            .and_then(|surface| surface.feedback.as_ref())
+            .or_else(|| {
+                udev.devices
+                    .get(id.device)
+                    .and_then(|device| device.feedback.as_ref())
+            })
         else {
             return;
         };

@@ -180,10 +180,21 @@ main device from this feedback and allocates something that device can import.
 Getting it right is the difference between a buffer that imports and one the
 client is told to allocate again.
 
-No scanout tranche is advertised. That is the hint that lets a buffer go
-straight to a display plane, and claiming it for a format the display controller
-cannot actually scan out is worse than not claiming it — it belongs with the
-per-CRTC plane formats, which is not what this knows.
+The feedback carries two tranches. The main one names the GPU's render node and
+everything its renderer can import, which is what makes a buffer usable at all.
+The preferred one carries `Scanout` and the formats this output's *primary
+plane* accepts, which is what lets a fullscreen buffer go straight to the
+display controller instead of through a composite.
+
+That second tranche is why the feedback is per output rather than per GPU: plane
+formats belong to a CRTC, and a monitor on the same card can have a different
+set from the one beside it.
+
+The scanout formats are intersected with what the renderer can import. A format
+the plane takes and the compositor cannot read is no use — the moment anything
+overlaps that surface it has to be composited, and a buffer that cannot be
+sampled has nowhere to go. Advertising it would trade a rare zero-copy frame for
+a window that vanishes when a notification appears over it.
 
 Still missing: GPU hotplug (plugging a monitor into an already-open card is
 handled; plugging in a card is not), and any sharing of a rendered frame between
