@@ -124,7 +124,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The project's own binary cache, on every job that evaluates this flake.
+      #
+      # flake.nix declares it in nixConfig, and that is not enough anywhere:
+      # nixConfig applies to interactive evaluation and only with
+      # accept-flake-config, so a runner reads none of it. Configuring the
+      # installer is what makes it real.
+      #
+      # Read-only and unauthenticated — the bucket is public, so there is no
+      # secret here and a fork gets the same substitutions. The public key
+      # matters as much as the URL: without it nix reaches the bucket and
+      # rejects every narinfo in it as unsigned, which fails silently and looks
+      # exactly like a cache with nothing in it.
       - uses: DeterminateSystems/nix-installer-action@v4
+        with:
+          extra-conf: |
+            extra-substituters = https://codebam-nix-cache.storage.googleapis.com
+            extra-trusted-public-keys = codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0=
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
       # One `nix develop` for all three, so the shell is realised once. Split
@@ -234,11 +250,17 @@ jobs:
           sudo mount --bind /mnt/nix /nix
           df -h / /mnt
 
+      # The project's cache here too, which sounds redundant in the job whose
+      # purpose is to build WebKit and is not: this rebuilds when flake.lock
+      # moves the input, and everything *else* in the closure — the whole
+      # nixpkgs stdenv the engine is built against — is what it substitutes.
       - uses: cachix/install-nix-action@v27
         if: steps.token.outputs.present == 'true'
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+            extra-substituters = https://codebam-nix-cache.storage.googleapis.com
+            extra-trusted-public-keys = codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0=
 
       # With a token this both substitutes and pushes: everything the job adds
       # to the store lands in the cache when the job ends.
@@ -291,9 +313,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The project's own cache, as in the `rust` job above. This is the job
+      # that most wants it: `nix build .#viewport-smithay` needs WPE WebKit,
+      # and building that from source is the four-hour job below.
       - uses: DeterminateSystems/nix-installer-action@v4
+        with:
+          extra-conf: |
+            extra-substituters = https://codebam-nix-cache.storage.googleapis.com
+            extra-trusted-public-keys = codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0=
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
+      # Cachix as well, if it is configured. Two substituters is not a
+      # conflict — nix asks each in turn — and the two were populated by
+      # different routes, so having both is strictly more likely to hit.
+      #
       # Read-only: this job wants the engine out of the cache, it has nothing
       # worth putting in. skipPush also means a public cache works here with
       # no secret at all, which is what makes the job survive a fork.
@@ -400,7 +433,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # As in the compositor job: this one links the same WebKit.
       - uses: DeterminateSystems/nix-installer-action@v4
+        with:
+          extra-conf: |
+            extra-substituters = https://codebam-nix-cache.storage.googleapis.com
+            extra-trusted-public-keys = codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0=
       - uses: DeterminateSystems/magic-nix-cache-action@v2
 
       - uses: cachix/cachix-action@v15
