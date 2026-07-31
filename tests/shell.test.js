@@ -198,6 +198,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   + ' fullscreenOnForTest: fullscreenOn,'
+  + ' dynamicOrderForTest: dynamicOrder,'
+  + ' TILING_MODES,'
+  + ' get tilingMode() { return tilingMode; },'
   + ' get activeOutput() { return activeOutput; } };';
 /* The shell is a set of ordered classic scripts sharing one global scope, so
  * concatenating them in load order and evaluating the result is exactly what
@@ -459,6 +462,82 @@ if (mode === 'tiling') {
   emit({ type: 'shell.command', command: 'layout.tabbed', args: [] });
   const after = sent.filter((m) => m.type === 'view.layout' && m.id === 2);
   check('focused window stays laid out while tabbed', after.length > 0);
+
+  /* Dynamic arrangements. Structure only: the stub returns one fixed rect for
+   * every element, so a measured width would say nothing. What is checked is
+   * the shape of the tree the mode built, and that every window survived it —
+   * an arrangement that loses a window is the failure that matters. */
+  emit({ type: 'shell.command', command: 'layout.toggle', args: [] });
+  const root = () => globalThis.__shell.workspaces.get(1);
+  const ids = () => globalThis.__shell.dynamicOrderForTest(root());
+  const opened = ids().length;
+
+  emit({ type: 'shell.command', command: 'layout.mode', args: ['master-stack'] });
+  check('master-stack puts one window beside the rest',
+    root().children.length === 2
+    && root().children[0].type === 'leaf'
+    && root().children[1].type === 'split');
+  check('the stack runs down the side',
+    root().dir === 'horizontal' && root().children[1].dir === 'vertical');
+  check('and no window was lost', ids().length === opened);
+
+  emit({ type: 'shell.command', command: 'layout.mode', args: ['spiral'] });
+  {
+    /* Each window takes half of what is left, turning ninety degrees each
+       time — so directions must alternate all the way down the nest. */
+    let node = root();
+    let alternated = true;
+    let depth = 0;
+    while (node && node.type === 'split' && node.children.length === 2) {
+      const inner = node.children[1];
+      if (inner && inner.type === 'split') {
+        if (inner.dir === node.dir) alternated = false;
+        depth++;
+      }
+      node = inner;
+    }
+    check('spiral alternates direction at every level', alternated && depth > 0);
+    check('spiral keeps every window', ids().length === opened);
+  }
+
+  emit({ type: 'shell.command', command: 'layout.mode', args: ['bsp'] });
+  check('bsp cuts a wide screen across first', root().dir === 'horizontal');
+  check('bsp keeps every window', ids().length === opened);
+
+  /* Back to manual, and the tree is left alone again. */
+  emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });
+  const manualShape = JSON.stringify(root());
+  emit({ type: 'shell.command', command: 'layout.toggle', args: [] });
+  emit({ type: 'shell.command', command: 'layout.toggle', args: [] });
+  check('manual is not rearranged behind your back',
+    JSON.stringify(root()) === manualShape);
+
+  /* No argument cycles, so one key can walk the modes. */
+  emit({ type: 'shell.command', command: 'layout.mode', args: [] });
+  check('layout.mode with no argument moves on',
+    globalThis.__shell.tilingMode !== 'manual');
+  emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });
+
+  /* An unknown name must not leave the shell in a mode that does not exist. */
+  emit({ type: 'shell.command', command: 'layout.mode', args: ['fibonacci'] });
+  check('an unknown mode name is not adopted',
+    globalThis.__shell.TILING_MODES.includes(globalThis.__shell.tilingMode));
+  emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });
+
+  /* A window opening in a dynamic mode rearranges rather than landing beside
+     the focused one — that is the whole difference from manual. */
+  emit({ type: 'shell.command', command: 'layout.mode', args: ['master-stack'] });
+  emit({ type: 'view.added', id: 90, title: 'extra', app_id: 'test',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  check('a new window joins the arrangement',
+    globalThis.__shell.dynamicOrderForTest(root()).includes(90));
+  check('and master-stack still has exactly two branches',
+    root().children.length === 2);
+
+  emit({ type: 'view.removed', id: 90 });
+  check('closing it rearranges back', ids().length === opened);
+  emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });
 } else {
   const before = sent.length;
   emit({ type: 'shell.command', command: 'layout.focus', args: ['left'] });

@@ -209,6 +209,16 @@ pub struct Config {
     /// strip carries on to the next monitor.
     #[serde(default = "yes")]
     pub focus_crosses_outputs: bool,
+
+    /// How the tiling tree arranges itself: `"manual"`, `"master-stack"`,
+    /// `"spiral"` or `"bsp"`.
+    ///
+    /// The shell's business entirely — the compositor has no layout and only
+    /// carries this across. Absent means `"manual"`, which is the tree of
+    /// splits the shell has always built and the only one that does what the
+    /// person at the keyboard said rather than what the mode says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiling_mode: Option<String>,
 }
 
 fn yes() -> bool {
@@ -355,6 +365,7 @@ mod tests {
             rules: None,
             theme: None,
             focus_crosses_outputs: true,
+            tiling_mode: None,
         }));
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
@@ -389,6 +400,7 @@ mod tests {
             rules: None,
             theme: None,
             focus_crosses_outputs: false,
+            tiling_mode: None,
         }));
         assert_eq!(value["focus_crosses_outputs"], false);
     }
@@ -403,6 +415,7 @@ mod tests {
             rules: Some(serde_json::json!([{"app_id": "mpv", "floating": true}])),
             theme: None,
             focus_crosses_outputs: true,
+            tiling_mode: None,
         }));
         assert!(value["rules"].is_array(), "rules must not be a string");
         assert_eq!(value["rules"][0]["app_id"], "mpv");
@@ -486,6 +499,7 @@ mod tests {
                 rules: None,
                 theme: None,
                 focus_crosses_outputs: true,
+                tiling_mode: None,
             })),
             json(&Event::Modifiers { logo: true }),
             json(&Event::SessionRestore {

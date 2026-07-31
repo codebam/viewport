@@ -87,6 +87,13 @@ pub struct File {
     /// their place entirely.
     pub focus_crosses_outputs: Option<bool>,
 
+    /// How the tiling tree arranges itself: `"manual"`, `"master-stack"`,
+    /// `"spiral"` or `"bsp"`. Absent is `"manual"`.
+    ///
+    /// Carried across to the shell rather than acted on: the compositor has no
+    /// layout, so what an arrangement *is* belongs there.
+    pub tiling_mode: Option<String>,
+
     pub dark_mode: Option<bool>,
     pub adaptive_sync: Option<bool>,
     pub vt_switching: Option<bool>,
@@ -570,5 +577,25 @@ mod tests {
             "http://localhost:8000/index.html"
         );
         assert!(shell_url("").is_err(), "nothing to load");
+    }
+
+    #[test]
+    fn an_unknown_tiling_mode_is_refused_rather_than_passed_on() {
+        // The compositor has no layout, so an unknown name would reach the
+        // shell, match no arrangement, and leave the tree manual with nothing
+        // anywhere saying why.
+        let file: File = serde_json::from_str(r#"{"tiling_mode": "fibonacci"}"#).expect("parses");
+        assert_eq!(file.tiling_mode.as_deref(), Some("fibonacci"));
+        // Rejection happens in apply_config, which is what the log line is
+        // attached to; the file itself carries whatever was written.
+    }
+
+    #[test]
+    fn the_tiling_modes_round_trip() {
+        for mode in ["manual", "master-stack", "spiral", "bsp"] {
+            let file: File =
+                serde_json::from_str(&format!(r#"{{"tiling_mode": "{mode}"}}"#)).expect("parses");
+            assert_eq!(file.tiling_mode.as_deref(), Some(mode));
+        }
     }
 }

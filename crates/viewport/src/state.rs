@@ -832,6 +832,9 @@ impl ViewportState {
                 // Off the end of a monitor carries on to the next one, which
                 // is what this has always done and what sway does.
                 focus_crosses_outputs: true,
+                // The tree of splits the shell has always built; a dynamic
+                // mode is opt-in.
+                tiling_mode: None,
             },
             shell_url: None,
             output_config: std::collections::HashMap::new(),
@@ -3920,6 +3923,21 @@ impl ViewportState {
         }
         if let Some(crosses) = file.focus_crosses_outputs {
             self.config.focus_crosses_outputs = crosses;
+        }
+        if let Some(mode) = file.tiling_mode {
+            // Checked here rather than in the shell, because this is where the
+            // name can be rejected with the file it came from. An unknown one
+            // would otherwise reach the shell, fail to match any arrangement,
+            // and leave the tree manual with nothing said.
+            const MODES: [&str; 4] = ["manual", "master-stack", "spiral", "bsp"];
+            if MODES.contains(&mode.as_str()) {
+                self.config.tiling_mode = Some(mode);
+            } else {
+                tracing::warn!(
+                    "unknown tiling_mode {mode:?}; expected one of {}",
+                    MODES.join(", ")
+                );
+            }
         }
         if let Some(tutorial) = file.tutorial {
             self.config.tutorial = tutorial;

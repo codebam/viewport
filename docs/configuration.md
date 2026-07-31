@@ -313,6 +313,46 @@ the workspace root's children — so switching `layout` and reloading rearranges
 what is open rather than discarding it.
 
 
+## Dynamic tiling arrangements
+
+`"layout": "tiling"` builds a tree of splits: a window opens beside the focused
+one, and the shape is whatever the splits you made say it is. That is the
+default and it is called `manual`.
+
+```json
+"tiling_mode": "master-stack"
+```
+
+replaces the manual part with an arrangement derived from *which windows are
+open*, so opening one rearranges what is already there.
+
+| Mode | What it does |
+| --- | --- |
+| `manual` | the tree of splits you make. The default |
+| `master-stack` | the first window takes one side, the rest share a column beside it |
+| `spiral` | each window takes half of what is left, turning ninety degrees every time |
+| `bsp` | the same nest, but each cut goes along the region's longer side, so nothing is driven to a silly shape |
+
+`Mod4+Shift+h` and `Mod4+Shift+l` reorder rather than resplit, so promoting a
+window to master is moving it to the front — there is no separate command for
+it. `layout.mode` switches at runtime, with a name or with no argument to cycle:
+
+```json
+"binds_override": { "Mod4+space": "shell layout.mode" }
+```
+
+These are arrangements, not new kinds of tree. What comes out is the same node
+structure the manual mode builds, so resizing, moving, tabbed containers, the
+overview and the saved session all keep working — a dynamic mode is a rule for
+what the tree *should* be, applied when the set of windows changes.
+
+That last part is the one thing to know: resize weights are reset when a window
+opens or closes, because that is when the arrangement is rebuilt. Every dynamic
+tiler behaves this way, and it is why `manual` is still the default.
+
+None of this touches `"layout": "scrolling"`, which is its own model.
+
+
 ## Focus at the edge of a monitor
 
 `Mod4+h` and `Mod4+l` step focus left and right, and by default running out of

@@ -43,6 +43,23 @@
   ],
   "layout": "tiling",
 
+  "_tiling_mode": [
+    "How the tiling tree arranges itself. Only meaningful with",
+    "\"layout\": \"tiling\" — the scrolling strip is its own model.",
+    "",
+    "  \"manual\"        the tree of splits you make. The default.",
+    "  \"master-stack\"  first window one side, the rest in a column beside it.",
+    "  \"spiral\"        each window halves what is left, turning each time.",
+    "  \"bsp\"           the same, cutting along the region's longer side.",
+    "",
+    "The dynamic modes derive the shape from which windows are open, so",
+    "opening one rearranges what is already there — and resize weights reset",
+    "when that happens, which is why manual is the default.",
+    "",
+    "\"shell layout.mode\" switches at runtime; with no argument it cycles."
+  ],
+  "tiling_mode": "manual",
+
   "_focus_crosses_outputs": [
     "Whether Mod4+h and Mod4+l — and Mod4+j and Mod4+k — carry focus onto the",
     "next monitor once there is nothing left to reach on this one. True is",

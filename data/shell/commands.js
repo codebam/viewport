@@ -72,6 +72,19 @@ function handleShellCommand(command, args) {
     case 'layout.split':
       pendingSplit = arg === 'vertical' ? 'vertical' : 'horizontal';
       break;
+    /* Switch arrangement without editing the config file. No argument cycles,
+       which is what a single key wants to do; a name picks one outright. */
+    case 'layout.mode': {
+      const next = TILING_MODES.includes(arg)
+        ? arg
+        : TILING_MODES[(TILING_MODES.indexOf(tilingMode) + 1) % TILING_MODES.length];
+      if (next !== tilingMode) {
+        tilingMode = next;
+        resetArrangements();
+        relayoutAll();
+      }
+      break;
+    }
     case 'bar.toggle':
       toggleBar();
       break;
@@ -191,6 +204,18 @@ window.addEventListener('viewport', (event) => {
       /* Absent means on, matching the compositor's own default: only an
          explicit false keeps focus on the monitor it is on. */
       focusCrossesOutputs = message.focus_crosses_outputs !== false;
+      /* Absent is manual: the tree of splits this has always built. A mode
+         arriving while windows are open rearranges them on the next relayout,
+         so switching it in the config file and reloading is enough. */
+      {
+        const next = TILING_MODES.includes(message.tiling_mode)
+          ? message.tiling_mode : 'manual';
+        if (next !== tilingMode) {
+          tilingMode = next;
+          resetArrangements();
+          relayoutAll();
+        }
+      }
       if (message.layout === 'scrolling' || message.layout === 'tiling') {
         if (message.layout !== layoutMode) {
           layoutMode = message.layout;

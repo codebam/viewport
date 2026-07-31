@@ -337,6 +337,12 @@ const resizeObserver = new ResizeObserver((entries) => {
 });
 
 function relayoutAll() {
+  /* A dynamic tiling mode derives the shape from which windows are open, so
+     the tree may be out of date before anything is measured. Cheap when
+     nothing changed: it compares the window set against what it last built
+     for and returns. */
+  arrangeAll();
+
   /* Where everything was, before the tree is thrown away and rebuilt. */
   const before = new Map();
   for (const [id, view] of views) {

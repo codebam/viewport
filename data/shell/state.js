@@ -128,6 +128,11 @@ let currentMode = 'default';
 /* 'tiling' (i3-style splits) or 'scrolling' (niri's strip of columns). Set by
  * the compositor from the config file; the shell implements both. */
 let layoutMode = 'tiling';
+/* How the tiling tree arranges itself: 'manual' is the splits you make, and
+ * 'master-stack', 'spiral' and 'bsp' derive the shape from which windows are
+ * open. Only meaningful while layoutMode is 'tiling' — the scrolling strip is
+ * its own model. See dynamic.js. */
+let tilingMode = 'manual';
 /* Rules from the config file, applied to a window when it opens. Matched on
  * app_id, or on title where an application gives everything the same app_id. */
 let windowRules = [];
