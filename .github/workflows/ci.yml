@@ -1,31 +1,25 @@
-# Six jobs. Three run on every push; three want something a hosted runner has
-# not got.
+# Four jobs, three of which run on every push and need nothing a hosted runner
+# has not got.
 #
-# `shell`, `rust` and `asan` are unassisted. The layout engine is plain
-# JavaScript and needs nothing but node. The Rust rewrite needs no WPE WebKit
-# for its own tests — the web engine is behind a non-default feature — and its
-# headless backend renders through surfaceless EGL, so it runs the Wayland
-# integration tests on a machine with no GPU at all. It does build the web
-# engine half, which is affordable because WebKit substitutes from the cache
-# rather than being compiled.
+# `shell` is the layout engine: plain JavaScript, node and nothing else.
+# `rust` is the compositor — fmt, clippy, the unit tests, the Wayland
+# integration tests, and a build with the web engine turned on. `asan` is the
+# same suite instrumented.
 #
-# The other three want WebKit, a DRM render node, or both:
+# That the last two run unassisted is recent and was not free. The headless
+# backend renders through a surfaceless EGL display, so the integration tests
+# want no GPU and no DRM render node; and WPE WebKit, which used to mean a
+# four-hour build on a runner with 14 GB of disk against a 20-40 GB build tree,
+# substitutes from the project's own binary cache in about a minute. Every job
+# below is configured to reach that cache, and `rust` refuses to start rather
+# than build the engine if it ever stops being there.
 #
-#   - WebKit is no longer the obstacle it was. flake.nix builds it from an
-#     upstream tarball with an overridden src, which no public cache has, and
-#     a hosted runner has 14 GB of disk against a 20-40 GB build tree — it runs
-#     out of disk rather than time. But the project's own bucket now carries
-#     it, every job here is configured to substitute from it, and
-#     `nix build .#viewport` takes about a minute as a result.
-#
-#   - A DRM render node still is. The wlroots compositor in src/ cannot start
-#     without one: `wlr_renderer_autocreate` enumerates /dev/dri/renderD* and a
-#     hosted runner has none. Pointing Vulkan at lavapipe does not help — that
-#     supplies a device, not a DRM fd — which was assumed here for a long time
-#     and was never true, because these jobs sat behind a repository variable
-#     from the day they were written. The meson tests now detect the node and
-#     skip rather than fail; set COMPOSITOR_RUNNER to a machine with a GPU and
-#     they run themselves.
+# The wlroots compositor these jobs used to test is gone; the tests that drove
+# it now drive the Rust binary instead. What was learned in the process is
+# worth keeping: those jobs could never have passed on a hosted runner, because
+# wlroots wants a DRM fd rather than merely a Vulkan device, and no lavapipe
+# ICD supplies one. They sat behind a repository variable from the day they
+# were written, so nobody found out.
 #
 # The wpewebkit-cache job builds the engine on demand and pushes it to Cachix.
 # It is never triggered by a push.
@@ -70,16 +64,6 @@ jobs:
   # stub the DOM and run the real data/shell scripts, so a broken layout tree
   # is caught here rather than by looking at screenshots.
   #
-  # The JSON accessor tests ride along here for the same reason: they link
-  # nothing but json-glib, so they need neither WebKit nor a Wayland socket and
-  # there is no reason to make them wait on the cache.
-  #
-  # They are compiled directly rather than through meson, which is the part
-  # worth explaining. meson.build declares wlroots and wpe-webkit at the top
-  # level, so `meson setup` fails on a runner that has neither — even for a
-  # target that uses neither. Two files and a pkg-config call reach the same
-  # binary without configuring the project at all. `meson test` still runs it
-  # locally and in the compositor job; this is the same code, checked earlier.
   shell:
     name: Shell logic
     runs-on: ubuntu-latest
@@ -103,23 +87,6 @@ jobs:
           node tests/shell.test.js data/shell scrolling session
           node tests/kiosk.test.js examples/kiosk
 
-      - name: Install json-glib
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libjson-glib-dev
-
-      # The type-checked accessors that stand between a page's postMessage and
-      # the dispatch table. Both of the crashes fixed in the IPC parser were a
-      # member that was present but not of the type the reader assumed, so this
-      # is the one piece of C where a wrong answer is a remote crash.
-      - name: JSON accessor tests
-        run: |
-          set -eux
-          cc -std=c11 -Wall -Wextra -Wno-unused-parameter -Iinclude \
-            -o unit-test tests/unit.c src/json_util.c \
-            $(pkg-config --cflags --libs json-glib-1.0)
-          ./unit-test
 
   # The Rust rewrite: fmt, clippy and the whole test suite, on every push.
   #
@@ -388,246 +355,3 @@ jobs:
       - name: Build WPE WebKit
         if: steps.token.outputs.present == 'true'
         run: nix build --print-build-logs .#wpewebkit
-
-  # Builds the compositor and drives real Wayland clients against a headless
-  # instance: tests/capture.test.sh and tests/lock.test.sh.
-  #
-  # Disabled by default because it cannot pass on a stock hosted runner (see
-  # the note at the top of this file). Three ways to turn it on, in order of
-  # how much work they are:
-  #
-  #   1. Set the repository variable CACHIX_CACHE and the CACHIX_AUTH_TOKEN
-  #      secret, then run the "Build and cache WPE WebKit" job above by hand
-  #      once. It builds .#wpewebkit and pushes the closure; from then on this
-  #      job substitutes the engine and compiles only the C. The derivation is
-  #      pinned in flake.lock, so it is rebuilt only when that input moves and
-  #      the weekly schedule keeps it alive against garbage collection.
-  #      Finally set COMPOSITOR_CI to "true".
-  #
-  #   2. Populate a binary cache with the wpewebkit derivation, so CI
-  #      substitutes it instead of building it. Build it once on a real
-  #      machine and push the closure:
-  #
-  #        nix build .#viewport
-  #        nix run nixpkgs#cachix -- push <cache-name> ./result
-  #
-  #      then set the repository variable COMPOSITOR_CI to "true" and add
-  #      CACHIX_CACHE plus the CACHIX_AUTH_TOKEN secret. A cache hit brings
-  #      the job in well under the disk and time limits; it only rebuilds
-  #      when flake.lock or the derivation actually changes.
-  #
-  #   3. Point it at a self-hosted runner with the disk to spare, by setting
-  #      COMPOSITOR_RUNNER to that runner's label.
-  compositor:
-    name: Compositor and Wayland tests
-    if: vars.COMPOSITOR_CI == 'true'
-    runs-on: ${{ vars.COMPOSITOR_RUNNER || 'ubuntu-latest' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      # The project's own cache, as in the `rust` job above. This is the job
-      # that most wants it: `nix build .#viewport-smithay` needs WPE WebKit,
-      # and building that from source is the four-hour job below.
-      - uses: DeterminateSystems/nix-installer-action@v4
-        with:
-          extra-conf: |
-            extra-substituters = https://codebam-nix-cache.storage.googleapis.com
-            extra-trusted-public-keys = codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0=
-      - uses: DeterminateSystems/magic-nix-cache-action@v2
-
-      # Cachix as well, if it is configured. Two substituters is not a
-      # conflict — nix asks each in turn — and the two were populated by
-      # different routes, so having both is strictly more likely to hit.
-      #
-      # Read-only: this job wants the engine out of the cache, it has nothing
-      # worth putting in. skipPush also means a public cache works here with
-      # no secret at all, which is what makes the job survive a fork.
-      - uses: cachix/cachix-action@v15
-        if: vars.CACHIX_CACHE != ''
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: true
-
-      # tests/capture.test.sh and tests/lock.test.sh both do
-      #   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
-      # and a hosted runner never sets it, so without this the Wayland socket
-      # and its lock file land in a world-writable /tmp shared with every
-      # other process on the machine. Give them the private 0700 directory
-      # the spec describes instead.
-      - name: Provide a runtime directory
-        run: |
-          mkdir -p "$RUNNER_TEMP/xdg-runtime"
-          chmod 700 "$RUNNER_TEMP/xdg-runtime"
-          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
-
-      # Only on a runner that has a GPU, which is the only kind that gets past
-      # the test gate below — and there the point is to use the *real* driver.
-      #
-      # This step used to run unconditionally, on the theory that lavapipe
-      # made a GPU unnecessary. It does not, and worse, forcing it on a
-      # machine that does have one would break the case that works: lavapipe
-      # exposes no DRM node, and wlroots wants a DRM fd rather than merely a
-      # Vulkan device. So this now picks the host's own ICD and only exists
-      # to be explicit about which device is in use.
-      #
-      # VK_ICD_FILENAMES is the older spelling of VK_DRIVER_FILES; which one
-      # is read depends on the loader version, so both were set. Neither is
-      # set now — the loader's own search finds the driver that owns the node
-      # wlroots is going to open, and naming one by hand can only disagree
-      # with it.
-      - name: Report the render device
-        run: |
-          set -- /dev/dri/renderD*
-          if [ -e "$1" ]; then
-            echo "render nodes: $*"
-          else
-            echo "no render node; the wlroots tests below will skip"
-          fi
-
-      - name: Build
-        run: nix build --print-build-logs .#viewport
-
-      # Only the Wayland tests here; the shell job already covered the rest,
-      # and running them twice would just make a node-less runner look green.
-      # Only where there is a DRM render node, which a hosted runner has not
-      # got.
-      #
-      # The step above this one used to claim lavapipe made these runnable
-      # anywhere. It does not: an ICD gives you a Vulkan *device*, and wlroots
-      # separately wants a DRM fd — `wlr_renderer_autocreate` enumerates
-      # /dev/dri/renderD* and finds nothing, so the compositor exits before it
-      # publishes a socket and all three tests fail in 0.15s with
-      #
-      #   [render/wlr_renderer.c:130] Failed to find any DRM render node
-      #
-      # That was never true, and nobody found out because this job sat behind
-      # a repository variable from the day it was written until 2026-07-30.
-      # Forcing pixman is not the escape either — the web engine needs a DRM fd
-      # of its own, which is why tests/lock.test.sh leaves the renderer alone.
-      #
-      # Skipping rather than failing, and detected rather than declared: point
-      # COMPOSITOR_RUNNER at a machine with a GPU and these run themselves,
-      # with no second variable to remember to set.
-      #
-      # The Rust rewrite runs the same three scripts unassisted in the `rust`
-      # job — its headless backend renders through surfaceless EGL and never
-      # asks for a device node — so this is coverage deferred, not lost.
-      - name: Test
-        run: |
-          set -- /dev/dri/renderD*
-          if [ ! -e "$1" ]; then
-            echo "::notice::no DRM render node on this runner; the wlroots" \
-                 "compositor cannot start, so the Wayland tests are skipped." \
-                 "Set COMPOSITOR_RUNNER to a machine with a GPU to run them."
-            exit 0
-          fi
-          nix develop --command bash -euo pipefail -c '
-            meson setup build
-            meson test -C build --print-errorlogs \
-              session-lock-crash capture-tiling capture-scrolling
-          '
-
-      - name: Upload the test log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: meson-testlog
-          path: build/meson-logs/testlog.txt
-          if-no-files-found: warn
-
-  # The same Wayland tests again, against a binary built with ASan and UBSan.
-  #
-  # Worth the second run because of what this compositor gets wrong: outputs
-  # and views outlive the structures that point at them. A monitor that
-  # disconnects mid-frame corrupted the heap and was only found by running the
-  # hotplug churn in scripts/asan-hotplug.sh under a sanitizer; the same
-  # family of bug has been fixed several times. Unsanitized, those failures
-  # look like a test that passed, or a crash somewhere unrelated hours later.
-  #
-  # Gated on the same variable as the compositor job because it links the same
-  # WebKit and needs the same populated cache to be affordable.
-  sanitizers:
-    name: Compositor under ASan and UBSan
-    if: vars.COMPOSITOR_CI == 'true'
-    runs-on: ${{ vars.COMPOSITOR_RUNNER || 'ubuntu-latest' }}
-    env:
-      # Leak checking is off for the same reason scripts/asan-hotplug.sh turns
-      # it off: WebKit and the Wayland libraries hold one-time allocations at
-      # exit and every run would be red for reasons that are not this
-      # project's. Use-after-free and out-of-bounds, the bugs actually being
-      # hunted, are unaffected.
-      ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0:abort_on_error=1
-      # UBSan only warns by default, and a warning in a log nobody reads is
-      # not a test result. Make it fatal so the meson test fails.
-      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-    steps:
-      - uses: actions/checkout@v4
-
-      # As in the compositor job: this one links the same WebKit.
-      - uses: DeterminateSystems/nix-installer-action@v4
-        with:
-          extra-conf: |
-            extra-substituters = https://codebam-nix-cache.storage.googleapis.com
-            extra-trusted-public-keys = codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0=
-      - uses: DeterminateSystems/magic-nix-cache-action@v2
-
-      - uses: cachix/cachix-action@v15
-        if: vars.CACHIX_CACHE != ''
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: true
-
-      - name: Provide a runtime directory
-        run: |
-          mkdir -p "$RUNNER_TEMP/xdg-runtime"
-          chmod 700 "$RUNNER_TEMP/xdg-runtime"
-          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
-
-      # See the compositor job. Same story: lavapipe was named here by hand and
-      # could not have worked, because wlroots wants a DRM fd rather than
-      # merely a Vulkan device. It matters more here — pixman cannot bring the
-      # compositor up at all, so a sanitizer job that fell back to it would
-      # report nothing forever.
-      - name: Report the render device
-        run: |
-          set -- /dev/dri/renderD*
-          if [ -e "$1" ]; then
-            echo "render nodes: $*"
-          else
-            echo "no render node; the sanitizer run below will skip"
-          fi
-
-      # build-asan is the directory scripts/asan-hotplug.sh expects, so the
-      # tree CI produces is the tree a maintainer already knows how to drive.
-      #
-      # b_lundef=false is not optional: meson passes -Wl,--no-undefined by
-      # default, and the sanitizer runtimes leave interposed symbols to be
-      # resolved at load time, so the link fails without it.
-      # Same gate as the job above, for the same reason: no DRM render node,
-      # no wlroots compositor, and a sanitizer finds nothing in a process that
-      # exits during renderer setup.
-      - name: Test
-        run: |
-          set -- /dev/dri/renderD*
-          if [ ! -e "$1" ]; then
-            echo "::notice::no DRM render node on this runner; the wlroots" \
-                 "compositor cannot start, so the sanitizer run is skipped." \
-                 "Set COMPOSITOR_RUNNER to a machine with a GPU to run it."
-            exit 0
-          fi
-          nix develop --command bash -euo pipefail -c '
-            meson setup build-asan \
-              -Db_sanitize=address,undefined -Db_lundef=false
-            meson test -C build-asan --print-errorlogs \
-              session-lock-crash capture-tiling capture-scrolling
-          '
-
-      - name: Upload the test log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: meson-testlog-asan
-          path: build-asan/meson-logs/testlog.txt
-          if-no-files-found: warn

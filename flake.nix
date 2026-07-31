@@ -181,24 +181,30 @@
           glslang
         ];
 
+        # What the compositor links and dlopens.
+        #
+        # Four entries left with the C tree and are worth naming so they do not
+        # come back: `wlroots` and `pixman` were its renderer, `libxcb-wm` was
+        # there because wlroots' xwayland.h wants the xcb-ewmh headers, and
+        # `json-glib` was its IPC parser — the Rust one is serde, in
+        # `crates/viewport-ipc`. Nothing under `crates/` references any of them
+        # outside comments about what the C build did.
         runtimeDeps = with pkgs; [
-          wlroots
           wayland
           wayland-protocols
           libxkbcommon
-          pixman
           libdrm
           mesa
           libglvnd
           udev
           libinput
           seatd
-          # wlroots' xwayland.h needs the xcb-ewmh headers, and Xwayland
-          # itself must be on PATH for X11 clients to run.
-          libxcb-wm
+          # Not linked — spawned. Smithay's X11Wm runs the real Xwayland
+          # binary, so it has to be on PATH for X11 clients to connect.
           xwayland
+          # glib and the engine go together: the WPE shim in
+          # crates/viewport-web/shim is C against GObject.
           glib
-          json-glib
           wpewebkit
           # The screencast portal's transport.
           pipewire
@@ -290,18 +296,6 @@
           };
         };
 
-        viewport = pkgs.stdenv.mkDerivation {
-          pname = "viewport";
-          version = "0.1.0";
-          src = self;
-          nativeBuildInputs = nativeDeps;
-          buildInputs = runtimeDeps;
-          meta = with pkgs.lib; {
-            description = "wlroots compositor with a WPE WebKit shell";
-            platforms = platforms.linux;
-            mainProgram = "viewport";
-          };
-        };
         # Shared by the two Rust shells below, which differ only in toolchain.
         rustDeps = with pkgs; [
             pkg-config
@@ -388,45 +382,12 @@
       in
       {
         packages = {
-          inherit viewport viewport-smithay wpewebkit;
-          default = viewport;
+          inherit viewport-smithay wpewebkit;
+          # `viewport` used to be here too, the wlroots build, and was the
+          # default. Both compositors produced a binary called `viewport`, so a
+          # system installed one or the other; there is only one now.
+          default = viewport-smithay;
         };
-
-        # --------------------------------------------------------------------
-        # `nix flake check` runs the part of the meson suite a sandbox can
-        # actually run, which is the shell logic tests and nothing else.
-        #
-        # The compositor tests (session-lock-crash, output-order, capture-*)
-        # each start viewport on the headless backend with WLR_RENDERER=vulkan,
-        # and vulkan needs a device node that the build sandbox does not have —
-        # the pixman fallback does not come up at all, so there is no renderer
-        # left to try. They also want an XDG_RUNTIME_DIR to put a Wayland
-        # socket in, and WebKit's web process wants user namespaces for bwrap.
-        # Naming them here would only guarantee a red check.
-        #
-        # The shell tests need node and a file, which is why they are the ones
-        # that survive. node is not a build dependency, so meson only defines
-        # them when it finds one — hence adding it here rather than relying on
-        # whatever happened to be in the closure.
-        # --------------------------------------------------------------------
-        checks.viewport = viewport.overrideAttrs (old: {
-          doCheck = true;
-          nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.nodejs ];
-          mesonCheckFlags = [
-            "shell-tiling"
-            "shell-scrolling"
-            "shell-session-tiling"
-            "shell-session-scrolling"
-            # Neither of these needs a seat, a DRM device or a Wayland socket:
-            # the first links json-glib alone, and the second drives the IPC
-            # parser against a display with no backend attached. The compositor
-            # tests are still excluded — they need all three.
-            "unit"
-            "ipc-replay"
-            "binding"
-            "kiosk"
-          ];
-        });
 
         # --------------------------------------------------------------------
         # The Rust rewrite, and nothing else.

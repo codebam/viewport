@@ -8,9 +8,8 @@
 # comes back is that window. See tests/capture-client.c for what is actually
 # being asserted and why those two things are the assertions.
 #
-#   ninja -C build && meson test -C build capture
-#
-# or directly:
+# Run it directly, or through scripts/integration.sh which compiles the
+# clients first:
 #
 #   tests/capture.test.sh build/viewport \
 #     build/viewport-test-paint-client build/viewport-test-capture-client

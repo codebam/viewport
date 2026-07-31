@@ -1,9 +1,0 @@
-# Off by default because the harness needs -fsanitize=fuzzer, which only clang
-# has: a normal build with gcc must never be asked to configure it. `meson
-# setup build-fuzz -Dfuzz=true` opts in.
-option(
-  'fuzz',
-  type: 'boolean',
-  value: false,
-  description: 'Build the libFuzzer harness for the IPC parser (needs clang)',
-)

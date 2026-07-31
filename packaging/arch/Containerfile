@@ -1,6 +1,0 @@
-FROM docker.io/library/archlinux:latest
-RUN pacman -Syu --noconfirm --disable-sandbox --needed \
-      base-devel nodejs meson ninja pkgconf \
-      wlroots0.20 wpewebkit wayland wayland-protocols libxkbcommon \
-      pixman libdrm libinput xcb-util-wm glib2 json-glib libglvnd \
- && pacman -Scc --noconfirm

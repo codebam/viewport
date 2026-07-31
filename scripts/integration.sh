@@ -10,12 +10,12 @@
 # headless, drive it with real clients over a real socket, and look at what
 # comes back.
 #
-# `meson test` runs the same three, and needs a configured build tree to do it.
-# meson.build declares wlroots and wpe-webkit at the top level, so `meson
-# setup` fails on a machine that has neither — even for targets that use
-# neither. That is the whole reason this script exists: the clients link
-# wayland-client and the generated marshalling code and nothing else, so
-# compiling them directly puts the suite on a runner that has no compositor
+# These used to be meson targets, which is why this script compiles the clients
+# by hand: meson.build declared wlroots and wpe-webkit at the top level, so
+# `meson setup` failed on a machine that had neither, even for targets that
+# used neither. meson is gone with the C compositor and the reasoning outlived
+# it — the clients link wayland-client and the generated marshalling code and
+# nothing else, which is what keeps this suite on a runner with no compositor
 # dependencies at all.
 set -euo pipefail
 

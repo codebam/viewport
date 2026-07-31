@@ -18,8 +18,8 @@
  *   node tests/shell.test.js data/shell scrolling
  *   node tests/shell.test.js data/shell tiling session
  *
- * Exits non-zero on failure. Registered with meson, so `meson test` runs all
- * of them; run one by hand with the lines above when a case fails.
+ * Exits non-zero on failure. CI runs all four combinations in the `shell`
+ * job; run one by hand with the lines above when a case fails.
  */
 const fs = require('fs');
 

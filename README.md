@@ -4,7 +4,7 @@ A Wayland compositor whose entire shell — wallpaper, dock, window frames,
 titlebars — is a web page, composited zero-copy alongside native Wayland
 clients.
 
-wlroots handles DRM/KMS, input and the `xdg-shell` protocol. WPE WebKit renders
+Smithay handles DRM/KMS, input and the `xdg-shell` protocol. WPE WebKit renders
 the UI to a DMA-BUF. Neither ever hands a pixel to the CPU.
 
 ```
@@ -14,19 +14,24 @@ the UI to a DMA-BUF. Neither ever hands a pixel to the CPU.
                         │  WPEBufferDMABuf     ▲ JSON over
                         ▼  (render_buffer)     │ script handler
         ┌──────────────────────────────────────┴───┐
-        │  viewport (C)                            │
-        │    wlr_scene   layer_web   ← shell       │
-        │                layer_apps  ← xdg clients │
+        │  viewport (Rust)                         │
+        │    Space       shell element ← shell     │
+        │                space elements ← clients  │
         └───────────────┬──────────────────────────┘
-                        ▼  wlr_scene_output_commit
+                        ▼  DrmOutput / frame submission
                      DRM/KMS
 ```
 
+There was a C implementation on wlroots, and this is a rewrite of it rather
+than a new project — which is why so much here is described as "what the C
+build did". It reached parity and was deleted; `docs/RUST-REWRITE.md` records
+what parity was defined to mean and how it was measured.
+
 ## How it fits together
 
-**The shell is the bottom layer.** A single `wlr_scene_buffer` covering the
-whole output layout, fed by WebKit's DMA-BUF. Client windows are stacked above
-it in `layer_apps`.
+**The shell is the bottom layer.** A custom `RenderElement` spanning the whole
+output layout, fed by WebKit's DMA-BUF and drawn below every space element.
+Client windows are stacked above it in `smithay::desktop::Space`.
 
 **Window placement is JavaScript's job.** The shell draws a frame with a hole in
 it — a `<div class="viewport">` — measures where that hole landed on screen, and
@@ -40,17 +45,17 @@ and fullscreen restructure the tree or adjust weights; no code calculates a
 window position. The gap between windows is a real element, which is why
 dragging a window edge needs no compositor support at all.
 
-**Hit-testing falls out of the layering.** `wlr_scene_node_at()` returns a client
-surface when the pointer is over a window and the shell's buffer everywhere
-else, so "click went to the titlebar" versus "click went to the app" needs no
-geometry bookkeeping and cannot go stale mid-animation.
+**Hit-testing falls out of the layering.** `Space::element_under()` returns a
+client surface when the pointer is over a window, and the shell element
+everywhere else, so "click went to the titlebar" versus "click went to the app"
+needs no geometry bookkeeping and cannot go stale mid-animation.
 
 **Frame pacing is real vblank.** WebKit will not paint frame N+1 until we
 acknowledge frame N; we acknowledge from the output's frame handler.
 
 **Explicit sync throughout.** WebKit attaches a rendering fence to each frame;
-we import it into a `drm_syncobj` timeline and let `wlr_scene` wait on that
-point rather than blocking the compositor. Wayland clients get
+we import it into a `drm_syncobj` timeline and wait on that point in the render
+pass rather than blocking the compositor. Wayland clients get
 `zwp_linux_drm_syncobj_v1`.
 
 ## Why WPEPlatform and not libwpe
@@ -76,13 +81,24 @@ hundred lines of glue to arrive at the same dma-buf.
 ## Build
 
 ```sh
-nix develop          # meson, ninja, wlroots 0.20, WPE WebKit, test clients
-meson setup build
-ninja -C build
+nix build .#viewport-smithay   # the compositor, web engine included
 ```
 
-The first `nix develop` compiles WPE WebKit from source. It is a full WebKit
-build: expect hours and tens of gigabytes. There is no binary cache for it.
+Or to work in the tree:
+
+```sh
+nix develop .#rust   # the toolchain and the test suite's dependencies
+cargo test --workspace
+scripts/integration.sh target/debug/viewport   # real clients, headless
+```
+
+`.#rust` deliberately carries no WPE WebKit: the web engine is behind a
+non-default feature, so the tests do not need it and the shell is not linked
+into what they run. `nix develop` on its own is the fuller workstation shell.
+
+WPE WebKit is a full WebKit build — hours, and tens of gigabytes — so it comes
+from the project's binary cache rather than being compiled. flake.nix names
+that cache and the key it is signed with.
 
 ```sh
 nix build .#wpewebkit   # do this once, deliberately, before anything else
@@ -135,5 +151,17 @@ On NixOS, `flake.nix` provides both a package and a dev shell.
 
 ## Licence
 
-MIT, matching wlroots. WPE WebKit and GLib are LGPL-2.1+ and dynamically
-linked, which imposes no licence condition on this code.
+Split, and deliberately. `crates/viewport` is **GPL-3.0-or-later**, because
+the compositor internals with the most prior art — `color-management-v1`,
+`wlr-output-management` — are all GPL, and being able to adapt niri's rather
+than work from the bare XML is worth real weeks. `crates/viewport-ipc` and
+`crates/viewport-web` stay **MIT**, so the protocol crate is reusable by anyone
+writing an alternative shell and the DMA-BUF `RenderingContext` could be
+upstreamed to Servo, which is MPL-2.0 and cannot absorb GPL-3.0 code.
+
+The cost is that it is a one-way valve: nothing in `crates/viewport` can go
+back to Smithay or wlroots, which are MIT. `docs/RUST-REWRITE.md` has the
+reasoning in full.
+
+WPE WebKit and GLib are LGPL-2.1+ and dynamically linked, which imposes no
+licence condition on this code.

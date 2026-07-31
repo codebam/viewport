@@ -45,12 +45,24 @@ The cost of the GPL half is that it is a one-way valve: code can be adapted
 upstreamed into Smithay or wlroots, which are MIT. Anything generic enough to
 be worth upstreaming should be written in one of the MIT crates on purpose.
 
-### Why the C tree is still here
+### The C tree is gone
 
-`src/` and `include/` stay for now as the reference being ported against —
-every Rust module lands with the C file it replaces named in its header
-comment. They get deleted once parity lands. `data/`, `protocols/`, `docs/`
-and `packaging/` are permanent.
+`src/` and `include/` stayed as long as they did because they were the
+reference being ported against — every Rust module landed with the C file it
+replaced named in its header comment. Those header comments are still there and
+still worth reading; they say what the port was checked against.
+
+They were deleted once parity landed, on the terms set out under "Parity, and
+when the C tree goes" below: the whole integration suite passing against the
+Rust binary, the compositor verified on real hardware, and a replacement for
+what the sanitizer job covered. `data/`, `protocols/`, `docs/` and `packaging/`
+are permanent.
+
+Four C files survive in `tests/`, and are not leftovers: `paint-client.c`,
+`capture-client.c`, `lock-client.c` and `frame-client.c` are Wayland *clients*.
+They link `wayland-client` and the generated marshalling code, they take the
+compositor under test as an argument, and they are what `scripts/integration.sh`
+drives against the Rust binary. `.clang-format` stays for them.
 
 ## What Smithay gives us and what it does not
 
@@ -496,9 +508,11 @@ happens to have — reproducible on a runner and on a workstation alike.
 1. ~~`capture.test.sh`, `lock.test.sh` and `output-order.test.sh` pass against
    the Rust binary.~~ Done — all four cases, on this workstation. They are not
    yet *run* against it by anything but a person, which is item 5.
-2. `meson.build` no longer needs to build a compositor: the `shell-*`, `kiosk`
-   and `unit` targets stay, and the C sources they compile against are gone or
-   moved.
+2. ~~`meson.build` no longer needs to build a compositor.~~ Done — it is gone
+   entirely, along with `meson.options`. The `shell-*` and `kiosk` targets it
+   used to define run directly under node in CI and had not needed meson for a
+   while. `unit` and `binding` went with the C sources they tested; the Rust
+   IPC parser has its own tests in `crates/viewport-ipc`.
 3. ~~The sanitizer job has an equivalent.~~ Done, and it took two things
    rather than one, because the question was posed wrongly. ASan over the C
    compositor was the *amplifier*; `scripts/asan-hotplug.sh` was the *test*.
@@ -522,8 +536,10 @@ happens to have — reproducible on a runner and on a workstation alike.
 
    Miri was considered and does not apply: it cannot execute FFI or syscalls,
    so it cannot run a compositor at all.
-4. `.github/workflows/ci.yml` no longer has a job gated on `COMPOSITOR_CI`
-   because it needs wlroots.
+4. ~~`.github/workflows/ci.yml` no longer has a job gated on `COMPOSITOR_CI`.~~
+   Done — both gated jobs are gone and the variable is referenced nowhere. What
+   they were for is covered unassisted now: the same three test scripts run in
+   the `rust` job against the Rust binary, and the `asan` job instruments it.
 5. ~~Those tests run on every push against the Rust binary.~~ Done. The
    `rust` job runs `scripts/integration.sh`, which compiles the clients
    directly — they link `wayland-client` and the generated protocol sources
