@@ -255,6 +255,18 @@ pub struct Device {
     pub renderer: Gpu,
     pub manager: Manager,
     pub surfaces: HashMap<crtc::Handle, Surface>,
+    /// What a client should allocate against for a surface being shown on this
+    /// GPU.
+    ///
+    /// The global carries one default feedback naming the primary, which is
+    /// the right answer while there is one GPU and the wrong one the moment
+    /// there are two: a window on the second card would be told to allocate
+    /// for the first, and the renderer that has to import it is the second's.
+    /// Per surface, a client is told the device actually displaying it.
+    ///
+    /// `None` if the feedback could not be built, which costs the per-surface
+    /// hint and nothing else — the default global still applies.
+    pub feedback: Option<smithay::wayland::dmabuf::DmabufFeedback>,
 }
 
 pub struct Udev {
@@ -484,7 +496,7 @@ pub fn init(
     );
 
     let mut session = session;
-    let (manager, renderer, drm_notifier) = open_device(&mut session, &card, &render)?;
+    let (manager, mut renderer, drm_notifier) = open_device(&mut session, &card, &render)?;
 
     // Input.
     let mut libinput = smithay::reexports::input::Libinput::new_with_udev::<
@@ -576,6 +588,7 @@ pub fn init(
         devices: vec![Device {
             node: card,
             render_node: render,
+            feedback: device_feedback(&render, &mut renderer),
             renderer,
             manager,
             surfaces: HashMap::new(),
@@ -610,11 +623,12 @@ pub fn init(
             break;
         };
         match open_device(&mut udev.session, other, &other_render) {
-            Ok((manager, renderer, notifier)) => {
+            Ok((manager, mut renderer, notifier)) => {
                 let index = udev.devices.len();
                 udev.devices.push(Device {
                     node: *other,
                     render_node: other_render,
+                    feedback: device_feedback(&other_render, &mut renderer),
                     renderer,
                     manager,
                     surfaces: HashMap::new(),
@@ -889,6 +903,39 @@ fn open_device(
     );
 
     Ok((manager, renderer, notifier))
+}
+
+/// What a client should allocate against for a surface shown on this GPU.
+///
+/// The main device is this GPU's render node, and the formats are the ones its
+/// renderer can actually import — which is the whole point on a machine with
+/// more than one card. A client told the primary's node allocates something the
+/// primary can import, and if the window is being displayed by another GPU it
+/// is that one which has to import it.
+///
+/// No scanout tranche. That is the hint that lets a buffer go straight to a
+/// plane, and claiming it for a format the display controller cannot actually
+/// scan out is worse than not claiming it — it belongs with the plane formats,
+/// which are per CRTC and not known here.
+fn device_feedback(
+    render_node: &DrmNode,
+    renderer: &mut Gpu,
+) -> Option<smithay::wayland::dmabuf::DmabufFeedback> {
+    use smithay::backend::renderer::ImportDma as _;
+
+    let formats: Vec<_> =
+        crate::with_gpu!(renderer, |r| r.dmabuf_formats().iter().copied().collect());
+    if formats.is_empty() {
+        return None;
+    }
+    let node = render_node.dev_id();
+    match smithay::wayland::dmabuf::DmabufFeedbackBuilder::new(node, formats).build() {
+        Ok(feedback) => Some(feedback),
+        Err(e) => {
+            tracing::warn!("{render_node:?}: no per-surface dmabuf feedback ({e})");
+            None
+        }
+    }
 }
 
 /// An OpenGL ES renderer on the same GBM device.
@@ -1207,6 +1254,7 @@ impl ViewportState {
         // told about none of them, then stopped. Measured 2026-07-30 with
         // WAYLAND_DEBUG on a frozen terminal — nine commits, zero `presented`.
         self.update_scanout_outputs(output, states);
+        self.send_dmabuf_feedback(output);
 
         let mut feedback = smithay::desktop::utils::OutputPresentationFeedback::new(output);
         for window in self.space.elements() {
@@ -1228,6 +1276,50 @@ impl ViewportState {
             );
         }
         feedback
+    }
+
+    /// Tell each surface which GPU to allocate against.
+    ///
+    /// The `linux-dmabuf` global carries one default feedback naming the
+    /// primary. That is the right answer while there is one GPU and the wrong
+    /// one as soon as there are two: a window being displayed by the second
+    /// card would be told to allocate for the first, and the renderer that has
+    /// to import it belongs to the second. What follows is a surface that
+    /// imports fine everywhere except the screen it is actually on.
+    ///
+    /// It matters for one GPU too. A client rendering on another device —
+    /// anything under `prime-run`, or a discrete GPU on a hybrid machine —
+    /// takes the main device from this feedback and allocates something that
+    /// device can import. Getting it right is the difference between a
+    /// zero-copy buffer and a rejected one the client has to allocate again.
+    ///
+    /// Sent per frame, from the same place the scan-out output is recorded,
+    /// because `send_dmabuf_feedback` only tells a surface whose primary
+    /// scan-out output is this one — which is state written immediately above.
+    fn send_dmabuf_feedback(&self, output: &smithay::output::Output) {
+        use smithay::desktop::utils::surface_primary_scanout_output;
+
+        let Some(udev) = self.udev.as_ref() else {
+            return;
+        };
+        // The GPU displaying this output, and what it can import.
+        let Some(feedback) = udev
+            .id_of(output)
+            .and_then(|id| udev.devices.get(id.device))
+            .and_then(|device| device.feedback.as_ref())
+        else {
+            return;
+        };
+
+        for window in self.space.elements() {
+            if self.space.outputs_for_element(window).contains(output) {
+                window
+                    .send_dmabuf_feedback(output, surface_primary_scanout_output, |_, _| feedback);
+            }
+        }
+        for layer in smithay::desktop::layer_map_for_output(output).layers() {
+            layer.send_dmabuf_feedback(output, surface_primary_scanout_output, |_, _| feedback);
+        }
     }
 
     /// Record which output each surface was drawn on for this frame.

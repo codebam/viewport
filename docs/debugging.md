@@ -168,6 +168,23 @@ A `crtc::Handle` is only unique within the device that issued it, and two GPUs
 routinely hand out the same value — keyed on the handle by itself, a vblank from
 the second card redraws an output on the first.
 
+Each surface is told which GPU to allocate against, per frame, from the device
+displaying it. The `linux-dmabuf` global carries one default feedback naming the
+primary — right with one GPU, wrong with two, because a window on the second
+card would be told to allocate for the first while the renderer that has to
+import it belongs to the second.
+
+That matters with one GPU as well. A client rendering on another device —
+anything under `prime-run`, or the discrete half of a hybrid machine — takes the
+main device from this feedback and allocates something that device can import.
+Getting it right is the difference between a buffer that imports and one the
+client is told to allocate again.
+
+No scanout tranche is advertised. That is the hint that lets a buffer go
+straight to a display plane, and claiming it for a format the display controller
+cannot actually scan out is worse than not claiming it — it belongs with the
+per-CRTC plane formats, which is not what this knows.
+
 Still missing: GPU hotplug (plugging a monitor into an already-open card is
 handled; plugging in a card is not), and any sharing of a rendered frame between
 devices. **Untested on real multi-GPU hardware** — it was written on a machine
