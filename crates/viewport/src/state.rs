@@ -829,6 +829,9 @@ impl ViewportState {
                 bar: None,
                 rules: None,
                 theme: None,
+                // Off the end of a monitor carries on to the next one, which
+                // is what this has always done and what sway does.
+                focus_crosses_outputs: true,
             },
             shell_url: None,
             output_config: std::collections::HashMap::new(),
@@ -3914,6 +3917,9 @@ impl ViewportState {
         }
         if let Some(logo) = file.logo {
             self.config.logo = logo;
+        }
+        if let Some(crosses) = file.focus_crosses_outputs {
+            self.config.focus_crosses_outputs = crosses;
         }
         if let Some(tutorial) = file.tutorial {
             self.config.tutorial = tutorial;

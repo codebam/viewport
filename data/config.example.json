@@ -43,6 +43,20 @@
   ],
   "layout": "tiling",
 
+  "_focus_crosses_outputs": [
+    "Whether Mod4+h and Mod4+l — and Mod4+j and Mod4+k — carry focus onto the",
+    "next monitor once there is nothing left to reach on this one. True is",
+    "sway's behaviour and the default. False stops directional focus at the",
+    "edge of the screen, which is worth having on a wide pair of monitors",
+    "where the last window on one is a keypress away from focusing something",
+    "you were not looking at.",
+    "",
+    "Asking for a monitor by name is unaffected: a binding on",
+    "\"shell output.focus right\" still crosses. This is about falling off the",
+    "end of a screen, not about ever leaving it."
+  ],
+  "focus_crosses_outputs": true,
+
   "_bar": [
     "\"visible\" always, \"hidden\" never, or \"auto\", which reveals the bar",
     "only while Mod4 is held. \"auto\" is for OLED panels: the bar is the one",

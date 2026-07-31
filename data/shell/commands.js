@@ -188,6 +188,9 @@ window.addEventListener('viewport', (event) => {
         message.logo === false);
       document.documentElement.classList.toggle('no-tutorial',
         message.tutorial === false);
+      /* Absent means on, matching the compositor's own default: only an
+         explicit false keeps focus on the monitor it is on. */
+      focusCrossesOutputs = message.focus_crosses_outputs !== false;
       if (message.layout === 'scrolling' || message.layout === 'tiling') {
         if (message.layout !== layoutMode) {
           layoutMode = message.layout;

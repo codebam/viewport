@@ -531,6 +531,18 @@ function focusedWorkspace() {
   return focusedId != null ? workspaceOf(focusedId) : null;
 }
 
+/* Step onto the monitor in this direction, if that is allowed.
+ *
+ * Every way out of scrollFocus goes through here rather than calling
+ * focusOutputDirection itself, so the setting cannot be honoured at one edge
+ * of the strip and forgotten at another. An explicit `output.focus` binding
+ * still crosses: asking for the next monitor by name is not the same as
+ * falling off the end of this one, and only the second is a surprise. */
+function crossToOutput(direction) {
+  if (!focusCrossesOutputs) return;
+  focusOutputDirection(direction);
+}
+
 /* Move focus along the strip, or up and down inside the focused column. The
  * compositor cannot do this itself here: the column you are moving to is
  * usually scrolled off screen, and directional focus works from what is on it. */
@@ -542,14 +554,14 @@ function scrollFocus(direction) {
      same thing the compositor's own directional focus does when it finds no
      window. */
   if (workspace === null) {
-    focusOutputDirection(direction);
+    crossToOutput(direction);
     return;
   }
 
   const root = workspaceRoot(workspace);
   const columns = root.children;
   if (columns.length === 0) {
-    focusOutputDirection(direction);
+    crossToOutput(direction);
     return;
   }
 
@@ -570,7 +582,7 @@ function scrollFocus(direction) {
        monitor, which is what the same keys do when tiling. Without this the
        leftmost and rightmost columns trapped focus on one screen. */
     if (next < 0 || next >= columns.length) {
-      focusOutputDirection(direction);
+      crossToOutput(direction);
       return;
     }
     send({ type: 'view.focus', id: firstOf(columns[next]) });
@@ -586,7 +598,7 @@ function scrollFocus(direction) {
   const next = at + (direction === 'down' ? 1 : -1);
 
   if (at < 0 || next < 0 || next >= leaves.length) {
-    focusOutputDirection(direction);
+    crossToOutput(direction);
     return;
   }
   send({ type: 'view.focus', id: leaves[next].id });

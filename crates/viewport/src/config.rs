@@ -76,6 +76,17 @@ pub struct File {
     pub logo: Option<bool>,
     pub tutorial: Option<bool>,
     pub bar: Option<String>,
+
+    /// Whether Mod4+h and Mod4+l — and the other directional focus keys —
+    /// may step onto the next monitor once there is nothing left to reach on
+    /// this one.
+    ///
+    /// True is the long-standing behaviour and stays the default. False keeps
+    /// focus on the monitor it is on, which is what someone wants when the
+    /// rightmost window on the left screen is one keypress away from losing
+    /// their place entirely.
+    pub focus_crosses_outputs: Option<bool>,
+
     pub dark_mode: Option<bool>,
     pub adaptive_sync: Option<bool>,
     pub vt_switching: Option<bool>,

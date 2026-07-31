@@ -313,6 +313,37 @@ the workspace root's children — so switching `layout` and reloading rearranges
 what is open rather than discarding it.
 
 
+## Focus at the edge of a monitor
+
+`Mod4+h` and `Mod4+l` step focus left and right, and by default running out of
+windows on one monitor carries on to the next one — sway's behaviour, and what
+this has always done.
+
+```json
+"focus_crosses_outputs": false
+```
+
+turns that off, so the edge of a monitor is where directional focus stops. It
+is worth having on a wide pair of screens, where the rightmost window on the
+left monitor is one keypress away from putting focus somewhere you were not
+looking.
+
+It covers `Mod4+j` and `Mod4+k` too. Vertical focus falls off the end the same
+way, and a setting that held for two of the four directions would be a
+different surprise rather than a fix.
+
+Both layouts honour it, but neither owns it. Tiling asks the compositor, which
+works out direction from where windows are on screen; the scrolling layout asks
+the shell, because the column being reached for is usually scrolled off screen.
+So the setting travels to the shell with the rest of the config, and `false`
+stops both — otherwise the same keypress would cross in one layout and not the
+other.
+
+What it does not touch is asking for a monitor by name. A binding on
+`shell output.focus right` still moves there: the setting is about falling off
+the end of one screen, not about ever leaving it.
+
+
 ## Outputs
 
 The `outputs` block is keyed by connector name — `DP-1`, `HDMI-A-1`, what

@@ -514,6 +514,59 @@ if (mode === 'scrolling') {
 
   emit({ type: 'shell.command', command: 'layout.focus', args: ['left'] });
   check('and back again', globalThis.__shell.activeOutput === start);
+
+  /* ...unless it was turned off, which is what someone wants when the edge of
+   * one screen is a keypress away from losing their place on it. */
+  emit({ type: 'config', layout: 'scrolling', logo: true, tutorial: true,
+    focus_crosses_outputs: false });
+
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['last'] });
+  const held = globalThis.__shell.activeOutput;
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['right'] });
+  check('with crossing off, the end of the strip is where focus stops',
+    globalThis.__shell.activeOutput === held);
+
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['left'] });
+  check('and the same at the other end',
+    globalThis.__shell.activeOutput === held);
+
+  /* Up and down fall off the strip the same way, so they honour it too —
+   * otherwise the setting would hold for h and l and not for j and k. */
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['up'] });
+  check('and vertically, which falls through the same way',
+    globalThis.__shell.activeOutput === held);
+
+  /* Asking for a monitor by name is not falling off the end of one, and still
+   * works — the setting is about the accident, not the intent. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['right'] });
+  check('an explicit output.focus still crosses',
+    globalThis.__shell.activeOutput !== held);
+
+  /* Back on, and the original behaviour returns without a reload. */
+  emit({ type: 'config', layout: 'scrolling', logo: true, tutorial: true,
+    focus_crosses_outputs: true });
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['last'] });
+  const again = globalThis.__shell.activeOutput;
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['right'] });
+  check('turning it back on restores crossing',
+    globalThis.__shell.activeOutput !== again);
+
+  /* A config that says nothing about it must not turn it off: absent means on,
+   * and the compositor omits keys it has no opinion about. */
+  emit({ type: 'config', layout: 'scrolling', logo: true, tutorial: true });
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['last'] });
+  const silent = globalThis.__shell.activeOutput;
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['right'] });
+  check('a config that omits the key leaves crossing on',
+    globalThis.__shell.activeOutput !== silent);
+
+  /* Put the focus back where the rest of the file expects it. These checks
+   * walked onto the second monitor, whose workspace is empty, and everything
+   * after this reads the columns of whichever output is active. */
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['left'] });
+  check('the strip is back on the monitor the other tests use',
+    globalThis.__shell.activeOutput === start);
 }
 
 if (mode === 'scrolling') {

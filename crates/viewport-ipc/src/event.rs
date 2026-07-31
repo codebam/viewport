@@ -194,6 +194,25 @@ pub struct Config {
     pub rules: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<serde_json::Value>,
+
+    /// Whether directional focus may leave the monitor it is on.
+    ///
+    /// Both halves of the desktop need this and neither owns it. Tiling asks
+    /// the compositor, which walks the windows on screen; the scrolling layout
+    /// asks the shell, because the column being moved to is usually scrolled
+    /// off screen and directional focus works from what is on it. So the
+    /// answer travels with the rest of the config rather than living on one
+    /// side, and `false` has to stop both or the same keypress crosses in one
+    /// layout and not the other.
+    ///
+    /// Defaults to true, which is what it has always done — off the end of the
+    /// strip carries on to the next monitor.
+    #[serde(default = "yes")]
+    pub focus_crosses_outputs: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,11 +354,43 @@ mod tests {
             bar: None,
             rules: None,
             theme: None,
+            focus_crosses_outputs: true,
         }));
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
         assert!(value.get("theme").is_none());
         assert_eq!(value["layout"], "tiling");
+    }
+
+    #[test]
+    fn a_config_without_the_crossing_key_reads_as_crossing() {
+        // The shell and the compositor have to agree on the default, and a
+        // message from a build that predates the key has to keep the old
+        // behaviour rather than silently trapping focus on one monitor.
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "scrolling",
+            "logo": true,
+            "tutorial": true,
+        }))
+        .expect("a config without the key");
+        assert!(config.focus_crosses_outputs);
+    }
+
+    #[test]
+    fn crossing_is_carried_to_the_shell_when_it_is_off() {
+        // The scrolling layout decides this in the shell, so `false` has to
+        // survive the trip — the compositor honouring it alone would stop
+        // tiling from crossing and leave the strip crossing anyway.
+        let value = json(&Event::Config(Config {
+            layout: "scrolling".into(),
+            logo: true,
+            tutorial: true,
+            bar: None,
+            rules: None,
+            theme: None,
+            focus_crosses_outputs: false,
+        }));
+        assert_eq!(value["focus_crosses_outputs"], false);
     }
 
     #[test]
@@ -351,6 +402,7 @@ mod tests {
             bar: Some("top".into()),
             rules: Some(serde_json::json!([{"app_id": "mpv", "floating": true}])),
             theme: None,
+            focus_crosses_outputs: true,
         }));
         assert!(value["rules"].is_array(), "rules must not be a string");
         assert_eq!(value["rules"][0]["app_id"], "mpv");
@@ -433,6 +485,7 @@ mod tests {
                 bar: None,
                 rules: None,
                 theme: None,
+                focus_crosses_outputs: true,
             })),
             json(&Event::Modifiers { logo: true }),
             json(&Event::SessionRestore {

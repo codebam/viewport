@@ -1325,6 +1325,13 @@ impl ViewportState {
 
         // Nothing that way. Hand the direction to the shell rather than doing
         // nothing, so the focus moves to the next monitor even if it is empty.
+        //
+        // Unless that was turned off, in which case the edge of the monitor is
+        // where directional focus stops and the keypress does nothing — which
+        // is the point, rather than an omission.
+        if !self.config.focus_crosses_outputs {
+            return;
+        }
         let event = viewport_ipc::Event::ShellCommand {
             command: "output.focus".to_owned(),
             args: vec![target.to_owned()],

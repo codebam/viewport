@@ -131,6 +131,11 @@ let layoutMode = 'tiling';
 /* Rules from the config file, applied to a window when it opens. Matched on
  * app_id, or on title where an application gives everything the same app_id. */
 let windowRules = [];
+/* Whether running off the end of the strip carries focus onto the next
+ * monitor. From the config file; true unless it says otherwise, which is what
+ * it has always done. The compositor honours the same setting for the tiling
+ * layout, where it does the directional focus itself. */
+let focusCrossesOutputs = true;
 /* Notifications on screen, newest last. The compositor owns the D-Bus side and
  * hands them here; what they look like and how long they stay is the shell's. */
 const notifications = new Map(); // id -> { el, timer }
