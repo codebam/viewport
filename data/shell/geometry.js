@@ -286,6 +286,42 @@ function fadeIn(id) {
   requestAnimationFrame(step);
 }
 
+/* How long the class below is left on. It only has to outlast the animation
+ * shell.css runs off it: once that has finished the element is already showing
+ * its resting style, so removing the class late changes nothing on screen and
+ * removing it early would cut the animation off. Generous on purpose, because
+ * the duration on the CSS side comes from a custom property a theme can
+ * change and this number cannot follow it. */
+const FLARE_MS = 400;
+
+/* The focus ring arriving, rather than appearing.
+ *
+ * Driven from here and not from `.window.focused` in the stylesheet, and that
+ * is the whole point of it being in JavaScript: relayoutAll() re-renders the
+ * tree, a divider drag runs one per mousemove, and an animation hung on a
+ * state restarts every time its element is rendered again. Attached to the
+ * moment focus actually moves, it runs once per focus change and nothing else
+ * can trigger it.
+ *
+ * It animates a one-pixel outline and nothing else. No rect changes, so
+ * nothing is remeasured and the compositor is told nothing at all. */
+function flareFocus(el) {
+  if (reducedMotion()) return;
+  /* Only when it is already running, which is alt-tabbing back and forth
+     inside the duration: adding a class an element already has is not a
+     change, so without this the second flare would not happen. The reflow is
+     what makes the removal take effect before the class goes back on, and it
+     is guarded because forcing a layout on every focus change to cover a case
+     that is usually not true is a poor trade — flipFrom already forces one per
+     relayout and does not need a second. */
+  if (el.classList.contains('focus-flare')) {
+    el.classList.remove('focus-flare');
+    void el.offsetWidth;
+  }
+  el.classList.add('focus-flare');
+  setTimeout(() => el.classList.remove('focus-flare'), FLARE_MS);
+}
+
 function sameBox(a, b) {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -406,10 +442,32 @@ function relayoutAll() {
       ? renderedIds.has(id)
       : (workspace !== null && shown.has(workspace) && renderedIds.has(id));
 
+    /* A window that was not on screen a moment ago fades in exactly as a
+       newly opened one does, and for the same reason: its contents are a
+       surface the compositor draws, so the only way to bring it up gently is
+       to tween the opacity over IPC. This is what gives a workspace switch
+       some motion — nothing else about it moves, the outgoing windows are
+       hidden and the incoming ones simply exist — and it is what makes the
+       overview arrive as miniatures appearing rather than as a grid that was
+       always there.
+
+       Bounded by the same 120ms as an opening window, and sampled at the same
+       30Hz, so switching to a workspace holding four windows costs the
+       compositor four surface-tree walks per sample and then stops. A window
+       already on screen is not touched, so a relayout that moves things about
+       fades nothing. */
+    const wasVisible = !view.el.hidden;
     view.el.hidden = !visible;
+    if (visible && !wasVisible) fadeIn(id);
     if (!visible && view.box !== null) {
       view.box = null;
       send({ type: 'view.visible', id, visible: false });
+    }
+    /* Before the class is set, so this reads the previous frame's answer: the
+       flare belongs to focus moving, not to the window being re-rendered while
+       it happens to hold focus. */
+    if (id === focusedId && !view.el.classList.contains('focused')) {
+      flareFocus(view.el);
     }
     view.el.classList.toggle('focused', id === focusedId);
     view.el.classList.toggle('selected', selectedIds.has(id));

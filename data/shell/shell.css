@@ -197,10 +197,31 @@ body {
 .desktop.bar-hidden .bar,
 .desktop.has-fullscreen .bar { display: none; }
 
-/* The bar under 'auto' comes and goes with a modifier key, which is fast enough
-   to read as a flicker if it simply appears. Fading it costs nothing and makes
-   holding Mod4 feel like revealing something rather than triggering it. */
-.bar { transition: opacity var(--anim) var(--ease); }
+/* Revealing the bar.
+ *
+ * This was an opacity *transition*, and it never once ran: `display: none`
+ * above is what hides the bar, display cannot be transitioned, and an element
+ * arriving from display:none has no previous style to move from. A keyframed
+ * entrance does run — going from display:none to displayed starts one — which
+ * is the same mechanism the mode badge above uses.
+ *
+ * The strip itself only fades. Under 'auto' its rect is measured and handed to
+ * the compositor as an overlay so the bar can be drawn in front of the windows
+ * it floats over — see setOverlay — and a bar that slid would be drawn cropped
+ * to a rectangle it had already left. The contents slide instead: a transform
+ * on a child changes no ancestor's box, and nothing measures these two. */
+.bar { animation: bar-in var(--anim-slow) var(--ease); }
+.bar-left, .bar-right { animation: bar-slide var(--anim-slow) var(--ease); }
+
+@keyframes bar-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes bar-slide {
+  from { opacity: 0; transform: translateY(-.4rem); }
+  to { opacity: 1; transform: none; }
+}
 
 .bar-left, .bar-right { display: flex; align-items: center; gap: .35rem; }
 
@@ -399,10 +420,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
-  /* Cycling tabs is a keyboard gesture with no motion of its own — the strip
-     does not move, one title lights and another goes out — so without this the
-     only feedback is a frame appearing somewhere else entirely. Colour on a
-     24px strip: the repaint is the strip. */
+  /* For the pointer only, and worth being clear about: renderTabbed builds the
+     strip from new elements every render, and a transition needs a previous
+     computed style to move from — so cycling tabs cannot animate through this
+     however it is written. Hovering can, because no render happens in between.
+     Making the switch animate would mean keeping the tab elements across
+     renders, as the bar's buttons now are; the tab strip is built inside the
+     recursive tree render, where that is a good deal harder to do safely. */
   transition:
     background-color var(--anim) var(--ease),
     border-color var(--anim) var(--ease),
@@ -673,6 +697,32 @@ body {
   border-color: var(--border-focus);
   outline-color: var(--focus-tint);
 }
+
+/* The ring arriving. A brighter, wider ring contracts onto the resting one, so
+   focus landing somewhere is something that happens rather than something that
+   is simply true a frame later.
+ *
+ * The `to` values are the resting state above, which is what lets this run
+ * with no fill mode: when it ends the element is already showing what the
+ * animation left it at, and there is nothing to snap back from.
+ *
+ * The class comes from flareFocus() in geometry.js rather than from .focused
+ * itself, because an animation on a state restarts every time its element is
+ * rendered again — and during a divider drag that is once per mousemove. See
+ * the note there.
+ *
+ * outline-width is animated and not border-width: an outline occupies no
+ * space, so a ring that grows and shrinks moves no edge, changes no measured
+ * rect and sends the compositor nothing. Doing the same with the border would
+ * resize the hole and every client behind it, twice, per focus change. */
+.window.focus-flare {
+  animation: focus-flare var(--anim-slow) var(--ease);
+}
+
+@keyframes focus-flare {
+  from { outline-color: var(--border-focus); outline-width: 2px; }
+  to { outline-color: var(--focus-tint); outline-width: 1px; }
+}
 .window.selected {
   border-color: var(--select);
   outline-color: var(--select-tint);
@@ -848,8 +898,13 @@ html.no-tutorial .empty .tutorial { display: none; }
    worth saying which one the pointer would take. */
 .notification:hover { border-color: var(--border-hover); }
 
+/* Every keyframed entrance in the file, by name. Zeroing --anim-slow above
+   covers the durations, but a zero-length animation still shows its from-state
+   for the frame it occupies — which for the bar is a frame of nothing where
+   the bar should be. */
 @media (prefers-reduced-motion: reduce) {
-  .notification, .overview, .mode, .screencast-dialog { animation: none; }
+  .notification, .overview, .mode, .screencast-dialog,
+  .bar, .bar-left, .bar-right, .window.focus-flare { animation: none; }
 }
 
 /* Low urgency recedes; critical asks to be dealt with and, per the

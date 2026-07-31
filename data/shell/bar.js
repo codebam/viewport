@@ -26,10 +26,10 @@ function formatBytes(n) {
 /* The bar is drawn in two halves, because they change at wildly different
  * rates and cost wildly different amounts.
  *
- * The chrome — workspace buttons and taskbar — is rebuilt with
- * replaceChildren(), which allocates every element and rebinds every click
- * listener. It only ever changes when the window list, the workspace set or
- * the focus moves, all of which already go through a relayout.
+ * The chrome — workspace buttons and taskbar — is updated in place by
+ * syncButtons() below. It only ever changes when the window list, the
+ * workspace set or the focus moves, all of which already go through a
+ * relayout.
  *
  * The modules are a mode label and six status strings, redrawn whenever the
  * compositor publishes a sample — every two seconds, awake or idle. Redrawing
@@ -41,6 +41,42 @@ function formatBytes(n) {
 function renderBar(name) {
   renderBarChrome(name);
   renderBarModules(name);
+}
+
+/* A row of buttons, kept and updated rather than rebuilt.
+ *
+ * This used to be replaceChildren() and a fresh element per entry, which cost
+ * an allocation and a rebound listener per workspace and per window on every
+ * relayout — a divider drag runs one of those per mousemove. It also made the
+ * bar unanimatable, which is the reason this changed: a CSS transition needs a
+ * previous computed style to move from, and an element created this frame has
+ * none. The pill under the active workspace could only ever jump. Keeping the
+ * element is what lets shell.css carry the colour across.
+ *
+ * Reuse is positional, so a listener cannot close over which workspace or
+ * window it was made for. It reads that back off the element instead, which is
+ * also what makes one listener per button enough for the life of the bar. */
+function syncButtons(container, items, activate) {
+  const existing = [...container.children];
+
+  for (let i = 0; i < items.length; i++) {
+    let button = existing[i];
+    if (button === undefined) {
+      button = document.createElement('button');
+      button.addEventListener('click', () => activate(button.dataset.key));
+      container.append(button);
+    }
+    const item = items[i];
+    /* Guarded exactly as renderBarModules() guards its strings: an assignment
+       dirties the element whether or not the value is new, and a dirty element
+       is a repaint of a bar that mostly has nothing to say. */
+    if (button.dataset.key !== item.key) button.dataset.key = item.key;
+    if (button.textContent !== item.text) button.textContent = item.text;
+    if (button.className !== item.className) button.className = item.className;
+  }
+
+  /* Whatever the last render needed and this one does not. */
+  for (let i = items.length; i < existing.length; i++) existing[i].remove();
 }
 
 function renderBarChrome(name) {
@@ -55,28 +91,32 @@ function renderBarChrome(name) {
   /* A workspace holding only floating windows is still occupied. */
   for (const [, floating] of floatingEntries()) occupied.add(floating.workspace);
 
-  output.workspacesEl.replaceChildren();
-  for (const n of [...occupied].sort((a, b) => a - b)) {
-    const host = hostOfWorkspace(n);
-    const button = document.createElement('button');
-    button.className = (n === output.workspace ? 'active' : '')
-      + (host !== null && host !== name ? ' elsewhere' : '');
-    button.textContent = String(n);
-    button.addEventListener('click', () => switchWorkspace(name, n));
-    output.workspacesEl.append(button);
-  }
+  /* Built by joining an array rather than by concatenating, so the string is
+     the same one every render for an unchanged button and the guard above can
+     see that it is. */
+  syncButtons(output.workspacesEl,
+    [...occupied].sort((a, b) => a - b).map((n) => {
+      const host = hostOfWorkspace(n);
+      const classes = [];
+      if (n === output.workspace) classes.push('active');
+      if (host !== null && host !== name) classes.push('elsewhere');
+      return { key: String(n), text: String(n), className: classes.join(' ') };
+    }),
+    (key) => switchWorkspace(name, Number(key)));
 
-  output.taskbarEl.replaceChildren();
-  for (const id of idsOf(output.workspace)) {
-    const view = views.get(id);
-    if (!view) continue;
-    const button = document.createElement('button');
-    button.className = (id === focusedId ? 'focused' : '')
-      + (isFloating(id) ? ' floating' : '');
-    button.textContent = view.title || view.app_id || `view ${id}`;
-    button.addEventListener('click', () => send({ type: 'view.focus', id }));
-    output.taskbarEl.append(button);
-  }
+  syncButtons(output.taskbarEl,
+    idsOf(output.workspace).filter((id) => views.has(id)).map((id) => {
+      const view = views.get(id);
+      const classes = [];
+      if (id === focusedId) classes.push('focused');
+      if (isFloating(id)) classes.push('floating');
+      return {
+        key: String(id),
+        text: view.title || view.app_id || `view ${id}`,
+        className: classes.join(' '),
+      };
+    }),
+    (key) => send({ type: 'view.focus', id: Number(key) }));
 }
 
 /* Every write here is guarded, exactly as renderClocks() guards the clock: an
