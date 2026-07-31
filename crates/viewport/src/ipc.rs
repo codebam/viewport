@@ -44,6 +44,21 @@ struct Client {
     /// writable half of the source has to.
     pending: Vec<u8>,
     token: RegistrationToken,
+    /// The write-readiness source, which exists only while `pending` does.
+    ///
+    /// A connected socket with an empty send buffer is writable at all times,
+    /// so a level-triggered source that asks about writability is ready on
+    /// every pass through the loop whether or not there is anything to write.
+    /// Registering both halves for the life of the connection therefore meant
+    /// the compositor never slept while anything was connected: an idle
+    /// session went from 15% of a core to 101% the moment a client opened the
+    /// socket, with no message sent — and Viewport's own tooling holds exactly
+    /// that kind of connection.
+    ///
+    /// So writability is asked about only when there is something to write.
+    /// This is inserted when a write comes up short and removes itself once
+    /// the backlog is gone.
+    write_token: Option<RegistrationToken>,
     dead: bool,
 }
 
@@ -51,6 +66,9 @@ pub struct Ipc {
     path: PathBuf,
     clients: HashMap<u64, Client>,
     next_client: u64,
+    /// For arming a client's write source from the send path, which is
+    /// reached from ordinary compositor code and not only from a callback.
+    loop_handle: LoopHandle<'static, ViewportState>,
 }
 
 impl Ipc {
@@ -118,6 +136,7 @@ impl Ipc {
             path,
             clients: HashMap::new(),
             next_client: 1,
+            loop_handle: loop_handle.clone(),
         })
     }
 
@@ -135,6 +154,7 @@ impl Ipc {
         for client in self.clients.values_mut() {
             client.send(text.as_bytes());
         }
+        self.arm_writers();
     }
 
     /// Send to one client, for an error that belongs to its sender.
@@ -145,6 +165,69 @@ impl Ipc {
         text.push('\n');
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.send(text.as_bytes());
+        }
+        self.arm_writer(client_id);
+    }
+
+    /// Ask about writability for any client a write came up short on.
+    ///
+    /// The `any` first so that the ordinary case — every write completed,
+    /// which is nearly all of them — costs a scan and no allocation.
+    fn arm_writers(&mut self) {
+        if !self.clients.values().any(Client::wants_writable) {
+            return;
+        }
+        let ids: Vec<u64> = self
+            .clients
+            .iter()
+            .filter(|(_, client)| client.wants_writable())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.arm_writer(id);
+        }
+    }
+
+    fn arm_writer(&mut self, id: u64) {
+        // A clone, so the borrow of `self.clients` below does not collide with
+        // the loop handle this inserts through.
+        let loop_handle = self.loop_handle.clone();
+        let Some(client) = self.clients.get_mut(&id) else {
+            return;
+        };
+        if !client.wants_writable() {
+            return;
+        }
+
+        let source = Generic::new(Shared(client.stream.clone()), Interest::WRITE, Mode::Level);
+        let token = loop_handle.insert_source(source, move |_, _, state: &mut ViewportState| {
+            // Drained, or gone: either way this source has no further job, and
+            // leaving it registered would be the busy loop it exists to avoid.
+            let mut finished = true;
+            if let Some(client) = state.ipc.clients.get_mut(&id) {
+                client.flush();
+                finished = client.dead || client.pending.is_empty();
+                if finished {
+                    client.write_token = None;
+                }
+            }
+            // Not reaping here: a dead client is removed by the read half,
+            // which sees the same hangup, and removing this source twice —
+            // once by returning `Remove` and once through `reap` — is not
+            // something calloop forgives.
+            Ok(if finished {
+                PostAction::Remove
+            } else {
+                PostAction::Continue
+            })
+        });
+
+        match token {
+            Ok(token) => client.write_token = Some(token),
+            Err(e) => {
+                tracing::warn!("could not watch control client {id} for writability: {e}");
+                client.dead = true;
+            }
         }
     }
 
@@ -158,6 +241,9 @@ impl Ipc {
         for id in dead {
             if let Some(client) = self.clients.remove(&id) {
                 loop_handle.remove(client.token);
+                if let Some(token) = client.write_token {
+                    loop_handle.remove(token);
+                }
             }
         }
     }
@@ -170,6 +256,12 @@ impl Drop for Ipc {
 }
 
 impl Client {
+    /// Whether this client has a backlog and nothing watching for the chance
+    /// to clear it.
+    fn wants_writable(&self) -> bool {
+        !self.dead && !self.pending.is_empty() && self.write_token.is_none()
+    }
+
     fn send(&mut self, bytes: &[u8]) {
         if self.dead {
             return;
@@ -208,15 +300,13 @@ impl ViewportState {
         let id = self.ipc.next_client;
         self.ipc.next_client += 1;
 
-        let source = Generic::new(Shared(stream.clone()), Interest::BOTH, Mode::Level);
+        // READ only. Writability is asked about separately and only while
+        // there is a backlog — see `Client::write_token` for what asking about
+        // it unconditionally cost.
+        let source = Generic::new(Shared(stream.clone()), Interest::READ, Mode::Level);
         let token = match self
             .loop_handle
             .insert_source(source, move |readiness, shared, state| {
-                if readiness.writable {
-                    if let Some(client) = state.ipc.clients.get_mut(&id) {
-                        client.flush();
-                    }
-                }
                 if readiness.readable {
                     state.ipc_read(id, &shared.0);
                 }
@@ -237,6 +327,7 @@ impl ViewportState {
                 framer: Framer::new(),
                 pending: Vec::new(),
                 token,
+                write_token: None,
                 dead: false,
             },
         );
