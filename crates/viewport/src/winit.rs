@@ -83,6 +83,29 @@ pub fn init(
         .map(|node| (node, formats));
     }
 
+    // The ping the shell uses to wake the loop, as in `udev.rs`. It has to be
+    // in place *before* `start_shell`, because that is where it gets handed
+    // over: `start_shell` ends with `if let Some(ping) = self.shell_ping`, so a
+    // ping installed afterwards is never given to the shell at all.
+    //
+    // Missing here until now, and the effect was quiet rather than loud. The
+    // shell started, connected, painted, and posted — and nothing ever called
+    // `drain_shell`, so every message it sent sat in the mailbox for the life
+    // of the session. Windows still appeared, because `state.rs` gives up on
+    // the shell after 2500ms and falls back to a built-in layout, which is why
+    // this looked like a working desktop rather than a broken one. Anyone
+    // developing the shell on this backend was watching the fallback.
+    #[cfg(feature = "wpe")]
+    {
+        let (ping, source) = smithay::reexports::calloop::ping::make_ping()
+            .map_err(|e| anyhow::anyhow!("creating the shell ping: {e}"))?;
+        event_loop
+            .handle()
+            .insert_source(source, |_, _, state| state.drain_shell())
+            .map_err(|e| anyhow::anyhow!("inserting the shell ping: {e}"))?;
+        state.shell_ping = Some(ping);
+    }
+
     // The shell, nested. It needs DRM nodes to allocate on — the same GPU the
     // host compositor is using, which is what the EGL device names.
     #[cfg(feature = "wpe")]
