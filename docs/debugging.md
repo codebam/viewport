@@ -105,6 +105,51 @@ disarmed for that window, so a merely slow shell costs nothing.
 
 Not yet implemented: tablet and stylus input.
 
+## When the shell dies outright
+
+The watchdog above covers a shell that is slow or wrong. A different thing
+happens when WebKit's web process is killed — by a crash, or by the OOM killer
+— and it is worse, because it does not look like a failure at all. WebKit leaves
+the view blank and stops painting, so the last frame stays on screen for ever:
+the bar is still there, the wallpaper is still there, and nothing redraws and no
+click does anything. On a desktop whose entire interface is that one page, that
+is indistinguishable from a compositor that has hung.
+
+The web process is not the compositor's process, so this is survivable. It just
+needed someone to act on it, and nothing was listening to
+`web-process-terminated`. Now the compositor is: the frames in flight are
+dropped, because their buffers belonged to the process that just died, and the
+page is loaded again on the next pass through the event loop. Loaded rather than
+reloaded — a process that died *during* the initial load has nothing to reload,
+and a shell that throws on startup is exactly the case that produces. The
+`WebKitWebView` and every signal on it survive; only the process behind it is
+replaced.
+
+The last painted frame is deliberately left on screen while the reload runs. It
+is the compositor's own copy rather than WebKit's memory, so keeping it is safe,
+and a transient crash then costs a second of a stale bar instead of a black
+screen. It is dropped only when recovery is abandoned, where a frozen picture
+would be a lie about the state of the desktop.
+
+Five restarts inside a minute is the budget, and both halves of that are load-
+bearing. A plain restart limit is wrong in either direction: a machine up for a
+week that has crashed five times over that week is healthy, and one that crashes
+five times in five seconds is a page that cannot load and must not be retried
+for ever — each attempt spawns a process. The window is what tells the two
+apart. When it is used up the compositor stops trying and says so; the desktop
+is gone either way, and what stopping preserves is a machine that can still be
+logged into and read the log.
+
+A termination the API asked for is not a crash and is not restarted. Something
+wanted that process gone, and reloading would fight it.
+
+The restarted page knows nothing — it has painted nothing, said nothing, and has
+no idea what the layout is. Everything the compositor derived from the old one
+goes with it, including the recorded size, so the new process is told how big it
+is; WebKit paints nothing into a view of no size, and a shell that is never told
+would load and then sit there. The window list is rebuilt by the shell itself
+through `view.query`, which is the same path a manual reload already used.
+
 ## Fallback
 
 The load deadline is on the **first painted frame**, not on the load event. A

@@ -76,6 +76,62 @@ place a description recorded against a surface can be attached to the texture
 made from its buffer. Recording it anywhere else means recording it and then
 decoding the buffer as sRGB anyway.
 
+## Hardware video
+
+A video decoder does not produce colour. VA-API and NVDEC hand back NV12, P010
+and their relatives — luma in one plane, the two colour-difference channels at
+half resolution in another — and a compositor that can only import single-plane
+RGB forces the player to convert every frame on the CPU before it can hand
+anything over. That conversion is the largest avoidable cost in playing a video,
+and it is paid sixty times a second.
+
+So the multi-planar formats are imported directly: NV12, NV21, NV16, P010, P016,
+YUV420, YVU420, YUV422 and YUV444. The pixels are never touched. Sampling them
+as colour is `VkSamplerYcbcrConversion`'s job, done by the sampler as the shader
+reads the texture, so the fragment shader is the same one every other surface
+uses.
+
+That conversion is not something a draw can choose. Vulkan requires the sampler
+carrying it to be *immutable* in the descriptor set layout, which makes it part
+of the pipeline layout and so part of the pipeline itself. A conversion
+therefore brings its own set layout, pipeline layout and pipeline along with it,
+and the conversion object is cached on the device rather than on either — the
+image view and the pipeline's sampler have to name the same object, and a second
+conversion built with identical parameters is a different object as far as
+Vulkan is concerned.
+
+Two things a DMA-BUF cannot carry have to be inferred. The matrix comes from the
+picture's height — BT.601 at or below PAL's 576 active lines, BT.709 above it,
+which is the rule every video stack uses — and the range is taken as narrow,
+which is what broadcast and every hardware decoder default to. A full-range
+buffer read as narrow comes out slightly washed out; the reverse clips. Chroma
+siting is not guessed: it is whichever of the two the device says it can
+reconstruct, preferring the one the MPEG family actually uses, and where chroma
+cannot be filtered linearly the luma filter drops to nearest with it, because
+Vulkan requires the two to agree.
+
+How the planes are laid out is the exporter's choice and both are handled. A
+decoder normally returns one allocation with the planes at different offsets;
+some return one file descriptor per plane, which is a disjoint image and binds
+one allocation per plane through `vkBindImageMemory2`. Which it is cannot be
+decided by comparing the descriptors — two descriptors onto the same buffer are
+two different numbers — so the DMA-BUF's inode is what identifies it.
+
+A YUV image is never a render target and never claims a transfer usage. A copy
+involving a multi-planar image names one plane aspect at a time, and every
+transfer in this renderer covers the whole image, so claiming it would make a
+screenshot of a video succeed and return a third of the picture. For the same
+reason the YUV formats are filtered back out of what is offered to the web shell
+and to capture clients: both allocate buffers to be copied *into*, and a shell
+painted into a luma plane imports without complaint and looks like a greyscale
+smear.
+
+Where the device cannot sample YUV at all — the feature is core since Vulkan 1.1
+and still optional there — it is not advertised, and the log says so at startup.
+Enabling a feature a device does not have fails `vkCreateDevice` outright, which
+would cost every machine without it a renderer to gain video import on the ones
+with it.
+
 ## Notifications
 
 The compositor claims `org.freedesktop.Notifications` itself and forwards each
@@ -109,6 +165,20 @@ programs that only understand a pointer. Tablets are absolute devices, so the
 cursor jumps to where the pen lands rather than moving relative to where it was,
 and touching the tablet focuses what is under the pen — otherwise drawing in a
 window would mean clicking it with a mouse first.
+
+## Touch
+
+`wl_touch` carries the whole sequence — down, motion, up, frame and cancel — and
+cancel matters as much as the rest: a touchscreen unplugged mid-gesture leaves
+every client that was told about the contact waiting for an end that never
+comes.
+
+Dragging between clients works from a finger as well as from a pointer.
+`data-device`'s drag request says which device started it, and a touch drag
+that is refused looks to the application like a drag that simply did not take —
+there is no error and nothing in the log. The touch grab differs from the
+pointer one in a single respect: it is given no focus policy, because there is
+no pointer left behind to decide about, so the grab settles focus itself.
 
 ## Idle
 
