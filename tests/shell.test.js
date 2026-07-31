@@ -14,6 +14,12 @@
  * windows make four columns, that consume and expel are inverses, that a
  * tabbed container shows exactly one window and it is the focused one.
  *
+ * The last section runs shell.css against the elements the shell just built,
+ * through the cascade in css.js. Structure and style are checked in the same
+ * process for one reason: the class list on a window has to come from the real
+ * geometry.js rather than from a test's idea of it, or the assertion is that
+ * the test agrees with itself. See css.js for what that can and cannot show.
+ *
  *   node tests/shell.test.js data/shell tiling
  *   node tests/shell.test.js data/shell scrolling
  *   node tests/shell.test.js data/shell tiling session
@@ -22,6 +28,7 @@
  * job; run one by hand with the lines above when a case fails.
  */
 const fs = require('fs');
+const css = require('./css.js');
 
 let idSeq = 0;
 
@@ -1109,6 +1116,339 @@ if (mode === 'scrolling') {
   const gone = sent.filter((m) => m.type === 'shell.overlay').at(-1);
   check('and tells the compositor there is nothing on top now',
     gone !== undefined && gone.rects.length === 0);
+}
+
+/* --- the stylesheet ----------------------------------------------------
+ *
+ * A window is a border and a hole, and both of them are CSS. Nothing above
+ * this point can tell whether that CSS reaches the elements the shell builds:
+ * geometry.js toggles `focused` on and the assertion that it did so is an
+ * assertion about geometry.js. Rename the class in shell.css alone and the
+ * frame stops changing colour with focus, with every test still passing.
+ *
+ * So shell.css is run through the cascade in css.js against the elements the
+ * shell has just built — the real class list, the real ancestors, the real
+ * inline styles — and the question asked is the one a browser answers: which
+ * declaration wins here? That covers selector matching, specificity, source
+ * order, `!important` and var(). It covers no pixels whatever: nothing here
+ * knows what `flex: 0 0 8px` looks like, only that it is what is in force.
+ * --------------------------------------------------------------------- */
+{
+  const sheet = css.parse(fs.readFileSync(`${shellDir}/shell.css`, 'utf8'),
+    { root: documentElement });
+
+  /* The resolver is itself something that can be wrong, and a broken one
+     answers every question with the empty string — which would quietly satisfy
+     any assertion phrased as "is not the focus colour". So it is given a
+     stylesheet whose answers are known before it is trusted with the real
+     one. */
+  {
+    const fixture = css.parse(
+      '.a { color: red; border: 1px solid red }'
+      + '.a.b { color: green }'
+      + '.c { color: blue }'
+      + '.d { color: black !important }');
+    const el = new El('div');
+
+    el.className = 'a c';
+    check('a later rule of equal specificity wins',
+      fixture.value(el, 'color') === 'blue');
+
+    el.className = 'a b c';
+    check('and a more specific one wins wherever it sits in the file',
+      fixture.value(el, 'color') === 'green');
+
+    el.className = 'e';
+    check('a rule that matches nothing contributes nothing',
+      fixture.value(el, 'color') === '');
+
+    el.className = 'a b c';
+    el.style.color = 'purple';
+    check('an inline style beats an ordinary rule',
+      fixture.value(el, 'color') === 'purple');
+
+    el.className = 'a b c d';
+    check('and !important beats the inline style',
+      fixture.value(el, 'color') === 'black');
+
+    el.className = 'a';
+    check('a shorthand is seen as the longhands it sets',
+      fixture.value(el, 'border-top-style') === 'solid');
+  }
+
+  /* A shorthand expands to one longhand per side, so this is how a test asks
+     what the frame looks like all the way round rather than on one edge. */
+  const sides = (el, part) => {
+    const values = ['top', 'right', 'bottom', 'left']
+      .map((side) => sheet.value(el, `border-${side}-${part}`));
+    return values.every((v) => v === values[0]) ? values[0] : 'mixed';
+  };
+  const snapshot = (el) => [...sheet.declarations(el)]
+    .map(([prop, value]) => `${prop}:${value}`).sort().join(';');
+
+  /* Classes seen on a real window element during this section, so the sweep at
+     the end is about what the shell does rather than about a list kept here. */
+  const seen = new Set();
+  const record = () => {
+    for (const [, view] of globalThis.__shell.views) {
+      for (const c of String(view.el.className).split(/\s+/)) {
+        if (c !== '' && c !== 'window') seen.add(c);
+      }
+    }
+  };
+
+  const open = (id, app, floating = false) => emit({ type: 'view.added', id,
+    title: app, app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
+    floating, width: 800, height: 600 });
+
+  const views = globalThis.__shell.views;
+  const outs = globalThis.__shell.outputs;
+
+  /* Everything above has left windows, tabbed containers and fullscreen state
+     scattered over the workspaces, and a container someone tabbed earlier
+     draws titles instead of the divider this section is about. So it starts on
+     one nobody has touched, and parks a window on a second that no monitor is
+     showing — which is what makes a hidden window hidden. */
+  const workspaceOf = globalThis.__shell.workspaceOfForTest;
+  const busy = new Set([...views.keys()].map((id) => workspaceOf(id)));
+  const shown = new Set([...outs.values()].map((o) => o.workspace));
+  const free = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    .filter((n) => !busy.has(n) && !shown.has(n));
+  check('the test found two workspaces of its own', free.length >= 2);
+  const [home, park] = free;
+
+  emit({ type: 'shell.command', command: 'workspace.switch',
+    args: [String(home)] });
+  const output = outs.get(globalThis.__shell.activeOutput);
+
+  open(80, 'framed');
+  open(81, 'framed');
+  emit({ type: 'view.focused', id: 80 });
+  record();
+
+  const framed = views.get(80);
+  const other = views.get(81);
+
+  check('a window is drawn as a frame around its hole',
+    sheet.value(framed.el, 'display') === 'flex' &&
+    sheet.value(framed.el, 'overflow') === 'hidden');
+  check('two pixels of border on every side',
+    sides(framed.el, 'width') === '2px');
+
+  /* Against the custom property rather than against #7aa2f7: a theme from the
+     config file arrives as an override of exactly these, so a literal here
+     would be asserting the default theme rather than the rule. */
+  const radius = sheet.custom(documentElement, '--radius');
+  const focusColour = sheet.custom(documentElement, '--border-focus');
+  const restColour = sheet.custom(documentElement, '--border');
+  check('rounded by the theme rather than by a literal',
+    radius !== '' && sheet.value(framed.el, 'border-radius') === radius);
+  check('and focused and unfocused are different colours',
+    focusColour !== '' && restColour !== '' && focusColour !== restColour);
+
+  /* Two windows differing in one class, so this is the class doing it. */
+  check('the focused window wears the focus colour',
+    sides(framed.el, 'color') === focusColour);
+  check('and the one beside it does not',
+    sides(other.el, 'color') === restColour);
+
+  emit({ type: 'view.focused', id: 81 });
+  check('moving focus moves the colour with it',
+    sides(other.el, 'color') === focusColour &&
+    sides(framed.el, 'color') === restColour);
+  emit({ type: 'view.focused', id: 80 });
+
+  /* The rule the whole file is written around: the compositor paints the
+     client into whatever rect this element occupies, on a layer above the web
+     view, so anything painted here is composited and then covered. */
+  check('the hole is painted with nothing at all',
+    sheet.value(framed.viewport, 'background-color') === 'transparent' &&
+    sheet.value(framed.viewport, 'background') === '');
+
+  /* The gap between two windows is a real element — that is what makes edge
+     dragging need no compositor support — so it has a width of its own and
+     must never take any of a window's. */
+  const gap = sheet.custom(documentElement, '--gap');
+  const divider = output.windowsEl.querySelector('.divider');
+  check('the shell drew a real element in the gap', divider !== null);
+  check('as wide as the gap, and it never grows',
+    sheet.value(divider, 'flex-basis') === gap &&
+    sheet.value(divider, 'flex-grow') === '0' &&
+    sheet.value(divider, 'flex-shrink') === '0');
+  check('and its container leaves no CSS gap for it to sit on top of',
+    sheet.value(divider.parentElement, 'gap') === '');
+  check('the tiling area is inset by that same gap',
+    ['top', 'right', 'bottom', 'left'].every((side) =>
+      sheet.value(output.windowsEl, `padding-${side}`) === gap));
+  /* scrolling.js reads --gap out of the stylesheet at runtime and falls back to
+     8 where there are no computed styles, which is every run of this harness.
+     The two have to agree or the column arithmetic checked above is not the
+     arithmetic that ships. */
+  check('which is the 8px this harness and scrolling.js fall back to',
+    gap === '8px');
+
+  /* Floating: positioned rather than laid out, and sized as the client asked
+     rather than as the frame around it. */
+  open(82, 'floaty', true);
+  const floaty = views.get(82);
+  record();
+
+  check('a floating window carries its rect as an inline style',
+    floaty.el.style.left !== '' && floaty.el.style.width !== '');
+  /* content-box has to beat the `*` rule that makes everything else
+     border-box, or the rect describes the frame and the hole comes out two
+     pixels smaller on every side than the client asked for. */
+  check('and its rect describes the hole rather than the frame',
+    sheet.value(floaty.el, 'box-sizing') === 'content-box');
+  const floatingLayer = Number(sheet.value(floaty.el, 'z-index'));
+  check('it is lifted above the tiled windows',
+    sheet.value(floaty.el, 'position') === 'absolute' && floatingLayer > 0);
+  check('and its hole is still a hole',
+    sheet.value(floaty.viewport, 'background-color') === 'transparent');
+
+  /* Fullscreen over a floating window is the case the !important in shell.css
+     exists for: the inline rect is left where it was, and the rule has to win
+     over it without the JS stripping and restoring four properties. */
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['82', '1'] });
+  record();
+
+  check('the desktop knows something on it is fullscreen',
+    output.el.classList.contains('has-fullscreen'));
+  check('fullscreen takes the frame off entirely',
+    sides(floaty.el, 'width') === '0' &&
+    sheet.value(floaty.el, 'border-radius') === '0');
+  check('and covers the output over the rect the window still carries',
+    floaty.el.style.left !== '' &&
+    sheet.value(floaty.el, 'left') === '0' &&
+    sheet.value(floaty.el, 'top') === '0' &&
+    sheet.value(floaty.el, 'width') === 'auto');
+  /* Never *below* a floating window, rather than above one, because on this
+     stylesheet the two tie: `.window.fullscreen` asks for 10 and
+     `.window.floating` for 5, the two selectors are equally specific, and
+     floating is written further down the file — so a floating window that goes
+     fullscreen is left on the floating layer and the 10 never applies.
+
+     Nothing shows today, because a fullscreen window paints nothing at all:
+     its border is gone, its hole is transparent, and client surfaces are
+     stacked by the compositor rather than by anything the shell says. The day
+     the fullscreen rule paints something, this is where it will be drawn under
+     a dialog left open behind it. */
+  check('and never below a floating window',
+    Number(sheet.value(floaty.el, 'z-index')) >= floatingLayer);
+  check('the gap goes with it: fullscreen means the whole output',
+    sheet.value(output.windowsEl, 'padding-top') === '0' &&
+    sheet.value(output.windowsEl, 'top') === '0');
+
+  if (mode === 'scrolling') {
+    /* A transform makes the strip the containing block for anything positioned
+       inside it, which would anchor the fullscreen window to the scrolled strip
+       rather than to the output. The rule that stops that has to beat the
+       strip's own inline transform, which is what !important is for here. */
+    const strip = output.windowsEl.querySelector('.strip');
+    check('the strip is translated by an inline style',
+      strip !== null && strip.style.transform !== '');
+    check('and fullscreen stops the scrolling outright',
+      strip !== null && sheet.value(strip, 'transform') === 'none');
+  }
+
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['82', '0'] });
+  check('and the frame comes back when it is over',
+    sides(floaty.el, 'width') === '2px');
+  emit({ type: 'view.removed', id: 82 });
+
+  if (mode === 'tiling') {
+    /* Tabs are the only place the shell draws a title at all — without one
+       there is nothing to tell two collapsed windows apart — so this is the
+       whole of its titlebar styling. */
+    emit({ type: 'shell.command', command: 'layout.tabbed', args: [] });
+    const strip = output.windowsEl.querySelector('.tabs');
+    const tabs = (strip?.children ?? [])
+      .filter((el) => el.classList.contains('tab'));
+    check('a tabbed container draws a title strip', tabs.length >= 2);
+
+    const active = tabs.filter((el) => el.classList.contains('active'));
+    check('with exactly one title marked as the one on show',
+      active.length === 1);
+    check('the tab on show is lit',
+      sides(active[0], 'color') === focusColour);
+    check('and the ones behind it are not',
+      tabs.filter((el) => !el.classList.contains('active'))
+        .every((el) => sides(el, 'color') === restColour));
+    check('each title is one --tab tall',
+      sheet.value(tabs[0], 'height') ===
+        sheet.custom(documentElement, '--tab'));
+
+    emit({ type: 'shell.command', command: 'layout.toggle', args: [] });
+  }
+
+  /* Hidden on another workspace: the element stays in the DOM so the client
+     stays alive, so something has to stop it being drawn. */
+  emit({ type: 'view.focused', id: 81 });
+  emit({ type: 'shell.command', command: 'workspace.move',
+    args: [String(park)] });
+  check('the test parked a window off screen', other.el.hidden);
+  check('and a parked window is not drawn',
+    sheet.value(other.el, 'display') === 'none');
+  emit({ type: 'view.focused', id: 80 });
+
+  /* In the overview a window is a miniature of itself, and the rule that says
+     so reaches it through the thumbnail it was rendered into — a descendant
+     selector, so this is a check that the tree the shell built has the shape
+     the stylesheet expects. */
+  emit({ type: 'shell.command', command: 'layout.overview', args: [] });
+  record();
+  check('a window in a thumbnail is drawn with a thinner frame',
+    sides(framed.el, 'width') === '1px');
+  check('and without the shadow it would otherwise cast',
+    sheet.value(framed.el, 'box-shadow') === 'none');
+  /* Kept for the sweep below, which needs somewhere a window can be dragged
+     between workspaces. The overview closing detaches this from the desktop
+     but not from the thumbnail above it, which is the part that matters. */
+  const insideThumb = framed.el.parentElement;
+
+  emit({ type: 'shell.command', command: 'layout.overview', args: [] });
+  check('and it is the full frame again once the overview is gone',
+    sides(framed.el, 'width') === '2px');
+
+  /* Both directions of the same drift.
+   *
+   * A class renamed in shell.css alone leaves a rule that can never match; one
+   * renamed in the shell alone leaves a state nothing draws. Neither shows up
+   * as anything but a window that stops changing appearance, which no other
+   * test in this file can see. */
+  const states = new Set();
+  for (const rule of sheet.rules) {
+    const subject = rule.parts[rule.parts.length - 1].compound;
+    if (!subject.classes.includes('window')) continue;
+    for (const c of subject.classes) if (c !== 'window') states.add(c);
+  }
+  check('the stylesheet draws several window states', states.size >= 5);
+  check('every one of them is a class the shell actually sets',
+    [...states].every((c) => src.includes(`'${c}'`)));
+  check('and every class the shell put on a window is one it draws',
+    seen.size > 0 && [...seen].every((c) => states.has(c)));
+
+  /* And that each of those rules still reaches a window, rather than existing
+     and being overridden into having no effect at all.
+
+     The probe goes inside a thumbnail because one of the states — being
+     carried to another workspace — is only ever drawn there, and a bare
+     .window would report that rule as dead when it is merely somewhere
+     else. */
+  const probe = document.createElement('section');
+  insideThumb.append(probe);
+  probe.className = 'window';
+  const plain = snapshot(probe);
+  check('each state changes how the window is drawn', [...states].every((c) => {
+    probe.className = `window ${c}`;
+    return snapshot(probe) !== plain;
+  }));
+  probe.remove();
+
+  emit({ type: 'view.removed', id: 80 });
+  emit({ type: 'view.removed', id: 81 });
 }
 
 emit({ type: 'view.removed', id: 1 });
