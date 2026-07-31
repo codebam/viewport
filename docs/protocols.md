@@ -166,6 +166,12 @@ cursor jumps to where the pen lands rather than moving relative to where it was,
 and touching the tablet focuses what is under the pen — otherwise drawing in a
 window would mean clicking it with a mouse first.
 
+One thing is not carried through: a tool's *own* cursor image. There is a single
+cursor status and it belongs to the pointer, so a tool naming an image has
+nowhere to put it and is ignored — a drawing program that asks for a crosshair
+while the pen is down still gets the ordinary arrow. The shape it asks for is
+the only part that goes missing; position, pressure, tilt and focus all arrive.
+
 ## Touch
 
 `wl_touch` carries the whole sequence — down, motion, up, frame and cancel — and

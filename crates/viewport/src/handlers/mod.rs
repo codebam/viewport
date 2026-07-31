@@ -116,10 +116,16 @@ impl WaylandDndGrabHandler for ViewportState {
 /// Tablet tools, which cursor-shape requires whether or not there is a tablet.
 ///
 /// A tool can name its own cursor exactly as a pointer can, so the protocol's
-/// dispatch asks for this. There is no tablet support yet, so the focus type is
-/// the same surface every other input uses and a tool setting an image is
-/// ignored — the alternative is not advertising cursor-shape at all, which
-/// costs every ordinary client its named cursors.
+/// dispatch asks for this. The focus type is the same surface every other input
+/// uses, which is right — a pen points at a window like anything else.
+///
+/// What is still missing is the cursor: there is one `cursor_status` on the
+/// state and it belongs to the pointer, so a tool naming its own image has
+/// nowhere to put it and is ignored. A drawing program asking for a crosshair
+/// while the pen is down gets the ordinary arrow. Fixing it means a second
+/// status for the tool and a rule in `cursor_for` for which of the two wins.
+/// Not advertising cursor-shape instead would cost every ordinary client its
+/// named cursors, which is much the worse trade.
 impl smithay::input::tablet::TabletSeatHandler for ViewportState {
     type ToolFocus = WlSurface;
 }

@@ -103,8 +103,6 @@ would choose; it exists so a broken shell leaves a desktop usable enough to open
 a terminal and fix it. The moment the shell does answer, the watchdog is
 disarmed for that window, so a merely slow shell costs nothing.
 
-Not yet implemented: tablet and stylus input.
-
 ## When the shell dies outright
 
 The watchdog above covers a shell that is slow or wrong. A different thing
