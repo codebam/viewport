@@ -92,8 +92,23 @@ impl WaylandDndGrabHandler for ViewportState {
                 let grab = DnDGrab::new_pointer(&self.display_handle, start_data, source, seat);
                 pointer.set_grab(self, grab, serial, Focus::Keep);
             }
-            // Touch is not wired up yet.
-            GrabType::Touch => source.cancel(),
+            // The same thing a finger down, because a touchscreen drag is the
+            // same gesture as a pointer one and a client that started it has
+            // no way to tell which device it came from. The only difference is
+            // that a touch grab takes no focus policy: there is no pointer to
+            // leave behind, so the grab decides focus on its own.
+            GrabType::Touch => {
+                let Some(touch) = seat.get_touch() else {
+                    source.cancel();
+                    return;
+                };
+                let Some(start_data) = touch.grab_start_data() else {
+                    source.cancel();
+                    return;
+                };
+                let grab = DnDGrab::new_touch(&self.display_handle, start_data, source, seat);
+                touch.set_grab(self, grab, serial);
+            }
         }
     }
 }
