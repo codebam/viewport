@@ -1,11 +1,13 @@
-# Five jobs. Two run on every push; three want something a hosted runner has
+# Six jobs. Three run on every push; three want something a hosted runner has
 # not got.
 #
-# `shell` and `rust` are unassisted. The layout engine is plain JavaScript and
-# needs nothing but node. The Rust rewrite needs no WPE WebKit either — the web
-# engine is behind a non-default feature — and its headless backend renders
-# through surfaceless EGL, so it runs the Wayland integration tests on a
-# machine with no GPU at all.
+# `shell`, `rust` and `asan` are unassisted. The layout engine is plain
+# JavaScript and needs nothing but node. The Rust rewrite needs no WPE WebKit
+# for its own tests — the web engine is behind a non-default feature — and its
+# headless backend renders through surfaceless EGL, so it runs the Wayland
+# integration tests on a machine with no GPU at all. It does build the web
+# engine half, which is affordable because WebKit substitutes from the cache
+# rather than being compiled.
 #
 # The other three want WebKit, a DRM render node, or both:
 #
@@ -258,6 +260,50 @@ jobs:
 
       - name: Build with the web engine
         run: nix build --print-build-logs .#viewport-smithay
+
+  # The same suite under AddressSanitizer.
+  #
+  # Narrower than it looks, and worth saying why it is not redundant with the
+  # job above. Rust already rules out the use-after-free that ASan over the C
+  # compositor kept finding — outputs and views outliving what points at them.
+  # What it does not rule out is the ~187 `unsafe` blocks and the FFI: WebKit,
+  # EGL, libinput, Vulkan. That boundary is where the memory bugs still are,
+  # and instrumenting the Rust side covers *both* halves of it, which the C
+  # sanitizer job never did.
+  #
+  # It is also not a replacement for the hotplug churn in
+  # crates/viewport/tests/control_socket.rs. The mistake that outlives Rust's
+  # guarantees is a stale view id or a WeakOutput that stops upgrading — a
+  # logic bug no sanitizer sees. The churn is the test; this makes its failures
+  # louder.
+  #
+  # A separate job rather than a step, so it runs beside `rust` instead of
+  # after it: -Zbuild-std recompiles the standard library with the same
+  # instrumentation, which is most of the wall clock here and is also the
+  # point. Without it std is uninstrumented and an overflow inside a Vec
+  # operation reads as a clean run.
+  #
+  # ASAN_OPTIONS comes from devShells.asan, beside the reason it is set.
+  asan:
+    name: Rust under ASan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v4
+        with:
+          extra-conf: |
+            extra-substituters = https://codebam-nix-cache.storage.googleapis.com
+            extra-trusted-public-keys = codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0=
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - name: Test under AddressSanitizer
+        run: |
+          nix develop .#asan --command bash -euo pipefail -c '
+            export RUSTFLAGS="-Zsanitizer=address"
+            cargo test --workspace \
+              --target x86_64-unknown-linux-gnu -Zbuild-std
+          '
 
   # Builds .#wpewebkit on its own and pushes the closure to Cachix, so that the
   # compositor and sanitizer jobs have something to substitute. Never runs on a

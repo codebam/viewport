@@ -521,3 +521,142 @@ fn strip_ansi(text: &str) -> String {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// Hotplug churn.
+//
+// The C compositor's worst bugs were all one shape: outputs and views
+// outliving the structures that point at them. A monitor disconnecting
+// mid-frame corrupted the heap, and the family was fixed several times —
+// found by running scripts/asan-hotplug.sh under a sanitizer, because
+// unsanitized the failures looked like a test that passed or a crash somewhere
+// unrelated an hour later.
+//
+// Rust removes the corruption, not the mistake. The same wrong lifetime here
+// is a stale view id resolving to nothing, a WeakOutput that stops upgrading
+// mid-capture, or a crtc left behind in `dirty_outputs` — assertion failures
+// and wrong pictures rather than a poisoned heap. Nothing about that is caught
+// by a sanitizer, which is why the churn is the test and the sanitizer is only
+// the amplifier.
+//
+// This could not be written until `output.test_add` worked; it was rejected
+// unconditionally, including under --headless, which is what
+// tests/output-order.test.sh exposed.
+// ---------------------------------------------------------------------------
+
+/// `(name, x)` for every output the layout describes.
+fn layout_of(client: &mut Client) -> Vec<(String, i64)> {
+    client.send(r#"{"type":"output.query"}"#);
+    let layout = client.wait_for("output.layout");
+    layout["outputs"]
+        .as_array()
+        .expect("outputs array")
+        .iter()
+        .map(|o| {
+            (
+                o["name"].as_str().expect("name").to_owned(),
+                o["x"].as_i64().expect("x"),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn plugging_outputs_in_and_out_leaves_the_layout_consistent() {
+    let compositor = Compositor::start("hotplug");
+    let mut client = compositor.connect();
+
+    assert_eq!(
+        layout_of(&mut client).len(),
+        1,
+        "the headless backend should start with one output"
+    );
+
+    // Every name ever handed out. Names count up and are never reused: a name
+    // that came back after an unplug would be a different monitor wearing the
+    // identity of one that anything still holding the old one would accept.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    seen.insert("HEADLESS-1".to_owned());
+
+    for round in 0..25 {
+        for _ in 0..3 {
+            client.send(r#"{"type":"output.test_add"}"#);
+            client.wait_for("output.layout");
+        }
+
+        let layout = layout_of(&mut client);
+        assert_eq!(
+            layout.len(),
+            4,
+            "round {round}: wrong count after plugging in"
+        );
+
+        // Left to right, in the order they arrived. This is the property the
+        // shell's display panel and three "leftmost monitor" fallbacks read,
+        // and the C build had it backwards once — see
+        // tests/output-order.test.sh.
+        let xs: Vec<i64> = layout.iter().map(|(_, x)| *x).collect();
+        let mut sorted = xs.clone();
+        sorted.sort_unstable();
+        assert_eq!(xs, sorted, "round {round}: layout is not ordered by x");
+
+        for (name, _) in &layout {
+            if !seen.insert(name.clone()) && !name.ends_with("-1") {
+                // Already present is fine for outputs that were never
+                // unplugged; a *reused* name is the failure, and the only one
+                // that survives every round is HEADLESS-1.
+                assert!(
+                    layout.iter().filter(|(n, _)| n == name).count() == 1,
+                    "round {round}: {name} appears twice"
+                );
+            }
+        }
+
+        for _ in 0..3 {
+            client.send(r#"{"type":"output.test_remove"}"#);
+            client.wait_for("output.layout");
+        }
+
+        let layout = layout_of(&mut client);
+        assert_eq!(
+            layout.len(),
+            1,
+            "round {round}: outputs left over after unplugging"
+        );
+        assert_eq!(layout[0].0, "HEADLESS-1", "round {round}: wrong survivor");
+    }
+
+    // Still answering after 150 plug events, which is the point: a compositor
+    // that had lost track would have stopped responding or started lying long
+    // before here.
+    assert_eq!(layout_of(&mut client).len(), 1);
+}
+
+#[test]
+fn the_last_output_can_be_unplugged_and_another_plugged_back_in() {
+    // A desktop with no outputs at all is the edge every "the first monitor"
+    // shortcut gets wrong, and it is reachable in earnest: a laptop lid
+    // closing while the dock is unplugged. Nothing may panic, and the
+    // compositor has to still be there when a screen comes back.
+    let compositor = Compositor::start("hotplug-empty");
+    let mut client = compositor.connect();
+
+    client.send(r#"{"type":"output.test_remove"}"#);
+    client.wait_for("output.layout");
+    assert!(
+        layout_of(&mut client).is_empty(),
+        "the last output should be removable"
+    );
+
+    client.send(r#"{"type":"output.test_add"}"#);
+    client.wait_for("output.layout");
+
+    let layout = layout_of(&mut client);
+    assert_eq!(layout.len(), 1, "a screen should come back");
+    // Back at the origin, because nothing else is mapped to be to the right of.
+    assert_eq!(layout[0].1, 0);
+    assert_ne!(
+        layout[0].0, "HEADLESS-1",
+        "a new monitor must not inherit the unplugged one's name"
+    );
+}

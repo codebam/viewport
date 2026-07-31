@@ -499,10 +499,29 @@ happens to have — reproducible on a runner and on a workstation alike.
 2. `meson.build` no longer needs to build a compositor: the `shell-*`, `kiosk`
    and `unit` targets stay, and the C sources they compile against are gone or
    moved.
-3. The sanitizer job has an equivalent. ASan over the C compositor is what
-   caught the output-outlives-its-surface family of bugs more than once;
-   Rust rules out the use-after-free but not the logic that led to it, so what
-   replaces that job is a question to answer rather than a box to tick.
+3. ~~The sanitizer job has an equivalent.~~ Done, and it took two things
+   rather than one, because the question was posed wrongly. ASan over the C
+   compositor was the *amplifier*; `scripts/asan-hotplug.sh` was the *test*.
+
+   Rust removes the corruption, not the mistake. The same wrong lifetime here
+   is a stale view id, a `WeakOutput` that stops upgrading mid-capture, or a
+   crtc left behind in `dirty_outputs` — assertion failures and wrong
+   pictures, which no sanitizer sees. So the churn is the replacement:
+   `plugging_outputs_in_and_out_leaves_the_layout_consistent` in
+   `crates/viewport/tests/control_socket.rs` drives 150 plug events and
+   asserts the layout stays ordered, the count returns, and a name is never
+   reused. It could not have been written before `output.test_add` worked.
+
+   The sanitizer still earns its place at the FFI boundary — ~187 `unsafe`
+   blocks against WebKit, EGL, libinput and Vulkan — where Rust's guarantees
+   stop. The `asan` job runs the whole suite under
+   `-Zsanitizer=address` with `-Zbuild-std`, so the standard library carries
+   the same instrumentation; without that an overflow inside a `Vec`
+   operation reads as a clean run. It covers *both* sides of the boundary,
+   which the C job never did.
+
+   Miri was considered and does not apply: it cannot execute FFI or syscalls,
+   so it cannot run a compositor at all.
 4. `.github/workflows/ci.yml` no longer has a job gated on `COMPOSITOR_CI`
    because it needs wlroots.
 5. ~~Those tests run on every push against the Rust binary.~~ Done. The

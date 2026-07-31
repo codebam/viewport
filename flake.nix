@@ -4,6 +4,17 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # For one thing only: `-Zsanitizer=address` is nightly-gated and nixpkgs
+    # ships a stable rustc. Everything else builds with the pinned stable
+    # toolchain; see `devShells.asan`.
+    #
+    # Following our nixpkgs so this adds a toolchain and not a second package
+    # set — in particular it must not move the nixpkgs revision, because the
+    # WPE WebKit store path in the binary cache is a function of it.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   nixConfig = {
@@ -23,10 +34,23 @@
     ];
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+
+        # A second package set, for the toolchain and nothing else.
+        #
+        # Deliberately not an overlay on `pkgs`. That would put a different
+        # rustc in front of every derivation that uses one — mesa builds Rust
+        # components — which changes the WPE WebKit closure, and that path is
+        # what the binary cache holds. Everything except `devShells.asan`
+        # continues to evaluate against the untouched `pkgs`.
+        nightly =
+          (import nixpkgs {
+            inherit system;
+            overlays = [ rust-overlay.overlays.default ];
+          }).rust-bin.nightly.latest;
 
         # ------------------------------------------------------------------
         # WPE WebKit.
@@ -278,6 +302,89 @@
             mainProgram = "viewport";
           };
         };
+        # Shared by the two Rust shells below, which differ only in toolchain.
+        rustDeps = with pkgs; [
+            pkg-config
+            # drm-sys and input-sys generate their bindings with bindgen, which
+            # needs libclang and the C headers found for it.
+            rustPlatform.bindgenHook
+
+            # scripts/integration.sh compiles the Wayland clients that
+            # tests/capture.test.sh and tests/lock.test.sh drive. They need a
+            # C compiler and the marshalling code for the protocols they
+            # speak, and nothing else — no wlroots, no WebKit, which is what
+            # keeps the whole integration suite on an unassisted runner.
+            wayland-scanner
+
+            libdrm
+            libgbm
+            libinput
+            seatd
+            udev
+            wayland
+            wayland-protocols
+            libxkbcommon
+            pipewire
+
+            # The headless backend composites captures through a surfaceless
+            # EGL display, so the tests that ask for a pixel need a GL stack —
+            # libglvnd for the EGL dispatch and mesa for the software driver
+            # behind it. This is what a CI runner with no /dev/dri renders
+            # with, and the reason that backend is GLES rather than Vulkan.
+            libglvnd
+            mesa
+        ];
+
+        # The environment both need, extracted for the same reason: an ASan
+        # run that rendered through a different EGL driver than the ordinary
+        # one would be testing a different program.
+        rustEnv = {
+          # As in the default shell: viewport-web links libgbm, and smithay's
+          # wayland_frontend pulls in xkbcommon, both at build time.
+          LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [ pkgs.libgbm pkgs.libxkbcommon ]}";
+          # Where libglvnd looks for an EGL driver.
+          #
+          # This is the whole reason the capture tests can run on a hosted
+          # runner. libglvnd is a dispatch library: libEGL.so.1 provides no
+          # driver of its own, it loads one named by a JSON file in
+          # /usr/share/glvnd/egl_vendor.d or /run/opengl-driver/... — and a
+          # GitHub runner has neither, while NixOS has the second, which is
+          # why this worked on a workstation and failed in CI.
+          #
+          # With no vendor loaded there are no EGL client extensions at all,
+          # so the failure is not "surfaceless is unsupported" but "nothing
+          # supports anything":
+          #
+          #   Missing extensions: ["EGL_MESA_platform_surfaceless"]
+          #   Unable to find suitable EGL platform
+          #
+          # Naming our own mesa fixes it and makes it reproducible: the shell
+          # renders through the driver this flake pins rather than whatever
+          # the host happens to have installed.
+          __EGL_VENDOR_LIBRARY_DIRS = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
+
+          shellHook = ''
+            # ash dlopens libvulkan.so.1 and winit dlopens libwayland-client;
+            # the viewport-vulkan tests that ask for a device skip themselves
+            # without one, but they have to get as far as the dlopen to do it.
+            #
+            # libglvnd is libEGL.so.1, which Smithay dlopens through a
+            # LazyLock that panics rather than returning an error. The headless
+            # backend catches that so a machine without it still runs
+            # everything that does not want pixels — but a shell meant for
+            # running the tests should have it, or the capture tests quietly
+            # test nothing.
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+              pkgs.vulkan-loader
+              pkgs.wayland
+              pkgs.libxkbcommon
+              pkgs.libgbm
+              pkgs.libglvnd
+              pkgs.mesa
+            ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          '';
+        };
+
       in
       {
         packages = {
@@ -338,89 +445,49 @@
         # hosted runner, which in turn is what gets these 34k lines tested on
         # every push.
         # --------------------------------------------------------------------
-        devShells.rust = pkgs.mkShell {
-          packages = with pkgs; [
-            rustc
-            cargo
-            rustfmt
-            clippy
-            pkg-config
-            # drm-sys and input-sys generate their bindings with bindgen, which
-            # needs libclang and the C headers found for it.
-            rustPlatform.bindgenHook
+        devShells.rust = pkgs.mkShell (rustEnv // {
+          packages = (with pkgs; [ rustc cargo rustfmt clippy ]) ++ rustDeps;
+        });
 
-            # scripts/integration.sh compiles the Wayland clients that
-            # tests/capture.test.sh and tests/lock.test.sh drive. They need a
-            # C compiler and the marshalling code for the protocols they
-            # speak, and nothing else — no wlroots, no WebKit, which is what
-            # keeps the whole integration suite on an unassisted runner.
-            wayland-scanner
+        # --------------------------------------------------------------------
+        # The same suite under AddressSanitizer.
+        #
+        # What this is for is narrower than it looks. Rust already rules out
+        # the use-after-free that ASan over the C compositor kept finding —
+        # outputs and views outliving what points at them, see
+        # docs/RUST-REWRITE.md. What it does not rule out is the ~187 `unsafe`
+        # blocks and the FFI: WebKit, EGL, libinput, Vulkan. That boundary is
+        # where the memory bugs still live, and instrumenting the Rust side
+        # covers *both* halves of it, which the C job never did.
+        #
+        # The mistake that outlives Rust's guarantees — a stale view id, a
+        # WeakOutput that stops upgrading — is a logic bug and no sanitizer
+        # finds it. That is what the hotplug churn in
+        # crates/viewport/tests/control_socket.rs is for. The churn is the
+        # test; this is the amplifier.
+        #
+        # Nightly because -Zsanitizer is unstable, and only here: `nightly` is
+        # never applied as an overlay, so nothing else in this flake changes
+        # toolchain and the cached WPE WebKit path stays put.
+        #
+        # rust-src, because -Zbuild-std recompiles the standard library with
+        # the same instrumentation. Without it std is uninstrumented and an
+        # overflow inside a Vec operation reads as a clean run.
+        # --------------------------------------------------------------------
+        devShells.asan = pkgs.mkShell (rustEnv // {
+          packages = [
+            (nightly.default.override {
+              extensions = [ "rust-src" ];
+            })
+          ] ++ rustDeps;
 
-            libdrm
-            libgbm
-            libinput
-            seatd
-            udev
-            wayland
-            wayland-protocols
-            libxkbcommon
-            pipewire
-
-            # The headless backend composites captures through a surfaceless
-            # EGL display, so the tests that ask for a pixel need a GL stack —
-            # libglvnd for the EGL dispatch and mesa for the software driver
-            # behind it. This is what a CI runner with no /dev/dri renders
-            # with, and the reason that backend is GLES rather than Vulkan.
-            libglvnd
-            mesa
-          ];
-
-          # As in the default shell: viewport-web links libgbm, and smithay's
-          # wayland_frontend pulls in xkbcommon, both at build time.
-          LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [ pkgs.libgbm pkgs.libxkbcommon ]}";
-
-          # Where libglvnd looks for an EGL driver.
-          #
-          # This is the whole reason the capture tests can run on a hosted
-          # runner. libglvnd is a dispatch library: libEGL.so.1 provides no
-          # driver of its own, it loads one named by a JSON file in
-          # /usr/share/glvnd/egl_vendor.d or /run/opengl-driver/... — and a
-          # GitHub runner has neither, while NixOS has the second, which is
-          # why this worked on a workstation and failed in CI.
-          #
-          # With no vendor loaded there are no EGL client extensions at all,
-          # so the failure is not "surfaceless is unsupported" but "nothing
-          # supports anything":
-          #
-          #   Missing extensions: ["EGL_MESA_platform_surfaceless"]
-          #   Unable to find suitable EGL platform
-          #
-          # Naming our own mesa fixes it and makes it reproducible: the shell
-          # renders through the driver this flake pins rather than whatever
-          # the host happens to have installed.
-          __EGL_VENDOR_LIBRARY_DIRS = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
-
-          shellHook = ''
-            # ash dlopens libvulkan.so.1 and winit dlopens libwayland-client;
-            # the viewport-vulkan tests that ask for a device skip themselves
-            # without one, but they have to get as far as the dlopen to do it.
-            #
-            # libglvnd is libEGL.so.1, which Smithay dlopens through a
-            # LazyLock that panics rather than returning an error. The headless
-            # backend catches that so a machine without it still runs
-            # everything that does not want pixels — but a shell meant for
-            # running the tests should have it, or the capture tests quietly
-            # test nothing.
-            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
-              pkgs.vulkan-loader
-              pkgs.wayland
-              pkgs.libxkbcommon
-              pkgs.libgbm
-              pkgs.libglvnd
-              pkgs.mesa
-            ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          '';
-        };
+          # Leak checking off, as in the C sanitizer job and for the same
+          # reason: the Wayland and GL libraries hold one-time allocations at
+          # exit, so every run would be red for something that is not this
+          # project's. Use-after-free and out-of-bounds are unaffected, and
+          # they are what is being hunted.
+          ASAN_OPTIONS = "detect_leaks=0:detect_odr_violation=0:abort_on_error=1";
+        });
 
         devShells.default = pkgs.mkShell {
           packages = nativeDeps ++ runtimeDeps ++ (with pkgs; [
