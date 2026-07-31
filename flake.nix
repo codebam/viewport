@@ -358,6 +358,14 @@
             wayland-protocols
             libxkbcommon
             pipewire
+
+            # The headless backend composites captures through a surfaceless
+            # EGL display, so the tests that ask for a pixel need a GL stack —
+            # libglvnd for the EGL dispatch and mesa for the software driver
+            # behind it. This is what a CI runner with no /dev/dri renders
+            # with, and the reason that backend is GLES rather than Vulkan.
+            libglvnd
+            mesa
           ];
 
           # As in the default shell: viewport-web links libgbm, and smithay's
@@ -368,11 +376,20 @@
             # ash dlopens libvulkan.so.1 and winit dlopens libwayland-client;
             # the viewport-vulkan tests that ask for a device skip themselves
             # without one, but they have to get as far as the dlopen to do it.
+            #
+            # libglvnd is libEGL.so.1, which Smithay dlopens through a
+            # LazyLock that panics rather than returning an error. The headless
+            # backend catches that so a machine without it still runs
+            # everything that does not want pixels — but a shell meant for
+            # running the tests should have it, or the capture tests quietly
+            # test nothing.
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
               pkgs.vulkan-loader
               pkgs.wayland
               pkgs.libxkbcommon
               pkgs.libgbm
+              pkgs.libglvnd
+              pkgs.mesa
             ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           '';
         };

@@ -398,13 +398,16 @@ display attached to the headless runs:
 | test | C | Rust |
 |---|---|---|
 | `output-order` | pass | pass |
-| `capture-tiling` | pass | **fail** |
-| `capture-scrolling` | pass | **fail** |
-| `session-lock-crash` | fail | fail |
+| `capture-tiling` | pass | pass |
+| `capture-scrolling` | pass | pass |
+| `session-lock-crash` | fail | pass |
 
-`session-lock-crash` fails for both and is not evidence of anything: it wants a
-renderer that a headless run on this machine does not give it. CI runs it
-against lavapipe, which is where its result means something.
+The whole suite passes against the Rust binary. `session-lock-crash` failing
+against the C one is an artefact of this machine rather than a fault: it wants
+`WLR_RENDERER=vulkan` on a headless run and does not get a usable device, which
+is what the lavapipe ICD in the CI job exists to give it. The Rust build passes
+it here because its headless backend renders through surfaceless EGL and never
+asks for a device node — see below.
 
 **`output-order` passes now.** It did not because `output.test_add` was
 rejected with "headless hotplug is only available under `--headless`" by an arm
@@ -425,53 +428,53 @@ protocol worse off than one going through the portal, for the same picture. The
 global is advertised now and a toplevel source captures through the same path
 the portal uses.
 
-### The one thing left: the headless backend has no renderer
+### The headless backend has a renderer
 
-With the global bound the tests get further and stop at `FAIL a frame arrives`,
-and the reason is structural rather than anything to do with capture.
-`service_image_capture` — and `service_screencopy` beside it — are called from
-`winit.rs` and `udev.rs`, because the copy has to happen where the renderer is.
-The headless backend does not have one. It is a virtual output and a timer
-standing in for vblank; `pending_capture_frames` fills up and nothing ever
-drains it.
+It did not, and that was the last structural gap. Every capture path composites
+where the renderer is — `service_image_capture` and `service_screencopy` are
+called from `winit.rs` and `udev.rs` — so a backend without one accepted
+screencopy requests and never answered them: `pending_capture_frames` filled up
+and nothing drained it. wlroots never had the problem, because
+`WLR_BACKENDS=headless` takes `WLR_RENDERER` like any other backend.
 
-wlroots did not have this problem: `WLR_BACKENDS=headless` with
-`WLR_RENDERER=vulkan` still gives a headless compositor a real renderer, which
-is why the C build passes these tests on a machine with no display, and why the
-CI job points `VK_DRIVER_FILES` at lavapipe.
+**It is GLES, and that is a decision rather than an accident.** Vulkan is what
+this compositor draws with everywhere else, and Smithay's
+`VulkanAllocator::new(phd, usage)` would give offscreen targets with no GBM
+device and no DRM node, so it looks like the shorter path. It is not, because
+of where these tests have to run: `VulkanAllocator` allocates through
+`VK_EXT_image_drm_format_modifier`, lavapipe does not implement it — the same
+reason `Gpu::Gles` exists at all — and a GitHub-hosted runner has no
+`/dev/dri`. A Vulkan headless backend would pass on a workstation and fail in
+CI, which is the half a test exists for.
 
-So the last parity item is: give the headless backend a renderer. It is not a
-capture change and is worth doing as its own piece of work. Everything that
-composites without a display depends on it — these two tests,
-`session-lock-crash`, and any future test that wants to look at a pixel in CI.
+So: a surfaceless EGL display (`EGL_MESA_platform_surfaceless`), a
+`GlesRenderer` on it, and `GlesRenderbuffer` offscreen targets, which involve
+no DMA-BUF and so are what software Mesa serves with no device node at all.
+That is already the pair the nested backend captures with, so nothing
+downstream changed — the capture paths were generic over the renderer.
 
-**Which renderer is the decision, and it is not the obvious one.** Vulkan is
-what this compositor draws with everywhere else, and Smithay's
-`VulkanAllocator::new(phd, usage)` would give it offscreen targets with no GBM
-device and no DRM node, so it looks like a short path. It is not, because of
-where these tests have to run: `VulkanAllocator` allocates through
-`VK_EXT_image_drm_format_modifier`, lavapipe does not have it — the same reason
-`Gpu::Gles` exists at all, see `udev.rs` — and a GitHub-hosted runner has no
-`/dev/dri`. A Vulkan headless backend would pass on this workstation and fail
-in CI, which is the half that matters for a test.
+Two things worth knowing about it.
 
-GLES is the answer instead: surfaceless EGL, and `GlesRenderbuffer` as the
-offscreen target, which needs no DMA-BUF at all. That is already the pair the
-nested backend uses —
+Captures are serviced from the frame timer rather than at the end of a render,
+because there is no render: nothing scans out. Sixty times a second costs
+nothing while nothing is waiting, since each call returns immediately on an
+empty queue.
 
-    winit.rs: state.service_image_capture::<_, GlesRenderbuffer>(...)
-
-— and it is what software Mesa serves without a device node. The work is the
-EGL bring-up and a render pass for outputs nothing scans out, not the capture
-paths, which are generic over the renderer already.
+The renderer is optional. Smithay loads libEGL through a `LazyLock` that
+`.expect()`s, so on a machine with no `libEGL.so.1` the first EGL call of any
+kind panics and there is no error to return instead; `headless.rs` catches that
+and carries on without a renderer. A compositor that still runs every IPC and
+window-lifecycle test is worth more than one that refuses to start, and those
+are most of what runs headless. The panic message reaches the log through the
+default hook before it is caught, so the diagnosis is not swallowed.
 
 ### The checklist
 
 `src/` and `include/` can be deleted when, and not before:
 
-1. `capture.test.sh`, `lock.test.sh` and `output-order.test.sh` pass against
-   the Rust binary. `output-order` does; the other two wait on the headless
-   renderer above.
+1. ~~`capture.test.sh`, `lock.test.sh` and `output-order.test.sh` pass against
+   the Rust binary.~~ Done — all four cases, on this workstation. They are not
+   yet *run* against it by anything but a person, which is item 5.
 2. `meson.build` no longer needs to build a compositor: the `shell-*`, `kiosk`
    and `unit` targets stay, and the C sources they compile against are gone or
    moved.
@@ -481,6 +484,12 @@ paths, which are generic over the renderer already.
    replaces that job is a question to answer rather than a box to tick.
 4. `.github/workflows/ci.yml` no longer has a job gated on `COMPOSITOR_CI`
    because it needs wlroots.
+5. Those tests run on every push against the Rust binary. They can: the
+   clients they drive — `tests/paint-client.c`, `capture-client.c`,
+   `lock-client.c` — link `wayland-client` and the generated protocol sources
+   and nothing else, and the compositor they start now needs no device node.
+   That puts the whole suite on an unassisted runner beside the `rust` job,
+   which is where it stops being something a person remembers to do.
 
 ## Notifications, and where they come from
 
