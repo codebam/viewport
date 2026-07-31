@@ -164,6 +164,10 @@ impl ViewportState {
                 let to_shell = keyboard.current_focus().is_none() && self.shell_is_up();
                 let modifiers_now = self.shell_modifiers();
 
+                // What the focused client currently believes is held. Compared
+                // against the state after the event, below.
+                let mods_before = keyboard.modifier_state();
+
                 // The filter runs with the keyboard's state borrowed, so it
                 // decides *what* to do and the action is carried out after.
                 let action = keyboard.input::<Option<Action>, _>(
@@ -302,8 +306,32 @@ impl ViewportState {
                     },
                 );
 
+                let intercepted = action.is_some();
                 if let Some(action) = action.flatten() {
                     self.handle_action(action);
+                }
+
+                // Tell the focused client about a modifier it did not see
+                // change.
+                //
+                // Smithay sends the modifier update as part of forwarding a
+                // key, and an intercepted key is never forwarded — so a
+                // modifier the compositor took for itself changes state
+                // silently as far as the client is concerned. Mod4 is one:
+                // it goes to the shell so the bar can appear while it is held,
+                // which means both its press and its release are intercepted.
+                //
+                // What that produced: `Mod4+Return` opens a terminal, the
+                // terminal takes focus while the key is still physically down,
+                // and its `enter` correctly reports Mod4 depressed. Releasing
+                // Mod4 was then intercepted and the terminal was never told —
+                // so it read every following key as Mod4+key. Arrows did
+                // nothing, and letters looked fine because by the time anyone
+                // typed one something unrelated had pushed a fresh modifier
+                // state out. It cleared as soon as focus moved away and back,
+                // which is why opening a second window "fixed" it.
+                if intercepted && keyboard.modifier_state() != mods_before {
+                    keyboard.advertise_modifier_state(self);
                 }
 
                 // Whether the logo key is held, which is what the bar rides on
