@@ -10,7 +10,7 @@
 
 pkgname=viewport-smithay
 pkgver=0.1.0
-pkgrel=5
+pkgrel=6
 pkgdesc='Wayland compositor whose entire shell is a web page — the Smithay rewrite'
 arch=('x86_64' 'aarch64')
 url='https://github.com/codebam/viewport-smithay'
@@ -18,7 +18,7 @@ license=('GPL-3.0-or-later')
 
 # The commit this package was cut from. A tag would be nicer; there is not one
 # yet, and a moving branch in a PKGBUILD is not a package anyone can reproduce.
-_commit=251d22245209d6471e795de355d349d7d24a53be
+_commit=104122c921e24c50b13c8b109acd2e05fc4ad58e
 
 depends=(
   'wayland'
@@ -56,13 +56,20 @@ optdepends=(
   # does not.
   'vulkan-radeon: AMD hardware'
   'vulkan-intel: Intel hardware'
-  'nvidia-utils: NVIDIA hardware'
+  'nvidia-utils: NVIDIA hardware, and hardware video decode with it'
   # Neither of these is enough to run it in a virtual machine today — software
   # Vulkan is missing VK_EXT_image_drm_format_modifier and Venus aborts inside
   # the driver. See docs/debugging.md. They are listed because they are what a
   # nested or headless run wants.
   'vulkan-virtio: a guest with 3D acceleration (see docs/debugging.md first)'
   'vulkan-swrast: software Vulkan, for tests rather than a session'
+  # The compositor imports the multi-planar YUV a hardware decoder produces
+  # (NV12, P010 and the rest), so a player can hand over the decoder's own
+  # buffer with nothing converted in between. That only happens if the player
+  # can decode in hardware in the first place, which is what these provide.
+  # Without one, video still plays — the player converts each frame itself,
+  # which is the cost the import path exists to avoid.
+  'libva-mesa-driver: hardware video decode on AMD and Intel, for zero-copy video'
 )
 
 makedepends=(
