@@ -59,7 +59,8 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `view.query` | — replays `config` and a `view.added` for every mapped window |
 | `shell.focus` | — |
 | `shell.overview` | `active` |
-| `screencast.rect` | `x`, `y`, `width`, `height` — where the shell drew something that has to be above the windows; a zero size means nothing is |
+| `shell.overlay` | `rects[]` of `x`, `y`, `width`, `height` — everywhere the shell has drawn something that belongs above the windows. Sent whole; an empty list means nothing does. See [Drawing in front of the windows](#drawing-in-front-of-the-windows) |
+| `screencast.rect` | `x`, `y`, `width`, `height` — the older single-rectangle form of `shell.overlay`, still accepted; a zero size means nothing is above the windows |
 | `session.save` | `state` (opaque string) |
 | `session.query` | — |
 | `notification.action` | `id`, `action` (the key the application supplied, not the label) |
@@ -112,7 +113,31 @@ that part of the shell's buffer a second time, above the windows:
   frame is the desktop's own background in the buffer — `.viewport` has no
   background, but the wallpaper behind it does — and drawing it over the client
   turns the window into a block of wallpaper.
-- `screencast.rect` — a dialog, drawn above every window.
+- `shell.overlay` — everything else that floats: a notification, a bar that is
+  not docked, the screen-share chooser. It carries the whole list every time
+  rather than one rectangle, because several can be up at once and a message
+  that named one would take the others down. An empty list says nothing floats
+  now. `screencast.rect` is the older single-rectangle form and still works.
+
+Keep the rectangles tight, and send a fresh list the moment an element goes
+away. They are not only about drawing: **a rectangle named here takes the
+pointer too.** Inside one, the compositor reports no client under the pointer,
+so the click goes to the shell — which is what makes a notification's close
+button work, and what makes a stale or oversized rectangle swallow clicks meant
+for the window beneath it. The shipped shell measures each element with
+`getBoundingClientRect` and drops the entry when the element is gone or has
+collapsed to nothing; anything else risks a region that is invisible and still
+eating input.
+
+That applies to focus as well as to clicks. Clicking an overlay does not raise
+or focus the window behind it, and `Mod4`-dragging inside one does not drag
+that window — the click never reached it, so neither should its consequences.
+Asking for something by name is unaffected: a binding on `shell output.focus`
+still works, because it is not a click landing anywhere.
+
+Before this, input and drawing disagreed. A notification was painted on top and
+every click went through it to whatever was underneath, so its close button did
+nothing unless the notification happened to land on empty desktop.
 
 A window is a real Wayland surface, so nothing the shell draws can crop it —
 CSS `overflow` bounds the shell's own painting and no more. `clip` on
