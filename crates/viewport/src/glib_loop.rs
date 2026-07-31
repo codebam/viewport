@@ -113,7 +113,36 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         // Zero timeout: dispatch whatever is already pending without waiting.
         let event_loop = &mut *bridge.event_loop;
         let state = &mut *bridge.state;
+
+        // What one turn of the outer loop costs is the other half of the
+        // question `FrameLog::commit_nanos` asks: every client commit wakes
+        // this, and everything below runs whether or not there was anything
+        // to do.
+        let timing = state
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.frame_log.as_ref())
+            .is_some();
+        let mark = || timing.then(std::time::Instant::now);
+        let since = |at: Option<std::time::Instant>| {
+            at.map(|at| at.elapsed().as_nanos() as u64).unwrap_or(0)
+        };
+
+        // Yes, this dispatches on every pass, and yes it looks redundant next
+        // to the source's own `dispatch` — it was tried the other way and
+        // measured worse.
+        //
+        // Under a client committing thirteen thousand times a second this is
+        // 17% of a core, almost all of it finding nothing. Removing it and
+        // reporting idles through `prepare`'s return value instead moved that
+        // work into the source dispatch and left the fd readable more often,
+        // so GLib iterated more: loop turns went from 25,000 a second to
+        // 34,000-41,000, the source dispatch went from 26% of a core to 33-39%,
+        // and the total went from 78.1% to 79.5%. Draining here is what lets
+        // GLib block, and blocking is worth more than the dispatch costs.
+        let at = mark();
         let _ = event_loop.dispatch(Some(Duration::ZERO), state);
+        let dispatched = since(at);
 
         // Draw what is owed before GLib blocks, for the same reason: vblank
         // drives rendering and vblank stops when nothing is submitted.
@@ -123,7 +152,9 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         // pass through the loop would mean re-arming it immediately after each
         // of its own ticks — a clock running at the refresh rate for the life
         // of the session, on a desktop with nothing on it.
+        let at = mark();
         state.render_if_needed();
+        let rendered = since(at);
 
         // Push pending events out to clients before GLib blocks
         // (`src/glib_loop.c:71`).
@@ -137,7 +168,21 @@ unsafe extern "C" fn prepare(source: *mut c_void, timeout: *mut i32) -> GBool {
         // session hits this every time, because it asks for the registry
         // before anything is moving. It looks exactly like a program that
         // takes seconds to start and then appears the moment you press a key.
+        let at = mark();
         let _ = state.display_handle.flush_clients();
+        let flushed = since(at);
+
+        if let Some(log) = state
+            .udev
+            .as_mut()
+            .and_then(|udev| udev.frame_log.as_mut())
+        {
+            log.loop_turns += 1;
+            log.flushes += 1;
+            log.dispatch_nanos += dispatched;
+            log.render_nanos += rendered;
+            log.flush_nanos += flushed;
+        }
     }
     if !timeout.is_null() {
         // Nothing here needs waking on a timer. The one thing that used to —
@@ -170,6 +215,12 @@ unsafe extern "C" fn dispatch(
     let event_loop = &mut *bridge.event_loop;
     let state = &mut *bridge.state;
 
+    let started = state
+        .udev
+        .as_ref()
+        .and_then(|udev| udev.frame_log.as_ref())
+        .map(|_| std::time::Instant::now());
+
     // The fd is already readable, so this drains without blocking.
     if let Err(e) = event_loop.dispatch(Some(Duration::ZERO), state) {
         tracing::error!("calloop dispatch failed: {e}");
@@ -179,6 +230,18 @@ unsafe extern "C" fn dispatch(
     // prepare runs again, and a reply left in a buffer is a client left
     // waiting.
     let _ = state.display_handle.flush_clients();
+
+    if let Some(started) = started {
+        let spent = started.elapsed().as_nanos() as u64;
+        if let Some(log) = state
+            .udev
+            .as_mut()
+            .and_then(|udev| udev.frame_log.as_mut())
+        {
+            log.source_dispatches += 1;
+            log.source_nanos += spent;
+        }
+    }
 
     // G_SOURCE_CONTINUE
     1

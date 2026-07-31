@@ -120,12 +120,33 @@ impl CompositorHandler for ViewportState {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        on_commit_buffer_handler::<Self>(surface);
+        // Timed as a whole, including `on_commit_buffer_handler`, because the
+        // question this answers is what one commit costs — not what one part
+        // of it costs. Two clock reads per commit, and only when the counters
+        // are on. See `FrameLog::commit_nanos`.
+        let started = self
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.frame_log.as_ref())
+            .map(|_| std::time::Instant::now());
 
-        // How fast the clients are actually painting. See `FrameLog`.
-        if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
-            log.commits += 1;
+        self.commit_inner(surface);
+
+        if let Some(started) = started {
+            let spent = started.elapsed().as_nanos() as u64;
+            if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+                log.commits += 1;
+                log.commit_nanos += spent;
+            }
         }
+    }
+}
+
+impl ViewportState {
+    /// The body of [`CompositorHandler::commit`], split out only so the whole
+    /// of it can be timed from one place.
+    fn commit_inner(&mut self, surface: &WlSurface) {
+        on_commit_buffer_handler::<Self>(surface);
 
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();

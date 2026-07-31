@@ -100,6 +100,13 @@ for arg in "$@"; do
             export VIEWPORT_FRAME_LOG=1
             echo "frame pacing counters on; expect a line a second in viewport.log" >&2
             ;;
+        # No --no-shell flag, and the reason is worth writing down: pointing
+        # VIEWPORT_SHELL_URL at a file that does not exist does not turn the
+        # shell off. WebKit loads, fails, and renders its own error page — a
+        # full-screen white document, composited over everything, which hides
+        # the window and leaves every bit of the shell's cost still in the
+        # measurement. To take the shell out of a run, build without the wpe
+        # feature and point --viewport at that binary.
         --no-commit-timing)
             # Leaves wp_fifo_v1 up and takes wp_commit_timing_v1 down, which
             # is the half of the pacing --no-fifo cannot separate.

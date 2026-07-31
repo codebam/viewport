@@ -338,7 +338,7 @@ PY
     # shell means nothing places the window, the compositor waits 2.5s, and
     # then lays it out with its own built-in fallback. The numbers still come
     # out. They are just not numbers about this desktop.
-    VIEWPORT_SHELL_URL="file://$root/data/shell/index.html" \
+    VIEWPORT_SHELL_URL="${VIEWPORT_SHELL_URL:-file://$root/data/shell/index.html}" \
         "$viewport_bin" "${args[@]}" >"$comp_log" 2>&1 &
     comp_pid=$!
     comp_started=$(start_time_of "$comp_pid")
