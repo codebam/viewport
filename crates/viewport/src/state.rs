@@ -1033,6 +1033,13 @@ impl ViewportState {
             // Every click belongs to the shell while it is drawing miniatures.
             return None;
         }
+        if crate::pointer::over_overlay(&self.shell_overlays, pos) {
+            // The shell drew something here in front of the windows — a
+            // notification, a floating bar, the screen-share chooser. It is on
+            // top, so it takes the pointer; reporting the window underneath
+            // would hand the click straight through it.
+            return None;
+        }
 
         // Layer surfaces first where they are in front, and last where they
         // are behind, so a launcher over a window takes the click and a

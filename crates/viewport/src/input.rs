@@ -456,7 +456,16 @@ impl ViewportState {
                     let hit = self
                         .space
                         .element_under(pointer.current_location())
-                        .map(|(w, _)| w.clone());
+                        .map(|(w, _)| w.clone())
+                        // Not through something the shell drew in front. A
+                        // notification sitting over a window is not a handle
+                        // for dragging that window about.
+                        .filter(|_| {
+                            !crate::pointer::over_overlay(
+                                &self.shell_overlays,
+                                pointer.current_location(),
+                            )
+                        });
                     if let Some(id) = hit.and_then(|window| {
                         self.views.iter().find(|v| v.window == window).map(|v| v.id)
                     }) {
@@ -485,8 +494,14 @@ impl ViewportState {
                         .space
                         .element_under(pointer.current_location())
                         .map(|(w, _)| w.clone());
+                    // Clicking a notification must not raise and focus the
+                    // window behind it — the click never reached that window.
+                    let on_overlay = crate::pointer::over_overlay(
+                        &self.shell_overlays,
+                        pointer.current_location(),
+                    );
 
-                    match hit.filter(|_| !self.overview) {
+                    match hit.filter(|_| !self.overview && !on_overlay) {
                         Some(window) => {
                             let id = self
                                 .views

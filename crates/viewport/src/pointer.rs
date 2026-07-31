@@ -58,6 +58,19 @@ pub fn confine(
     best.map(|(_, point)| point)
 }
 
+/// Whether `at` falls in something the shell drew above the windows.
+///
+/// The shell names these rectangles so the compositor can draw its buffer
+/// again, cropped to each, in front of the windows — a notification that
+/// arrived while a window was open would otherwise be behind it. Input has to
+/// agree with that, or the notification is painted on top and every click goes
+/// through it to whatever is underneath: visible, and unusable.
+///
+/// Half-open like everything else here, so a point on the far edge is outside.
+pub fn over_overlay(overlays: &[Rectangle<i32, Logical>], at: Point<f64, Logical>) -> bool {
+    overlays.iter().any(|rect| contains(*rect, at))
+}
+
 fn contains(rect: Rectangle<i32, Logical>, at: Point<f64, Logical>) -> bool {
     at.x >= rect.loc.x as f64
         && at.y >= rect.loc.y as f64
@@ -145,6 +158,64 @@ mod tests {
         assert_eq!(
             confine(&region, (50.0, 50.0).into()),
             Some(Point::from((10.0, 10.0)))
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_notification_is_not_a_click_on_the_window_behind_it() {
+        // The bug this exists for: a notification is drawn in front of a
+        // window, so it is visible — and every click went through it to the
+        // window, which made its close button unusable.
+        let notification = [rect(4800, 60, 300, 120)];
+        assert!(over_overlay(&notification, (4950.0, 100.0).into()));
+        // The close button, in the top-right corner of it.
+        assert!(over_overlay(&notification, (5090.0, 66.0).into()));
+    }
+
+    #[test]
+    fn everywhere_else_still_reaches_the_windows() {
+        // The overlay has to be the exception. If this were ever true for a
+        // point outside the rectangle, the desktop would stop taking clicks.
+        let notification = [rect(4800, 60, 300, 120)];
+        for at in [(0.0, 0.0), (4799.0, 100.0), (4950.0, 59.0), (2000.0, 700.0)] {
+            assert!(!over_overlay(&notification, at.into()), "{at:?}");
+        }
+        assert!(
+            !over_overlay(&[], (4950.0, 100.0).into()),
+            "nothing declared"
+        );
+    }
+
+    #[test]
+    fn the_far_edges_belong_to_the_window() {
+        // Half-open, like `confine` above. Both have to agree, or a pixel
+        // column exists that one considers inside and the other outside.
+        let overlay = [rect(100, 100, 50, 50)];
+        assert!(over_overlay(&overlay, (100.0, 100.0).into()), "near corner");
+        assert!(over_overlay(&overlay, (149.9, 149.9).into()), "just inside");
+        assert!(!over_overlay(&overlay, (150.0, 120.0).into()), "far x");
+        assert!(!over_overlay(&overlay, (120.0, 150.0).into()), "far y");
+    }
+
+    #[test]
+    fn several_overlays_are_all_live() {
+        // A notification and the screen-share chooser can be up together, and
+        // the bar floats as a third. Only checking the first would make the
+        // others click-through again.
+        let overlays = [
+            rect(0, 0, 100, 40),
+            rect(4800, 60, 300, 120),
+            rect(900, 400, 400, 300),
+        ];
+        assert!(over_overlay(&overlays, (50.0, 20.0).into()), "bar");
+        assert!(
+            over_overlay(&overlays, (4900.0, 100.0).into()),
+            "notification"
+        );
+        assert!(over_overlay(&overlays, (1000.0, 500.0).into()), "chooser");
+        assert!(
+            !over_overlay(&overlays, (600.0, 600.0).into()),
+            "between them"
         );
     }
 }
