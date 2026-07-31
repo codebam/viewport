@@ -797,7 +797,7 @@ impl ViewportState {
         // client that has already decided start listening.
         seat.add_touch();
 
-        let socket_name = Self::init_wayland_listener(display, event_loop);
+        let socket_name = Self::init_wayland_listener(display, event_loop)?;
 
         // The control socket is named after the Wayland display, so it has to
         // wait until the display exists.
@@ -980,22 +980,56 @@ impl ViewportState {
         })
     }
 
+    /// Bind the Wayland socket and start listening on it.
+    ///
+    /// Every failure here is fatal — a compositor with no socket is a
+    /// compositor no client can reach — but fatal is not the same as a panic.
+    /// The socket is the first thing that touches the outside world, so it is
+    /// where a session that is not set up properly shows itself, and the
+    /// commonest of those is worth naming rather than unwrapping.
     fn init_wayland_listener(
         display: Display<Self>,
         event_loop: &mut EventLoop<'static, Self>,
-    ) -> OsString {
-        let listening_socket = ListeningSocketSource::new_auto().unwrap();
+    ) -> anyhow::Result<OsString> {
+        let listening_socket = ListeningSocketSource::new_auto().map_err(|e| {
+            // The socket lives in XDG_RUNTIME_DIR, so without one there is
+            // nowhere to put it. A login session sets this; a compositor
+            // started by hand, from a bare `su`, or inside a container often
+            // has no session behind it and inherits nothing.
+            if std::env::var_os("XDG_RUNTIME_DIR").is_none_or(|dir| dir.is_empty()) {
+                anyhow::anyhow!(
+                    "XDG_RUNTIME_DIR is not set, so there is nowhere to put the \
+                     Wayland socket.\n\
+                     It is normally set for you by the login session. If you are \
+                     starting the compositor by hand — from a bare `su`, a cron \
+                     job, or a container — point it at a private writable \
+                     directory you own, conventionally /run/user/$(id -u):\n\
+                     \n    export XDG_RUNTIME_DIR=/run/user/$(id -u)"
+                )
+            } else {
+                anyhow::Error::from(e).context(
+                    "could not bind a Wayland socket. Every name from wayland-1 to \
+                     wayland-32 is taken, or XDG_RUNTIME_DIR is not writable",
+                )
+            }
+        })?;
+
         let socket_name = listening_socket.socket_name().to_os_string();
         let loop_handle = event_loop.handle();
 
         loop_handle
             .insert_source(listening_socket, move |client_stream, _, state| {
-                state
+                if let Err(e) = state
                     .display_handle
                     .insert_client(client_stream, Arc::new(ClientState::default()))
-                    .unwrap();
+                {
+                    // One client that could not be taken on. It is the only
+                    // thing affected, and the desktop around it carries on —
+                    // which is not true if this unwinds through the event loop.
+                    tracing::error!("could not accept a client connection: {e}");
+                }
             })
-            .expect("failed to init the wayland event source");
+            .map_err(|e| anyhow::anyhow!("listening for Wayland clients: {e}"))?;
 
         loop_handle
             .insert_source(
@@ -1008,9 +1042,9 @@ impl ViewportState {
                     Ok(PostAction::Continue)
                 },
             )
-            .unwrap();
+            .map_err(|e| anyhow::anyhow!("dispatching Wayland clients: {e}"))?;
 
-        socket_name
+        Ok(socket_name)
     }
 
     /// What the pointer is over.
