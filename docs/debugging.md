@@ -148,6 +148,46 @@ is; WebKit paints nothing into a view of no size, and a shell that is never told
 would load and then sit there. The window list is rebuilt by the shell itself
 through `view.query`, which is the same path a manual reload already used.
 
+## A video player dying with "Invalid stride"
+
+Under heavy load — twelve 4K streams at once — a player using the zero-copy
+video path occasionally dies outright:
+
+```
+error 6: Invalid stride (4096) or height (2160) for plane 0.
+[vo/dmabuf-wayland/wayland] Error occurred on the display fd
+```
+
+That is a `zwp_linux_buffer_params_v1` out-of-bounds error, and a protocol error
+kills the client: libwayland aborts. The compositor is right to send it, and the
+cause is not on this side.
+
+The check is `offset + stride * height` against the size of the file the plane's
+descriptor refers to. Instrumenting it and reproducing on real hardware — 909
+samples, three rejections — gives the answer directly:
+
+```
+pass:   link=/dmabuf:3945763-mpv   st_size=15728640
+reject: link=/memfd:mpv (deleted)  st_size=94848  mode=0o100777
+```
+
+The rejected descriptor is not a DMA-BUF at all. It is a memfd belonging to the
+player, a regular file of about 95 KB, where a 15 MB buffer should be. The
+parameters around it are identical to the ones that pass — same offset, same
+stride, same height, same modifier — which is why the wire log looks innocent:
+it records the numbers, not what a descriptor points to.
+
+So the client sends the wrong descriptor for plane 0, rarely and under load, and
+the compositor refuses a buffer whose first plane is a small regular file. Both
+halves are behaving correctly. Report it to the player.
+
+Worth knowing for anything similar: nothing about this is visible from the
+protocol trace, and the compositor's own log only says a buffer was refused.
+`readlink /proc/self/fd/N` at the point of the check is what separates "the
+measurement is wrong" from "the descriptor is wrong", and those two have
+opposite culprits.
+
+
 ## Fallback
 
 The load deadline is on the **first painted frame**, not on the load event. A

@@ -230,18 +230,70 @@ fn main() -> Result<()> {
     // input routing, and the control socket needs another terminal. This needs
     // only the event loop, so a run that comes up wrong still ends by itself
     // rather than holding the machine.
+    // On a timerfd, for the same reason the frame clock is.
+    //
+    // With the shell running, GLib is the outer loop and calloop is dispatched
+    // from inside it — and `glib_loop::prepare` passes -1, so GLib blocks until
+    // one of the file descriptors it watches signals. calloop keeps its own
+    // timers in a heap rather than as descriptors, so nothing about a calloop
+    // timer expiring is visible to GLib: the deadline passes and the loop stays
+    // asleep until something unrelated wakes it.
+    //
+    // That made `--exit-after` fail exactly where it is used. A busy compositor
+    // exits roughly on time because client traffic wakes the loop anyway; an
+    // idle one — a test, a CI run, a headless check — never does, and the flag
+    // silently did nothing until an outer `timeout` killed the process. It cost
+    // two runs on a spare VT, both of which left the display on a compositor
+    // that should have stopped and had not.
+    //
+    // A timerfd is a descriptor like any other, so GLib wakes for it.
     if let Some(seconds) = flag(&args, "--exit-after").and_then(|v| v.parse::<u64>().ok()) {
+        use smithay::reexports::calloop::generic::Generic;
+        use smithay::reexports::calloop::{Interest, Mode, PostAction};
+        use smithay::reexports::rustix::time::{
+            timerfd_create, timerfd_settime, Itimerspec, TimerfdClockId, TimerfdFlags,
+            TimerfdTimerFlags, Timespec,
+        };
+
         tracing::info!("will exit after {seconds}s");
-        let timer = smithay::reexports::calloop::timer::Timer::from_duration(
-            std::time::Duration::from_secs(seconds),
-        );
+        let fd = timerfd_create(
+            TimerfdClockId::Monotonic,
+            TimerfdFlags::NONBLOCK | TimerfdFlags::CLOEXEC,
+        )
+        .map_err(|e| anyhow::anyhow!("creating the exit timer: {e}"))?;
+
+        let spec = Itimerspec {
+            it_interval: Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+            it_value: Timespec {
+                tv_sec: seconds as _,
+                tv_nsec: 0,
+            },
+        };
+        timerfd_settime(&fd, TimerfdTimerFlags::empty(), &spec)
+            .map_err(|e| anyhow::anyhow!("arming the exit timer: {e}"))?;
+
         event_loop
             .handle()
-            .insert_source(timer, |_, _, state| {
-                tracing::info!("the --exit-after deadline passed; stopping");
-                state.loop_signal.stop();
-                smithay::reexports::calloop::timer::TimeoutAction::Drop
-            })
+            .insert_source(
+                Generic::new(fd, Interest::READ, Mode::Level),
+                |_, fd, state: &mut ViewportState| {
+                    // Drained, or a level-triggered source reports the same
+                    // expiry for ever and the loop never sleeps again.
+                    let mut buf = [0u8; 8];
+                    let _ = smithay::reexports::rustix::io::read(&*fd, &mut buf[..]);
+                    tracing::info!("the --exit-after deadline passed; stopping");
+                    // `shutdown`, not `loop_signal.stop()`. With the web engine
+                    // on, calloop is the inner loop and stopping it leaves GLib
+                    // running — the deadline was reported and the process
+                    // carried on regardless, which is the other half of why
+                    // this flag never worked.
+                    state.shutdown();
+                    Ok(PostAction::Continue)
+                },
+            )
             .map_err(|e| anyhow::anyhow!("inserting the exit timer: {e}"))?;
     }
 
