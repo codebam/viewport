@@ -202,11 +202,27 @@ jobs:
             scripts/integration.sh target/debug/viewport
           '
 
-      # The `wpe` half is not built here — it is the part that needs WebKit —
-      # so nothing above would catch a lint or a type error inside
-      # `#[cfg(feature = "wpe")]`. The compositor job below builds
-      # .#viewport-smithay, which turns the feature on, and that is where those
-      # show up. It is gated on the cache; this job is not.
+      # The `wpe` half, which none of the above compiles: `cargo` here builds
+      # the default features, leaving everything inside
+      # `#[cfg(feature = "wpe")]` untouched — the shell, the DMA-BUF import,
+      # the WPE shim, which is to say the reason the compositor exists.
+      #
+      # This used to live in the compositor job because turning the feature on
+      # pulls in WPE WebKit, and building that is a four-hour job a hosted
+      # runner has not the disk for. It substitutes from the project's cache
+      # now — measured at 409s for the whole thing, against 53s for the C
+      # build beside it — so the gate it was behind has no reason left, and
+      # the feature is checked on every push instead of never.
+      #
+      # `nix build` rather than `cargo build --features wpe`: the feature needs
+      # wpe-platform and wpe-webkit found by pkg-config, and .#viewport-smithay
+      # is where that plumbing already lives.
+      #
+      # Its own tests stay off — buildRustPackage would run them inside the nix
+      # sandbox, which has neither a GPU nor a socket, and the steps above have
+      # already run the suite outside it.
+      - name: Build with the web engine
+        run: nix build --print-build-logs .#viewport-smithay
 
   # Builds .#wpewebkit on its own and pushes the closure to Cachix, so that the
   # compositor and sanitizer jobs have something to substitute. Never runs on a
@@ -390,20 +406,6 @@ jobs:
 
       - name: Build
         run: nix build --print-build-logs .#viewport
-
-      # The Rust rewrite with the web engine turned on. The `rust` job above
-      # builds the default features, which leaves everything inside
-      # `#[cfg(feature = "wpe")]` uncompiled — the shell, the DMA-BUF import,
-      # the whole reason the compositor exists. Nothing else in this file
-      # type-checks it.
-      #
-      # Here rather than in that job because `wpe` is what pulls in WebKit, so
-      # this is gated on the same populated cache as everything else on this
-      # runner. Its own tests stay off: buildRustPackage runs them in the nix
-      # sandbox, which has neither a GPU nor a socket, and the `rust` job has
-      # already run the suite outside it.
-      - name: Build the Rust rewrite with the web engine
-        run: nix build --print-build-logs .#viewport-smithay
 
       # Only the Wayland tests here; the shell job already covered the rest,
       # and running them twice would just make a node-less runner look green.
