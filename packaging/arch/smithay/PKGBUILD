@@ -10,7 +10,7 @@
 
 pkgname=viewport-smithay
 pkgver=0.1.0
-pkgrel=18
+pkgrel=19
 pkgdesc='Wayland compositor whose entire shell is a web page — the Smithay rewrite'
 arch=('x86_64' 'aarch64')
 url='https://github.com/codebam/viewport-smithay'
@@ -18,7 +18,7 @@ license=('GPL-3.0-or-later')
 
 # The commit this package was cut from. A tag would be nicer; there is not one
 # yet, and a moving branch in a PKGBUILD is not a package anyone can reproduce.
-_commit=8eada166eb610c27f46ab7ca9e17ed3b5ca289b8
+_commit=fb937044ee14698d8342d4690348e0f29a56ccfa
 
 depends=(
   'wayland'
