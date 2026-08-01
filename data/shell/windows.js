@@ -171,6 +171,10 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
     /* The frame last reported to the compositor, so an unchanged one is not
        re-sent. Null for a tiled window, which needs none. */
     frame: null,
+    /* Whether the compositor has been told this window floats, which is what
+       keeps it stacked over the tiled ones. Separate from `floating` above:
+       that is the rect, this is what went out on the wire. */
+    reportedFloating: false,
     /* Set while the overview is up; see clearOverviewState(). */
     overview: null,
   });

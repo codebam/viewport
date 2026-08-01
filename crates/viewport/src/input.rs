@@ -538,7 +538,10 @@ impl ViewportState {
                                 .map(|v| v.id)
                                 .unwrap_or(NO_VIEW);
 
-                            self.space.raise_element(&window, true);
+                            self.space.raise_element(&window, false);
+                            // A click on a tiled window must not bury the
+                            // floating one that was over it.
+                            self.restack();
                             if let Some(toplevel) = window.toplevel() {
                                 keyboard.set_focus(
                                     self,
@@ -546,7 +549,7 @@ impl ViewportState {
                                     serial,
                                 );
                             }
-                            self.send_pending_configures();
+                            self.activate_view(id);
                             if id != self.focused {
                                 self.notify_focus(id);
                             }
@@ -554,10 +557,7 @@ impl ViewportState {
                         None => {
                             // The pointer is over the shell, or the overview is
                             // up and every click belongs to it.
-                            for window in self.space.elements() {
-                                window.set_activated(false);
-                            }
-                            self.send_pending_configures();
+                            self.activate_view(NO_VIEW);
                             keyboard.set_focus(self, Option::<WlSurface>::None, serial);
                             if self.focused != NO_VIEW {
                                 self.notify_focus(NO_VIEW);
@@ -1299,14 +1299,6 @@ impl ViewportState {
             args,
         };
         self.notify(&event);
-    }
-
-    fn send_pending_configures(&mut self) {
-        for window in self.space.elements() {
-            if let Some(toplevel) = window.toplevel() {
-                toplevel.send_pending_configure();
-            }
-        }
     }
 }
 

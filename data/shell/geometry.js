@@ -103,24 +103,33 @@ function reportGeometry(id) {
     }
     : null;
 
+  /* Stacking is the compositor's — the space it keeps is what it draws from
+     and what it tests a click against — and floating is the one thing about a
+     window's stacking that only the shell knows. Without it a click on a tiled
+     window raises that window over the dialog sitting on top of it. */
+  const floating = isFloating(id);
+
   const prev = view.box;
   const prevClip = view.clip;
   const prevFrame = view.frame;
+  const prevFloating = view.reportedFloating;
   if (prev && prev.x === box.x && prev.y === box.y &&
       prev.width === box.width && prev.height === box.height &&
       prev.scale === scale && sameBox(prevClip, clip) &&
-      sameBox(prevFrame, frame)) {
+      sameBox(prevFrame, frame) && prevFloating === floating) {
     return false;
   }
 
   view.box = { ...box, scale };
   view.clip = clip;
   view.frame = frame;
+  view.reportedFloating = floating;
 
   const message = { type: 'view.layout', id, ...box };
   if (scale !== 1) message.scale = scale;
   if (clip) message.clip = clip;
   if (frame) message.frame = frame;
+  if (floating) message.floating = true;
   /* Anything that gets past the comparison above differs, so this goes out
      unconditionally — including the case where the scale alone changed, which
      is worth a message even though the rect did not move. */

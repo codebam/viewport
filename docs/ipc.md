@@ -50,7 +50,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 
 | Message | Payload |
 | --- | --- |
-| `view.layout` | `id`, `x`, `y`, `width`, `height`, optional `clip{x,y,width,height}`, optional `scale`, optional `frame{x,y,width,height}` |
+| `view.layout` | `id`, `x`, `y`, `width`, `height`, optional `clip{x,y,width,height}`, optional `scale`, optional `frame{x,y,width,height}`, optional `floating` |
 | `view.visible` | `id`, `visible` |
 | `view.fullscreen` | `id`, `fullscreen` — tells the client, which rearranges itself on the state |
 | `view.focus` | `id` |
@@ -113,6 +113,14 @@ that part of the shell's buffer a second time, above the windows:
   frame is the desktop's own background in the buffer — `.viewport` has no
   background, but the wallpaper behind it does — and drawing it over the client
   turns the window into a block of wallpaper.
+- `floating` on `view.layout` — that this window is floating rather than tiled.
+  Layout is the shell's, but the *stack* is the compositor's: it is what the
+  renderer draws from and what a click is tested against, and focusing a window
+  raises it. Without the flag, focusing a tiled window puts it over the dialog
+  that was deliberately placed on top, where it is not merely hidden but
+  unclickable. Sent as `true` for a floating window and left off a tiled one;
+  absent means tiled. Floating windows keep their order among themselves, and
+  an X11 menu or tooltip still sits above all of them.
 - `shell.overlay` — everything else that floats: a notification, a bar that is
   not docked, the screen-share chooser. It carries the whole list every time
   rather than one rectangle, because several can be up at once and a message

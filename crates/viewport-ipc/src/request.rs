@@ -227,6 +227,20 @@ pub struct ViewLayout {
     /// that needs nothing of the sort, which is most of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<crate::geometry::Box>,
+
+    /// Whether the shell is floating this window rather than tiling it.
+    ///
+    /// The shell owns layout, but not stacking: the stack lives in the
+    /// compositor's `Space`, which is what the renderer draws from and what a
+    /// click is tested against. A floating window that fell behind a tiled one
+    /// is invisible to both, so the compositor has to know which windows are
+    /// floating to keep them above the rest — and the shell is the only thing
+    /// that knows.
+    ///
+    /// Absent means tiled, which is most windows and every window a shell that
+    /// never sets it sends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub floating: bool,
 }
 
 impl ViewLayout {
@@ -445,6 +459,25 @@ mod tests {
             layout.resolve(Box::new(0, 0, 1, 1)).unwrap().box_,
             Box::new(10, 20, 800, 600)
         );
+    }
+
+    #[test]
+    fn absent_floating_means_tiled() {
+        // A shell that says nothing about stacking gets the old behaviour,
+        // which is the tiled one.
+        let Request::ViewLayout(layout) =
+            parse(r#"{"type":"view.layout","id":3,"x":0,"y":0,"width":8,"height":8}"#)
+        else {
+            panic!("wrong variant");
+        };
+        assert!(!layout.floating);
+
+        let Request::ViewLayout(layout) = parse(
+            r#"{"type":"view.layout","id":3,"x":0,"y":0,"width":8,"height":8,"floating":true}"#,
+        ) else {
+            panic!("wrong variant");
+        };
+        assert!(layout.floating);
     }
 
     #[test]

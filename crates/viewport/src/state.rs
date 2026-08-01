@@ -1824,10 +1824,12 @@ impl ViewportState {
         for (window, location) in placed {
             self.space.map_element(window, location, false);
         }
-        // Same as a layout: mapping restacks, so focus decides what is on top.
+        // Same as a layout: mapping restacks, so focus decides what is on top,
+        // and the floats stay above whatever that is.
         if let Some(window) = self.views.get(self.focused).map(|view| view.window.clone()) {
             self.space.raise_element(&window, false);
         }
+        self.restack();
         // Said out loud because "the windows did not come back" and "the
         // windows came back somewhere off screen" look identical from a chair
         // in front of the monitor.
@@ -3384,6 +3386,7 @@ impl ViewportState {
                     clip: None,
                     frame: None,
                     scale: None,
+                    floating: false,
                 }),
             );
         }
@@ -5103,9 +5106,102 @@ impl ViewportState {
         }
     }
 
+    /// Send every toplevel the configure it has pending.
+    ///
+    /// Cheap to call on all of them: `send_pending_configure` is a no-op for a
+    /// window whose pending state matches what it was last told.
+    pub(crate) fn send_pending_configures(&self) {
+        for window in self.space.elements() {
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.send_pending_configure();
+            }
+        }
+    }
+
+    /// Tell the clients which one of them has focus. `NO_VIEW` means none does.
+    ///
+    /// Two separate things carry focus and only one of them is obvious. The
+    /// keyboard focus decides where keys go. The toplevel's `activated` state
+    /// decides what the window *looks* like — a toolkit greys its title bar,
+    /// dims its selection and stops blinking its cursor without it — and it
+    /// only reaches the client on a configure.
+    ///
+    /// Smithay sets that state when a window is raised with `activate`, but
+    /// only into the pending configure, and a configure nobody sends is a
+    /// client that never finds out. Tiling hid it: focus there arrives with a
+    /// layout change, and the resize that comes with it flushes the pending
+    /// state along the way. A floating window is focused where it stands — no
+    /// move, no resize, nothing else to send — so it took the keys and stayed
+    /// drawn as though it had not: focused and grey.
+    pub fn activate_view(&mut self, id: u32) {
+        let focused = self.views.get(id).map(|view| view.window.clone());
+        // Every window, not only the two that changed. Anything else leaves a
+        // window that was activated by some other path still believing it.
+        for window in self.space.elements() {
+            let active = focused.as_ref() == Some(window);
+            window.set_activated(active);
+        }
+        self.send_pending_configures();
+    }
+
+    /// Put the stack back the way the desktop is meant to look: floating
+    /// windows above tiled ones.
+    ///
+    /// The shell owns layout and the compositor owns the stack, so this is the
+    /// one stacking rule the compositor keeps for itself. A floating window is
+    /// a dialog, a palette or a picture-in-picture that was deliberately put in
+    /// front of the layout; behind a tiled window it is not merely hard to see
+    /// but unreachable, because `Space` is what a click is tested against as
+    /// well as what the renderer draws from.
+    ///
+    /// Focus does not enter into it. Focusing a tiled window raises that window,
+    /// and without this the float it was covering goes under — so this runs
+    /// after every raise rather than only after the ones that look risky.
+    /// Relative order among the floats is kept: they are re-raised bottom to
+    /// top, so the one in front stays in front.
+    pub fn restack(&mut self) {
+        let floating: Vec<smithay::desktop::Window> = self
+            .space
+            .elements()
+            .filter(|window| {
+                self.views
+                    .iter()
+                    .any(|view| view.floating && view.window == **window)
+            })
+            .cloned()
+            .collect();
+        for window in floating {
+            self.space.raise_element(&window, false);
+        }
+
+        // Above even those: an X11 menu or tooltip, which places itself and is
+        // no view at all. A float raised over an open dropdown is the same bug
+        // this function exists to fix, one layer up.
+        let overrides: Vec<smithay::desktop::Window> = self
+            .space
+            .elements()
+            .filter(|window| {
+                window
+                    .x11_surface()
+                    .is_some_and(|x11| x11.is_override_redirect())
+            })
+            .cloned()
+            .collect();
+        for window in overrides {
+            self.space.raise_element(&window, false);
+        }
+    }
+
     pub fn notify_focus(&mut self, id: u32) {
         let previous = self.focused;
         self.focused = id;
+
+        // Every path that changes focus comes through here, including the ones
+        // that only ever meant to update a list — a window closing and taking
+        // focus with it, a workspace switch. Activating from here rather than
+        // from each of them is what keeps the clients' idea of focus and the
+        // compositor's the same.
+        self.activate_view(id);
 
         // Outside the compositor too: a taskbar draws the focused window
         // differently, and one that is never told keeps highlighting the

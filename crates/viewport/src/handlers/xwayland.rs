@@ -75,7 +75,11 @@ impl XwmHandler for ViewportState {
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
         let geometry = window.geometry();
         let element = Window::new_x11_window(window);
-        self.space.map_element(element, geometry.loc, true);
+        // Mapped without activating. Activating here does not focus the menu —
+        // it takes the activated state off every other window, into a pending
+        // configure that goes out with whatever is sent next, so the window the
+        // menu belongs to greys out while its own menu is open.
+        self.space.map_element(element, geometry.loc, false);
         self.needs_render = true;
     }
 

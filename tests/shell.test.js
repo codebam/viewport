@@ -1151,12 +1151,21 @@ if (mode === 'scrolling') {
     framed !== undefined && framed.frame !== undefined &&
     framed.frame.width > 0 && framed.frame.height > 0);
 
+  /* Stacking belongs to the compositor, and floating is the part of it only
+     the shell knows. Without the flag a click on a tiled window raises it over
+     the dialog that was sitting on top. */
+  check('a floating window says so on its layout',
+    framed !== undefined && framed.floating === true);
+
   /* A tiled border falls in the gap between two windows, where nothing covers
      it, so reporting one would be a texture drawn per window for nothing. */
   open(93, 'tiled-one');
   const tiled = sent.filter((m) => m.type === 'view.layout' && m.id === 93).at(-1);
   check('a tiled window reports none',
     tiled !== undefined && tiled.frame === undefined);
+  /* Absent means tiled, so nothing is sent for the ordinary case. */
+  check('and does not claim to float',
+    tiled !== undefined && tiled.floating === undefined);
   emit({ type: 'view.removed', id: 93 });
 
   /* Mod4 and the left button on a *tiled* window did nothing at all: the

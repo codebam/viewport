@@ -67,6 +67,12 @@ pub struct View {
     /// a floating window that has become a solid block of wallpaper.
     pub overlay_ids: [smithay::backend::renderer::element::Id; 4],
 
+    /// The shell is floating this window rather than tiling it, as its last
+    /// `view.layout` said. Stacking reads it: a floating window belongs over
+    /// the tiled ones whatever has focus, because it is a dialog or a palette
+    /// that was put in front of them on purpose.
+    pub floating: bool,
+
     /// Driven a frame at a time by a tween in the shell, which cannot fade a
     /// window with CSS: the frame is DOM, the contents are a surface the
     /// compositor draws.
@@ -333,6 +339,7 @@ impl Views {
             clip: None,
             tag: None,
             frame: None,
+            floating: false,
             overlay_ids: std::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
             opacity: 1.0,
             configured: None,

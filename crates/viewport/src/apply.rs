@@ -32,6 +32,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 if placed {
                     let location = (view.box_.x, view.box_.y);
                     state.space.map_element(window, location, false);
+                    // Mapping stacks on top, which is wrong for a tiled window
+                    // coming back to a desktop that has a float over it.
+                    state.restack();
                 }
             } else {
                 state.space.unmap_elem(&window);
@@ -93,6 +96,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 let serial = SERIAL_COUNTER.next_serial();
                 keyboard.set_focus(state, None, serial);
             }
+            // Keys stopping at the shell is only half of it, and the other
+            // half — no window still drawn as the focused one — is what
+            // `notify_focus` does with `NO_VIEW`.
             state.notify_focus(NO_VIEW);
         }
 
@@ -138,6 +144,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     let serial = SERIAL_COUNTER.next_serial();
                     keyboard.set_focus(state, None, serial);
                 }
+                // The overview owns the keys, so no window is focused while it
+                // is up and none should be drawn as though it were.
+                state.activate_view(NO_VIEW);
                 return;
             }
             // Clear every window's scale here rather than waiting for the
@@ -321,6 +330,7 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
     // Absent means there is nothing of this window's frame that has to be
     // drawn above anything, which is every tiled window.
     view.frame = layout.frame;
+    view.floating = layout.floating;
     view.placed = true;
     // A rectangle un-hides a window, as in C (`src/xdg_shell.c:832`).
     //
@@ -382,6 +392,9 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
         }
     }
 
+    // And whatever the focused window is, the floats stay over it.
+    state.restack();
+
     // A window that just crossed onto another monitor is being shown in a
     // different colour space than the one it was drawing for. Nothing else
     // notices: the outputs themselves did not change, so `notify_output_colour`
@@ -400,8 +413,12 @@ pub fn focus_view(state: &mut ViewportState, id: u32) {
     }
     if let Some(view) = state.views.get(id) {
         let window = view.window.clone();
-        state.space.raise_element(&window, true);
+        // Raised without activating: `notify_focus` owns that, because the
+        // state Smithay sets here only reaches the client on a configure and a
+        // raise sends none.
+        state.space.raise_element(&window, false);
     }
+    state.restack();
     state.notify_focus(id);
 }
 
