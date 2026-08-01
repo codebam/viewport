@@ -190,6 +190,18 @@ if [ "$only" = niri ] || [ "$only" = all ]; then
     fi
 fi
 
+# Whether Viewport is one of the compositors this run measures.
+#
+# Asked positively. Both checks below used to read "not sway", which was true
+# of `--only niri` as well — so a niri-only run demanded a Viewport binary with
+# a web shell in it and refused to start without one.
+includes_viewport() {
+    case "$only" in
+        viewport | both | all) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 outdir=${outdir:-$root/bench-results}
 mkdir -p "$outdir"
@@ -224,7 +236,7 @@ if [ -z "$viewport_bin" ]; then
     done
     viewport_bin=$newest
 fi
-if [ "$only" != sway ] && { [ -z "$viewport_bin" ] || [ ! -x "$viewport_bin" ]; }; then
+if includes_viewport && { [ -z "$viewport_bin" ] || [ ! -x "$viewport_bin" ]; }; then
     echo "no viewport binary: build one, or pass --viewport PATH" >&2
     exit 1
 fi
@@ -241,7 +253,7 @@ fi
 # rebuilds target/debug without the feature, so an afternoon of running tests
 # leaves the newest binary the one that cannot do this. That is the same trap
 # run-drm.sh has a check for, arriving by a different door.
-if [ -n "$second" ] && [ "$only" != sway ] &&
+if [ -n "$second" ] && includes_viewport &&
     ! grep -qa "starting the shell at" "$viewport_bin"; then
     echo "$viewport_bin has no shell in it: built without --features wpe," >&2
     echo "or overwritten by a cargo test run." >&2
@@ -646,7 +658,19 @@ EOF
     local stamp=$outdir/.stamp
     : >"$stamp"
 
-    NIRI_CONFIG="$cfg" "$niri_bin" >"$comp_log" 2>&1 &
+    # With WAYLAND_DISPLAY or DISPLAY set, niri nests. It has no flag for the
+    # backend — unlike sway, which takes WLR_BACKENDS, and Viewport, which
+    # takes --drm — so the only way to ask for DRM is to leave it nothing to
+    # nest inside. Both are inherited by anything started from a graphical
+    # session or from a tmux server that was, and what came of it was a panic
+    # in winit's event loop against a compositor that was not running:
+    #
+    #     called `Result::unwrap()` on an `Err` value: EventLoopCreation(..)
+    #
+    # which reads as niri failing rather than as niri being asked for the
+    # wrong backend.
+    env -u WAYLAND_DISPLAY -u DISPLAY NIRI_CONFIG="$cfg" "$niri_bin" \
+        >"$comp_log" 2>&1 &
     comp_pid=$!
 
     local waited=0
