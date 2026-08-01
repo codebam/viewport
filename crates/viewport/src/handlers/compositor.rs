@@ -80,42 +80,32 @@ impl CompositorHandler for ViewportState {
                 return;
             };
 
-            // The client's own point first: it knows when it is done, and the
-            // buffer's fence may cover work that has nothing to do with this
-            // frame.
-            // Waiting on the acquire point is not free, and there is no cheap
-            // way out of it. Each wait costs an eventfd, two epoll_ctl to put
-            // it in the loop and take it out, a close, and a wakeup when it
-            // fires — about eight syscalls per commit per surface, and it is
-            // the second of the two wakeups every commit costs. Skipping it
-            // outright, which is wrong but measurable, takes a client in
-            // IMMEDIATE mode from 52.6% of a core to 31.8%.
+            // An explicit acquire point is not waited for here.
+            //
+            // Smithay carries it to the two places that actually touch the
+            // buffer: `import_surface` waits on it through the renderer, which
+            // makes it a wait on the GPU rather than on this thread, and the
+            // DRM compositor hands it to KMS as an IN_FENCE_FD so the display
+            // waits instead. Neither costs a descriptor in the event loop and
+            // neither wakes the compositor.
+            //
+            // Waiting for it here did both. A blocker is an eventfd, two
+            // epoll_ctl to put it in the loop and take it out, a close, and a
+            // wakeup when it fires — about eight syscalls per commit per
+            // surface, and the second of exactly two wakeups every commit
+            // cost. A client in IMMEDIATE mode commits thirteen thousand times
+            // a second and paid all of it. Skipping the wait outright, which
+            // is wrong and was done only to price it, took that scenario from
+            // 52.6% of a core to 31.8%.
             //
             // Asking `is_signaled` first and skipping the blocker when the
-            // point has already fired was tried and does nothing: 55.1%, still
-            // two turns per commit. A client committing thirteen thousand
-            // times a second is by definition ahead of the GPU, so the point
-            // has essentially never signalled by the time its commit arrives.
-            // All that check bought was another ioctl.
-            //
-            // The wait has to stop being the compositor's to do — handed to
-            // the renderer as something for the GPU to wait on — rather than
-            // be skipped or predicted.
-            if let Some(acquire) = acquire {
-                if let Ok((blocker, source)) = acquire.generate_blocker() {
-                    let client = client.clone();
-                    let inserted = state.loop_handle.insert_source(source, move |_, _, state| {
-                        let dh = state.display_handle.clone();
-                        state
-                            .client_compositor_state(&client)
-                            .blocker_cleared(state, &dh);
-                        Ok(())
-                    });
-                    if inserted.is_ok() {
-                        add_blocker(surface, blocker);
-                        return;
-                    }
-                }
+            // point had already fired was the cheap version of this and does
+            // nothing: 55.1%, still two turns per commit. A client committing
+            // that fast is ahead of the GPU by definition, so its acquire
+            // point has essentially never signalled by the time the commit
+            // arrives.
+            if acquire.is_some() {
+                return;
             }
 
             // No explicit point, so the buffer's own fence — which is what a
