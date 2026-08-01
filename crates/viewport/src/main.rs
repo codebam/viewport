@@ -462,8 +462,30 @@ fn main() -> Result<()> {
     // answered and never hears the answer, which looks exactly like a program
     // that takes seconds to start and then appears the moment a key is pressed.
     event_loop.run(None, &mut state, |state| {
+        // Timed only when the counters are on. See `FrameLog::loop_turns`.
+        let timing = state
+            .udev
+            .as_ref()
+            .and_then(|udev| udev.frame_log.as_ref())
+            .is_some();
+        let mark = || timing.then(std::time::Instant::now);
+        let since = |at: Option<std::time::Instant>| {
+            at.map(|at| at.elapsed().as_nanos() as u64).unwrap_or(0)
+        };
+
+        let at = mark();
         state.render_if_needed();
+        let rendered = since(at);
+
+        let at = mark();
         let _ = state.display_handle.flush_clients();
+        let flushed = since(at);
+
+        if let Some(log) = state.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+            log.loop_turns += 1;
+            log.render_nanos += rendered;
+            log.flush_nanos += flushed;
+        }
     })?;
     Ok(())
 }

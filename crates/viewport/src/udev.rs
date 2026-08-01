@@ -388,6 +388,28 @@ pub struct FrameLog {
     /// from the vblank while a client is painting, that is the same drift in
     /// a second place.
     pub barrier_ticks: u32,
+    /// Turns of the event loop, and where the two things done at the end of
+    /// each one go.
+    ///
+    /// calloop's own dispatch is not measurable from inside the callback, so
+    /// what these bound is everything else: whatever is left after the commit
+    /// handler, the drawing and the flush is calloop waking up and
+    /// wayland-server parsing what arrived.
+    pub loop_turns: u32,
+    pub render_nanos: u64,
+    pub flush_nanos: u64,
+    /// Every client request, parsed and handed to a handler. The commit
+    /// handler is inside this; so is everything vkcube sends around it —
+    /// attach, damage, the fifo barrier, the commit-timing deadline.
+    pub protocol_nanos: u64,
+    pub protocol_dispatches: u32,
+    /// Voluntary context switches at the last report: how many times this
+    /// process actually blocked. Read against `loop_turns` it says whether a
+    /// turn is a real wakeup or a spin — the loop going round again without
+    /// ever sleeping, which is a different bug with a different fix.
+    pub blocked_at: u64,
+    /// The shell waking the compositor to collect a frame or a message.
+    pub shell_pings: u32,
     /// Nanoseconds spent inside the surface commit handler.
     ///
     /// A client in IMMEDIATE mode commits as fast as buffers come back —
@@ -423,6 +445,19 @@ pub struct FrameLog {
     pub last_vblank: Option<std::time::Instant>,
 }
 
+/// How many times this process has blocked, from the kernel's own count.
+fn blocked_count() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("voluntary_ctxt_switches:"))
+                .and_then(|value| value.trim().parse().ok())
+        })
+        .unwrap_or(0)
+}
+
 impl FrameLog {
     /// Enabled by `VIEWPORT_FRAME_LOG`, which is read once.
     pub fn from_env() -> Option<Self> {
@@ -453,7 +488,10 @@ impl FrameLog {
              {:.1} barrier ticks/s, {:.1} empty/s, \
              {} stalls (worst gap {:.2}ms), {:.1} clock restarts/s, \
              {:.0} skipped for a flip in the air, {:.0} skipped for an output that is off, \
-             commit handler {:.1}us each and {:.0}% of a core",
+             commit handler {:.1}us each and {:.0}% of a core, \
+             {:.0} loop turns/s ({:.1} per commit), render {:.0}% of a core, flush {:.0}%, \
+             protocol {:.0}% of a core over {:.0} dispatches/s, {:.0} blocks/s, \
+             {:.0} shell pings/s",
             per_second(self.vblanks),
             expected,
             per_second(self.flips),
@@ -475,11 +513,30 @@ impl FrameLog {
                 0.0
             },
             self.commit_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
+            per_second(self.loop_turns),
+            if self.commits > 0 {
+                f64::from(self.loop_turns) / f64::from(self.commits)
+            } else {
+                0.0
+            },
+            self.render_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
+            self.flush_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
+            self.protocol_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
+            per_second(self.protocol_dispatches),
+            {
+                let now = blocked_count();
+                let delta = now.saturating_sub(self.blocked_at);
+                self.blocked_at = now;
+                delta as f64 / elapsed.as_secs_f64()
+            },
+            per_second(self.shell_pings),
         );
         let last = self.last_vblank;
+        let blocked = self.blocked_at;
         *self = Self::default();
         self.since = Some(now);
         self.last_vblank = last;
+        self.blocked_at = blocked;
     }
 }
 
@@ -748,7 +805,15 @@ pub fn init(
             .map_err(|e| anyhow!("creating the shell ping: {e}"))?;
         event_loop
             .handle()
-            .insert_source(source, |_, _, state| state.drain_shell())
+            .insert_source(source, |_, _, state| {
+                // Counted: this is the shell waking the compositor, and it is
+                // one of the few sources that could plausibly fire thousands
+                // of times a second.
+                if let Some(log) = state.udev.as_mut().and_then(|u| u.frame_log.as_mut()) {
+                    log.shell_pings += 1;
+                }
+                state.drain_shell()
+            })
             .map_err(|e| anyhow!("inserting the shell ping: {e}"))?;
         state.shell_ping = Some(ping);
     }
