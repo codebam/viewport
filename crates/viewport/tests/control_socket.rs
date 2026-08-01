@@ -660,3 +660,33 @@ fn the_last_output_can_be_unplugged_and_another_plugged_back_in() {
         "a new monitor must not inherit the unplugged one's name"
     );
 }
+
+#[test]
+fn a_shell_command_comes_back_out_as_the_event_a_keybinding_sends() {
+    // The one request that goes the other way. Layout is entirely the shell's,
+    // and until this existed a keypress was the only thing that could reach
+    // it — so nothing outside a keyboard could switch a workspace, move focus
+    // to another monitor, or put a window on a chosen screen. That last one is
+    // what a two-monitor benchmark needs and could not do.
+    //
+    // Round-tripped here rather than mocked: the compositor re-emits it to
+    // everything listening, and this connection is listening, so what arrives
+    // is what a shell would have been sent.
+    let compositor = Compositor::start("shellcommand");
+    let mut client = compositor.connect();
+
+    client.send(r#"{"type":"shell.command","command":"output.focus","args":["right"]}"#);
+    let event = client.wait_for("shell.command");
+    assert_eq!(event["command"], "output.focus");
+    assert_eq!(event["args"][0], "right");
+
+    // And with none, which is most verbs.
+    client.send(r#"{"type":"shell.command","command":"layout.overview"}"#);
+    let event = client.wait_for("shell.command");
+    assert_eq!(event["command"], "layout.overview");
+    assert_eq!(
+        event["args"].as_array().map(Vec::len),
+        Some(0),
+        "absent args must arrive as an empty list, not as null"
+    );
+}

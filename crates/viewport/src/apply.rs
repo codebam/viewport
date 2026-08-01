@@ -200,6 +200,13 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::OutputActive { name } => state.active_output = Some(name),
 
+        // Straight back out as the event a keybinding produces. No validation:
+        // the shell is the only thing that knows its own verbs, and it already
+        // warns about the ones it does not recognise.
+        Request::ShellCommand { command, args } => {
+            state.notify(&viewport_ipc::event::Event::ShellCommand { command, args });
+        }
+
         Request::OutputQuery => state.notify_output_layout(),
 
         // Nothing arms a revert yet, so there is nothing to cancel.

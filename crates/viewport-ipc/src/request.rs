@@ -186,6 +186,33 @@ pub enum Request {
     #[serde(rename = "bind.add")]
     BindAdd { chord: String, action: String },
 
+    /// Ask the shell to do something, as a keybinding would.
+    ///
+    /// Every other request here is the shell talking to the compositor. This
+    /// one goes the other way and is the only one that does: it is re-emitted
+    /// as the `shell.command` event a bound chord already produces, so the
+    /// shell cannot tell the two apart and needs no code for it.
+    ///
+    /// It exists because the layout is entirely the shell's and, until now,
+    /// keyboard input was the only thing that could reach it. Anything wanting
+    /// to switch a workspace, focus the next monitor or change the layout
+    /// model had to be a person pressing a key — which leaves a benchmark
+    /// unable to put a window on a chosen screen, and a test unable to drive
+    /// any of it. `bind.add` is not an answer: it binds a chord, and nothing
+    /// here can press one.
+    ///
+    /// Deliberately the whole verb set and not a chosen few. The shell already
+    /// ignores commands it does not recognise — `handleShellCommand` warns and
+    /// returns — so the compositor validating a list here would be a second
+    /// place to keep in step with `data/shell/commands.js`, and it has no way
+    /// to know what a given shell understands.
+    #[serde(rename = "shell.command")]
+    ShellCommand {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+
     #[serde(rename = "quit")]
     Quit,
 }
@@ -579,5 +606,29 @@ mod tests {
         for json in table {
             serde_json::from_str::<Request>(json).unwrap_or_else(|e| panic!("{json}: {e}"));
         }
+    }
+
+    #[test]
+    fn a_shell_command_carries_its_arguments_and_needs_none() {
+        // Deliberately not in the table above. That one is parity with the C
+        // build's dispatch, and this request has no counterpart there — adding
+        // a row would make its count assertion mean something else.
+        let Request::ShellCommand { command, args } =
+            parse(r#"{"type":"shell.command","command":"output.focus","args":["right"]}"#)
+        else {
+            panic!("not a shell command");
+        };
+        assert_eq!(command, "output.focus");
+        assert_eq!(args, ["right"]);
+
+        // Most verbs take none, and writing `"args": []` for every one of them
+        // is the sort of thing a caller gets wrong once and then debugs.
+        let Request::ShellCommand { command, args } =
+            parse(r#"{"type":"shell.command","command":"layout.overview"}"#)
+        else {
+            panic!("not a shell command");
+        };
+        assert_eq!(command, "layout.overview");
+        assert!(args.is_empty());
     }
 }

@@ -75,7 +75,40 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `output.test_add` | — headless only; plugs in a virtual monitor for tests |
 | `output.test_remove` | optional `name` (default: the first output); headless only |
 | `bind.add` | `chord`, `action` |
+| `shell.command` | `command`, optional `args[]` — re-emitted as the `shell.command` *event*; see below |
 | `quit` | — |
+
+`shell.command` is the one request that goes the other way. Everything else in
+this table is the shell telling the compositor something; this one asks the
+shell to act, and it does it by emitting the same `shell.command` event a bound
+chord produces — so the shell cannot tell the two apart and needs no code for
+it.
+
+It exists because layout is entirely the shell's, and a keypress used to be the
+only thing that could reach it. Anything wanting to switch a workspace, move
+focus to the next monitor or change the layout model had to be a person
+pressing a key, which leaves a benchmark unable to put a window on a chosen
+screen and a test unable to drive any of it. `bind.add` is not a substitute: it
+binds a chord, and nothing can press one.
+
+The verb is not validated. The shell is the only thing that knows what it
+understands — `handleShellCommand` warns about a name it does not recognise and
+carries on — so a list here would be a second copy of
+`data/shell/commands.js` to keep in step, kept by something with no way to
+check it.
+
+The socket is a stream, not a datagram, and the compositor answers on it — so a
+one-shot redirect will not do. `scripts/bench-vkcube.sh` opens it from Python
+for exactly this reason:
+
+```python
+import json, socket
+s = socket.socket(socket.AF_UNIX)
+s.connect(f"{runtime}/viewport-{display}.sock")
+s.sendall(json.dumps(
+    {"type": "shell.command", "command": "output.focus", "args": ["right"]}
+).encode() + b"\n")
+```
 
 A member that is present but of the wrong type is treated as absent, so it
 takes the documented default rather than reaching the handler as a zero or a
