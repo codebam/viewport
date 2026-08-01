@@ -125,8 +125,16 @@ let pendingSplit = 'horizontal';
 const fullscreens = new Map(); // workspace -> view id
 let lastStatus = {};
 let currentMode = 'default';
-/* 'tiling' (i3-style splits) or 'scrolling' (niri's strip of columns). Set by
- * the compositor from the config file; the shell implements both. */
+/* The layout models the shell implements. Set by the compositor from the
+ * config file, and switched at runtime with `shell layout.model`.
+ *
+ *   tiling     i3-style splits — tiling.js
+ *   scrolling  niri's endless strip of columns — scrolling.js
+ *   solar      one window in the middle, the rest in orbit — solar.js
+ *
+ * Listed here rather than in each file so that the config handler, the runtime
+ * command and the cycle order cannot disagree about what exists. */
+const LAYOUT_MODES = ['tiling', 'scrolling', 'solar'];
 let layoutMode = 'tiling';
 /* How the tiling tree arranges itself: 'manual' is the splits you make, and
  * 'master-stack', 'spiral' and 'bsp' derive the shape from which windows are

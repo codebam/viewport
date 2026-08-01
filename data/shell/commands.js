@@ -85,6 +85,22 @@ function handleShellCommand(command, args) {
       }
       break;
     }
+    /* Switch layout model without editing the config file. No argument cycles,
+       which is what a single key wants to do; a name picks one outright. The
+       tree survives the switch — the three models read the same one — so this
+       is a change of presentation and not of what is open. */
+    case 'layout.model': {
+      const next = LAYOUT_MODES.includes(arg)
+        ? arg
+        : LAYOUT_MODES[(LAYOUT_MODES.indexOf(layoutMode) + 1) % LAYOUT_MODES.length];
+      if (next !== layoutMode) {
+        layoutMode = next;
+        clearSelection();
+        normaliseForLayout();
+        relayoutAll();
+      }
+      break;
+    }
     case 'bar.toggle':
       toggleBar();
       break;
@@ -159,6 +175,28 @@ function handleShellCommand(command, args) {
     case 'layout.overview':
       setOverview(!overviewActive);
       break;
+
+    /* Solar. Bound only when the compositor is configured for it, and each of
+       these is a no-op in the other two layouts rather than an error: a chord
+       left over in someone's config file should do nothing, not log. */
+    case 'solar.ray':
+      if (layoutMode === 'solar') {
+        clearSelection();
+        solarRay(arg);
+      }
+      break;
+    case 'solar.spin':
+      if (layoutMode === 'solar') solarSpin(Number(arg) < 0 ? -1 : 1);
+      break;
+    case 'solar.slingshot':
+      if (layoutMode === 'solar') solarSlingshot();
+      break;
+    case 'solar.mass':
+      if (layoutMode === 'solar') solarMass(Number(arg) < 0 ? -1 : 1);
+      break;
+    case 'solar.field':
+      if (layoutMode === 'solar') solarToggleField();
+      break;
     case 'output.hdr':
       /* No state of its own: the compositor owns whether an output is in HDR,
          and toggling is asking it to flip whatever it currently has. */
@@ -216,7 +254,7 @@ window.addEventListener('viewport', (event) => {
           relayoutAll();
         }
       }
-      if (message.layout === 'scrolling' || message.layout === 'tiling') {
+      if (LAYOUT_MODES.includes(message.layout)) {
         if (message.layout !== layoutMode) {
           layoutMode = message.layout;
           normaliseForLayout();

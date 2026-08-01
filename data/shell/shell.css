@@ -792,6 +792,68 @@ body {
   box-shadow: none;
 }
 
+/* ---------------------------------------------------------------------
+ * Solar
+ *
+ * The one layout whose rectangles are arithmetic rather than flexbox — an
+ * orbit is not expressible as rows and columns — so almost nothing here is
+ * geometry. solar.js writes left/top/width/height per window and this supplies
+ * only what those rectangles mean: which tier a window is in, and that the sun
+ * is in front. See docs/solar.md.
+ * ------------------------------------------------------------------ */
+
+/* The containing block, matching .windows exactly so that an orbit's
+   coordinates and a floating window's mean the same thing. Both are resolved
+   against the padding box of whichever of the two is their parent, and with
+   inset:0 those are the same rectangle. */
+.solar-field {
+  position: absolute;
+  inset: 0;
+}
+
+/* One class per state, each of which changes something on its own. The tier
+   classes are only ever set alongside .orbit, so writing them as .orbit.sun
+   would be more honest about that and would also make every one of them
+   invisible to the sweep at the end of tests/shell.test.js, which asks each
+   window state in turn whether it draws anything. A rule that can only be
+   reached by two classes at once reads there as a rule that does nothing. */
+.window.orbit {
+  position: absolute;
+  /* As for a floating window: the rect describes the hole, not the frame, so a
+     client is not handed a size two pixels smaller on each side than the one
+     it was configured with. */
+  box-sizing: content-box;
+}
+
+/* In front of its own orbits, which is the model's one hard rule. The
+   compositor is told the same thing over view.layout — this only settles which
+   *frame* is drawn over which, since the client surfaces are stacked by the
+   compositor and nothing here can reach them. */
+.window.sun {
+  z-index: 4;
+  box-shadow: var(--shadow-2);
+}
+
+/* The sun of a monitor that is not holding the keyboard: lying on the desktop
+   rather than lifted off it, so which of two screens is live is answerable by
+   looking at it rather than by trying it. After .sun and equally specific,
+   which is what lets it take the elevation back down. */
+.window.companion { box-shadow: var(--shadow-1); }
+
+/* Warm, but not the one in use. A quieter frame — the same grey the shell uses
+   for anything merely being pointed at. */
+.window.inner { border-color: var(--border-hover); }
+
+/* Cold. `opacity` here fades the *frame* only: the window's contents are a
+   surface the compositor draws, and nothing in this file can reach it. The
+   surface is dimmed to match over view.opacity, from solar.js. */
+.window.outer { border-color: var(--muted); opacity: 0.75; }
+
+/* Parked on the other monitor. Brighter than an outer orbit for the same
+   reason it is drawn larger: it has a screen to itself rather than a margin,
+   and the point of the field is that you can read what is in it. */
+.window.lagrange { border-color: var(--muted); opacity: 0.85; }
+
 /* Hidden on another workspace: kept in the DOM so the client stays alive. */
 .window[hidden], .split[hidden] { display: none; }
 

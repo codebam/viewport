@@ -199,8 +199,16 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   + ' fullscreenOnForTest: fullscreenOn,'
   + ' dynamicOrderForTest: dynamicOrder,'
-  + ' TILING_MODES,'
+  + ' TILING_MODES, LAYOUT_MODES,'
   + ' get tilingMode() { return tilingMode; },'
+  + ' get layoutMode() { return layoutMode; },'
+  /* The solar layout's kernel, which is a pure function of (ids, sun, area)
+     and is the one piece of layout arithmetic in the shell that can be checked
+     without a browser. Exported through a getter for SOLAR so that a test
+     moving the sun's mass sees the same object the shell does. */
+  + ' solarForTest: { placements: solarPlacements, sunOf: solarSunOf,'
+  + '   recalculate: recalculateSolarLayout, get SOLAR() { return SOLAR; },'
+  + '   get field() { return solarField; } },'
   + ' get activeOutput() { return activeOutput; } };';
 /* The shell is a set of ordered classic scripts sharing one global scope, so
  * concatenating them in load order and evaluating the result is exactly what
@@ -504,6 +512,7 @@ if (mode === 'tiling') {
   check('bsp cuts a wide screen across first', root().dir === 'horizontal');
   check('bsp keeps every window', ids().length === opened);
 
+
   /* Back to manual, and the tree is left alone again. */
   emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });
   const manualShape = JSON.stringify(root());
@@ -538,7 +547,7 @@ if (mode === 'tiling') {
   emit({ type: 'view.removed', id: 90 });
   check('closing it rearranges back', ids().length === opened);
   emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });
-} else {
+} else if (mode === 'scrolling') {
   const before = sent.length;
   emit({ type: 'shell.command', command: 'layout.focus', args: ['left'] });
   check('focus left asks for another window',
@@ -562,6 +571,238 @@ if (mode === 'tiling') {
   check('consume/expel/width/move all run', process.exitCode !== 1);
 
   /* The four this block opened, ignoring any a rules test opened and closed. */
+  const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
+    .map((m) => m.id).filter((id) => id <= 4));
+  check('every window still reachable', laidOut.size === 4);
+} else {
+  /* Solar.
+   *
+   * The only layout here whose rectangles are arithmetic rather than flexbox,
+   * which is exactly the part a stubbed DOM can check and the part it usually
+   * cannot: getBoundingClientRect returns a fixed number, so what
+   * reportGeometry sends under this harness is fiction — but
+   * recalculateSolarLayout() is a pure function of (ids, sun, area) and can be
+   * handed a synthetic output and asked what it produced. Where the rectangles
+   * land on a real screen is tests/layout.test.js, which needs one. */
+  const solar = globalThis.__shell.solarForTest;
+  const AREA = { x: 0, y: 0, width: 1920, height: 1050 };
+  const place = (ids, sun) =>
+    solar.placements({ ids, sun, area: AREA }).here;
+  const by = (list, id) => list.find((p) => p.id === id);
+
+  {
+    const one = place([1], 1);
+    check('one window is the whole system', one.length === 1);
+    const sun = one[0];
+    check('and it is the sun', sun.tier === 'sun');
+
+    /* Sixty per cent of the area, at the area's aspect ratio: the square root
+       on each axis is what makes the product come out at the fraction asked
+       for rather than at its square. Two pixels of slack for the rounding on
+       each side. */
+    const share = (sun.width * sun.height) / (AREA.width * AREA.height);
+    check('the sun takes the share of the screen it is meant to',
+      Math.abs(share - solar.SOLAR.sunArea) < 0.005);
+    check('at the output-s aspect ratio', Math.abs(
+      (sun.width / sun.height) - (AREA.width / AREA.height)) < 0.01);
+    check('centred', Math.abs((sun.x + sun.width / 2) - AREA.width / 2) <= 1
+      && Math.abs((sun.y + sun.height / 2) - AREA.height / 2) <= 1);
+    check('drawn at full size and fully opaque',
+      sun.scale === 1 && sun.opacity === 1);
+    /* The compositor gives the shell two z-bands and this is how the model
+       reaches the top one — without it the window being typed into is behind
+       its own orbits. */
+    check('and lifted above its orbits', sun.lift === true);
+  }
+
+  {
+    /* On screen by construction rather than by clamping: the projection is
+       onto the boundary of a rectangle inset by the window's own size, so
+       there is no angle at which anything can leave the output. This is the
+       property that makes the clamping code that would otherwise be needed
+       unnecessary, so it is worth checking at every count. */
+    let escaped = null;
+    for (let n = 1; n <= 30 && escaped === null; n++) {
+      const ids = Array.from({ length: n }, (_, i) => i + 1);
+      for (const p of place(ids, 1)) {
+        const w = p.width * p.scale;
+        const h = p.height * p.scale;
+        if (p.x < AREA.x || p.y < AREA.y
+          || p.x + w > AREA.x + AREA.width + 1
+          || p.y + h > AREA.y + AREA.height + 1) escaped = `${n}: ${p.id}`;
+      }
+    }
+    check('no window ever leaves the output, at any count', escaped === null);
+  }
+
+  {
+    const ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    const all = place(ids, 1);
+    check('every window is placed', all.length === ids.length);
+    check('exactly one sun',
+      all.filter((p) => p.tier === 'sun').length === 1);
+
+    const inner = all.filter((p) => p.tier === 'inner');
+    const outer = all.filter((p) => p.tier === 'outer');
+    check('the inner orbit fills before the outer one',
+      inner.length === solar.SOLAR.innerSlots.length);
+    check('and the rest go cold', outer.length === ids.length - 1 - inner.length);
+
+    check('a cold window is drawn small',
+      outer.every((p) => p.scale === solar.SOLAR.outerScale));
+    /* Drawn small, not made small. A focus change reshuffles every orbit, so
+       giving a cold client a genuinely smaller rectangle would reconfigure
+       half the workspace several times a second. */
+    check('but is not itself resized',
+      outer.every((p) => p.width === inner[0].width));
+    check('the tiers are dimmed apart',
+      inner.every((p) => p.opacity === solar.SOLAR.opacity.inner)
+      && outer.every((p) => p.opacity === solar.SOLAR.opacity.outer));
+    check('and nothing but the sun is lifted',
+      all.filter((p) => p.lift).length === 1);
+  }
+
+  {
+    /* Fixed slots, not redistribution. Opening a third window must leave the
+       first two exactly where they were: a layout in which everything shifts
+       whenever anything opens is one you cannot build any habit around. */
+    const three = place([1, 2, 3], 1);
+    const four = place([1, 2, 3, 4], 1);
+    check('opening a window does not move the ones already there',
+      [1, 2, 3].every((id) => {
+        const a = by(three, id);
+        const b = by(four, id);
+        return a.x === b.x && a.y === b.y;
+      }));
+
+    /* Focusing a satellite swaps it with the sun and leaves everything else
+       alone, which is the other half of the same property. */
+    const focusedTwo = place([1, 2, 3, 4], 2);
+    check('and focusing a satellite swaps only it and the sun',
+      by(focusedTwo, 2).tier === 'sun'
+      && by(focusedTwo, 1).x === by(four, 2).x
+      && by(focusedTwo, 3).x === by(four, 3).x);
+  }
+
+  {
+    /* An empty area is the case a monitor being reconfigured goes through, and
+       a NaN written into a style there loses the window for good. */
+    check('a degenerate output places nothing rather than placing nonsense',
+      solar.placements({ ids: [1, 2], sun: 1,
+        area: { x: 0, y: 0, width: 0, height: 0 } }).here.length === 0);
+    check('and every coordinate is a real number',
+      place([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 1)
+        .every((p) => [p.x, p.y, p.width, p.height].every(Number.isFinite)));
+  }
+
+  /* --- driven through the shell, rather than called --- */
+
+  const root = () => globalThis.__shell.workspaces.get(1);
+  const shape = () => JSON.stringify(root());
+
+  {
+    const before = shape();
+    emit({ type: 'shell.command', command: 'solar.spin', args: ['1'] });
+    check('spinning leaves the tree alone', shape() === before);
+
+    const rects = () => new Map(sent.filter((m) => m.type === 'view.layout')
+      .map((m) => [m.id, `${m.x},${m.y}`]));
+    const wasFocused = globalThis.__shell.solarForTest.sunOf(1);
+    emit({ type: 'shell.command', command: 'solar.spin', args: ['1'] });
+    check('and does not move focus off the sun',
+      globalThis.__shell.solarForTest.sunOf(1) === wasFocused);
+    check('but does move the satellites', rects().size > 0);
+  }
+
+  {
+    const mass = solar.SOLAR.sunArea;
+    emit({ type: 'shell.command', command: 'solar.mass', args: ['1'] });
+    check('the sun can be grown', solar.SOLAR.sunArea > mass);
+    emit({ type: 'shell.command', command: 'solar.mass', args: ['-1'] });
+    check('and shrunk back', Math.abs(solar.SOLAR.sunArea - mass) < 1e-9);
+
+    /* Bounded at both ends: a sun at the whole output leaves no ring, and one
+       at nothing leaves no centre. */
+    for (let i = 0; i < 40; i++) {
+      emit({ type: 'shell.command', command: 'solar.mass', args: ['1'] });
+    }
+    check('and cannot be grown past its limit',
+      solar.SOLAR.sunArea === solar.SOLAR.sunAreaMax);
+    for (let i = 0; i < 40; i++) {
+      emit({ type: 'shell.command', command: 'solar.mass', args: ['-1'] });
+    }
+    check('nor shrunk past it', solar.SOLAR.sunArea === solar.SOLAR.sunAreaMin);
+    while (solar.SOLAR.sunArea < mass) {
+      emit({ type: 'shell.command', command: 'solar.mass', args: ['1'] });
+    }
+  }
+
+  {
+    /* Ray-cast focus. Under this harness every measured rect is the same fixed
+       number, so which window it picks is not a meaningful question — that it
+       asks for one at all, and that it never asks for the window it was cast
+       from, is. One ray per assertion: emit() replays the focus the shell asks
+       for, so the sun has already moved by the time a second one is cast. */
+    for (const direction of ['left', 'right', 'up', 'down']) {
+      emit({ type: 'view.focused', id: 1 });
+      const before = sent.length;
+      emit({ type: 'shell.command', command: 'solar.ray', args: [direction] });
+      const asked = sent.slice(before).filter((m) => m.type === 'view.focus');
+      check(`a ray cast ${direction} asks for a window`, asked.length > 0);
+      check(`and ${direction} never lands on the sun it left`,
+        asked.every((m) => m.id !== 1));
+    }
+  }
+
+  {
+    /* Every tier's opacity reaches the compositor, because no stylesheet can:
+       the frame is the shell's and the contents are a surface it never
+       touches. Enough windows to overflow the inner orbit, because until it
+       overflows there is no cold tier to dim. */
+    const cold = [];
+    for (let id = 120; id < 120 + solar.SOLAR.innerSlots.length + 3; id++) {
+      cold.push(id);
+      emit({ type: 'view.added', id, title: `cold${id}`, app_id: 'cold',
+        output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+        width: 800, height: 600 });
+    }
+    const dimmed = sent.filter((m) => m.type === 'view.opacity'
+      && m.opacity === solar.SOLAR.opacity.outer);
+    check('cold windows are dimmed over IPC', dimmed.length > 0);
+    check('and drawn small, which is the whole reason they are not resized',
+      sent.filter((m) => m.type === 'view.layout'
+        && m.scale === solar.SOLAR.outerScale).length > 0);
+    for (const id of cold) emit({ type: 'view.removed', id });
+  }
+
+  {
+    /* Leaving the layout has to undo it. A window still carrying an orbit's
+       left/top would be positioned in the middle of a tiling column, and one
+       still at 0.4 would stay dim for the rest of the session. */
+    const view = globalThis.__shell.views.get(2);
+    emit({ type: 'config', layout: 'tiling' });
+    check('leaving solar clears the orbit off a window',
+      view.el.style.left === '' && view.el.style.top === ''
+      && !view.el.classList.contains('orbit'));
+    check('and puts its opacity back',
+      sent.filter((m) => m.type === 'view.opacity' && m.id === 2)
+        .at(-1)?.opacity === 1);
+    emit({ type: 'config', layout: 'solar' });
+    check('and coming back rebuilds it', globalThis.__shell.views.get(2)
+      .el.classList.contains('orbit'));
+  }
+
+  {
+    /* layout.model is the runtime switch, and an unknown name must not leave
+       the shell in a layout that does not exist. */
+    emit({ type: 'shell.command', command: 'layout.model', args: ['nonesuch'] });
+    check('an unknown layout name is not adopted',
+      globalThis.__shell.LAYOUT_MODES.includes(globalThis.__shell.layoutMode));
+    emit({ type: 'shell.command', command: 'layout.model', args: ['solar'] });
+    check('and it can be asked for by name',
+      globalThis.__shell.layoutMode === 'solar');
+  }
+
   const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
     .map((m) => m.id).filter((id) => id <= 4));
   check('every window still reachable', laidOut.size === 4);
@@ -1158,15 +1399,20 @@ if (mode === 'scrolling') {
     framed !== undefined && framed.floating === true);
 
   /* A tiled border falls in the gap between two windows, where nothing covers
-     it, so reporting one would be a texture drawn per window for nothing. */
-  open(93, 'tiled-one');
-  const tiled = sent.filter((m) => m.type === 'view.layout' && m.id === 93).at(-1);
-  check('a tiled window reports none',
-    tiled !== undefined && tiled.frame === undefined);
-  /* Absent means tiled, so nothing is sent for the ordinary case. */
-  check('and does not claim to float',
-    tiled !== undefined && tiled.floating === undefined);
-  emit({ type: 'view.removed', id: 93 });
+     it, so reporting one would be a texture drawn per window for nothing.
+     Not in solar, where a window is either the middle one — which does sit
+     over the others and does need both — or is in an orbit that nothing
+     overlaps; there is no window in that layout that is tiled in this sense. */
+  if (mode !== 'solar') {
+    open(93, 'tiled-one');
+    const tiled = sent.filter((m) => m.type === 'view.layout' && m.id === 93).at(-1);
+    check('a tiled window reports none',
+      tiled !== undefined && tiled.frame === undefined);
+    /* Absent means tiled, so nothing is sent for the ordinary case. */
+    check('and does not claim to float',
+      tiled !== undefined && tiled.floating === undefined);
+    emit({ type: 'view.removed', id: 93 });
+  }
 
   /* Mod4 and the left button on a *tiled* window did nothing at all: the
      handler returned early unless the window already floated. */
@@ -1421,16 +1667,21 @@ if (mode === 'scrolling') {
   check('and focused and unfocused are different colours',
     focusColour !== '' && restColour !== '' && focusColour !== restColour);
 
-  /* Two windows differing in one class, so this is the class doing it. */
+  /* Two windows differing in one class, so this is the class doing it.
+     Solar draws the window beside the focused one in its own colour — an orbit
+     is a tier and not merely "not focused" — so the second half of the pair is
+     asked for there rather than the resting grey. */
+  const besideColour = mode === 'solar'
+    ? sheet.custom(documentElement, '--border-hover') : restColour;
   check('the focused window wears the focus colour',
     sides(framed.el, 'color') === focusColour);
   check('and the one beside it does not',
-    sides(other.el, 'color') === restColour);
+    besideColour !== focusColour && sides(other.el, 'color') === besideColour);
 
   emit({ type: 'view.focused', id: 81 });
   check('moving focus moves the colour with it',
     sides(other.el, 'color') === focusColour &&
-    sides(framed.el, 'color') === restColour);
+    sides(framed.el, 'color') === besideColour);
   emit({ type: 'view.focused', id: 80 });
 
   /* The rule the whole file is written around: the compositor paints the
@@ -1444,14 +1695,19 @@ if (mode === 'scrolling') {
      dragging need no compositor support — so it has a width of its own and
      must never take any of a window's. */
   const gap = sheet.custom(documentElement, '--gap');
+  /* Solar has no dividers, because it has no shared edges: windows overlap on
+     purpose there and the space between two of them is not a thing anyone
+     could drag. The area's own inset below still applies to it. */
   const divider = output.windowsEl.querySelector('.divider');
-  check('the shell drew a real element in the gap', divider !== null);
-  check('as wide as the gap, and it never grows',
-    sheet.value(divider, 'flex-basis') === gap &&
-    sheet.value(divider, 'flex-grow') === '0' &&
-    sheet.value(divider, 'flex-shrink') === '0');
-  check('and its container leaves no CSS gap for it to sit on top of',
-    sheet.value(divider.parentElement, 'gap') === '');
+  if (mode !== 'solar') {
+    check('the shell drew a real element in the gap', divider !== null);
+    check('as wide as the gap, and it never grows',
+      sheet.value(divider, 'flex-basis') === gap &&
+      sheet.value(divider, 'flex-grow') === '0' &&
+      sheet.value(divider, 'flex-shrink') === '0');
+    check('and its container leaves no CSS gap for it to sit on top of',
+      sheet.value(divider.parentElement, 'gap') === '');
+  }
   check('the tiling area is inset by that same gap',
     ['top', 'right', 'bottom', 'left'].every((side) =>
       sheet.value(output.windowsEl, `padding-${side}`) === gap));

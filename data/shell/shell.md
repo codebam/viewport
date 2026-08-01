@@ -16,7 +16,10 @@ The full message set is in [docs/ipc.md](../../docs/ipc.md).
 
 **Layout is CSS, not arithmetic.** The tiling tree renders to nested flexboxes
 and the browser computes every rectangle. Splitting, moving and fullscreen only
-restructure the tree; no code here calculates a window position.
+restructure the tree; no code here calculates a window position. `solar.js` is
+the documented exception and the only one — an orbit is not expressible as rows
+and columns, so it positions absolutely. It still writes rectangles as style and
+lets the rule below measure the result.
 
 **Geometry is measured, never assumed.** A hole's screen rect changes for
 reasons no message announces — transitions, font loading, a reflow three
@@ -47,6 +50,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | `state.js` | The bridge to the compositor, and every piece of shell state. Loaded first because the rest is declarations and these are the values they act on. |
 | `tiling.js` | The i3-style tree, and rendering it to nested flexboxes. |
 | `scrolling.js` | niri's endless strip of columns, and the overview. |
+| `solar.js` | one window in the middle, the rest in orbit. The only layout arithmetic in the shell; see [docs/solar.md](../../docs/solar.md). |
 | `session.js` | Saving and restoring the layout, window rules, notifications. |
 | `resize.js` | Dragging the gap between two windows, and resize mode. |
 | `geometry.js` | Measuring what the browser laid out and reporting it to the compositor. The hinge of the whole design. |

@@ -340,6 +340,10 @@ function removeView(id) {
      with it — there is no second structure left to forget. */
   views.delete(id);
   removeLeaf(id);
+  /* Which window is a workspace's sun is one of the few things kept outside
+     the record, because it is a property of the workspace rather than of the
+     window — so it does have to be forgotten by hand. */
+  solarForget(id);
   treeGeneration++;
   const fullscreenWorkspace = workspace !== null && fullscreens.get(workspace) === id
     ? workspace : null;

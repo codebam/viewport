@@ -203,7 +203,15 @@ fn keysym_from_name(name: &str) -> Option<u32> {
 /// Layout verbs are all passthroughs: the shell decides what splitting,
 /// fullscreen and moving mean, and duplicating that judgement here would give
 /// two things an opinion about it.
-pub fn defaults(terminal: &str, menu: &str, scrolling: bool) -> Vec<Binding> {
+///
+/// `layout` names which of the shell's models is running — `"tiling"`,
+/// `"scrolling"` or `"solar"` — because a few chords only mean anything in one
+/// of them. It is a name rather than a flag per model: three booleans would
+/// admit combinations that cannot exist.
+pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
+    let scrolling = layout == "scrolling";
+    let solar = layout == "solar";
+
     let mut specs: Vec<String> = vec![
         format!("Mod4+Return=exec {terminal}"),
         format!("Mod4+d=exec {menu}"),
@@ -254,6 +262,24 @@ pub fn defaults(terminal: &str, menu: &str, scrolling: bool) -> Vec<Binding> {
         specs.push("Mod4+Shift+r=shell layout.column.height".to_owned());
         specs.push("Mod4+Home=shell layout.focus first".to_owned());
         specs.push("Mod4+End=shell layout.focus last".to_owned());
+    } else if solar {
+        // Rotate which window is in which orbital slot, without moving focus
+        // and without touching the tree: the gesture for "show me the next
+        // few" on a workspace with more windows than the inner orbit holds.
+        specs.push("Mod4+bracketright=shell solar.spin 1".to_owned());
+        specs.push("Mod4+bracketleft=shell solar.spin -1".to_owned());
+        // Throw the focused window at the other monitor, where it arrives as
+        // that monitor's centre rather than in a cold corner.
+        specs.push("Mod4+Shift+s=shell solar.slingshot".to_owned());
+        // The resize gesture. A satellite's size is a function of the middle
+        // window's, so there is nothing else to drag — growing the middle one
+        // is the only dimension the layout has (`Mod4+r`, the resize mode, is
+        // therefore not bound here either).
+        specs.push("Mod4+equal=shell solar.mass 1".to_owned());
+        specs.push("Mod4+minus=shell solar.mass -1".to_owned());
+        // Binary star or Lagrange field: whether the second monitor runs its
+        // own system or holds this one's background applications.
+        specs.push("Mod4+Shift+g=shell solar.field".to_owned());
     } else {
         // Resize mode, as in sway: Mod4+r enters it, hjkl and the arrows
         // resize a step at a time, Escape or Return leaves. Scoped to the mode
@@ -289,9 +315,15 @@ pub fn defaults(terminal: &str, menu: &str, scrolling: bool) -> Vec<Binding> {
         // shell can answer it. Sending both there keeps one implementation.
         // Tiling: the compositor answers it geometrically. Scrolling: the
         // column you want is usually scrolled off the screen, so only the
-        // shell can (`src/binding.c:391`).
+        // shell can (`src/binding.c:391`). Solar: "the window to the left" of
+        // a centre with satellites at four corners is a matter of which corner
+        // a ray passes closest to, not of which rectangle shares an edge — so
+        // that one goes to the shell too, and by its own verb, because the
+        // answer is a ray cast rather than a walk along a strip.
         let focus = if scrolling {
             "shell layout.focus"
+        } else if solar {
+            "shell solar.ray"
         } else {
             "focus"
         };
@@ -358,7 +390,7 @@ mod tests {
     fn the_default_lock_and_blank_chords_are_bound_to_something_real() {
         // `defaults` has always listed both. What it produced was two entries
         // whose action was a shell verb that does not exist.
-        let bindings = defaults("foot", "wmenu-run", false);
+        let bindings = defaults("foot", "wmenu-run", "tiling");
         assert!(
             bindings.iter().any(|b| b.action == Action::Lock),
             "no binding produces Action::Lock"
@@ -524,7 +556,7 @@ mod tests {
         // without this a typo would just remove a binding.
         // 26 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
-        let bindings = defaults("foot", "wmenu-run", false);
+        let bindings = defaults("foot", "wmenu-run", "tiling");
         assert_eq!(
             bindings.len(),
             26 + 16 + 18 + 11 + 1,
@@ -533,14 +565,28 @@ mod tests {
 
         // Scrolling has no resize mode to enter — a column does not share
         // space with its neighbours — and six column bindings instead.
-        let scrolling = defaults("foot", "wmenu-run", true);
+        let scrolling = defaults("foot", "wmenu-run", "scrolling");
         assert_eq!(scrolling.len(), bindings.len() - 1 + 6);
+
+        // Solar has no resize mode either, for the same kind of reason: a
+        // satellite's size is a function of the middle window's, so the only
+        // thing to resize is that one. Six of its own in place of it.
+        let solar = defaults("foot", "wmenu-run", "solar");
+        assert_eq!(solar.len(), bindings.len() - 1 + 6);
+
+        // An unknown layout is the tiling keymap rather than a keyboard with
+        // holes in it: the name reaches here unvalidated, because the
+        // compositor has no layout and cannot judge one.
+        assert_eq!(
+            defaults("foot", "wmenu-run", "orbital").len(),
+            bindings.len()
+        );
     }
 
     #[test]
     fn scrolling_sends_focus_to_the_shell_differently() {
-        let tiling = defaults("foot", "wmenu-run", false);
-        let scrolling = defaults("foot", "wmenu-run", true);
+        let tiling = defaults("foot", "wmenu-run", "tiling");
+        let scrolling = defaults("foot", "wmenu-run", "scrolling");
         let find = |bindings: &[Binding]| {
             bindings
                 .iter()
@@ -557,6 +603,15 @@ mod tests {
         assert_eq!(
             find(&scrolling),
             Some(Action::Shell("layout.focus left".to_owned()))
+        );
+        // Solar: a third answer, and a third verb. It is neither a walk along
+        // a strip nor a rectangle comparison — the shell casts a ray from the
+        // middle window — so reusing either spelling would send it to code
+        // that would answer the wrong question convincingly.
+        let solar = defaults("foot", "wmenu-run", "solar");
+        assert_eq!(
+            find(&solar),
+            Some(Action::Shell("solar.ray left".to_owned()))
         );
     }
 }

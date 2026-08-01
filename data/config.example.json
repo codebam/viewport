@@ -39,13 +39,25 @@
     "             open. Changes the default movement bindings to match:",
     "             Mod4+h/l walk the strip, Mod4+j/k move inside a column,",
     "             Mod4+comma/period consume and expel, Mod4+r cycles the",
-    "             column width."
+    "             column width.",
+    "\"solar\"     the focused window in the middle at 60% of the screen, the",
+    "             rest in orbit around it — eight at full size in the margin,",
+    "             the rest at the edges and corners drawn at 40% and dimmed.",
+    "             Focus is what puts a window in the middle, so the one being",
+    "             typed into is never shrunk, dimmed or covered. Mod4+h/j/k/l",
+    "             cast a ray from the middle rather than comparing edges,",
+    "             Mod4+[ and Mod4+] rotate the orbit, Mod4+= and Mod4+- grow",
+    "             and shrink the middle one, Mod4+Shift+s throws a window at",
+    "             the other monitor. See docs/solar.md.",
+    "",
+    "\"shell layout.model\" switches at runtime; with no argument it cycles."
   ],
   "layout": "tiling",
 
   "_tiling_mode": [
     "How the tiling tree arranges itself. Only meaningful with",
-    "\"layout\": \"tiling\" — the scrolling strip is its own model.",
+    "\"layout\": \"tiling\" — the scrolling strip and the solar layout are each",
+    "their own model.",
     "",
     "  \"manual\"        the tree of splits you make. The default.",
     "  \"master-stack\"  first window one side, the rest in a column beside it.",

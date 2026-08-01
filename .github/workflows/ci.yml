@@ -84,17 +84,23 @@ jobs:
         with:
           node-version: '22'
 
-      # Run the four combinations meson would, but directly. meson makes these
+      # Run the combinations meson would, but directly. meson makes these
       # optional so a checkout without node still gets the compositor tests;
       # here that rule is backwards, and naming each one means a missing
       # variant fails loudly instead of quietly not running.
+      #
+      # One per layout model, and the session path for each: restoring a saved
+      # layout is where the three of them are most likely to disagree, because
+      # it is the one thing that writes the tree rather than reading it.
       - name: Layout tests
         run: |
           set -eux
           node tests/shell.test.js data/shell tiling
           node tests/shell.test.js data/shell scrolling
+          node tests/shell.test.js data/shell solar
           node tests/shell.test.js data/shell tiling session
           node tests/shell.test.js data/shell scrolling session
+          node tests/shell.test.js data/shell solar session
           node tests/kiosk.test.js examples/kiosk
 
 

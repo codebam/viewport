@@ -879,7 +879,11 @@ impl ViewportState {
             bindings: crate::binding::defaults(
                 &std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
                 &std::env::var("VIEWPORT_MENU").unwrap_or_else(|_| "wmenu-run".to_owned()),
-                false,
+                // The starting keymap, before a config file has been read. The
+                // layout it is built for is the one `self.config.layout` also
+                // starts at; reload_bindings() rebuilds it against whatever the
+                // file turned out to say.
+                "tiling",
             ),
             #[cfg(feature = "wpe")]
             shell: None,
@@ -4087,7 +4091,7 @@ impl ViewportState {
             .menu
             .or_else(|| std::env::var("VIEWPORT_MENU").ok())
             .unwrap_or_else(|| "wmenu-run".to_owned());
-        let scrolling = self.config.layout == "scrolling";
+        let layout = self.config.layout.clone();
 
         let mut bindings = Vec::new();
         // Overrides go in front: bindings are matched first-wins, so a chord
@@ -4106,7 +4110,7 @@ impl ViewportState {
                     .iter()
                     .filter_map(|spec| crate::binding::parse(spec)),
             ),
-            None => bindings.extend(crate::binding::defaults(&terminal, &menu, scrolling)),
+            None => bindings.extend(crate::binding::defaults(&terminal, &menu, &layout)),
         }
         self.bindings = bindings;
     }

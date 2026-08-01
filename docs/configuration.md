@@ -16,7 +16,7 @@ a TTY.
 {
   "url": "http://localhost:3000",
   "timeout_ms": 5000,
-  "layout": "tiling",       // or "scrolling"
+  "layout": "tiling",       // or "scrolling", or "solar"
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
   "idle": { "lock_after": 600, "lock_command": "swaylock -f",
             "blank_after": 900 },
@@ -308,9 +308,35 @@ in a column *do* share it.
 
 Directional focus moves to the shell in this mode: the compositor decides
 direction from where windows are on screen, and the column you are reaching for
-is usually scrolled off it. Both models share one tree — the strip's columns are
-the workspace root's children — so switching `layout` and reloading rearranges
-what is open rather than discarding it.
+is usually scrolled off it.
+
+**`solar`** — the focused window in the middle at 60% of the screen, the rest
+in orbit around it: eight warm slots in the margin at full size, and everything
+after that pushed to the edges and corners, drawn at 40% and dimmed. Focus is
+what makes a window the middle one, so the window being typed into is never
+shrunk, dimmed or covered. Two monitors run either as two independent systems
+or with the second holding the first's background applications.
+
+| Key | Solar layout |
+| --- | --- |
+| `Mod4+h/j/k/l` | focus by casting a ray from the middle window |
+| `Mod4+bracketleft` / `Mod4+bracketright` | rotate which window is in which slot |
+| `Mod4+Shift+s` | throw the focused window at the other monitor, where it lands in the middle |
+| `Mod4+equal` / `Mod4+minus` | grow / shrink the middle window |
+| `Mod4+Shift+g` | two independent systems, or one plus a field of background applications |
+
+It has no resize mode and no dividers: a satellite's size is a function of the
+middle window's, so growing that one is the only dimension the layout has. The
+full model, its formulas and its tunables are in [solar.md](solar.md).
+
+All three models share one tree — the strip's columns and the orbits' order are
+both the workspace root's children — so switching `layout` and reloading
+rearranges what is open rather than discarding it. `shell layout.model`
+switches at runtime, with a name or with no argument to cycle:
+
+```json
+"binds_override": { "Mod4+Shift+m": "shell layout.model" }
+```
 
 
 ## Dynamic tiling arrangements
@@ -350,7 +376,9 @@ That last part is the one thing to know: resize weights are reset when a window
 opens or closes, because that is when the arrangement is rebuilt. Every dynamic
 tiler behaves this way, and it is why `manual` is still the default.
 
-None of this touches `"layout": "scrolling"`, which is its own model.
+None of this touches `"layout": "scrolling"` or `"layout": "solar"`, each of
+which is its own model. Solar in particular has no sub-arrangements: where a
+window goes is decided by its position in the order and nothing else.
 
 
 ## Focus at the edge of a monitor

@@ -32,8 +32,13 @@ function reportGeometry(id) {
   const rect = view.viewport.getBoundingClientRect();
   /* In the overview the element is inside a scaled container, so the measured
      rect is where it appears but not the size the client should be. The
-     compositor is told the real size and the factor to draw it at. */
-  const scale = view.overview?.scale ?? 1;
+     compositor is told the real size and the factor to draw it at.
+
+     The solar layout's outer orbit does the same thing for the same reason: a
+     cold window keeps the size of a warm one and is merely drawn small, so
+     that a focus change — which reshuffles every orbit on the workspace — does
+     not reconfigure half the clients on it. See solar.js. */
+  const scale = view.overview?.scale ?? view.solar?.scale ?? 1;
   const box = {
     x: Math.round(rect.left),
     y: Math.round(rect.top),
@@ -53,8 +58,11 @@ function reportGeometry(id) {
    * Wayland surface the compositor draws itself. Left unclipped, a column
    * scrolled off the left of one monitor appears on the monitor beside it. The
    * compositor crops the surface to this rect. */
-  /* In the overview a window is bounded by its thumbnail, not by the output. */
-  const cell = view.overview?.cell;
+  /* In the overview a window is bounded by its thumbnail, not by the output.
+     In solar's Lagrange field it is bounded by the monitor it was parked on,
+     which is not the one showing its workspace — clipped against that, a
+     parked window would be cropped away entirely. */
+  const cell = view.overview?.cell ?? view.solar?.cell ?? null;
   const area = cell
     ? (() => {
       const r = cell.getBoundingClientRect();
@@ -93,7 +101,13 @@ function reportGeometry(id) {
      hole is covered by that client. A tiled border never does: it sits in the
      gap between two windows, where there is no surface to hide it. A floating
      window is the case where it does, every time. */
-  const frameEl = isFloating(id) ? view.el?.getBoundingClientRect() : null;
+  /* Lifted: above the windows it overlaps, rather than merely somewhere on the
+     workspace. Floating is the usual reason and solar's sun is the other one —
+     it sits over its own orbits by design, and its border falls inside their
+     holes exactly as a dialog's falls inside the window beneath it. */
+  const lifted = isFloating(id) || view.solar?.lift === true;
+
+  const frameEl = lifted ? view.el?.getBoundingClientRect() : null;
   const frame = frameEl
     ? {
       x: Math.round(frameEl.left),
@@ -106,8 +120,13 @@ function reportGeometry(id) {
   /* Stacking is the compositor's — the space it keeps is what it draws from
      and what it tests a click against — and floating is the one thing about a
      window's stacking that only the shell knows. Without it a click on a tiled
-     window raises that window over the dialog sitting on top of it. */
-  const floating = isFloating(id);
+     window raises that window over the dialog sitting on top of it.
+
+     The compositor offers exactly two bands — restack() raises everything
+     marked floating above everything else and stops there — so this is also
+     how solar keeps its sun in front: the sun is lifted, the orbits are not,
+     and the one window being typed into is never occluded. */
+  const floating = lifted;
 
   const prev = view.box;
   const prevClip = view.clip;
@@ -267,8 +286,25 @@ function reducedMotion() {
  * to the surface itself. Short, and skipped entirely when motion is reduced. */
 const FADE_MS = 120;
 
+/* Returns whether a tween was actually started, which is what lets a caller
+ * that also has an opinion about this window's opacity — solar, whose tiers
+ * rest well below 1 — leave a fade in progress alone rather than talking over
+ * it. */
 function fadeIn(id) {
-  if (reducedMotion()) return;
+  /* Where the fade stops. Usually opaque, but the solar layout rests its cold
+     windows well below that — and a fade that always ended at 1 would bring
+     every one of them up bright and leave it bright until something else
+     caused a relayout, which is a window that looks focused and is not. */
+  const resting = typeof solarRestingOpacity === 'function'
+    ? solarRestingOpacity(id) : 1;
+
+  if (reducedMotion()) {
+    /* No journey, but it still has to arrive. Reduced motion asks for nothing
+       to move, not for every cold window to open at full brightness and stay
+       there until something else happens to cause a relayout. */
+    if (resting !== 1) send({ type: 'view.opacity', id, opacity: resting });
+    return false;
+  }
 
   send({ type: 'view.opacity', id, opacity: 0 });
 
@@ -288,11 +324,13 @@ function fadeIn(id) {
     if (t === 1 || ++frame % 2 === 0) {
       /* Ease-out, matching the CSS curve closely enough that a window opening
          beside one that is moving does not look like a different animation. */
-      send({ type: 'view.opacity', id, opacity: 1 - Math.pow(1 - t, 3) });
+      send({ type: 'view.opacity', id,
+        opacity: resting * (1 - Math.pow(1 - t, 3)) });
     }
     if (t < 1) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
+  return true;
 }
 
 /* Fade in every window a relayout has just brought on screen.
@@ -376,6 +414,20 @@ function relayoutAll() {
      for and returns. */
   arrangeAll();
 
+  /* Solar positions absolutely and dims what is not in focus, neither of which
+     any other layout would undo — a window left carrying an orbit's left/top
+     would be placed in the middle of a tiling column, and one left at 0.4
+     would stay dim for the rest of the session. Cheap when there is nothing to
+     undo. */
+  if (layoutMode !== 'solar' || overviewActive) clearSolarState();
+
+  /* Every output's orbits, worked out in one pass before any of them is drawn.
+     A Lagrange field puts one monitor's cold windows on another, and the
+     outputs are rendered in whatever order the map is in, so the companion has
+     to already know what it is holding by the time its turn comes. */
+  const solar = (layoutMode === 'solar' && !overviewActive)
+    ? planSolar() : null;
+
   /* Where everything was, before the tree is thrown away and rebuilt. */
   const before = new Map();
   for (const [id, view] of views) {
@@ -402,16 +454,23 @@ function relayoutAll() {
     /* Only one output shows the overview: a window element exists once in the
        DOM, so two grids would fight over the same windows and the second would
        simply steal them. The others go blank for the duration. */
+    /* Solar is asked for the output rather than for the root: what it draws
+       here is not this workspace's tree but this monitor's share of the plan,
+       which in a Lagrange field includes windows belonging to the workspace on
+       the other screen. */
     const rendered = overviewActive
       ? renderOverview(output, assignment.get(name) ?? [])
-      : (root
-        ? (layoutMode === 'scrolling'
-          ? renderStrip(root, output)
-          : renderTree(root))
-        : null);
+      : (solar
+        ? renderSolar(solar.get(name) ?? [], output)
+        : (root
+          ? (layoutMode === 'scrolling'
+            ? renderStrip(root, output)
+            : renderTree(root))
+          : null));
 
     output.windowsEl.replaceChildren();
     output.windowsEl.classList.toggle('scrolling', layoutMode === 'scrolling');
+    output.windowsEl.classList.toggle('solar', layoutMode === 'solar');
     if (rendered) output.windowsEl.append(rendered);
 
     /* Floating windows are positioned rather than laid out, so they are
@@ -434,7 +493,11 @@ function relayoutAll() {
       });
     }
 
-    output.emptyEl.hidden = idsOf(output.workspace).length > 0;
+    /* A monitor holding another workspace's Lagrange field has nothing of its
+       own on it and is not empty, so the placeholder is answered by what was
+       drawn rather than by whose workspace it was. */
+    output.emptyEl.hidden = idsOf(output.workspace).length > 0
+      || (solar?.get(name)?.length ?? 0) > 0;
 
     /* A fullscreen window covers the whole output, bar included — that is what
      * fullscreen means, and a video with a status bar across the top is not
@@ -468,6 +531,10 @@ function relayoutAll() {
     renderBar(name);
   }
 
+  /* Windows a fade was just started on, so that anything else with an opinion
+     about their opacity does not talk over the tween. */
+  const faded = new Set();
+
   for (const [id, view] of views) {
     const workspace = workspaceOf(id);
     /* Normally a window is on screen only if its workspace is: `shown` maps
@@ -497,7 +564,7 @@ function relayoutAll() {
        fades nothing. */
     const wasVisible = !view.el.hidden;
     view.el.hidden = !visible;
-    if (visible && !wasVisible) fadeIn(id);
+    if (visible && !wasVisible && fadeIn(id)) faded.add(id);
     if (!visible && view.box !== null) {
       view.box = null;
       send({ type: 'view.visible', id, visible: false });
@@ -512,6 +579,13 @@ function relayoutAll() {
     view.el.classList.toggle('selected', selectedIds.has(id));
     view.el.classList.toggle('fullscreen', isFullscreen(id));
   }
+
+  /* The orbits' resting opacities, now that it is settled which windows are on
+     screen and which of those are already fading in from zero. Sending them
+     from renderSolar instead would put a window's resting value on the wire
+     immediately before the fade set it back to zero, which is a window that
+     flashes at its final brightness on the frame it opens. */
+  if (solar) settleSolarOpacity(faded);
 
   /* Offset every window back to where it was and let it slide into place. */
   flipFrom(before);
