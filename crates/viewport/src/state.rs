@@ -1882,8 +1882,19 @@ impl ViewportState {
 
         // The kernel takes a modeline from the connector's own list rather
         // than numbers, so the one it offered has to be found again.
+        //
+        // Asked of the device this output is on. A connector handle is
+        // device-local, exactly as a crtc handle is, and `id` names the device
+        // because that is what makes it meaningful — so looking one up on the
+        // primary is asking the wrong card about a connector it does not have.
+        // What that gives is either a lookup that fails, and a mode change
+        // that silently does nothing, or a handle that happens to be valid
+        // there too and describes a different monitor entirely.
         use smithay::reexports::drm::control::Device as _;
-        let device = udev.primary_mut().manager.device();
+        let Some(gpu) = udev.devices.get_mut(id.device) else {
+            return;
+        };
+        let device = gpu.manager.device();
         let Ok(info) = device.get_connector(connector, false) else {
             return;
         };
@@ -3159,14 +3170,18 @@ impl ViewportState {
         self.udev
             .as_ref()
             .and_then(|udev| {
-                let connector = udev
-                    .surfaces()
-                    .find(|surface| surface.output.name() == name)?
-                    .connector;
-                Some(crate::hdr::capable(
-                    udev.primary().manager.device(),
-                    connector,
-                ))
+                // By output rather than by surface, because the answer needs
+                // the device as well as the connector: a connector handle is
+                // device-local, so asking the primary about a monitor on the
+                // second card reports a display that does support HDR as one
+                // that does not — or answers from an unrelated connector that
+                // happens to share the handle.
+                let (id, connector) = udev
+                    .outputs()
+                    .find(|(_, surface)| surface.output.name() == name)
+                    .map(|(id, surface)| (id, surface.connector))?;
+                let device = udev.devices.get(id.device)?.manager.device();
+                Some(crate::hdr::capable(device, connector))
             })
             .unwrap_or(false)
     }
@@ -3189,7 +3204,15 @@ impl ViewportState {
             anyhow::bail!("no such output");
         };
 
-        let device = udev.primary_mut().manager.device();
+        // The card this screen is on. A connector handle means nothing on any
+        // other, so asking the primary about a monitor plugged into the second
+        // card either finds nothing — and reports a display that does support
+        // HDR as one that does not — or finds an unrelated connector with the
+        // same handle and turns HDR on for the wrong screen.
+        let Some(gpu) = udev.devices.get_mut(crtc.device) else {
+            anyhow::bail!("no such gpu");
+        };
+        let device = gpu.manager.device();
         if !crate::hdr::capable(device, connector) {
             anyhow::bail!("the display does not offer BT.2020 with PQ metadata");
         }
