@@ -51,7 +51,47 @@ use tracing_subscriber::EnvFilter;
 
 use crate::state::ViewportState;
 
-fn main() -> Result<()> {
+/// Run the compositor, then leave without running C's exit handlers.
+///
+/// Everything this process owns is dropped by `run` returning: the DRM state
+/// is restored, libseat gives the devices back, and the shell thread is asked
+/// to stop and joined. Rust destructors are what do all of that, and they run
+/// before this function is reached.
+///
+/// What is left after them is the C library's own teardown, and under the web
+/// engine that teardown aborts. WebKit builds a default `WebKitNetworkSession`
+/// on whichever thread first makes a web view — the shell thread here — and
+/// registers it to be destroyed at exit. glibc then runs that from the main
+/// thread, `~WebsiteDataStore` finds itself on the wrong one, and
+/// `WTFCrashWithInfo` calls `abort`. Every session on this machine ended that
+/// way: eight cores, all of them raised from `__run_exit_handlers`, all after
+/// the compositor had finished and given the screens back.
+///
+/// So the process leaves before those handlers run. `_exit` skips them and
+/// skips stdio flushing with them, which is why the log is flushed here by
+/// hand rather than left to `exit`.
+///
+/// The alternative — building the session explicitly on the shell thread and
+/// unreffing it there, so the default is never made — fixes this one global
+/// and not the next. WebKit registers several.
+fn main() -> ! {
+    let code = match run() {
+        Ok(()) => 0,
+        Err(e) => {
+            tracing::error!("{e:#}");
+            1
+        }
+    };
+    use std::io::Write as _;
+    let _ = std::io::stderr().flush();
+    let _ = std::io::stdout().flush();
+    // SAFETY: nothing of this process's own is left to clean up — `run` has
+    // returned and its destructors with it. This only skips what the C library
+    // would do next.
+    unsafe { libc::_exit(code) }
+}
+
+fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("VIEWPORT_LOG").unwrap_or_else(|_| EnvFilter::new("info")),

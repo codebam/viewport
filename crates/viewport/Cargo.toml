@@ -33,6 +33,10 @@ pipewire = "0.9"
 # choosing what to share, so the wait has to yield rather than block: a blocked
 # executor is a desktop whose settings and session calls stop with it.
 async-channel = "2"
+# For `_exit` alone: leaving without running C's exit handlers, because the
+# web engine's own teardown aborts when it runs. See `main`. Already in the
+# tree by way of `viewport-vulkan`.
+libc = "0.2"
 
 [build-dependencies]
 pkg-config = "0.3"

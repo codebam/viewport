@@ -2220,6 +2220,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "libc",
  "pipewire",
  "pkg-config",
  "serde",
