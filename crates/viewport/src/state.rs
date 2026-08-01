@@ -3924,12 +3924,33 @@ impl ViewportState {
     /// new, so `replay` is set and the shell restores them into the slots they
     /// left rather than appending them wherever there is room.
     pub fn notify_views(&mut self) {
-        let output = self.output_for_new_view();
+        // Where each window actually is, not where the next one would go.
+        //
+        // This sent `output_for_new_view()` — one answer, the active output,
+        // for every window in the list. That is the right answer to "where
+        // does a new window belong" and no answer at all to "where is this
+        // one": a replay across two monitors told the shell that everything
+        // was on whichever screen happened to be active, so a shell rebuilding
+        // its tree after a reload had every window's output wrong except by
+        // luck.
+        //
+        // A window that is mapped but in no output's region falls back to the
+        // same guess as before. That is a window the space has nowhere to put,
+        // which is the case the old answer was already the only one for.
+        let fallback = self.output_for_new_view();
         let events: Vec<Event> = self
             .views
             .iter()
             .filter(|v| v.mapped)
-            .map(|v| Event::ViewAdded(v.added(output.clone(), true)))
+            .map(|v| {
+                let output = self
+                    .space
+                    .outputs_for_element(&v.window)
+                    .first()
+                    .map(|o| o.name())
+                    .unwrap_or_else(|| fallback.clone());
+                Event::ViewAdded(v.added(output, true))
+            })
             .collect();
         for event in events {
             self.notify(&event);

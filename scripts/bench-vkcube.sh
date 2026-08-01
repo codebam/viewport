@@ -984,6 +984,73 @@ PY
 }
 
 # --------------------------------------------------------------------------
+# Which output each client is actually on, asked while they are both running.
+#
+# Written to placement.log beside the request that was supposed to put them
+# there, so a run can be read afterwards and believed — or not.
+# --------------------------------------------------------------------------
+verify_placement() {
+    local plog=$outdir/placement.log
+    echo "  verifying:" >>"$plog"
+    case "$comp_kind" in
+        sway)
+            SWAYSOCK=$sway_sock swaymsg -t get_tree -r 2>/dev/null |
+                python3 -c 'import json,sys
+def walk(node, output):
+    if node.get("type") == "output":
+        output = node.get("name", output)
+    name = node.get("name") or ""
+    if node.get("pid") and "vkcube" in name.lower():
+        print("    {} on {}".format(name, output))
+    for key in ("nodes", "floating_nodes"):
+        for child in node.get(key) or []:
+            walk(child, output)
+try:
+    walk(json.load(sys.stdin), "?")
+except Exception as e:
+    print("    could not read the tree: {}".format(e))' >>"$plog" 2>&1 || true
+            ;;
+        viewport)
+            # view.query replays every mapped window with the output it is on.
+            # That field used to be one guess for the whole list — the output a
+            # *new* window would open on — which is why this could not be asked
+            # before; see notify_views in state.rs.
+            python3 - "$runtime/viewport-$comp_display.sock" <<'PY' >>"$plog" 2>&1 || true
+import json, socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(2)
+try:
+    s.connect(sys.argv[1])
+    s.sendall(b'{"type":"view.query"}\n')
+    seen, buffered, deadline = {}, b"", time.monotonic() + 3
+    while time.monotonic() < deadline:
+        try:
+            chunk = s.recv(65536)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buffered += chunk
+        while b"\n" in buffered:
+            line, buffered = buffered.split(b"\n", 1)
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if message.get("type") == "view.added":
+                seen[message.get("id")] = message.get("output")
+    for view, output in sorted(seen.items(), key=lambda kv: kv[0] or 0):
+        print("    view {} on {}".format(view, output))
+    if not seen:
+        print("    no windows reported")
+finally:
+    s.close()
+PY
+            ;;
+    esac
+}
+
+# --------------------------------------------------------------------------
 # One multi-monitor pass: a client on each screen, timed apart.
 #
 # The single-output pass times the batch, which is all that fps means when
@@ -1036,6 +1103,17 @@ one_pass_mm() {
         --wsi wayland --c "$count_b" --present_mode "$mode_b" \
         >/dev/null 2>&1 &
     local pid_b=$!
+
+    # Where the clients actually are, while both are still up.
+    #
+    # Everything up to here moves *focus* and then starts something. Nothing
+    # has ever checked that the window went where the focus went, and the
+    # frame rates cannot stand in for it: with both panels at the same
+    # refresh, a FIFO client reads the same on either screen, so a run with
+    # both clients on one monitor produces numbers indistinguishable from a
+    # correct one. Advisory rather than fatal — a run that measured the wrong
+    # thing should say so in the results, not vanish at the end of it.
+    verify_placement
 
     wait "$pid_b" 2>/dev/null || true
     local end_b
