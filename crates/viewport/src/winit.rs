@@ -139,6 +139,11 @@ pub fn init(
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let mut dumped: Option<std::time::Instant> = None;
+    // Whether the last frame failed to bind. Only so the message is not
+    // repeated: a lost GL context does not come back on its own, and a redraw
+    // is asked for every frame, so saying it once a frame fills the log at the
+    // refresh rate and buries whatever came before it.
+    let mut unbound = false;
 
     event_loop
         .handle()
@@ -165,73 +170,109 @@ pub fn init(
                 #[cfg(feature = "wpe")]
                 state.import_shell_frame();
                 let frame = state.frame_for(&output);
-                {
-                    let (renderer, mut framebuffer) = backend.bind().unwrap();
-                    let elements = crate::render::build(&frame, renderer);
+                // Not an unwrap. This is the development backend, and the thing
+                // that takes the context away — a driver reset, a mesa crash,
+                // the host compositor going out from under the window — is the
+                // thing being debugged when it happens. Ending the session on
+                // it destroys the state that would have said why.
+                //
+                // A frame that cannot bind draws nothing, and then submits
+                // nothing and sends no frame callbacks: a client told its frame
+                // was shown draws the next one into a compositor that cannot
+                // present it. The redraw at the end is still asked for, so a
+                // failure that turns out to be transient recovers by itself.
+                //
+                // The whole frame lives in the `Ok` arm because the bind holds
+                // `backend` mutably until the framebuffer it returns is
+                // dropped, and both `submit` and `window` want it back.
+                let drawn = match backend.bind() {
+                    Ok((renderer, mut framebuffer)) => {
+                        if unbound {
+                            tracing::info!("the nested backend is drawing again");
+                            unbound = false;
+                        }
+                        let elements = crate::render::build(&frame, renderer);
 
-                    // The same capture the real backend has. Nested is where
-                    // this gets used most, and it is the only way to tell "the
-                    // shell painted nothing" from "the shell never reached the
-                    // screen".
-                    if let Some(path) = crate::dump::output_target() {
-                        // Repeatedly, overwriting: whatever is on screen when
-                        // someone looks at the file is what it holds. A single
-                        // capture has to guess when the interesting thing
-                        // happens, and it is usually wrong — the first attempt
-                        // caught a buffer WebKit had not painted into yet.
-                        #[cfg(feature = "wpe")]
-                        let painted = state.shell_frames >= 2;
-                        #[cfg(not(feature = "wpe"))]
-                        let painted = false;
-                        let due = dumped
-                            .map(|at: std::time::Instant| {
-                                at.elapsed() >= std::time::Duration::from_secs(2)
-                            })
-                            .unwrap_or(true);
-                        if due && (painted || !frame.windows.is_empty() || frame.locked_blank) {
-                            dumped = Some(std::time::Instant::now());
-                            if let Err(e) = crate::dump::output_frame::<
-                                _,
-                                smithay::backend::renderer::gles::GlesRenderbuffer,
-                                _,
-                            >(
-                                renderer,
-                                &elements,
-                                size,
-                                [0.1, 0.1, 0.1, 1.0],
-                                &path,
-                            ) {
-                                tracing::error!("could not dump the nested output: {e:#}");
+                        // The same capture the real backend has. Nested is where
+                        // this gets used most, and it is the only way to tell "the
+                        // shell painted nothing" from "the shell never reached the
+                        // screen".
+                        if let Some(path) = crate::dump::output_target() {
+                            // Repeatedly, overwriting: whatever is on screen when
+                            // someone looks at the file is what it holds. A single
+                            // capture has to guess when the interesting thing
+                            // happens, and it is usually wrong — the first attempt
+                            // caught a buffer WebKit had not painted into yet.
+                            #[cfg(feature = "wpe")]
+                            let painted = state.shell_frames >= 2;
+                            #[cfg(not(feature = "wpe"))]
+                            let painted = false;
+                            let due = dumped
+                                .map(|at: std::time::Instant| {
+                                    at.elapsed() >= std::time::Duration::from_secs(2)
+                                })
+                                .unwrap_or(true);
+                            if due && (painted || !frame.windows.is_empty() || frame.locked_blank) {
+                                dumped = Some(std::time::Instant::now());
+                                if let Err(e) = crate::dump::output_frame::<
+                                    _,
+                                    smithay::backend::renderer::gles::GlesRenderbuffer,
+                                    _,
+                                >(
+                                    renderer,
+                                    &elements,
+                                    size,
+                                    [0.1, 0.1, 0.1, 1.0],
+                                    &path,
+                                ) {
+                                    tracing::error!("could not dump the nested output: {e:#}");
+                                }
                             }
                         }
-                    }
-                    let result = damage_tracker.render_output(
-                        renderer,
-                        &mut framebuffer,
-                        0,
-                        &elements,
-                        Color32F::from([0.1, 0.1, 0.1, 1.0]),
-                    );
-                    if let Err(e) = result {
-                        tracing::error!("render failed: {e}");
-                    }
+                        let result = damage_tracker.render_output(
+                            renderer,
+                            &mut framebuffer,
+                            0,
+                            &elements,
+                            Color32F::from([0.1, 0.1, 0.1, 1.0]),
+                        );
+                        if let Err(e) = result {
+                            tracing::error!("render failed: {e}");
+                        }
 
-                    // Screenshots, while the renderer is in hand. After the
-                    // draw so a client that asked during this frame is served
-                    // with what the frame shows rather than the one before it.
-                    state.service_screencopy::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-                        &output, renderer,
-                    );
-                    state.service_image_capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-                        &output, renderer,
-                    );
-                    // No allocator here, so a resized source is renegotiated
-                    // onto shared memory — which is what a nested session was
-                    // using in any case.
-                    state.resize_casts(None::<&mut viewport_vulkan::VulkanRenderer>);
-                    state.feed_casts::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-                        &output, renderer,
-                    );
+                        // Screenshots, while the renderer is in hand. After the
+                        // draw so a client that asked during this frame is served
+                        // with what the frame shows rather than the one before it.
+                        state.service_screencopy::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                            &output, renderer,
+                        );
+                        state.service_image_capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                            &output, renderer,
+                        );
+                        // No allocator here, so a resized source is renegotiated
+                        // onto shared memory — which is what a nested session was
+                        // using in any case.
+                        state.resize_casts(None::<&mut viewport_vulkan::VulkanRenderer>);
+                        state.feed_casts::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                            &output, renderer,
+                        );
+                        true
+                    }
+                    Err(e) => {
+                        // Once per run of them. A lost context does not come
+                        // back on its own and a redraw is asked for every
+                        // frame, so one message per frame fills the log at the
+                        // refresh rate and buries what caused it.
+                        if !unbound {
+                            tracing::error!("could not bind the nested backend: {e}");
+                            unbound = true;
+                        }
+                        false
+                    }
+                };
+                if !drawn {
+                    backend.window().request_redraw();
+                    return;
                 }
                 if let Err(e) = backend.submit(Some(&[damage])) {
                     tracing::error!("submit failed: {e}");
