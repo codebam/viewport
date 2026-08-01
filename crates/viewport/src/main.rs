@@ -19,8 +19,6 @@ mod focus;
 mod foreign_toplevel;
 mod framing;
 mod gamma;
-#[cfg(feature = "wpe")]
-mod glib_loop;
 mod handlers;
 mod hdr;
 mod headless;
@@ -438,23 +436,35 @@ fn main() -> Result<()> {
         input::spawn(&command);
     }
 
-    // With the web engine, GLib owns the outer loop and calloop nests inside
-    // it — see glib_loop.rs for why round that way.
-    // Falling through to the shared `Ok(())` rather than returning from inside
-    // the block: with the web engine on, a `return` here left the tail
-    // unreachable and the warning permanently lit, which is where a real
-    // unreachable-code warning would have hidden.
-    #[cfg(feature = "wpe")]
-    {
-        let mut glib = glib_loop::GlibLoop::new(&event_loop)?;
-        state.glib = Some(glib.signal());
-        glib.run(&mut event_loop, &mut state);
-    }
-
-    #[cfg(not(feature = "wpe"))]
-    {
-        event_loop.run(None, &mut state, |_| {})?;
-    }
+    // calloop owns the loop, with or without the web engine.
+    //
+    // It used to be GLib's, with calloop nested inside as a single source,
+    // because WebKit needs a GMainContext pumped on the thread that owns the
+    // web view. The web view is on its own thread now with a context of its
+    // own, so nothing on this thread needs GLib at all — and being inside it
+    // was expensive. GLib walks every source in its context on every turn of
+    // the loop, the loop turns about twice per client message, and a client
+    // committing thirteen thousand times a second therefore paid for twenty-six
+    // thousand of those walks a second.
+    //
+    // The callback runs after each dispatch, which is calloop's version of the
+    // "before it blocks again" hook the GSource's `prepare` was. Both things
+    // that happened there still happen here, and for the reasons written up in
+    // the commit that removed them:
+    //
+    // Drawing, because rendering is driven by vblank and vblank stops when
+    // nothing is submitted — so on a still screen there has to be something
+    // else to carry a commit to an output.
+    //
+    // Flushing, because a reply written into a client's outgoing buffer is not
+    // sent until something flushes it, and the only other flush is at the end
+    // of a render. A client that connects to an idle compositor is otherwise
+    // answered and never hears the answer, which looks exactly like a program
+    // that takes seconds to start and then appears the moment a key is pressed.
+    event_loop.run(None, &mut state, |state| {
+        state.render_if_needed();
+        let _ = state.display_handle.flush_clients();
+    })?;
     Ok(())
 }
 

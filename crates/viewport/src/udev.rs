@@ -398,29 +398,6 @@ pub struct FrameLog {
     /// expensive", which are different bugs with different fixes and are
     /// indistinguishable from the outside.
     pub commit_nanos: u64,
-    /// Turns of the outer loop, and what each one does unconditionally.
-    ///
-    /// `glib_loop::prepare` dispatches calloop, renders what is owed and
-    /// flushes every client on every pass, and every commit wakes the loop.
-    /// If the cost is here rather than in the handler, these are the numbers
-    /// that show it.
-    pub loop_turns: u32,
-    pub flushes: u32,
-    /// Where a turn of the outer loop goes: dispatching calloop, deciding
-    /// whether to render, and flushing clients. Split three ways because the
-    /// fix differs — fewer turns, or a cheaper turn, or a flush that only
-    /// happens when there is something to flush.
-    pub dispatch_nanos: u64,
-    pub render_nanos: u64,
-    pub flush_nanos: u64,
-    /// The other half of the loop: GLib's `check`/`dispatch` on the source,
-    /// which dispatches calloop and flushes the clients a second time in the
-    /// same iteration. Counted apart from `prepare` so that whatever is left
-    /// over after both is GLib's own per-iteration cost — walking every source
-    /// in the default context, and with the web engine running that context is
-    /// not only ours.
-    pub source_dispatches: u32,
-    pub source_nanos: u64,
     /// Vblanks that found no barrier to release.
     ///
     /// Ten a second on a sixty hertz screen, and they are the missing frames.
@@ -476,10 +453,7 @@ impl FrameLog {
              {:.1} barrier ticks/s, {:.1} empty/s, \
              {} stalls (worst gap {:.2}ms), {:.1} clock restarts/s, \
              {:.0} skipped for a flip in the air, {:.0} skipped for an output that is off, \
-             commit handler {:.1}us each and {:.0}% of a core, \
-             {:.0} loop turns/s, {:.0} client flushes/s \
-             (dispatch {:.0}% of a core, render {:.0}%, flush {:.0}%), \
-             {:.0} source dispatches/s at {:.0}% of a core",
+             commit handler {:.1}us each and {:.0}% of a core",
             per_second(self.vblanks),
             expected,
             per_second(self.flips),
@@ -501,13 +475,6 @@ impl FrameLog {
                 0.0
             },
             self.commit_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
-            per_second(self.loop_turns),
-            per_second(self.flushes),
-            self.dispatch_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
-            self.render_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
-            self.flush_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
-            per_second(self.source_dispatches),
-            self.source_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
         );
         let last = self.last_vblank;
         *self = Self::default();

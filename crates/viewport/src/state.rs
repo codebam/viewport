@@ -156,7 +156,6 @@ pub struct ViewportState {
     /// dispatch, so quitting has to go through this when the web engine is
     /// running.
     #[cfg(feature = "wpe")]
-    pub glib: Option<crate::glib_loop::GlibSignal>,
 
     /// The web engine drawing the desktop, once it has started.
     #[cfg(feature = "wpe")]
@@ -884,7 +883,6 @@ impl ViewportState {
                 false,
             ),
             #[cfg(feature = "wpe")]
-            glib: None,
             #[cfg(feature = "wpe")]
             shell: None,
             #[cfg(feature = "wpe")]
@@ -5054,11 +5052,11 @@ impl ViewportState {
     /// only the inner loop — so the outer GLib loop has to be told as well or
     /// quitting does nothing visible.
     pub fn shutdown(&mut self) {
+        // One loop to stop now. This used to have to stop GLib as well, which
+        // owned the outer loop and carried on happily when only calloop was
+        // told — the bug behind `--exit-after` reporting its deadline and then
+        // running for ever.
         self.loop_signal.stop();
-        #[cfg(feature = "wpe")]
-        if let Some(glib) = self.glib {
-            glib.quit();
-        }
     }
 }
 
