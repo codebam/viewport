@@ -1484,12 +1484,25 @@ impl ViewportState {
 
         tracing::info!("{} connected connector(s)", connectors.len());
 
-        // CRTCs already driving something. Without this the second monitor
-        // gets handed the first one's CRTC, and the "already in use" check
-        // then drops it silently — which is exactly what happened on the first
-        // two-monitor run.
-        let mut taken: std::collections::HashSet<crtc::Handle> =
-            udev.ids().into_iter().map(|id| id.crtc).collect();
+        // CRTCs already driving something *on this device*. Without this the
+        // second monitor gets handed the first one's CRTC, and the "already in
+        // use" check then drops it silently — which is exactly what happened
+        // on the first two-monitor run.
+        //
+        // Scoped to the device, because a crtc handle is only meaningful on
+        // the device that issued it — the same rule `on_vblank` is written
+        // around. Taking the handles from every device and comparing them by
+        // value alone means a CRTC busy on one GPU reserves whichever
+        // unrelated CRTC happens to share its number on another, and a monitor
+        // on the second card is refused with "no free crtc" while its own CRTCs
+        // sit idle. The numbers collide readily: handles are small integers
+        // handed out per device, so two cards almost always overlap.
+        let mut taken: std::collections::HashSet<crtc::Handle> = udev
+            .ids()
+            .into_iter()
+            .filter(|id| id.device == index)
+            .map(|id| id.crtc)
+            .collect();
 
         for connector in connectors {
             let name = format!(
