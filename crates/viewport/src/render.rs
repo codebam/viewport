@@ -442,8 +442,42 @@ where
             shell.damage.clone(),
             Kind::Unspecified,
         )),
-        Err(_) => {
-            tracing::error!("could not import the shell's frame into this renderer");
+        Err(e) => {
+            // Once in a while, not once a frame.
+            //
+            // This runs per output per frame, and a buffer that cannot be
+            // imported cannot be imported the next time either — so the
+            // failure repeats at the refresh rate for as long as it lasts. On
+            // a 240Hz screen that is 240 formatted lines a second, and the
+            // write to go with them, on the render path. views.rs keeps
+            // `last_mismatch` for exactly this reason.
+            //
+            // Timed rather than a "have I said this" flag, because with more
+            // than one GPU the answer differs per renderer: the primary
+            // imports the shell fine while a second card cannot, so a plain
+            // flag is set and cleared by alternating outputs and every frame
+            // prints again.
+            static COMPLAINED: std::sync::LazyLock<std::sync::Mutex<Option<std::time::Instant>>> =
+                std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+            const EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+            let mut last = COMPLAINED.lock().unwrap_or_else(|e| e.into_inner());
+            if last.is_none_or(|at| at.elapsed() >= EVERY) {
+                *last = Some(std::time::Instant::now());
+                // The cause, and what it usually is. Cross-device is the one
+                // that happens on a working machine: the shell's buffer is
+                // allocated on the GPU the clients are told about, and a
+                // screen on another card imports it into that card's own
+                // renderer. Vulkan hides it here — every device without a
+                // Vulkan driver of its own falls back to the same one, so the
+                // import never crosses anything — and the GLES renderer,
+                // which binds one EGL context per card, does not.
+                tracing::error!(
+                    "could not import the shell's frame into this renderer: {e}. \
+                     On more than one GPU this is the shell's buffer being \
+                     allocated on one card and imported on another; that screen \
+                     draws its windows and no desktop behind them."
+                );
+            }
             None
         }
     }
