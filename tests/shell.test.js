@@ -512,6 +512,60 @@ if (mode === 'tiling') {
   check('bsp cuts a wide screen across first', root().dir === 'horizontal');
   check('bsp keeps every window', ids().length === opened);
 
+  {
+    /* And the other way up, which is the whole of what separates bsp from the
+       spiral: it answers the region in front of it rather than following a
+       fixed turn.
+     *
+     * This is the test the layout did not have, and its absence is why the
+     * bug it now covers survived. workspaceAspect() read `output.width` and
+     * `output.height`, which no output record has: syncOutputs stores them
+     * under `output.rect`. Both comparisons were `undefined > 0`, so every cut
+     * bsp ever made came from the 16:9 guess meant as the fallback for a
+     * workspace that is not on screen. On a 16:9 monitor that is invisible —
+     * bspPick compares w against h and nothing else, so the guess and the
+     * truth agree at every level — and the existing check above passes either
+     * way. Turning the screen on its end is what tells them apart. */
+    const area = globalThis.__shell.outputs
+      .get(globalThis.__shell.activeOutput).windowsEl;
+    const landscape = area.__rect;
+    area.__rect = { left: 0, top: 0, width: 1080, height: 1920 };
+    emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });
+    emit({ type: 'shell.command', command: 'layout.mode', args: ['bsp'] });
+    check('and cuts a tall screen down it instead',
+      root().dir === 'vertical');
+    check('the aspect it reads is the tiling area, not the whole output',
+      /windowsAreaOf/.test(src));
+    area.__rect = landscape;
+    emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });
+    emit({ type: 'shell.command', command: 'layout.mode', args: ['bsp'] });
+    check('and follows the screen back when it is turned upright',
+      root().dir === 'horizontal');
+  }
+
+  {
+    /* Rebuilding is what resets resize weights, so an arrangement that is
+       already the shape it should be must be left alone — otherwise every
+       relayout during a divider drag throws away the weight the drag is
+       setting. The old cache did this by remembering the window list; the
+       shape comparison that replaced it has to keep the property. */
+    const [first] = root().children;
+    first.weight = 2.5;
+    /* Anything that runs a relayout. Focusing a window that already has focus
+       still rebuilds the tree, which is the path being checked. */
+    emit({ type: 'view.focused', id: ids()[0] });
+    check('an arrangement that has not changed keeps its resize weights',
+      root().children[0].weight === 2.5);
+
+    /* But a change in the window set still rebuilds, weights and all — which
+       is what every dynamic tiler does and what makes the mode dynamic. */
+    emit({ type: 'view.added', id: 91, title: 'weighty', app_id: 'weighty',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+      width: 800, height: 600 });
+    check('and a window opening does rebuild it',
+      root().children[0].weight === 1);
+    emit({ type: 'view.removed', id: 91 });
+  }
 
   /* Back to manual, and the tree is left alone again. */
   emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });

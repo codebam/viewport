@@ -80,7 +80,8 @@ function handleShellCommand(command, args) {
         : TILING_MODES[(TILING_MODES.indexOf(tilingMode) + 1) % TILING_MODES.length];
       if (next !== tilingMode) {
         tilingMode = next;
-        resetArrangements();
+        /* Nothing to invalidate: the next relayout works out what the shape
+           should be and compares it against what is there. */
         relayoutAll();
       }
       break;
@@ -250,7 +251,6 @@ window.addEventListener('viewport', (event) => {
           ? message.tiling_mode : 'manual';
         if (next !== tilingMode) {
           tilingMode = next;
-          resetArrangements();
           relayoutAll();
         }
       }

@@ -26,9 +26,25 @@
 
 const TILING_MODES = ['manual', 'master-stack', 'spiral', 'bsp'];
 
-/* workspace -> the window set the current shape was built for, so a relayout
- * that changed nothing does not throw away the weights. */
-const arrangedFor = new Map();
+/* A node's structure, with everything a rebuild would destroy left out.
+ *
+ * Two trees with the same shape hold the same windows, in the same nesting,
+ * split the same ways — and differ only in the weights a divider drag put on
+ * them. That is the test worth having: rebuilding is what resets weights, so
+ * the arrangement should be swapped in only when it would actually look
+ * different.
+ *
+ * This replaced a cache keyed on the window list. The window list is not the
+ * whole input — the aspect of the screen is the other half, and bsp reads it —
+ * so a workspace moved to a monitor of a different shape kept an arrangement
+ * built for the old one until a window happened to open. Comparing what came
+ * out instead of remembering what went in has no such gap, and it also keeps
+ * weights across an aspect change that does not reach any of bsp's decisions,
+ * which the old cache could not do either. */
+function shapeOf(node) {
+  if (node.type === 'leaf') return String(node.id);
+  return `(${node.dir}:${node.children.map(shapeOf).join(' ')})`;
+}
 
 /* Every window id in a subtree, in tree order.
  *
@@ -98,66 +114,89 @@ function masterStack(ids, root) {
   return [newLeaf(ids[0]), stack];
 }
 
-/* The proportions of the output a workspace is showing, for bsp's first cut.
+/* The proportions of the area a workspace's windows are laid out in, for bsp's
+ * cuts.
  *
- * Falls back to a landscape guess when the workspace is not on screen: an
- * arrangement still has to be built for it, and every desktop monitor this
- * runs on is wider than it is tall. */
+ * The *tiling area*, not the output. The bar and any panel's exclusive zone
+ * come off it before a window is placed anywhere, and on a screen that is close
+ * to square those thirty pixels are the difference between a first cut across
+ * and a first cut down. Measured, for the same reason everything else here is:
+ * what those insets are is in the stylesheet and in a layer-shell client, and
+ * `.windows` is the element they have already been taken out of.
+ *
+ * Falls back to a landscape guess when the workspace is not on screen — an
+ * arrangement still has to be built for it, and there is nothing to measure.
+ * Only the ratio is ever used, so the units do not matter and 16:9 is as good
+ * a way to write the guess as 1920x1080.
+ *
+ * This read `output.width` and `output.height`, which no output record has ever
+ * had: syncOutputs stores them under `output.rect`. Both comparisons were
+ * `undefined > 0`, so the guess was not a fallback, it was the only answer bsp
+ * ever got. On 16:9 that is invisible — bspPick compares w against h and
+ * nothing else, so the guess and the truth agree at every level — which is why
+ * it survived. On a rotated monitor it inverts the very first cut, and on a
+ * 32:9 it is wrong by a factor of two from the start. */
 function workspaceAspect(workspace) {
-  for (const output of outputs.values()) {
-    if (output.workspace === workspace && output.width > 0 && output.height > 0) {
-      return [output.width, output.height];
-    }
+  const area = windowsAreaOf(workspace);
+  if (area) {
+    const w = area.right - area.left;
+    const h = area.bottom - area.top;
+    if (w > 0 && h > 0) return [w, h];
   }
   return [16, 9];
 }
 
-/* Rebuild one workspace's shape, if the mode asks for one and the windows have
- * changed since it was last built. */
-function arrangeWorkspace(workspace) {
-  if (layoutMode !== 'tiling' || tilingMode === 'manual') {
-    arrangedFor.delete(workspace);
-    return;
+/* What one workspace's shape should be, given its windows and its screen. */
+function arrangementFor(workspace, root) {
+  const ids = dynamicOrder(root);
+
+  if (tilingMode === 'master-stack') {
+    /* masterStack sets the root's direction itself, which is why it is handed
+       the root rather than asked for children alone. */
+    return { dir: 'horizontal', children: masterStack(ids, root) };
   }
+
+  const [w, h] = workspaceAspect(workspace);
+  const pick = tilingMode === 'spiral' ? spiralPick : bspPick;
+  /* The root is one split already, so the first cut is its direction and the
+     nest continues underneath it. */
+  const dir = pick(w, h, ids.length);
+  const [half, rest] = dir === 'horizontal' ? [w / 2, h] : [w, h / 2];
+  return {
+    dir,
+    children: ids.length === 0 ? []
+      : ids.length === 1 ? [newLeaf(ids[0])]
+        : [newLeaf(ids[0]), nest(ids.slice(1), pick, half, rest)],
+  };
+}
+
+/* Rebuild one workspace's shape, if the mode asks for one and what it asks for
+ * is not what is already there. */
+function arrangeWorkspace(workspace) {
+  if (layoutMode !== 'tiling' || tilingMode === 'manual') return;
 
   const root = workspaces.get(workspace);
   if (!root) return;
 
-  const ids = dynamicOrder(root);
-  /* Fullscreen takes the workspace on its own, and rearranging underneath it
-     would be work nobody can see. */
-  const signature = ids.join(',');
-  if (arrangedFor.get(workspace) === signature) return;
-  arrangedFor.set(workspace, signature);
+  const wanted = arrangementFor(workspace, root);
 
-  if (tilingMode === 'master-stack') {
-    root.children = masterStack(ids, root);
-  } else {
-    const [w, h] = workspaceAspect(workspace);
-    const pick = tilingMode === 'spiral' ? spiralPick : bspPick;
-    /* The root is one split already, so the first cut is its direction and the
-       nest continues underneath it. */
-    root.dir = pick(w, h, ids.length);
-    const [half, rest] = root.dir === 'horizontal' ? [w / 2, h] : [w, h / 2];
-    root.children = ids.length === 0 ? []
-      : ids.length === 1 ? [newLeaf(ids[0])]
-        : [newLeaf(ids[0]), nest(ids.slice(1), pick, half, rest)];
-  }
+  /* Nothing to do if it already looks like this. Cheaper than it reads — the
+     candidate is a couple of dozen small objects and is thrown away — and it
+     is what keeps a divider drag from resetting the weight it is setting: a
+     drag changes weights and nothing else, so the shape is unchanged on every
+     one of the relayouts it runs. */
+  const before = shapeOf(root);
+  const after = shapeOf({ type: 'split', dir: wanted.dir, children: wanted.children });
+  if (before === after) return;
+
+  root.dir = wanted.dir;
+  root.children = wanted.children;
   root.layout = 'split';
   treeGeneration++;
 }
 
 /* Every workspace, on the way into a relayout. */
 function arrangeAll() {
-  if (layoutMode !== 'tiling' || tilingMode === 'manual') {
-    if (arrangedFor.size > 0) arrangedFor.clear();
-    return;
-  }
+  if (layoutMode !== 'tiling' || tilingMode === 'manual') return;
   for (const workspace of workspaces.keys()) arrangeWorkspace(workspace);
-}
-
-/* Throw the arrangements away so the next relayout rebuilds them: the mode
- * changed, so the shape that matched the old one means nothing. */
-function resetArrangements() {
-  arrangedFor.clear();
 }

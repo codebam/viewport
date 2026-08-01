@@ -372,9 +372,11 @@ structure the manual mode builds, so resizing, moving, tabbed containers, the
 overview and the saved session all keep working — a dynamic mode is a rule for
 what the tree *should* be, applied when the set of windows changes.
 
-That last part is the one thing to know: resize weights are reset when a window
-opens or closes, because that is when the arrangement is rebuilt. Every dynamic
-tiler behaves this way, and it is why `manual` is still the default.
+That last part is the one thing to know: resize weights are reset whenever the
+arrangement is rebuilt, which is whenever the shape it asks for differs from
+the shape that is there — a window opening or closing, mostly, and also a
+monitor rotating under `bsp`, which cuts along whichever side is longer. Every
+dynamic tiler behaves this way, and it is why `manual` is still the default.
 
 None of this touches `"layout": "scrolling"` or `"layout": "solar"`, each of
 which is its own model. Solar in particular has no sub-arrangements: where a
