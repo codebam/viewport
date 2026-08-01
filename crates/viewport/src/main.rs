@@ -473,6 +473,18 @@ fn main() -> Result<()> {
             at.map(|at| at.elapsed().as_nanos() as u64).unwrap_or(0)
         };
 
+        // CPU spent since this callback last returned, which is exactly one
+        // turn of `EventLoop::dispatch`. Thread CPU rather than wall clock, so
+        // the time asleep in `epoll_wait` is not counted as work.
+        if timing {
+            let now = crate::udev::thread_cpu_nanos();
+            if let Some(log) = state.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+                if log.cpu_at_turn > 0 {
+                    log.dispatch_cpu_nanos += now.saturating_sub(log.cpu_at_turn);
+                }
+            }
+        }
+
         let at = mark();
         state.render_if_needed();
         let rendered = since(at);
@@ -485,6 +497,13 @@ fn main() -> Result<()> {
             log.loop_turns += 1;
             log.render_nanos += rendered;
             log.flush_nanos += flushed;
+        }
+        // Last thing, so the next turn's difference starts from here.
+        if timing {
+            let now = crate::udev::thread_cpu_nanos();
+            if let Some(log) = state.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+                log.cpu_at_turn = now;
+            }
         }
     })?;
     Ok(())

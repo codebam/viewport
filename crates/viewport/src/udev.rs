@@ -408,6 +408,16 @@ pub struct FrameLog {
     /// a price per request — the number that says whether the cost is the
     /// protocol implementation or what this compositor does inside it.
     pub protocol_messages: u64,
+    /// CPU spent inside `EventLoop::dispatch` — everything calloop does per
+    /// turn, including the client-request dispatch counted above.
+    ///
+    /// Thread CPU time, not wall clock, so blocking in `epoll_wait` is not in
+    /// it. Subtract `protocol_nanos` and what is left is calloop's own work:
+    /// the poll, deciding which sources are ready, and calling them.
+    pub dispatch_cpu_nanos: u64,
+    /// Thread CPU at the end of the last turn's callback, to difference
+    /// against.
+    pub cpu_at_turn: u64,
     /// Voluntary context switches at the last report: how many times this
     /// process actually blocked. Read against `loop_turns` it says whether a
     /// turn is a real wakeup or a spin — the loop going round again without
@@ -451,6 +461,14 @@ pub struct FrameLog {
 }
 
 /// How many times this process has blocked, from the kernel's own count.
+/// This thread's CPU time in nanoseconds.
+pub fn thread_cpu_nanos() -> u64 {
+    let now = smithay::reexports::rustix::time::clock_gettime(
+        smithay::reexports::rustix::time::ClockId::ThreadCPUTime,
+    );
+    now.tv_sec as u64 * 1_000_000_000 + now.tv_nsec as u64
+}
+
 fn blocked_count() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -495,6 +513,7 @@ impl FrameLog {
              {:.0} skipped for a flip in the air, {:.0} skipped for an output that is off, \
              commit handler {:.1}us each and {:.0}% of a core, \
              {:.0} loop turns/s ({:.1} per commit), render {:.0}% of a core, flush {:.0}%, \
+             calloop dispatch {:.0}% of a core ({:.2}us a turn, of which {:.2}us is calloop\'s own), \
              protocol {:.0}% of a core over {:.0} dispatches/s \
              ({:.0} requests/s, {:.1} per dispatch, {:.2}us each), {:.0} blocks/s, \
              {:.0} shell pings/s",
@@ -527,6 +546,19 @@ impl FrameLog {
             },
             self.render_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
             self.flush_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
+            self.dispatch_cpu_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
+            if self.loop_turns > 0 {
+                self.dispatch_cpu_nanos as f64 / f64::from(self.loop_turns) / 1000.0
+            } else {
+                0.0
+            },
+            if self.loop_turns > 0 {
+                self.dispatch_cpu_nanos.saturating_sub(self.protocol_nanos) as f64
+                    / f64::from(self.loop_turns)
+                    / 1000.0
+            } else {
+                0.0
+            },
             self.protocol_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
             per_second(self.protocol_dispatches),
             self.protocol_messages as f64 / elapsed.as_secs_f64(),
@@ -550,10 +582,12 @@ impl FrameLog {
         );
         let last = self.last_vblank;
         let blocked = self.blocked_at;
+        let cpu = self.cpu_at_turn;
         *self = Self::default();
         self.since = Some(now);
         self.last_vblank = last;
         self.blocked_at = blocked;
+        self.cpu_at_turn = cpu;
     }
 }
 
