@@ -241,10 +241,21 @@ function adjacentOutput(direction) {
  * silently measures the wrong screen when they are stacked. */
 function focusOutputDirection(direction) {
   const best = outputs.has(direction) ? direction : adjacentOutput(direction);
-  if (best !== null) {
-    setActiveOutput(best);
-    focusFirstOn(best);
-  }
+  if (best === null) return;
+
+  setActiveOutput(best);
+  /* Say which output this is, even when nothing moved.
+   *
+   * setActiveOutput stays quiet about a move to the output that is already
+   * active, which is right for the case it was written for — it runs on every
+   * pointer crossing — but it leaves anything driving this over IPC unable to
+   * tell "already there" from "ignored". The compositor's own record of the
+   * active output starts empty and is written by nothing but this message, so
+   * a caller asking for the output the shell happens to have started on waits
+   * for a confirmation that is never coming. That is one message per explicit
+   * focus, which is not a rate anything cares about. */
+  send({ type: 'output.active', name: best });
+  focusFirstOn(best);
 }
 
 /* Carry the focused window to the monitor in a direction, onto whatever

@@ -1344,6 +1344,25 @@ if (mode === 'scrolling') {
     emit({ type: 'shell.command', command: 'output.focus', args: ['DP-99'] });
     check('an unknown name leaves focus alone',
       globalThis.__shell.activeOutput === rightName);
+
+    /* Focusing the output that is already active still says so.
+     *
+     * setActiveOutput returns early on a move to where focus already is,
+     * which is right for the pointer crossing it was written for and wrong
+     * for a caller over IPC: the compositor's record of the active output is
+     * written by nothing but this message and starts empty, so a caller
+     * asking for the output the shell happened to start on waited for a
+     * confirmation that never came. That is not hypothetical — it aborted
+     * every two-monitor benchmark run at the first placement, before a single
+     * measurement was taken. */
+    {
+      const before = sent.length;
+      emit({ type: 'shell.command', command: 'output.focus', args: [rightName] });
+      const announced = sent.slice(before)
+        .filter((m) => m.type === 'output.active' && m.name === rightName);
+      check('focusing the output already active still announces it',
+        announced.length > 0);
+    }
   }
 
   emit({ type: 'view.focused', id: onLeft });

@@ -1206,6 +1206,25 @@ bench_one() {
     echo "   display $comp_display, pid $comp_pid" >&2
     [ "$fullscreen" = 1 ] && start_view_listener fullscreen
 
+    # Put Viewport on the output that was asked for.
+    #
+    # sway has had this since the beginning — start_sway writes `focus output`
+    # into its config — and Viewport had no equivalent at any level, which the
+    # note at the top of this file recorded as a limitation rather than a bug:
+    # the shell picks which output a window opens on and nothing on the wire
+    # overrode it. So `--output DP-1` pinned the mode everywhere, told sway
+    # where to put its client, and let Viewport put its own wherever the shell
+    # had started. On a two-monitor desk that is a coin toss, and it is why a
+    # run could come back measuring the other screen.
+    #
+    # shell.command is what makes it possible to say. Done for every run and
+    # not only the two-monitor ones, because a single-output comparison in
+    # which the two compositors used different monitors was never comparing
+    # what it said it was.
+    if [ "$comp_kind" = viewport ] && [ -n "$output" ]; then
+        place_on "$output"
+    fi
+
     # Warm up: first-frame costs are shader compilation and buffer allocation,
     # which are real but are not what a steady-state number is measuring.
     env WAYLAND_DISPLAY="$comp_display" "$vkcube" --wsi wayland \
