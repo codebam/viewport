@@ -403,6 +403,11 @@ pub struct FrameLog {
     /// attach, damage, the fifo barrier, the commit-timing deadline.
     pub protocol_nanos: u64,
     pub protocol_dispatches: u32,
+    /// Client requests actually parsed and handed to a handler.
+    /// `dispatch_clients` counts them, which turns a percentage of a core into
+    /// a price per request — the number that says whether the cost is the
+    /// protocol implementation or what this compositor does inside it.
+    pub protocol_messages: u64,
     /// Voluntary context switches at the last report: how many times this
     /// process actually blocked. Read against `loop_turns` it says whether a
     /// turn is a real wakeup or a spin — the loop going round again without
@@ -490,7 +495,8 @@ impl FrameLog {
              {:.0} skipped for a flip in the air, {:.0} skipped for an output that is off, \
              commit handler {:.1}us each and {:.0}% of a core, \
              {:.0} loop turns/s ({:.1} per commit), render {:.0}% of a core, flush {:.0}%, \
-             protocol {:.0}% of a core over {:.0} dispatches/s, {:.0} blocks/s, \
+             protocol {:.0}% of a core over {:.0} dispatches/s \
+             ({:.0} requests/s, {:.1} per dispatch, {:.2}us each), {:.0} blocks/s, \
              {:.0} shell pings/s",
             per_second(self.vblanks),
             expected,
@@ -523,6 +529,17 @@ impl FrameLog {
             self.flush_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
             self.protocol_nanos as f64 / elapsed.as_secs_f64() / 10_000_000.0,
             per_second(self.protocol_dispatches),
+            self.protocol_messages as f64 / elapsed.as_secs_f64(),
+            if self.protocol_dispatches > 0 {
+                self.protocol_messages as f64 / f64::from(self.protocol_dispatches)
+            } else {
+                0.0
+            },
+            if self.protocol_messages > 0 {
+                self.protocol_nanos as f64 / self.protocol_messages as f64 / 1000.0
+            } else {
+                0.0
+            },
             {
                 let now = blocked_count();
                 let delta = now.saturating_sub(self.blocked_at);

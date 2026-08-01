@@ -1069,16 +1069,14 @@ impl ViewportState {
                         .map(|_| std::time::Instant::now());
 
                     // Safety: the display is not dropped here.
-                    unsafe {
-                        display.get_mut().dispatch_clients(state).unwrap();
-                    }
+                    let messages = unsafe { display.get_mut().dispatch_clients(state).unwrap() };
 
                     if let Some(started) = started {
                         let spent = started.elapsed().as_nanos() as u64;
                         if let Some(log) =
                             state.udev.as_mut().and_then(|udev| udev.frame_log.as_mut())
                         {
-                            state_dispatches(log, spent);
+                            state_dispatches(log, spent, messages as u64);
                         }
                     }
                     Ok(PostAction::Continue)
@@ -5500,7 +5498,8 @@ pub struct PointerDrag {
 /// Record one turn of client-request dispatch. Split out so the call site
 /// above stays a single expression.
 #[allow(dead_code)]
-fn state_dispatches(log: &mut crate::udev::FrameLog, nanos: u64) {
+fn state_dispatches(log: &mut crate::udev::FrameLog, nanos: u64, messages: u64) {
     log.protocol_dispatches += 1;
     log.protocol_nanos += nanos;
+    log.protocol_messages += messages;
 }
