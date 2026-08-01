@@ -5285,17 +5285,42 @@ impl ViewportState {
                         pending.buffer.height() as i32,
                     )
                         .into();
-                    let owned = match self.shell_owned.take() {
-                        Some((buffer, at)) if at == size => Some((buffer, at)),
-                        // First frame, or the layout changed under it.
-                        _ => self
+                    // Allocated before the old one is given up, not after.
+                    //
+                    // The old buffer is the picture on screen. Taking it first
+                    // and then failing to replace it — the layout changed and
+                    // the device is out of memory, or the renderer is gone —
+                    // drops the shell out of the render list entirely, which
+                    // is a grey half of a desktop that comes back only if
+                    // WebKit paints again. Holding a stale frame is the better
+                    // failure: it is wrong by one layout, not absent.
+                    let stale = match self.shell_owned.as_ref() {
+                        Some((_, at)) => *at != size,
+                        // First frame.
+                        None => true,
+                    };
+                    if stale {
+                        match self
                             .shell_renderer
                             .as_mut()
                             .and_then(|renderer| crate::dump::owned_image(renderer, size).ok())
-                            .map(|buffer| (buffer, size)),
-                    };
-                    match owned {
-                        Some((mut buffer, at)) => {
+                        {
+                            Some(buffer) => self.shell_owned = Some((buffer, size)),
+                            None => tracing::error!(
+                                "could not allocate a {}x{} image for the shell's frame",
+                                size.w,
+                                size.h
+                            ),
+                        }
+                    }
+                    match self.shell_owned.take() {
+                        // Only into a buffer the frame actually fits. The
+                        // reallocation above failed if this does not match, and
+                        // copying anyway would paint a new frame into part of
+                        // an old one — a torn composite of two layouts, which
+                        // reads as a rendering bug rather than as the
+                        // allocation failure it is.
+                        Some((mut buffer, at)) if at == size => {
                             let copied = self.shell_renderer.as_mut().map(|renderer| {
                                 crate::dump::copy_texture(renderer, &texture, &mut buffer, at)
                             });
@@ -5305,6 +5330,12 @@ impl ViewportState {
                             // Whichever renderer draws this output imports it
                             // itself — see `render::build`.
                             self.shell_owned = Some((buffer, at));
+                        }
+                        Some(kept) => {
+                            tracing::warn!(
+                                "keeping the shell's last frame; this one has nowhere to go"
+                            );
+                            self.shell_owned = Some(kept);
                         }
                         None => tracing::error!("no image to copy the shell's frame into"),
                     }
