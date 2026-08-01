@@ -984,6 +984,63 @@ PY
 }
 
 # --------------------------------------------------------------------------
+# How many vkcube windows the compositor currently has mapped.
+#
+# Only used to know when it is worth asking where they are; a client that has
+# not mapped is on no output, and asking early answers about the wrong moment.
+# --------------------------------------------------------------------------
+count_clients() {
+    case "$comp_kind" in
+        sway)
+            SWAYSOCK=$sway_sock swaymsg -t get_tree -r 2>/dev/null |
+                python3 -c 'import json,sys
+def walk(node):
+    n = 1 if (node.get("pid") and "vkcube" in (node.get("name") or "").lower()) else 0
+    for key in ("nodes", "floating_nodes"):
+        for child in node.get(key) or []:
+            n += walk(child)
+    return n
+try:
+    print(walk(json.load(sys.stdin)))
+except Exception:
+    print(0)' 2>/dev/null || echo 0
+            ;;
+        viewport)
+            python3 - "$runtime/viewport-$comp_display.sock" <<'PY' 2>/dev/null || echo 0
+import json, socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(1)
+seen = set()
+try:
+    s.connect(sys.argv[1])
+    s.sendall(b'{"type":"view.query"}\n')
+    buffered, deadline = b"", time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        try:
+            chunk = s.recv(65536)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buffered += chunk
+        while b"\n" in buffered:
+            line, buffered = buffered.split(b"\n", 1)
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if message.get("type") == "view.added":
+                seen.add(message.get("id"))
+finally:
+    s.close()
+print(len(seen))
+PY
+            ;;
+        *) echo 0 ;;
+    esac
+}
+
+# --------------------------------------------------------------------------
 # Which output each client is actually on, asked while they are both running.
 #
 # Written to placement.log beside the request that was supposed to put them
@@ -991,7 +1048,25 @@ PY
 # --------------------------------------------------------------------------
 verify_placement() {
     local plog=$outdir/placement.log
-    echo "  verifying:" >>"$plog"
+
+    # Wait for both clients to be on screen before asking where they are.
+    #
+    # This is called the moment the second one is started, and a client that
+    # has not mapped yet is on no output at all. Sampling once reported one
+    # window and left it looking as though the other compositor had put both
+    # on one screen — which is a false accusation of exactly the fault this
+    # check exists to detect, and it fooled me first. Viewport happened to
+    # pass only because its placement round-trips through the shell and takes
+    # long enough for the client to appear in the meantime; sway's is two
+    # swaymsg calls and got there first.
+    local waited=0
+    while [ "$waited" -lt 50 ]; do
+        [ "$(count_clients)" -ge 2 ] && break
+        sleep 0.1
+        waited=$(( waited + 1 ))
+    done
+    echo "  verifying (after ${waited}00ms, $(count_clients) clients):" >>"$plog"
+
     case "$comp_kind" in
         sway)
             SWAYSOCK=$sway_sock swaymsg -t get_tree -r 2>/dev/null |
