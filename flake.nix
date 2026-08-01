@@ -558,6 +558,18 @@
             echo "  meson setup build && ninja -C build   # the C compositor"
             echo "  cargo test --workspace                # the Rust rewrite"
             echo "  VIEWPORT_REQUIRE_GPU=1 cargo test -p viewport-web   # dma-buf, for real"
+
+            # The checks moved into .githooks when CI was disabled, and they
+            # are off until git is told where the hooks live. Nothing else can
+            # say so: a hook that is not installed does not run, so it cannot
+            # complain about not running, and the first sign is a commit that
+            # would not have passed. This shell is the one place every
+            # contributor already goes through.
+            if [ -d .git ] && [ "$(git config --get core.hooksPath || true)" != ".githooks" ]; then
+              echo
+              echo "  ! the pre-commit checks are not installed. To enable them:"
+              echo "        git config core.hooksPath .githooks"
+            fi
           '';
         };
       }) // {
