@@ -2169,7 +2169,25 @@ impl ViewportState {
         // Out of the struct and onto the stack: the call below borrows the rest
         // of `udev` and all of `self`, which it cannot do while the renderer is
         // still a field of one of them.
-        let mut gpu = std::mem::replace(&mut udev.primary_mut().renderer, Gpu::Placeholder);
+        //
+        // The renderer belonging to the GPU this output is on, not the
+        // primary's. `render` is handed an `OutputId`, which names a device
+        // precisely because the output need not be on the first one — and this
+        // took `devices[0]` regardless. Every screen on a second card was
+        // therefore drawn with the first card's renderer and then committed to
+        // a `DrmOutput` whose allocator belongs to the second, which is the
+        // cross-device copy the secondary-GPU path was written to avoid: "a
+        // buffer is only cheap on the device that allocated it". Each
+        // secondary built a renderer at open time that nothing ever used.
+        let Some(primary_device) = udev.devices.get_mut(id.device) else {
+            // The device index came out of an OutputId this compositor made,
+            // so this cannot happen — but a panic in the render path would
+            // take the session down for one stale id.
+            tracing::error!("render: no gpu {} for {id:?}", id.device);
+            self.udev = Some(udev);
+            return;
+        };
+        let mut gpu = std::mem::replace(&mut primary_device.renderer, Gpu::Placeholder);
         // Colour management belongs to the Vulkan renderer; GLES draws in the
         // output's own space, so an HDR screen driven by it gets the ordinary
         // one — the honest result of that renderer not having the transforms.
@@ -2196,7 +2214,10 @@ impl ViewportState {
             start,
             &mut pending_dump,
         ));
-        udev.primary_mut().renderer = gpu;
+        // Back to the device it came from, for the same reason.
+        if let Some(device) = udev.devices.get_mut(id.device) {
+            device.renderer = gpu;
+        }
         self.udev = Some(udev);
     }
 
