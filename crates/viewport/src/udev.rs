@@ -60,6 +60,22 @@ pub enum Choice {
 /// nothing is a mistake worth reporting: the alternative is a hybrid laptop
 /// running on the wrong GPU while the variable that was supposed to fix it
 /// sits in the environment doing nothing.
+/// The items, in the order they first appear, with later repeats dropped.
+///
+/// Order is the point: the seat's primary is put in front of the full GPU list
+/// so the ranking sees it first, and sorting or hashing to deduplicate would
+/// throw that away. The lists here are two or three long, so the quadratic
+/// comparison is cheaper than the set that would avoid it.
+fn first_occurrences<T: PartialEq>(items: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut kept: Vec<T> = Vec::new();
+    for item in items {
+        if !kept.contains(&item) {
+            kept.push(item);
+        }
+    }
+    kept
+}
+
 pub fn gpu_named(paths: &[Option<String>], wanted: Option<&str>) -> Choice {
     let Some(wanted) = wanted.map(str::trim).filter(|w| !w.is_empty()) else {
         return Choice::Ranked;
@@ -740,17 +756,29 @@ pub fn init(
     // screen and a driver abort. So the candidates are ranked by whether a
     // Vulkan device actually exposes them, and only then by what the seat
     // thinks.
-    let candidates: Vec<DrmNode> = primary_gpu(&seat)
-        .ok()
-        .flatten()
-        .into_iter()
-        .chain(all_gpus(&seat).unwrap_or_default())
-        .filter_map(|path| DrmNode::from_path(path).ok())
-        .filter_map(|node| match node.ty() {
-            NodeType::Primary => Some(node),
-            _ => node.node_with_type(NodeType::Primary)?.ok(),
-        })
-        .collect();
+    //
+    // Deduplicated, because `all_gpus` includes the primary and this puts the
+    // primary in front of it — so the seat's primary was in the list twice,
+    // always. The ranking below did not care, but the loop that opens the
+    // *other* GPUs skips only the one that was chosen, so whenever the choice
+    // was not the seat's primary that primary was opened twice. The second
+    // open fails, and the warning for it says its outputs stay dark — about a
+    // device that had been opened successfully a moment earlier and was
+    // driving its monitors. Had it instead succeeded, the result would have
+    // been two `Device`s for one card: two output managers, two renderers, and
+    // every connector on it published twice.
+    let candidates: Vec<DrmNode> = first_occurrences(
+        primary_gpu(&seat)
+            .ok()
+            .flatten()
+            .into_iter()
+            .chain(all_gpus(&seat).unwrap_or_default())
+            .filter_map(|path| DrmNode::from_path(path).ok())
+            .filter_map(|node| match node.ty() {
+                NodeType::Primary => Some(node),
+                _ => node.node_with_type(NodeType::Primary)?.ok(),
+            }),
+    );
     if candidates.is_empty() {
         return Err(anyhow!("no GPU with a primary node found for seat {seat}"));
     }
@@ -2608,6 +2636,23 @@ mod tests {
         assert_eq!(gpu_named(&cards, None), Choice::Ranked);
         assert_eq!(gpu_named(&cards, Some("")), Choice::Ranked);
         assert_eq!(gpu_named(&cards, Some("   ")), Choice::Ranked);
+    }
+
+    #[test]
+    fn the_seat_primary_is_not_listed_twice() {
+        // all_gpus() includes the primary, and the candidate list puts the
+        // primary in front of it, so every seat's primary appeared twice.
+        // Harmless to the ranking and not to what follows it: the loop that
+        // opens the other GPUs skips only the card that was chosen, so a
+        // choice that was not the seat's primary opened that primary twice —
+        // once successfully, then again to a failure whose warning says the
+        // outputs are dark while they are lit.
+        assert_eq!(first_occurrences([1, 2, 1, 3]), vec![1, 2, 3]);
+        // The primary in front is the whole reason this is not a sort: the
+        // ranking reads the order.
+        assert_eq!(first_occurrences([2, 1, 2, 3]), vec![2, 1, 3]);
+        assert_eq!(first_occurrences([7, 7, 7]), vec![7]);
+        assert!(first_occurrences(Vec::<u8>::new()).is_empty());
     }
 
     #[test]
