@@ -64,23 +64,22 @@ pub fn init(
             .iter()
             .copied()
             .collect();
+        // Asked for once. Both of the things below want the node behind this
+        // display, and enumerating it twice asks the driver the same question
+        // twice to get the same answer — or, if the second one ever disagreed
+        // with the first, to advertise one GPU to clients and record on
+        // another.
         let node = smithay::backend::egl::EGLDevice::device_for_display(
             backend.renderer().egl_context().display(),
         )
         .ok()
-        .and_then(|device| device.try_get_render_node().ok().flatten())
-        .map(|node| node.dev_id());
-        state.advertise_dmabuf(node, formats.clone());
+        .and_then(|device| device.try_get_render_node().ok().flatten());
+        state.advertise_dmabuf(node.map(|node| node.dev_id()), formats.clone());
 
         // And the same GPU for capture, so a recorder works nested too —
         // which is the only place this can be tested without a second
         // machine.
-        state.capture_gpu = smithay::backend::egl::EGLDevice::device_for_display(
-            backend.renderer().egl_context().display(),
-        )
-        .ok()
-        .and_then(|device| device.try_get_render_node().ok().flatten())
-        .map(|node| (node, formats));
+        state.capture_gpu = node.map(|node| (node, formats));
     }
 
     // The ping the shell uses to wake the loop, as in `udev.rs`. It has to be
