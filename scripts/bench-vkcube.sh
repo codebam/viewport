@@ -869,7 +869,7 @@ place_on() {
             # something else is the failure this whole harness is written
             # against, so the reply is read and a rejection is fatal.
             if ! python3 - "$runtime/viewport-$comp_display.sock" "$target" <<'PY'
-import json, socket, sys
+import json, socket, sys, time
 sock, target = sys.argv[1], sys.argv[2]
 s = socket.socket(socket.AF_UNIX)
 s.settimeout(3)
@@ -883,15 +883,32 @@ try:
         "command": "output.focus",
         "args": [target],
     }).encode() + b"\n")
-    # The compositor answers an unknown type against the type itself, and
-    # otherwise says nothing about a request it accepted — so this reads until
-    # it finds a rejection of *this* message or the traffic goes quiet.
+    # Then wait until the move has actually happened, rather than until the
+    # message has been sent.
+    #
+    # The command going out proves nothing: it reaches the shell through the
+    # web view, the shell answers it on its own event loop, and only then does
+    # it tell the compositor. What settles it is `output.layout`, whose
+    # `active` field is the compositor's record of the output the shell last
+    # named — which is the same thing that decides where the next window
+    # opens. So this asks for the layout until that field is the output that
+    # was asked for.
+    #
+    # Sleeping a fixed time instead is what this replaced, and it is the
+    # difference between a benchmark that fails and one that quietly puts both
+    # clients on one screen and reports two.
+    deadline = time.monotonic() + 5
     buffered = b""
-    while True:
+    asked = 0.0
+    seen_active = []
+    while time.monotonic() < deadline:
+        if time.monotonic() - asked > 0.25:
+            s.sendall(b'{"type":"output.query"}\n')
+            asked = time.monotonic()
         try:
-            chunk = s.recv(4096)
+            chunk = s.recv(65536)
         except socket.timeout:
-            break
+            continue
         if not chunk:
             break
         buffered += chunk
@@ -904,16 +921,26 @@ try:
             except ValueError:
                 continue
             if (message.get("type") == "error"
-                    and message.get("context") == "shell.command"):
-                sys.stderr.write(
-                    "the compositor rejected shell.command: {}\n".format(
-                        message.get("message", "")))
+                    and message.get("context") in ("shell.command", "output.query")):
+                sys.stderr.write("the compositor rejected {}: {}\n".format(
+                    message.get("context"), message.get("message", "")))
                 sys.exit(1)
-            # Our own command coming back out is the acknowledgement: it is
-            # re-emitted to everything listening, including this connection.
-            if (message.get("type") == "shell.command"
-                    and message.get("args", [None])[:1] == [target]):
+            if message.get("type") != "output.layout":
+                continue
+            outputs = message.get("outputs") or []
+            names = [o.get("name") for o in outputs]
+            if target not in names:
+                sys.stderr.write(
+                    "the compositor has no output named {!r}; it has {}\n".format(
+                        target, ", ".join(n for n in names if n)))
+                sys.exit(1)
+            seen_active = [o.get("name") for o in outputs if o.get("active")]
+            if seen_active[:1] == [target]:
                 sys.exit(0)
+    sys.stderr.write(
+        "the shell did not move to {} within 5s; it is still on {}\n".format(
+            target, ", ".join(seen_active) if seen_active else "an unknown output"))
+    sys.exit(1)
 finally:
     s.close()
 PY
