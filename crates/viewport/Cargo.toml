@@ -44,18 +44,10 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 serde_json.workspace = true
 
-# Pinned to a revision rather than the 0.7.0 release: the release predates the
-# dispatch2 rework, and the API this code is written against is the one in the
-# tree — `delegate_dispatch2!`, `backend.bind()` returning a framebuffer, and
-# `render_output` taking one. Bump deliberately, not automatically.
+# The fork and the revision are in the workspace manifest, shared with
+# `viewport-vulkan`. Only the features are this crate's.
 [dependencies.smithay]
-# A fork, for one patch: DrmCompositor::set_allow_tearing, without which
-# tearing-control-v1 is a protocol the compositor can advertise and never
-# honour — the async flip flag lives inside the atomic commit smithay
-# builds, and nothing upstream reaches it.
-git = "https://github.com/codebam/smithay.git"
-rev = "a8f1c0054b47c95362374a9b808235ea64837cc0"
-default-features = false
+workspace = true
 features = [
     "backend_winit",
     "wayland_frontend",

@@ -34,5 +34,25 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# One pin, inherited by both `viewport` and `viewport-vulkan`. They were
+# separate entries with the same revision, which is a revision that has to be
+# bumped in lockstep: two crates in one binary cannot link two Smithays, so a
+# drift between them is a build failure at best and a silent duplicate type at
+# worst. Features stay per-crate — the renderer needs three, the compositor
+# needs a dozen — and Cargo unions them.
+#
+# Pinned to a revision rather than the 0.7.0 release: the release predates the
+# dispatch2 rework, and the API this code is written against is the one in the
+# tree — `delegate_dispatch2!`, `backend.bind()` returning a framebuffer, and
+# `render_output` taking one. Bump deliberately, not automatically.
+[workspace.dependencies.smithay]
+# A fork, for one patch: DrmCompositor::set_allow_tearing, without which
+# tearing-control-v1 is a protocol the compositor can advertise and never
+# honour — the async flip flag lives inside the atomic commit smithay
+# builds, and nothing upstream reaches it.
+git = "https://github.com/codebam/smithay.git"
+rev = "a8f1c0054b47c95362374a9b808235ea64837cc0"
+default-features = false
+
 [profile.release]
 debug = 1

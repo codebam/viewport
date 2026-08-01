@@ -20,10 +20,12 @@ readme = "README.md"
 keywords = ["wayland", "vulkan", "compositor", "smithay", "renderer"]
 categories = ["graphics", "rendering", "gui"]
 
-# Publishing is blocked until Smithay cuts a release with the dispatch2 API
-# this is written against — a crates.io package cannot depend on a git
-# revision. The crate is otherwise self-contained: it depends on no other
-# Viewport crate and exposes no Viewport type.
+# Publishing is blocked on the Smithay dependency, which is a git revision of a
+# fork — a crates.io package cannot depend on either. Both halves have to go:
+# `set_allow_tearing` has to land upstream, and upstream has to cut a release
+# with the dispatch2 API this is written against. The crate is otherwise
+# self-contained: it depends on no other Viewport crate and exposes no Viewport
+# type.
 publish = false
 
 [dependencies]
@@ -33,14 +35,10 @@ thiserror.workspace = true
 ash = "0.38"
 libc = "0.2"
 
+# The fork and the revision are in the workspace manifest, shared with
+# `viewport`. Only the features are this crate's.
 [dependencies.smithay]
-# A fork, for one patch: DrmCompositor::set_allow_tearing, without which
-# tearing-control-v1 is a protocol the compositor can advertise and never
-# honour — the async flip flag lives inside the atomic commit smithay
-# builds, and nothing upstream reaches it.
-git = "https://github.com/codebam/smithay.git"
-rev = "a8f1c0054b47c95362374a9b808235ea64837cc0"
-default-features = false
+workspace = true
 # wayland_frontend is what ImportDmaWl and ImportMemWl need — they take a
 # wl_buffer. It is behind a feature so the renderer stays usable without a
 # Wayland display, which is also what lets the tests run headless.
