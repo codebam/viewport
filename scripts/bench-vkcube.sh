@@ -1324,9 +1324,9 @@ bench_one() {
                         # by its own frame count, not by anything meaningful.
                         printf "%s\t%s\t%d\t%s\tbusy\t\t%.3f\t%.1f\t%.1f\t%.1f\n",
                             comp, scenario, run, out_a, wall_a, cpu, sess, gpu
+                        fps = (wall_b > 0) ? count_b / wall_b : 0
                         printf "%s\t%s\t%d\t%s\tmeasured\t%.1f\t%.3f\t%.1f\t%.1f\t%.1f\n",
-                            comp, scenario, run, out_b,
-                            wall_b > 0 ? count_b / wall_b : 0,
+                            comp, scenario, run, out_b, fps,
                             wall_b, cpu, sess, gpu
                     }' | tee -a "$mm_results" >&2
             done
