@@ -659,8 +659,25 @@ EOF
         waited=$(( waited + 1 ))
     done
     [ -n "$comp_display" ] || { echo "niri never opened a socket; see $comp_log" >&2; return 1; }
-    # niri's own IPC is reached through the display it took.
-    niri_sock=$runtime/niri.$comp_display.sock
+    # niri's own IPC socket, taken from what it printed rather than guessed.
+    #
+    # The name carries the pid as well as the display —
+    # `niri.wayland-1.622491.sock` — so the obvious construction from the
+    # display alone names a file that never exists. Every `niri msg` then
+    # failed, and because placement is best-effort they failed quietly: a run
+    # still produced a full set of numbers for two clients that were both on
+    # whichever screen niri happened to start on.
+    local waited_sock=0
+    while [ $waited_sock -lt 100 ]; do
+        niri_sock=$(sed -n 's/.*IPC listening on: \(.*\)$/\1/p' "$comp_log" | head -1)
+        [ -n "$niri_sock" ] && [ -S "$niri_sock" ] && break
+        sleep 0.1
+        waited_sock=$(( waited_sock + 1 ))
+    done
+    if [ -z "$niri_sock" ] || [ ! -S "$niri_sock" ]; then
+        echo "niri did not say where its IPC socket is; see $comp_log" >&2
+        return 1
+    fi
     sleep 2
 }
 
@@ -1567,7 +1584,12 @@ bench_one() {
     # not only the two-monitor ones, because a single-output comparison in
     # which the two compositors used different monitors was never comparing
     # what it said it was.
-    if [ "$comp_kind" = viewport ] && [ -n "$output" ]; then
+    # sway is told which output to use in its config; the other two have to be
+    # told at runtime, and niri was being told by nothing at all — so a run
+    # asking for DP-1 measured whichever screen niri focuses by default, which
+    # on this desk is the other one.
+    if { [ "$comp_kind" = viewport ] || [ "$comp_kind" = niri ]; } &&
+        [ -n "$output" ]; then
         place_on "$output"
     fi
 
