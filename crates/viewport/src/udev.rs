@@ -1808,6 +1808,28 @@ impl ViewportState {
                 udev.devices[index].surfaces.remove(&crtc);
             }
             self.space.unmap_output(&output);
+
+            // Whatever named this screen has to stop naming it.
+            //
+            // `active_output` is where a new window opens and what
+            // `output.layout` reports as the active one. Nothing cleared it
+            // when its monitor went, and `output_for_new_view` reads it before
+            // the fallback that would have picked a live output — so unplugging
+            // the active screen left every later window aimed at a name with
+            // nothing behind it, and every `output.layout` reporting no active
+            // output at all, because the name matched none of them.
+            //
+            // Moved to a screen that is still here rather than cleared, so the
+            // answer stays a real one. The shell overrides it the moment focus
+            // moves, which is the usual case; this is only for the gap.
+            if self.active_output.as_deref() == Some(output.name().as_str()) {
+                self.active_output = self.space.outputs().next().map(|o| o.name());
+                tracing::info!(
+                    "the active output was unplugged; now {}",
+                    self.active_output.as_deref().unwrap_or("(none)")
+                );
+            }
+
             tracing::info!("{}: unplugged", output.name());
         }
         // The shell decides layout from the output list, and one screen fewer
