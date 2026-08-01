@@ -1107,11 +1107,20 @@ pub fn init(
     // Without this the initial modeset appears to work and every page flip
     // afterwards fails with EPERM — which presents as a screen that stops
     // updating rather than as anything anyone would connect to permissions.
+    //
+    // Claimed on every GPU, not only the first. The reason above applies to
+    // each of them — a secondary card is opened the same way and its session
+    // is active the same way — so claiming it for one left every other card's
+    // page flips failing with EPERM. That is the same "screen that stops
+    // updating" this exists to prevent, on the monitors this compositor grew
+    // multi-GPU support in order to light up at all.
     if let Some(udev) = state.udev.as_mut() {
-        if let Err(e) = udev.primary_mut().manager.lock().activate(false) {
-            tracing::error!("could not claim drm master: {e}");
-        } else {
-            tracing::info!("drm master claimed");
+        for index in 0..udev.devices.len() {
+            if let Err(e) = udev.devices[index].manager.lock().activate(false) {
+                tracing::error!("could not claim drm master on gpu {index}: {e}");
+            } else {
+                tracing::info!("gpu {index}: drm master claimed");
+            }
         }
     }
 
@@ -2535,7 +2544,13 @@ impl ViewportState {
             return;
         };
         udev.active = false;
-        udev.primary_mut().manager.pause();
+        // Every device, not just the first. The line above this function says
+        // every fd is about to be revoked, and it is: logind takes them all
+        // back on a VT switch. Pausing only the primary left every secondary
+        // GPU's `DrmDevice` believing it still held a live fd.
+        for device in &mut udev.devices {
+            device.manager.pause();
+        }
         tracing::info!("session paused");
     }
 
@@ -2546,8 +2561,22 @@ impl ViewportState {
             return;
         };
         udev.active = true;
-        if let Err(e) = udev.primary_mut().manager.lock().activate(true) {
-            tracing::error!("reactivating drm: {e}");
+        // Every device, for the reason the pause is: they were all revoked.
+        //
+        // Reactivating only the primary is a monitor on a second GPU that goes
+        // dark at the first VT switch and never comes back — while everything
+        // downstream carries on as though it had. The buffer reset below walks
+        // every surface on every device, and the render loop at the end walks
+        // every crtc, so the frames were being drawn and committed to devices
+        // that had not been told they were live again.
+        //
+        // Each is reported on its own. One card failing to come back is one
+        // dark monitor, which is worth a line naming it; taking the session
+        // down for it would make every monitor dark.
+        for (index, device) in udev.devices.iter_mut().enumerate() {
+            if let Err(e) = device.manager.lock().activate(true) {
+                tracing::error!("reactivating drm on gpu {index}: {e}");
+            }
         }
         tracing::info!("session resumed");
 
