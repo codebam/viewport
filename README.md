@@ -112,6 +112,34 @@ Run nested inside an existing compositor:
 
 On a TTY it takes the DRM session directly (needs `seatd` or logind).
 
+### Checks before a commit
+
+There is no CI. `.github/workflows/ci.yml` still describes what it used to
+run and no longer runs on a push — the comment at the top of it says why, and
+how to put it back. The same checks live in a hook instead, which has to be
+turned on once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+After that `git commit` runs, against the staged changes only:
+
+- the shell layout tests, if anything under `data/shell`, `examples/kiosk` or
+  the JavaScript tests is staged;
+- `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test --workspace`,
+  if anything under `crates/`, `Cargo.toml`, `Cargo.lock` or `flake.nix` is;
+- and a `cargo check` of *both* halves of the `wpe` feature, because a
+  `#[cfg(feature = "wpe")]` on the wrong item compiles cleanly in whichever
+  configuration you happen to test and breaks the other.
+
+Staging nothing it can break — a PKGBUILD, a document — runs nothing.
+
+`git commit --no-verify` skips it. It builds into `target/pre-commit` rather
+than `target`, so it cannot replace a `target/release/viewport` built with
+`--features wpe` with one built without: that swap is silent, and what it
+produces is a session that comes up grey with nothing in the log to say why.
+
 ## Documentation
 
 The reference material lives in `docs/`:

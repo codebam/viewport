@@ -25,18 +25,28 @@
 # It is never triggered by a push.
 name: CI
 
+# Nothing here runs by itself any more. `.githooks/pre-commit` does the same
+# checks before a commit is made, which is where they were being run anyway.
+#
+# What made this worth turning off rather than fixing: the `rust` job refuses
+# to run when WPE WebKit is not substitutable, which is right — building the
+# engine on a hosted runner is hours and more disk than it has — and nothing
+# was keeping it substitutable. The compositor jobs read the project's cache
+# at codebam-nix-cache.storage.googleapis.com; `wpewebkit-cache`, the job whose
+# whole purpose is to keep the engine there, pushes to *Cachix* and is gated on
+# `vars.CACHIX_CACHE`, which is not set on this repository. So it has never
+# run, and the bucket has never held the engine. Every green run until now was
+# substituting from the GitHub Actions cache by way of magic-nix-cache, which
+# GitHub evicts after a week idle or when a repository passes 10GB — and a
+# WebKit closure is exactly what gets evicted. It expired, and every push since
+# has failed on a cache that was never the one being read.
+#
+# To put it back: restore `push:` and `pull_request:` below, and either point
+# `wpewebkit-cache` at the bucket the other jobs substitute from, or populate
+# that bucket by hand and leave the job deleted.
 on:
-  push:
-  pull_request:
-  # For the cache job only. Nothing else in this file reads these events; the
-  # job that does checks github.event_name so a push cannot start a four-hour
-  # WebKit build by accident.
+  # Still runnable from the Actions tab, and by the cache job's own guard.
   workflow_dispatch:
-  schedule:
-    # Weekly, because the derivation is pinned in flake.lock and only changes
-    # when that input moves. This is a refresh against cache garbage
-    # collection, not a rebuild.
-    - cron: '17 4 * * 1'
 
 # A push to a branch with an open pull request fires both events, and there is
 # no reason to run the same commit twice.

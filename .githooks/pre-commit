@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# What GitHub used to run, run here instead, before the commit is made.
+#
+# The CI workflow is disabled — see the comment at the top of
+# .github/workflows/ci.yml for why — so this is the only thing standing
+# between a mistake and `main`. It runs the same checks the `shell` and `rust`
+# jobs did, in the same order.
+#
+# Enable it once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# Skip it for a commit that does not need it:
+#
+#     git commit --no-verify
+#
+# It only runs what the staged changes could have broken: touching nothing but
+# a PKGBUILD or a document does not compile anything.
+set -uo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root" || exit 1
+
+# Staged names only. A file changed in the working tree but not staged is not
+# what is about to be committed, and failing on it is how a hook trains people
+# to pass --no-verify by reflex.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+
+touches() { printf '%s\n' "$staged" | grep -qE "$1"; }
+
+rust=false
+shell=false
+touches '^(crates/|Cargo\.(toml|lock)$|flake\.nix$)' && rust=true
+touches '^(data/shell/|examples/kiosk/|tests/.*\.(js|test\.js)$)' && shell=true
+
+if ! $rust && ! $shell; then
+    exit 0
+fi
+
+failed=0
+step() {
+    local what=$1
+    shift
+    echo "pre-commit: $what" >&2
+    if ! "$@"; then
+        echo "pre-commit: $what FAILED" >&2
+        failed=1
+    fi
+}
+
+if $shell; then
+    step "shell layout tests" bash -c '
+        set -eu
+        node tests/shell.test.js data/shell tiling
+        node tests/shell.test.js data/shell scrolling
+        node tests/shell.test.js data/shell tiling session
+        node tests/shell.test.js data/shell scrolling session
+        node tests/kiosk.test.js examples/kiosk
+    '
+fi
+
+if $rust; then
+    # A target directory of this hook's own.
+    #
+    # `cargo test` builds the `viewport` binary without `--features wpe`, and
+    # the default target directory is where a working `target/release/viewport`
+    # lives — the one with the web engine compiled in, the one run-drm.sh and
+    # the benchmarks use. Sharing the directory silently replaces it with a
+    # build that comes up grey and says nothing about why. Keeping a separate
+    # one costs disk and one slow first run, and nothing after that.
+    export CARGO_TARGET_DIR=$root/target/pre-commit
+
+    # The dev shell, because none of this builds without it: the crates link
+    # Smithay, DRM, libinput and libseat, and `nix develop` is what puts them
+    # on the library path. `.#rust` rather than the default shell — it carries
+    # exactly the Rust toolchain and those libraries, and skips WPE and Servo.
+    step "fmt, clippy and tests" nix develop "$root#rust" --command bash -c '
+        set -eu
+        cargo fmt --all --check
+        cargo clippy --workspace --all-targets -- -D warnings
+        cargo test --workspace
+    '
+
+    # Both halves of the feature flag.
+    #
+    # `--features wpe` is off by default, so a plain check never compiles the
+    # shell, and a `#[cfg(feature = "wpe")]` left attached to the wrong item
+    # compiles clean in whichever configuration is tested and breaks the other.
+    # That has happened: removing a `mod` line left its cfg attribute on the
+    # next module and silently gated the whole of `handlers`, and the build
+    # with the feature on was green throughout.
+    #
+    # `cargo check`, not `build`: this is about whether both configurations
+    # compile, and the wpe one needs pkg-config to find wpe-webkit, which the
+    # default dev shell has and `.#rust` does not.
+    step "check without the web engine" nix develop "$root#rust" --command \
+        cargo check --workspace --all-targets
+    step "check with the web engine" nix develop "$root" --command \
+        cargo check -p viewport --features wpe
+fi
+
+if [ "$failed" -ne 0 ]; then
+    echo >&2
+    echo "pre-commit: refusing the commit. Fix the above, or use" >&2
+    echo "  git commit --no-verify" >&2
+    echo "if you know why it does not apply." >&2
+    exit 1
+fi
+exit 0
