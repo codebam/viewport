@@ -172,8 +172,7 @@ pub struct ViewportState {
     /// Whether opening a Vulkan renderer for the shell's copy has already
     /// failed, so it is not attempted once per frame for the rest of the
     /// session.
-    // Only the web engine's paths use this; dead, honestly, without it.
-    #[cfg_attr(not(feature = "wpe"), allow(dead_code))]
+    #[cfg(feature = "wpe")]
     pub shell_copy_refused: bool,
     /// The size the shell was last told it is, so a layout change that does
     /// not alter it costs nothing.
@@ -883,7 +882,6 @@ impl ViewportState {
                 false,
             ),
             #[cfg(feature = "wpe")]
-            #[cfg(feature = "wpe")]
             shell: None,
             #[cfg(feature = "wpe")]
             shell_ping: None,
@@ -891,6 +889,7 @@ impl ViewportState {
             shell_size: None,
             #[cfg(feature = "wpe")]
             shell_renderer: None,
+            #[cfg(feature = "wpe")]
             shell_copy_refused: false,
             #[cfg(feature = "wpe")]
             shell_owned: None,
