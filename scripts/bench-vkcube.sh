@@ -1724,8 +1724,14 @@ compositors = [c for c in ("viewport", "sway", "niri")
                if any(k[1] == c for k in rows)]
 others = [c for c in compositors if c != "viewport"]
 
-lines = ["# vkcube: Viewport against {}".format(
-    " and ".join(others) if others else "itself"), ""]
+# A run that did not measure Viewport is not Viewport against anything, and
+# saying so would put its name on a table it has no row in.
+if "viewport" in compositors:
+    title = "Viewport against {}".format(
+        " and ".join(others)) if others else "Viewport"
+else:
+    title = " and ".join(compositors) if compositors else "nothing"
+lines = ["# vkcube: {}".format(title), ""]
 lines.append(
     "| scenario | compositor | fps | cpu ms/frame | net ms/frame | comp cpu % "
     "| session cpu % | gpu % | rss MB | client |"
@@ -1743,14 +1749,17 @@ for scenario in scenarios:
             )
         )
 
-lines += [
-    "",
-    "## Ratios",
-    "",
-    "Viewport over each of the others. Above 1.00 means more of whatever the",
-    "column counts, which is better for fps and worse for everything else.",
-]
-for other in others:
+# Nothing to compare against when only one compositor ran, or when the one
+# everything is expressed relative to is not among them.
+if "viewport" in compositors and others:
+    lines += [
+        "",
+        "## Ratios",
+        "",
+        "Viewport over each of the others. Above 1.00 means more of whatever the",
+        "column counts, which is better for fps and worse for everything else.",
+    ]
+for other in (others if "viewport" in compositors else []):
     lines += [
         "",
         "**against {}**".format(other),
@@ -1847,8 +1856,12 @@ for scenario, _ in order:
     if scenario not in scenarios:
         scenarios.append(scenario)
 
+mm_compositors = [c for c in ("viewport", "sway", "niri")
+                  if any(k[1] == c for k in rows)]
+mm_others = [c for c in mm_compositors if c != "viewport"]
+
 for scenario in scenarios:
-    for compositor in ("viewport", "sway"):
+    for compositor in mm_compositors:
         key = (scenario, compositor)
         if key not in rows:
             continue
@@ -1857,22 +1870,24 @@ for scenario in scenarios:
             median(key, "fps"), median(key, "comp_cpu_pct"),
             median(key, "sess_cpu_pct"), median(key, "gpu_pct")))
 
-both = [s for s in scenarios
-        if (s, "viewport") in rows and (s, "sway") in rows]
-if both:
+for other in mm_others:
+    both = [s for s in scenarios
+            if (s, "viewport") in rows and (s, other) in rows]
+    if not both:
+        continue
     lines += [
         "",
-        "### Ratios",
+        "### Ratios against {}".format(other),
         "",
-        "Viewport over sway, on `{}`. Above 1.00 is more frames reaching the"
-        .format(secondary),
+        "Viewport over {}, on `{}`. Above 1.00 is more frames reaching the"
+        .format(other, secondary),
         "screen that was not the busy one, which is better.",
         "",
         "| scenario | fps | comp cpu % |",
         "| --- " * 3 + "|",
     ]
     for scenario in both:
-        a, b = (scenario, "viewport"), (scenario, "sway")
+        a, b = (scenario, "viewport"), (scenario, other)
         cells = []
         for field in ("fps", "comp_cpu_pct"):
             denominator = median(b, field)
