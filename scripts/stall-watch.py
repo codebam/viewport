@@ -62,13 +62,51 @@ def find_gdb():
 
 
 def viewport_pid():
-    try:
-        out = subprocess.run(["pgrep", "-x", "viewport"],
-                             capture_output=True, text=True, timeout=5)
-        pids = [int(p) for p in out.stdout.split()]
-        return pids[-1] if pids else None
-    except Exception:
-        return None
+    """The running compositor, by what it is rather than what it is called.
+
+    `pgrep -x viewport` is the obvious lookup and it finds nothing on NixOS:
+    the installed binary is reached through a wrapper, so the process `comm`
+    is `.viewport-wrapp` — truncated to the kernel's 15 characters — and an
+    exact-name match never hits. The failure is
+    "no viewport process to attach to" at startup, which reads as "the
+    compositor is not running" rather than "this script cannot see it", and
+    it happens on the machine the stall actually occurs on.
+
+    So: ask what each process is executing. /proc/<pid>/exe is the real
+    binary whatever the wrapper is called, and the command line is the
+    fallback for the case where the link cannot be read.
+    """
+    def named(name):
+        """`.viewport-wrapped` is this compositor; `viewport-shell` is not."""
+        if name.startswith("."):
+            name = name[1:]
+        if name.endswith("-wrapped"):
+            name = name[: -len("-wrapped")]
+        return name == "viewport"
+
+    found = []
+    for entry in glob.glob("/proc/[0-9]*"):
+        pid = int(os.path.basename(entry))
+        if pid == os.getpid():
+            continue
+        names = []
+        # Both, not the first that works. On NixOS the exe link resolves to
+        # the wrapper's real target and the command line holds the name
+        # anyone would recognise, and either one alone misses a case.
+        try:
+            names.append(os.path.basename(os.readlink(os.path.join(entry, "exe"))))
+        except OSError:
+            pass
+        try:
+            with open(os.path.join(entry, "cmdline"), "rb") as fh:
+                argv0 = fh.read().split(b"\0")[0].decode(errors="replace")
+            if argv0:
+                names.append(os.path.basename(argv0))
+        except OSError:
+            pass
+        if any(named(name) for name in names):
+            found.append(pid)
+    return found[-1] if found else None
 
 
 def probe(path, timeout):
