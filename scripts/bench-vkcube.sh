@@ -1379,7 +1379,19 @@ one_pass_mm() {
     # both clients on one monitor produces numbers indistinguishable from a
     # correct one. Advisory rather than fatal — a run that measured the wrong
     # thing should say so in the results, not vanish at the end of it.
-    verify_placement
+    #
+    # In the background, and waited for after the clients, because this used to
+    # run here in the foreground and its own duration landed inside the
+    # measurement. `wall_b` is taken from `start_b` to after `wait pid_b`, so
+    # every second verification spent polling was counted as time the client
+    # took to draw its frames. It polls for up to five seconds, and for
+    # Viewport each poll is a control-socket round trip through Python while
+    # sway answers two quick swaymsg calls — so it inflated one compositor and
+    # not the other, and the difference read as the second monitor being
+    # starved. The giveaway was wall_b coming back as 7.598 and 7.599 for runs
+    # with half the frame count between them.
+    verify_placement &
+    local verify_pid=$!
 
     wait "$pid_b" 2>/dev/null || true
     local end_b
@@ -1390,6 +1402,9 @@ one_pass_mm() {
 
     kill "$sampler" 2>/dev/null || true
     wait "$sampler" 2>/dev/null || true
+    # After the clocks are stopped: it has nothing to do with how long anything
+    # took, and everything to do with whether the run meant what it says.
+    wait "$verify_pid" 2>/dev/null || true
 
     local after_comp after_tree gpu_mean
     after_comp=$(ticks_of "$comp_pid")
