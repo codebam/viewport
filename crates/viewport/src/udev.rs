@@ -1527,6 +1527,34 @@ impl ViewportState {
 
         tracing::info!("{} connected connector(s)", connectors.len());
 
+        // Monitors that have gone since the last scan.
+        //
+        // This pass only ever added. It collects the connected connectors,
+        // skips the ones that already have a surface, and builds the rest —
+        // so unplugging a screen left its `Surface` in place, its `Output` in
+        // the space, and its `wl_output` still advertised to every client. The
+        // field holding that global says "dropped when the connector goes",
+        // and nothing dropped it.
+        //
+        // What that costs: clients keep a screen in their output list that is
+        // not there, the shell keeps laying windows out on it, and the render
+        // loop keeps drawing frames for a connector that cannot show them. The
+        // headless backend has removed outputs since it was written —
+        // `output.test_remove` — and the hotplug test in control_socket.rs
+        // exercises that path, which is why nothing caught this: the test is
+        // headless and the bug is DRM's.
+        //
+        // Collected before anything is touched, because unmapping needs `self`
+        // and the loop below is holding `udev`.
+        let live: std::collections::HashSet<connector::Handle> =
+            connectors.iter().map(|info| info.handle()).collect();
+        let gone: Vec<(crtc::Handle, Output)> = udev.devices[index]
+            .surfaces
+            .iter()
+            .filter(|(_, surface)| !live.contains(&surface.connector))
+            .map(|(crtc, surface)| (*crtc, surface.output.clone()))
+            .collect();
+
         // CRTCs already driving something *on this device*. Without this the
         // second monitor gets handed the first one's CRTC, and the "already in
         // use" check then drops it silently — which is exactly what happened
@@ -1765,6 +1793,27 @@ impl ViewportState {
         for crtc in started {
             self.render(crtc);
         }
+
+        // And drop the ones that went away, now that `udev` is no longer
+        // borrowed and the space can be reached.
+        //
+        // Order matters against the loop above: a connector that vanished and
+        // came back between two scans is not in `gone`, because `live` is read
+        // from this same pass — so nothing here can remove an output the pass
+        // just created.
+        for (crtc, output) in gone {
+            if let Some(udev) = self.udev.as_mut() {
+                // Dropping the surface drops the `GlobalId` it holds, which is
+                // what the field was there for.
+                udev.devices[index].surfaces.remove(&crtc);
+            }
+            self.space.unmap_output(&output);
+            tracing::info!("{}: unplugged", output.name());
+        }
+        // The shell decides layout from the output list, and one screen fewer
+        // is a different layout. Without this the windows stay where they were
+        // — including on the monitor that is no longer there.
+        self.notify_output_layout();
     }
 
     /// Everyone waiting to hear that this output's frame reached the screen.
