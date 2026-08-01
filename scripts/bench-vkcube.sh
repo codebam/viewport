@@ -856,9 +856,23 @@ one_pass() {
 # --------------------------------------------------------------------------
 place_on() {
     local target=$1
+    # Kept beside the results rather than only on the terminal. Everything
+    # about why a placement failed was going to a TTY that scrolls, which is
+    # the one place it cannot be read afterwards — so two runs came back with
+    # nothing but an empty raw-mm.tsv to explain themselves.
+    local plog=$outdir/placement.log
+    echo "--- $comp_kind: asking for $target at $(date +%H:%M:%S)" >>"$plog"
     case "$comp_kind" in
         sway)
-            SWAYSOCK=$sway_sock swaymsg focus output "$target" >/dev/null 2>&1 || true
+            SWAYSOCK=$sway_sock swaymsg focus output "$target" >>"$plog" 2>&1 || true
+            SWAYSOCK=$sway_sock swaymsg -t get_workspaces -r 2>/dev/null |
+                python3 -c 'import json,sys
+try:
+    ws = json.load(sys.stdin)
+except Exception:
+    print("  could not read workspaces"); raise SystemExit
+focused = [w for w in ws if w.get("focused")]
+print("  focused output now: {}".format(focused[0]["output"] if focused else "none"))' >>"$plog" 2>&1 || true
             ;;
         viewport)
             # Not `|| true`. A compositor built before shell.command existed
@@ -868,7 +882,7 @@ place_on() {
             # monitors were measured. A benchmark that quietly measures
             # something else is the failure this whole harness is written
             # against, so the reply is read and a rejection is fatal.
-            if ! python3 - "$runtime/viewport-$comp_display.sock" "$target" <<'PY'
+            if ! python3 - "$runtime/viewport-$comp_display.sock" "$target" 2>>"$plog" <<'PY'
 import json, socket, sys, time
 sock, target = sys.argv[1], sys.argv[2]
 s = socket.socket(socket.AF_UNIX)
@@ -935,7 +949,11 @@ try:
                         target, ", ".join(n for n in names if n)))
                 sys.exit(1)
             seen_active = [o.get("name") for o in outputs if o.get("active")]
+            sys.stderr.write("  saw outputs {} active {}\n".format(
+                ", ".join(n for n in names if n),
+                ", ".join(seen_active) if seen_active else "(none)"))
             if seen_active[:1] == [target]:
+                sys.stderr.write("  moved to {}\n".format(target))
                 sys.exit(0)
     sys.stderr.write(
         "the shell did not move to {} within 5s; it is still on {}\n".format(
