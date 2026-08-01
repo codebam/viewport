@@ -254,6 +254,13 @@ impl CrashSink for Crashes {
 // were sound before was that everything stayed on one thread, and the shell is
 // on its way to a thread of its own.
 
+/// How long the compositor waits for the web thread to report itself up.
+///
+/// Long enough that a cold WebKit on a slow disk, compiling shaders for a GPU
+/// it has never seen, is not cut off; short enough that a hang is a message in
+/// the log rather than a hung machine.
+const STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Shell {
     /// Start the shell on `render_node`, showing `url`.
     ///
@@ -308,14 +315,36 @@ impl Shell {
         // The engine has to be up before the compositor is told it is: a
         // failure here is "no shell", and it has to come back as an error
         // rather than as a desktop that never paints.
-        match started.recv() {
+        //
+        // Bounded, because this runs before the event loop does. A WebKit that
+        // hangs here — a driver deadlock in the GPU process, an engine that
+        // OOMs before it answers — is a compositor with no keyboard, no
+        // control socket and no VT switch, on a machine whose only way out is
+        // the power button. A slow start is worth waiting out; a start that
+        // never finishes has to become an error while something can still be
+        // done about it.
+        match started.recv_timeout(STARTUP_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
                 mailbox,
                 commands,
                 thread: Some(thread),
             }),
             Ok(Err(e)) => Err(anyhow::anyhow!(e)),
-            Err(_) => Err(anyhow::anyhow!("the shell thread stopped before starting")),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Queued rather than joined. The thread is wedged inside
+                // WebKit by assumption, so waiting on it would inherit the
+                // hang; the queue is drained as soon as its loop runs, so a
+                // thread that does wake up later ends instead of painting into
+                // a shell nobody is holding.
+                commands.send(Command::Quit);
+                Err(anyhow::anyhow!(
+                    "the shell did not start within {}s",
+                    STARTUP_TIMEOUT.as_secs()
+                ))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(anyhow::anyhow!("the shell thread stopped before starting"))
+            }
         }
     }
 
