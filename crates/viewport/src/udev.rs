@@ -60,6 +60,45 @@ pub enum Choice {
 /// nothing is a mistake worth reporting: the alternative is a hybrid laptop
 /// running on the wrong GPU while the variable that was supposed to fix it
 /// sits in the environment doing nothing.
+/// The node clients should allocate on for this card.
+///
+/// A card usually has a render node beside its primary one — `card1` and
+/// `renderD128` — and that is the node the renderer draws with and the one
+/// advertised over `linux-dmabuf` as the device to allocate on.
+///
+/// Some have none. A virtual DRM device has none, and neither does a
+/// display controller on a machine where scanout and rendering are separate
+/// chips. The primary node is not a substitute: the compositor can use it
+/// because it holds DRM master, and a client cannot open it at all. Handing
+/// its `dev_id` to `DmabufFeedbackBuilder` therefore tells every client to
+/// allocate on a device it is not allowed to touch, and what comes back is
+///
+///     MESA-EGL: warning: failed to get driver name for fd -1
+///
+/// from the client, naming nothing about this compositor. Falling back
+/// silently is what made that the visible symptom, so it is said out loud —
+/// the fallback is kept, because the compositor's own use of the node does
+/// work and refusing to start would be worse.
+fn client_render_node(card: &DrmNode) -> DrmNode {
+    match card
+        .node_with_type(NodeType::Render)
+        .and_then(|node| node.ok())
+    {
+        Some(render) => render,
+        None => {
+            tracing::warn!(
+                "{card:?} has no render node, so clients are being told to \
+                 allocate on its primary node — which they cannot open. \
+                 Expect every GL and Vulkan client to fail at startup with a \
+                 driver error of its own. A card that only scans out needs the \
+                 rendering GPU's render node advertised instead, which this \
+                 does not yet do."
+            );
+            *card
+        }
+    }
+}
+
 /// The items, in the order they first appear, with later repeats dropped.
 ///
 /// Order is the point: the seat's primary is put in front of the full GPU list
@@ -868,11 +907,9 @@ pub fn init(
         );
     }
 
-    // Same card, the node Vulkan should use.
-    let render = card
-        .node_with_type(NodeType::Render)
-        .and_then(|node| node.ok())
-        .unwrap_or(card);
+    // Same card, the node Vulkan should use — and the one clients are told to
+    // allocate on, which is why a card without one is worth a word.
+    let render = client_render_node(&card);
 
     tracing::info!("primary GPU: card {card:?}, render {render:?}");
     // Said out loud because it changes what the screen does, and a run whose
@@ -1025,10 +1062,7 @@ pub fn init(
     // A GPU that cannot be opened is skipped with a warning. One card failing
     // is a monitor that stays dark; refusing to start is every monitor dark.
     for other in candidates.iter().filter(|c| **c != card) {
-        let other_render = other
-            .node_with_type(NodeType::Render)
-            .and_then(|node| node.ok())
-            .unwrap_or(*other);
+        let other_render = client_render_node(other);
 
         let Some(udev) = state.udev.as_mut() else {
             break;
