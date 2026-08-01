@@ -200,6 +200,31 @@ if [ "$only" != sway ] && { [ -z "$viewport_bin" ] || [ ! -x "$viewport_bin" ]; 
     exit 1
 fi
 
+# A run without the shell is legitimate — building without the wpe feature is
+# how you take WebKit out of a measurement, and the note on --no-shell above
+# says so. It is not legitimate *here*: placing a client on a chosen monitor
+# goes through the shell, because the shell is what decides which output a
+# window opens on. A binary with no shell in it has nothing to ask, so both
+# clients would open on one screen and the report would name two.
+#
+# Worth checking rather than trusting, because the picker above takes the
+# newest of result/, target/release/ and target/debug/ — and `cargo test`
+# rebuilds target/debug without the feature, so an afternoon of running tests
+# leaves the newest binary the one that cannot do this. That is the same trap
+# run-drm.sh has a check for, arriving by a different door.
+if [ -n "$second" ] && [ "$only" != sway ] &&
+    ! grep -qa "starting the shell at" "$viewport_bin"; then
+    echo "$viewport_bin has no shell in it: built without --features wpe," >&2
+    echo "or overwritten by a cargo test run." >&2
+    echo >&2
+    echo "--second places each client by asking the shell which monitor to" >&2
+    echo "open the next window on. Without a shell there is nothing to ask," >&2
+    echo "and every client lands on the same screen." >&2
+    echo >&2
+    echo "  nix develop --command cargo build --release -p viewport --features wpe" >&2
+    exit 1
+fi
+
 # A cargo-built binary dlopens libvulkan, libgbm and libEGL rather than linking
 # them, so it needs the dev shell's library path at run time and not only at
 # build time — the same trap run-drm.sh exists to avoid. Getting it wrong
@@ -836,11 +861,18 @@ place_on() {
             SWAYSOCK=$sway_sock swaymsg focus output "$target" >/dev/null 2>&1 || true
             ;;
         viewport)
-            python3 - "$runtime/viewport-$comp_display.sock" "$target" <<'PY' || true
+            # Not `|| true`. A compositor built before shell.command existed
+            # answers this with an "unknown IPC message type" error, and
+            # swallowing that gives a run in which both clients open on the
+            # same screen, every scenario completes, and the report says two
+            # monitors were measured. A benchmark that quietly measures
+            # something else is the failure this whole harness is written
+            # against, so the reply is read and a rejection is fatal.
+            if ! python3 - "$runtime/viewport-$comp_display.sock" "$target" <<'PY'
 import json, socket, sys
 sock, target = sys.argv[1], sys.argv[2]
 s = socket.socket(socket.AF_UNIX)
-s.settimeout(2)
+s.settimeout(3)
 try:
     s.connect(sock)
     # By name rather than by direction. A direction would depend on how the
@@ -851,9 +883,52 @@ try:
         "command": "output.focus",
         "args": [target],
     }).encode() + b"\n")
+    # The compositor answers an unknown type against the type itself, and
+    # otherwise says nothing about a request it accepted — so this reads until
+    # it finds a rejection of *this* message or the traffic goes quiet.
+    buffered = b""
+    while True:
+        try:
+            chunk = s.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buffered += chunk
+        while b"\n" in buffered:
+            line, buffered = buffered.split(b"\n", 1)
+            if not line.strip():
+                continue
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if (message.get("type") == "error"
+                    and message.get("context") == "shell.command"):
+                sys.stderr.write(
+                    "the compositor rejected shell.command: {}\n".format(
+                        message.get("message", "")))
+                sys.exit(1)
+            # Our own command coming back out is the acknowledgement: it is
+            # re-emitted to everything listening, including this connection.
+            if (message.get("type") == "shell.command"
+                    and message.get("args", [None])[:1] == [target]):
+                sys.exit(0)
 finally:
     s.close()
 PY
+            then
+                echo >&2
+                echo "could not place a client on '$target'." >&2
+                echo >&2
+                echo "This needs a compositor with the shell.command request" >&2
+                echo "(67b84fc or later). An older one has no way to be told" >&2
+                echo "which monitor to open a window on, so every client would" >&2
+                echo "land on one screen and the run would report two." >&2
+                echo >&2
+                echo "  nix develop --command cargo build --release -p viewport --features wpe" >&2
+                exit 1
+            fi
             ;;
     esac
     # The shell answers this on its own event loop and the compositor has to
