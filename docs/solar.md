@@ -2,8 +2,12 @@
 
 One window in the middle, the rest in orbit around it. A third layout model
 beside `tiling` (i3-style splits) and `scrolling` (niri's strip), selected with
-`"layout": "solar"` in the config file or `shell layout.model solar` at
-runtime.
+`"layout": "solar"` in the config file, `--layout solar` on the command line,
+or `shell layout.model solar` at runtime.
+
+```sh
+./scripts/run-drm.sh --layout solar
+```
 
 ## Where it lives, and why
 

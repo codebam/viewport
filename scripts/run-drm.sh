@@ -11,8 +11,32 @@
 #
 #   ./scripts/run-drm.sh                    # release build if present, else debug
 #   ./scripts/run-drm.sh --exit-after 120   # stop by itself after two minutes
+#   ./scripts/run-drm.sh --layout solar     # tiling, scrolling or solar
 #   ./scripts/run-drm.sh --headless         # any argument is passed through
 set -euo pipefail
+
+# Which layout model to start in, overriding the config file's "layout".
+#
+# Passed straight through — the compositor has taken --layout since the solar
+# layout landed — so the only thing done here is checking the name. That is
+# worth doing at this end: the compositor warns and carries on with whatever it
+# had, and a warning scrolling past on a TTY at the moment a session starts is
+# not something anybody reads. What you see instead is the layout you did not
+# ask for, and no reason given.
+for arg in "$@"; do
+    case $arg in
+        --layout=*) layout=${arg#--layout=} ;;
+        --layout) want_layout=1; continue ;;
+        *) [ "${want_layout:-}" = 1 ] && layout=$arg; want_layout= ;;
+    esac
+done
+case "${layout:-tiling}" in
+    tiling | scrolling | solar) ;;
+    *)
+        echo "unknown layout '${layout}': expected tiling, scrolling or solar." >&2
+        exit 1
+        ;;
+esac
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 

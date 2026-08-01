@@ -189,6 +189,7 @@ Precedence is flags > config file > defaults.
 -t, --timeout MS       first-paint deadline before falling back (default 5000)
 -s, --socket PATH      control socket
 -c, --config PATH      config file (default ~/.config/viewport/config.json)
+    --layout NAME      tiling, scrolling or solar; overrides the file's "layout"
 -T, --terminal CMD     command bound to Mod4+Return
 -M, --menu CMD         command bound to Mod4+d
 -b, --bind CHORD=ACT   add a keybinding; repeatable

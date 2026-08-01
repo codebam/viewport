@@ -3957,7 +3957,22 @@ impl ViewportState {
     /// (`src/config.c:400`).
     pub fn apply_config(&mut self, file: crate::config::File) {
         if let Some(layout) = file.layout {
-            self.config.layout = layout;
+            // Checked here for the same reason tiling_mode is, below: this is
+            // where the name can be rejected while the file it came from is
+            // still in hand. Unchecked, a typo reached the shell, matched none
+            // of the models, and left it on the tiling default — while the
+            // keymap was built for a layout that does not exist, so the chords
+            // belonging to whichever one was meant were simply absent. What
+            // that looks like is a config key that was ignored in silence.
+            const LAYOUTS: [&str; 3] = ["tiling", "scrolling", "solar"];
+            if LAYOUTS.contains(&layout.as_str()) {
+                self.config.layout = layout;
+            } else {
+                tracing::warn!(
+                    "unknown layout {layout:?}; expected one of {}",
+                    LAYOUTS.join(", ")
+                );
+            }
         }
         if let Some(logo) = file.logo {
             self.config.logo = logo;

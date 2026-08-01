@@ -123,7 +123,7 @@ fn run() -> Result<()> {
     // settings the file was meant to change.
     let explicit = flag(&args, "--config").map(std::path::PathBuf::from);
     let config_path = explicit.clone().or_else(config::default_path);
-    let config = match config_path.as_deref().map(config::load) {
+    let mut config = match config_path.as_deref().map(config::load) {
         Some(Ok(Some(file))) => {
             tracing::info!(
                 "loaded config from {}",
@@ -144,6 +144,20 @@ fn run() -> Result<()> {
         Some(Err(e)) => return Err(e),
         None => config::File::default(),
     };
+
+    // `--layout solar` is the same switch as the config file's "layout", for
+    // trying one out without editing anything. Written over the file's value
+    // rather than applied after it, because the keymap is built from this: a
+    // few chords exist only in one model, and apply_config puts the bindings
+    // together last precisely so it can read the answer. Set afterwards, the
+    // layout would change and its keys would not.
+    //
+    // Not validated here. apply_config rejects an unknown name and says which
+    // ones it knows, and one message about a bad layout is better than two.
+    if let Some(layout) = flag(&args, "--layout") {
+        tracing::info!("layout from the command line: {layout}");
+        config.layout = Some(layout.to_owned());
+    }
 
     let mut event_loop: EventLoop<ViewportState> = EventLoop::try_new()?;
     let display: Display<ViewportState> = Display::new()?;
@@ -574,6 +588,7 @@ const OPTIONS: &[&str] = &[
     "--drm",
     "--renderer",
     "--config",
+    "--layout",
     "--width",
     "--height",
     "--exit-after",

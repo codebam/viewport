@@ -598,4 +598,17 @@ mod tests {
             assert_eq!(file.tiling_mode.as_deref(), Some(mode));
         }
     }
+
+    #[test]
+    fn the_layout_models_round_trip() {
+        // The same three names `--layout` takes and apply_config checks
+        // against. A model added to one and not the others is a config key
+        // that parses, is rejected, and leaves the keymap built for something
+        // else.
+        for layout in ["tiling", "scrolling", "solar"] {
+            let file: File =
+                serde_json::from_str(&format!(r#"{{"layout": "{layout}"}}"#)).expect("parses");
+            assert_eq!(file.layout.as_deref(), Some(layout));
+        }
+    }
 }
