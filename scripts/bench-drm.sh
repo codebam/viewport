@@ -7,6 +7,7 @@
 #   ./scripts/bench-drm.sh --codebam                # this machine's fast timing
 #   ./scripts/bench-drm.sh --mode 2560x1440@239.760 # the same thing, spelled out
 #   ./scripts/bench-drm.sh --second DP-3            # both monitors at once
+#   ./scripts/bench-drm.sh --only all               # viewport, sway and niri
 #   ./scripts/bench-drm.sh --runs 5                 # anything else is passed through
 #
 # --second turns on the two-monitor scenarios: the output picked below is held

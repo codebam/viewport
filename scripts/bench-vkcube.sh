@@ -5,7 +5,13 @@
 # in numbers that another compositor can be held against.
 #
 #   scripts/bench-vkcube.sh                       # viewport and sway, nested
+#   scripts/bench-vkcube.sh --only all            # and niri as well
 #   scripts/bench-vkcube.sh --only viewport       # one of them
+#
+# niri is worth having in the comparison and not only for a third number:
+# Viewport's scrolling layout was written from it, so it is the compositor
+# that model should be held against. It is fetched from nixpkgs when it is not
+# already on PATH, the same way vkcube is.
 #   scripts/bench-vkcube.sh --runs 5              # more repeats, median wins
 #   scripts/bench-vkcube.sh --scale 0.25          # a quarter of the frames, for a smoke test
 #   scripts/bench-vkcube.sh --drm                 # from a TTY: real scanout
@@ -83,6 +89,8 @@ drm=0
 outdir=""
 vkcube=""
 viewport_bin=""
+niri_bin=""
+niri_sock=""
 clients=4
 output=""
 # The other monitor, for the multi-monitor scenarios. Empty runs none of them.
@@ -123,6 +131,7 @@ while [ $# -gt 0 ]; do
         --out) outdir=$2; shift 2 ;;
         --vkcube) vkcube=$2; shift 2 ;;
         --viewport) viewport_bin=$2; shift 2 ;;
+        --niri) niri_bin=$2; shift 2 ;;
         -h|--help) sed -n '3,52p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -158,6 +167,26 @@ if [ -n "$second" ]; then
             echo "  ${connector#*-}" >&2
         done
         exit 2
+    fi
+fi
+
+# niri, when it is one of the compositors being measured.
+#
+# Not a dependency of anything here and not in the dev shell, so it is found
+# the same way vkcube is: on PATH if someone arranged it, otherwise built and
+# cached by the store, which is a download once and instant afterwards.
+if [ "$only" = niri ] || [ "$only" = all ]; then
+    if [ -z "$niri_bin" ]; then
+        niri_bin=$(command -v niri || true)
+    fi
+    if [ -z "$niri_bin" ] || [ ! -x "$niri_bin" ]; then
+        echo "building niri from nixpkgs..." >&2
+        niri_out=$(nix build --no-link --print-out-paths nixpkgs#niri 2>/dev/null || true)
+        niri_bin=$niri_out/bin/niri
+    fi
+    if [ ! -x "$niri_bin" ]; then
+        echo "no niri: pass --niri PATH, or make it reachable from nixpkgs." >&2
+        exit 1
     fi
 fi
 
@@ -571,6 +600,77 @@ EOF
     sleep 2
 }
 
+start_niri() {
+    comp_kind=niri
+    comp_log=$outdir/niri.log
+    : >"$comp_log"
+
+    # A config of our own, for the reason the other two get one: otherwise this
+    # measures whatever is in ~/.config/niri/config.kdl.
+    #
+    # niri is the model Viewport's scrolling layout was written from, so the
+    # settings that matter are the ones that decide how much of the output one
+    # window gets: no gaps, no focus ring, no border, and a column that is the
+    # whole width. Animations off, because an animation running while a client
+    # is being timed is compositor work nobody asked for and sway's config has
+    # no equivalent to leave on.
+    local cfg=$outdir/niri-bench.kdl
+    cat >"$cfg" <<'EOF'
+layout {
+    gaps 0
+    focus-ring { off; }
+    border { off; }
+    default-column-width { proportion 1.0; }
+}
+animations { off; }
+prefer-no-csd
+hotkey-overlay { skip-at-startup; }
+EOF
+    if [ -n "$mode" ]; then
+        # niri wants the rate as a bare number after the size, which is the
+        # same shape --mode already has.
+        {
+            echo "output \"${output:-*}\" {"
+            echo "    mode \"${mode}\""
+            echo "}"
+        } >>"$cfg"
+    fi
+
+    if ! "$niri_bin" validate -c "$cfg" >>"$comp_log" 2>&1; then
+        echo "the generated niri config is not valid; see $comp_log" >&2
+        return 1
+    fi
+
+    # Same socket-watching as sway, and for the same reason: the display name
+    # only reaches the environment of processes the compositor itself starts.
+    local stamp=$outdir/.stamp
+    : >"$stamp"
+
+    NIRI_CONFIG="$cfg" "$niri_bin" >"$comp_log" 2>&1 &
+    comp_pid=$!
+
+    local waited=0
+    while [ $waited -lt 200 ]; do
+        comp_display=$(find "$runtime" -maxdepth 1 -type s -name 'wayland-*' -newer "$stamp" \
+            -printf '%f\n' 2>/dev/null | head -1)
+        [ -n "$comp_display" ] && break
+        kill -0 "$comp_pid" 2>/dev/null || { echo "niri exited; see $comp_log" >&2; return 1; }
+        sleep 0.1
+        waited=$(( waited + 1 ))
+    done
+    [ -n "$comp_display" ] || { echo "niri never opened a socket; see $comp_log" >&2; return 1; }
+    # niri's own IPC is reached through the display it took.
+    niri_sock=$runtime/niri.$comp_display.sock
+    sleep 2
+}
+
+# `niri msg` against the instance this script started, rather than whatever
+# else may be running. It finds its socket through NIRI_SOCKET.
+niri_msg() {
+    NIRI_SOCKET="$niri_sock" WAYLAND_DISPLAY="$comp_display" \
+        "$niri_bin" msg "$@" 2>/dev/null
+}
+
 # Make every window that appears fill its output, for as long as the
 # compositor lives.
 #
@@ -676,6 +776,8 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
     except OSError:
         pass
 PY
+    elif [ "$comp_kind" = niri ]; then
+        niri_msg action quit --skip-confirmation >/dev/null 2>&1 || true
     else
         SWAYSOCK=$sway_sock swaymsg exit >/dev/null 2>&1 || true
     fi
@@ -725,6 +827,29 @@ client_geometry() {
 # real hardware had Viewport on 240Hz and sway on 120 — each had simply taken
 # what it preferred — and nothing in the results said so.
 comp_mode() {
+    if [ "$comp_kind" = niri ]; then
+        # niri reports outputs as an object keyed by name, each with the mode
+        # it is running and an index into its own mode list.
+        niri_msg -j outputs |
+            python3 -c 'import json,sys
+try:
+    outputs = json.load(sys.stdin)
+except Exception:
+    print("unknown"); raise SystemExit
+if isinstance(outputs, dict):
+    outputs = list(outputs.values())
+parts = []
+for o in outputs:
+    modes, current = o.get("modes") or [], o.get("current_mode")
+    if current is None or not isinstance(current, int) or current >= len(modes):
+        continue
+    m = modes[current]
+    parts.append("{}={}x{}@{:.3f}".format(
+        o.get("name"), m.get("width"), m.get("height"),
+        (m.get("refresh_rate") or 0) / 1000))
+print(" ".join(parts) if parts else "unknown")' 2>/dev/null || echo unknown
+        return
+    fi
     if [ "$comp_kind" = sway ]; then
         SWAYSOCK=$sway_sock swaymsg -t get_outputs -r >"$outdir/.outputs.json" 2>/dev/null || true
         python3 - "$outdir/.outputs.json" <<'PY'
@@ -763,6 +888,15 @@ PY
 }
 
 client_output() {
+    if [ "$comp_kind" = niri ]; then
+        niri_msg -j focused-output |
+            python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("name") or "unknown")
+except Exception:
+    print("unknown")' 2>/dev/null || echo unknown
+        return
+    fi
     if [ "$comp_kind" = sway ]; then
         SWAYSOCK=$sway_sock swaymsg -t get_workspaces -r >"$outdir/.workspaces.json" 2>/dev/null || true
         python3 - "$outdir/.workspaces.json" <<'PY'
@@ -873,6 +1007,15 @@ except Exception:
     print("  could not read workspaces"); raise SystemExit
 focused = [w for w in ws if w.get("focused")]
 print("  focused output now: {}".format(focused[0]["output"] if focused else "none"))' >>"$plog" 2>&1 || true
+            ;;
+        niri)
+            niri_msg action focus-monitor "$target" >>"$plog" 2>&1 || true
+            niri_msg -j focused-output |
+                python3 -c 'import json,sys
+try:
+    print("  focused output now: {}".format(json.load(sys.stdin).get("name")))
+except Exception:
+    print("  could not read the focused output")' >>"$plog" 2>&1 || true
             ;;
         viewport)
             # Not `|| true`. A compositor built before shell.command existed
@@ -991,6 +1134,15 @@ PY
 # --------------------------------------------------------------------------
 count_clients() {
     case "$comp_kind" in
+        niri)
+            niri_msg -j windows |
+                python3 -c 'import json,sys
+try:
+    print(sum(1 for w in json.load(sys.stdin)
+              if "vkcube" in ((w.get("title") or "") + (w.get("app_id") or "")).lower()))
+except Exception:
+    print(0)' 2>/dev/null || echo 0
+            ;;
         sway)
             SWAYSOCK=$sway_sock swaymsg -t get_tree -r 2>/dev/null |
                 python3 -c 'import json,sys
@@ -1068,6 +1220,28 @@ verify_placement() {
     echo "  verifying (after ${waited}00ms, $(count_clients) clients):" >>"$plog"
 
     case "$comp_kind" in
+        niri)
+            # niri gives each window its workspace, and each workspace its
+            # output, so the two lists are joined rather than a tree walked.
+            { niri_msg -j windows; echo "@@"; niri_msg -j workspaces; } |
+                python3 -c 'import json,sys
+raw = sys.stdin.read().split("@@")
+try:
+    windows, workspaces = json.loads(raw[0]), json.loads(raw[1])
+except Exception as e:
+    print("    could not read the window list: {}".format(e)); raise SystemExit
+where = {w.get("id"): w.get("output") for w in workspaces}
+found = False
+for w in windows:
+    name = (w.get("title") or "") + (w.get("app_id") or "")
+    if "vkcube" not in name.lower():
+        continue
+    found = True
+    print("    window {} on {}".format(
+        w.get("id"), where.get(w.get("workspace_id"), "?")))
+if not found:
+    print("    no vkcube windows reported")' >>"$plog" 2>&1 || true
+            ;;
         sway)
             SWAYSOCK=$sway_sock swaymsg -t get_tree -r 2>/dev/null |
                 python3 -c 'import json,sys
@@ -1372,6 +1546,7 @@ bench_one() {
     case "$which" in
         viewport) start_viewport ;;
         sway) start_sway ;;
+        niri) start_niri ;;
         *) echo "unknown compositor: $which" >&2; return 1 ;;
     esac
     echo "   display $comp_display, pid $comp_pid" >&2
@@ -1416,6 +1591,8 @@ bench_one() {
         echo "$which"
         if [ "$which" = viewport ]; then
             echo "  binary       $viewport_bin ($(date -r "$viewport_bin" '+%Y-%m-%d %H:%M'))"
+        elif [ "$which" = niri ]; then
+            echo "  binary       $("$niri_bin" --version)"
         else
             echo "  binary       $(sway --version)"
         fi
@@ -1491,6 +1668,7 @@ bench_one() {
 
 case "$only" in
     both) bench_one viewport; bench_one sway ;;
+    all) bench_one viewport; bench_one sway; bench_one niri ;;
     *) bench_one "$only" ;;
 esac
 rm -f "$outdir/.gpu-samples" "$outdir/.geometry"
@@ -1540,14 +1718,21 @@ for scenario, compositor in order:
     if scenario not in scenarios:
         scenarios.append(scenario)
 
-lines = ["# vkcube: Viewport against sway", ""]
+# Whichever compositors this run actually measured, Viewport first because it
+# is the subject and the others are what it is being held against.
+compositors = [c for c in ("viewport", "sway", "niri")
+               if any(k[1] == c for k in rows)]
+others = [c for c in compositors if c != "viewport"]
+
+lines = ["# vkcube: Viewport against {}".format(
+    " and ".join(others) if others else "itself"), ""]
 lines.append(
     "| scenario | compositor | fps | cpu ms/frame | net ms/frame | comp cpu % "
     "| session cpu % | gpu % | rss MB | client |"
 )
 lines.append("| --- " * 10 + "|")
 for scenario in scenarios:
-    for compositor in ("viewport", "sway"):
+    for compositor in compositors:
         key = (scenario, compositor)
         if key not in rows:
             continue
@@ -1562,21 +1747,26 @@ lines += [
     "",
     "## Ratios",
     "",
-    "Viewport over sway. Above 1.00 means more of whatever the column counts,",
-    "which is better for fps and worse for everything else.",
-    "",
+    "Viewport over each of the others. Above 1.00 means more of whatever the",
+    "column counts, which is better for fps and worse for everything else.",
 ]
-lines.append("| scenario | fps | cpu ms/frame | net ms/frame | session cpu % |")
-lines.append("| --- " * 5 + "|")
-for scenario in scenarios:
-    a, b = (scenario, "viewport"), (scenario, "sway")
-    if a not in rows or b not in rows:
-        continue
-    cells = []
-    for field in ("fps", "cpu_ms_frame", "net_ms_frame", "sess_cpu_pct"):
-        base = median(b, field)
-        cells.append("{:.2f}x".format(median(a, field) / base) if base else "n/a")
-    lines.append("| {} | {} |".format(scenario, " | ".join(cells)))
+for other in others:
+    lines += [
+        "",
+        "**against {}**".format(other),
+        "",
+        "| scenario | fps | cpu ms/frame | net ms/frame | session cpu % |",
+        "| --- " * 5 + "|",
+    ]
+    for scenario in scenarios:
+        a, b = (scenario, "viewport"), (scenario, other)
+        if a not in rows or b not in rows:
+            continue
+        cells = []
+        for field in ("fps", "cpu_ms_frame", "net_ms_frame", "sess_cpu_pct"):
+            base = median(b, field)
+            cells.append("{:.2f}x".format(median(a, field) / base) if base else "n/a")
+        lines.append("| {} | {} |".format(scenario, " | ".join(cells)))
 
 lines += [
     "",
