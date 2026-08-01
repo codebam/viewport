@@ -1952,7 +1952,7 @@ impl ViewportState {
     /// The surface and its CRTC are kept either way, so coming back is a commit
     /// rather than a re-scan of the device. Off means the planes are cleared
     /// rather than painted black: a black frame still lights the panel.
-    fn set_output_enabled(&mut self, output: &Output, enabled: bool) {
+    pub(crate) fn set_output_enabled(&mut self, output: &Output, enabled: bool) {
         let mapped = self.space.outputs().any(|other| other == output);
         if enabled == mapped {
             let already = self

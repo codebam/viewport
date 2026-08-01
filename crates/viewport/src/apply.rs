@@ -430,10 +430,44 @@ pub fn focus_view(state: &mut ViewportState, id: u32) {
 }
 
 fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
-    let Some(output) = state.output_by_name(&config.name) else {
+    // Including one that is already off, or it can never be turned back on:
+    // a disabled output is unmapped from the space, and `output_by_name` only
+    // sees what is mapped.
+    let Some(output) = state.any_output_by_name(&config.name) else {
         reject(state, "output.configure", "no such output");
         return;
     };
+
+    // Turning a screen off, which this request has documented since it was
+    // written and never did.
+    //
+    // `enabled` is parsed, listed in docs/ipc.md, and was read by nothing —
+    // `grep -c config.enabled` came back zero. So asking the compositor to
+    // switch a monitor off over its own control socket did nothing at all and
+    // reported success. The wlr-output-management path has always honoured it,
+    // which is why this went unnoticed: every tool that turns a screen off
+    // uses that protocol, and the one place the compositor offers the same
+    // thing itself quietly ignored it.
+    //
+    // The last one on is refused, matching `apply_output_configuration`. A
+    // desktop with every output disabled is not a state anything can be
+    // recovered from by pointing at a screen.
+    if let Some(enabled) = config.enabled {
+        if !enabled && state.space.outputs().count() <= 1 {
+            reject(
+                state,
+                "output.configure",
+                "refusing to turn off the only output left on",
+            );
+            return;
+        }
+        state.set_output_enabled(&output, enabled);
+        if !enabled {
+            // Nothing below applies to a screen that is off, and a mode or a
+            // position for one is not an error worth reporting either.
+            return;
+        }
+    }
 
     // Prefer an exact modeline the display advertised; fall back to a custom
     // mode so unusual panels stay configurable.
