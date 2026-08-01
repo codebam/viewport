@@ -185,6 +185,15 @@ impl ViewportState {
         // 120Hz on one monitor had the other attempting a frame per commit for
         // nothing.
         self.mark_dirty_for_surface(surface);
+        // Measurement only: a render that finds nothing to draw after this has
+        // lost something a client just painted. See `empty_after_commit`.
+        if let Some(udev) = self.udev.as_mut() {
+            udev.committed_since_flip = true;
+            // The first since the last flip starts the clock; a second one
+            // before anything drew has been waiting since the first.
+            udev.first_commit_at
+                .get_or_insert_with(std::time::Instant::now);
+        }
         // Whether or not it painted, this client is awake, so keep the
         // invitations going. A commit that carried no damage is often exactly
         // a client acknowledging a configure and waiting to be told when to

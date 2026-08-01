@@ -311,6 +311,24 @@ pub struct Udev {
     /// compositor shows one of them. Measured on a 60Hz screen, a client
     /// drawing 120 frames a second and half of them thrown away.
     pub last_vblank: Option<std::time::Instant>,
+    /// The last vblank on each output, by name, rather than the newest on any
+    /// of them.
+    ///
+    /// `last_vblank` above is one timestamp for the whole device, and the
+    /// barrier tick used to defer to it — but the release it defers to is
+    /// per-output. One screen flipping kept the global stamp fresh and so
+    /// silenced the tick for every other screen, whose windows that flip never
+    /// walks. See `release_barriers`.
+    pub last_vblank_by_output: HashMap<String, std::time::Instant>,
+    /// Whether a client commit has been applied since the last flip reached
+    /// the screen. Measurement only, for `empty_after_commit`.
+    pub committed_since_flip: bool,
+    /// When the first client commit since the last flip arrived.
+    ///
+    /// Measurement only, for `commit_to_flip`. The first rather than the
+    /// newest: a client that commits twice before either is drawn has waited
+    /// since the first.
+    pub first_commit_at: Option<std::time::Instant>,
 }
 
 /// Why a client on a 240Hz screen gets 204 frames a second.
@@ -341,6 +359,26 @@ pub struct FrameLog {
     /// Render passes that reached the renderer and found nothing changed.
     /// Each one ends the chain: no flip, so no vblank to drive the next.
     pub empty: u32,
+    /// Empty passes that ran with a client commit applied since the last flip.
+    ///
+    /// The half of `empty` that is not a still desk. An empty pass withholds
+    /// the one signal a client pacing on presentation feedback waits for: no
+    /// flip means no vblank, so no `presented`.
+    ///
+    /// Per device rather than per output, so on a multi-screen desk a commit
+    /// on one screen counts against an empty pass on the other. Read with that
+    /// in mind.
+    pub empty_after_commit: u32,
+    /// How long a client commit waits before the flip carrying it is queued,
+    /// summed, and the worst single wait.
+    ///
+    /// The queueing delay, not the drawing cost — `render_nanos` already says
+    /// the drawing is under a percent of a core. Note what it cannot see: a
+    /// commit held by a fifo or commit-timing blocker has not reached the
+    /// commit handler yet, so the wait starts when the blocker clears.
+    pub commit_to_flip_nanos: u64,
+    pub commit_to_flip_count: u32,
+    pub commit_to_flip_worst: std::time::Duration,
     /// Render attempts that returned before building a frame because one was
     /// already in the air. Expected to be large — it is every commit a client
     /// makes between two frames — and cheap.
@@ -388,6 +426,23 @@ pub struct FrameLog {
     /// from the vblank while a client is painting, that is the same drift in
     /// a second place.
     pub barrier_ticks: u32,
+    /// Turns of the barrier tick that did nothing because every screen had
+    /// just flipped, and so left the job to those vblanks.
+    pub barrier_ticks_deferred: u32,
+    /// Turns that deferred while some screen had *not* flipped on its own.
+    ///
+    /// The multi-screen bug in one number, kept as a regression check. The
+    /// deferral used to be one question for the device — "has anything flipped
+    /// recently" — while the release it defers to walks a single screen's
+    /// windows, so a monitor animating at the refresh rate silenced the tick
+    /// for a second screen it never visited. Measured on a two-screen desk
+    /// before the fix: 238 turns a second, every one deferred, every one of
+    /// those on behalf of a screen that had not flipped.
+    ///
+    /// Now that the gate is asked per screen this should stay at zero. If it
+    /// climbs, the gate has gone back to speaking for screens it does not
+    /// visit.
+    pub barrier_ticks_starved: u32,
     /// Turns of the event loop, and where the two things done at the end of
     /// each one go.
     ///
@@ -508,7 +563,9 @@ impl FrameLog {
             "frames: {:.1} vblanks/s of {:.1} possible, {:.1} flips/s, {:.1} client commits/s, \
              {:.1} windows waiting on a callback/s, {:.1} fifo barriers released/s \
              ({:.1} of them by the tick), {:.1} vblanks with no barrier/s, \
-             {:.1} barrier ticks/s, {:.1} empty/s, \
+             {:.1} barrier ticks/s ({:.1} deferred to a vblank, {:.1} starved), \
+             {:.1} empty/s ({:.1} after a commit), \
+             commit to flip {:.2}ms each over {:.0}/s (worst {:.2}ms), \
              {} stalls (worst gap {:.2}ms), {:.1} clock restarts/s, \
              {:.0} skipped for a flip in the air, {:.0} skipped for an output that is off, \
              commit handler {:.1}us each and {:.0}% of a core, \
@@ -526,7 +583,17 @@ impl FrameLog {
             per_second(self.barriers_at_tick),
             per_second(self.vblanks_without_barrier),
             per_second(self.barrier_ticks),
+            per_second(self.barrier_ticks_deferred),
+            per_second(self.barrier_ticks_starved),
             per_second(self.empty),
+            per_second(self.empty_after_commit),
+            if self.commit_to_flip_count > 0 {
+                self.commit_to_flip_nanos as f64 / f64::from(self.commit_to_flip_count) / 1e6
+            } else {
+                0.0
+            },
+            per_second(self.commit_to_flip_count),
+            self.commit_to_flip_worst.as_secs_f64() * 1000.0,
             self.stalls,
             self.worst_gap.as_secs_f64() * 1000.0,
             per_second(self.restarts),
@@ -901,6 +968,9 @@ pub fn init(
         active: true,
         frame_log: FrameLog::from_env(),
         last_vblank: None,
+        last_vblank_by_output: HashMap::new(),
+        committed_since_flip: false,
+        first_commit_at: None,
     });
     if state
         .udev
@@ -1805,8 +1875,17 @@ impl ViewportState {
             .current_mode()
             .map(|mode| std::time::Duration::from_secs_f64(1_000.0 / mode.refresh.max(1) as f64))
             .unwrap_or_default();
+        // Which screen this was, before the borrow on the surface is given up.
+        let flipped = surface.output.name();
         // The chain is alive; the frame clock can stay out of the way.
         udev.last_vblank = Some(std::time::Instant::now());
+        // And the same for this screen alone, which is what the barrier tick
+        // asks. See `last_vblank_by_output`.
+        udev.last_vblank_by_output
+            .insert(flipped, std::time::Instant::now());
+        // Whatever had committed has now been shown. An empty pass after this
+        // point is a still desk until a client paints again.
+        udev.committed_since_flip = false;
 
         // Between the two `surface_mut` calls on purpose: that borrow holds
         // all of `udev`, and the counters live in `udev` too. The surface is
@@ -2104,6 +2183,11 @@ impl ViewportState {
         if !udev.active {
             return;
         }
+        // Read before the surface takes a borrow of `udev` for the rest of
+        // this. `Option<Instant>` is `Copy`, so this is the value and not a
+        // handle on the device.
+        let mut udev_commit_at = udev.first_commit_at;
+        let mut flipped_at: Option<std::time::Instant> = None;
         let Some(surface) = udev.surface_mut(id) else {
             return;
         };
@@ -2276,6 +2360,10 @@ impl ViewportState {
                 } else {
                     submitted = true;
                     surface.pending = true;
+                    // The flip is away. Whatever commit started the wait has
+                    // been carried, so time it and start the next wait from
+                    // the next commit.
+                    flipped_at = udev_commit_at.take();
                     if !surface.drawn {
                         surface.drawn = true;
                         tracing::info!("{}: first frame queued", output.name());
@@ -2294,8 +2382,12 @@ impl ViewportState {
             Ok(_) => {
                 // The chain ends here: no flip means no vblank, so nothing
                 // will drive the next frame until something asks again.
+                let after_commit = udev.committed_since_flip;
                 if let Some(log) = udev.frame_log.as_mut() {
                     log.empty += 1;
+                    if after_commit {
+                        log.empty_after_commit += 1;
+                    }
                 }
                 tracing::debug!("{}: nothing to draw", output.name());
             }
@@ -2307,6 +2399,16 @@ impl ViewportState {
         if submitted {
             if let Some(log) = udev.frame_log.as_mut() {
                 log.flips += 1;
+            }
+        }
+        // The wait this flip ended, and the wait the next one inherits. Both
+        // out here for the same reason the flip count is.
+        udev.first_commit_at = udev_commit_at;
+        if let Some(waited) = flipped_at.map(|at| at.elapsed()) {
+            if let Some(log) = udev.frame_log.as_mut() {
+                log.commit_to_flip_nanos += waited.as_nanos() as u64;
+                log.commit_to_flip_count += 1;
+                log.commit_to_flip_worst = log.commit_to_flip_worst.max(waited);
             }
         }
 

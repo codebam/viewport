@@ -4136,6 +4136,34 @@ impl ViewportState {
         output: &Output,
         frame_target: std::time::Duration,
     ) -> bool {
+        self.released_barriers(output, frame_target, false)
+    }
+
+    /// Let go of commit-timing deadlines that are already past, and nothing
+    /// else.
+    ///
+    /// For a screen this round is otherwise skipping because its own vblank is
+    /// doing the releasing. A fifo barrier there is that vblank's to take —
+    /// taking it here is what paced clients off this timer instead of off the
+    /// screen. A deadline that has *already passed* is different: it is not
+    /// pacing anything, it is only holding a commit.
+    ///
+    /// It holds it because Smithay blocks every commit carrying a deadline
+    /// whether or not the deadline has arrived — unlike its fifo hook, which
+    /// skips a barrier that is already signalled. So a commit aimed at a
+    /// moment that has been and gone waits for whatever runs next, and on a
+    /// screen with no frame coming that is this and only this.
+    pub fn release_overdue_timers(&mut self, output: &Output) -> bool {
+        let at = self.start_time.elapsed();
+        self.released_barriers(output, at, true)
+    }
+
+    fn released_barriers(
+        &mut self,
+        output: &Output,
+        frame_target: std::time::Duration,
+        overdue_only: bool,
+    ) -> bool {
         use smithay::desktop::utils::with_surfaces_surface_tree;
         use smithay::utils::Time;
         use smithay::wayland::commit_timing::CommitTimerBarrierStateUserData;
@@ -4168,7 +4196,15 @@ impl ViewportState {
         // client sitting at five sixths of the rate: with commit-timing off
         // and fifo left on, the same client goes from 204.1fps to 239.2 of a
         // possible 239.76.
-        let refresh = self.frame_interval();
+        //
+        // Except when only the overdue are wanted: then the moment is now, so
+        // a deadline aimed at the frame after this one is left for the vblank
+        // that will actually show it.
+        let refresh = if overdue_only {
+            std::time::Duration::ZERO
+        } else {
+            self.frame_interval()
+        };
         let target: Time<smithay::utils::Monotonic> =
             (std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32) + refresh).into();
         let released = std::cell::Cell::new(false);
@@ -4218,12 +4254,21 @@ impl ViewportState {
             // pending alone — Smithay carries it in the transaction and puts it
             // in the current half when that commit applies, which is the round
             // this signals it in.
-            let barrier = states
-                .cached_state
-                .get::<FifoBarrierCachedState>()
-                .current()
-                .barrier
-                .take();
+            // Left alone entirely when only the overdue are wanted: this
+            // screen has a vblank coming, and that vblank is what a fifo
+            // barrier means. Taking it here would pace the client off this
+            // timer rather than off the screen, which is the drift measured at
+            // five sixths of the refresh rate.
+            let barrier = if overdue_only {
+                None
+            } else {
+                states
+                    .cached_state
+                    .get::<FifoBarrierCachedState>()
+                    .current()
+                    .barrier
+                    .take()
+            };
             if let Some(barrier) = barrier {
                 barrier.signal();
                 tracing::trace!("fifo: a barrier released");
@@ -4413,20 +4458,48 @@ impl ViewportState {
         //
         // Still re-armed below, so it takes over within two frames if the
         // chain really does stop.
-        let vblank_driven = self
-            .udev
-            .as_ref()
-            .and_then(|udev| udev.last_vblank)
-            .is_some_and(|at| at.elapsed() < self.frame_interval() * 2);
-        if vblank_driven {
-            self.arm_barrier_tick();
-            return;
-        }
-
+        //
+        // Asked once per screen rather than once for the device. It used to be
+        // one stamp — "has *anything* flipped lately" — and the release it
+        // defers to is one screen's windows, so a second monitor animating at
+        // the refresh rate kept that stamp fresh and silenced this tick for a
+        // screen it never visited. Measured on a two-screen desk: 238 turns a
+        // second, every one of them deferred, and every one of those deferrals
+        // made on behalf of a screen that had not flipped.
+        //
+        // What waits behind it is worse than a late fifo barrier. Smithay
+        // blocks *every* commit carrying a commit-timing deadline, including
+        // one already in the past — unlike its fifo hook, which skips a
+        // barrier that is already signalled — so this pass is the only thing
+        // that lets such a commit through. Deferring it on another screen's
+        // behalf is how a terminal ends up at seven frames a second on a 240Hz
+        // display with the compositor idle.
+        let interval = self.frame_interval();
         let at = self.start_time.elapsed();
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
         let mut released = false;
+        let mut walked = 0usize;
         for output in &outputs {
+            // This screen's own last flip, not the newest anywhere. A screen
+            // whose vblank is doing the releasing does not need this pass.
+            let own_vblank = self.udev.as_ref().is_some_and(|udev| {
+                udev.last_vblank_by_output
+                    .get(&output.name())
+                    .is_some_and(|at| at.elapsed() < interval * 2)
+            });
+            if own_vblank {
+                // Its vblank has the fifo barriers. What that vblank will not
+                // do is let go of a deadline that has already passed, because
+                // it only signals up to the frame it is about to show — and a
+                // commit held on a stale deadline is not waiting for a frame,
+                // it is just waiting.
+                if self.release_overdue_timers(output) {
+                    released = true;
+                    self.mark_output_dirty(output);
+                }
+                continue;
+            }
+            walked += 1;
             // Counted before the call, so what it adds to `barriers` can be
             // told apart afterwards: this is the tick's share of the releases,
             // and under a client painting flat out it should be nearly none.
@@ -4444,6 +4517,27 @@ impl ViewportState {
                     log.barriers_at_tick += log.barriers.saturating_sub(before);
                 }
             }
+        }
+        // Every screen was flipping on its own, so this turn had nothing to
+        // do. The same early exit as before, reached per-screen rather than
+        // for the device — and `starved` should now stay at zero, because a
+        // screen that has not flipped is one this walked.
+        if walked == 0 {
+            let starved = self.udev.as_ref().is_some_and(|udev| {
+                self.space.outputs().any(|output| {
+                    udev.last_vblank_by_output
+                        .get(&output.name())
+                        .is_none_or(|at| at.elapsed() >= interval * 2)
+                })
+            });
+            if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
+                log.barrier_ticks_deferred += 1;
+                if starved {
+                    log.barrier_ticks_starved += 1;
+                }
+            }
+            self.arm_barrier_tick();
+            return;
         }
         // Only when something was let go. Releasing a barrier applies the
         // commit it was blocking, and an applied commit is damage, and damage
