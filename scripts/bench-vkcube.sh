@@ -15,6 +15,17 @@
 #
 #   scripts/bench-vkcube.sh --drm --output DP-1 --mode 2560x1440@239.760
 #
+# Two monitors, which is a different question and only answerable from a TTY:
+#
+#   scripts/bench-vkcube.sh --drm --output DP-1 --second DP-3
+#
+# --output becomes the screen held busy and --second the one measured. What
+# comes back is the frame rate the second monitor achieved while the first was
+# saturated, which is the thing no single-output run can report. Leave --mode
+# off for this: the two panels are allowed to differ, and a compositor that
+# paces off the device rather than off each screen is exactly what the
+# mismatch exposes.
+#
 # Both are pinned on every output, not only the named one, because Viewport's
 # shell picks which output a window opens on and nothing on the wire overrides
 # it. --output is what sway focuses and what the report checks Viewport
@@ -74,6 +85,13 @@ vkcube=""
 viewport_bin=""
 clients=4
 output=""
+# The other monitor, for the multi-monitor scenarios. Empty runs none of them.
+#
+# Named rather than discovered, because "the second monitor" is not a thing the
+# machine can be asked for: sysfs lists connectors in an order nobody chose,
+# and picking the second connected one would silently benchmark a different
+# pair of screens on a machine where one was unplugged.
+second=""
 mode=""
 # Off by default, and not because it is the wrong thing to measure.
 #
@@ -97,6 +115,7 @@ while [ $# -gt 0 ]; do
         --scale) scale=$2; shift 2 ;;
         --clients) clients=$2; shift 2 ;;
         --output) output=$2; shift 2 ;;
+        --second) second=$2; shift 2 ;;
         --mode) mode=$2; shift 2 ;;
         --fullscreen) fullscreen=1; shift ;;
         --no-fullscreen) fullscreen=0; shift ;;
@@ -108,6 +127,39 @@ while [ $# -gt 0 ]; do
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
+
+# A second monitor needs two of them, and nested there is only ever one: both
+# compositors open a single window on the host, so `--second` there would place
+# every client on the same output and report it as though two screens had been
+# measured. Refused rather than ignored — a benchmark that runs and means
+# something else is worse than one that will not start.
+if [ -n "$second" ]; then
+    if [ "$drm" != 1 ]; then
+        echo "--second needs --drm: nested, both compositors get one output and" >&2
+        echo "there is no other screen to put a client on." >&2
+        exit 2
+    fi
+    if [ -z "$output" ]; then
+        echo "--second needs --output too: which screen is the busy one and which" >&2
+        echo "is being measured is the whole of what these scenarios report." >&2
+        exit 2
+    fi
+    if [ "$second" = "$output" ]; then
+        echo "--second is the same output as --output ($output)." >&2
+        exit 2
+    fi
+    # Connected, per the kernel. Catches a typo now rather than as a run whose
+    # clients all silently landed on one screen.
+    if ! grep -qx connected "/sys/class/drm/"*"-${second}/status" 2>/dev/null; then
+        echo "no connected output named '$second'. Connected:" >&2
+        for status in /sys/class/drm/card*-*/status; do
+            [ -r "$status" ] && [ "$(cat "$status")" = connected ] || continue
+            connector=$(basename "$(dirname "$status")")
+            echo "  ${connector#*-}" >&2
+        done
+        exit 2
+    fi
+fi
 
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 outdir=${outdir:-$root/bench-results}
@@ -761,6 +813,132 @@ one_pass() {
 }
 
 # --------------------------------------------------------------------------
+# Put the next window on a named monitor.
+#
+# A Wayland client has no say in which output it lands on — that is the
+# compositor's decision — so the only way to benchmark two screens at once is
+# to tell the compositor where the next one goes, and then start it.
+#
+# The two are told differently, and the asymmetry is worth knowing about. sway
+# takes any command its config language accepts over its IPC, so this is the
+# same sentence a user would type. Viewport's control socket is a fixed set of
+# typed requests and none of them reached the shell at all until
+# `shell.command` was added for this; layout is entirely the shell's, so
+# without it a keypress was the only thing that could move focus between
+# monitors. `output.active` is not the same thing and does not work here: it
+# runs shell to compositor, setting the compositor's own idea of which output
+# is active, which the shell never reads back.
+# --------------------------------------------------------------------------
+place_on() {
+    local target=$1
+    case "$comp_kind" in
+        sway)
+            SWAYSOCK=$sway_sock swaymsg focus output "$target" >/dev/null 2>&1 || true
+            ;;
+        viewport)
+            python3 - "$runtime/viewport-$comp_display.sock" "$target" <<'PY' || true
+import json, socket, sys
+sock, target = sys.argv[1], sys.argv[2]
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(2)
+try:
+    s.connect(sock)
+    # By name rather than by direction. A direction would depend on how the
+    # monitors are physically arranged, and would quietly measure the wrong
+    # screen on a desk where they are stacked rather than side by side.
+    s.sendall(json.dumps({
+        "type": "shell.command",
+        "command": "output.focus",
+        "args": [target],
+    }).encode() + b"\n")
+finally:
+    s.close()
+PY
+            ;;
+    esac
+    # The shell answers this on its own event loop and the compositor has to
+    # round-trip through the web view to do it, so the change is not in effect
+    # when the socket write returns. Starting a client into that gap puts it on
+    # whichever screen was focused before.
+    sleep 0.4
+}
+
+# --------------------------------------------------------------------------
+# One multi-monitor pass: a client on each screen, timed apart.
+#
+# The single-output pass times the batch, which is all that fps means when
+# every client is on the same screen. Here it is the wrong measurement twice
+# over: the two clients are on outputs that may not even share a refresh rate,
+# and the number being looked for is whether *one* of them is being starved by
+# the other. So each client's own wall time is recorded and each screen gets
+# its own frame rate.
+#
+# Echoes "wall_primary wall_second comp_ticks tree_ticks gpu_mean".
+# --------------------------------------------------------------------------
+one_pass_mm() {
+    local mode_a=$1 count_a=$2 mode_b=$3 count_b=$4
+
+    local gpu_file=$outdir/.gpu-samples
+    : >"$gpu_file"
+    (
+        while :; do
+            gpu_busy >>"$gpu_file"
+            sleep 0.2
+        done
+    ) &
+    local sampler=$!
+
+    local before_comp before_tree
+    before_comp=$(ticks_of "$comp_pid")
+    before_tree=$(tree_ticks "$comp_pid")
+
+    # The busy client first, and left running for the whole of the other's
+    # measurement. That ordering is the test: what is being asked is whether a
+    # screen kept at full rate stops the *other* screen being paced, which is
+    # only a question while both are drawing.
+    place_on "$output"
+    local start_a
+    start_a=$(date +%s.%N)
+    env WAYLAND_DISPLAY="$comp_display" "$vkcube" \
+        --wsi wayland --c "$count_a" --present_mode "$mode_a" \
+        >/dev/null 2>&1 &
+    local pid_a=$!
+
+    # Mapped before the second is placed, or moving focus moves nothing and
+    # both clients open on the same screen — which reads as a successful run
+    # and measures one monitor twice.
+    sleep 1
+
+    place_on "$second"
+    local start_b
+    start_b=$(date +%s.%N)
+    env WAYLAND_DISPLAY="$comp_display" "$vkcube" \
+        --wsi wayland --c "$count_b" --present_mode "$mode_b" \
+        >/dev/null 2>&1 &
+    local pid_b=$!
+
+    wait "$pid_b" 2>/dev/null || true
+    local end_b
+    end_b=$(date +%s.%N)
+    wait "$pid_a" 2>/dev/null || true
+    local end_a
+    end_a=$(date +%s.%N)
+
+    kill "$sampler" 2>/dev/null || true
+    wait "$sampler" 2>/dev/null || true
+
+    local after_comp after_tree gpu_mean
+    after_comp=$(ticks_of "$comp_pid")
+    after_tree=$(tree_ticks "$comp_pid")
+    gpu_mean=$(awk '{s += $1; c++} END {print c ? s / c : 0}' "$gpu_file")
+
+    awk -v sa="$start_a" -v ea="$end_a" -v sb="$start_b" -v eb="$end_b" \
+        'BEGIN { printf "%.6f %.6f", ea - sa, eb - sb }'
+    printf ' %d %d %s\n' \
+        "$(( after_comp - before_comp ))" "$(( after_tree - before_tree ))" "$gpu_mean"
+}
+
+# --------------------------------------------------------------------------
 # One measurement: the same scenario at two frame counts, subtracted.
 #
 # A single timed run cannot be divided into a frame rate, because a fixed cost
@@ -870,6 +1048,43 @@ scenarios=(
     "mailbox:1:1:3000:15000"
 )
 
+# --------------------------------------------------------------------------
+# The multi-monitor scenarios.
+#
+# name : present mode on the busy screen : present mode on the other one :
+# frames the other one draws.
+#
+# The busy client's frame count is not listed because it is not measured — it
+# is there to keep its screen saturated for the whole of the other's run, and
+# is given enough frames to outlast it.
+#
+# Two scenarios, and they ask different questions.
+#
+#   mm-fifo    both screens paced normally. Each client should reach its own
+#              output's refresh rate, which on a desk with a 240Hz and a 120Hz
+#              panel is two different numbers — and a compositor that paces
+#              off the device rather than off each screen cannot produce both.
+#
+#   mm-stress  one screen driven by a client that never idles, the other paced
+#              normally. The second number is the whole point: it is what a
+#              terminal on your other monitor gets while something is running
+#              flat out over here.
+#
+# That second one is not hypothetical. It is the shape of the bug in
+# 8eada16 — the barrier tick asked the device whether anything had flipped
+# lately rather than asking each screen, so a screen animating at the refresh
+# rate kept the stamp fresh and silenced the tick for the other one, whose
+# windows that flip never visits. A terminal there fell to 8.8 commits a
+# second on a 240Hz panel. Nothing measured on one output can see it.
+# --------------------------------------------------------------------------
+mm_scenarios=(
+    "mm-fifo:2:2:600"
+    "mm-stress:0:2:600"
+)
+
+mm_results=$outdir/raw-mm.tsv
+printf 'compositor\tscenario\trun\toutput\trole\tfps\twall_s\tcomp_cpu_pct\tsess_cpu_pct\tgpu_pct\n' >"$mm_results"
+
 results=$outdir/raw.tsv
 printf 'compositor\tscenario\trun\twall_s\tfps\tcpu_ms_frame\tnet_ms_frame\tcomp_cpu_pct\tsess_cpu_pct\tgpu_pct\trss_mb\tclient_size\n' >"$results"
 : >"$outdir/environment.txt"
@@ -935,6 +1150,50 @@ bench_one() {
                 tee -a "$results" >&2
         done
     done
+
+    # The other monitor, if there is one to use.
+    if [ -n "$second" ]; then
+        local mode_a mode_b count_b count_a fields wall_a wall_b ticks tree gpu
+        for (( run = 1; run <= runs; run++ )); do
+            for entry in "${mm_scenarios[@]}"; do
+                IFS=: read -r name mode_a mode_b count_b <<<"$entry"
+                count_b=$(scale_count "$count_b")
+                # Enough to outlast the measured client rather than a fixed
+                # number: in IMMEDIATE the busy one runs two orders of
+                # magnitude faster, so the same count would have it finish
+                # almost at once and leave most of the other's run uncontended
+                # — which is the measurement quietly not happening.
+                if [ "$mode_a" = 0 ]; then
+                    count_a=$(( count_b * 200 ))
+                else
+                    count_a=$(( count_b * 3 ))
+                fi
+                echo "   run $run  $name" >&2
+                fields=$(one_pass_mm "$mode_a" "$count_a" "$mode_b" "$count_b")
+                read -r wall_a wall_b ticks tree gpu <<<"$fields"
+                awk -v comp="$comp_kind" -v scenario="$name" -v run="$run" \
+                    -v out_a="$output" -v out_b="$second" \
+                    -v wall_a="$wall_a" -v wall_b="$wall_b" \
+                    -v count_b="$count_b" -v ticks="$ticks" -v tree="$tree" \
+                    -v gpu="$gpu" -v clock="$clock" \
+                    'BEGIN {
+                        span = (wall_a > wall_b) ? wall_a : wall_b
+                        cpu = span > 0 ? ticks * 100 / clock / span : 0
+                        sess = span > 0 ? tree * 100 / clock / span : 0
+                        # The busy client is not given a frame rate. It is
+                        # there to hold its screen at full rate and is killed
+                        # by its own frame count, not by anything meaningful.
+                        printf "%s\t%s\t%d\t%s\tbusy\t\t%.3f\t%.1f\t%.1f\t%.1f\n",
+                            comp, scenario, run, out_a, wall_a, cpu, sess, gpu
+                        printf "%s\t%s\t%d\t%s\tmeasured\t%.1f\t%.3f\t%.1f\t%.1f\t%.1f\n",
+                            comp, scenario, run, out_b,
+                            wall_b > 0 ? count_b / wall_b : 0,
+                            wall_b, cpu, sess, gpu
+                    }' | tee -a "$mm_results" >&2
+            done
+        done
+    fi
+
     stop_compositor
 }
 
@@ -1052,6 +1311,122 @@ with open(out, "w") as f:
 print("\n".join(lines))
 PY
 
+# --------------------------------------------------------------------------
+# The multi-monitor table, appended to the same summary.
+#
+# Its own section rather than more rows in the one above, because the columns
+# do not mean the same thing: there, fps is every client on one screen added
+# together, and here it is one client on one named screen while another screen
+# is deliberately busy.
+# --------------------------------------------------------------------------
+if [ -n "$second" ]; then
+    python3 - "$mm_results" "$summary" "$output" "$second" <<'PY'
+import statistics
+import sys
+from collections import defaultdict
+
+raw, out, primary, secondary = sys.argv[1:5]
+rows = defaultdict(list)
+order = []
+with open(raw) as f:
+    header = next(f).rstrip("\n").split("\t")
+    for line in f:
+        row = dict(zip(header, line.rstrip("\n").split("\t")))
+        if row.get("role") != "measured":
+            continue
+        key = (row["scenario"], row["compositor"])
+        if key not in rows:
+            order.append(key)
+        rows[key].append(row)
+
+if not order:
+    sys.exit(0)
+
+
+def median(key, field):
+    values = [float(r[field]) for r in rows[key] if r.get(field)]
+    return statistics.median(values) if values else 0.0
+
+
+lines = [
+    "",
+    "## Two monitors",
+    "",
+    "One client on `{}` held at full rate, and the measured client on `{}`."
+    .format(primary, secondary),
+    "",
+    "| scenario | compositor | fps on {} | comp cpu % | session cpu % | gpu % |"
+    .format(secondary),
+    "| --- " * 6 + "|",
+]
+
+scenarios = []
+for scenario, _ in order:
+    if scenario not in scenarios:
+        scenarios.append(scenario)
+
+for scenario in scenarios:
+    for compositor in ("viewport", "sway"):
+        key = (scenario, compositor)
+        if key not in rows:
+            continue
+        lines.append("| {} | {} | {:.1f} | {:.1f} | {:.1f} | {:.1f} |".format(
+            scenario, compositor,
+            median(key, "fps"), median(key, "comp_cpu_pct"),
+            median(key, "sess_cpu_pct"), median(key, "gpu_pct")))
+
+both = [s for s in scenarios
+        if (s, "viewport") in rows and (s, "sway") in rows]
+if both:
+    lines += [
+        "",
+        "### Ratios",
+        "",
+        "Viewport over sway, on `{}`. Above 1.00 is more frames reaching the"
+        .format(secondary),
+        "screen that was not the busy one, which is better.",
+        "",
+        "| scenario | fps | comp cpu % |",
+        "| --- " * 3 + "|",
+    ]
+    for scenario in both:
+        a, b = (scenario, "viewport"), (scenario, "sway")
+        cells = []
+        for field in ("fps", "comp_cpu_pct"):
+            denominator = median(b, field)
+            cells.append("{:.2f}x".format(median(a, field) / denominator)
+                         if denominator else "-")
+        lines.append("| {} | {} |".format(scenario, " | ".join(cells)))
+
+lines += [
+    "",
+    "### Reading this",
+    "",
+    "- The number to look at is `fps on {}`, and what to hold it against is".format(secondary),
+    "  that monitor's own refresh rate in environment.txt — not the other",
+    "  monitor's. Two panels at different rates should produce two different",
+    "  frame rates, and a compositor pacing off the device rather than off",
+    "  each screen cannot produce both.",
+    "- `mm-stress` is the one that matters. A client that never idles on the",
+    "  other screen is the condition under which a screen stops being paced at",
+    "  all: the barrier tick asked the device whether anything had flipped",
+    "  lately, so one screen running flat out silenced it for the other, and a",
+    "  terminal there fell to single figures. If this row is far below that",
+    "  monitor's refresh rate, that fault is back.",
+    "- The busy client gets no frame rate. It is there to hold its screen at",
+    "  full rate and stops on its own frame count, which measures nothing.",
+    "- CPU here is the whole compositor across both screens, not per output.",
+    "  There is no per-output attribution to be had: it is one process, and one",
+    "  render loop serving both.",
+]
+
+with open(out, "a") as f:
+    f.write("\n".join(lines) + "\n")
+print("\n".join(lines))
+PY
+fi
+
 echo >&2
 echo "raw:     $results" >&2
+[ -n "$second" ] && echo "raw (mm): $mm_results" >&2
 echo "summary: $summary" >&2

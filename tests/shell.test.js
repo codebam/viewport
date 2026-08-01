@@ -1310,6 +1310,42 @@ if (mode === 'scrolling') {
   check('the two windows landed on different workspaces',
     left.workspace !== right.workspace);
 
+  {
+    /* Focus an output by name as well as by direction.
+     *
+     * A direction is right for a key — "the screen to my left" is what someone
+     * means by pressing one, and it follows the monitors being rearranged. It
+     * is wrong for anything driving the shell over IPC: the layout rects are
+     * here and not there, so a caller that wants a named monitor has to guess
+     * a direction and hope the two are side by side. scripts/bench-vkcube.sh
+     * is the caller that made this concrete — placing a client on a chosen
+     * screen is the whole of what its two-monitor scenarios do, and guessing
+     * `right` on a desk with stacked monitors measures the wrong one while
+     * reporting success. */
+    /* Each leg starts from the other monitor, by direction, so that neither
+       check can pass because focus happened to already be where it was asked
+       to go — which is exactly what the second one did when it was written
+       the obvious way, and it passed against a shell that ignored names
+       entirely. */
+    emit({ type: 'shell.command', command: 'output.focus', args: ['right'] });
+    emit({ type: 'shell.command', command: 'output.focus', args: [leftName] });
+    check('an output can be focused by name',
+      globalThis.__shell.activeOutput === leftName);
+
+    emit({ type: 'shell.command', command: 'output.focus', args: ['left'] });
+    emit({ type: 'shell.command', command: 'output.focus', args: [rightName] });
+    check('and by the other name, rather than only in one direction',
+      globalThis.__shell.activeOutput === rightName);
+
+    /* A name that is not a monitor must not be taken as one. It falls through
+       to the direction path, which finds nothing that way and leaves focus
+       where it was — rather than throwing, which would take the whole
+       command loop down. */
+    emit({ type: 'shell.command', command: 'output.focus', args: ['DP-99'] });
+    check('an unknown name leaves focus alone',
+      globalThis.__shell.activeOutput === rightName);
+  }
+
   emit({ type: 'view.focused', id: onLeft });
   emit({ type: 'shell.command', command: 'window.fullscreen', args: [] });
   emit({ type: 'view.focused', id: onRight });

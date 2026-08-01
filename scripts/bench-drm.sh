@@ -6,7 +6,14 @@
 #   ./scripts/bench-drm.sh                          # everything decided for you
 #   ./scripts/bench-drm.sh --codebam                # this machine's fast timing
 #   ./scripts/bench-drm.sh --mode 2560x1440@239.760 # the same thing, spelled out
+#   ./scripts/bench-drm.sh --second DP-3            # both monitors at once
 #   ./scripts/bench-drm.sh --runs 5                 # anything else is passed through
+#
+# --second turns on the two-monitor scenarios: the output picked below is held
+# at full rate and the named one is measured, which is the frame rate a window
+# on your other screen actually gets while something is busy over here. Do not
+# combine it with --codebam or --mode — pinning both panels to one timing is
+# the opposite of what those scenarios are for.
 #
 # bench-vkcube.sh does the measuring. This exists because getting it onto real
 # hardware takes three things that are easy to get wrong and produce failures
@@ -152,7 +159,16 @@ fi
 # nominates a 120Hz timing will be benchmarked at 120 by both. Pinning the
 # fast one is one flag, and the refresh rate is not in sysfs to be guessed at
 # from here.
-if ! have --mode; then
+# Pinning one timing onto every output is what makes the single-output
+# comparison fair, and it is what makes the two-monitor one meaningless: the
+# mismatch between two panels is half of what those scenarios exist to expose.
+if have --second && have --mode; then
+    echo "--second with --mode pins both panels to one timing, which is the" >&2
+    echo "opposite of what the two-monitor scenarios measure. Drop one." >&2
+    exit 2
+fi
+
+if ! have --mode && ! have --second; then
     echo >&2
     echo "no --mode: both compositors will take the monitor's preferred timing." >&2
     echo "That is equal, which is what matters, but it may not be the fastest" >&2

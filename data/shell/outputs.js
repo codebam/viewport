@@ -228,8 +228,19 @@ function adjacentOutput(direction) {
   return best;
 }
 
+/* Move to another monitor, by direction or by name.
+ *
+ * A direction is what a keybinding sends, and it is the right thing for a key:
+ * "the screen to my left" is what someone means when they press it, and it
+ * follows the monitors being rearranged without anything being rebound.
+ *
+ * A name is for everything that is not a person. Anything driving the shell
+ * over IPC knows which monitor it wants and has no way to work out the
+ * direction to it — the layout rects are here, not there — and a benchmark
+ * that has to guess `right` and hope the monitors are side by side is one that
+ * silently measures the wrong screen when they are stacked. */
 function focusOutputDirection(direction) {
-  const best = adjacentOutput(direction);
+  const best = outputs.has(direction) ? direction : adjacentOutput(direction);
   if (best !== null) {
     setActiveOutput(best);
     focusFirstOn(best);
