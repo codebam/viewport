@@ -83,6 +83,24 @@ impl CompositorHandler for ViewportState {
             // The client's own point first: it knows when it is done, and the
             // buffer's fence may cover work that has nothing to do with this
             // frame.
+            // Waiting on the acquire point is not free, and there is no cheap
+            // way out of it. Each wait costs an eventfd, two epoll_ctl to put
+            // it in the loop and take it out, a close, and a wakeup when it
+            // fires — about eight syscalls per commit per surface, and it is
+            // the second of the two wakeups every commit costs. Skipping it
+            // outright, which is wrong but measurable, takes a client in
+            // IMMEDIATE mode from 52.6% of a core to 31.8%.
+            //
+            // Asking `is_signaled` first and skipping the blocker when the
+            // point has already fired was tried and does nothing: 55.1%, still
+            // two turns per commit. A client committing thirteen thousand
+            // times a second is by definition ahead of the GPU, so the point
+            // has essentially never signalled by the time its commit arrives.
+            // All that check bought was another ioctl.
+            //
+            // The wait has to stop being the compositor's to do — handed to
+            // the renderer as something for the GPU to wait on — rather than
+            // be skipped or predicted.
             if let Some(acquire) = acquire {
                 if let Ok((blocker, source)) = acquire.generate_blocker() {
                     let client = client.clone();
