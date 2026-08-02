@@ -596,19 +596,19 @@
           # default. Both compositors produced a binary called `viewport`, so a
           # system installed one or the other; there is only one now.
           #
-          # The default is `webkitgtk`, and the reason is the paint rate
-          # rather than the CPU figure it looked like it should be.
+          # The default is `cef`: of the three that build no engine it is the
+          # cheapest per frame the shell paints — 0.250% of a core against
+          # webkitgtk's 0.273 and chromium's 0.309 — at the same paint rate.
+          # See docs/benchmarks.md.
           #
-          # `cef` spends half the CPU of `webkitgtk` under the shell load, and
-          # paints 12 frames a second against 52 doing it — so per frame it
-          # costs twice as much, and a desktop being dragged around at 12fps is
-          # one anybody can see stuttering. Cheap because it did less, not
-          # because it did it better. See docs/benchmarks.md.
+          # It costs about 156 MB more resident than `webkitgtk`, which is the
+          # argument for that one on a machine short of memory rather than CPU.
           #
-          # `wpe` is better than either on both counts and is not the default
-          # because it is the one that compiles WebKit: several hours before a
-          # machine that has just switched to this configuration has a desktop.
-          default = webkitgtk;
+          # `wpe` is better than all three on every column and is not the
+          # default because it is the one that compiles WebKit: several hours
+          # before a machine that has just switched to this configuration has a
+          # desktop.
+          default = cef;
         };
 
         # --------------------------------------------------------------------
@@ -914,38 +914,36 @@
             enable = mkEnableOption "the Viewport compositor";
 
             shellBackend = mkOption {
-              type = types.enum [ "webkitgtk" "cef" "chromium" "wpe" ];
-              # The one that paints a desktop at a rate anyone would want,
-              # without building a browser engine to do it.
+              type = types.enum [ "cef" "webkitgtk" "chromium" "wpe" ];
+              # The cheapest per painted frame of the three that build no
+              # engine, and the one that installs from a cache.
               #
-              # Two things decided this. `wpe` is the best of the four on both
-              # CPU per frame and memory, and cannot be installed from a cache
-              # nobody has: switching to a configuration that enables Viewport
-              # meant several hours of WebKit before the machine had a desktop,
-              # and a default that cannot be reached on an ordinary connection
-              # is not a default.
+              # `wpe` is better than all of them on CPU and on memory, and
+              # cannot be installed from a cache nobody has: switching to a
+              # configuration that enables Viewport meant several hours of
+              # WebKit before the machine had a desktop, and a default that
+              # cannot be reached on an ordinary connection is not a default.
               #
-              # And the Blink backends look cheaper than they are. `cef` spends
-              # half the CPU of `webkitgtk` under the shell load in
-              # docs/benchmarks.md — and paints 12 frames a second against 52
-              # while doing it, which is twice the cost per frame and a visibly
-              # stuttering desktop when a window is being dragged.
-              default = "webkitgtk";
+              # Of the other three, `cef` costs 0.250% of a core per frame the
+              # shell paints against webkitgtk's 0.273 and chromium's 0.309,
+              # at the same rate — for about 156 MB more resident. On a machine
+              # short of memory rather than CPU, `webkitgtk` is the better
+              # answer. See docs/benchmarks.md.
+              default = "cef";
               description = ''
                 Which engine draws the desktop.
 
-                `webkitgtk` runs the shell page in a separate process, as an
-                ordinary Wayland client, on nixpkgs' prebuilt WebKitGTK.
-                Nothing in that closure builds WebKit, and it paints the shell
-                at 52 frames a second against the Blink backends' 12. It is the
+                `cef` embeds Chromium through the Chromium Embedded Framework:
+                the engine is a prebuilt library and nothing here compiles one.
+                Cheapest per painted frame of the three that build no engine,
+                and about 156 MB heavier than `webkitgtk` for it. It is the
                 default.
 
-                `cef` embeds Chromium through the Chromium Embedded Framework.
-                Half the CPU of `webkitgtk` under the same load, and a fifth of
-                the frames for it — cheaper because it painted less, not
-                because it painted better. About 150 MB heavier. The shell can
-                crash and be restarted without the session going with it in
-                either case.
+                `webkitgtk` runs the shell page in a separate process, as an
+                ordinary Wayland client, on nixpkgs' prebuilt WebKitGTK. The
+                lightest of the three, and the answer on a machine short of
+                memory rather than CPU. The shell can crash and be restarted
+                without the session going with it in either case.
 
                 `wpe` embeds WPE WebKit in the compositor. It is the original
                 backend, and it costs a WebKit build of several hours that no

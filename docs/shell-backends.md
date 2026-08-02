@@ -4,18 +4,17 @@ The shell is a web page. Which engine renders it is a choice, and this is what
 the choices are.
 
 ```
---shell-backend=webkitgtk   WebKitGTK, in a process of its own     implemented, default
---shell-backend=cef         Chromium embedded through CEF          implemented
+--shell-backend=cef         Chromium embedded through CEF          implemented, default
+--shell-backend=webkitgtk   WebKitGTK, in a process of its own     implemented
 --shell-backend=chromium    Chromium, driven as a child process    implemented
 --shell-backend=wpe         WPE WebKit, inside the compositor      implemented
 --shell-backend=servo       Servo, inside the compositor           refused
 ```
 
-`webkitgtk` is what the NixOS module installs and what `nix run` on this flake
-gives: it builds no engine, and it paints the shell at 52 frames a second
-against the Blink backends' 12. `cef` spends half the CPU doing that fifth of
-the work, which is twice the cost per painted frame — see
-[`benchmarks.md`](benchmarks.md).
+`cef` is what the NixOS module installs and what `nix run` on this flake gives:
+it builds no engine, and of the three that do not it is the cheapest per frame
+the shell paints. `webkitgtk` is 156 MB lighter, which on a machine short of
+memory is the better trade — see [`benchmarks.md`](benchmarks.md).
 
 Two defaults that are not that one. A build with `--features wpe` uses `wpe` at
 run time, because a binary that paid for the in-process engine should use it.
@@ -230,7 +229,7 @@ On NixOS:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "webkitgtk";   # the default; also "cef", "chromium" or "wpe"
+  shellBackend = "cef";   # the default; also "webkitgtk", "chromium" or "wpe"
 };
 ```
 

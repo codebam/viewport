@@ -249,53 +249,50 @@ the shell handed over, counted by the compositor — `VIEWPORT_SHELL_RATE=1`.
 
 | backend | idle cpu % | load cpu % | of which the compositor | shell fps | cpu per painted frame | idle pss MB | load pss MB | processes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| wpe | 0.3 | 9.1 | 4.5 | 59 | 0.154 | 360 | 363 | 9 |
-| webkitgtk | 0.3 | 11.4 | 3.0 | 52 | 0.219 | 390 | 395 | 10 |
-| chromium | 0.3 | 6.7 | 1.9 | 12 | 0.558 | 582 | 589 | 12 |
-| cef | 0.0 | 5.3 | 1.9 | 12 | 0.442 | 530 | 547 | 9 |
+| wpe | 0.3 | 8.9 | 4.4 | 49 | 0.182 | 358 | 362 | 9 |
+| webkitgtk | 0.3 | 10.9 | 2.9 | 40 | 0.273 | 391 | 395 | 10 |
+| chromium | 0.7 | 13.3 | 3.1 | 43 | 0.309 | 582 | 595 | 12 |
+| cef | 1.0 | 9.5 | 3.0 | 38 | 0.250 | 529 | 551 | 9 |
 
-`cpu per painted frame` is the load column divided by the rate: percent of a
-core per frame the shell produced.
+**These are the second set of numbers for this table, and the first set were
+wrong.** The Blink backends measured 12 frames a second against WebKit's 52,
+which read as an engine painting a fifth as often — and it was this
+compositor's fault. Chromium paces on presentation feedback; the shell surface
+was in neither the space nor a layer map, so nothing ever took its feedback,
+and 723 requests in twelve seconds came back `discarded`. With nothing to pace
+against it fell back to its own 60Hz clock. WebKitGTK paces on frame callbacks,
+which the shell surface always received, so it tracked the panel and hid the
+bug. Fixed; re-measured; the row that said 12 now says 38.
 
-**The paint rate is the column that matters, and it reverses the CPU one.**
-Read without it, the Blink backends look 40% cheaper. They are not cheaper;
-they painted a fifth as many frames. Per frame the shell actually produced,
-`cef` costs nearly three times what `wpe` does and twice what `webkitgtk` does.
-A desktop repainting at 12fps while a window is being dragged is one anybody
-can see stuttering, and no CPU figure was ever going to say so.
+**Nothing separates the engines by much.** All four paint between 38 and 49
+frames a second under the same load and spend between 8.9 and 13.3 percent of a
+core doing it. The interesting column is the last derived one: cost per frame
+the shell actually produced.
 
-This is the second time this page has had to be corrected by a number arriving
-later, and both times in the same direction: a cost that looked low because
-less work was being done. The vkcube tables could not tell the engines apart
-because the shell was idle; this table's CPU column could not either, until the
-rate said what the CPU was buying.
+**`wpe` is the cheapest, and it is the one nobody can install.** 0.182% of a
+core per frame and the smallest resident set, which is what an engine inside
+the compositor buys — no second process, no buffer handed across one. It is
+also the only backend that compiles WebKit, so a machine switching to it waits
+hours for a desktop.
 
-**Why Blink paints a fifth as often is not established.** Chromium throttles
-compositing in several circumstances and any of them could be it, or Blink may
-simply be slower to produce a frame for this page. The measurement says what
-happened, not why, and the difference is far too large to leave at that — but
-it is not something this run can answer.
+**Of the three that build no engine, `cef` is cheapest per frame and
+`webkitgtk` is lightest.** 0.250% against 0.273%, and 551 MB against 395 — a
+156 MB difference, which is the whole of the argument for either. Embedding
+beats driving: `chromium` runs the same engine through a browser process and a
+DevTools round trip per message and costs 0.309% per frame for it, the most of
+the four.
 
-**Memory goes the other way, and it is a real trade.** WebKit is 150–190 MB
-lighter across the tree. On a machine short of memory rather than CPU that is
-the argument for `webkitgtk` over `wpe`, which is otherwise the best of the
-four on every column here.
+**Idle went up for the Blink backends** — 0.7% and 1.0% against 0.3% before the
+fix, when they were being told nothing. A client that is now receiving
+presentation feedback keeps a compositor loop alive to consume it. That is a
+real cost of the fix and it is small, but it is not nothing on a laptop.
 
-**CEF beats the browser it embeds.** 5.3% against 6.7%, 547 MB against 589,
-nine processes against twelve, at the same 12fps. Driving Chromium as a browser
-costs a browser process and a round trip per message; embedding it does not.
+**The spread**: CPU is tight (8.9/8.9/8.9, 11.4/10.9/10.9, 13.3/13.3/13.3,
+10.9/9.5/9.3) and the rate is not (49/46/53, 40/43/39, 44/43/41, 35/38/43). The
+load is scripted but the work it makes is not identical run to run — an
+overview with four windows is not the same repaint every time.
 
-**Nothing is idling badly.** All four sit at 0.0–0.3% with the desktop up and
-nobody touching it, which is what the frame-callback pacing is supposed to
-produce and is the first time it has been measured across the backends.
-
-**The spread, since the last set of tables was noisy enough to mislead**: CPU
-is tight (9.1/9.1/10.8, 11.4/11.3/11.8, 6.7/6.8/6.7, 5.3/5.3/5.1) and the
-paint rate is not (41/59/63, 39/52/68, 12/12/12, 12/12/11). The WebKit rates
-vary by half; the Blink ones do not vary at all, which is itself a hint that
-something is clamping them.
-
-### Reading the caveats### Reading the caveats
+### Reading the caveats### Reading the caveats### Reading the caveats
 
 `wpe` runs the engine inside the compositor process, so its cost lands in the
 compositor's own columns while the other three carry theirs in a second

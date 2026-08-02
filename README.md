@@ -97,15 +97,15 @@ terminal costs a window rather than the machine. `Mod4+Shift+e` quits, and
 `-- --exit-after 30` gives it a deadline in case that is the thing that is
 broken.
 
-The default package runs WebKitGTK in a process of its own: nothing in that
-closure builds an engine, and it paints the shell at 52 frames a second against
-the Blink backends' 12 — see [`docs/benchmarks.md`](docs/benchmarks.md). Ask
-for any of the others by name.
+The default package embeds Chromium through CEF: nothing in that closure builds
+an engine, and it is the cheapest per painted frame of the three that do not —
+see [`docs/benchmarks.md`](docs/benchmarks.md). `.#webkitgtk` is 156 MB lighter
+if that matters more. Ask for any of them by name.
 
 ## Build
 
 ```sh
-nix build github:codebam/viewport-smithay        # the default, above — webkitgtk
+nix build github:codebam/viewport-smithay        # the default, above — cef
 nix build github:codebam/viewport-smithay#wpe    # in-process; builds WebKit
 nix build github:codebam/viewport-smithay#chromium
 nix build github:codebam/viewport-smithay#cef
@@ -219,7 +219,7 @@ with:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "webkitgtk";   # the default; also "cef", "chromium" or "wpe"
+  shellBackend = "cef";   # the default; also "webkitgtk", "chromium" or "wpe"
 };
 ```
 
