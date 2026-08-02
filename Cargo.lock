@@ -2605,6 +2605,7 @@ dependencies = [
  "libc",
  "pipewire",
  "pkg-config",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "smithay",

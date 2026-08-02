@@ -38,14 +38,31 @@ async-channel = "2"
 # tree by way of `viewport-vulkan`.
 libc = "0.2"
 
+# The one place this compositor is a Wayland *client*: nested, it asks its host
+# to hold its own keyboard shortcuts back while the nested window has the
+# keyboard. See src/capture.rs — without it a compositor inside a compositor
+# never sees Mod4+anything.
+[dependencies.wayland-client]
+version = "0.31"
+
+[dependencies.wayland-protocols]
+version = "0.32"
+features = ["client", "staging"]
+
+# To get at winit's `wl_display` and `wl_surface`, which is what that request
+# names. winit re-exports the same version; naming it here keeps the two from
+# resolving to different crates and handing back handles of a type this cannot
+# read.
+[dependencies.raw-window-handle]
+version = "0.6"
+
 [build-dependencies]
 pkg-config = "0.3"
 
 [dev-dependencies]
 # For `examples/workspaces.rs`, which is a client rather than the compositor:
-# what an external bar sees through ext-workspace-v1.
-wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# what an external bar sees through ext-workspace-v1. The client crates
+# themselves are ordinary dependencies now — see the note above them.
 serde_json.workspace = true
 
 # The fork and the revision are in the workspace manifest, shared with

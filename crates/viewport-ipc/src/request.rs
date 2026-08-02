@@ -238,6 +238,19 @@ pub enum Request {
         pressed: bool,
     },
 
+    /// Press or release a key, by evdev keycode.
+    ///
+    /// The same codes libinput reports — 29 is left control, 56 left alt, 34
+    /// is `g` — because that is what the compositor's own key path takes, and a
+    /// scripted chord has to go through the filter that decides what a chord
+    /// means.
+    #[serde(rename = "input.key")]
+    InputKey {
+        keycode: u32,
+        #[serde(default = "crate::request::pressed_default")]
+        pressed: bool,
+    },
+
     #[serde(rename = "quit")]
     Quit,
 }

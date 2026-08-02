@@ -365,6 +365,8 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             pointer.frame(state);
         }
 
+        Request::InputKey { keycode, pressed } => state.inject_key(keycode, pressed),
+
         Request::Quit => state.shutdown(),
     }
 }

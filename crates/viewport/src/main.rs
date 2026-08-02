@@ -9,6 +9,7 @@
 mod appearance;
 mod apply;
 mod binding;
+mod capture;
 // Not gated on the web engine: an output composite is worth capturing
 // whatever is drawing into it.
 mod color_management;

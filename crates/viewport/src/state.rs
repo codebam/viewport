@@ -174,6 +174,10 @@ pub struct ViewportState {
     /// session.
     #[cfg(feature = "wpe")]
     pub shell_copy_refused: bool,
+    /// The host's shortcuts, held back while this nested window has the
+    /// keyboard. `None` when not nested, or when the host does not offer the
+    /// protocol. See `crate::capture`.
+    pub capture: Option<crate::capture::Capture>,
     /// Which engine draws the desktop.
     pub shell_backend: crate::shell_backend::ShellBackend,
     /// Whether that came from the command line, which the config file must not
@@ -910,6 +914,7 @@ impl ViewportState {
             shell: None,
             #[cfg(feature = "wpe")]
             shell_ping: None,
+            capture: None,
             shell_backend: crate::shell_backend::ShellBackend::default_for_build(),
             shell_backend_from_flag: false,
             shell_client: None,

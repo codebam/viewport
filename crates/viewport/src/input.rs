@@ -73,6 +73,8 @@ pub enum Action {
     SwitchVt(i32),
     /// Ctrl+Alt+Backspace.
     Quit,
+    /// Ctrl+Alt+G, the same as a virtual machine's ungrab.
+    ToggleCapture,
     /// The release half of an intercepted chord.
     Swallow,
     /// A binding fired.
@@ -123,10 +125,61 @@ fn shortcut(modifiers: &ModifiersState, keysym: Keysym) -> Option<Action> {
         return Some(Action::Quit);
     }
 
+    // The ungrab chord, the one QEMU and virt-manager use. Nested, this hands
+    // the host back its own shortcuts and takes them again; on real hardware
+    // there is no host and nothing to hand anything to.
+    if modifiers.ctrl && modifiers.alt && (raw == keysyms::KEY_g || raw == keysyms::KEY_G) {
+        return Some(Action::ToggleCapture);
+    }
+
     None
 }
 
 impl ViewportState {
+    /// A key from the control socket rather than from libinput.
+    ///
+    /// Through `KeyboardHandle::input` and `shortcut` like the real path, so a
+    /// scripted chord is filtered by the code a typed one is filtered by — a
+    /// test that took its own route would be testing its own route. What it
+    /// deliberately does not carry is the rest of `process_input_event`: idle
+    /// activity, the screen coming back on, the shell's own key forwarding.
+    /// This is for driving the compositor's chords, not for pretending to be a
+    /// keyboard.
+    pub fn inject_key(&mut self, keycode: u32, pressed: bool) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = self.start_time.elapsed().as_millis() as u32;
+        let state_bit = if pressed {
+            smithay::backend::input::KeyState::Pressed
+        } else {
+            smithay::backend::input::KeyState::Released
+        };
+        // evdev codes are offset by 8 from xkb's, which is the difference
+        // between what libinput reports and what a keymap is written against.
+        let code = smithay::input::keyboard::Keycode::new(keycode + 8);
+        let action = keyboard.input::<Option<Action>, _>(
+            self,
+            code,
+            state_bit,
+            serial,
+            time,
+            |_, modifiers, handle| {
+                if !pressed {
+                    return FilterResult::Forward;
+                }
+                match shortcut(modifiers, handle.modified_sym()) {
+                    Some(action) => FilterResult::Intercept(Some(action)),
+                    None => FilterResult::Forward,
+                }
+            },
+        );
+        if let Some(action) = action.flatten() {
+            self.handle_action(action);
+        }
+    }
+
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         // Anything at all counts. Device added and removed do not — they
         // arrive when a dock is plugged in with nobody at the machine — but
@@ -1082,6 +1135,18 @@ impl ViewportState {
                 tracing::info!("quit chord pressed");
                 self.shutdown();
             }
+            Action::ToggleCapture => match self.capture.as_mut() {
+                Some(capture) => {
+                    capture.toggle();
+                }
+                // Not nested, or a host that never agreed to hold anything
+                // back. Said once rather than silently doing nothing, because
+                // the chord working everywhere except where it matters is the
+                // confusing version.
+                None => tracing::info!(
+                    "nothing to release: this session has no host holding its shortcuts back"
+                ),
+            },
             Action::Bound(bound) => self.run_binding(bound),
             Action::Swallow => {}
         }

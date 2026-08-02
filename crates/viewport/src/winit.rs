@@ -53,6 +53,40 @@ pub fn init(
     state.space.map_output(&output, (0, 0));
     state.active_output = Some(output.name());
 
+    // The host's shortcuts, held back while this window has the keyboard.
+    //
+    // Without it a compositor inside a compositor never sees Mod4+anything:
+    // the host takes the chord first and the nested session is left testing
+    // whichever bindings its host happens not to use. See `crate::capture`.
+    //
+    // Best-effort on purpose. A host that does not implement the protocol is
+    // not a failure to start a session with, it is one line in the log and a
+    // nested run that behaves as it always did.
+    state.capture = {
+        use raw_window_handle::{
+            HasDisplayHandle as _, HasWindowHandle as _, RawDisplayHandle, RawWindowHandle,
+        };
+        let window = backend.window();
+        let display = window.display_handle().ok().map(|h| h.as_raw());
+        let surface = window.window_handle().ok().map(|h| h.as_raw());
+        match (display, surface) {
+            (Some(RawDisplayHandle::Wayland(d)), Some(RawWindowHandle::Wayland(w))) => {
+                // SAFETY: both pointers come from the window this backend owns
+                // and outlive the capture, which is dropped with the session.
+                match unsafe {
+                    crate::capture::keep_the_keys(d.display.as_ptr(), w.surface.as_ptr())
+                } {
+                    Ok(capture) => Some(capture),
+                    Err(e) => {
+                        tracing::info!("the host keeps its own shortcuts: {e}");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    };
+
     // A GPU client cannot present without this, whatever the backend. Nested
     // is where most development happens, so it is worth as much here as on
     // real hardware.
