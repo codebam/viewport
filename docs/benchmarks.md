@@ -225,9 +225,10 @@ backend than between backends: `cef` fifo came in at 2.2, 2.8 and 7.6 percent,
 the two WebKit ones did not, across all three runs — which is worth noticing
 and is not worth concluding anything from at n=3.
 
-**What would actually compare engines** is a scenario where the shell repaints
-and a sampler that counts every process the desktop is made of. That is
-`scripts/bench-shell.sh`, below. These tables say the compositor does not care
+**What would actually compare engines** is a scenario where the shell repaints,
+a sampler that counts every process the desktop is made of, and the shell's own
+paint rate. That is `scripts/bench-shell.sh`, below — and the rate is what turns
+out to decide it. These tables say the compositor does not care
 which engine draws its desktop, which is a real thing to know and a smaller
 thing than it looks.
 
@@ -243,46 +244,58 @@ inside the compositor for `wpe` and beside it for the other three; a
 per-process number cannot compare across that line. Memory is **PSS** over the
 same tree rather than RSS: CEF and Chromium run four or five processes sharing
 most of an engine, and adding their RSS together reports a desktop about twice
-the size of what the machine has actually committed.
+the size of what the machine has actually committed. `shell fps` is the frames
+the shell handed over, counted by the compositor — `VIEWPORT_SHELL_RATE=1`.
 
-| backend | idle cpu % | load cpu % | of which the compositor | idle pss MB | load pss MB | peak pss MB | processes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| wpe | 0.3 | 9.0 | 4.4 | 364 | 363 | 375 | 9 |
-| webkitgtk | 0.3 | 11.5 | 3.0 | 391 | 396 | 408 | 10 |
-| chromium | 0.3 | 6.8 | 1.9 | 581 | 591 | 607 | 12 |
-| cef | 0.3 | 5.4 | 2.0 | 535 | 548 | 573 | 9 |
+| backend | idle cpu % | load cpu % | of which the compositor | shell fps | cpu per painted frame | idle pss MB | load pss MB | processes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| wpe | 0.3 | 9.1 | 4.5 | 59 | 0.154 | 360 | 363 | 9 |
+| webkitgtk | 0.3 | 11.4 | 3.0 | 52 | 0.219 | 390 | 395 | 10 |
+| chromium | 0.3 | 6.7 | 1.9 | 12 | 0.558 | 582 | 589 | 12 |
+| cef | 0.0 | 5.3 | 1.9 | 12 | 0.442 | 530 | 547 | 9 |
 
-Three runs each, and unlike the vkcube tables they barely move: 9.0/9.1/8.9,
-11.5/11.6/11.3, 6.8/6.8/6.7, 5.4/5.4/5.3 percent. The differences below are
-larger than the spread.
+`cpu per painted frame` is the load column divided by the rate: percent of a
+core per frame the shell produced.
 
-**It is a straight trade, and it goes both ways.** WebKit is about 180 MB
-lighter; Blink is about 40% cheaper in CPU when the shell is actually
-repainting. Neither engine wins the pair. Which one that argues for depends
-entirely on the machine — a laptop with 8 GB and a shell that mostly sits still
-wants WebKit, a desk that lives in the overview wants Blink.
+**The paint rate is the column that matters, and it reverses the CPU one.**
+Read without it, the Blink backends look 40% cheaper. They are not cheaper;
+they painted a fifth as many frames. Per frame the shell actually produced,
+`cef` costs nearly three times what `wpe` does and twice what `webkitgtk` does.
+A desktop repainting at 12fps while a window is being dragged is one anybody
+can see stuttering, and no CPU figure was ever going to say so.
 
-**CEF beats the browser it embeds, on both.** 5.4% against 6.8%, 548 MB against
-591 MB, nine processes against twelve. Driving Chromium as a browser costs a
-browser process and a DevTools round trip per message; embedding it does not.
+This is the second time this page has had to be corrected by a number arriving
+later, and both times in the same direction: a cost that looked low because
+less work was being done. The vkcube tables could not tell the engines apart
+because the shell was idle; this table's CPU column could not either, until the
+rate said what the CPU was buying.
 
-**The in-process engine puts its cost where you can see it.** `wpe` spends 4.4
-of its 9.0 percent inside the compositor process, against 1.9–3.0 for the
-three that run the engine elsewhere. Same work, different process; it is only
-worth knowing because a compositor CPU figure that does not say which backend
-it came from means something different in each case.
+**Why Blink paints a fifth as often is not established.** Chromium throttles
+compositing in several circumstances and any of them could be it, or Blink may
+simply be slower to produce a frame for this page. The measurement says what
+happened, not why, and the difference is far too large to leave at that — but
+it is not something this run can answer.
 
-**Nothing is idling badly.** All four sit at 0.3% with the desktop up and
+**Memory goes the other way, and it is a real trade.** WebKit is 150–190 MB
+lighter across the tree. On a machine short of memory rather than CPU that is
+the argument for `webkitgtk` over `wpe`, which is otherwise the best of the
+four on every column here.
+
+**CEF beats the browser it embeds.** 5.3% against 6.7%, 547 MB against 589,
+nine processes against twelve, at the same 12fps. Driving Chromium as a browser
+costs a browser process and a round trip per message; embedding it does not.
+
+**Nothing is idling badly.** All four sit at 0.0–0.3% with the desktop up and
 nobody touching it, which is what the frame-callback pacing is supposed to
 produce and is the first time it has been measured across the backends.
 
-**What this still does not measure**: the shell's own paint rate. Everything
-here is the cost of a repaint, not how many repaints the engine managed —
-`shell: painting` logs the size and not the rate, and a `fps` for the shell
-would need the compositor to count its buffer commits. That is the next
-missing number.
+**The spread, since the last set of tables was noisy enough to mislead**: CPU
+is tight (9.1/9.1/10.8, 11.4/11.3/11.8, 6.7/6.8/6.7, 5.3/5.3/5.1) and the
+paint rate is not (41/59/63, 39/52/68, 12/12/12, 12/12/11). The WebKit rates
+vary by half; the Blink ones do not vary at all, which is itself a hint that
+something is clamping them.
 
-### Reading the caveats
+### Reading the caveats### Reading the caveats
 
 `wpe` runs the engine inside the compositor process, so its cost lands in the
 compositor's own columns while the other three carry theirs in a second

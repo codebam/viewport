@@ -397,6 +397,9 @@ fn run() -> Result<()> {
             .insert_source(timer, |_, _, state| {
                 state.idle_tick();
                 state.check_lock_screen();
+                // How fast the shell is painting, which the frame counter on
+                // its own cannot say.
+                state.report_shell_rate();
                 // And whether the shell process is still there. Reaped here
                 // rather than on SIGCHLD: this compositor installs no signal
                 // handlers, and a desktop that has been gone for at most a

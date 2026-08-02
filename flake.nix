@@ -596,10 +596,18 @@
           # default. Both compositors produced a binary called `viewport`, so a
           # system installed one or the other; there is only one now.
           #
-          # The default is the out-of-process shell, for the same reason the
-          # NixOS module's is: `nix run` on this flake should give a desktop
-          # off the binary cache rather than starting a WebKit build. Ask for
-          # `.#wpe` to get the in-process engine.
+          # The default is `webkitgtk`, and the reason is the paint rate
+          # rather than the CPU figure it looked like it should be.
+          #
+          # `cef` spends half the CPU of `webkitgtk` under the shell load, and
+          # paints 12 frames a second against 52 doing it — so per frame it
+          # costs twice as much, and a desktop being dragged around at 12fps is
+          # one anybody can see stuttering. Cheap because it did less, not
+          # because it did it better. See docs/benchmarks.md.
+          #
+          # `wpe` is better than either on both counts and is not the default
+          # because it is the one that compiles WebKit: several hours before a
+          # machine that has just switched to this configuration has a desktop.
           default = webkitgtk;
         };
 
@@ -906,24 +914,38 @@
             enable = mkEnableOption "the Viewport compositor";
 
             shellBackend = mkOption {
-              type = types.enum [ "webkitgtk" "chromium" "cef" "wpe" ];
-              # The one that installs without building a browser engine.
+              type = types.enum [ "webkitgtk" "cef" "chromium" "wpe" ];
+              # The one that paints a desktop at a rate anyone would want,
+              # without building a browser engine to do it.
               #
-              # `wpe` is what this project shipped first and it is still the
-              # tighter integration, but it cannot be installed from a cache
+              # Two things decided this. `wpe` is the best of the four on both
+              # CPU per frame and memory, and cannot be installed from a cache
               # nobody has: switching to a configuration that enables Viewport
-              # meant several hours of WebKit before the machine had a desktop.
-              # A default that cannot be reached on an ordinary connection is
-              # not a default. Set this to "wpe" to have the old one.
+              # meant several hours of WebKit before the machine had a desktop,
+              # and a default that cannot be reached on an ordinary connection
+              # is not a default.
+              #
+              # And the Blink backends look cheaper than they are. `cef` spends
+              # half the CPU of `webkitgtk` under the shell load in
+              # docs/benchmarks.md — and paints 12 frames a second against 52
+              # while doing it, which is twice the cost per frame and a visibly
+              # stuttering desktop when a window is being dragged.
               default = "webkitgtk";
               description = ''
                 Which engine draws the desktop.
 
                 `webkitgtk` runs the shell page in a separate process, as an
                 ordinary Wayland client, on nixpkgs' prebuilt WebKitGTK.
-                Nothing in that closure builds WebKit, which is why it is the
-                default. The shell can also crash and be restarted without the
-                session going with it.
+                Nothing in that closure builds WebKit, and it paints the shell
+                at 52 frames a second against the Blink backends' 12. It is the
+                default.
+
+                `cef` embeds Chromium through the Chromium Embedded Framework.
+                Half the CPU of `webkitgtk` under the same load, and a fifth of
+                the frames for it — cheaper because it painted less, not
+                because it painted better. About 150 MB heavier. The shell can
+                crash and be restarted without the session going with it in
+                either case.
 
                 `wpe` embeds WPE WebKit in the compositor. It is the original
                 backend, and it costs a WebKit build of several hours that no

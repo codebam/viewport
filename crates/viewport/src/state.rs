@@ -197,9 +197,22 @@ pub struct ViewportState {
         smithay::backend::allocator::dmabuf::Dmabuf,
         smithay::utils::Size<i32, smithay::utils::Physical>,
     )>,
-    /// How many frames the shell has painted. Only for the log: "one frame
-    /// and then nothing" and "painting normally" are the same still picture.
+    /// How many frames the shell has painted. Both backends count into this —
+    /// WebKit handing over a buffer and a client committing one are the same
+    /// event from here — which is what makes a rate out of it comparable
+    /// across engines.
     pub shell_frames: u64,
+    /// The last count and when it was taken, for turning the total into a
+    /// rate. `None` until the first tick, which is the sample that has nothing
+    /// to compare against.
+    pub shell_rate_mark: Option<(u64, std::time::Instant)>,
+    /// Whether that rate is worth a line a second in the log.
+    ///
+    /// Off by default: a desktop that is painting is *supposed* to paint, and
+    /// a line a second saying so is noise in every log anyone reads for
+    /// another reason. `VIEWPORT_SHELL_RATE=1` turns it on, which is what
+    /// scripts/bench-shell.py sets.
+    pub shell_rate_verbose: bool,
     /// How many times the shell has been restarted after its web process
     /// died, and when the run of restarts began.
     ///
@@ -909,6 +922,8 @@ impl ViewportState {
             shell_copy_refused: false,
             shell_owned: None,
             shell_frames: 0,
+            shell_rate_mark: None,
+            shell_rate_verbose: std::env::var_os("VIEWPORT_SHELL_RATE").is_some(),
             #[cfg(feature = "wpe")]
             shell_restarts: 0,
             #[cfg(feature = "wpe")]
@@ -3467,6 +3482,48 @@ impl ViewportState {
             }
         });
         (size.0.max(0) as u32, size.1.max(0) as u32)
+    }
+
+    /// How fast the shell is painting, as a rate rather than a total.
+    ///
+    /// The total says whether the shell ever painted, which is what it was
+    /// added for. It does not say whether the desktop is keeping up: a shell
+    /// producing four frames a second and one producing sixty look identical
+    /// in a counter that only goes up, and they are not the same desktop.
+    ///
+    /// Counted here rather than in the render path because this is the shell's
+    /// own rate — the frames it produced — and not the compositor's. A frame
+    /// the shell painted that was superseded before anything drew it still
+    /// cost the engine what it cost.
+    pub fn report_shell_rate(&mut self) {
+        let now = std::time::Instant::now();
+        let Some((previous, at)) = self.shell_rate_mark else {
+            // The first tick has nothing to compare against.
+            self.shell_rate_mark = Some((self.shell_frames, now));
+            return;
+        };
+        let elapsed = now.duration_since(at).as_secs_f64();
+        if elapsed < 0.5 {
+            return;
+        }
+        let painted = self.shell_frames.saturating_sub(previous);
+        self.shell_rate_mark = Some((self.shell_frames, now));
+
+        if !self.shell_rate_verbose {
+            // Still worth a line for anyone already reading at debug, and
+            // still not worth one for a desktop nobody is touching.
+            if painted > 0 {
+                tracing::debug!("shell: {:.1} frames/s", painted as f64 / elapsed);
+            }
+            return;
+        }
+        // Zero included when this is on: "the shell painted nothing for four
+        // seconds" is the interesting half of a paint rate, and a series with
+        // the gaps left out cannot show it.
+        tracing::info!(
+            "shell: {:.1} frames/s ({painted} in {elapsed:.2}s)",
+            painted as f64 / elapsed
+        );
     }
 
     /// Sample the machine and tell the shell.

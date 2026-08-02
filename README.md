@@ -97,14 +97,15 @@ terminal costs a window rather than the machine. `Mod4+Shift+e` quits, and
 `-- --exit-after 30` gives it a deadline in case that is the thing that is
 broken.
 
-The default package is the shell out of process, on nixpkgs' prebuilt
-WebKitGTK, because it is the one that substitutes rather than builds. Ask for
-the in-process engine by name.
+The default package runs WebKitGTK in a process of its own: nothing in that
+closure builds an engine, and it paints the shell at 52 frames a second against
+the Blink backends' 12 — see [`docs/benchmarks.md`](docs/benchmarks.md). Ask
+for any of the others by name.
 
 ## Build
 
 ```sh
-nix build github:codebam/viewport-smithay        # the default, above
+nix build github:codebam/viewport-smithay        # the default, above — webkitgtk
 nix build github:codebam/viewport-smithay#wpe    # in-process; builds WebKit
 nix build github:codebam/viewport-smithay#chromium
 nix build github:codebam/viewport-smithay#cef
@@ -218,7 +219,7 @@ with:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "webkitgtk";   # the default; also "chromium", "cef" or "wpe"
+  shellBackend = "webkitgtk";   # the default; also "cef", "chromium" or "wpe"
 };
 ```
 

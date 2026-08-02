@@ -164,7 +164,11 @@ def run(binary: str, out: pathlib.Path, seconds: float, clients: int, client_bin
     log = out / "viewport.log"
     handle = log.open("w")
 
-    environment = dict(os.environ, RUST_LOG="info")
+    # `VIEWPORT_SHELL_RATE` makes the compositor say how fast the shell is
+    # painting, once a second. Without it the log has a frame *total* and no
+    # rate, and a shell producing four frames a second looks like one producing
+    # sixty.
+    environment = dict(os.environ, RUST_LOG="info", VIEWPORT_SHELL_RATE="1")
     compositor = subprocess.Popen(
         [binary, "--drm"],
         stdout=handle,
@@ -229,6 +233,21 @@ def run(binary: str, out: pathlib.Path, seconds: float, clients: int, client_bin
         elapsed = time.monotonic() - at
         busy = (cpu_jiffies(tree(compositor.pid)) - started) / clock_ticks()
 
+        # The shell's own paint rate, out of the compositor's log. Read after
+        # the load rather than sampled during it: the line is emitted once a
+        # second by the compositor's own housekeeping tick, so the file already
+        # holds the series.
+        rates = []
+        for line in log.read_text(errors="replace").splitlines():
+            if "shell: " in line and "frames/s" in line:
+                try:
+                    rates.append(float(line.split("shell: ")[1].split(" frames/s")[0]))
+                except (IndexError, ValueError):
+                    continue
+        # The last `seconds` worth, which is the loaded part of the run: the
+        # ticks before it are the idle baseline and would drag the median down.
+        loaded = rates[-int(elapsed) :] if rates else []
+
         # The compositor's own share of it, for the one comparison that is not
         # about the engine: how much of the desktop is inside the compositor.
         # A delta over the same window, not the process's total since it
@@ -248,6 +267,8 @@ def run(binary: str, out: pathlib.Path, seconds: float, clients: int, client_bin
             "peak_pss_mb": max(p for p, _ in samples) / 1024,
             "compositor_pss_mb": compositor_pss / 1024,
             "compositor_cpu_pct": 100 * compositor_only / elapsed,
+            "shell_fps": (sorted(loaded)[len(loaded) // 2] if loaded else 0.0),
+            "shell_fps_peak": (max(loaded) if loaded else 0.0),
             "processes": max(n for _, n in samples),
             "commands": tick,
             "seconds": elapsed,

@@ -4,17 +4,24 @@ The shell is a web page. Which engine renders it is a choice, and this is what
 the choices are.
 
 ```
---shell-backend=webkitgtk   WebKitGTK, in a process of its own     implemented
+--shell-backend=webkitgtk   WebKitGTK, in a process of its own     implemented, default
+--shell-backend=cef         Chromium embedded through CEF          implemented
 --shell-backend=chromium    Chromium, driven as a child process    implemented
 --shell-backend=wpe         WPE WebKit, inside the compositor      implemented
 --shell-backend=servo       Servo, inside the compositor           refused
---shell-backend=cef         Chromium embedded through CEF          implemented
 ```
 
-`webkitgtk` is what the NixOS module installs unless told otherwise, because
-it is the one that installs without building a browser engine. A build with
-`--features wpe` still defaults to `wpe` at run time: a binary that paid for
-the in-process engine should use it.
+`webkitgtk` is what the NixOS module installs and what `nix run` on this flake
+gives: it builds no engine, and it paints the shell at 52 frames a second
+against the Blink backends' 12. `cef` spends half the CPU doing that fifth of
+the work, which is twice the cost per painted frame — see
+[`benchmarks.md`](benchmarks.md).
+
+Two defaults that are not that one. A build with `--features wpe` uses `wpe` at
+run time, because a binary that paid for the in-process engine should use it.
+And a plain `cargo build` defaults to `webkitgtk`, because that is the shell
+program the workspace builds beside the compositor — the cef crate is outside
+the workspace and its binary is not in `target/`.
 
 The name can also come from `VIEWPORT_SHELL_BACKEND`, or from `shell_backend`
 in the config file, in that order of precedence. A name that cannot be honoured
@@ -223,7 +230,7 @@ On NixOS:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "webkitgtk";   # the default; also "chromium", "cef" or "wpe"
+  shellBackend = "webkitgtk";   # the default; also "cef", "chromium" or "wpe"
 };
 ```
 
