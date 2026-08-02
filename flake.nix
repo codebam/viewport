@@ -806,6 +806,24 @@
           cfg = config.programs.viewport;
         in
         {
+          options.programs.viewport.package = lib.mkOption {
+            type = lib.types.package;
+            default = self.packages.${pkgs.system}.default;
+            defaultText = lib.literalExpression "viewport-smithay.packages.\${system}.default";
+            description = ''
+              The Viewport package this system runs.
+
+              Declared here rather than in the session module because the
+              portal needs it too: the portal backend *is* the compositor's
+              package, and a system that imports only this module — screen
+              sharing without adopting the session — would otherwise pull in
+              whichever package is the flake's default, on top of whichever one
+              it actually installed. Two compositors in the closure, one of
+              them a 1.3 GB Chromium, for a configuration that asked for
+              neither.
+            '';
+          };
+
           options.programs.viewport.portals.enable =
             lib.mkEnableOption "xdg-desktop-portal wiring for Viewport" // {
               description = ''
@@ -875,7 +893,7 @@
       nixosModules.default = { config, lib, pkgs, ... }:
         let
           cfg = config.programs.viewport;
-          inherit (lib) mkEnableOption mkOption mkIf types literalExpression;
+          inherit (lib) mkDefault mkEnableOption mkOption mkIf types literalExpression;
 
           # The compositor reads plain JSON, so the module's job is only to
           # render these options into a file and point --config at it.
@@ -959,14 +977,6 @@
                 compositor and refused: neither is implemented. See
                 crates/viewport/src/shell_backend.rs.
               '';
-            };
-
-            package = mkOption {
-              type = types.package;
-              default = self.packages.${pkgs.system}.${cfg.shellBackend};
-              defaultText = literalExpression
-                "the package matching `programs.viewport.shellBackend`";
-              description = "The viewport package to use.";
             };
 
             url = mkOption {
@@ -1088,7 +1098,14 @@
             };
           };
 
+          # Which package the backend option asks for, unless something has
+          # already said. `mkDefault` rather than a declaration: the option
+          # itself lives in the portal module, so that a system taking only the
+          # portal can set it — see there.
           config = mkIf cfg.enable {
+            programs.viewport.package =
+              mkDefault self.packages.${pkgs.system}.${cfg.shellBackend};
+
             environment.systemPackages = [ cfg.package ];
 
             services.seatd.enable = true;
