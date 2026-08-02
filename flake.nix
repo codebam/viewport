@@ -395,6 +395,13 @@
             libglvnd
             mesa
 
+            # The CEF shell, crates/viewport-shell-cef. `cef-dll-sys` builds
+            # `libcef_dll_wrapper` out of the CEF distribution's own source
+            # with cmake and ninja — the engine itself is a prebuilt blob and
+            # is not compiled by anything here.
+            cmake
+            ninja
+
             # The out-of-process shell, crates/viewport-shell-gtk.
             #
             # Both are prebuilt in cache.nixos.org, which is the entire point

@@ -123,25 +123,25 @@ impl ShellBackend {
                     .to_owned())
             }
             Self::Wpe | Self::WebKitGtk | Self::Chromium => Ok(()),
+            Self::Cef => Err(
+                "the cef backend is half written: crates/viewport-shell-cef \
+                              starts CEF, makes a Views window on Wayland and hands over a \
+                              DMA-BUF, and has no bridge — so the desktop would draw and \
+                              never place a window. Use --shell-backend=chromium, which is \
+                              the same engine"
+                    .to_owned(),
+            ),
             Self::Servo => Err("the servo backend is not implemented yet: \
                                 the buffer handoff is spiked in \
                                 crates/viewport-web/src/dmabuf.rs and the engine over it is not \
                                 written. Use --shell-backend=webkitgtk"
                 .to_owned()),
-            Self::Cef => Err(
-                "the cef backend is not implemented yet: the same engine is \
-                              available as --shell-backend=chromium, out of process and \
-                              driven over the DevTools protocol. What cef would add is \
-                              embedding it in-process with offscreen rendering; see the \
-                              notes at the top of crates/viewport/src/shell_backend.rs"
-                    .to_owned(),
-            ),
         }
     }
 
     /// Whether the shell runs in a process of its own.
     pub fn is_out_of_process(self) -> bool {
-        matches!(self, Self::WebKitGtk | Self::Chromium)
+        matches!(self, Self::WebKitGtk | Self::Chromium | Self::Cef)
     }
 
     /// The program the compositor starts for an out-of-process backend.
@@ -153,7 +153,8 @@ impl ShellBackend {
         match self {
             Self::WebKitGtk => Some("viewport-shell-gtk"),
             Self::Chromium => Some("viewport-shell-chromium"),
-            Self::Wpe | Self::Servo | Self::Cef => None,
+            Self::Cef => Some("viewport-shell-cef"),
+            Self::Wpe | Self::Servo => None,
         }
     }
 }

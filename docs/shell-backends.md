@@ -8,7 +8,7 @@ the choices are.
 --shell-backend=chromium    Chromium, driven as a child process    implemented
 --shell-backend=wpe         WPE WebKit, inside the compositor      implemented
 --shell-backend=servo       Servo, inside the compositor           refused
---shell-backend=cef         Chromium embedded in-process           refused
+--shell-backend=cef         Chromium embedded through CEF          half written
 ```
 
 `webkitgtk` is what the NixOS module installs unless told otherwise, because
@@ -143,26 +143,54 @@ nixpkgs has a `servo` package, but it builds servoshell — an embedding is a
 cargo dependency on the `servo` crate either way, so this buys a second engine
 rather than a shorter build.
 
-## cef — refused
+## cef — half written
 
 The same Blink as `chromium`, embedded as a library rather than driven as a
-browser. What that would add is offscreen rendering — `OnAcceleratedPaint`
-hands over dmabuf planes, a modifier and a format, which is very nearly
-`viewport_web::Frame` already — so the shell would be a buffer in this process
-rather than a client, like `wpe` and unlike everything else here.
+browser: no browser binary, no DevTools pipe, one process fewer, and — the
+reason it is worth finishing — `OnAcceleratedPaint`, which hands over DMA-BUF
+planes, a modifier and a format. That is very nearly `viewport_web::Frame`
+already, which is what the shell element takes, so CEF is the only route to
+running Blink *in* the compositor the way `wpe` runs WebKit.
 
-What it costs, measured rather than guessed:
+`crates/viewport-shell-cef` exists and does not work yet. What it does:
+initialises CEF, hands off correctly for the zygote, GPU and renderer
+processes, makes a Views window on Wayland, and hands the compositor a DMA-BUF
+— verified nested, `shell: first frame`. What it does not do: the bridge. The
+page cannot reach the compositor and the compositor cannot reach the page, so
+the desktop would draw and never place a window, which is why
+`--shell-backend=cef` still refuses and says so.
 
-- crates.io `cef` is `149.3.0+149.0.6`; nixpkgs' `cef-binary` is `149.0.5`. One
-  of the two has to move.
-- `cef-dll-sys`'s build script builds `libcef_dll_wrapper` from the
-  distribution with cmake and ninja, and downloads a CEF archive unless
-  `CEF_PATH` holds one with an `archive.json` it recognises — which a nix
-  sandbox forbids, so that file has to be produced.
-- CEF re-executes the host binary for its zygote, GPU and render processes, so
-  the entry point has to hand off before anything else runs.
+The remaining work is that bridge, and the shape of it is known:
+`add_dev_tools_message_observer` and `send_dev_tools_message` on the browser
+host give the same `Runtime.addBinding` / `Runtime.evaluate` pair the
+`chromium` backend uses, without Chromium's target discovery — the host *is*
+the page. Lines arriving from the socket thread have to reach CEF's UI thread
+through `post_task`, because a `Browser` is not `Send`.
 
-Until that is done, `--shell-backend=chromium` is the same engine.
+What is already dealt with, and was the part nobody could estimate:
+
+- **The engine is not built.** nixpkgs' `cef-binary` is a prebuilt 1.3 GB
+  `libcef.so`. Only `libcef_dll_wrapper` compiles here, from the
+  distribution's own source, with cmake and ninja.
+- **The layout.** `cef-dll-sys` wants the tree its downloader produces, which
+  is flattened: `Release/` *is* the root, with `Resources/` emptied into it
+  beside `include/`, `libcef_dll/`, `cmake/` and `CMakeLists.txt`. Pointing
+  `CEF_PATH` at nixpkgs' unflattened layout fails on a missing `locales`.
+- **The download.** The build script fetches unless `CEF_PATH` holds an
+  `archive.json` — three fields, `{type, name, sha1}` — whose `name` parses as
+  `cef_binary_<version>`. The check is `archive <= expected`, so nixpkgs'
+  149.0.5 satisfies a crate that wants 149.0.6. There is no version skew to
+  resolve after all.
+- **The API version.** Every CEF structure carries one, and it is only set
+  once `api_hash` has run. Without that first call the process dies with
+  `CefApp_0_CToCpp called with invalid version -1`.
+- **When a window may be made.** Not when `initialize` returns — from
+  `on_context_initialized`. Doing it early traps thirteen seconds later with
+  no message at all.
+
+The crate is outside the workspace on purpose: it does not build without
+`CEF_PATH`, and `cargo test --workspace` is what the pre-commit hook and CI
+run.
 
 ## Building and installing
 

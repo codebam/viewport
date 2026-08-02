@@ -1,0 +1,20 @@
+[package]
+name = "viewport-shell-cef"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/codebam/viewport-smithay"
+description = "The Viewport shell, rendered out of process by Chromium embedded through CEF"
+
+[dependencies]
+viewport-ipc = { path = "../viewport-ipc" }
+viewport-shell-bridge = { path = "../viewport-shell-bridge" }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The engine, embedded rather than driven. `default-features = false` drops
+# the crate's build-util and sandbox features: the first pulls in clap and
+# cargo_metadata for a bundler this does not use, and the second wants a
+# setuid helper that a nix store path cannot be.
+cef = { version = "149", default-features = false }
