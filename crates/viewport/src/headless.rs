@@ -159,11 +159,23 @@ pub fn init(
             // has to be told to paint too.
             let outputs: Vec<_> = state.space.outputs().cloned().collect();
             let now = state.start_time.elapsed();
+            // The out-of-process shell is not in the space — it is drawn under
+            // it — so it has to be invited by name or it paints once and stops.
+            let shell = state.shell_client_surface().cloned();
             for output in &outputs {
                 for window in state.space.elements() {
                     window.send_frame(output, now, Some(Duration::ZERO), |_, _| {
                         Some(output.clone())
                     });
+                }
+                if let Some(surface) = shell.as_ref() {
+                    smithay::desktop::utils::send_frames_surface_tree(
+                        surface,
+                        output,
+                        now,
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
                 }
             }
             state.space.refresh();
@@ -175,6 +187,12 @@ pub fn init(
         .map_err(|e| anyhow::anyhow!("insert headless frame timer: {e}"))?;
 
     tracing::info!("headless output HEADLESS-1 {width}x{height}");
+
+    // After the first output exists, because the shell is configured to the
+    // size of the layout and a layout with no outputs in it has none. This is
+    // also what makes the out-of-process backend testable without a screen:
+    // the shell is a client, and a headless compositor is still a compositor.
+    state.start_shell_process();
     Ok(())
 }
 

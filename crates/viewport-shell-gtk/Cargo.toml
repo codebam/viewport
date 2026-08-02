@@ -1,0 +1,37 @@
+[package]
+name = "viewport-shell-gtk"
+version.workspace = true
+edition.workspace = true
+# MIT, like the other two non-compositor crates. Nothing here is adapted from a
+# GPL compositor: it is a browser window and a socket.
+license = "MIT"
+repository.workspace = true
+description = "The Viewport shell, rendered out of process by WebKitGTK"
+
+[dependencies]
+viewport-ipc.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# The engine. Both of these resolve to the `webkitgtk-6.0` pkg-config module
+# that nixpkgs already ships prebuilt — which is the entire reason this crate
+# exists, since `wpewebkit` is not packaged anywhere and has to be built.
+#
+# The versions are locked to each other, not chosen: webkit6 0.6 requires
+# gtk4 0.11, and two gtk4-sys versions in one graph is a link conflict rather
+# than a warning. glib is not named at all — `gtk4::glib` is the same crate,
+# and naming it separately is how the graph acquires a second one.
+#
+# `v4_10` is not a preference either: webkit6's `WebView` declares that it
+# implements `gtk::Accessible`, and that type only exists in the bindings with
+# this feature on — so without it the engine crate does not compile at all.
+# nixpkgs ships GTK 4.22, well past it.
+gtk4 = { version = "0.11", features = ["v4_10"] }
+webkit6 = "0.6"
+
+# Moving lines off the socket thread and onto the GTK main context. glib's own
+# channel was removed in 0.18; this is what the gtk-rs book replaced it with.
+async-channel = "2"

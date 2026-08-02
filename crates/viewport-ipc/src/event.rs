@@ -132,6 +132,19 @@ pub enum Event {
     #[serde(rename = "screencast.pick.done")]
     ScreencastPickDone { id: u32 },
 
+    /// Throw the page away and load it again, ignoring the HTTP cache.
+    ///
+    /// For the shell process rather than for the page, and the only event that
+    /// is. The keybinding behind it used to reach an engine the compositor
+    /// owned; with the shell in a process of its own there is no such call to
+    /// make, so the request travels the same way everything else does and the
+    /// shell process acts on it instead of forwarding it.
+    ///
+    /// Harmless to a shell that does forward it: `data/shell/*.js` ignores an
+    /// event type it does not know.
+    #[serde(rename = "shell.reload")]
+    ShellReload,
+
     /// A rejected message. Delivered to the client that caused it where there
     /// is one, and broadcast otherwise — an error the shell caused is one it
     /// must see on the channel it already listens to.

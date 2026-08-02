@@ -4,8 +4,13 @@ A Wayland compositor whose entire shell — wallpaper, dock, window frames,
 titlebars — is a web page, composited zero-copy alongside native Wayland
 clients.
 
-Smithay handles DRM/KMS, input and the `xdg-shell` protocol. WPE WebKit renders
-the UI to a DMA-BUF. Neither ever hands a pixel to the CPU.
+Smithay handles DRM/KMS, input and the `xdg-shell` protocol. WebKit renders the
+UI to a DMA-BUF. Neither ever hands a pixel to the CPU.
+
+Which WebKit is a choice: WPE inside the compositor, or WebKitGTK in a process
+of its own as an ordinary Wayland client. The second needs no engine built from
+source — nixpkgs ships it — and the page cannot tell the difference. See
+[`docs/shell-backends.md`](docs/shell-backends.md).
 
 ```
         ┌──────────────────────────────────────────┐
@@ -81,7 +86,8 @@ hundred lines of glue to arrive at the same dma-buf.
 ## Build
 
 ```sh
-nix build .#viewport-smithay   # the compositor, web engine included
+nix build .#viewport-smithay    # the engine in-process; builds WebKit
+nix build .#viewport-webkitgtk  # the engine beside it; builds no WebKit at all
 ```
 
 Or to work in the tree:
@@ -103,6 +109,11 @@ that cache and the key it is signed with.
 ```sh
 nix build .#wpewebkit   # do this once, deliberately, before anything else
 ```
+
+That build is the whole reason there is a second backend.
+`.#viewport-webkitgtk` runs the same shell against nixpkgs' prebuilt
+WebKitGTK — the same WebKit version, a different port, out of process — and
+substitutes from cache.nixos.org like anything else.
 
 Run nested inside an existing compositor:
 
@@ -150,6 +161,7 @@ The reference material lives in `docs/`:
 | [`docs/ipc.md`](docs/ipc.md) | both transports and every message in each direction, what a shell has to do to place a window, and how the layout is remembered across a restart — plus the overview, logging and the shell tests |
 | [`docs/protocols.md`](docs/protocols.md) | HDR, notifications, tablets, idle and locking, what clients may ask for and what they are told, and what is verified on real hardware |
 | [`docs/debugging.md`](docs/debugging.md) | screenshotting the session from inside it, pointer capture, XWayland, and what happens when the shell stops answering |
+| [`docs/shell-backends.md`](docs/shell-backends.md) | the four engines the shell can be drawn by, which two are implemented, what changes between them and what does not, and how to run the shell process by hand against a live session |
 | [`docs/benchmarks.md`](docs/benchmarks.md) | Viewport measured against sway and niri on real scanout — frame rate, CPU per frame, memory, and the second monitor while the first is saturated |
 
 Two shells ship with it, at opposite ends of the same protocol:
@@ -176,7 +188,16 @@ it, and a `wayland-sessions` entry means a display manager will offer it as
 something to log into. See `packaging/arch/README.md` for building it in a
 container, which has two non-obvious wrinkles.
 
-On NixOS, `flake.nix` provides both a package and a dev shell.
+On NixOS, `flake.nix` provides packages and a dev shell, and
+`programs.viewport.shellBackend` picks which engine the session is installed
+with:
+
+```nix
+programs.viewport = {
+  enable = true;
+  shellBackend = "webkitgtk";   # the default; "wpe" builds WebKit instead
+};
+```
 
 ## Licence
 
@@ -193,4 +214,7 @@ back to Smithay or wlroots, which are MIT. `docs/RUST-REWRITE.md` has the
 reasoning in full.
 
 WPE WebKit and GLib are LGPL-2.1+ and dynamically linked, which imposes no
-licence condition on this code.
+licence condition on this code. `crates/viewport-shell-gtk` — the shell as a
+separate process, on WebKitGTK — is MIT for the same reason the other two are:
+it is a browser window and a socket, and nothing in it is adapted from a GPL
+compositor.

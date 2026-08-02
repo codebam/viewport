@@ -1243,7 +1243,12 @@ pub fn init(
     #[cfg(feature = "wpe")]
     // Sizes, maps and focuses the view itself — WebKit paints nothing into an
     // unmapped view of no size.
-    state.start_shell(&card, &render)?;
+    if state.shell_backend == crate::shell_backend::ShellBackend::Wpe {
+        state.start_shell(&card, &render)?;
+    }
+    // The out-of-process shell needs none of this device: it allocates against
+    // whatever GPU it opens for itself and hands the buffer over as a client.
+    state.start_shell_process();
 
     Ok(())
 }

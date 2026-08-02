@@ -15,6 +15,7 @@ a TTY.
 ```jsonc
 {
   "url": "http://localhost:3000",
+  "shell_backend": "wpe",   // or "webkitgtk"; see docs/shell-backends.md
   "timeout_ms": 5000,
   "layout": "tiling",       // or "scrolling", or "solar"
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
@@ -185,6 +186,9 @@ Precedence is flags > config file > defaults.
 
 ```
 -u, --url URL          shell endpoint (default http://localhost:3000)
+    --shell-backend NAME which engine draws the shell: wpe, webkitgtk, servo
+                       or cef. The last two are recognised and refused; see
+                       docs/shell-backends.md
 -f, --fallback URL     used when the shell fails (default: bundled fallback.html)
 -t, --timeout MS       first-paint deadline before falling back (default 5000)
 -s, --socket PATH      control socket

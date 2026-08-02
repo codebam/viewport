@@ -327,11 +327,7 @@ impl WebView {
     /// Becomes the same `CustomEvent` the C build dispatches, so the shell's
     /// existing listener needs no change.
     pub fn post(&self, json: &str) -> Result<()> {
-        let script = format!(
-            "window.dispatchEvent(new CustomEvent('viewport',{{detail:JSON.parse({})}}));",
-            js_string_literal(json)
-        );
-        self.evaluate(&script)
+        self.evaluate(&viewport_ipc::js::dispatch(json))
     }
 
     /// Run a script in the page.
@@ -483,71 +479,4 @@ unsafe fn take_error(error: *mut GError, fallback: &str) -> String {
     };
     g_error_free(error);
     message
-}
-
-/// Quote a string as a JavaScript literal.
-///
-/// The message is interpolated into a script, so anything that could end the
-/// literal early has to be escaped — a shell message containing a quote would
-/// otherwise be a syntax error at best.
-fn js_string_literal(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            // U+2028 and U+2029 terminate a line in JavaScript but not in
-            // JSON, so a message containing one would end the statement.
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_quote_cannot_end_the_literal_early() {
-        // The message is interpolated into a script, so this is the difference
-        // between a delivered message and a syntax error.
-        assert_eq!(js_string_literal(r#"a"b"#), r#""a\"b""#);
-        assert_eq!(js_string_literal(r"a\b"), r#""a\\b""#);
-    }
-
-    #[test]
-    fn newlines_are_escaped() {
-        assert_eq!(js_string_literal("a\nb"), r#""a\nb""#);
-        assert_eq!(js_string_literal("a\r\nb"), r#""a\r\nb""#);
-    }
-
-    #[test]
-    fn the_javascript_only_line_terminators_are_escaped() {
-        // Legal inside a JSON string, but they end a line in JavaScript — so
-        // interpolating one raw truncates the statement.
-        assert_eq!(js_string_literal("a\u{2028}b"), r#""a\u2028b""#);
-        assert_eq!(js_string_literal("a\u{2029}b"), r#""a\u2029b""#);
-    }
-
-    #[test]
-    fn control_characters_are_escaped() {
-        assert_eq!(js_string_literal("a\u{1}b"), r#""a\u0001b""#);
-    }
-
-    #[test]
-    fn ordinary_text_is_left_alone() {
-        assert_eq!(
-            js_string_literal(r#"{"type":"view.layout","id":1}"#),
-            r#""{\"type\":\"view.layout\",\"id\":1}""#
-        );
-    }
 }

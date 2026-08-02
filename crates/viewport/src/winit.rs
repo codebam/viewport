@@ -105,6 +105,11 @@ pub fn init(
         state.shell_ping = Some(ping);
     }
 
+    // The out-of-process shell, which needs no DRM node from us — it is a
+    // client of this compositor like any other, and nesting changes nothing
+    // about that.
+    state.start_shell_process();
+
     // The shell, nested. It needs DRM nodes to allocate on — the same GPU the
     // host compositor is using, which is what the EGL device names.
     #[cfg(feature = "wpe")]
@@ -122,8 +127,10 @@ pub fn init(
                     .node_with_type(smithay::backend::drm::NodeType::Primary)
                     .and_then(|node| node.ok())
                     .unwrap_or(render);
-                if let Err(e) = state.start_shell(&card, &render) {
-                    tracing::warn!("the shell did not start, so this is windows only: {e:#}");
+                if state.shell_backend == crate::shell_backend::ShellBackend::Wpe {
+                    if let Err(e) = state.start_shell(&card, &render) {
+                        tracing::warn!("the shell did not start, so this is windows only: {e:#}");
+                    }
                 }
             }
             None => tracing::warn!("no render node for the shell; this is windows only"),

@@ -72,6 +72,15 @@ pub struct Ipc {
 }
 
 impl Ipc {
+    /// Where it is listening.
+    ///
+    /// The out-of-process shell is told this outright rather than deriving it:
+    /// it is started with `WAYLAND_SOCKET` and so has no `WAYLAND_DISPLAY` to
+    /// derive it from.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// `$XDG_RUNTIME_DIR/viewport-<display>.sock`, falling back to `/tmp` and
     /// then to the pid, exactly as `src/ipc.c:1660` does.
     pub fn default_path(display: Option<&str>) -> PathBuf {

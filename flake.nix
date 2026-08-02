@@ -210,15 +210,28 @@
           pipewire
         ];
 
-        # The Rust rewrite. Built from the same tree, beside the C compositor
-        # rather than instead of it: both produce a binary called `viewport`,
-        # so a system installs one or the other.
+        # The compositor, as a function of which engine draws its shell.
         #
-        # The web engine is behind a feature flag, and this build turns it on:
-        # without it there is no shell at all — grey where the wallpaper and
-        # the bar should be — and nothing in the log says so.
-        viewport-smithay = pkgs.rustPlatform.buildRustPackage {
-          pname = "viewport-smithay";
+        # There are two, and the difference between them is almost entirely a
+        # packaging one — see `crates/viewport/src/shell_backend.rs`:
+        #
+        #   wpe        the engine in-process. `wpewebkit` above, which is a
+        #              four-hour build no binary cache has.
+        #   webkitgtk  the same WebKit as a separate process and an ordinary
+        #              Wayland client, from the prebuilt nixpkgs package. Adds
+        #              `viewport-shell-gtk` to bin/, which the compositor finds
+        #              beside itself and starts.
+        #
+        # Both binaries are called `viewport`, so a system installs one or the
+        # other. The default stays `wpe` so an existing configuration keeps the
+        # desktop it had.
+        mkViewport = { shellBackend }: pkgs.rustPlatform.buildRustPackage {
+          # The in-process build keeps the name it has always had, so an
+          # existing pin does not become a different package for a reason that
+          # has nothing to do with it.
+          pname = if shellBackend == "wpe"
+            then "viewport-smithay"
+            else "viewport-smithay-${shellBackend}";
           version = "0.1.0";
           src = self;
 
@@ -232,21 +245,48 @@
             };
           };
 
-          buildAndTestSubdir = "crates/viewport";
-          buildFeatures = [ "wpe" ];
+          # From the workspace root rather than `buildAndTestSubdir`, because
+          # the out-of-process backend is two binaries out of one tree and a
+          # subdirectory build can only produce one of them.
+          cargoBuildFlags = [ "-p" "viewport" ]
+            ++ pkgs.lib.optionals (shellBackend == "webkitgtk") [ "-p" "viewport-shell-gtk" ];
+          buildFeatures = pkgs.lib.optionals (shellBackend == "wpe") [ "wpe" ];
 
           nativeBuildInputs = with pkgs; [
             pkg-config
             rustPlatform.bindgenHook
             makeWrapper
             wayland-scanner
+          ] ++ pkgs.lib.optionals (shellBackend == "webkitgtk") [
+            # A GTK program needs its GSettings schemas and GIO modules named
+            # in the environment or it aborts at startup rather than starting
+            # without them.
+            wrapGAppsHook4
           ];
 
-          buildInputs = runtimeDeps ++ (with pkgs; [
-            vulkan-loader
-            vulkan-headers
-            libgbm
-          ]);
+          # This package wraps `viewport` itself, and two wrappers around one
+          # binary is one too many. The hook's arguments are applied by hand
+          # below, to the binary that actually needs them.
+          dontWrapGApps = true;
+
+          buildInputs =
+            (if shellBackend == "wpe"
+             then runtimeDeps
+             else builtins.filter (dep: dep != wpewebkit) runtimeDeps)
+            ++ (with pkgs; [
+              vulkan-loader
+              vulkan-headers
+              libgbm
+            ])
+            ++ pkgs.lib.optionals (shellBackend == "webkitgtk") (with pkgs; [
+              gtk4
+              webkitgtk_6_0
+              # WebKit refuses a `file://` page whose type it cannot work out,
+              # and it works it out from the shared MIME database. Without this
+              # the shell loads "successfully" and the desktop is empty.
+              shared-mime-info
+              gsettings-desktop-schemas
+            ]);
 
           # The renderer, gbm and EGL are opened by name at run time rather
           # than linked, so the closure has to carry them and the loader has to
@@ -281,6 +321,11 @@
                 libinput
                 udev
               ])}
+          '' + pkgs.lib.optionalString (shellBackend == "webkitgtk") ''
+            # The shell process, which the compositor starts by looking beside
+            # itself in bin/. This is where the GTK hook's environment goes:
+            # the schemas, the GIO modules and the MIME database.
+            wrapProgram $out/bin/viewport-shell-gtk "''${gappsWrapperArgs[@]}"
           '';
 
           # The suite needs a GPU for the renderer tests and a socket for the
@@ -290,11 +335,19 @@
           doCheck = false;
 
           meta = with pkgs.lib; {
-            description = "The Smithay rewrite of the Viewport compositor";
+            description =
+              "The Smithay rewrite of the Viewport compositor, shell on ${shellBackend}";
             platforms = platforms.linux;
             mainProgram = "viewport";
           };
         };
+
+        # The engine in-process: what this project has always built.
+        viewport-smithay = mkViewport { shellBackend = "wpe"; };
+
+        # The engine out of process, from nixpkgs' prebuilt WebKitGTK. Nothing
+        # in this closure is built from a WebKit tarball.
+        viewport-webkitgtk = mkViewport { shellBackend = "webkitgtk"; };
 
         # Shared by the two Rust shells below, which differ only in toolchain.
         rustDeps = with pkgs; [
@@ -327,6 +380,15 @@
             # with, and the reason that backend is GLES rather than Vulkan.
             libglvnd
             mesa
+
+            # The out-of-process shell, crates/viewport-shell-gtk.
+            #
+            # Both are prebuilt in cache.nixos.org, which is the entire point
+            # of that backend: it costs this shell a download, where the WPE
+            # backend costs a four-hour WebKit build no cache has. Same WebKit
+            # version underneath — 2.52.5 — different port.
+            gtk4
+            webkitgtk_6_0
         ];
 
         # The environment both need, extracted for the same reason: an ASan
@@ -382,7 +444,7 @@
       in
       {
         packages = {
-          inherit viewport-smithay wpewebkit;
+          inherit viewport-smithay viewport-webkitgtk wpewebkit;
           # `viewport` used to be here too, the wlroots build, and was the
           # default. Both compositors produced a binary called `viewport`, so a
           # system installed one or the other; there is only one now.
@@ -700,6 +762,11 @@
           configFile = pkgs.writeText "viewport-config.json" (builtins.toJSON
             ({
               timeout_ms = cfg.timeoutMs;
+              # Written even though the binary would pick the same thing on its
+              # own: the two builds differ only in what is in bin/, so a config
+              # that says which engine it expects is the difference between a
+              # blank desktop and a log line naming the reason for it.
+              shell_backend = cfg.shellBackend;
             }
             // lib.optionalAttrs (cfg.url != null) { inherit (cfg) url; }
             // lib.optionalAttrs (cfg.terminal != null) { inherit (cfg) terminal; }
@@ -717,9 +784,45 @@
           options.programs.viewport = {
             enable = mkEnableOption "the Viewport compositor";
 
+            shellBackend = mkOption {
+              type = types.enum [ "webkitgtk" "wpe" ];
+              # The one that installs without building a browser engine.
+              #
+              # `wpe` is what this project shipped first and it is still the
+              # tighter integration, but it cannot be installed from a cache
+              # nobody has: switching to a configuration that enables Viewport
+              # meant several hours of WebKit before the machine had a desktop.
+              # A default that cannot be reached on an ordinary connection is
+              # not a default. Set this to "wpe" to have the old one.
+              default = "webkitgtk";
+              description = ''
+                Which engine draws the desktop.
+
+                `webkitgtk` runs the shell page in a separate process, as an
+                ordinary Wayland client, on nixpkgs' prebuilt WebKitGTK.
+                Nothing in that closure builds WebKit, which is why it is the
+                default. The shell can also crash and be restarted without the
+                session going with it.
+
+                `wpe` embeds WPE WebKit in the compositor. It is the original
+                backend, and it costs a WebKit build of several hours that no
+                binary cache has, because `wpewebkit` is not packaged in
+                nixpkgs.
+
+                Two further names — `servo` and `cef` — are recognised by the
+                compositor and refused: neither is implemented. See
+                crates/viewport/src/shell_backend.rs.
+              '';
+            };
+
             package = mkOption {
               type = types.package;
-              default = self.packages.${pkgs.system}.viewport;
+              default =
+                if cfg.shellBackend == "webkitgtk"
+                then self.packages.${pkgs.system}.viewport-webkitgtk
+                else self.packages.${pkgs.system}.viewport-smithay;
+              defaultText = literalExpression
+                "the package matching `programs.viewport.shellBackend`";
               description = "The viewport package to use.";
             };
 

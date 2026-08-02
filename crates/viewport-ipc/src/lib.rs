@@ -11,6 +11,7 @@
 
 pub mod event;
 pub mod geometry;
+pub mod js;
 pub mod request;
 
 pub use event::{CastSource, Event};

@@ -89,12 +89,14 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         }
 
         Request::ShellFocus => {
-            // The shell has no surface of its own yet, so this can only drop
-            // client focus. It becomes a real focus target once the web engine
-            // is wired up.
+            // With the engine in this process the shell has no surface, so
+            // this can only drop client focus and let the key path forward to
+            // WebKit. Out of process it is a surface like any other, and
+            // focusing it is what makes the keys arrive.
+            let target = state.shell_client_surface().cloned();
             if let Some(keyboard) = state.seat.get_keyboard() {
                 let serial = SERIAL_COUNTER.next_serial();
-                keyboard.set_focus(state, None, serial);
+                keyboard.set_focus(state, target, serial);
             }
             // Keys stopping at the shell is only half of it, and the other
             // half — no window still drawn as the focused one — is what

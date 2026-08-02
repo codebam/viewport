@@ -174,21 +174,31 @@ pub struct ViewportState {
     /// session.
     #[cfg(feature = "wpe")]
     pub shell_copy_refused: bool,
+    /// Which engine draws the desktop.
+    pub shell_backend: crate::shell_backend::ShellBackend,
+    /// Whether that came from the command line, which the config file must not
+    /// override.
+    pub shell_backend_from_flag: bool,
+    /// The shell as a client of this compositor, for the backend that runs it
+    /// out of process. Never set at the same time as `shell`: one desktop, one
+    /// engine drawing it.
+    pub shell_client: Option<crate::shell_client::ClientShell>,
+    /// Whether the out-of-process shell has already been told it is painting
+    /// into shared memory. Once per shell, not once per frame.
+    pub shell_shm_warned: bool,
+    #[cfg(feature = "wpe")]
     /// The size the shell was last told it is, so a layout change that does
     /// not alter it costs nothing.
-    #[cfg(feature = "wpe")]
     pub shell_size: Option<(u32, u32)>,
     /// The compositor's own copy of the shell's newest frame, and its size.
     ///
     /// Reused between frames; reallocated only when the layout changes size.
-    #[cfg(feature = "wpe")]
     pub shell_owned: Option<(
         smithay::backend::allocator::dmabuf::Dmabuf,
         smithay::utils::Size<i32, smithay::utils::Physical>,
     )>,
     /// How many frames the shell has painted. Only for the log: "one frame
     /// and then nothing" and "painting normally" are the same still picture.
-    #[cfg(feature = "wpe")]
     pub shell_frames: u64,
     /// How many times the shell has been restarted after its web process
     /// died, and when the run of restarts began.
@@ -206,7 +216,6 @@ pub struct ViewportState {
     /// A fresh `Id` per frame would make every damage tracker treat the shell
     /// as a new element each time, so it could never work out what actually
     /// changed and would repaint the whole output forever.
-    #[cfg(feature = "wpe")]
     pub shell_element_id: smithay::backend::renderer::element::Id,
     /// A second id for the copy of the shell drawn *over* the windows.
     ///
@@ -231,7 +240,6 @@ pub struct ViewportState {
     /// element built with `DamageSnapshot::empty()` answers "nothing" for
     /// ever — so the outputs go quiet after the first frame while WebKit
     /// carries on painting into buffers nobody draws.
-    #[cfg(feature = "wpe")]
     pub shell_damage: smithay::backend::renderer::utils::DamageBag<i32, smithay::utils::Buffer>,
 
     /// The pointer image: the client's own surface where one is set, the
@@ -889,25 +897,25 @@ impl ViewportState {
             shell: None,
             #[cfg(feature = "wpe")]
             shell_ping: None,
+            shell_backend: crate::shell_backend::ShellBackend::default_for_build(),
+            shell_backend_from_flag: false,
+            shell_client: None,
+            shell_shm_warned: false,
             #[cfg(feature = "wpe")]
             shell_size: None,
             #[cfg(feature = "wpe")]
             shell_renderer: None,
             #[cfg(feature = "wpe")]
             shell_copy_refused: false,
-            #[cfg(feature = "wpe")]
             shell_owned: None,
-            #[cfg(feature = "wpe")]
             shell_frames: 0,
             #[cfg(feature = "wpe")]
             shell_restarts: 0,
             #[cfg(feature = "wpe")]
             shell_restart_window: None,
-            #[cfg(feature = "wpe")]
             shell_element_id: smithay::backend::renderer::element::Id::new(),
             shell_overlay_ids: Vec::new(),
             shell_overlays: Vec::new(),
-            #[cfg(feature = "wpe")]
             shell_damage: Default::default(),
 
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
@@ -1108,14 +1116,14 @@ impl ViewportState {
         }
         if self.overview {
             // Every click belongs to the shell while it is drawing miniatures.
-            return None;
+            return self.shell_under(pos);
         }
         if crate::pointer::over_overlay(&self.shell_overlays, pos) {
             // The shell drew something here in front of the windows — a
             // notification, a floating bar, the screen-share chooser. It is on
             // top, so it takes the pointer; reporting the window underneath
             // would hand the click straight through it.
-            return None;
+            return self.shell_under(pos);
         }
 
         // Layer surfaces first where they are in front, and last where they
@@ -1189,7 +1197,22 @@ impl ViewportState {
                 return Some((surface, (at + render_location).to_f64()));
             }
         }
-        below
+        below.or_else(|| self.shell_under(pos))
+    }
+
+    /// The shell's own surface at a point, for the out-of-process backend.
+    ///
+    /// This is the whole of its input handling. Where the WPE backend answers
+    /// `None` — "the pointer is on the shell, so tell the engine directly" —
+    /// this answers with a surface, and the pointer and keyboard take it from
+    /// there exactly as they would for any other client. A click on a titlebar
+    /// the shell drew is a `wl_pointer.button` on the shell's surface.
+    ///
+    /// One buffer across the whole layout, mapped at the layout's origin, so a
+    /// position in layout coordinates is already surface-local.
+    fn shell_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let surface = self.shell_client_surface()?;
+        Some((surface.clone(), pos))
     }
 
     /// Advertise linux-dmabuf, with the formats this renderer can import.
@@ -3728,7 +3751,9 @@ impl ViewportState {
 
         let cursor = self.cursor_for(output, output_geometry, scale);
 
-        #[cfg(feature = "wpe")]
+        // Whichever backend painted it. `shell_owned` is a DMA-BUF and a size,
+        // and the element below it does not care whether WebKit handed it over
+        // through an engine call or a client attached it to a surface.
         let shell = self
             .shell_owned
             .as_ref()
@@ -3744,8 +3769,6 @@ impl ViewportState {
                 damage: self.shell_damage.snapshot(),
                 id: self.shell_element_id.clone(),
             });
-        #[cfg(not(feature = "wpe"))]
-        let shell = None;
 
         // The part of the shell that goes above the windows, in this output's
         // own physical coordinates.
@@ -4054,6 +4077,14 @@ impl ViewportState {
         if let Some(url) = file.url {
             self.shell_url = Some(url);
         }
+        // Only where the command line said nothing: a flag is a decision made
+        // for this run, and a config file that could override it would make
+        // `--shell-backend` untestable on a machine that has one.
+        if let Some(name) = file.shell_backend.as_deref() {
+            if !self.shell_backend_from_flag {
+                self.shell_backend = crate::shell_backend::choose(None, Some(name));
+            }
+        }
         if !file.outputs.is_empty() {
             self.output_config = file.outputs;
         }
@@ -4355,6 +4386,9 @@ impl ViewportState {
         }
         for lock in self.lock_surfaces.values() {
             with_surfaces_surface_tree(lock.wl_surface(), &release);
+        }
+        if let Some(surface) = self.shell_client_surface() {
+            with_surfaces_surface_tree(surface, &release);
         }
         // After the walks, so the closure's borrows are done with.
         let signalled = signalled.get();
@@ -4775,6 +4809,10 @@ impl ViewportState {
         // window resized, leaves the rest of the screen on the clear colour.
         #[cfg(feature = "wpe")]
         self.resize_shell();
+        // The same thing for the shell that is a client: it is configured to
+        // the layout rather than to an output, so the layout changing is the
+        // only thing that resizes it.
+        self.configure_client_shell();
 
         let event = Event::OutputLayout { outputs };
         self.notify(&event);
@@ -4937,6 +4975,19 @@ impl ViewportState {
         for lock in self.lock_surfaces.values() {
             smithay::desktop::utils::send_frames_surface_tree(
                 lock.wl_surface(),
+                output,
+                at,
+                throttle,
+                |_, _| Some(output.clone()),
+            );
+        }
+        // The out-of-process shell. It is not in the space and not in a layer
+        // map, so nothing above reaches it — and a client that paints only when
+        // invited and is never invited is a desktop that draws one frame and
+        // stops.
+        if let Some(surface) = self.shell_client_surface().cloned() {
+            smithay::desktop::utils::send_frames_surface_tree(
+                &surface,
                 output,
                 at,
                 throttle,
@@ -5307,6 +5358,16 @@ pub struct ClientState {
     /// strength of it yet — the point of the protocol is that a compositor
     /// *can* tell, and a compositor that cannot tell has no way to start.
     pub security_context: Option<smithay::wayland::security_context::SecurityContext>,
+    /// Set on the one connection the compositor made for the shell process it
+    /// started itself.
+    ///
+    /// This is what makes the out-of-process shell unforgeable. Recognising it
+    /// by `app_id` would mean any client that named itself `dev.viewport.shell`
+    /// could take the desktop's place — draw under every window, receive every
+    /// click that misses one — and an `app_id` is a string a client chooses.
+    /// A connection is not: this one was handed to a process the compositor
+    /// spawned, over a socket pair nothing else has an end of.
+    pub shell: bool,
 }
 
 impl ClientData for ClientState {

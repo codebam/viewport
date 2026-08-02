@@ -52,6 +52,14 @@ impl XdgShellHandler for ViewportState {
     /// occupy. The announcement itself waits for the first buffer — see
     /// `announce_if_newly_mapped`.
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        // The desktop itself, when it is being drawn by a process rather than
+        // by an engine inside this one. It is not a window: it is not tiled,
+        // not announced to the shell as something to lay out, not listed in a
+        // taskbar and not offered as a screen-share source.
+        if self.is_shell_client(surface.wl_surface()) {
+            self.adopt_shell_toplevel(surface);
+            return;
+        }
         let window = Window::new_wayland_window(surface);
         let id = self.views.insert(window);
         tracing::debug!("new toplevel, view {id}");
@@ -99,6 +107,9 @@ impl XdgShellHandler for ViewportState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        if self.shell_toplevel_destroyed(surface.wl_surface()) {
+            return;
+        }
         let Some(view) = self.views.find_by_surface(surface.wl_surface()) else {
             return;
         };

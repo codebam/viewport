@@ -67,6 +67,9 @@ pub struct IdleConfig {
 #[serde(default)]
 pub struct File {
     pub url: Option<String>,
+    /// Which engine draws the shell: `wpe`, `webkitgtk`, `servo` or `cef`.
+    /// See `crate::shell_backend`.
+    pub shell_backend: Option<String>,
     pub fallback: Option<String>,
     pub timeout_ms: Option<i64>,
     pub terminal: Option<String>,

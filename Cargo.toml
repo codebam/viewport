@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/viewport",
     "crates/viewport-ipc",
+    "crates/viewport-shell-gtk",
     "crates/viewport-web",
     "crates/viewport-vulkan",
 ]

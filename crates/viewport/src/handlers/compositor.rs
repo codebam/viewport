@@ -166,6 +166,18 @@ impl ViewportState {
             }
         }
 
+        // Before everything else that looks at a commit: the shell's buffer is
+        // taken here, and none of the rest applies to it — it is not a window,
+        // not a layer surface and not a lock screen.
+        if self.shell_client_commit(surface) {
+            // Both clocks, as for any other client: the shell is invited to
+            // draw by the same frame callbacks, and it is as entitled to a
+            // fifo barrier as anything else that paints.
+            self.arm_frame_clock();
+            self.arm_barrier_tick();
+            return;
+        }
+
         xdg_shell::handle_commit(self, surface);
         // A layer surface has no size until it is arranged, and will not paint
         // until it has been configured.

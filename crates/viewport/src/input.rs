@@ -1103,11 +1103,16 @@ impl ViewportState {
                     toplevel.send_close();
                 }
             }
-            Bound::Reload =>
-            {
+            Bound::Reload => {
                 #[cfg(feature = "wpe")]
                 if let Some(shell) = self.shell.as_ref() {
                     shell.reload();
+                }
+                // Out of process there is no engine here to call, so the
+                // request travels the way everything else does and the shell
+                // process acts on it.
+                if self.shell_client.is_some() {
+                    self.notify(&viewport_ipc::Event::ShellReload);
                 }
             }
             Bound::Mode(mode) => {

@@ -35,6 +35,8 @@ mod screencopy;
 mod session;
 #[cfg(feature = "wpe")]
 mod shell;
+mod shell_backend;
+mod shell_client;
 mod state;
 mod status;
 mod tearing;
@@ -163,6 +165,19 @@ fn run() -> Result<()> {
     let display: Display<ViewportState> = Display::new()?;
 
     let mut state = ViewportState::new(&mut event_loop, display, socket_path)?;
+
+    // Before the config, because the config file is only consulted where
+    // neither the command line nor the environment said anything. A name that
+    // cannot be honoured is reported and fallen back from rather than being
+    // fatal: this is the setting that decides whether there is a desktop, and
+    // refusing to start over it leaves nothing to log in to and fix it with.
+    {
+        let asked = flag(&args, "--shell-backend");
+        state.shell_backend = shell_backend::choose(asked, None);
+        state.shell_backend_from_flag =
+            asked.is_some() || std::env::var_os("VIEWPORT_SHELL_BACKEND").is_some();
+    }
+
     state.apply_config(config);
     // After the config, so the flag wins — the same rule `--renderer` follows,
     // and for the same reason: naming it on the command line is the more
@@ -259,21 +274,23 @@ fn run() -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         state.socket_name.to_string_lossy()
     );
-    // Whether there is a shell in this binary at all.
+    // Which engine is going to draw the desktop, said once and plainly.
     //
-    // The feature is not the default, so `cargo test` and a plain
-    // `cargo build` both leave a binary with no web engine in
-    // target/release — and run-drm.sh runs whatever is there. A session with
-    // no shell looks exactly like a shell that failed to paint: grey where
-    // the wallpaper and the bar should be, and nothing in the log to say
-    // which, because the code that would have logged is not compiled in.
-    if cfg!(feature = "wpe") {
-        tracing::info!("the shell is compiled in");
-    } else {
-        tracing::warn!(
-            "no shell in this binary: rebuild with \
-             `cargo build --release -p viewport --features wpe`"
-        );
+    // A session with no shell looks exactly like a shell that failed to paint:
+    // grey where the wallpaper and the bar should be, and nothing in the log
+    // to say which. That used to be the common case — the `wpe` feature is not
+    // the default, so a plain `cargo build` left a binary with no engine in it
+    // at all — and it is why this line exists.
+    match state.shell_backend {
+        shell_backend::ShellBackend::Wpe => {
+            tracing::info!("shell backend: wpe, the engine in this process");
+        }
+        backend if backend.is_out_of_process() => {
+            tracing::info!("shell backend: {backend}, in a process of its own");
+        }
+        backend => {
+            tracing::error!("shell backend: {backend}, which cannot draw anything");
+        }
     }
 
     // A self-imposed deadline, for trying things on a real TTY.
@@ -380,6 +397,11 @@ fn run() -> Result<()> {
             .insert_source(timer, |_, _, state| {
                 state.idle_tick();
                 state.check_lock_screen();
+                // And whether the shell process is still there. Reaped here
+                // rather than on SIGCHLD: this compositor installs no signal
+                // handlers, and a desktop that has been gone for at most a
+                // second is not a thing anyone can see.
+                state.check_client_shell();
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
                     std::time::Duration::from_secs(1),
                 )
@@ -593,6 +615,7 @@ const OPTIONS: &[&str] = &[
     "--height",
     "--exit-after",
     "--url",
+    "--shell-backend",
 ];
 
 /// Say so when an option is not one of ours.
