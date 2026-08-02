@@ -168,6 +168,35 @@ Read these before quoting anything above.
   There is no per-output attribution to be had: one process, one render loop
   serving both.
 
+## The shell backends against each other
+
+Everything above compares Viewport with other compositors. The shell can be
+drawn by three different engines — see
+[`docs/shell-backends.md`](shell-backends.md) — and comparing those means
+holding the compositor still and changing only the engine:
+
+```sh
+scripts/bench-backends.sh              # wpe, webkitgtk and chromium
+scripts/bench-backends.sh --only chromium
+```
+
+Each backend is a package rather than a flag, because the packaged wrapper is
+what names the engine and installs the shell program beside the compositor; the
+script builds all three before measuring any, so a build failure in the last
+one does not arrive after two runs have already had the machine.
+
+Two things to hold in mind when the numbers arrive. `wpe` runs the engine
+inside the compositor process, so its cost lands in the compositor's own CPU
+and RSS columns while the other two carry theirs in a second process — a
+per-compositor number is not comparable across that line without adding the
+shell process back in. And the `chromium` backend runs `--in-process-gpu`,
+because with a GPU process of its own Chromium segfaults on this compositor and
+falls back to software; that is a real difference in what is being measured,
+not a knob turned for tidiness.
+
+Results are not published here yet. This section is the method, so that a run
+is reproducible before there is anything to argue with.
+
 ## Reproducing
 
 ```sh
