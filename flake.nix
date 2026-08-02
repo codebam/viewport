@@ -589,9 +589,16 @@
           inherit wpe webkitgtk chromium cef wpewebkit;
           inherit viewport-shell-cef;
 
-          # The old name for `.#wpe`. Kept because it is what any existing pin
-          # or checkout says, and a rename is not a reason to break one.
-          viewport-smithay = wpe;
+          # The old name, from before these were named for the engine. It
+          # follows the default rather than staying pinned to the backend that
+          # happened to be the only one when it was the only name — a system
+          # that asked for "the Viewport from this flake" should get the one
+          # this flake recommends.
+          #
+          # Which means a pin to this name changes backend when the default
+          # does. That is the intent and it is worth knowing: name `.#wpe`,
+          # `.#webkitgtk`, `.#chromium` or `.#cef` to be held to one.
+          viewport-smithay = cef;
           # `viewport` used to be here too, the wlroots build, and was the
           # default. Both compositors produced a binary called `viewport`, so a
           # system installed one or the other; there is only one now.
