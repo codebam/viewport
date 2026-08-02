@@ -9,29 +9,12 @@
     # toolchain; see `devShells.asan`.
     #
     # Following our nixpkgs so this adds a toolchain and not a second package
-    # set — in particular it must not move the nixpkgs revision, because the
-    # WPE WebKit store path in the binary cache is a function of it.
+    # set — in particular it must not move the nixpkgs revision, because that
+    # revision is what every prebuilt path in this flake substitutes against.
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-  };
-
-  nixConfig = {
-    extra-substituters = [
-      "https://codebam-nix-cache.storage.googleapis.com"
-      "https://storage.googleapis.com/codebam-nix-cache"
-    ];
-    extra-trusted-substituters = [
-      "https://codebam-nix-cache.storage.googleapis.com"
-      "https://storage.googleapis.com/codebam-nix-cache"
-    ];
-    # Signed by the key gcp-cache-fill pulls from GCP Secret Manager
-    # (secret: nix-cache-signing-key). Without this the bucket's narinfos are
-    # rejected as unsigned and the substituter is silently useless.
-    extra-trusted-public-keys = [
-      "codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0="
-    ];
   };
 
   outputs = { self, nixpkgs, flake-utils, rust-overlay }:
@@ -43,9 +26,9 @@
         #
         # Deliberately not an overlay on `pkgs`. That would put a different
         # rustc in front of every derivation that uses one — mesa builds Rust
-        # components — which changes the WPE WebKit closure, and that path is
-        # what the binary cache holds. Everything except `devShells.asan`
-        # continues to evaluate against the untouched `pkgs`.
+        # components — which changes the WPE WebKit closure, and that closure
+        # is a WebKit build. Everything except `devShells.asan` continues to
+        # evaluate against the untouched `pkgs`.
         nightly =
           (import nixpkgs {
             inherit system;
@@ -448,7 +431,12 @@
           # `viewport` used to be here too, the wlroots build, and was the
           # default. Both compositors produced a binary called `viewport`, so a
           # system installed one or the other; there is only one now.
-          default = viewport-smithay;
+          #
+          # The default is the out-of-process shell, for the same reason the
+          # NixOS module's is: `nix run` on this flake should give a desktop
+          # off the binary cache rather than starting a WebKit build. Ask for
+          # `.#viewport-smithay` to get the in-process engine.
+          default = viewport-webkitgtk;
         };
 
         # --------------------------------------------------------------------
@@ -491,7 +479,7 @@
         #
         # Nightly because -Zsanitizer is unstable, and only here: `nightly` is
         # never applied as an overlay, so nothing else in this flake changes
-        # toolchain and the cached WPE WebKit path stays put.
+        # toolchain and the WPE WebKit path stays put.
         #
         # rust-src, because -Zbuild-std recompiles the standard library with
         # the same instrumentation. Without it std is uninstrumented and an
@@ -637,57 +625,12 @@
       }) // {
 
       # ----------------------------------------------------------------------
-      # The binary cache, so that importing any part of this builds nothing it
-      # does not have to.
-      #
-      # This used to live in the session module alone, and a system that took
-      # only the portal module still built the compositor — the portal backend
-      # *is* the compositor's package — from source, every time. Both modules
-      # import this one, so the substituter arrives with whichever of them is
-      # enabled.
-      #
-      # The key matters as much as the URL: nixConfig in this flake applies to
-      # interactive evaluation and only with accept-flake-config, so a system
-      # without the key here reaches the bucket and rejects every narinfo in it
-      # as unsigned. That failure is silent, and looks exactly like a cache
-      # that has nothing in it.
-      # ----------------------------------------------------------------------
-      nixosModules.cache = { config, lib, ... }:
-        let
-          cfg = config.programs.viewport;
-          substituters = [
-            "https://codebam-nix-cache.storage.googleapis.com"
-            "https://storage.googleapis.com/codebam-nix-cache"
-          ];
-        in
-        {
-          # `or false` because either module can be imported without the other,
-          # so either option may be undefined here.
-          config = lib.mkIf ((cfg.enable or false) || (cfg.portals.enable or false)) {
-            nix.settings = {
-              extra-substituters = substituters;
-              trusted-substituters = substituters;
-              # Signed by the key gcp-cache-fill pulls from GCP Secret Manager
-              # (secret: nix-cache-signing-key).
-              extra-trusted-public-keys = [
-                "codebam-nix-cache-1:ZiBhSEjcy3Y53eTmQIdJsa1T1T6fCrh52EK22amzkD0="
-              ];
-            };
-          };
-        };
-
-      # ----------------------------------------------------------------------
-      # NixOS module: session entry + seatd, so viewport can be picked from a
-      # display manager or launched straight from a TTY.
-      # ----------------------------------------------------------------------
       # Portal wiring, on its own so it can be imported without adopting the
       # session module. Getting screen sharing working is four lines of routing
       # that nobody should have to rediscover: a browser's getDisplayMedia
       # simply rejects, and no log anywhere names a portal or a desktop.
       nixosModules.portal = { config, lib, pkgs, ... }:
         {
-          imports = [ self.nixosModules.cache ];
-
           options.programs.viewport.portals.enable =
             lib.mkEnableOption "xdg-desktop-portal wiring for Viewport" // {
               description = ''
@@ -743,6 +686,10 @@
           };
         };
 
+      # ----------------------------------------------------------------------
+      # NixOS module: session entry + seatd, so viewport can be picked from a
+      # display manager or launched straight from a TTY.
+      # ----------------------------------------------------------------------
       nixosModules.default = { config, lib, pkgs, ... }:
         let
           cfg = config.programs.viewport;

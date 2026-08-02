@@ -83,11 +83,28 @@ The legacy path would have meant standing up our own EGL display on a `gbm`
 device and pulling fds out with `EGL_MESA_image_dma_buf_export` — several
 hundred lines of glue to arrive at the same dma-buf.
 
+## Run it
+
+```sh
+nix run github:codebam/viewport-smithay
+```
+
+That is the whole thing: a compositor and a desktop, from a flake, with no
+WebKit compiled anywhere. It nests inside the session you are already in when
+there is one and takes the DRM device when there is not, so trying it from a
+terminal costs a window rather than the machine. `Mod4+Shift+e` quits, and
+`-- --exit-after 30` gives it a deadline in case that is the thing that is
+broken.
+
+The default package is the shell out of process, on nixpkgs' prebuilt
+WebKitGTK, because it is the one that substitutes rather than builds. Ask for
+the in-process engine by name.
+
 ## Build
 
 ```sh
-nix build .#viewport-smithay    # the engine in-process; builds WebKit
-nix build .#viewport-webkitgtk  # the engine beside it; builds no WebKit at all
+nix build github:codebam/viewport-smithay                   # the default, above
+nix build github:codebam/viewport-smithay#viewport-smithay  # in-process; builds WebKit
 ```
 
 Or to work in the tree:
@@ -102,18 +119,17 @@ scripts/integration.sh target/debug/viewport   # real clients, headless
 non-default feature, so the tests do not need it and the shell is not linked
 into what they run. `nix develop` on its own is the fuller workstation shell.
 
-WPE WebKit is a full WebKit build — hours, and tens of gigabytes — so it comes
-from the project's binary cache rather than being compiled. flake.nix names
-that cache and the key it is signed with.
+WPE WebKit is a full WebKit build — hours, and tens of gigabytes — and nothing
+substitutes it, because `wpewebkit` is packaged by nobody.
 
 ```sh
 nix build .#wpewebkit   # do this once, deliberately, before anything else
 ```
 
-That build is the whole reason there is a second backend.
-`.#viewport-webkitgtk` runs the same shell against nixpkgs' prebuilt
-WebKitGTK — the same WebKit version, a different port, out of process — and
-substitutes from cache.nixos.org like anything else.
+That build is the whole reason there is a second backend, and the reason it is
+the default. `.#viewport-webkitgtk` runs the same shell against nixpkgs'
+prebuilt WebKitGTK — the same WebKit version, a different port, out of
+process — and substitutes from cache.nixos.org like anything else.
 
 Run nested inside an existing compositor:
 
@@ -188,7 +204,7 @@ it, and a `wayland-sessions` entry means a display manager will offer it as
 something to log into. See `packaging/arch/README.md` for building it in a
 container, which has two non-obvious wrinkles.
 
-On NixOS, `flake.nix` provides packages and a dev shell, and
+On NixOS, `flake.nix` provides packages, a dev shell and two modules, and
 `programs.viewport.shellBackend` picks which engine the session is installed
 with:
 
