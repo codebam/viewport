@@ -3526,6 +3526,38 @@ impl ViewportState {
         );
     }
 
+    /// Work out what is under the pointer again, without it having moved.
+    ///
+    /// A pointer's focus is decided when it moves. Anything else that changes
+    /// what is under it — the shell drawing a notification over a window, a
+    /// window opening beneath it, the overview coming up — leaves that focus
+    /// describing a desktop that no longer exists, and the next click goes
+    /// wherever the last motion said.
+    ///
+    /// Sent as a motion to the position it is already at, which is how a
+    /// Wayland compositor says "the same pointer, somewhere else in the
+    /// stack": clients receive leave and enter as they should, and one that
+    /// tracks the pointer sees no jump because there is none.
+    pub fn refresh_pointer_focus(&mut self) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let location = pointer.current_location();
+        let under = self.surface_under(location);
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let time = self.start_time.elapsed().as_millis() as u32;
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+    }
+
     /// Sample the machine and tell the shell.
     ///
     /// The page cannot do this for itself: it is loaded from file:// or
@@ -4732,6 +4764,22 @@ impl ViewportState {
         if self.shell_overlays == rects {
             return;
         }
+        // What is under the pointer just changed without the pointer moving,
+        // and the pointer's focus is only worked out when it moves.
+        //
+        // This is what made notifications unclickable. One appears over a
+        // window, under a pointer that is sitting still; the compositor knows
+        // the click belongs to the shell — `surface_under` checks the overlays
+        // first — but the *pointer* still has the window underneath as its
+        // focus, and a button event goes to the focus rather than to a fresh
+        // hit test. The click landed on whatever the notification was covering.
+        //
+        // The in-process backend never showed this: there, a click over an
+        // overlay was routed by re-running the hit test at button time, since
+        // the shell was not a surface and could not be a pointer focus. Moving
+        // the shell into a client is what turned "checked on every click" into
+        // "checked on every motion", and this is the half that went missing.
+        self.refresh_pointer_focus();
         while self.shell_overlay_ids.len() < rects.len() {
             self.shell_overlay_ids
                 .push(smithay::backend::renderer::element::Id::new());

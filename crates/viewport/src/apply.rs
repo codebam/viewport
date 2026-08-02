@@ -141,6 +141,10 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::ShellOverview { active } => {
             state.overview = active;
+            // Every click belongs to the shell while the overview is up and to
+            // the windows again when it is down, and neither transition
+            // involves the pointer moving. Same reason as `set_shell_overlays`.
+            state.refresh_pointer_focus();
             if active {
                 if let Some(keyboard) = state.seat.get_keyboard() {
                     let serial = SERIAL_COUNTER.next_serial();
