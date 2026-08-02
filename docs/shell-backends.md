@@ -5,9 +5,10 @@ the choices are.
 
 ```
 --shell-backend=webkitgtk   WebKitGTK, in a process of its own     implemented
+--shell-backend=chromium    Chromium, driven as a child process    implemented
 --shell-backend=wpe         WPE WebKit, inside the compositor      implemented
 --shell-backend=servo       Servo, inside the compositor           refused
---shell-backend=cef         Chromium through CEF, inside it        refused
+--shell-backend=cef         Chromium embedded in-process           refused
 ```
 
 `webkitgtk` is what the NixOS module installs unless told otherwise, because
@@ -54,13 +55,14 @@ The compositor makes a socket pair, inserts one end as a Wayland client marked
 as the shell, and starts `viewport-shell-gtk` on the other. Everything after
 that is ordinary:
 
-| | wpe | webkitgtk |
-| --- | --- | --- |
-| pixels | `WPEBufferDMABuf` per frame | a client attaches a buffer |
-| input | translated into engine calls | `wl_pointer` / `wl_keyboard` |
-| pacing | acknowledge a frame to release the next | `wl_surface::frame` |
-| bridge | `messageHandlers` in-process | `messageHandlers` over the control socket |
-| a crash | takes the session | takes the shell |
+| | wpe | webkitgtk | chromium |
+| --- | --- | --- | --- |
+| pixels | `WPEBufferDMABuf` per frame | a client attaches a buffer | a client attaches a buffer |
+| input | translated into engine calls | `wl_pointer` / `wl_keyboard` | `wl_pointer` / `wl_keyboard` |
+| pacing | acknowledge a frame to release the next | `wl_surface::frame` | `wl_surface::frame` |
+| bridge | `messageHandlers` in-process | `messageHandlers`, engine API | `messageHandlers`, DevTools protocol |
+| engine | built here, hours | prebuilt, linked | prebuilt, not linked |
+| a crash | takes the session | takes the shell | takes the shell |
 
 The page needs no edit for either: WebKitGTK has the same user-content API WPE
 does, so `window.webkit.messageHandlers.viewport` is real rather than shimmed,
@@ -97,6 +99,38 @@ If the shell process itself exits, the compositor restarts it, five times in a
 minute, then leaves it down and says so. The desktop is blank at that point;
 the compositor is not.
 
+## chromium — the engine in a browser, driven
+
+`crates/viewport/src/shell_client.rs`, `crates/viewport-shell-chromium/`. The
+compositor starts `viewport-shell-chromium`, which starts a browser and drives
+it. Nothing links an engine: this crate compiles in seconds on a machine with
+no browser installed, and the engine is whatever `chromium` the package names —
+`VIEWPORT_CHROMIUM_BIN` overrides it.
+
+The window is a Wayland client exactly as the WebKitGTK one is, on the
+connection the compositor handed over, so placement, input, pacing and the
+buffer are all the same code.
+
+**The bridge is the DevTools protocol**, over `--remote-debugging-pipe` rather
+than a port: a debugging *port* is a socket anything local can connect to, and
+what it can do there is drive the desktop. `Runtime.addBinding` puts
+`__viewport_send` in the page, `viewport_ipc::js::BRIDGE_SHIM` wraps it in the
+`window.webkit.messageHandlers.viewport` name the shell was written against,
+and `Runtime.evaluate` delivers the same `CustomEvent` inbound. Chromium
+announces several targets and answers an attach slower than it announces the
+next one, so the shell attaches once and ignores the rest — without that, the
+bridge is installed three times and every message arrives in triplicate.
+
+**It runs the GPU in the browser process.** With a GPU process of its own,
+Chromium segfaults on this compositor — `exit_code=139`, three times over —
+and falls back to software rendering, which means shared-memory buffers, which
+the shell element cannot draw. `--in-process-gpu` produces a DMA-BUF on the
+first frame. `VIEWPORT_CHROMIUM_GPU_PROCESS=1` restores the separate process
+for a machine where this is not true, and is worth knowing about when
+comparing this backend's numbers against the other two.
+
+`VIEWPORT_CHROMIUM_ARGS` adds arguments to the browser's command line.
+
 ## servo — refused
 
 The original plan for the rewrite, and the buffer handoff is already spiked:
@@ -111,10 +145,24 @@ rather than a shorter build.
 
 ## cef — refused
 
-CEF's offscreen rendering hands `OnAcceleratedPaint` dmabuf planes, a modifier
-and a format on Linux, which is very nearly `viewport_web::Frame` already, and
-nixpkgs' `cef-binary` is a prebuilt blob — no engine build at all. The cost is
-a C++ API and a multi-process model to host.
+The same Blink as `chromium`, embedded as a library rather than driven as a
+browser. What that would add is offscreen rendering — `OnAcceleratedPaint`
+hands over dmabuf planes, a modifier and a format, which is very nearly
+`viewport_web::Frame` already — so the shell would be a buffer in this process
+rather than a client, like `wpe` and unlike everything else here.
+
+What it costs, measured rather than guessed:
+
+- crates.io `cef` is `149.3.0+149.0.6`; nixpkgs' `cef-binary` is `149.0.5`. One
+  of the two has to move.
+- `cef-dll-sys`'s build script builds `libcef_dll_wrapper` from the
+  distribution with cmake and ninja, and downloads a CEF archive unless
+  `CEF_PATH` holds one with an `archive.json` it recognises — which a nix
+  sandbox forbids, so that file has to be produced.
+- CEF re-executes the host binary for its zygote, GPU and render processes, so
+  the entry point has to hand off before anything else runs.
+
+Until that is done, `--shell-backend=chromium` is the same engine.
 
 ## Building and installing
 
@@ -127,6 +175,9 @@ nix build .#wpe
 
 # the engine out of process; builds no WebKit at all
 nix build .#webkitgtk       # and this is `.#default`
+
+# no engine built or linked; runs nixpkgs' chromium
+nix build .#chromium
 ```
 
 `.#viewport-smithay` is still an alias for `.#wpe`, because that is what any
@@ -137,7 +188,7 @@ On NixOS:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "webkitgtk";   # the default; "wpe" builds WebKit instead
+  shellBackend = "webkitgtk";   # the default; also "chromium" or "wpe"
 };
 ```
 

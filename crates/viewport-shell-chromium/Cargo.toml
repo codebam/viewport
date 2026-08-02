@@ -1,0 +1,26 @@
+[package]
+name = "viewport-shell-chromium"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+description = "The Viewport shell, rendered out of process by Chromium"
+
+[dependencies]
+viewport-ipc.workspace = true
+viewport-shell-bridge.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# The engine is not linked. It is a browser, started as a child process and
+# driven over the DevTools protocol — which is why there is no engine
+# dependency here at all, and why this crate compiles in seconds on a machine
+# with no browser installed.
+#
+# `rustix` for the pipe pair the protocol travels over; Chromium's
+# `--remote-debugging-pipe` takes fds 3 and 4 rather than a TCP port, which
+# means no listening socket on the machine and no port to collide.
+rustix = { version = "1", features = ["pipe", "process", "stdio"] }

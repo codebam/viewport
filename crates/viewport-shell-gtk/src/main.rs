@@ -38,14 +38,11 @@
 // taking the compositor with it, and the compositor can restart it without
 // restarting itself.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc;
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{anyhow, Result};
 use gtk4 as gtk;
+use viewport_shell_bridge::{Line, Options};
 // One prelude, not two: webkit6's re-exports the GTK traits this uses, and
 // importing both is an unused import rather than a missing one.
 use webkit6::prelude::*;
@@ -106,69 +103,6 @@ fn main() -> Result<()> {
         return Err(anyhow!("the shell exited with {code:?}"));
     }
     Ok(())
-}
-
-/// Everything the shell needs to be told, and where each of them comes from.
-#[derive(Clone, Debug)]
-struct Options {
-    /// The page to load.
-    url: String,
-    /// The compositor's control socket.
-    socket: PathBuf,
-    /// Whether to allow the web inspector. For a shell being edited live.
-    inspector: bool,
-}
-
-impl Options {
-    fn parse(args: &[String]) -> Result<Self> {
-        let flag = |name: &str| -> Option<String> {
-            let mut it = args.iter();
-            while let Some(arg) = it.next() {
-                if let Some(rest) = arg.strip_prefix(&format!("{name}=")) {
-                    return Some(rest.to_owned());
-                }
-                if arg == name {
-                    return it.next().cloned();
-                }
-            }
-            None
-        };
-
-        let url = flag("--url")
-            .or_else(|| std::env::var("VIEWPORT_SHELL_URL").ok())
-            .ok_or_else(|| {
-                anyhow!(
-                    "no page to load: pass --url or set VIEWPORT_SHELL_URL. \
-                     The compositor sets it when it starts the shell itself"
-                )
-            })?;
-
-        // The compositor passes the path outright, because a shell started
-        // with `WAYLAND_SOCKET` has no `WAYLAND_DISPLAY` to derive it from.
-        // The derivation is still here for running this by hand against a
-        // compositor that is already up, which is the whole dev loop for the
-        // shell's own JavaScript.
-        let socket = match flag("--socket").or_else(|| std::env::var("VIEWPORT_IPC_SOCKET").ok()) {
-            Some(path) => PathBuf::from(path),
-            None => {
-                let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_owned());
-                let display = std::env::var("WAYLAND_DISPLAY").map_err(|_| {
-                    anyhow!(
-                        "no control socket: pass --socket or set VIEWPORT_IPC_SOCKET, \
-                         or run under a compositor so WAYLAND_DISPLAY names one"
-                    )
-                })?;
-                PathBuf::from(format!("{dir}/viewport-{display}.sock"))
-            }
-        };
-
-        Ok(Self {
-            url,
-            socket,
-            inspector: flag("--inspector").is_some()
-                || std::env::var("VIEWPORT_SHELL_INSPECTOR").is_ok(),
-        })
-    }
 }
 
 fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
@@ -255,10 +189,7 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
         .child(&view)
         .build();
 
-    let socket = UnixStream::connect(&options.socket)
-        .with_context(|| format!("connecting to {}", options.socket.display()))?;
-
-    bridge(&view, &manager, socket, app)?;
+    bridge(&view, &manager, options, app)?;
 
     view.load_uri(&options.url);
     window.present();
@@ -267,34 +198,24 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
 
 /// Wire the page to the compositor, in both directions.
 ///
-/// Neither direction runs on the GTK thread by itself. A blocking read there
-/// would stop the shell painting, and a blocking write there would stop it as
-/// well the moment the compositor was slow to drain the socket — which is
-/// exactly when the desktop most needs to keep drawing. So each direction gets
-/// a thread, and the GTK thread only ever touches a channel.
+/// The socket, its two threads and the framing are
+/// `viewport_shell_bridge`; what is here is the part that is WebKit's — the
+/// script message handler outbound, and an evaluated script inbound.
 fn bridge(
     view: &webkit6::WebView,
     manager: &webkit6::UserContentManager,
-    socket: UnixStream,
+    options: &Options,
     app: &gtk::Application,
 ) -> Result<()> {
-    let reader = socket.try_clone().context("duplicating the socket")?;
-
-    // Page to compositor.
-    let (out_tx, out_rx) = mpsc::channel::<String>();
-    std::thread::Builder::new()
-        .name("ipc-write".into())
-        .spawn(move || {
-            let mut socket = socket;
-            while let Ok(mut line) = out_rx.recv() {
-                line.push('\n');
-                if let Err(e) = socket.write_all(line.as_bytes()) {
-                    tracing::error!("writing to the compositor: {e}");
-                    return;
-                }
-            }
-        })
-        .context("starting the socket writer")?;
+    // The reader thread cannot touch the view, so lines cross onto the GTK
+    // main context here. glib's own channel was removed in 0.18; this is what
+    // the gtk-rs book replaced it with.
+    let (in_tx, in_rx) = async_channel::unbounded::<Line>();
+    let out = viewport_shell_bridge::connect(&options.socket, move |line| {
+        // A closed channel means the loop below has already stopped, which is
+        // to say the process is on its way out.
+        let _ = in_tx.send_blocking(line);
+    })?;
 
     manager.connect_script_message_received(Some("viewport"), move |_, value| {
         // The compositor accepts either a JSON string or a live object, so
@@ -311,34 +232,8 @@ fn bridge(
                 }
             }
         };
-        if out_tx.send(json).is_err() {
-            tracing::error!("the compositor is gone; the message was dropped");
-        }
+        out.send(json);
     });
-
-    // Compositor to page.
-    let (in_tx, in_rx) = async_channel::unbounded::<Line>();
-    std::thread::Builder::new()
-        .name("ipc-read".into())
-        .spawn(move || {
-            for line in BufReader::new(reader).lines() {
-                let line = match line {
-                    Ok(line) => line,
-                    Err(e) => {
-                        tracing::error!("reading from the compositor: {e}");
-                        break;
-                    }
-                };
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if in_tx.send_blocking(Line::Event(line)).is_err() {
-                    return;
-                }
-            }
-            let _ = in_tx.send_blocking(Line::Closed);
-        })
-        .context("starting the socket reader")?;
 
     // Events that arrived before the page could receive them.
     //
@@ -355,18 +250,18 @@ fn bridge(
         let loaded = loaded.clone();
         view.connect_load_changed(move |view, event| match event {
             webkit6::LoadEvent::Committed => {
-                // Committed, not Finished: the document and its scripts
-                // exist here, and waiting for every subresource would hold
-                // the desktop's state back behind a slow image.
+                // Committed, not Finished: the document and its scripts exist
+                // here, and waiting for every subresource would hold the
+                // desktop's state back behind a slow image.
                 loaded.set(true);
                 for json in queue.borrow_mut().drain(..) {
                     post(view, &json);
                 }
             }
             webkit6::LoadEvent::Started => {
-                // A reload throws the page away, so anything queued for
-                // the old one is stale and anything sent to the new one
-                // has to wait for it.
+                // A reload throws the page away, so anything queued for the
+                // old one is stale and anything sent to the new one has to
+                // wait for it.
                 loaded.set(false);
             }
             _ => {}
@@ -384,7 +279,7 @@ fn bridge(
                         // than the page. The compositor's reload binding used
                         // to be a call into the engine it owned; out of
                         // process it has to travel like everything else.
-                        if is_reload(&json) {
+                        if viewport_shell_bridge::is_reload(&json) {
                             tracing::info!("reloading the shell");
                             view.reload_bypass_cache();
                             continue;
@@ -411,11 +306,6 @@ fn bridge(
     Ok(())
 }
 
-enum Line {
-    Event(String),
-    Closed,
-}
-
 /// Deliver one event to the page.
 ///
 /// The script is built by `viewport_ipc::js`, which is also what the in-process
@@ -429,24 +319,4 @@ fn post(view: &webkit6::WebView, json: &str) {
         gtk::gio::Cancellable::NONE,
         |_| {},
     );
-}
-
-/// Whether a line is the compositor asking for a reload.
-///
-/// Matched on the wire rather than deserialised into `viewport_ipc::Event`:
-/// every other line is destined for the page unexamined, and parsing them all
-/// to recognise one would mean this process rejecting messages the page would
-/// have understood.
-fn is_reload(json: &str) -> bool {
-    #[derive(serde::Deserialize)]
-    struct Typed<'a> {
-        #[serde(rename = "type")]
-        kind: &'a str,
-    }
-    matches!(
-        serde_json::from_str::<Typed>(json),
-        Ok(Typed {
-            kind: "shell.reload"
-        })
-    )
 }

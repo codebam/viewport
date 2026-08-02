@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/viewport",
     "crates/viewport-ipc",
+    "crates/viewport-shell-bridge",
+    "crates/viewport-shell-chromium",
     "crates/viewport-shell-gtk",
     "crates/viewport-web",
     "crates/viewport-vulkan",
@@ -26,6 +28,7 @@ repository = "https://github.com/codebam/viewport-smithay"
 
 [workspace.dependencies]
 viewport-ipc = { path = "crates/viewport-ipc" }
+viewport-shell-bridge = { path = "crates/viewport-shell-bridge" }
 viewport-web = { path = "crates/viewport-web" }
 
 serde = { version = "1", features = ["derive"] }

@@ -195,20 +195,30 @@
 
         # The compositor, as a function of which engine draws its shell.
         #
-        # There are two, and the difference between them is almost entirely a
+        # There are three, and the difference between them is almost entirely a
         # packaging one — see `crates/viewport/src/shell_backend.rs`:
         #
         #   wpe        the engine in-process. `wpewebkit` above, which is a
         #              four-hour build no binary cache has.
         #   webkitgtk  the same WebKit as a separate process and an ordinary
-        #              Wayland client, from the prebuilt nixpkgs package. Adds
-        #              `viewport-shell-gtk` to bin/, which the compositor finds
-        #              beside itself and starts.
+        #              Wayland client, from the prebuilt nixpkgs package.
+        #   chromium   Blink, in a browser this does not link at all: the shell
+        #              process starts one and drives it over the DevTools
+        #              protocol, so the engine is a runtime dependency rather
+        #              than a build one.
         #
-        # Both binaries are called `viewport`, so a system installs one or the
-        # other. The default stays `wpe` so an existing configuration keeps the
-        # desktop it had.
-        mkViewport = { shellBackend }: pkgs.rustPlatform.buildRustPackage {
+        # The last two add a second binary to bin/, which the compositor finds
+        # beside itself and starts. All three install a binary called
+        # `viewport`, so a system installs one of them.
+        mkViewport = { shellBackend }:
+          let
+            # The crate that provides the shell process, where there is one.
+            shellCrate = {
+              webkitgtk = "viewport-shell-gtk";
+              chromium = "viewport-shell-chromium";
+            }.${shellBackend} or null;
+          in
+          pkgs.rustPlatform.buildRustPackage {
           # Named for the engine, like the attribute is. Both produce a binary
           # called `viewport`; the store path is the only thing that says which
           # of them a running compositor came from.
@@ -230,7 +240,7 @@
           # the out-of-process backend is two binaries out of one tree and a
           # subdirectory build can only produce one of them.
           cargoBuildFlags = [ "-p" "viewport" ]
-            ++ pkgs.lib.optionals (shellBackend == "webkitgtk") [ "-p" "viewport-shell-gtk" ];
+            ++ pkgs.lib.optionals (shellCrate != null) [ "-p" shellCrate ];
           buildFeatures = pkgs.lib.optionals (shellBackend == "wpe") [ "wpe" ];
 
           nativeBuildInputs = with pkgs; [
@@ -291,7 +301,19 @@
             cp ${self}/data/fallback.html $out/share/viewport/fallback.html
             cp ${self}/data/config.example.json $out/share/viewport/config.example.json
 
+            # Which engine this package was built to use.
+            #
+            # The binary picks a default of its own — the in-process engine
+            # when it was compiled in, the out-of-process one otherwise — and
+            # that default cannot know which shell program was installed beside
+            # it. A `chromium` package whose compositor went looking for
+            # `viewport-shell-gtk` came up windows-only with the reason in the
+            # log, which is exactly the case this closes.
+            #
+            # `--set-default`, so `--shell-backend` and the config file still
+            # win: this says what is installed, not what must be used.
             wrapProgram $out/bin/viewport \
+              --set-default VIEWPORT_SHELL_BACKEND ${shellBackend} \
               --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (with pkgs; [
                 vulkan-loader
                 libgbm
@@ -307,6 +329,12 @@
             # itself in bin/. This is where the GTK hook's environment goes:
             # the schemas, the GIO modules and the MIME database.
             wrapProgram $out/bin/viewport-shell-gtk "''${gappsWrapperArgs[@]}"
+          '' + pkgs.lib.optionalString (shellBackend == "chromium") ''
+            # The engine, named rather than looked for. `chromium` on PATH is
+            # whatever the session happens to have installed, and a desktop
+            # should not change engine because a user installed a browser.
+            wrapProgram $out/bin/viewport-shell-chromium \
+              --set-default VIEWPORT_CHROMIUM_BIN ${pkgs.chromium}/bin/chromium
           '';
 
           # The suite needs a GPU for the renderer tests and a socket for the
@@ -329,6 +357,11 @@
         # The engine out of process, from nixpkgs' prebuilt WebKitGTK. Nothing
         # in this closure is built from a WebKit tarball.
         webkitgtk = mkViewport { shellBackend = "webkitgtk"; };
+
+        # Blink, in a browser this does not link. The heaviest closure of the
+        # three and the lightest build: nothing here compiles an engine, and
+        # the one it runs is nixpkgs' chromium.
+        chromium = mkViewport { shellBackend = "chromium"; };
 
         # Shared by the two Rust shells below, which differ only in toolchain.
         rustDeps = with pkgs; [
@@ -429,7 +462,7 @@
           # thing that differs between them: `.#wpe`, `.#webkitgtk`, and two
           # more names to come. `wpewebkit` is the engine itself rather than a
           # compositor, which is why it does not follow the pattern.
-          inherit wpe webkitgtk wpewebkit;
+          inherit wpe webkitgtk chromium wpewebkit;
 
           # The old name for `.#wpe`. Kept because it is what any existing pin
           # or checkout says, and a rename is not a reason to break one.
@@ -748,7 +781,7 @@
             enable = mkEnableOption "the Viewport compositor";
 
             shellBackend = mkOption {
-              type = types.enum [ "webkitgtk" "wpe" ];
+              type = types.enum [ "webkitgtk" "chromium" "wpe" ];
               # The one that installs without building a browser engine.
               #
               # `wpe` is what this project shipped first and it is still the
@@ -772,6 +805,11 @@
                 binary cache has, because `wpewebkit` is not packaged in
                 nixpkgs.
 
+                `chromium` is Blink, in a browser started as a child process
+                and driven over the DevTools protocol. It links no engine at
+                all, so it is the fastest of the three to build and the only
+                one whose engine can change without a recompile.
+
                 Two further names — `servo` and `cef` — are recognised by the
                 compositor and refused: neither is implemented. See
                 crates/viewport/src/shell_backend.rs.
@@ -780,10 +818,7 @@
 
             package = mkOption {
               type = types.package;
-              default =
-                if cfg.shellBackend == "webkitgtk"
-                then self.packages.${pkgs.system}.webkitgtk
-                else self.packages.${pkgs.system}.wpe;
+              default = self.packages.${pkgs.system}.${cfg.shellBackend};
               defaultText = literalExpression
                 "the package matching `programs.viewport.shellBackend`";
               description = "The viewport package to use.";

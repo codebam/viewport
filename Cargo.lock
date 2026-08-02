@@ -2630,17 +2630,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "viewport-shell-bridge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tracing",
+ "viewport-ipc",
+]
+
+[[package]]
+name = "viewport-shell-chromium"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+ "viewport-ipc",
+ "viewport-shell-bridge",
+]
+
+[[package]]
 name = "viewport-shell-gtk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-channel",
  "gtk4",
- "serde",
- "serde_json",
  "tracing",
  "tracing-subscriber",
  "viewport-ipc",
+ "viewport-shell-bridge",
  "webkit6",
 ]
 

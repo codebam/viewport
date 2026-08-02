@@ -7,9 +7,10 @@ clients.
 Smithay handles DRM/KMS, input and the `xdg-shell` protocol. WebKit renders the
 UI to a DMA-BUF. Neither ever hands a pixel to the CPU.
 
-Which WebKit is a choice: WPE inside the compositor, or WebKitGTK in a process
-of its own as an ordinary Wayland client. The second needs no engine built from
-source — nixpkgs ships it — and the page cannot tell the difference. See
+Which engine is a choice: WPE inside the compositor, WebKitGTK in a process of
+its own as an ordinary Wayland client, or Chromium as a browser this does not
+link at all. The last two need no engine built from source, and the page cannot
+tell which one it is running under. See
 [`docs/shell-backends.md`](docs/shell-backends.md).
 
 ```
@@ -105,10 +106,12 @@ the in-process engine by name.
 ```sh
 nix build github:codebam/viewport-smithay        # the default, above
 nix build github:codebam/viewport-smithay#wpe    # in-process; builds WebKit
+nix build github:codebam/viewport-smithay#chromium
 ```
 
-The package attributes are named for the engine that draws the shell — `.#wpe`
-and `.#webkitgtk` — because that is the only thing that differs between them.
+The package attributes are named for the engine that draws the shell — `.#wpe`,
+`.#webkitgtk`, `.#chromium` — because that is the only thing that differs
+between them.
 
 Or to work in the tree:
 
@@ -180,7 +183,7 @@ The reference material lives in `docs/`:
 | [`docs/ipc.md`](docs/ipc.md) | both transports and every message in each direction, what a shell has to do to place a window, and how the layout is remembered across a restart — plus the overview, logging and the shell tests |
 | [`docs/protocols.md`](docs/protocols.md) | HDR, notifications, tablets, idle and locking, what clients may ask for and what they are told, and what is verified on real hardware |
 | [`docs/debugging.md`](docs/debugging.md) | screenshotting the session from inside it, pointer capture, XWayland, and what happens when the shell stops answering |
-| [`docs/shell-backends.md`](docs/shell-backends.md) | the four engines the shell can be drawn by, which two are implemented, what changes between them and what does not, and how to run the shell process by hand against a live session |
+| [`docs/shell-backends.md`](docs/shell-backends.md) | the engines the shell can be drawn by, which three are implemented, what changes between them and what does not, and how to run the shell process by hand against a live session |
 | [`docs/benchmarks.md`](docs/benchmarks.md) | Viewport measured against sway and niri on real scanout — frame rate, CPU per frame, memory, and the second monitor while the first is saturated |
 
 Two shells ship with it, at opposite ends of the same protocol:
@@ -214,7 +217,7 @@ with:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "webkitgtk";   # the default; "wpe" builds WebKit instead
+  shellBackend = "webkitgtk";   # the default; also "chromium" or "wpe"
 };
 ```
 

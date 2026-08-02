@@ -1,0 +1,14 @@
+[package]
+name = "viewport-shell-bridge"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository.workspace = true
+description = "The control-socket half of a Viewport shell that runs in a process of its own"
+
+[dependencies]
+viewport-ipc.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true

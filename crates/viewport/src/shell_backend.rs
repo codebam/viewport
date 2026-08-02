@@ -8,9 +8,9 @@
 // `wpewebkit` is packaged by nobody — the flake builds it from source, four
 // hours, and no binary cache has it.
 //
-// So this is a choice now, and the point of naming all four is that the
+// So this is a choice now, and the point of naming all of them is that the
 // choice is visible at install time rather than being whichever one somebody
-// compiled. Two are implemented:
+// compiled. Three are implemented:
 //
 // * `wpe` — the engine in-process, `crate::shell`. Fewest moving parts at run
 //   time and the most at build time. Needs `--features wpe`.
@@ -18,6 +18,12 @@
 // * `webkitgtk` — the same WebKit, one version and one port apart, in a
 //   process of its own as an ordinary Wayland client. See
 //   `crate::shell_client`. nixpkgs ships it prebuilt.
+//
+// * `chromium` — Blink, out of process, and not linked at all: the browser is
+//   started as a child and driven over the DevTools protocol. The engine is
+//   whatever `chromium` is on PATH, which makes this the cheapest of the three
+//   to build and the only one that can change engine version without a
+//   recompile.
 //
 // And two are named, refused, and documented, because "not implemented" and
 // "not compiled in" and "no such thing" are three different answers and a
@@ -30,11 +36,21 @@
 //   embedding is a cargo dependency on the `servo` crate either way, so this
 //   one buys a supported engine rather than a shorter build.
 //
-// * `cef` — Chromium through CEF's offscreen rendering, whose
-//   `OnAcceleratedPaint` hands over dmabuf planes on Linux in very nearly the
-//   shape `viewport_web::Frame` already has. nixpkgs' `cef-binary` is a
-//   prebuilt blob, so it is the only option here with no engine build at all;
-//   the cost is a C++ API and a multi-process model to host.
+// * `cef` — the same Blink as `chromium`, but embedded as a library rather
+//   than driven as a browser, whose offscreen rendering hands over dmabuf
+//   planes in very nearly the shape `viewport_web::Frame` already has. That is
+//   the version worth having in-process, and it is the one piece of real work
+//   left here. What it costs, measured rather than guessed:
+//
+//     - crates.io `cef` is 149.3.0+149.0.6 and nixpkgs' `cef-binary` is
+//       149.0.5, so one of the two has to move.
+//     - `cef-dll-sys`'s build script builds `libcef_dll_wrapper` from the
+//       distribution with cmake and ninja, and *downloads* a CEF archive
+//       unless `CEF_PATH` holds one with an `archive.json` it recognises —
+//       which a nix sandbox forbids, so that file has to be produced.
+//     - CEF re-executes the host binary for its zygote, GPU and render
+//       processes, so the entry point has to hand off before anything else
+//       runs.
 
 use std::fmt;
 
@@ -45,6 +61,8 @@ pub enum ShellBackend {
     Wpe,
     /// WebKitGTK, in a process of its own, as a Wayland client.
     WebKitGtk,
+    /// Chromium, as a child process driven over the DevTools protocol.
+    Chromium,
     /// Servo, in this process. Not implemented.
     Servo,
     /// Chromium through CEF, in this process. Not implemented.
@@ -57,18 +75,20 @@ impl ShellBackend {
         match self {
             Self::Wpe => "wpe",
             Self::WebKitGtk => "webkitgtk",
+            Self::Chromium => "chromium",
             Self::Servo => "servo",
             Self::Cef => "cef",
         }
     }
 
     /// Every name that can be asked for, whether or not it works here.
-    pub const NAMES: &'static [&'static str] = &["wpe", "webkitgtk", "servo", "cef"];
+    pub const NAMES: &'static [&'static str] = &["wpe", "webkitgtk", "chromium", "servo", "cef"];
 
     pub fn parse(name: &str) -> Result<Self, String> {
         match name {
             "wpe" => Ok(Self::Wpe),
             "webkitgtk" | "gtk" => Ok(Self::WebKitGtk),
+            "chromium" | "blink" => Ok(Self::Chromium),
             "servo" => Ok(Self::Servo),
             "cef" => Ok(Self::Cef),
             other => Err(format!(
@@ -102,22 +122,39 @@ impl ShellBackend {
                  --shell-backend=webkitgtk, which needs no engine compiled in"
                     .to_owned())
             }
-            Self::Wpe | Self::WebKitGtk => Ok(()),
+            Self::Wpe | Self::WebKitGtk | Self::Chromium => Ok(()),
             Self::Servo => Err("the servo backend is not implemented yet: \
                                 the buffer handoff is spiked in \
                                 crates/viewport-web/src/dmabuf.rs and the engine over it is not \
                                 written. Use --shell-backend=webkitgtk"
                 .to_owned()),
-            Self::Cef => Err("the cef backend is not implemented yet: \
-                              CEF's OnAcceleratedPaint is the right shape for this and nothing \
-                              is written against it. Use --shell-backend=webkitgtk"
-                .to_owned()),
+            Self::Cef => Err(
+                "the cef backend is not implemented yet: the same engine is \
+                              available as --shell-backend=chromium, out of process and \
+                              driven over the DevTools protocol. What cef would add is \
+                              embedding it in-process with offscreen rendering; see the \
+                              notes at the top of crates/viewport/src/shell_backend.rs"
+                    .to_owned(),
+            ),
         }
     }
 
     /// Whether the shell runs in a process of its own.
     pub fn is_out_of_process(self) -> bool {
-        matches!(self, Self::WebKitGtk)
+        matches!(self, Self::WebKitGtk | Self::Chromium)
+    }
+
+    /// The program the compositor starts for an out-of-process backend.
+    ///
+    /// One binary per engine rather than one that switches: they share the
+    /// socket half (`viewport-shell-bridge`) and nothing else, and a build that
+    /// wants WebKitGTK should not have to link Chromium's launcher to get it.
+    pub fn shell_program(self) -> Option<&'static str> {
+        match self {
+            Self::WebKitGtk => Some("viewport-shell-gtk"),
+            Self::Chromium => Some("viewport-shell-chromium"),
+            Self::Wpe | Self::Servo | Self::Cef => None,
+        }
     }
 }
 
@@ -191,6 +228,22 @@ mod tests {
         assert!(ShellBackend::Servo.available().is_err());
         assert!(ShellBackend::Cef.available().is_err());
         assert!(ShellBackend::WebKitGtk.available().is_ok());
+        assert!(ShellBackend::Chromium.available().is_ok());
+    }
+
+    /// Every backend that runs in its own process must name the program that
+    /// process is, and no other backend may — a compositor that tried to start
+    /// a shell for the in-process engine would start two of them.
+    #[test]
+    fn out_of_process_backends_name_a_program() {
+        for name in ShellBackend::NAMES {
+            let backend = ShellBackend::parse(name).expect("a listed name parses");
+            assert_eq!(
+                backend.is_out_of_process(),
+                backend.shell_program().is_some(),
+                "{backend} disagrees with itself about whether it has a program"
+            );
+        }
     }
 
     #[test]

@@ -54,6 +54,44 @@ pub fn dispatch(json: &str) -> String {
     )
 }
 
+/// The script injected before any of the shell's own scripts.
+///
+/// Servo has no `window.webkit.messageHandlers`, which is the entire outbound
+/// half of the shell's bridge (`data/shell/state.js:13`). Rather than edit the
+/// shell — the one thing this rewrite is supposed to carry over untouched — the
+/// bridge is recreated in the page under the name the shell already looks for.
+///
+/// The inbound half needs nothing: `src/web.c:48` already delivers messages as
+/// a `CustomEvent`, which is a plain DOM API Servo has.
+///
+/// `__viewport_send` is whatever primitive the Servo embedding gives us for
+/// page-to-embedder messages; it is installed by the engine before this runs.
+pub const BRIDGE_SHIM: &str = r#"
+(function () {
+  'use strict';
+  if (window.webkit && window.webkit.messageHandlers &&
+      window.webkit.messageHandlers.viewport) {
+    return;
+  }
+  const send = window.__viewport_send;
+  if (typeof send !== 'function') {
+    console.error('viewport: no host bridge; the shell will not be able to lay anything out');
+    return;
+  }
+  const handler = {
+    /* The compositor accepts either a JSON string or a live object, so page
+     * authors can call postMessage({...}) without stringifying by hand
+     * (src/web.c:63). Preserve that. */
+    postMessage(message) {
+      send(typeof message === 'string' ? message : JSON.stringify(message));
+    },
+  };
+  window.webkit = window.webkit || {};
+  window.webkit.messageHandlers = window.webkit.messageHandlers || {};
+  window.webkit.messageHandlers.viewport = handler;
+})();
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +129,18 @@ mod tests {
             string_literal(r#"{"type":"view.layout","id":1}"#),
             r#""{\"type\":\"view.layout\",\"id\":1}""#
         );
+    }
+
+    #[test]
+    fn the_shim_defines_what_the_shell_reaches_for() {
+        // data/shell/state.js:13 reads exactly this path.
+        assert!(BRIDGE_SHIM.contains("window.webkit.messageHandlers.viewport"));
+        assert!(BRIDGE_SHIM.contains("postMessage"));
+    }
+
+    #[test]
+    fn the_shim_stringifies_objects_like_webkit_did() {
+        assert!(BRIDGE_SHIM.contains("JSON.stringify(message)"));
     }
 
     /// The shape both engines have to produce, spelled out.

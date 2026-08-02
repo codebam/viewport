@@ -110,7 +110,13 @@ impl ViewportState {
     /// back. The window's own buffer is a DMA-BUF either way, so nothing about
     /// the handoff to the compositor changes.
     pub fn start_client_shell_degraded(&mut self, url: &str, degraded: bool) -> Result<()> {
-        let binary = shell_binary()?;
+        let program = self.shell_backend.shell_program().ok_or_else(|| {
+            anyhow!(
+                "{} does not run in a process of its own",
+                self.shell_backend
+            )
+        })?;
+        let binary = shell_binary(program)?;
         let (ours, theirs) = UnixStream::pair().context("making a socket for the shell")?;
 
         // The handle is dropped on purpose: what marks the connection is the
@@ -496,9 +502,7 @@ fn initial_configure_sent(toplevel: &ToplevelSurface) -> bool {
 /// same `bin` directory and a system with two versions installed must not run
 /// one's compositor against the other's shell. `PATH` after that, for a
 /// development tree where the binary is in `target/` and the shell is not.
-fn shell_binary() -> Result<PathBuf> {
-    const NAME: &str = "viewport-shell-gtk";
-
+fn shell_binary(name: &str) -> Result<PathBuf> {
     if let Ok(path) = std::env::var("VIEWPORT_SHELL_BIN") {
         let path = PathBuf::from(path);
         if !path.exists() {
@@ -512,7 +516,7 @@ fn shell_binary() -> Result<PathBuf> {
 
     if let Some(sibling) = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(NAME)))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
         .filter(|path| path.exists())
     {
         return Ok(sibling);
@@ -521,5 +525,5 @@ fn shell_binary() -> Result<PathBuf> {
     // Not resolved here: `Command` searches `PATH` itself, and a bare name is
     // the only way to say "whatever is installed" without reimplementing that
     // search. The failure, if there is one, is reported by `spawn`.
-    Ok(PathBuf::from(NAME))
+    Ok(PathBuf::from(name))
 }
