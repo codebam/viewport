@@ -225,11 +225,62 @@ backend than between backends: `cef` fifo came in at 2.2, 2.8 and 7.6 percent,
 the two WebKit ones did not, across all three runs — which is worth noticing
 and is not worth concluding anything from at n=3.
 
-**What would actually compare engines**: a scenario where the shell repaints —
-the overview, a window being dragged, the bar under load — and per-process
-sampling that includes the shell. Neither exists yet. Until they do, these
-tables say the compositor does not care which engine draws its desktop, which
-is a real thing to know and a smaller thing than it looks.
+**What would actually compare engines** is a scenario where the shell repaints
+and a sampler that counts every process the desktop is made of. That is
+`scripts/bench-shell.sh`, below. These tables say the compositor does not care
+which engine draws its desktop, which is a real thing to know and a smaller
+thing than it looks.
+
+## The shell under load
+
+`scripts/bench-shell.sh --seconds 25 --runs 3`, from a TTY, four `foot` windows
+open, the shell driven over the control socket at four commands a second: the
+overview on and off, a workspace switch, and a pair of resize deltas — which is
+what dragging an edge does. Median of three runs.
+
+CPU is the compositor **and every process it started**, because the engine is
+inside the compositor for `wpe` and beside it for the other three; a
+per-process number cannot compare across that line. Memory is **PSS** over the
+same tree rather than RSS: CEF and Chromium run four or five processes sharing
+most of an engine, and adding their RSS together reports a desktop about twice
+the size of what the machine has actually committed.
+
+| backend | idle cpu % | load cpu % | of which the compositor | idle pss MB | load pss MB | peak pss MB | processes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| wpe | 0.3 | 9.0 | 4.4 | 364 | 363 | 375 | 9 |
+| webkitgtk | 0.3 | 11.5 | 3.0 | 391 | 396 | 408 | 10 |
+| chromium | 0.3 | 6.8 | 1.9 | 581 | 591 | 607 | 12 |
+| cef | 0.3 | 5.4 | 2.0 | 535 | 548 | 573 | 9 |
+
+Three runs each, and unlike the vkcube tables they barely move: 9.0/9.1/8.9,
+11.5/11.6/11.3, 6.8/6.8/6.7, 5.4/5.4/5.3 percent. The differences below are
+larger than the spread.
+
+**It is a straight trade, and it goes both ways.** WebKit is about 180 MB
+lighter; Blink is about 40% cheaper in CPU when the shell is actually
+repainting. Neither engine wins the pair. Which one that argues for depends
+entirely on the machine — a laptop with 8 GB and a shell that mostly sits still
+wants WebKit, a desk that lives in the overview wants Blink.
+
+**CEF beats the browser it embeds, on both.** 5.4% against 6.8%, 548 MB against
+591 MB, nine processes against twelve. Driving Chromium as a browser costs a
+browser process and a DevTools round trip per message; embedding it does not.
+
+**The in-process engine puts its cost where you can see it.** `wpe` spends 4.4
+of its 9.0 percent inside the compositor process, against 1.9–3.0 for the
+three that run the engine elsewhere. Same work, different process; it is only
+worth knowing because a compositor CPU figure that does not say which backend
+it came from means something different in each case.
+
+**Nothing is idling badly.** All four sit at 0.3% with the desktop up and
+nobody touching it, which is what the frame-callback pacing is supposed to
+produce and is the first time it has been measured across the backends.
+
+**What this still does not measure**: the shell's own paint rate. Everything
+here is the cost of a repaint, not how many repaints the engine managed —
+`shell: painting` logs the size and not the rate, and a `fps` for the shell
+would need the compositor to count its buffer commits. That is the next
+missing number.
 
 ### Reading the caveats
 
