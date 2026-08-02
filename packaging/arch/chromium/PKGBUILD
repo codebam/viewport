@@ -1,0 +1,133 @@
+# Maintainer: Sean Behan <swb1998@gmail.com>
+#
+# The shell drawn by Chromium, started as a child process and driven over the
+# DevTools protocol. This links no engine at all: the browser is a runtime
+# dependency, and which Chromium it runs can change without a rebuild.
+#
+# One of five recipes beside each other in packaging/arch, one per engine the
+# shell can be drawn by — see docs/shell-backends.md. Every one of them installs
+# a binary called `viewport`, so they conflict with each other and with the C
+# compositor's `viewport` package: a system takes one.
+
+pkgname=viewport-smithay-chromium
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Wayland compositor whose shell is a web page — Chromium, driven as a child process'
+arch=('x86_64' 'aarch64')
+url='https://github.com/codebam/viewport-smithay'
+license=('GPL-3.0-or-later')
+
+# The commit this package was cut from. A tag would be nicer; there is not one
+# yet, and a moving branch in a PKGBUILD is not a package anyone can reproduce.
+_commit=7392728c3bd868aac94b163d1f10d076e4b6ee62
+
+depends=(
+  'wayland'
+  'libxkbcommon'
+  'pixman'
+  'libdrm'
+  'libinput'
+  'seatd'
+  'systemd-libs'
+  'mesa'
+  'libglvnd'
+  'vulkan-icd-loader'
+  'pipewire'
+  'libxcb'
+  'xcb-util-wm'
+  'chromium'
+)
+
+optdepends=(
+  'xorg-xwayland: X11 clients'
+  'xdg-desktop-portal-gtk: the portal interfaces the compositor does not answer itself'
+  # The renderer is Vulkan and there is no fallback, so a machine with the
+  # loader and no driver behind it fails with "Failed to load the Vulkan
+  # library" — which names the library rather than the missing driver.
+  'vulkan-radeon: AMD hardware'
+  'vulkan-intel: Intel hardware'
+  'nvidia-utils: NVIDIA hardware, and hardware video decode with it'
+  'vulkan-swrast: software Vulkan, for tests rather than a session'
+  'libva-mesa-driver: hardware video decode, for zero-copy video'
+)
+
+makedepends=(
+  'rust'
+  'cargo'
+  'git'
+  'pkgconf'
+  'clang'
+  'vulkan-headers'
+  'wayland-protocols'
+
+)
+
+provides=('viewport' 'viewport-smithay')
+conflicts=('viewport'
+           'viewport-smithay-wpe'
+           'viewport-smithay-webkitgtk'
+           'viewport-smithay-cef'
+           'viewport-smithay-full')
+options=('!lto')
+
+source=("git+https://github.com/codebam/viewport-smithay.git#commit=$_commit")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$srcdir/viewport-smithay"
+  # A git dependency (the smithay fork, for the tearing-control patch) has to
+  # be fetched here rather than during build(), so build() is the only step
+  # that has to work offline.
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$srcdir/viewport-smithay"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p viewport -p viewport-shell-chromium
+}
+
+package() {
+  cd "$srcdir/viewport-smithay"
+
+  # Which engine this package installed, said outright. The binary picks a
+  # default of its own and cannot know which shell program is beside it, so a
+  # wrapper names it. `${VIEWPORT_SHELL_BACKEND:-}` first, so `--shell-backend`
+  # and the config file still win.
+  install -Dm755 target/release/viewport "$pkgdir/usr/lib/viewport/viewport"
+  install -Dm755 /dev/stdin "$pkgdir/usr/bin/viewport" <<'EOF'
+#!/bin/sh
+export VIEWPORT_SHELL_BACKEND="${VIEWPORT_SHELL_BACKEND:-chromium}"
+export VIEWPORT_CHROMIUM_BIN="${VIEWPORT_CHROMIUM_BIN:-/usr/bin/chromium}"
+exec /usr/lib/viewport/viewport "$@"
+EOF
+  install -Dm755 target/release/viewport-shell-chromium \
+    "$pkgdir/usr/lib/viewport/viewport-shell-chromium"
+
+  # The shell itself, and the page it falls back to. Without them an installed
+  # compositor has nothing to load: the default URL resolves beside the binary,
+  # and a session started from a login shell has no source tree under it.
+  install -dm755 "$pkgdir/usr/share/viewport"
+  cp -r data/shell "$pkgdir/usr/share/viewport/shell"
+  install -Dm644 data/fallback.html "$pkgdir/usr/share/viewport/fallback.html"
+  install -Dm644 data/config.example.json \
+    "$pkgdir/usr/share/viewport/config.example.json"
+
+  # How xdg-desktop-portal learns this backend exists. Without the file the
+  # frontend does not know the name "viewport" refers to anything, so a config
+  # naming it matches nothing and the request goes elsewhere.
+  install -Dm644 data/portal-share/xdg-desktop-portal/portals/viewport.portal \
+    "$pkgdir/usr/share/xdg-desktop-portal/portals/viewport.portal"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE" 2>/dev/null || true
+
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/wayland-sessions/viewport.desktop" <<'EOF'
+[Desktop Entry]
+Name=Viewport
+Comment=Wayland compositor with a Chromium shell
+Exec=viewport
+Type=Application
+EOF
+}
