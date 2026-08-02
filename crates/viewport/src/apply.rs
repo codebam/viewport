@@ -8,6 +8,7 @@
 
 use smithay::output::{Mode as OutputMode, Scale};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Transform as SmithayTransform, SERIAL_COUNTER};
 
 use viewport_ipc::request::OutputConfigure;
@@ -328,6 +329,24 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             let Some(pointer) = state.seat.get_pointer() else {
                 return;
             };
+            // Who is about to be sent this, which is the question whenever a
+            // click appears to do nothing: the pointer delivers to its current
+            // focus, and "the shell" and "the window under the shell" are easy
+            // to confuse from outside.
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let focus = pointer.current_focus();
+                let shell = state.shell_client_surface().cloned();
+                tracing::debug!(
+                    "button {button} {} -> focus {:?}, shell surface {:?}, same: {}",
+                    if pressed { "press" } else { "release" },
+                    focus.as_ref().map(Resource::id),
+                    shell.as_ref().map(Resource::id),
+                    focus
+                        .as_ref()
+                        .map(|f| Some(f) == shell.as_ref())
+                        .unwrap_or(false),
+                );
+            }
             let serial = SERIAL_COUNTER.next_serial();
             let time = state.start_time.elapsed().as_millis() as u32;
             pointer.button(

@@ -1225,9 +1225,16 @@ impl ViewportState {
     ///
     /// One buffer across the whole layout, mapped at the layout's origin, so a
     /// position in layout coordinates is already surface-local.
-    fn shell_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+    fn shell_under(&self, _pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         let surface = self.shell_client_surface()?;
-        Some((surface.clone(), pos))
+        // Where the *surface* is, not where the pointer is: smithay subtracts
+        // this from the pointer's position to get the surface-local
+        // coordinate. Returning the pointer's own position made every click
+        // arrive at (0, 0) — the top-left corner of the page, whatever had
+        // been aimed at — which is why nothing the shell drew could be
+        // clicked. The shell is one buffer across the whole layout, mapped at
+        // the layout's origin, so the origin is where it is.
+        Some((surface.clone(), (0.0, 0.0).into()))
     }
 
     /// Advertise linux-dmabuf, with the formats this renderer can import.
