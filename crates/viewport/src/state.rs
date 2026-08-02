@@ -4868,8 +4868,10 @@ impl ViewportState {
         self.resize_shell();
         // The same thing for the shell that is a client: it is configured to
         // the layout rather than to an output, so the layout changing is the
-        // only thing that resizes it.
+        // only thing that resizes it. And a monitor that was just plugged in
+        // is an output the shell has not entered.
         self.configure_client_shell();
+        self.announce_shell_outputs();
 
         let event = Event::OutputLayout { outputs };
         self.notify(&event);

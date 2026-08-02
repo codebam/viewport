@@ -246,6 +246,30 @@ impl ViewportState {
             shell.configured = None;
         }
         self.configure_client_shell();
+        self.announce_shell_outputs();
+    }
+
+    /// Tell the shell which screens it is on.
+    ///
+    /// `wl_surface.enter`, which nothing else was sending it: the shell is not
+    /// in the `Space` and is not in a layer map, so neither of the two things
+    /// that normally do this ever sees it.
+    ///
+    /// It is not a formality. A client learns the refresh rate from the output
+    /// it has entered, and one that has entered none has to guess — Chromium
+    /// guesses 60Hz and paints at 60Hz for ever, on a 120Hz panel and on a
+    /// 240Hz one, which measured as the shell painting a fifth as often as the
+    /// WebKit backends and read as an engine being slow. It was this.
+    ///
+    /// Every output, because the shell is one page across the whole layout:
+    /// it is on all of them by construction.
+    pub fn announce_shell_outputs(&mut self) {
+        let Some(surface) = self.shell_client_surface().cloned() else {
+            return;
+        };
+        for output in self.space.outputs() {
+            output.enter(&surface);
+        }
     }
 
     /// Tell the shell how big the desktop is.

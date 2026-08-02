@@ -1894,6 +1894,39 @@ impl ViewportState {
                 |surface, _| surface_presentation_feedback_flags_from_states(surface, None, states),
             );
         }
+        // And the shell, which is in neither of those and had been getting no
+        // feedback at all.
+        //
+        // The engines pace themselves differently and that is what made this
+        // visible. WebKitGTK draws on frame callbacks, which the shell surface
+        // has always been sent, and followed the panel at 120 and at 240Hz.
+        // Chromium paces its compositor on presentation feedback, was told a
+        // frame had been presented exactly never, and fell back to its own
+        // 60Hz clock — which measured as Blink painting a fifth as often as
+        // WebKit and read as the engine being slow. It was this.
+        if let Some(surface) = self.shell_client_surface() {
+            smithay::desktop::utils::take_presentation_feedback_surface_tree(
+                surface,
+                &mut feedback,
+                // The output outright, not `surface_primary_scanout_output`.
+                //
+                // That helper answers from `RenderElementStates`, which is
+                // keyed by render element id — and the shell's buffer is drawn
+                // as a texture element under an id of the compositor's own,
+                // not as a surface element. So it looks up the shell's surface,
+                // finds nothing, and concludes the surface was not scanned out;
+                // every feedback the shell asked for came back `discarded`.
+                // Measured with WAYLAND_DEBUG: 723 requests, 723 discarded,
+                // zero presented.
+                //
+                // Saying the output plainly is not a shortcut around the
+                // check. The shell spans the whole layout and its buffer is
+                // drawn on every output, every frame, underneath everything —
+                // if this output presented at all, the shell was in it.
+                |_, _| Some(output.clone()),
+                |surface, _| surface_presentation_feedback_flags_from_states(surface, None, states),
+            );
+        }
         feedback
     }
 
@@ -1994,6 +2027,27 @@ impl ViewportState {
                     default_primary_scanout_output_compare,
                 );
             });
+        }
+        // The shell, for the same reason its feedback is taken above: a
+        // surface with no primary scanout output recorded is dropped from the
+        // feedback entirely, so this has to happen or that does nothing.
+        if let Some(shell) = self.shell_client_surface() {
+            smithay::wayland::compositor::with_surface_tree_downward(
+                shell,
+                (),
+                |_, _, _| smithay::wayland::compositor::TraversalAction::DoChildren(()),
+                |surface, surface_states, _| {
+                    update_surface_primary_scanout_output(
+                        surface,
+                        output,
+                        surface_states,
+                        None,
+                        states,
+                        default_primary_scanout_output_compare,
+                    );
+                },
+                |_, _, _| true,
+            );
         }
         for lock in self.lock_surfaces.values() {
             smithay::desktop::utils::with_surfaces_surface_tree(
