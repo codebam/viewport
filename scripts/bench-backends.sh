@@ -3,7 +3,7 @@
 #
 # The same benchmark, once per shell backend.
 #
-#   ./scripts/bench-backends.sh                  # wpe, webkitgtk and chromium
+#   ./scripts/bench-backends.sh                  # every implemented backend
 #   ./scripts/bench-backends.sh --only chromium  # one of them
 #   ./scripts/bench-backends.sh --runs 5         # anything else goes through
 #
@@ -49,7 +49,7 @@ if [ -z "${XDG_VTNR:-}" ] || [ -z "${XDG_SESSION_ID:-}" ]; then
     done < <(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$USER" '$3 == u {print $1}')
 fi
 
-backends=(wpe webkitgtk chromium)
+backends=(wpe webkitgtk chromium cef)
 passthrough=()
 stamp=$(date +%Y%m%d-%H%M%S)
 outroot="$here/bench-results/backends-$stamp"

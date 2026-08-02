@@ -8,7 +8,7 @@ the choices are.
 --shell-backend=chromium    Chromium, driven as a child process    implemented
 --shell-backend=wpe         WPE WebKit, inside the compositor      implemented
 --shell-backend=servo       Servo, inside the compositor           refused
---shell-backend=cef         Chromium embedded through CEF          half written
+--shell-backend=cef         Chromium embedded through CEF          implemented
 ```
 
 `webkitgtk` is what the NixOS module installs unless told otherwise, because
@@ -55,14 +55,14 @@ The compositor makes a socket pair, inserts one end as a Wayland client marked
 as the shell, and starts `viewport-shell-gtk` on the other. Everything after
 that is ordinary:
 
-| | wpe | webkitgtk | chromium |
-| --- | --- | --- | --- |
-| pixels | `WPEBufferDMABuf` per frame | a client attaches a buffer | a client attaches a buffer |
-| input | translated into engine calls | `wl_pointer` / `wl_keyboard` | `wl_pointer` / `wl_keyboard` |
-| pacing | acknowledge a frame to release the next | `wl_surface::frame` | `wl_surface::frame` |
-| bridge | `messageHandlers` in-process | `messageHandlers`, engine API | `messageHandlers`, DevTools protocol |
-| engine | built here, hours | prebuilt, linked | prebuilt, not linked |
-| a crash | takes the session | takes the shell | takes the shell |
+| | wpe | webkitgtk | chromium | cef |
+| --- | --- | --- | --- | --- |
+| pixels | `WPEBufferDMABuf` per frame | a client attaches a buffer | a client attaches a buffer | a client attaches a buffer |
+| input | translated into engine calls | `wl_pointer` / `wl_keyboard` | `wl_pointer` / `wl_keyboard` | `wl_pointer` / `wl_keyboard` |
+| pacing | acknowledge a frame to release the next | `wl_surface::frame` | `wl_surface::frame` | `wl_surface::frame` |
+| bridge | `messageHandlers` in-process | `messageHandlers`, engine API | DevTools over a pipe | DevTools through the library |
+| engine | built here, hours | prebuilt, linked | prebuilt, not linked | prebuilt, linked |
+| a crash | takes the session | takes the shell | takes the shell | takes the shell |
 
 The page needs no edit for either: WebKitGTK has the same user-content API WPE
 does, so `window.webkit.messageHandlers.viewport` is real rather than shimmed,
@@ -143,54 +143,58 @@ nixpkgs has a `servo` package, but it builds servoshell — an embedding is a
 cargo dependency on the `servo` crate either way, so this buys a second engine
 rather than a shorter build.
 
-## cef — half written
+## cef — the engine embedded
 
-The same Blink as `chromium`, embedded as a library rather than driven as a
-browser: no browser binary, no DevTools pipe, one process fewer, and — the
-reason it is worth finishing — `OnAcceleratedPaint`, which hands over DMA-BUF
-planes, a modifier and a format. That is very nearly `viewport_web::Frame`
-already, which is what the shell element takes, so CEF is the only route to
-running Blink *in* the compositor the way `wpe` runs WebKit.
+`crates/viewport/src/shell_client.rs`, `crates/viewport-shell-cef/`. The same
+Blink as `chromium`, linked in rather than driven: no browser binary, no
+DevTools pipe over a socket, one process fewer. The window is CEF's Views
+framework on Wayland; the compositor sees an ordinary client on the connection
+it handed over, as with the other two out-of-process backends.
 
-`crates/viewport-shell-cef` exists and does not work yet. What it does:
-initialises CEF, hands off correctly for the zygote, GPU and renderer
-processes, makes a Views window on Wayland, and hands the compositor a DMA-BUF
-— verified nested, `shell: first frame`. What it does not do: the bridge. The
-page cannot reach the compositor and the compositor cannot reach the page, so
-the desktop would draw and never place a window, which is why
-`--shell-backend=cef` still refuses and says so.
-
-The remaining work is that bridge, and the shape of it is known:
+**The bridge goes straight into the library.**
 `add_dev_tools_message_observer` and `send_dev_tools_message` on the browser
 host give the same `Runtime.addBinding` / `Runtime.evaluate` pair the
-`chromium` backend uses, without Chromium's target discovery — the host *is*
-the page. Lines arriving from the socket thread have to reach CEF's UI thread
-through `post_task`, because a `Browser` is not `Send`.
+`chromium` backend uses over a pipe, without its target discovery — the host
+*is* the page. Lines from the socket reach CEF's UI thread through
+`post_task`, because a `Browser` may not leave the thread that made it.
 
-What is already dealt with, and was the part nobody could estimate:
+**Nothing here builds Chromium.** nixpkgs' `cef-binary` is a prebuilt 1.3 GB
+`libcef.so`. The only thing compiled is `libcef_dll_wrapper`, from the
+distribution's own source, with cmake and ninja.
 
-- **The engine is not built.** nixpkgs' `cef-binary` is a prebuilt 1.3 GB
-  `libcef.so`. Only `libcef_dll_wrapper` compiles here, from the
-  distribution's own source, with cmake and ninja.
+Five things had to be right, none of which says so when it is wrong:
+
 - **The layout.** `cef-dll-sys` wants the tree its downloader produces, which
   is flattened: `Release/` *is* the root, with `Resources/` emptied into it
-  beside `include/`, `libcef_dll/`, `cmake/` and `CMakeLists.txt`. Pointing
-  `CEF_PATH` at nixpkgs' unflattened layout fails on a missing `locales`.
-- **The download.** The build script fetches unless `CEF_PATH` holds an
-  `archive.json` — three fields, `{type, name, sha1}` — whose `name` parses as
-  `cef_binary_<version>`. The check is `archive <= expected`, so nixpkgs'
-  149.0.5 satisfies a crate that wants 149.0.6. There is no version skew to
-  resolve after all.
-- **The API version.** Every CEF structure carries one, and it is only set
-  once `api_hash` has run. Without that first call the process dies with
-  `CefApp_0_CToCpp called with invalid version -1`.
-- **When a window may be made.** Not when `initialize` returns — from
-  `on_context_initialized`. Doing it early traps thirteen seconds later with
-  no message at all.
+  beside `include/`, `libcef_dll/`, `cmake/` and `CMakeLists.txt`. nixpkgs'
+  unflattened layout fails on a missing `locales`, and on the second attempt
+  reads as a permissions error, because the first left read-only copies in
+  `target/`.
+- **The download.** The build script fetches a CEF of its own unless
+  `CEF_PATH` holds an `archive.json` — `{type, name, sha1}`, and only `name`
+  is read. The check is `archive <= expected`, so nixpkgs' 149.0.5 satisfies a
+  crate built against 149.0.6. There is no version skew to resolve.
+- **The API version.** Every CEF structure carries one, set by the first call
+  to `api_hash`. Without it the process dies with `CefApp_0_CToCpp called with
+  invalid version -1`.
+- **When a window may be made.** From `on_context_initialized`, not when
+  `initialize` returns. Early, it traps thirteen seconds later with no message.
+- **`can_resize`.** Every delegate method that is not implemented answers
+  `Default::default()`, which for a `c_int` is 0 — so a delegate that says
+  nothing says the window cannot be resized, Chromium tells the compositor its
+  minimum and maximum are both 800x600, and the desktop is drawn 800x600 in
+  the corner of the screen whatever the layout is.
 
-The crate is outside the workspace on purpose: it does not build without
-`CEF_PATH`, and `cargo test --workspace` is what the pre-commit hook and CI
-run.
+The crate is outside the workspace: it does not build without `CEF_PATH`, and
+`cargo test --workspace` is what the pre-commit hook and CI run. It carries its
+own lock file and its own `[workspace]` table for the same reason.
+
+Offscreen rendering is the piece still worth doing here, and the reason this
+backend exists rather than only `chromium`: `OnAcceleratedPaint` hands over
+DMA-BUF planes, a modifier and a format, which is very nearly
+`viewport_web::Frame` — so CEF is the route to running Blink *in* the
+compositor the way `wpe` runs WebKit. Today it is a Wayland client like the
+others.
 
 ## Building and installing
 
@@ -206,6 +210,9 @@ nix build .#webkitgtk       # and this is `.#default`
 
 # no engine built or linked; runs nixpkgs' chromium
 nix build .#chromium
+
+# the same engine, embedded; builds a C++ wrapper and no engine
+nix build .#cef
 ```
 
 `.#viewport-smithay` is still an alias for `.#wpe`, because that is what any
@@ -216,7 +223,7 @@ On NixOS:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "webkitgtk";   # the default; also "chromium" or "wpe"
+  shellBackend = "webkitgtk";   # the default; also "chromium", "cef" or "wpe"
 };
 ```
 

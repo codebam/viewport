@@ -20,12 +20,48 @@
 // `execute_process` has to run before anything else does and exit when it
 // returns a code. Everything below that line runs in the browser process only.
 
+use std::cell::RefCell;
 use std::ffi::{c_char, CString};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use cef::{args::Args, rc::*, *};
+use serde_json::{json, Value};
 
-use viewport_shell_bridge::Options;
+use viewport_shell_bridge::{Line, Options};
+
+/// The name the page calls to reach the compositor, wrapped by
+/// `viewport_ipc::js::BRIDGE_SHIM` in the name the shell was written against.
+const BINDING: &str = "__viewport_send";
+
+/// The compositor, for the DevTools observer to hand messages to.
+///
+/// A static because the observer is built by CEF and there is nowhere else to
+/// put it: it is `Send`, unlike everything else here.
+static OUT: OnceLock<viewport_shell_bridge::Sender> = OnceLock::new();
+
+/// Events that arrived before the page could take them.
+///
+/// The compositor starts talking the moment it accepts the connection, which
+/// is before CEF has a browser, let alone a document. A script evaluated
+/// against a page that does not exist is dropped on the floor.
+static QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static READY: AtomicBool = AtomicBool::new(false);
+
+/// DevTools command ids. Any monotonic sequence will do; nothing here waits on
+/// a reply, and the ids only have to be distinct.
+static NEXT_ID: AtomicI64 = AtomicI64::new(1);
+
+thread_local! {
+    /// The browser, and the registration that keeps the observer alive.
+    ///
+    /// Thread-local rather than static because neither is `Send` — CEF objects
+    /// belong to the thread that made them, which for both of these is the UI
+    /// thread. Everything that touches them arrives there through `post_task`.
+    static BROWSER: RefCell<Option<Browser>> = const { RefCell::new(None) };
+    static OBSERVER: RefCell<Option<Registration>> = const { RefCell::new(None) };
+}
 
 fn main() -> Result<()> {
     // Before the logger, before the options, before anything: in a subprocess
@@ -107,6 +143,24 @@ fn main() -> Result<()> {
     {
         return Err(anyhow!("CEF would not initialise"));
     }
+
+    // Both directions, started before the loop: the socket is what the shell
+    // is for, and a page that came up before the connection did would have
+    // nothing to talk to.
+    let out = viewport_shell_bridge::connect(&options.socket, |line| match line {
+        Line::Event(json) => {
+            // Onto CEF's UI thread. This closure runs on the socket reader,
+            // and a `Browser` may not leave the thread that made it.
+            let mut task = Deliver::new(json);
+            post_task(ThreadId::UI, Some(&mut task));
+        }
+        Line::Closed => {
+            tracing::info!("the compositor closed the socket; stopping");
+            let mut task = Stop::new();
+            post_task(ThreadId::UI, Some(&mut task));
+        }
+    })?;
+    let _ = OUT.set(out);
 
     tracing::info!("CEF is up on {}", options.url);
     run_message_loop();
@@ -217,12 +271,223 @@ wrap_window_delegate! {
             let mut child = View::from(&self.view);
             window.add_child_view(Some(&mut child));
             window.show();
+            // The desktop is the whole layout, and CEF's Views window comes up
+            // at its own default of 800x600 and stays there — the compositor's
+            // configure sizes the surface and Chromium keeps drawing the size
+            // it decided on, so the shell would be a small patch in a corner.
+            // Fullscreen is the state the compositor already puts this
+            // toplevel in; this is the window agreeing to it.
+            window.set_fullscreen(1);
+
+            // Only now: the browser is made when its view is put in a window,
+            // so asking before this point answers `None`.
+            let Some(browser) = self.view.browser() else {
+                tracing::error!("the browser view has no browser; there is no bridge");
+                return;
+            };
+            install_bridge(&browser);
+            BROWSER.with(|slot| *slot.borrow_mut() = Some(browser));
         }
 
         /// No titlebar and no border: this window is the desktop, and what
         /// goes around a window is drawn by the compositor.
         fn is_frameless(&self, _window: Option<&mut Window>) -> ::std::os::raw::c_int {
             1
+        }
+
+        /// Resizable, which is not the default here and has to be said.
+        ///
+        /// Every method of this delegate that is not implemented answers
+        /// `Default::default()`, which for a `c_int` is 0 — so a delegate that
+        /// says nothing says the window cannot be resized. Chromium then tells
+        /// the compositor its minimum and maximum size are both 800x600 and
+        /// ignores the configure, and the desktop is drawn 800x600 in the
+        /// corner of the screen whatever the layout is.
+        fn can_resize(&self, _window: Option<&mut Window>) -> ::std::os::raw::c_int {
+            1
+        }
+
+        /// The states a desktop can legitimately be in. Maximise and minimise
+        /// are refused for the same reason the frame is: this window is not
+        /// one the user manages.
+        fn can_maximize(&self, _window: Option<&mut Window>) -> ::std::os::raw::c_int {
+            0
+        }
+
+        fn can_minimize(&self, _window: Option<&mut Window>) -> ::std::os::raw::c_int {
+            0
+        }
+
+        /// Closable, so that a compositor going away closes the window rather
+        /// than leaving a browser holding a dead connection.
+        fn can_close(&self, _window: Option<&mut Window>) -> ::std::os::raw::c_int {
+            1
+        }
+    }
+}
+
+/// Put the page-to-compositor half of the bridge in place.
+///
+/// The same three DevTools calls the chromium backend makes, without its
+/// target discovery: there, the protocol reaches a browser that has many
+/// pages; here the host *is* the page.
+fn install_bridge(browser: &Browser) {
+    let observer = ShellObserver::new();
+    let registration = browser
+        .host()
+        .and_then(|host| host.add_dev_tools_message_observer(Some(&mut observer.clone())));
+    if registration.is_none() {
+        tracing::error!("CEF would not take a devtools observer; there is no bridge");
+        return;
+    }
+    // Kept, because dropping it removes the observer.
+    OBSERVER.with(|slot| *slot.borrow_mut() = registration);
+
+    send(
+        browser,
+        &json!({"id": next_id(), "method": "Runtime.enable"}),
+    );
+    send(browser, &json!({"id": next_id(), "method": "Page.enable"}));
+    // The outbound half: a real function in the page that calls back out here.
+    send(
+        browser,
+        &json!({
+            "id": next_id(),
+            "method": "Runtime.addBinding",
+            "params": {"name": BINDING},
+        }),
+    );
+    // The name the shell reaches for, wrapped around it, before any of the
+    // page's own scripts run — `data/shell/state.js` reads the handler at load
+    // time, so arriving late is the same as not arriving.
+    send(
+        browser,
+        &json!({
+            "id": next_id(),
+            "method": "Page.addScriptToEvaluateOnNewDocument",
+            "params": {"source": viewport_ipc::js::BRIDGE_SHIM},
+        }),
+    );
+    // And once for the document that is already loading, which the line above
+    // is too late for.
+    evaluate(browser, viewport_ipc::js::BRIDGE_SHIM);
+
+    READY.store(true, Ordering::SeqCst);
+    let waiting: Vec<String> = QUEUE
+        .lock()
+        .map(|mut q| q.drain(..).collect())
+        .unwrap_or_default();
+    for json in waiting {
+        evaluate(browser, &viewport_ipc::js::dispatch(&json));
+    }
+}
+
+fn next_id() -> i64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// One DevTools message to the page's own agent.
+fn send(browser: &Browser, message: &Value) {
+    let Some(host) = browser.host() else { return };
+    match serde_json::to_vec(message) {
+        Ok(bytes) => {
+            host.send_dev_tools_message(Some(&bytes));
+        }
+        Err(e) => tracing::error!("could not encode a devtools command: {e}"),
+    }
+}
+
+fn evaluate(browser: &Browser, script: &str) {
+    send(
+        browser,
+        &json!({
+            "id": next_id(),
+            "method": "Runtime.evaluate",
+            "params": {"expression": script, "awaitPromise": false, "returnByValue": false},
+        }),
+    );
+}
+
+wrap_dev_tools_message_observer! {
+    struct ShellObserver;
+
+    impl DevToolsMessageObserver {
+        /// An event from the page's agent. The only one that matters is the
+        /// binding being called, which is the page talking.
+        fn on_dev_tools_event(
+            &self,
+            _browser: Option<&mut Browser>,
+            method: Option<&CefString>,
+            params: Option<&[u8]>,
+        ) {
+            if method.map(CefString::to_string).as_deref() != Some("Runtime.bindingCalled") {
+                return;
+            }
+            let Some(params) = params else { return };
+            let Ok(params) = serde_json::from_slice::<Value>(params) else {
+                tracing::warn!("undecodable bindingCalled parameters");
+                return;
+            };
+            // A page can add bindings of its own, and a compositor that
+            // forwarded them would be taking instructions from whatever the
+            // page felt like naming.
+            if params.get("name").and_then(Value::as_str) != Some(BINDING) {
+                return;
+            }
+            let Some(payload) = params.get("payload").and_then(Value::as_str) else {
+                return;
+            };
+            if let Some(out) = OUT.get() {
+                out.send(payload.to_owned());
+            }
+        }
+    }
+}
+
+wrap_task! {
+    struct Deliver {
+        json: String,
+    }
+
+    impl Task {
+        /// On the UI thread, where the browser may be touched.
+        fn execute(&self) {
+            BROWSER.with(|slot| {
+                let slot = slot.borrow();
+                let Some(browser) = slot.as_ref() else {
+                    QUEUE.lock().map(|mut q| q.push(self.json.clone())).ok();
+                    return;
+                };
+                if viewport_shell_bridge::is_reload(&self.json) {
+                    tracing::info!("reloading the shell");
+                    READY.store(false, Ordering::SeqCst);
+                    send(browser, &json!({
+                        "id": next_id(),
+                        "method": "Page.reload",
+                        "params": {"ignoreCache": true},
+                    }));
+                    // The shim goes back in with the new document, from
+                    // `addScriptToEvaluateOnNewDocument`; this only has to let
+                    // messages flow again.
+                    READY.store(true, Ordering::SeqCst);
+                    return;
+                }
+                if READY.load(Ordering::SeqCst) {
+                    evaluate(browser, &viewport_ipc::js::dispatch(&self.json));
+                } else {
+                    QUEUE.lock().map(|mut q| q.push(self.json.clone())).ok();
+                }
+            });
+        }
+    }
+}
+
+wrap_task! {
+    struct Stop;
+
+    impl Task {
+        fn execute(&self) {
+            quit_message_loop();
         }
     }
 }

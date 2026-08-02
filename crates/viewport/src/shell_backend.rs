@@ -122,15 +122,7 @@ impl ShellBackend {
                  --shell-backend=webkitgtk, which needs no engine compiled in"
                     .to_owned())
             }
-            Self::Wpe | Self::WebKitGtk | Self::Chromium => Ok(()),
-            Self::Cef => Err(
-                "the cef backend is half written: crates/viewport-shell-cef \
-                              starts CEF, makes a Views window on Wayland and hands over a \
-                              DMA-BUF, and has no bridge — so the desktop would draw and \
-                              never place a window. Use --shell-backend=chromium, which is \
-                              the same engine"
-                    .to_owned(),
-            ),
+            Self::Wpe | Self::WebKitGtk | Self::Chromium | Self::Cef => Ok(()),
             Self::Servo => Err("the servo backend is not implemented yet: \
                                 the buffer handoff is spiked in \
                                 crates/viewport-web/src/dmabuf.rs and the engine over it is not \
@@ -221,15 +213,15 @@ mod tests {
         }
     }
 
-    /// The two that are not written must not be silently treatable as
-    /// available: `choose` falls back on them, and a fallback that did not
-    /// happen is a session with no desktop.
+    /// What is not written must not be silently treatable as available:
+    /// `choose` falls back on that answer, and a fallback that did not happen
+    /// is a session with no desktop.
     #[test]
-    fn the_unimplemented_backends_are_refused() {
+    fn the_unimplemented_backend_is_refused() {
         assert!(ShellBackend::Servo.available().is_err());
-        assert!(ShellBackend::Cef.available().is_err());
         assert!(ShellBackend::WebKitGtk.available().is_ok());
         assert!(ShellBackend::Chromium.available().is_ok());
+        assert!(ShellBackend::Cef.available().is_ok());
     }
 
     /// Every backend that runs in its own process must name the program that

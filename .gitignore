@@ -10,3 +10,7 @@ __pycache__/
 packaging/arch/smithay/out/
 *.pkg.tar.*
 bench-results/
+
+# The cef shell is its own cargo workspace, so its build directory is not
+# covered by the rule for the one at the root.
+crates/viewport-shell-cef/target/

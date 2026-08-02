@@ -1,3 +1,8 @@
+# Its own workspace root, which is what `exclude` in the tree's root manifest
+# leaves it as. Without this, cargo walks up, finds the root that excludes it,
+# and refuses to build anything at all.
+[workspace]
+
 [package]
 name = "viewport-shell-cef"
 version = "0.1.0"
@@ -12,6 +17,8 @@ viewport-shell-bridge = { path = "../viewport-shell-bridge" }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # The engine, embedded rather than driven. `default-features = false` drops
 # the crate's build-util and sandbox features: the first pulls in clap and

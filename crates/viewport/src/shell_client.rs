@@ -362,8 +362,25 @@ impl ViewportState {
         let size: smithay::utils::Size<i32, smithay::utils::Physical> =
             (dmabuf.width() as i32, dmabuf.height() as i32).into();
 
-        if self.shell_owned.is_none() {
-            tracing::info!("shell: first frame, {}x{}", size.w, size.h);
+        // Every size the shell paints at, not only the first.
+        //
+        // A shell whose buffer stops matching the layout is drawn at the wrong
+        // size — a desktop in the corner of the screen, or one cropped — and
+        // the only place that is visible is here. It changes on a layout
+        // change and otherwise never, so this is a line at startup and a line
+        // when something moved.
+        let previous = self.shell_owned.as_ref().map(|(_, size)| *size);
+        if previous != Some(size) {
+            match previous {
+                None => tracing::info!("shell: first frame, {}x{}", size.w, size.h),
+                Some(was) => tracing::info!(
+                    "shell: painting {}x{}, was {}x{}",
+                    size.w,
+                    size.h,
+                    was.w,
+                    was.h
+                ),
+            }
         }
         self.shell_frames += 1;
 

@@ -193,6 +193,114 @@
           pipewire
         ];
 
+        # ------------------------------------------------------------------
+        # CEF, in the layout the Rust bindings expect.
+        #
+        # nixpkgs ships the distribution as it comes: `Release/` holds the
+        # engine, `Resources/` holds the .pak files and locales. `cef-dll-sys`
+        # wants what its own downloader produces, which is those two flattened
+        # into one directory beside `include/`, `libcef_dll/`, `cmake/` and
+        # `CMakeLists.txt` — point it at the unflattened tree and it fails on a
+        # missing `locales`.
+        #
+        # `archive.json` is what stops the build script downloading a CEF of
+        # its own, which a sandbox forbids. Three fields, and the only one that
+        # is read is `name`: the version is parsed out of it and accepted if it
+        # is not *newer* than the version the crate wants, so 149.0.5 satisfies
+        # a crate built against 149.0.6.
+        #
+        # Symlinks rather than copies: this is 1.3 GB of engine, and nothing in
+        # the build writes to it.
+        # ------------------------------------------------------------------
+        cefDistribution = pkgs.runCommand "cef-flat-${pkgs.cef-binary.version}" { } ''
+          mkdir -p $out
+          for entry in ${pkgs.cef-binary}/Release/* ${pkgs.cef-binary}/Resources/*; do
+            ln -s "$entry" "$out/$(basename "$entry")"
+          done
+          for entry in include libcef_dll cmake; do
+            ln -s ${pkgs.cef-binary}/$entry $out/$entry
+          done
+          cp ${pkgs.cef-binary}/CMakeLists.txt ${pkgs.cef-binary}/CREDITS.html $out/
+          cat > $out/archive.json <<'JSON'
+          {
+            "type": "minimal",
+            "name": "cef_binary_${pkgs.cef-binary.version}+g0000000+chromium-149.0.0.0_linux64_minimal",
+            "sha1": "0000000000000000000000000000000000000000"
+          }
+          JSON
+        '';
+
+        # The shell process for the cef backend.
+        #
+        # Its own derivation because the crate is outside the workspace — it
+        # does not build without `CEF_PATH` — so it has its own lock file and
+        # cannot be a `-p` of the compositor's build.
+        viewport-shell-cef = pkgs.rustPlatform.buildRustPackage {
+          pname = "viewport-shell-cef";
+          version = "0.1.0";
+
+          # The whole tree, built from inside the crate.
+          #
+          # `sourceRoot` rather than `buildAndTestSubdir`, because it is the
+          # lock file at the source root that `buildRustPackage` validates
+          # against the vendored dependencies — and this crate has its own,
+          # being outside the workspace. The rest of the tree still has to be
+          # here: `viewport-ipc` and `viewport-shell-bridge` inherit their
+          # version and dependencies from the root manifest above them.
+          src = self;
+          sourceRoot = "source/crates/viewport-shell-cef";
+          cargoLock.lockFile = ./crates/viewport-shell-cef/Cargo.lock;
+
+          CEF_PATH = cefDistribution;
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            makeWrapper
+            # `libcef_dll_wrapper` is C++ built from the distribution's own
+            # source. The engine beside it is a prebuilt blob and is not
+            # compiled by anything here.
+            cmake
+            ninja
+          ];
+
+          # Both setup hooks take over phases they should not here: the build
+          # script drives cmake and ninja itself, from inside cargo, and the
+          # source root this builds from has no CMakeLists.txt or build.ninja
+          # of its own. Left on, ninja's hook fails the build phase with
+          # "loading 'build.ninja': No such file or directory", which names the
+          # tool rather than the hook.
+          dontUseCmakeConfigure = true;
+          dontUseNinjaBuild = true;
+          dontUseNinjaInstall = true;
+          dontUseNinjaCheck = true;
+
+          buildInputs = with pkgs; [ nss nspr at-spi2-atk cups libdrm libxkbcommon mesa ];
+
+          doCheck = false;
+
+          # The build script copies the engine and its resources next to the
+          # binary, which for a nix build is the target directory rather than
+          # anywhere that survives. They are taken from the flattened tree
+          # instead, and the binary is pointed at them.
+          postInstall = ''
+            mkdir -p $out/lib/viewport-cef
+            for entry in ${cefDistribution}/*; do
+              case "$(basename "$entry")" in
+                include|libcef_dll|cmake|CMakeLists.txt|CREDITS.html|archive.json) ;;
+                *) ln -s "$entry" $out/lib/viewport-cef/ ;;
+              esac
+            done
+            wrapProgram $out/bin/viewport-shell-cef \
+              --prefix LD_LIBRARY_PATH : $out/lib/viewport-cef
+          '';
+
+          meta = with pkgs.lib; {
+            description = "The Viewport shell, rendered by Chromium embedded through CEF";
+            platforms = platforms.linux;
+            mainProgram = "viewport-shell-cef";
+          };
+        };
+
         # The compositor, as a function of which engine draws its shell.
         #
         # There are three, and the difference between them is almost entirely a
@@ -329,6 +437,10 @@
             # itself in bin/. This is where the GTK hook's environment goes:
             # the schemas, the GIO modules and the MIME database.
             wrapProgram $out/bin/viewport-shell-gtk "''${gappsWrapperArgs[@]}"
+          '' + pkgs.lib.optionalString (shellBackend == "cef") ''
+            # The shell process, from its own derivation: the crate is outside
+            # the workspace, so it cannot be built as a `-p` of this one.
+            ln -s ${viewport-shell-cef}/bin/viewport-shell-cef $out/bin/
           '' + pkgs.lib.optionalString (shellBackend == "chromium") ''
             # The engine, named rather than looked for. `chromium` on PATH is
             # whatever the session happens to have installed, and a desktop
@@ -362,6 +474,11 @@
         # three and the lightest build: nothing here compiles an engine, and
         # the one it runs is nixpkgs' chromium.
         chromium = mkViewport { shellBackend = "chromium"; };
+
+        # The same Blink, embedded rather than driven. No browser process, no
+        # DevTools pipe over a socket — the protocol goes straight into the
+        # library — and the engine is nixpkgs' prebuilt libcef.
+        cef = mkViewport { shellBackend = "cef"; };
 
         # Shared by the two Rust shells below, which differ only in toolchain.
         rustDeps = with pkgs; [
@@ -469,7 +586,8 @@
           # thing that differs between them: `.#wpe`, `.#webkitgtk`, and two
           # more names to come. `wpewebkit` is the engine itself rather than a
           # compositor, which is why it does not follow the pattern.
-          inherit wpe webkitgtk chromium wpewebkit;
+          inherit wpe webkitgtk chromium cef wpewebkit;
+          inherit viewport-shell-cef;
 
           # The old name for `.#wpe`. Kept because it is what any existing pin
           # or checkout says, and a rename is not a reason to break one.
@@ -788,7 +906,7 @@
             enable = mkEnableOption "the Viewport compositor";
 
             shellBackend = mkOption {
-              type = types.enum [ "webkitgtk" "chromium" "wpe" ];
+              type = types.enum [ "webkitgtk" "chromium" "cef" "wpe" ];
               # The one that installs without building a browser engine.
               #
               # `wpe` is what this project shipped first and it is still the
