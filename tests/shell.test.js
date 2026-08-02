@@ -1182,6 +1182,25 @@ if (mode === 'scrolling') {
   check('the compositor is told to route input to the shell',
     announced?.active === true);
 
+  /* A thumbnail is a picture of a monitor, so it is shaped like one. The grid
+     tracks are not: three workspaces across an ultrawide gives tracks nothing
+     like the output, and a thumbnail stretched to its track is a monitor drawn
+     in the wrong shape. */
+  {
+    const thumbs = [...globalThis.__shell.overviewThumbs.values()];
+    check('the overview has thumbnails to check', thumbs.length > 0);
+    const area = { width: 1920, height: 1050 };  // what the stub reports
+    const wrong = thumbs.filter((cell) => {
+      const width = parseFloat(cell.style.width);
+      const height = parseFloat(cell.style.height);
+      if (!Number.isFinite(width) || !Number.isFinite(height) || height === 0) {
+        return true;
+      }
+      return Math.abs(width / height - area.width / area.height) > 0.01;
+    });
+    check('every thumbnail has the output\'s aspect ratio', wrong.length === 0);
+  }
+
   const scaled = sent.slice(before)
     .filter((m) => m.type === 'view.layout' && m.scale !== undefined);
   check('windows are laid out with a scale', scaled.length > 0);

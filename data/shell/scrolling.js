@@ -220,11 +220,34 @@ function renderOverview(output, list) {
      tall, since an output is wider than it is high. */
   const columns = Math.ceil(Math.sqrt(list.length)) || 1;
   const rows = Math.ceil(list.length / columns);
-  const cellWidth = area.width / columns;
-  const cellHeight = area.height / rows;
-  const scale = Math.min(cellWidth / area.width, cellHeight / area.height) * 0.9;
+
+  /* Each thumbnail is a picture of a monitor, so it is shaped like one.
+   *
+   * The grid tracks are whatever shape the grid is divided into, which on an
+   * ultrawide with four workspaces is nothing like the output: the miniature
+   * inside was scaled to fit and pinned to the top left, so every thumbnail
+   * was a monitor-shaped image in the corner of a differently-shaped box, with
+   * dead space down one side. Sizing the box from the output's own ratio makes
+   * the two the same thing, and the miniature then fills it exactly.
+   *
+   * The gaps and the padding come out of the available space first — they are
+   * `--gap * 2` in the stylesheet, and a track worked out without them is wider
+   * than the track that gets laid out, which puts the last column off the edge. */
+  const spacing = gapPx() * 2;
+  const trackWidth = (area.width - spacing * (columns + 1)) / columns;
+  const trackHeight = (area.height - spacing * (rows + 1)) / rows;
+  const ratio = area.height > 0 ? area.width / area.height : 16 / 9;
+  /* Whichever of the two runs out first, so the box fits its track in both
+     directions and keeps the ratio. */
+  const thumbWidth = Math.max(0, Math.min(trackWidth, trackHeight * ratio));
+  const thumbHeight = ratio > 0 ? thumbWidth / ratio : 0;
+  const scale = area.width > 0 ? thumbWidth / area.width : 0;
 
   grid.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+  /* Explicit rows as well, so the tracks are even and the last row is the
+     same height as the others rather than being sized by its content — which
+     is what decides whether the grid reads as centred. */
+  grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
 
   for (const n of list) {
     const cell = document.createElement('div');
@@ -236,6 +259,12 @@ function renderOverview(output, list) {
     label.className = 'thumb-label';
     label.textContent = String(n);
     cell.append(label);
+
+    /* The box is the monitor's shape, and centred in its track by the grid's
+       `place-items` — a thumbnail that fills its track would not need this,
+       and one that keeps a ratio always has slack in one direction. */
+    cell.style.width = `${thumbWidth}px`;
+    cell.style.height = `${thumbHeight}px`;
 
     const inner = document.createElement('div');
     inner.className = 'thumb-inner';

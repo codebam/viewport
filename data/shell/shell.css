@@ -479,6 +479,11 @@ body {
   display: grid;
   gap: calc(var(--gap) * 2);
   padding: calc(var(--gap) * 2);
+  /* The thumbnails are sized in px from the output's aspect ratio rather than
+     stretched to their tracks, so they are smaller than the track in one
+     direction and want centring in it. Without this they sit top-left and the
+     whole grid reads as pushed into a corner. */
+  place-items: center;
   /* Dim the wallpaper so the thumbnails read as a layer above the desktop
      rather than as more windows on it. */
   background: #0b0d12cc;
