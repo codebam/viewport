@@ -36,17 +36,18 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # Both are derived here rather than assumed, so this works from a shell that
 # was not started by the login on this VT.
 if [ -z "${XDG_VTNR:-}" ] || [ -z "${XDG_SESSION_ID:-}" ]; then
-    while read -r session _; do
-        [ -n "$session" ] || continue
-        seat=$(loginctl show-session "$session" -p Seat --value 2>/dev/null || true)
+    # What the seat itself says, rather than a scan of session states: the
+    # answer changes as VTs are switched, and "the session that is active on
+    # seat0" is exactly the one libseat will let take DRM master.
+    session=$(loginctl show-seat seat0 -p ActiveSession --value 2>/dev/null || true)
+    if [ -n "$session" ]; then
         vt=$(loginctl show-session "$session" -p VTNr --value 2>/dev/null || true)
-        state=$(loginctl show-session "$session" -p State --value 2>/dev/null || true)
-        if [ "$seat" = seat0 ] && [ -n "$vt" ] && [ "$vt" != 0 ] && [ "$state" = active ]; then
-            export XDG_SESSION_ID=$session XDG_VTNR=$vt
-            echo "using session $session on tty$vt" >&2
-            break
-        fi
-    done < <(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$USER" '$3 == u {print $1}')
+        export XDG_SESSION_ID=$session XDG_VTNR=$vt
+        echo "using session $session on tty$vt" >&2
+    else
+        echo "no active session on seat0; switch to a TTY and log in" >&2
+        exit 1
+    fi
 fi
 
 backends=(wpe webkitgtk chromium cef)
@@ -68,8 +69,11 @@ done
 # engine is compiled from source — and finding that out first is the point.
 declare -A binary
 for backend in "${backends[@]}"; do
-    echo "building .#$backend..." >&2
-    path=$(nix build "$here#$backend" --no-link --print-out-paths)
+    # Loud, because this is where a first run spends its first few minutes and
+    # a silent terminal is indistinguishable from a hung one.
+    echo "building .#$backend (nothing is on screen until every build is done)..." >&2
+    path=$(nix build "$here#$backend" --no-link --print-out-paths --print-build-logs 2>&1 \
+        | tee /dev/stderr | tail -1)
     binary[$backend]=$path/bin/viewport
     [ -x "${binary[$backend]}" ] || {
         echo "no viewport binary in $path" >&2

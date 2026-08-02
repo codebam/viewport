@@ -176,26 +176,69 @@ drawn by four different engines — see
 holding the compositor still and changing only the engine:
 
 ```sh
-scripts/bench-backends.sh              # every implemented backend
-scripts/bench-backends.sh --only chromium
+scripts/bench-backends.sh --runs 3    # every implemented backend
+scripts/bench-backends.sh --only cef
 ```
 
 Each backend is a package rather than a flag, because the packaged wrapper is
 what names the engine and installs the shell program beside the compositor; the
-script builds all three before measuring any, so a build failure in the last
-one does not arrive after two runs have already had the machine.
+script builds all four before measuring any, so a build failure in the last one
+does not arrive after three runs have already had the machine.
 
-Two things to hold in mind when the numbers arrive. `wpe` runs the engine
-inside the compositor process, so its cost lands in the compositor's own CPU
-and RSS columns while the other two carry theirs in a second process — a
-per-compositor number is not comparable across that line without adding the
-shell process back in. And the `chromium` and `cef` backends both run
-`--in-process-gpu`, because with a GPU process of its own Chromium segfaults on
-this compositor and falls back to software; that is a real difference in what
-is being measured, not a knob turned for tidiness.
+### What one run said
 
-Results are not published here yet. This section is the method, so that a run
-is reproducible before there is anything to argue with.
+`--drm` from a TTY, DP-1 at 2560x1440@120 with a 5120x1440 layout, `--runs 3`,
+median of three. Same compositor binary in all four, same shell page, same
+client.
+
+| backend | fifo fps | cpu ms/frame | comp cpu % | session cpu % | compositor rss MB | start → shell talking |
+| --- | --- | --- | --- | --- | --- | --- |
+| wpe | 120.0 | 0.217 | 2.6 | 2.6 | 329 | 2484 ms |
+| webkitgtk | 120.0 | 0.217 | 2.6 | 2.8 | 248 | 585 ms |
+| chromium | 119.9 | 0.217 | 2.6 | 3.0 | 248 | 678 ms |
+| cef | 119.6 | 0.233 | 2.8 | 2.8 | 248 | 308 ms |
+
+**The compositing columns do not tell these engines apart, and that is the
+finding.** Every backend presents at the panel's rate and spends the same fifth
+of a millisecond of CPU on each frame, because the thing being measured is a
+fullscreen `vkcube` and the shell behind it is idle. An engine that has painted
+its desktop and been given no reason to repaint costs nothing to composite,
+whichever engine it is. This benchmark was built to compare compositors and it
+compares compositors; pointing it at four shells mostly re-measures the same
+compositor four times.
+
+**The memory column is not a memory comparison.** `rss_mb` is the compositor
+process, and only `wpe` has an engine inside that process — the other three
+keep theirs in a shell process the harness never samples. So the honest reading
+of 329 against 248 is "this is what moving WebKit out of the compositor takes
+out of the compositor", not "wpe uses more memory". Session CPU *does* cover
+the shell process, and it is the column to read across that line.
+
+**The startup column is a real difference** and the largest one here. CEF is up
+and talking in 308 ms against WPE's 2.5 s — though wpe's figure is measured
+from a different point, since there the compositor is starting an engine on a
+thread of its own rather than a process, and the page load is inside it.
+
+**What is not established.** Session CPU varies more between runs of one
+backend than between backends: `cef` fifo came in at 2.2, 2.8 and 7.6 percent,
+`chromium` at 2.4, 3.0 and 5.6. The two Blink backends produced the spikes and
+the two WebKit ones did not, across all three runs — which is worth noticing
+and is not worth concluding anything from at n=3.
+
+**What would actually compare engines**: a scenario where the shell repaints —
+the overview, a window being dragged, the bar under load — and per-process
+sampling that includes the shell. Neither exists yet. Until they do, these
+tables say the compositor does not care which engine draws its desktop, which
+is a real thing to know and a smaller thing than it looks.
+
+### Reading the caveats
+
+`wpe` runs the engine inside the compositor process, so its cost lands in the
+compositor's own columns while the other three carry theirs in a second
+process. And `chromium` and `cef` both run `--in-process-gpu`, because with a
+GPU process of their own Chromium segfaults on this compositor and falls back
+to software; that is a real difference in what is being measured, not a knob
+turned for tidiness.
 
 ## Reproducing
 
