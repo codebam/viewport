@@ -156,7 +156,22 @@ pub fn init(
         .insert_source(winit, move |event, _, state| match event {
             WinitEvent::Resized { size, .. } => {
                 output.change_current_state(Some(Mode { size, refresh: 60_000 }), None, None, None);
+                output.set_preferred(Mode { size, refresh: 60_000 });
                 state.space.map_output(&output, (0, 0));
+                // The same reshaping the DRM backend does when a mode changes,
+                // and it is not optional here either.
+                //
+                // The layer map caches a usable area, worked out against the
+                // output it was last arranged for. Nothing re-arranged it on a
+                // resize, so it kept the area of the window winit opened —
+                // 1280x800, its default — for the life of the session. The
+                // *output* was the right size all along and `usable_width` was
+                // not, and the shell lays its windows out inside the usable
+                // area: a nested window came out with the desktop drawn to the
+                // proportions of some other rectangle entirely, which read as
+                // the nested backend ignoring its window and using the
+                // monitor's shape.
+                state.output_reshaped(&output);
                 // The shell lays out against the output layout, so a resize it
                 // is not told about would leave every window where it was.
                 state.notify_output_layout();
