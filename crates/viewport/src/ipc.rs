@@ -433,6 +433,14 @@ impl ViewportState {
 
     /// Parse one message and act on it.
     pub fn ipc_dispatch(&mut self, client_id: u64, bytes: &[u8]) {
+        // Everything that arrives, at debug. The out-of-process shell talks
+        // over this socket like any other client, so without this there is no
+        // way to see what the desktop asked for — which is the first question
+        // whenever a click appears to do nothing.
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            tracing::debug!("from {client_id}: {}", String::from_utf8_lossy(bytes));
+        }
+
         // The first message the shell sends, once.
         //
         // "The shell did not lay anything out" has two very different causes:

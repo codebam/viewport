@@ -299,6 +299,53 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        // Driving the pointer from the socket. The same three calls the
+        // libinput path makes, in the same order, so a scripted click and a
+        // real one are the same event by the time anything sees it.
+        Request::InputPointer { x, y } => {
+            let Some(pointer) = state.seat.get_pointer() else {
+                return;
+            };
+            let location = (x, y).into();
+            let under = state.surface_under(location);
+            let serial = SERIAL_COUNTER.next_serial();
+            let time = state.start_time.elapsed().as_millis() as u32;
+            pointer.motion(
+                state,
+                under,
+                &smithay::input::pointer::MotionEvent {
+                    location,
+                    serial,
+                    time,
+                },
+            );
+            pointer.frame(state);
+            // The cursor moved and nothing else would draw it.
+            state.needs_render = true;
+        }
+
+        Request::InputButton { button, pressed } => {
+            let Some(pointer) = state.seat.get_pointer() else {
+                return;
+            };
+            let serial = SERIAL_COUNTER.next_serial();
+            let time = state.start_time.elapsed().as_millis() as u32;
+            pointer.button(
+                state,
+                &smithay::input::pointer::ButtonEvent {
+                    button,
+                    state: if pressed {
+                        smithay::backend::input::ButtonState::Pressed
+                    } else {
+                        smithay::backend::input::ButtonState::Released
+                    },
+                    serial,
+                    time,
+                },
+            );
+            pointer.frame(state);
+        }
+
         Request::Quit => state.shutdown(),
     }
 }

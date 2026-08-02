@@ -199,6 +199,30 @@ fn run() -> Result<()> {
     let nested =
         std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
     let drm = drm || (!headless && !nested);
+
+    // A shell with no display to nest in is not the same thing as a shell
+    // sitting at a seat, and until now this could not tell the difference.
+    //
+    // A terminal that belongs to no session — a tmux started by the service
+    // manager, a systemd unit, anything reattached after its login went away —
+    // has neither `WAYLAND_DISPLAY` nor `XDG_VTNR`. This chose DRM for it,
+    // libseat handed over the seat's *active* session because that is the one
+    // asking, and the compositor took the screen out from under the desktop
+    // already running on it. Which is a spectacular way to find out, and it
+    // happened three times in one evening.
+    //
+    // So: DRM needs either a VT of its own or an explicit `--drm`. The flag
+    // is what says "I mean it", and it is what run-drm.sh and the benchmark
+    // harness already pass.
+    if drm && !args.iter().any(|arg| arg == "--drm") && std::env::var_os("XDG_VTNR").is_none() {
+        anyhow::bail!(
+            "no display to nest in and no VT of this session's own: WAYLAND_DISPLAY, \
+             DISPLAY and XDG_VTNR are all unset. Taking DRM from here would take the \
+             screen from whatever is already on this seat. Run this from a TTY, or set \
+             WAYLAND_DISPLAY to nest inside a session, or pass --drm to mean it"
+        );
+    }
+
     if drm {
         tracing::info!("drm backend");
         udev::init(&mut event_loop, &mut state)?;

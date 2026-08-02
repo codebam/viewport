@@ -213,6 +213,31 @@ pub enum Request {
         args: Vec<String>,
     },
 
+    /// Move the pointer, in the layout's own coordinates.
+    ///
+    /// For driving the desktop from a script: a test that wants to know
+    /// whether a notification can be clicked has to be able to click it, and
+    /// there is no other way in. Everything a real pointer does goes through
+    /// the same path — the hit test, the focus, the shell's overlays — so what
+    /// this exercises is what a hand exercises.
+    ///
+    /// Not a privilege escalation: this socket already runs keybindings
+    /// through `shell.command`, which can execute anything, and it is 0600.
+    #[serde(rename = "input.pointer")]
+    InputPointer { x: f64, y: f64 },
+
+    /// Press or release a pointer button, at wherever the pointer is.
+    ///
+    /// `button` is an evdev code — 272 is left, 273 right, 274 middle — which
+    /// is what the compositor receives from libinput and what the shell is
+    /// written against.
+    #[serde(rename = "input.button")]
+    InputButton {
+        button: u32,
+        #[serde(default = "crate::request::pressed_default")]
+        pressed: bool,
+    },
+
     #[serde(rename = "quit")]
     Quit,
 }
@@ -401,6 +426,12 @@ fn yes() -> bool {
 
 fn one() -> f64 {
     1.0
+}
+
+/// A button message with no `pressed` is a press: the common case is a click,
+/// and a release with nothing held is a no-op anyway.
+fn pressed_default() -> bool {
+    true
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ use std::ffi::{c_char, CString};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context as _, Result};
 use cef::{args::Args, rc::*, *};
 use serde_json::{json, Value};
 
@@ -91,11 +91,31 @@ fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().collect();
     let options = Options::parse(&argv)?;
 
+    // A cache directory of this process's own.
+    //
+    // Left unset, CEF uses one shared path for every instance and warns that
+    // it "may lead to unintended process singleton behavior" — which is not a
+    // warning about tidiness. Chromium's singleton lock lives in that
+    // directory, so a second shell started while a desktop is running finds
+    // the lock held: it hands its command line to the running instance and
+    // exits, or takes the lock from it. Either way one of the two stops being
+    // a working desktop, and what surfaced here was `CEF would not initialise`
+    // in the new one and a live session that had to be restarted.
+    //
+    // The chromium backend has had a per-process profile from the start
+    // (`--user-data-dir`), which is why it can be run beside a live session
+    // and this could not.
+    let cache = std::env::temp_dir().join(format!("viewport-shell-cef-{}", std::process::id()));
+    std::fs::create_dir_all(&cache)
+        .with_context(|| format!("creating {}", cache.display()))?;
+
     let settings = Settings {
         // No sandbox: the helper is a setuid binary and a nix store path
         // cannot be one. The shell is a page this compositor shipped rather
         // than the open web.
         no_sandbox: 1,
+        root_cache_path: CefString::from(cache.to_string_lossy().as_ref()),
+        cache_path: CefString::from(cache.to_string_lossy().as_ref()),
         ..Default::default()
     };
 
@@ -165,6 +185,9 @@ fn main() -> Result<()> {
     tracing::info!("CEF is up on {}", options.url);
     run_message_loop();
     shutdown();
+    // Thrown away with the process, like the chromium backend's profile: what
+    // is in it is a cache for a page this compositor ships.
+    let _ = std::fs::remove_dir_all(&cache);
     Ok(())
 }
 
