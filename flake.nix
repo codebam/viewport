@@ -209,12 +209,10 @@
         # other. The default stays `wpe` so an existing configuration keeps the
         # desktop it had.
         mkViewport = { shellBackend }: pkgs.rustPlatform.buildRustPackage {
-          # The in-process build keeps the name it has always had, so an
-          # existing pin does not become a different package for a reason that
-          # has nothing to do with it.
-          pname = if shellBackend == "wpe"
-            then "viewport-smithay"
-            else "viewport-smithay-${shellBackend}";
+          # Named for the engine, like the attribute is. Both produce a binary
+          # called `viewport`; the store path is the only thing that says which
+          # of them a running compositor came from.
+          pname = "viewport-${shellBackend}";
           version = "0.1.0";
           src = self;
 
@@ -326,11 +324,11 @@
         };
 
         # The engine in-process: what this project has always built.
-        viewport-smithay = mkViewport { shellBackend = "wpe"; };
+        wpe = mkViewport { shellBackend = "wpe"; };
 
         # The engine out of process, from nixpkgs' prebuilt WebKitGTK. Nothing
         # in this closure is built from a WebKit tarball.
-        viewport-webkitgtk = mkViewport { shellBackend = "webkitgtk"; };
+        webkitgtk = mkViewport { shellBackend = "webkitgtk"; };
 
         # Shared by the two Rust shells below, which differ only in toolchain.
         rustDeps = with pkgs; [
@@ -427,7 +425,15 @@
       in
       {
         packages = {
-          inherit viewport-smithay viewport-webkitgtk wpewebkit;
+          # Named for the engine that draws the shell, because that is the only
+          # thing that differs between them: `.#wpe`, `.#webkitgtk`, and two
+          # more names to come. `wpewebkit` is the engine itself rather than a
+          # compositor, which is why it does not follow the pattern.
+          inherit wpe webkitgtk wpewebkit;
+
+          # The old name for `.#wpe`. Kept because it is what any existing pin
+          # or checkout says, and a rename is not a reason to break one.
+          viewport-smithay = wpe;
           # `viewport` used to be here too, the wlroots build, and was the
           # default. Both compositors produced a binary called `viewport`, so a
           # system installed one or the other; there is only one now.
@@ -435,8 +441,8 @@
           # The default is the out-of-process shell, for the same reason the
           # NixOS module's is: `nix run` on this flake should give a desktop
           # off the binary cache rather than starting a WebKit build. Ask for
-          # `.#viewport-smithay` to get the in-process engine.
-          default = viewport-webkitgtk;
+          # `.#wpe` to get the in-process engine.
+          default = webkitgtk;
         };
 
         # --------------------------------------------------------------------
@@ -630,6 +636,9 @@
       # that nobody should have to rediscover: a browser's getDisplayMedia
       # simply rejects, and no log anywhere names a portal or a desktop.
       nixosModules.portal = { config, lib, pkgs, ... }:
+        let
+          cfg = config.programs.viewport;
+        in
         {
           options.programs.viewport.portals.enable =
             lib.mkEnableOption "xdg-desktop-portal wiring for Viewport" // {
@@ -654,9 +663,16 @@
               # installs — a config naming "viewport" with no declaration
               # behind it matches nothing, and the request quietly goes
               # somewhere else.
+              #
+              # Whichever compositor package the session is installed with, so
+              # that a system on the default backend does not acquire a WebKit
+              # build by turning portals on. `or` because this module can be
+              # imported without the session one, in which case there is no
+              # `package` option to read — the same reason `cfg.enable or false`
+              # is written that way above.
               extraPortals = [
                 pkgs.xdg-desktop-portal-gtk
-                self.packages.${pkgs.system}.viewport-smithay
+                (cfg.package or self.packages.${pkgs.system}.default)
               ];
 
               # Named for XDG_CURRENT_DESKTOP's first entry, which the
@@ -766,8 +782,8 @@
               type = types.package;
               default =
                 if cfg.shellBackend == "webkitgtk"
-                then self.packages.${pkgs.system}.viewport-webkitgtk
-                else self.packages.${pkgs.system}.viewport-smithay;
+                then self.packages.${pkgs.system}.webkitgtk
+                else self.packages.${pkgs.system}.wpe;
               defaultText = literalExpression
                 "the package matching `programs.viewport.shellBackend`";
               description = "The viewport package to use.";

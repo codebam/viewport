@@ -103,9 +103,12 @@ the in-process engine by name.
 ## Build
 
 ```sh
-nix build github:codebam/viewport-smithay                   # the default, above
-nix build github:codebam/viewport-smithay#viewport-smithay  # in-process; builds WebKit
+nix build github:codebam/viewport-smithay        # the default, above
+nix build github:codebam/viewport-smithay#wpe    # in-process; builds WebKit
 ```
+
+The package attributes are named for the engine that draws the shell — `.#wpe`
+and `.#webkitgtk` — because that is the only thing that differs between them.
 
 Or to work in the tree:
 
@@ -127,9 +130,9 @@ nix build .#wpewebkit   # do this once, deliberately, before anything else
 ```
 
 That build is the whole reason there is a second backend, and the reason it is
-the default. `.#viewport-webkitgtk` runs the same shell against nixpkgs'
-prebuilt WebKitGTK — the same WebKit version, a different port, out of
-process — and substitutes from cache.nixos.org like anything else.
+the default. `.#webkitgtk` runs the same shell against nixpkgs' prebuilt
+WebKitGTK — the same WebKit version, a different port, out of process — and
+substitutes from cache.nixos.org like anything else.
 
 Run nested inside an existing compositor:
 

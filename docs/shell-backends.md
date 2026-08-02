@@ -118,13 +118,19 @@ a C++ API and a multi-process model to host.
 
 ## Building and installing
 
+Each package is named for the engine that draws its shell, which is the only
+thing that differs between them:
+
 ```
 # the engine in-process; builds WebKit
-nix build .#viewport-smithay
+nix build .#wpe
 
 # the engine out of process; builds no WebKit at all
-nix build .#viewport-webkitgtk
+nix build .#webkitgtk       # and this is `.#default`
 ```
+
+`.#viewport-smithay` is still an alias for `.#wpe`, because that is what any
+existing pin says.
 
 On NixOS:
 

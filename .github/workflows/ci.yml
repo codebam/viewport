@@ -17,7 +17,7 @@
 # of disk against a 20-40 GB build tree — and pushed it to a cache so the
 # other jobs could substitute it. That cache is gone, and with it the gate
 # every compositor job sat behind. The `wpe` backend is still supported and
-# still built by `.#viewport-smithay`; it is checked by `.githooks/pre-commit`
+# still built by `.#wpe`; it is checked by `.githooks/pre-commit`
 # on a machine that has the engine, and not here, because a hosted runner
 # cannot afford it and never could.
 #
@@ -170,7 +170,7 @@ jobs:
       # data files, the portal declaration, and the second binary the
       # out-of-process shell needs beside it.
       #
-      # `.#viewport-webkitgtk` rather than `.#viewport-smithay`: this is the
+      # `.#webkitgtk` rather than `.#wpe`: this is the
       # default package, it is what `nix run` on this flake gives, and its
       # engine substitutes from cache.nixos.org. The `wpe` build is a WebKit
       # compile and belongs on a machine that has one.
@@ -179,7 +179,7 @@ jobs:
       # sandbox, which has neither a GPU nor a socket, and the steps above have
       # already run the suite outside it.
       - name: Build the packaged compositor
-        run: nix build --print-build-logs .#viewport-webkitgtk
+        run: nix build --print-build-logs .#webkitgtk
 
   # The same suite under AddressSanitizer.
   #
