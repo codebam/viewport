@@ -89,6 +89,10 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             state.notify_views();
         }
 
+        Request::BackgroundFocus => {
+            state.toggle_background_focus();
+        }
+
         Request::ShellFocus => {
             // With the engine in this process the shell has no surface, so
             // this can only drop client focus and let the key path forward to

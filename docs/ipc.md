@@ -58,6 +58,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `view.opacity` | `id`, `opacity` (0–1) |
 | `view.query` | — replays `config` and a `view.added` for every mapped window |
 | `shell.focus` | — |
+| `background.focus` | — (toggles the keyboard onto the wallpaper terminal and back) |
 | `shell.overview` | `active` |
 | `shell.overlay` | `rects[]` of `x`, `y`, `width`, `height` — everywhere the shell has drawn something that belongs above the windows. Sent whole; an empty list means nothing does. See [Drawing in front of the windows](#drawing-in-front-of-the-windows) |
 | `screencast.rect` | `x`, `y`, `width`, `height` — the older single-rectangle form of `shell.overlay`, still accepted; a zero size means nothing is above the windows |

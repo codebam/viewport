@@ -41,7 +41,23 @@ pub fn spawn(command: &str) {
     use std::process::{Command, Stdio};
 
     tracing::info!("exec: {command}");
-    let result = Command::new("/bin/sh")
+    let mut child = Command::new("/bin/sh");
+    // Which engine *this* compositor draws its shell with is not a preference
+    // to hand down.
+    //
+    // An installed Viewport is wrapped with `VIEWPORT_SHELL_BACKEND` set to
+    // the engine it ships, and every process the session starts inherits it —
+    // so a second Viewport run from a terminal inside the first picks up the
+    // first one's engine whatever package it came from, and says nothing about
+    // why. That surfaced as `--background-terminal` refusing to start under a
+    // compositor whose whole package exists to be the backend that supports
+    // it: the cef session's variable had followed the terminal, the `nix run`
+    // typed into it, and the webkitgtk build it started.
+    //
+    // The variable is how someone *asks* for an engine, and that ask belongs
+    // to the shell they typed it in, not to a compositor three processes up.
+    child.env_remove("VIEWPORT_SHELL_BACKEND");
+    let result = child
         .arg("-c")
         .arg(command)
         .stdin(Stdio::null())
@@ -1177,6 +1193,7 @@ impl ViewportState {
                     toplevel.send_close();
                 }
             }
+            Bound::Background => self.toggle_background_focus(),
             Bound::Reload => {
                 #[cfg(feature = "wpe")]
                 for page in &self.shells {
