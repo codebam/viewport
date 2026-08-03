@@ -10,7 +10,7 @@
 # compositor's `viewport` package: a system takes one.
 
 pkgname=viewport-smithay-chromium
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Wayland compositor whose shell is a web page — Chromium, driven as a child process'
 arch=('x86_64' 'aarch64')
@@ -19,7 +19,7 @@ license=('GPL-3.0-or-later')
 
 # The tag this package was cut from. A branch would move under it, and a
 # PKGBUILD that follows a moving branch is not a package anyone can reproduce.
-_tag=v0.1.0
+_tag=v0.1.1
 
 depends=(
   'wayland'

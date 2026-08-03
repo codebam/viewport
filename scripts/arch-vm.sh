@@ -5,7 +5,7 @@
 #
 #   ./scripts/arch-vm.sh                     # newest package under packaging/arch/out
 #   ./scripts/arch-vm.sh --variant cef
-#   ./scripts/arch-vm.sh --package ~/viewport-smithay-wpe-0.1.0-1-x86_64.pkg.tar.zst
+#   ./scripts/arch-vm.sh --package ~/viewport-smithay-wpe-0.1.1-1-x86_64.pkg.tar.zst
 #   ./scripts/arch-vm.sh --shell                 # a login shell, no compositor
 #
 # `nix run .#vm` boots this compositor on NixOS, which proves the flake and

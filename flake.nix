@@ -237,7 +237,7 @@
         # cannot be a `-p` of the compositor's build.
         viewport-shell-cef = pkgs.rustPlatform.buildRustPackage {
           pname = "viewport-shell-cef";
-          version = "0.1.0";
+          version = "0.1.1";
 
           # The whole tree, built from inside the crate.
           #
@@ -331,7 +331,7 @@
           # called `viewport`; the store path is the only thing that says which
           # of them a running compositor came from.
           pname = "viewport-${shellBackend}";
-          version = "0.1.0";
+          version = "0.1.1";
           src = self;
 
           cargoLock = {
