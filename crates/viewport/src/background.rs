@@ -123,8 +123,17 @@ impl ViewportState {
             // Once, not once per monitor and not once per layout change.
             if !self.background_backend_warned {
                 self.background_backend_warned = true;
+                // Where that engine came from, because the surprising case is
+                // an inherited one: a session exports VIEWPORT_SHELL_BACKEND
+                // to everything it starts, so a compositor run from a terminal
+                // inside another desktop is handed that desktop's engine and
+                // the refusal names a backend nobody typed.
+                let from = match std::env::var("VIEWPORT_SHELL_BACKEND") {
+                    Ok(value) => format!(" (VIEWPORT_SHELL_BACKEND={value})"),
+                    Err(_) => String::new(),
+                };
                 tracing::error!(
-                    "background: {command:?} is not being started — the {} shell paints an \
+                    "background: {command:?} is not being started — the {} shell{from} paints an \
                      opaque background and nothing behind it can be seen. Start the compositor \
                      with --shell-backend=webkitgtk to use a terminal as the wallpaper",
                     self.shell_backend

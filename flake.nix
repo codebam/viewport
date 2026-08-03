@@ -418,10 +418,20 @@
             # `viewport-shell-gtk` came up windows-only with the reason in the
             # log, which is exactly the case this closes.
             #
-            # `--set-default`, so `--shell-backend` and the config file still
-            # win: this says what is installed, not what must be used.
+            # `--set` and not `--set-default`, which it was until it bit.
+            #
+            # A running session exports this to every process it starts, so a
+            # terminal inside a `cef` desktop has `VIEWPORT_SHELL_BACKEND=cef`
+            # in its environment — and `--set-default` then does nothing for a
+            # `nix run .#webkitgtk` typed into that terminal. The webkitgtk
+            # package came up on cef, which is the one engine that cannot draw
+            # a wallpaper terminal, and the refusal named an engine the user
+            # had not asked for.
+            #
+            # A package named for an engine runs that engine. `--shell-backend`
+            # still wins over both, which is where "use something else" lives.
             wrapProgram $out/bin/viewport \
-              --set-default VIEWPORT_SHELL_BACKEND ${shellBackend} \
+              --set VIEWPORT_SHELL_BACKEND ${shellBackend} \
               --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (with pkgs; [
                 vulkan-loader
                 libgbm
