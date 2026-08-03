@@ -106,6 +106,22 @@
       # writes go nowhere, which is the harmless half of this.
       targets=/var/log/viewport.log
       [ -w /dev/ttyS0 ] && targets="$targets /dev/ttyS0"
+      # Wait for a resolver, because tty1 is here before DHCP is. Ordering the
+      # unit after `network-online.target` is what this looked like first and
+      # it does nothing: the session on tty1 is started by `autovt@tty1`,
+      # logind's own instance of the same template, which carries no ordering
+      # of ours — and `systemd.services."getty@tty1"` does not add any either,
+      # it writes a *standalone* unit that shadows the template for that one
+      # instance and has no ExecStart at all.
+      #
+      # So the wait goes where the work is. Thirty seconds is long enough for
+      # DHCP on a machine that has a network and short enough to sit through
+      # on a machine that does not, which then falls through to the build on
+      # the disk below.
+      for _ in $(seq 30); do
+        ${pkgs.getent}/bin/getent hosts api.github.com > /dev/null 2>&1 && break
+        sleep 1
+      done
       {
         nix run --refresh github:codebam/viewport-smithay \
           || ${config.programs.viewport.package}/bin/viewport
@@ -143,14 +159,6 @@
     "nix-command"
     "flakes"
   ];
-
-  # Autologin happens well before DHCP finishes, and a `nix run` that starts
-  # first fails to resolve github.com and falls straight through to the
-  # fallback — which works, and is never the version that was asked for.
-  systemd.services."getty@tty1" = {
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
-  };
 
   environment.systemPackages = with pkgs; [
     foot
