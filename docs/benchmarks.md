@@ -185,6 +185,12 @@ what names the engine and installs the shell program beside the compositor; the
 script builds all four before measuring any, so a build failure in the last one
 does not arrive after three runs have already had the machine.
 
+All four come from this flake. Three of them are packaged for Arch as well —
+`packaging/arch/{wpe,webkitgtk,chromium}` — and `cef` is not: CEF ships as a
+prebuilt binary bundle, the only Arch package of it is `cef-minimal` in the AUR,
+and that is CEF 121 against the 149 this tree is built against. So a comparison
+run on Arch is three engines wide and one on nix is four.
+
 ### What one run said
 
 `--drm` from a TTY, DP-1 at 2560x1440@120 with a 5120x1440 layout, `--runs 3`,
@@ -269,11 +275,13 @@ frames a second under the same load and spend between 8.9 and 13.3 percent of a
 core doing it. The interesting column is the last derived one: cost per frame
 the shell actually produced.
 
-**`wpe` is the cheapest, and it is the one nobody can install.** 0.182% of a
-core per frame and the smallest resident set, which is what an engine inside
-the compositor buys — no second process, no buffer handed across one. It is
-also the only backend that compiles WebKit, so a machine switching to it waits
-hours for a desktop.
+**`wpe` is the cheapest, and on nix it is the one nobody waits for.** 0.182% of
+a core per frame and the smallest resident set, which is what an engine inside
+the compositor buys — no second process, no buffer handed across one. Under
+this flake it is also the only backend that compiles WebKit, so a machine
+switching to it waits hours for a desktop. On Arch it is the opposite: the
+repositories carry `wpewebkit` built with the WPE platform API, nothing
+compiles an engine, and `packaging/arch/wpe` builds in about a minute.
 
 **Of the three that build no engine, `cef` is cheapest per frame and
 `webkitgtk` is lightest.** 0.250% against 0.273%, and 551 MB against 395 — a
@@ -292,7 +300,7 @@ real cost of the fix and it is small, but it is not nothing on a laptop.
 load is scripted but the work it makes is not identical run to run — an
 overview with four windows is not the same repaint every time.
 
-### Reading the caveats### Reading the caveats### Reading the caveats
+### Reading the caveats
 
 `wpe` runs the engine inside the compositor process, so its cost lands in the
 compositor's own columns while the other three carry theirs in a second
