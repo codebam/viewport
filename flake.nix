@@ -633,6 +633,39 @@
           # which does not exercise the DRM path at all, or a TTY, which takes
           # the screen. See nix/vm.nix.
           vm = self.nixosConfigurations.vm.config.system.build.vm;
+
+          # The same desktop as a disk somebody else can boot: `nix build .#vdi`
+          # leaves ./result/viewport.vdi, which VirtualBox attaches as-is.
+          #
+          # The conversion is the last step of the image build rather than
+          # something done to the file afterwards, because `make-disk-image`
+          # knows raw, qcow2 and vpc and VDI is not one of them. VirtualBox's
+          # own converter does it, which is what nixpkgs' virtualbox-image.nix
+          # does; the difference is that it goes on to wrap the result in an
+          # OVA and this stops at the disk. See nix/vdi.nix.
+          vdi = import "${nixpkgs}/nixos/lib/make-disk-image.nix" {
+            inherit pkgs;
+            inherit (pkgs) lib;
+            config = self.nixosConfigurations.vdi.config;
+            name = "viewport-vdi";
+            # The store holds a 1.3 GB engine before anything else is counted,
+            # and the machine builds a second copy of the compositor from
+            # GitHub on first login. The VDI is dynamic and grows into this
+            # rather than starting at it.
+            diskSize = 24576;
+            format = "raw";
+            # VirtualBox boots BIOS by default, so an MBR disk with GRUB in it.
+            partitionTableType = "legacy";
+            label = "nixos";
+            postVM = ''
+              export HOME=$PWD
+              export PATH=${pkgs.virtualbox}/bin:$PATH
+              echo "converting to VDI..."
+              VBoxManage convertfromraw "$diskImage" viewport.vdi --format VDI
+              rm -f "$diskImage"
+              mv viewport.vdi $out/viewport.vdi
+            '';
+          };
         };
 
         # --------------------------------------------------------------------
@@ -829,6 +862,18 @@
         modules = [
           self.nixosModules.default
           ./nix/vm.nix
+        ];
+      };
+
+      # The machine on the disk `nix build .#vdi` writes. Same desktop, and
+      # nothing else in common with the one above: this one has a bootloader
+      # and its own root filesystem, because it is booted by a hypervisor
+      # somebody else is running. See nix/vdi.nix.
+      nixosConfigurations.vdi = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          self.nixosModules.default
+          ./nix/vdi.nix
         ];
       };
 
