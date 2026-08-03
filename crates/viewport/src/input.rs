@@ -611,7 +611,16 @@ impl ViewportState {
                             // The pointer is over the shell, or the overview is
                             // up and every click belongs to it.
                             self.activate_view(NO_VIEW);
-                            keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+                            // To the page that was clicked, where the shell is
+                            // a client — a click on a web page is how anyone
+                            // expects to start typing into it. With the engine
+                            // in this process there is no surface to focus and
+                            // the focus has to stay empty, which is what tells
+                            // the key path to hand keys to the engine instead.
+                            let where_ = pointer.current_location();
+                            if !self.focus_shell_at(Some(where_)) {
+                                keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+                            }
                             if self.focused != NO_VIEW {
                                 self.notify_focus(NO_VIEW);
                             }

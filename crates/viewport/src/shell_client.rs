@@ -562,6 +562,21 @@ impl ViewportState {
             }
         }
 
+        // The keyboard, if nothing else wants it.
+        //
+        // Here rather than at `adopt_shell_toplevel`, because a surface that
+        // has not committed is one `wl_keyboard.enter` would name before there
+        // is anything to type into. A page that has committed is a page
+        // somebody can see, and on a `--url` session it is the whole session:
+        // requiring a click first would make a kiosk untypable until somebody
+        // found the mouse.
+        //
+        // Before the buffer is looked at, so a shell painting into shared
+        // memory is still typable. Nothing will be drawn for it — that is the
+        // error below — but keys reaching a page nobody can see is a better
+        // failure than a page that is up and deaf.
+        self.focus_shell_if_idle();
+
         use smithay::backend::allocator::Buffer as _;
         use smithay::backend::renderer::utils::with_renderer_surface_state;
 
@@ -748,6 +763,65 @@ impl ViewportState {
             }
             Some((shell.surface()?.clone(), region.loc))
         })
+    }
+
+    /// Give the keyboard to a page, which is what makes a web page typable.
+    ///
+    /// The out-of-process shell is a Wayland client, so keys reach it the way
+    /// they reach any client: `wl_keyboard.enter` and then `wl_keyboard.key`.
+    /// Nothing was sending the enter. The shell bound the keyboard, received
+    /// the keymap, and was never focused — so a page with a text field in it
+    /// could be clicked and not typed into, and the keys were not going
+    /// somewhere else, they were being intercepted and dropped: with no focused
+    /// surface the key path decides they are the shell's and hands them to
+    /// `shell_keyboard_key`, which posts to the in-process engine and does
+    /// nothing at all when there is not one.
+    ///
+    /// `at` names a point in the layout — a click — and picks the page under
+    /// it. Without one the desktop page is chosen, which is what a session
+    /// coming up wants: the page is there, nothing else holds the keyboard, and
+    /// requiring a click first would make a kiosk untypable until somebody
+    /// found the mouse.
+    ///
+    /// False when there is nothing to focus, which is every WPE session: that
+    /// engine is not a client, keys reach it through `Action::Web`, and the
+    /// path above depends on the focus staying empty. The caller sets the focus
+    /// to nothing then, exactly as it did before.
+    pub fn focus_shell_at(&mut self, at: Option<Point<f64, Logical>>) -> bool {
+        let surface = match at {
+            Some(at) => self.shell_at(at).map(|(surface, _)| surface),
+            None => None,
+        }
+        .or_else(|| self.shell_client_surface().cloned())
+        // A `--url` page on its own is the desktop, so the line above finds it.
+        // This is for the shape where it is not and no point was given.
+        .or_else(|| self.shell_client_surfaces().into_iter().next());
+        let Some(surface) = surface else {
+            return false;
+        };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        if keyboard.current_focus().as_ref() == Some(&surface) {
+            return true;
+        }
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        keyboard.set_focus(self, Some(surface), serial);
+        true
+    }
+
+    /// The same, when nothing else has the keyboard.
+    ///
+    /// A window that takes focus must keep it: this is the floor under an empty
+    /// desktop, not a policy that competes with one.
+    pub fn focus_shell_if_idle(&mut self) {
+        let idle = self
+            .seat
+            .get_keyboard()
+            .is_some_and(|keyboard| keyboard.current_focus().is_none());
+        if idle {
+            self.focus_shell_at(None);
+        }
     }
 
     /// Forget a shell's toplevel when it goes.

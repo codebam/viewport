@@ -146,6 +146,30 @@ nix develop .#rust --command bash -c \
 painted every second, including the zeroes. One frame and then `0.0 frames/s`
 for ever is this section; a rate that is merely low is `docs/benchmarks.md`.
 
+## A page that is up and deaf
+
+Clicking works, the page draws, and nothing typed reaches it.
+
+The out-of-process shell is a Wayland client, so keys reach it the way they
+reach any client — `wl_keyboard.enter`, then `wl_keyboard.key` — and nothing
+was sending the enter. `VIEWPORT_SHELL_WAYLAND_DEBUG=1` shows it plainly: the
+shell binds the keyboard, receives `keymap`, and is never entered.
+
+Worse than losing the keys: with no focused surface the key path decides they
+belong to the shell and hands them to `shell_keyboard_key`, which posts to the
+*in-process* engine and does nothing at all when there is not one. The keys
+were intercepted and dropped, which is why they did not reach a window either.
+
+The keyboard now goes to a page on its first commit if nothing else wants it,
+and to whichever page is clicked. Bindings are unaffected — `match_binding`
+runs before the focus is consulted, so `Mod4+Shift+E` and `Ctrl+Alt+Backspace`
+work whatever holds the keyboard.
+
+The in-process engine is the other case and must stay the way it was: it is not
+a client, it has no surface to enter, and `Action::Web` is chosen *because* the
+focus is empty. `focus_shell_at` returns false there and every caller falls back
+to clearing the focus.
+
 ## When the shell dies outright
 
 The watchdog above covers a shell that is slow or wrong. A different thing
