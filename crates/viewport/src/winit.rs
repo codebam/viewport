@@ -488,7 +488,7 @@ pub fn init(
                 }
                 // The wallpaper terminal, which is neither of the above and
                 // would otherwise draw once and stop.
-                if let Some(surface) = state.background_surface().cloned() {
+                if let Some(surface) = state.background_surface_for(&output).cloned() {
                     smithay::desktop::utils::send_frames_surface_tree(
                         &surface,
                         &output,

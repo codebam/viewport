@@ -68,7 +68,7 @@ impl WlrLayerShellHandler for ViewportState {
         // the wallpaper. Two things claiming the same position is one of them
         // painting for nothing, so the terminal stands down.
         if layer == Layer::Background {
-            self.background_yield_to_wallpaper();
+            self.background_yield_to_wallpaper(&output);
         }
 
         // An exclusive zone changes where windows may go, and the shell is
@@ -100,7 +100,7 @@ impl WlrLayerShellHandler for ViewportState {
         // assumed: a second wallpaper client on another monitor is still one,
         // and this runs after the unmap so what it counts is what is left.
         if was_wallpaper {
-            self.background_reclaim_wallpaper();
+            self.background_reclaim_wallpaper(&output);
         }
 
         // The space it reserved is usable again.

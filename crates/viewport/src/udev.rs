@@ -3026,7 +3026,7 @@ impl ViewportState {
         // map for the same reason the shell is not: it is one surface across
         // the whole layout. Without this it paints its first frame and stops,
         // which is a clock on the desktop that never ticks.
-        if let Some(surface) = self.background_surface().cloned() {
+        if let Some(surface) = self.background_surface_for(output).cloned() {
             smithay::desktop::utils::send_frames_surface_tree(
                 &surface,
                 output,

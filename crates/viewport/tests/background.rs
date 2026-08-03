@@ -311,6 +311,78 @@ fn a_wallpaper_program_takes_the_position() {
     );
 }
 
+/// One terminal per monitor, and a monitor plugged in later gets its own.
+///
+/// The shell is one page across the whole layout and the wallpaper is not: a
+/// terminal is a grid of cells and the cells have to land on a screen, so one
+/// stretched across two monitors has half its columns on the other one and
+/// every line cut down the middle by the gap between them.
+#[test]
+fn every_monitor_gets_a_terminal() {
+    let Some(terminal) = terminal() else {
+        eprintln!("skipped: no terminal emulator on PATH");
+        return;
+    };
+
+    let flag = format!("--background-terminal={terminal}");
+    let compositor = Compositor::start("per-output", &[&flag]);
+    assert!(
+        compositor.saw("background: started", Duration::from_secs(10)),
+        "nothing was started for the first monitor:\n{}",
+        compositor.log()
+    );
+
+    // A second screen, which the headless backend can plug in on request.
+    let mut client = compositor.connect();
+    client.send(r#"{"type":"output.test_add"}"#);
+    let _ = client.drain(Duration::from_millis(500));
+
+    let started: Vec<String> = {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let lines: Vec<String> = compositor
+                .log()
+                .lines()
+                .filter(|line| line.contains("background: started"))
+                .map(str::to_owned)
+                .collect();
+            if lines.len() >= 2 || Instant::now() > deadline {
+                break lines;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+
+    assert!(
+        started.len() >= 2,
+        "the second monitor got no terminal of its own:\n{}",
+        compositor.log()
+    );
+    // Each names the screen it belongs to, and they are different screens —
+    // two terminals on one monitor would be two wallpapers in the same place.
+    let names: Vec<&str> = started
+        .iter()
+        .filter_map(|line| line.split(" on ").nth(1))
+        .filter_map(|rest| rest.split(" as pid").next())
+        .collect();
+    assert!(
+        names.len() >= 2 && names[0] != names[1],
+        "two terminals for the same monitor: {names:?}"
+    );
+
+    // And unplugging takes one with it, or a wallpaper outlives the screen it
+    // was drawn on and paints frames for nothing.
+    client.send(r#"{"type":"output.test_remove"}"#);
+    assert!(
+        compositor.saw(
+            "went away, so its terminal did too",
+            Duration::from_secs(10)
+        ),
+        "unplugging a monitor left its terminal running:\n{}",
+        compositor.log()
+    );
+}
+
 /// With the flag absent, nothing is started at all.
 ///
 /// The switch is the presence of a command, and a desktop that has not asked
