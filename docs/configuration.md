@@ -143,6 +143,16 @@ Two other consequences worth knowing:
   compositor tells the shell to leave it transparent and the terminal shows
   through. A custom shell that paints an opaque background of its own will
   cover it; honour `background_terminal` in the `config` event.
+- **It needs `wpe` or `webkitgtk`.** Those two composite the page over nothing.
+  Chromium does not, in either of the two ways this ships it: with CEF's
+  `background_color` set to transparent on the browser settings, the view *and*
+  the window, the composited output is still Chromium's own `#1f1f1f` across
+  the whole screen — windowed Chromium has no translucent-surface path on
+  Wayland, and its transparent-painting one is windowless rendering, which is a
+  different backend to this. On `cef` or `chromium` the terminal is therefore
+  not started at all, and the log says so: an invisible terminal under an
+  opaque desktop is a process nobody can see spending a core. Since `cef` is
+  the default package, using this means `--shell-backend=webkitgtk`.
 
 It is restarted if it exits, up to five times a minute, and then left down with
 a line in the log.

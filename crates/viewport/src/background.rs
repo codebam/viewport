@@ -95,6 +95,20 @@ impl ViewportState {
         let Some(command) = self.background_command.clone() else {
             return;
         };
+        // An engine that will not let anything show through it. The terminal
+        // would run, paint and be covered by the desktop for the whole
+        // session, which looks exactly like the feature not working — so say
+        // what is wrong and what to do about it, and start nothing.
+        if !self.shell_backend.shows_what_is_behind() {
+            tracing::error!(
+                "background: {command:?} is not being started — the {} shell paints an opaque \
+                 background and nothing behind it can be seen. Start the compositor with \
+                 --shell-backend=webkitgtk to use a terminal as the wallpaper",
+                self.shell_backend
+            );
+            return;
+        }
+
         // Something is already drawing the wallpaper. Starting a terminal
         // under an opaque layer surface is starting one nobody will ever see.
         if self.wallpaper_layer_present() {

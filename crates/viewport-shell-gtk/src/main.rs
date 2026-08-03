@@ -201,6 +201,26 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
         .child(&view)
         .build();
 
+    // The window under the page, which is opaque by default and is *not* the
+    // same thing as the web view's background colour.
+    //
+    // Setting the view's background to transparent only stops WebKit painting
+    // one; what shows through then is GTK's own window background — Adwaita's
+    // #353535 — and that covered the wallpaper terminal just as thoroughly as
+    // black would have. Both have to go, and the window's is CSS.
+    if behind {
+        let css = gtk::CssProvider::new();
+        // `load_from_data`, not `load_from_string`: the latter needs the v4_12
+        // feature on the gtk4 crate, and this backend builds against whatever
+        // GTK the system has.
+        css.load_from_data("window, window > * { background: transparent; }");
+        gtk::style_context_add_provider_for_display(
+            &gtk::prelude::WidgetExt::display(&window),
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+
     bridge(&view, &manager, options, app)?;
 
     view.load_uri(&options.url);

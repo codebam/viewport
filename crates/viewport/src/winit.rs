@@ -271,7 +271,17 @@ pub fn init(
                                     at.elapsed() >= std::time::Duration::from_secs(2)
                                 })
                                 .unwrap_or(true);
-                            if due && (painted || !frame.windows.is_empty() || frame.locked_blank) {
+                            // A wallpaper terminal counts as something worth
+                            // capturing: on the out-of-process backends there
+                            // is no `shell_frames` to wait for, and a desktop
+                            // with nothing but a wallpaper on it is exactly
+                            // the case someone dumps a frame to look at.
+                            if due
+                                && (painted
+                                    || !frame.windows.is_empty()
+                                    || frame.background.is_some()
+                                    || frame.locked_blank)
+                            {
                                 dumped = Some(std::time::Instant::now());
                                 if let Err(e) = crate::dump::output_frame::<
                                     _,
