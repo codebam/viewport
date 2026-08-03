@@ -9,7 +9,7 @@
 #   ./scripts/arch-vm.sh --shell                 # a login shell, no compositor
 #
 # `nix run .#vm` boots this compositor on NixOS, which proves the flake and
-# nothing about the five PKGBUILDs beside it. Those declare their own
+# nothing about the three PKGBUILDs beside it. Those declare their own
 # dependencies against Arch's repositories, install their own wrapper, and are
 # the thing an Arch user actually gets — and until now the only way to find out
 # whether that worked was to have an Arch machine.
@@ -113,6 +113,10 @@ fi
 # package arrives over 9p rather than baked into the image, so rebuilding it
 # and running this again does not touch the disk at all.
 seed=$cache/seed.iso
+# Emptied per run: a log from the last boot read as this one's is worse
+# than no log at all.
+xchg=$cache/xchg
+rm -rf "$xchg"; mkdir -p "$xchg"
 userdata=$cache/user-data
 
 # What tty1 does after logging in. Built here rather than edited into the file
@@ -124,7 +128,8 @@ if [ "$shell_only" = 1 ]; then
     launcher='        : # --shell: not starting the compositor'
 else
     launcher="        if [ -x /usr/bin/viewport ]; then
-          exec viewport ${backend:+--shell-backend $backend} 2>&1 | tee /tmp/viewport.log
+          exec viewport ${backend:+--shell-backend $backend} 2>&1 \\
+            | tee /mnt/xchg/viewport.log
         else
           echo 'no /usr/bin/viewport: the package installed no compositor.' >&2
         fi"
@@ -170,16 +175,36 @@ $launcher
 runcmd:
   # The package, over 9p. Not a repository: this is a file built minutes ago
   # and the whole point is to install *that* file.
-  - [ mkdir, -p, /mnt/pkgs ]
+  - [ mkdir, -p, /mnt/pkgs, /mnt/xchg ]
   - [ mount, -t, 9p, -o, "trans=virtio,ro,version=9p2000.L", pkgs, /mnt/pkgs ]
+  # Writable, and shared with whoever started the VM. The compositor's log is
+  # on tty1, which is a screen that has already gone black by the time there is
+  # anything worth reading on it; this is the copy that can be read from
+  # outside while it is still running. nix/vm.nix uses QEMU's own xchg share
+  # for the same reason.
+  - [ mount, -t, 9p, -o, "trans=virtio,version=9p2000.L", xchg, /mnt/xchg ]
+  - [ chmod, "0777", /mnt/xchg ]
   # -Sy before -U so pacman can resolve what the package declares. This is the
   # part a container build never checks: makepkg needs the build dependencies
   # to exist, and says nothing about whether the runtime ones do.
   - [ pacman, -Sy, --noconfirm ]
-  # Not dependencies of the package and not optional here: a virtual GPU has no
-  # driver of its own, and without these the compositor fails at startup naming
-  # a library rather than the missing driver.
-  - [ pacman, -S, --noconfirm, --needed, mesa, vulkan-swrast, foot, vulkan-tools, mesa-utils ]
+  # `mesa` carries the virgl driver, which is what makes OpenGL in here the
+  # host's GPU rather than llvmpipe: the compositor's EGL comes up on
+  # /dev/dri/card0 through GBM and draws with virgl.
+  #
+  # `vulkan-virtio` rather than `vulkan-swrast`, which is the difference
+  # between hardware Vulkan and none: Venus needs the host to offer it
+  # (virtio-gpu-gl with venus, blob and hostmem all on), and where it is not
+  # offered nothing loads and the compositor draws with OpenGL, which is
+  # correct here. lavapipe
+  # would load, own no DRM node, drive no display, and do every shell-frame
+  # copy on the CPU, which is the software rendering worth not having.
+  - [ pacman, -S, --noconfirm, --needed, mesa, vulkan-virtio, foot, vulkan-tools, mesa-utils ]
+  # The bar draws its icons in a Nerd Font, named in data/shell/shell.css as
+  # fontconfig reports them. An optdepend of the package rather than a
+  # dependency, because a desktop with boxes where the icons go is still a
+  # desktop — but a screenshot of one proves nothing, so the VM installs them.
+  - [ pacman, -S, --noconfirm, --needed, ttf-firacode-nerd, ttf-nerd-fonts-symbols ]
   # The compositor, and not the 79 MB of detached debug symbols makepkg leaves
   # beside it — which installs a package with no compositor in it and takes
   # longer to do it than everything above put together.
@@ -216,6 +241,7 @@ exec qemu-system-x86_64 \
     -drive "if=virtio,format=raw,file=$seed,readonly=on" \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
     -virtfs "local,path=$(dirname "$package"),mount_tag=pkgs,security_model=none,readonly=on" \
+    -virtfs "local,path=$xchg,mount_tag=xchg,security_model=none" \
     -device virtio-rng-pci \
     -device virtio-keyboard -usb -device usb-tablet \
     -vga none -device virtio-vga-gl \

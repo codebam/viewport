@@ -41,14 +41,27 @@ depends=(
 optdepends=(
   'xorg-xwayland: X11 clients'
   'xdg-desktop-portal-gtk: the portal interfaces the compositor does not answer itself'
-  # The renderer is Vulkan and there is no fallback, so a machine with the
-  # loader and no driver behind it fails with "Failed to load the Vulkan
-  # library" — which names the library rather than the missing driver.
+  # Vulkan is the renderer wherever a Vulkan device owns the display; without
+  # one the compositor draws with OpenGL instead, so these are what decide
+  # which of the two a machine gets rather than whether it starts at all.
   'vulkan-radeon: AMD hardware'
   'vulkan-intel: Intel hardware'
   'nvidia-utils: NVIDIA hardware, and hardware video decode with it'
+  # In a virtual machine: Venus passes Vulkan through to the host's GPU, and
+  # needs the host to offer it — QEMU wants
+  # `-device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=2G`. Without it the
+  # only device that loads is lavapipe, which owns no DRM node, cannot drive
+  # a display, and turns every shell-frame copy into a copy on the CPU.
+  'vulkan-virtio: a virtual machine with 3D acceleration'
   'vulkan-swrast: software Vulkan, for tests rather than a session'
   'libva-mesa-driver: hardware video decode, for zero-copy video'
+  # The bar's icons are Material Design glyphs from a Nerd Font patch, and the
+  # family names in data/shell/shell.css are the ones fontconfig reports:
+  # "FiraCode Nerd Font" first, "Symbols Nerd Font" as the fallback that
+  # carries the glyphs without the monospace face. With neither installed the
+  # bar still lays out and every icon in it is a replacement box.
+  'ttf-firacode-nerd: the icons in the bar, and the font the shell names first'
+  'ttf-nerd-fonts-symbols: the icons in the bar, without the patched monospace family'
 )
 
 makedepends=(
@@ -100,6 +113,17 @@ package() {
 #!/bin/sh
 export VIEWPORT_SHELL_BACKEND="${VIEWPORT_SHELL_BACKEND:-chromium}"
 export VIEWPORT_CHROMIUM_BIN="${VIEWPORT_CHROMIUM_BIN:-/usr/bin/chromium}"
+# And where the shell is. The compositor finds its own assets at
+# `<prefix>/share/viewport`, taken from the directory two above the binary —
+# which works for /usr/bin/viewport and does not for the wrapped layout here:
+# /usr/lib/viewport/viewport gives /usr/lib/share/viewport, nothing is there,
+# and it falls back to `$PWD/data/shell`. A login shell starts in $HOME, so
+# that is a black screen with a working cursor and one line in the log:
+#
+#   the shell page failed to load from file:///home/you/data/shell/index.html
+#
+# Set only when unset, so --url and the config file still win.
+export VIEWPORT_SHELL_URL="${VIEWPORT_SHELL_URL:-file:///usr/share/viewport/shell/index.html}"
 exec /usr/lib/viewport/viewport "$@"
 EOF
   install -Dm755 target/release/viewport-shell-chromium \
