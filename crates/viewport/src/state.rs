@@ -211,6 +211,14 @@ pub struct ViewportState {
     /// The id the next shell process is given, so a restarted one is not
     /// mistaken for the process it replaced.
     pub next_shell_id: u32,
+    /// Where the page whose message is being dispatched begins, in the
+    /// layout's coordinates.
+    ///
+    /// A page lays out in its own document, which starts at (0, 0) wherever the
+    /// page itself is; the compositor places windows in the layout. See
+    /// `ipc_dispatch`, which sets this, and `apply::view_layout`, which is the
+    /// reason it exists. Zero for anything that is not a shell.
+    pub dispatch_origin: smithay::utils::Point<i32, Logical>,
     /// Whether a page named by `--url` spans every monitor rather than taking
     /// the first one and leaving the rest to the desktop.
     ///
@@ -921,6 +929,7 @@ impl ViewportState {
             shell_clients: Vec::new(),
             next_shell_id: 0,
             shell_url_spans: false,
+            dispatch_origin: (0, 0).into(),
             shell_shm_warned: false,
             #[cfg(feature = "wpe")]
             shells: Vec::new(),
@@ -4927,9 +4936,29 @@ impl ViewportState {
     }
 
     pub fn notify_output_layout(&mut self) {
-        let outputs: Vec<OutputInfo> = self
-            .space
+        self.notify_output_layout_to(None);
+    }
+
+    /// The same, as one page sees it.
+    ///
+    /// `region` names a page's rectangle: only the screens it covers are
+    /// listed, and their positions are relative to its own top-left. That is
+    /// the layout the page can act on — it draws in its own document, and a
+    /// screen it does not cover is one it must not place a window on.
+    ///
+    /// `None` is the layout as it really is, which is what a script on the
+    /// control socket asked for and what a desktop spanning every screen sees
+    /// anyway.
+    fn output_infos(&self, region: Option<Rectangle<i32, Logical>>) -> Vec<OutputInfo> {
+        let origin = region.map(|region| region.loc).unwrap_or_default();
+        self.space
             .outputs()
+            .filter(
+                |output| match (region, self.space.output_geometry(output)) {
+                    (Some(region), Some(geometry)) => geometry.overlaps(region),
+                    _ => true,
+                },
+            )
             .map(|output| {
                 let geometry = self.space.output_geometry(output).unwrap_or_default();
                 let usable = self.usable_area(output);
@@ -4949,15 +4978,15 @@ impl ViewportState {
                     // a screenshot tool otherwise has to guess, and guessing
                     // over two monitors means capturing both.
                     active: self.active_output.as_deref() == Some(output.name().as_str()),
-                    x: geometry.loc.x,
-                    y: geometry.loc.y,
+                    x: geometry.loc.x - origin.x,
+                    y: geometry.loc.y - origin.y,
                     width: geometry.size.w,
                     height: geometry.size.h,
                     // What is left after exclusive zones. A bar that reserved
                     // the top of the screen has taken that space away from the
                     // shell, which is the only thing that places windows.
-                    usable_x: usable.loc.x,
-                    usable_y: usable.loc.y,
+                    usable_x: usable.loc.x - origin.x,
+                    usable_y: usable.loc.y - origin.y,
                     usable_width: usable.size.w,
                     usable_height: usable.size.h,
                     hdr: self.hdr_enabled(&output.name()),
@@ -4977,8 +5006,15 @@ impl ViewportState {
                         .collect(),
                 }
             })
-            .collect();
+            .collect()
+    }
 
+    /// Tell everything that lays windows out what the screens are.
+    ///
+    /// `only` narrows it to one page, for a page that has just started and has
+    /// been told nothing yet. `None` tells all of them, and everything else on
+    /// the socket.
+    pub fn notify_output_layout_to(&mut self, only: Option<usize>) {
         // The shell is one buffer across the whole layout, so a change to the
         // layout is a change to its size. Without this it keeps whatever size
         // it had when it started: a monitor plugged in later, or a nested
@@ -4989,17 +5025,86 @@ impl ViewportState {
         // the layout rather than to an output, so the layout changing is the
         // only thing that resizes it. And a monitor that was just plugged in
         // is an output the shell has not entered.
-        // A monitor arriving or leaving can change how many pages there
-        // are, not only how big they are: a `--url` session on one screen runs
-        // the page as the desktop, and the same session on two runs the page on
-        // the first and the shipped desktop on the second. This starts and
-        // stops them to match, and configures whatever is left running.
+        //
+        // A monitor arriving or leaving can change how many pages there are,
+        // not only how big they are: a `--url` session on one screen runs the
+        // page as the desktop, and the same session on two runs the page on the
+        // first and the shipped desktop on the second. This starts and stops
+        // them to match, and configures whatever is left running.
         self.sync_shell_processes();
         self.configure_client_shell();
         self.announce_shell_outputs();
 
-        let event = Event::OutputLayout { outputs };
-        self.notify(&event);
+        // Each page hears about its own screens, in its own coordinates.
+        //
+        // A desktop confined to the second monitor must not be told the first
+        // one exists: it would lay a window out on a screen it does not cover,
+        // and the window would land on top of whatever page does cover it. And
+        // the positions have to be the page's own, because that is the only
+        // frame of reference its document has.
+        let regions: Vec<(usize, Rectangle<i32, Logical>)> = self
+            .shell_clients
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| only.is_none_or(|only| only == *at))
+            .map(|(at, shell)| (at, shell.region))
+            .collect();
+        for (at, region) in regions {
+            let outputs = self.output_infos(Some(region));
+            let Some(pid) = self.shell_clients.get(at).and_then(|shell| shell.pid()) else {
+                continue;
+            };
+            tracing::debug!(
+                "shell {at}: its screens are {}",
+                outputs
+                    .iter()
+                    .map(|o| format!("{} {}x{}{:+}{:+}", o.name, o.width, o.height, o.x, o.y))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let event = Event::OutputLayout { outputs };
+            let Some(client) = self.ipc.client_for_pid(pid) else {
+                // It has not connected to the control socket yet. The one it
+                // makes on startup asks for this itself; see `ipc_dispatch`.
+                continue;
+            };
+            self.ipc.send_to(client, &event);
+        }
+        #[cfg(feature = "wpe")]
+        {
+            let regions: Vec<(usize, Rectangle<i32, Logical>)> = self
+                .shells
+                .iter()
+                .enumerate()
+                .filter(|(at, _)| only.is_none_or(|only| only == *at))
+                .map(|(at, page)| (at, page.region))
+                .collect();
+            for (at, region) in regions {
+                let event = Event::OutputLayout {
+                    outputs: self.output_infos(Some(region)),
+                };
+                if let Some(page) = self.shells.get(at) {
+                    if let Err(e) = page.engine.post(&event) {
+                        tracing::warn!("could not post the output layout to shell {at}: {e:#}");
+                    }
+                }
+            }
+        }
+
+        if only.is_some() {
+            return;
+        }
+        // And the layout as it really is, to everything else on the socket: a
+        // script has no page to speak in and asked about the machine.
+        let event = Event::OutputLayout {
+            outputs: self.output_infos(None),
+        };
+        let shells: Vec<i32> = self
+            .shell_clients
+            .iter()
+            .filter_map(|shell| shell.pid())
+            .collect();
+        self.ipc.broadcast_except(&shells, &event);
     }
 
     /// Which view a toplevel object belongs to.
