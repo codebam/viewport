@@ -145,24 +145,38 @@ where
 /// From the GBM allocator rather than from the renderer: OpenGL cannot hand out
 /// a DMA-BUF, and asking the renderer for one is what tied this path to Vulkan
 /// and so to whatever Vulkan device happened to load.
+///
+/// `modifiers` are the ones the renderer that will import this buffer
+/// advertises for ARGB8888. Allocating implicitly instead is what made every
+/// copy fail on a machine whose shell renderer is Vulkan:
+///
+///   binding the shell copy: Intel(R) UHD Graphics 620 (KBL GT2) does not
+///   support DrmFourcc(AR24) with modifier 0xffffffffffffff
+///
+/// `VK_EXT_image_drm_format_modifier` enumerates explicit modifiers and never
+/// `DRM_FORMAT_MOD_INVALID`, so a Vulkan renderer cannot import an implicitly
+/// allocated buffer at all — not on this GPU, not on any. OpenGL imports
+/// either kind, which is why the implicit allocation looked correct for as
+/// long as the copy happened to run on GLES.
 pub fn owned_image(
     allocator: &mut smithay::backend::allocator::gbm::GbmAllocator<
         smithay::backend::drm::DrmDeviceFd,
     >,
     size: Size<i32, Physical>,
+    modifiers: &[smithay::backend::allocator::Modifier],
 ) -> Result<smithay::backend::allocator::dmabuf::Dmabuf> {
     use smithay::backend::allocator::dmabuf::AsDmabuf as _;
     use smithay::backend::allocator::{Allocator as _, Modifier};
+    // Implicit only when there is nothing else to ask for: a renderer that
+    // advertises no modifier for this format is an OpenGL one on a driver
+    // without the modifier extensions, and that one takes an implicit buffer.
+    let modifiers = if modifiers.is_empty() {
+        &[Modifier::Invalid][..]
+    } else {
+        modifiers
+    };
     let buffer = allocator
-        .create_buffer(
-            size.w as u32,
-            size.h as u32,
-            Fourcc::Argb8888,
-            // Implicit: the buffer is imported by this compositor's own
-            // renderer and never scanned out directly, so there is nothing to
-            // negotiate a modifier with.
-            &[Modifier::Invalid],
-        )
+        .create_buffer(size.w as u32, size.h as u32, Fourcc::Argb8888, modifiers)
         .context("allocating an image for the shell")?;
     buffer
         .export()

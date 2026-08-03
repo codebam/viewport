@@ -5556,13 +5556,29 @@ impl ViewportState {
                 crate::udev::Gpu,
                 smithay::backend::allocator::gbm::GbmAllocator<smithay::backend::drm::DrmDeviceFd>,
             )> {
-                let instance = smithay::backend::vulkan::Instance::new(
-                    smithay::backend::vulkan::version::Version::VERSION_1_3,
-                    None,
-                )
-                .map_err(|e| anyhow::anyhow!("creating a vulkan instance for the shell: {e}"))?;
-                let device = viewport_vulkan::Device::for_node_exactly(&instance, render)
-                    .map_err(|e| anyhow::anyhow!("opening a vulkan device for the shell: {e}"));
+                // VIEWPORT_RENDERER=gles means this renderer too. It steered
+                // only the outputs before, which left a session forced onto
+                // OpenGL still copying the shell's frames with Vulkan — the one
+                // renderer the switch exists to take out of the picture, and
+                // the one whose failure to import the copy is the reason to
+                // reach for the switch at all.
+                let forced_gles = crate::udev::renderer_forced_gles();
+                let device = if forced_gles {
+                    Err(anyhow::anyhow!("VIEWPORT_RENDERER asked for OpenGL"))
+                } else {
+                    let instance = smithay::backend::vulkan::Instance::new(
+                        smithay::backend::vulkan::version::Version::VERSION_1_3,
+                        None,
+                    )
+                    .map_err(|e| {
+                        anyhow::anyhow!("creating a vulkan instance for the shell: {e}")
+                    })?;
+                    // The device borrows nothing from the instance: Smithay's
+                    // `PhysicalDevice` holds its own handle to it, which is what
+                    // lets the instance be built inside this branch.
+                    viewport_vulkan::Device::for_node_exactly(&instance, render)
+                        .map_err(|e| anyhow::anyhow!("opening a vulkan device for the shell: {e}"))
+                };
                 // With an allocator: the copy needs somewhere of its own to draw
                 // into, and a renderer without one cannot make an offscreen at
                 // all — which presents as "no image to copy the shell's frame
@@ -5605,6 +5621,12 @@ impl ViewportState {
                     )
                     .map(crate::udev::Gpu::Vulkan)
                     .map_err(|e| anyhow::anyhow!("creating a vulkan renderer: {e}"))?,
+                    Err(_) if forced_gles => {
+                        tracing::info!(
+                            "VIEWPORT_RENDERER: copying the shell's frames with OpenGL too"
+                        );
+                        crate::udev::Gpu::Gles(Box::new(crate::udev::gles_renderer(&gbm)?))
+                    }
                     Err(e) => {
                         tracing::info!(
                             "no Vulkan on the shell's GPU ({e:#}); copying its frames with OpenGL"
@@ -5684,6 +5706,62 @@ impl ViewportState {
 
 #[cfg(feature = "wpe")]
 impl ViewportState {
+    /// The modifiers the shell's copy buffer may be allocated with.
+    ///
+    /// The intersection of what the copy renderer can draw into and what the
+    /// renderer that draws the desktop can sample from, because the buffer is
+    /// handed from one to the other. They are usually the same device and
+    /// usually the same renderer, but not always: the copy runs on the render
+    /// node's own renderer, and under a nested backend the desktop is drawn by
+    /// a renderer that never saw that node.
+    ///
+    /// Empty when there is nothing in common — or when neither advertises a
+    /// modifier at all, which is an OpenGL driver without the modifier
+    /// extensions. [`crate::dump::owned_image`] allocates implicitly then,
+    /// which is what such a driver wants.
+    fn shell_copy_modifiers(&self) -> Vec<smithay::backend::allocator::Modifier> {
+        let Some(copy) = self.shell_renderer.as_ref() else {
+            return Vec::new();
+        };
+        let importable = |formats: smithay::backend::allocator::format::FormatSet| {
+            formats
+                .iter()
+                .filter(|format| format.code == smithay::backend::allocator::Fourcc::Argb8888)
+                .map(|format| format.modifier)
+                .collect::<Vec<_>>()
+        };
+        let mine = importable(copy.dmabuf_formats());
+        let Some(theirs) = self
+            .udev
+            .as_ref()
+            .map(|udev| importable(udev.primary().renderer.dmabuf_formats()))
+        else {
+            // No DRM renderer to hand it to: nested, where the backend's own
+            // renderer imports it and the copy renderer's set is the only one
+            // this side of the compositor knows.
+            return mine;
+        };
+        let both: Vec<_> = mine
+            .iter()
+            .copied()
+            .filter(|modifier| theirs.contains(modifier))
+            .collect();
+        if both.is_empty() && !mine.is_empty() {
+            // Two renderers on one GPU with no ARGB8888 modifier in common
+            // should not happen, and if it does the buffer cannot both be
+            // drawn into and be sampled from whatever it is allocated as. The
+            // copy renderer wins, because a copy that fails is a shell that is
+            // never drawn at all, while an import that fails says so per
+            // output and names the modifier.
+            tracing::warn!(
+                "the shell's copy renderer and the display's share no ARGB8888 modifier; \
+                 allocating for the copy"
+            );
+            return mine;
+        }
+        both
+    }
+
     /// Import whatever the shell last painted, as a texture.
     ///
     /// The imported texture is cached: WebKit paints only when something
@@ -5729,10 +5807,15 @@ impl ViewportState {
                 None => true,
             };
             if stale {
+                // Two renderers touch this buffer: the shell's copies into it,
+                // and the output's samples from it. Only a modifier both of
+                // them advertise works, and on a machine where one is Vulkan
+                // that rules out the implicit one entirely — see `owned_image`.
+                let modifiers = self.shell_copy_modifiers();
                 match self
                     .shell_allocator
                     .as_mut()
-                    .map(|allocator| crate::dump::owned_image(allocator, size))
+                    .map(|allocator| crate::dump::owned_image(allocator, size, &modifiers))
                 {
                     Some(Ok(buffer)) => self.shell_owned = Some((buffer, size)),
                     Some(Err(e)) => tracing::error!(
