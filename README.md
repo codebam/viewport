@@ -145,6 +145,11 @@ Run nested inside an existing compositor:
 ./build/viewport --url http://localhost:3000 --startup foot
 ```
 
+`--url` on a session with more than one monitor puts that page on the first
+screen and the bundled desktop on the rest. `--url-span` puts it back across
+every screen, which is what a shell being developed wants — see
+docs/configuration.md.
+
 On a TTY it takes the DRM session directly (needs `seatd` or logind).
 
 ### Checks before a commit

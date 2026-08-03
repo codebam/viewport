@@ -103,6 +103,49 @@ would choose; it exists so a broken shell leaves a desktop usable enough to open
 a terminal and fix it. The moment the shell does answer, the watchdog is
 disarmed for that window, so a merely slow shell costs nothing.
 
+## A page that draws one frame and stops
+
+The symptom is a desktop that loads, appears, and then never changes again —
+input still works, the compositor is not wedged, and the log says nothing. Two
+things can produce it, and they are told apart from the shell process's own
+Wayland traffic rather than from the compositor's log.
+
+`VIEWPORT_SHELL_WAYLAND_DEBUG=1` sets `WAYLAND_DEBUG=1` on the shell process
+only — the compositor's own client traffic, which on the nested backend is
+substantial, stays out of the way. What to look for after the first
+`wl_surface.commit`:
+
+* **no `wl_callback.done`** — nothing is inviting the page to draw. It is not in
+  the `Space` and not in a layer map, so every path that sends frame callbacks
+  has to name it: `udev.rs` in both `on_vblank` and the render pass, `winit.rs`
+  after submit, `headless.rs` on its timer, and `state.rs`'s frame clock.
+
+* **`wl_callback.done` but no `wp_presentation_feedback.presented`** — the page
+  is being invited and cannot use the invitation. GTK4 presents through Mesa's
+  Vulkan WSI, which will not acquire the next swapchain image until the last one
+  is reported presented, so a compositor that advertises `wp_presentation` and
+  never answers freezes it on frame one. Both backends answer now; a new backend
+  has to.
+
+Neither is what a *third* cause looks like. Running the compositor from
+`nix develop .#rust` puts that flake's Mesa in `__EGL_VENDOR_LIBRARY_DIRS`,
+which the shell process inherits — and nixpkgs' WebKit against a different Mesa
+segfaults in `driQueryOptionb` while creating its GL context, before it has
+rendered anything. The window then shows GTK's empty first frame and stops. The
+tell is `WebKitWebProcess` in `coredumpctl`, and the fix is to leave the system
+driver in place for the child:
+
+```sh
+nix develop .#rust --command bash -c \
+  'unset __EGL_VENDOR_LIBRARY_DIRS
+   export LD_LIBRARY_PATH=/run/opengl-driver/lib:$LD_LIBRARY_PATH
+   exec ./target/debug/viewport --url https://example.com'
+```
+
+`VIEWPORT_SHELL_RATE=1` is the quick check for all three: it logs what the shell
+painted every second, including the zeroes. One frame and then `0.0 frames/s`
+for ever is this section; a rate that is merely low is `docs/benchmarks.md`.
+
 ## When the shell dies outright
 
 The watchdog above covers a shell that is slow or wrong. A different thing

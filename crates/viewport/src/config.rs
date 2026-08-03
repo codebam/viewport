@@ -67,6 +67,9 @@ pub struct IdleConfig {
 #[serde(default)]
 pub struct File {
     pub url: Option<String>,
+    /// Whether `url` spans every monitor rather than taking the first and
+    /// leaving the rest to the shipped desktop. See `shell_client::plan_shells`.
+    pub url_span: Option<bool>,
     /// Which engine draws the shell: `wpe`, `webkitgtk`, `servo` or `cef`.
     /// See `crate::shell_backend`.
     pub shell_backend: Option<String>,

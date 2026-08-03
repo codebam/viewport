@@ -15,6 +15,7 @@ a TTY.
 ```jsonc
 {
   "url": "http://localhost:3000",
+  "url_span": true,         // that page on every monitor; see below
   "shell_backend": "wpe",   // or "webkitgtk"; see docs/shell-backends.md
   "timeout_ms": 5000,
   "layout": "tiling",       // or "scrolling", or "solar"
@@ -152,14 +153,58 @@ for its built-in, so removing one has to be said out loud.
 
 `binds` replaces the built-in keymap entirely. Defining *any* `binds` object
 suppresses the defaults, so an empty one means "no keybindings at all", which is
-the point of it — it is how you start from nothing. Include an exit binding if
-you use it, or the only way out of the session is a TTY.
+the point of it — it is how you start from nothing.
+
+One binding survives that: if nothing in the resulting keymap quits, and
+`Mod4+Shift+E` is free, `Mod4+Shift+e=exit` is added back. A config file that
+did not think about it cannot produce a session with no way out of it, and a
+`--url` session — a web page and nothing else, no launcher and no terminal to
+reach — is where that matters most. A file that binds `Mod4+Shift+E` to
+something *else* is left alone and warned about: `Ctrl+Alt+Backspace` is the
+chord underneath that no config file can take away.
 
 Both accept the same `CHORD: ACTION` entries, and a chord written twice takes
 its last definition. `data/config.example.json` is a fuller starting point.
 
 Anything you bind beats a built-in for the same chord regardless of which key it
 came from, and `--bind` on the command line beats both.
+
+### A web page on one monitor, the desktop on the rest
+
+`url` — or `--url` — names the page the session shows. With one monitor it is
+the desktop: it gets the whole screen, and whether it lays windows out is up to
+what the page does. That is the shell being developed (`--url
+http://localhost:3000`) and it is also a kiosk (`--url https://example.com`,
+one screen, one site, nothing else).
+
+With **two monitors or more** the two readings come apart, so they are split:
+
+* the page takes the **first monitor** — first by the order the outputs were
+  detected, which is the order the session came up in, not by position;
+* the **shipped desktop** runs on the rest, in a second shell process of its
+  own.
+
+So `--url https://example.com` on a two-monitor desk is that site on the main
+screen and a working desktop — bar, windows, workspaces — on the other, rather
+than one page stretched across both and no window manager anywhere.
+
+`"url_span": true`, or `--url-span`, puts it back to one page across every
+screen. That is what a shell under development wants: it *is* the desktop, it
+just is not the shipped one.
+
+Monitors can arrive and leave at runtime and the arrangement follows. Plugging
+a second screen into a `--url` session starts the desktop on it without
+restarting the page — same process, same document, a resize — and unplugging it
+hands the page the whole desk back.
+
+Only the desktop page is sent window events, given the keyboard by
+`shell.focus`, or drawn above windows for `shell.overlay`. The other is a web
+page: it receives pointer and keyboard input on its own screen like any client,
+and nothing else.
+
+This is implemented for the out-of-process backends — `webkitgtk` and
+`chromium`, and `cef` when it lands. The in-process `wpe` backend still runs one
+engine across the whole layout, so `--url` there behaves as it always did.
 
 ### Running one application: kiosk mode
 

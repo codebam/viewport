@@ -161,14 +161,14 @@ pub fn init(
             let now = state.start_time.elapsed();
             // The out-of-process shell is not in the space — it is drawn under
             // it — so it has to be invited by name or it paints once and stops.
-            let shell = state.shell_client_surface().cloned();
+            let shell = state.shell_client_surfaces();
             for output in &outputs {
                 for window in state.space.elements() {
                     window.send_frame(output, now, Some(Duration::ZERO), |_, _| {
                         Some(output.clone())
                     });
                 }
-                if let Some(surface) = shell.as_ref() {
+                for surface in &shell {
                     smithay::desktop::utils::send_frames_surface_tree(
                         surface,
                         output,

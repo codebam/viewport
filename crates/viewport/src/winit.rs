@@ -217,6 +217,9 @@ pub fn init(
             WinitEvent::Redraw => {
                 let size = backend.window_size();
                 let damage = Rectangle::from_size(size);
+                // What the frame ended up containing, filled in by the render
+                // below and read by the presentation feedback after the submit.
+                let mut drawn_states = None;
 
                 // The same desktop the real backend draws: shell, layer
                 // surfaces, windows with their clip, and the pointer. Assembled
@@ -291,8 +294,11 @@ pub fn init(
                             &elements,
                             Color32F::from([0.1, 0.1, 0.1, 1.0]),
                         );
-                        if let Err(e) = result {
-                            tracing::error!("render failed: {e}");
+                        match result {
+                            // Kept for the presentation feedback below, which
+                            // needs to know which surfaces were in the frame.
+                            Ok(result) => drawn_states = Some(result.states),
+                            Err(e) => tracing::error!("render failed: {e}"),
                         }
 
                         // Screenshots, while the renderer is in hand. After the
@@ -333,6 +339,93 @@ pub fn init(
                     tracing::error!("submit failed: {e}");
                 }
 
+                // The frame is on the host's screen, near enough. Say so.
+                //
+                // The DRM backend has answered `wp_presentation` since
+                // `presentation_feedback` in `udev.rs`; this one never did, and
+                // for a client that paces itself on presentation rather than on
+                // frame callbacks that is a freeze rather than a slowdown.
+                //
+                // The shell is exactly such a client on this backend: GTK4
+                // presents through Mesa's Vulkan WSI, which will not acquire the
+                // next swapchain image until the last one is reported presented.
+                // Measured with WAYLAND_DEBUG — one commit, one frame callback
+                // answered, zero `presented`, and no second frame for the life
+                // of the session. A page with a running animation looked
+                // identical to a page that had finished loading.
+                if let Some(states) = drawn_states.as_ref() {
+                    use smithay::desktop::utils::{
+                        surface_presentation_feedback_flags_from_states,
+                        take_presentation_feedback_surface_tree, OutputPresentationFeedback,
+                    };
+                    let mut feedback = OutputPresentationFeedback::new(&output);
+                    // The output outright rather than `surface_primary_scanout_output`,
+                    // for both reasons `udev.rs` gives: nothing here writes the
+                    // scanout state that helper reads, and there is one output —
+                    // if this window presented, everything in it presented.
+                    for window in state.space.elements() {
+                        window.take_presentation_feedback(
+                            &mut feedback,
+                            |_, _| Some(output.clone()),
+                            |surface, _| {
+                                surface_presentation_feedback_flags_from_states(
+                                    surface, None, states,
+                                )
+                            },
+                        );
+                    }
+                    for layer in smithay::desktop::layer_map_for_output(&output).layers() {
+                        layer.take_presentation_feedback(
+                            &mut feedback,
+                            |_, _| Some(output.clone()),
+                            |surface, _| {
+                                surface_presentation_feedback_flags_from_states(
+                                    surface, None, states,
+                                )
+                            },
+                        );
+                    }
+                    for lock in state.lock_surfaces.values() {
+                        take_presentation_feedback_surface_tree(
+                            lock.wl_surface(),
+                            &mut feedback,
+                            |_, _| Some(output.clone()),
+                            |surface, _| {
+                                surface_presentation_feedback_flags_from_states(
+                                    surface, None, states,
+                                )
+                            },
+                        );
+                    }
+                    for surface in state.shell_client_surfaces() {
+                        take_presentation_feedback_surface_tree(
+                            &surface,
+                            &mut feedback,
+                            |_, _| Some(output.clone()),
+                            |surface, _| {
+                                surface_presentation_feedback_flags_from_states(
+                                    surface, None, states,
+                                )
+                            },
+                        );
+                    }
+                    // A software clock: there is no vblank of our own here, and
+                    // the host's is not something this backend is told about.
+                    // `Vsync` alone, without `HwClock` — claiming a provenance
+                    // this number does not have is what `udev.rs` calls out.
+                    let now = smithay::reexports::rustix::time::clock_gettime(
+                        smithay::reexports::rustix::time::ClockId::Monotonic,
+                    );
+                    let clock = Duration::new(now.tv_sec as u64, now.tv_nsec as u32);
+                    use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
+                    feedback.presented::<_, smithay::utils::Monotonic>(
+                        clock,
+                        smithay::wayland::presentation::Refresh::Fixed(state.frame_interval()),
+                        0,
+                        Kind::Vsync,
+                    );
+                }
+
                 // WebKit would not paint frame N+1 until frame N was
                 // acknowledged; the same discipline applies to clients, and
                 // this is where their frame callbacks fire.
@@ -358,6 +451,21 @@ pub fn init(
                 for lock in state.lock_surfaces.values() {
                     smithay::desktop::utils::send_frames_surface_tree(
                         lock.wl_surface(),
+                        &output,
+                        at,
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                }
+                // The out-of-process shell, which is neither of those either —
+                // it is drawn under the desktop from its own buffer rather than
+                // mapped into the space, so nothing above reaches it. Headless
+                // already invites it by name; without the same thing here the
+                // shell paints one frame and stops, which reads as "the page
+                // loaded and then froze".
+                for surface in state.shell_client_surfaces() {
+                    smithay::desktop::utils::send_frames_surface_tree(
+                        &surface,
                         &output,
                         at,
                         Some(Duration::ZERO),

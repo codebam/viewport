@@ -942,6 +942,7 @@
               shell_backend = cfg.shellBackend;
             }
             // lib.optionalAttrs (cfg.url != null) { inherit (cfg) url; }
+            // lib.optionalAttrs cfg.urlSpan { url_span = true; }
             // lib.optionalAttrs (cfg.terminal != null) { inherit (cfg) terminal; }
             // lib.optionalAttrs (cfg.menu != null) { inherit (cfg) menu; }
             // lib.optionalAttrs (cfg.binds != { }) { inherit (cfg) binds; }
@@ -1014,6 +1015,20 @@
                 url key at all, which leaves the compositor on its bundled
                 shell — the only endpoint guaranteed to answer on a machine
                 that has just been switched to this configuration.
+              '';
+            };
+
+            urlSpan = mkOption {
+              type = types.bool;
+              default = false;
+              description = ''
+                Whether `url` spans every monitor rather than taking the first
+                one and leaving the rest to the bundled desktop.
+
+                False is what naming a web page usually means: that site on the
+                main screen, a working desktop on the others. True is for a
+                shell under development, which is one page across the whole desk
+                by definition. See docs/configuration.md.
               '';
             };
 

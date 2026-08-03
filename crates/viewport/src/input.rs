@@ -1170,13 +1170,13 @@ impl ViewportState {
             }
             Bound::Reload => {
                 #[cfg(feature = "wpe")]
-                if let Some(shell) = self.shell.as_ref() {
-                    shell.reload();
+                for page in &self.shells {
+                    page.engine.reload();
                 }
                 // Out of process there is no engine here to call, so the
                 // request travels the way everything else does and the shell
                 // process acts on it.
-                if self.shell_client.is_some() {
+                if !self.shell_clients.is_empty() {
                     self.notify(&viewport_ipc::Event::ShellReload);
                 }
             }
@@ -1233,9 +1233,19 @@ impl ViewportState {
         let (x, y) = if on_shell { (at.x, at.y) } else { (-1.0, -1.0) };
         self.pointer_on_shell = on_shell;
         let modifiers = self.shell_modifiers();
+        // Every page, and each in its own coordinates: a page that has the
+        // pointer is told where, and one that does not is told it left. A
+        // second page still showing a hover from the last time the pointer was
+        // over it is what leaving out the second half looks like.
         #[cfg(feature = "wpe")]
-        if let Some(shell) = self.shell.as_ref() {
-            shell.pointer_motion(time, x, y, modifiers);
+        for page in &self.shells {
+            let local = if on_shell && page.contains(at) {
+                page.local(at)
+            } else {
+                (-1.0, -1.0).into()
+            };
+            page.engine
+                .pointer_motion(time, local.x, local.y, modifiers);
         }
         let _ = (x, y, time, modifiers);
     }
@@ -1248,9 +1258,13 @@ impl ViewportState {
         time: u32,
     ) {
         let modifiers = self.shell_modifiers();
+        // Only the page under the pointer. A click is not an event every page
+        // should see.
         #[cfg(feature = "wpe")]
-        if let Some(shell) = self.shell.as_ref() {
-            shell.pointer_button(time, at.x, at.y, button, pressed, modifiers);
+        if let Some(page) = self.shells.iter().find(|page| page.contains(at)) {
+            let local = page.local(at);
+            page.engine
+                .pointer_button(time, local.x, local.y, button, pressed, modifiers);
         }
         let _ = (at, button, pressed, time, modifiers);
     }
@@ -1265,15 +1279,25 @@ impl ViewportState {
     ) {
         let modifiers = self.shell_modifiers();
         #[cfg(feature = "wpe")]
-        if let Some(shell) = self.shell.as_ref() {
-            shell.pointer_axis(time, at.x, at.y, dx, dy, precise, modifiers);
+        if let Some(page) = self.shells.iter().find(|page| page.contains(at)) {
+            let local = page.local(at);
+            page.engine
+                .pointer_axis(time, local.x, local.y, dx, dy, precise, modifiers);
         }
         let _ = (at, dx, dy, precise, time, modifiers);
     }
 
     fn shell_keyboard_key(&mut self, key: WebKey) {
+        // The desktop page. There is one keyboard focus and the desktop is
+        // what holds it when no window does; handing the same key to a `--url`
+        // page on another monitor would type into a site nobody is looking at.
         #[cfg(feature = "wpe")]
-        if let Some(shell) = self.shell.as_ref() {
+        if let Some(shell) = self
+            .shells
+            .iter()
+            .find(|page| page.desktop)
+            .map(|page| &page.engine)
+        {
             shell.keyboard_key(
                 key.time,
                 key.keycode,
