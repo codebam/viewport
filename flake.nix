@@ -616,6 +616,13 @@
           # before a machine that has just switched to this configuration has a
           # desktop.
           default = cef;
+        } // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          # A disposable machine to try it in: `nix run .#vm` opens a QEMU
+          # window with the whole desktop inside, on a virtual GPU it really
+          # does take DRM master on. The alternative to this was a nested run,
+          # which does not exercise the DRM path at all, or a TTY, which takes
+          # the screen. See nix/vm.nix.
+          vm = self.nixosConfigurations.vm.config.system.build.vm;
         };
 
         # --------------------------------------------------------------------
@@ -802,6 +809,18 @@
           '';
         };
       }) // {
+
+      # ----------------------------------------------------------------------
+      # The machine `nix run .#vm` boots. Declared here rather than inside
+      # `eachDefaultSystem` because a NixOS configuration names its own system
+      # and there is only one of these.
+      nixosConfigurations.vm = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          self.nixosModules.default
+          ./nix/vm.nix
+        ];
+      };
 
       # ----------------------------------------------------------------------
       # Portal wiring, on its own so it can be imported without adopting the
