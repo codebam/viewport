@@ -62,11 +62,31 @@ pub struct IdleConfig {
     pub lock_command: Option<String>,
 }
 
+/// What `background_terminal` was set to.
+///
+/// Two shapes because there are two things people mean by it: `true` is "the
+/// terminal I already have configured", and a string is a command line for
+/// when the point is the program inside it rather than the terminal — which is
+/// the usual case, because the wallpaper is never typed into.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum BackgroundTerminal {
+    Enabled(bool),
+    Command(String),
+}
+
 /// What the file says. Everything optional; see the module comment.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct File {
     pub url: Option<String>,
+    /// Draw a terminal as the wallpaper: `true` for the configured
+    /// `terminal`, or a command line of its own.
+    ///
+    /// It is never given keyboard or pointer input — see
+    /// `crate::background`, which explains why that is deliberate and not a
+    /// missing feature.
+    pub background_terminal: Option<BackgroundTerminal>,
     /// Which engine draws the shell: `wpe`, `webkitgtk`, `servo` or `cef`.
     /// See `crate::shell_backend`.
     pub shell_backend: Option<String>,

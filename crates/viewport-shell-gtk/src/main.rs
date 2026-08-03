@@ -122,7 +122,19 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
     // nothing behind it that should ever show through. Left at the default,
     // the page's own background is composited over WebKit's white, and a shell
     // that has not finished loading flashes white across every monitor.
-    view.set_background_color(&gtk::gdk::RGBA::BLACK);
+    //
+    // Unless the compositor says there is something back there — a terminal
+    // drawn as the wallpaper — in which case this colour is precisely what
+    // would cover it, and the page composites over nothing instead. The white
+    // flash is traded for the desktop being briefly see-through while the page
+    // loads, which is the right way round: one is a bug and the other is what
+    // was asked for.
+    let behind = std::env::var_os("VIEWPORT_SHELL_TRANSPARENT").is_some();
+    view.set_background_color(if behind {
+        &gtk::gdk::RGBA::TRANSPARENT
+    } else {
+        &gtk::gdk::RGBA::BLACK
+    });
 
     if options.inspector {
         if let Some(settings) = webkit6::prelude::WebViewExt::settings(&view) {

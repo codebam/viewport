@@ -143,6 +143,10 @@ pub fn init(
     // client of this compositor like any other, and nesting changes nothing
     // about that.
     state.start_shell_process();
+    // And the wallpaper terminal, if one was asked for. Beside the shell
+    // because it needs the same thing the shell does: outputs, so it can be
+    // told how big the desktop is.
+    state.start_background_process();
 
     // The shell, nested. It needs DRM nodes to allocate on — the same GPU the
     // host compositor is using, which is what the EGL device names.
@@ -358,6 +362,17 @@ pub fn init(
                 for lock in state.lock_surfaces.values() {
                     smithay::desktop::utils::send_frames_surface_tree(
                         lock.wl_surface(),
+                        &output,
+                        at,
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                }
+                // The wallpaper terminal, which is neither of the above and
+                // would otherwise draw once and stop.
+                if let Some(surface) = state.background_surface().cloned() {
+                    smithay::desktop::utils::send_frames_surface_tree(
+                        &surface,
                         &output,
                         at,
                         Some(Duration::ZERO),

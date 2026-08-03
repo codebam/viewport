@@ -166,6 +166,12 @@ impl ViewportState {
             }
         }
 
+        // The wallpaper terminal, before the window path: it is not a window,
+        // and every path below would either ignore it or half-adopt it.
+        if self.background_commit(surface) {
+            return;
+        }
+
         // Before everything else that looks at a commit: the shell's buffer is
         // taken here, and none of the rest applies to it — it is not a window,
         // not a layer surface and not a lock screen.

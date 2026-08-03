@@ -232,6 +232,17 @@ pub struct Config {
     /// person at the keyboard said rather than what the mode says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiling_mode: Option<String>,
+
+    /// Whether something is being drawn *behind* the shell, so the page must
+    /// stop painting a wallpaper of its own.
+    ///
+    /// The shell is the bottom layer of the desktop by default and its `body`
+    /// gradient is what the wallpaper actually is. A terminal under it is
+    /// invisible until the page gets out of the way, and only the compositor
+    /// knows there is one — hence a flag rather than a theme key someone has
+    /// to set twice.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background_terminal: bool,
 }
 
 fn yes() -> bool {
@@ -379,6 +390,7 @@ mod tests {
             theme: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
+            background_terminal: false,
         }));
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
@@ -414,6 +426,7 @@ mod tests {
             theme: None,
             focus_crosses_outputs: false,
             tiling_mode: None,
+            background_terminal: false,
         }));
         assert_eq!(value["focus_crosses_outputs"], false);
     }
@@ -429,6 +442,7 @@ mod tests {
             theme: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
+            background_terminal: false,
         }));
         assert!(value["rules"].is_array(), "rules must not be a string");
         assert_eq!(value["rules"][0]["app_id"], "mpv");
@@ -513,6 +527,7 @@ mod tests {
                 theme: None,
                 focus_crosses_outputs: true,
                 tiling_mode: None,
+                background_terminal: false,
             })),
             json(&Event::Modifiers { logo: true }),
             json(&Event::SessionRestore {

@@ -1485,6 +1485,27 @@ if (mode === 'scrolling') {
   emit({ type: 'config', layout: mode });
   check('a config that says nothing leaves them on',
     !root.contains('no-logo') && !root.contains('no-tutorial'));
+
+  /* A terminal drawn behind the page.
+   *
+   * The compositor draws it under the shell's own buffer, so it is visible
+   * only while the page paints no background of its own. `behind` is the whole
+   * of the shell's part in that, and getting it wrong is invisible in a
+   * screenshot of the shell alone — the page looks exactly the same, and the
+   * terminal underneath is simply never seen. */
+  emit({ type: 'config', layout: mode, background_terminal: true });
+  check('background_terminal makes room for what is behind the page',
+    root.contains('behind'));
+
+  emit({ type: 'config', layout: mode, background_terminal: false });
+  check('turning it off paints the wallpaper again', !root.contains('behind'));
+
+  /* Absent means off, and the compositor omits the key when it is: a desktop
+   * with no terminal behind it must not go transparent onto the clear colour,
+   * which is a black screen with a bar on it. */
+  emit({ type: 'config', layout: mode });
+  check('a config that omits the key keeps the wallpaper',
+    !root.contains('behind'));
 }
 
 /* Moving a window to another workspace, for both kinds of window.

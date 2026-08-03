@@ -158,6 +158,19 @@ impl ViewportState {
             // GTK picks X11 when `DISPLAY` is set, and under Xwayland the
             // shell would be a client of a client.
             .env("GDK_BACKEND", "wayland");
+
+        // Whether anything is drawn behind the page.
+        //
+        // The engine composites the document over a colour of its own, and the
+        // default is opaque — deliberately, or a shell that has not finished
+        // loading flashes white across every monitor. With a terminal as the
+        // wallpaper that opaque colour is what covers it, so the shell process
+        // is told to composite over nothing instead. The page still has to
+        // stop painting its own background; both halves are needed, and
+        // `Config::background_terminal` is the other.
+        if self.background_command.is_some() {
+            command.env("VIEWPORT_SHELL_TRANSPARENT", "1");
+        }
         if degraded {
             command.env("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         }
@@ -525,7 +538,7 @@ impl ViewportState {
 ///
 /// Smithay tracks it per toplevel, and the answer decides which of the two
 /// ways of sending a configure is the legal one.
-fn initial_configure_sent(toplevel: &ToplevelSurface) -> bool {
+pub(crate) fn initial_configure_sent(toplevel: &ToplevelSurface) -> bool {
     smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
         states
             .data_map

@@ -1346,6 +1346,10 @@ pub fn init(
     // The out-of-process shell needs none of this device: it allocates against
     // whatever GPU it opens for itself and hands the buffer over as a client.
     state.start_shell_process();
+    // And the wallpaper terminal, if one was asked for. Beside the shell
+    // because it needs the same thing the shell does: outputs, so it can be
+    // told how big the desktop is.
+    state.start_background_process();
 
     Ok(())
 }
@@ -2997,6 +3001,19 @@ impl ViewportState {
         for lock in self.lock_surfaces.values() {
             smithay::desktop::utils::send_frames_surface_tree(
                 lock.wl_surface(),
+                output,
+                start,
+                throttle,
+                |_, _| Some(output.clone()),
+            );
+        }
+        // The wallpaper terminal, which is in neither the space nor a layer
+        // map for the same reason the shell is not: it is one surface across
+        // the whole layout. Without this it paints its first frame and stops,
+        // which is a clock on the desktop that never ticks.
+        if let Some(surface) = self.background_surface().cloned() {
+            smithay::desktop::utils::send_frames_surface_tree(
+                &surface,
                 output,
                 start,
                 throttle,

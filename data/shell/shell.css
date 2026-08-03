@@ -152,6 +152,20 @@ body {
     var(--bg);
 }
 
+/* Something is behind the page: `background_terminal` is on and the compositor
+   is drawing a terminal underneath this document.
+ *
+ * The shell is the bottom layer of the desktop and its `body` is what the
+ * wallpaper actually is, so the only way to see anything below it is for the
+ * page to paint nothing there. Everything else the shell draws — the bar, the
+ * taskbar, window frames — is in front of this and unaffected, which is why
+ * this is one rule and not a mode.
+ *
+ * The vignette stays off rather than being kept at a lower opacity: it is a
+ * gradient over the whole screen, and a terminal read through one is a
+ * terminal with dim corners. */
+html.behind body { background: transparent; }
+
 /* Positioned per output from JS, in layout coordinates. */
 .desktop {
   position: absolute;
