@@ -296,6 +296,26 @@ Only the desktop page is sent window events, given the keyboard by
 page: it receives pointer and keyboard input on its own screen like any client,
 and nothing else.
 
+**Each page's world is its own rectangle.** A page lays out in a document that
+starts at (0, 0) however far across the desk the page itself begins, so:
+
+* `output.layout` sent to a page lists only the screens it covers, with
+  positions relative to its own top-left. A desktop confined to the second
+  monitor is told about that monitor, at `+0+0`, and is not told the first one
+  exists — it must not place a window on a screen it does not cover.
+* `view.layout`, `shell.overlay` and `screencast.rect` coming back from a page
+  are read in that page's coordinates and moved into the layout's.
+
+A script on the control socket has no page to speak in, so it speaks layout
+coordinates and is told the layout as it really is. Which connection is a page
+is decided by the pid the kernel reports for it (`SO_PEERCRED`), matched
+against the processes the compositor started — a client cannot claim to be the
+desktop, because it does not choose its own pid.
+
+`viewport=debug` logs both halves: `shell N: its screens are …` for what each
+page was told, and `view N: placed at …; the page asked for …` for where a
+window ended up and what was asked for.
+
 This is implemented for the out-of-process backends — `webkitgtk` and
 `chromium`, and `cef` when it lands. The in-process `wpe` backend still runs one
 engine across the whole layout, so `--url` there behaves as it always did.

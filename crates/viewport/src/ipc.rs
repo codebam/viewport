@@ -39,6 +39,13 @@ impl AsFd for Shared {
 
 struct Client {
     stream: Rc<UnixStream>,
+    /// The process on the other end, when the kernel will say.
+    ///
+    /// What makes a shell's connection recognisable on a socket every client
+    /// may open. The shell is spawned by this compositor, so its pid is known
+    /// here — and a pid read from `SO_PEERCRED` is the kernel's answer, not the
+    /// client's, so nothing can claim to be the desktop by saying so.
+    pid: Option<i32>,
     framer: Framer,
     /// What a short write left behind. Nothing else will send it, so the
     /// writable half of the source has to.
@@ -161,6 +168,40 @@ impl Ipc {
         };
         text.push('\n');
         for client in self.clients.values_mut() {
+            client.send(text.as_bytes());
+        }
+        self.arm_writers();
+    }
+
+    /// The process on the other end of a connection, if the kernel said.
+    pub fn client_pid(&self, client_id: u64) -> Option<i32> {
+        self.clients.get(&client_id).and_then(|client| client.pid)
+    }
+
+    /// The connection a process holds, if it has one.
+    pub fn client_for_pid(&self, pid: i32) -> Option<u64> {
+        self.clients
+            .iter()
+            .find(|(_, client)| client.pid == Some(pid))
+            .map(|(id, _)| *id)
+    }
+
+    /// Send to everything except the processes named.
+    ///
+    /// For an event that has a different answer per shell: each of them is sent
+    /// its own, and this is what carries the plain one to everyone else. A
+    /// script watching the socket is told what the machine is; a page is told
+    /// what it covers.
+    pub fn broadcast_except(&mut self, pids: &[i32], event: &Event) {
+        let Ok(mut text) = viewport_ipc::to_string(event) else {
+            tracing::error!("could not serialise {event:?}");
+            return;
+        };
+        text.push('\n');
+        for client in self.clients.values_mut() {
+            if client.pid.is_some_and(|pid| pids.contains(&pid)) {
+                continue;
+            }
             client.send(text.as_bytes());
         }
         self.arm_writers();
@@ -329,10 +370,22 @@ impl ViewportState {
             }
         };
 
+        // Before the stream is handed to the source, and best-effort: a
+        // connection the kernel will not describe is an ordinary client, which
+        // is what every connection was until there were two shells to tell
+        // apart.
+        //
+        // Through rustix rather than `UnixStream::peer_cred`, which is still
+        // unstable — and this is the same `SO_PEERCRED` either way.
+        let pid = smithay::reexports::rustix::net::sockopt::socket_peercred(&*stream)
+            .ok()
+            .map(|cred| cred.pid.as_raw_nonzero().get());
+
         self.ipc.clients.insert(
             id,
             Client {
                 stream,
+                pid,
                 framer: Framer::new(),
                 pending: Vec::new(),
                 token,
@@ -431,6 +484,18 @@ impl ViewportState {
     }
 
     /// Parse one message and act on it.
+    /// Which shell a control-socket client is, if it is one.
+    ///
+    /// By the pid the kernel reports for the connection, matched against the
+    /// processes this compositor started. A client that merely says it is the
+    /// desktop cannot be one: it does not choose its own pid.
+    pub fn shell_for_client(&self, client_id: u64) -> Option<usize> {
+        let pid = self.ipc.client_pid(client_id)?;
+        self.shell_clients
+            .iter()
+            .position(|shell| shell.pid() == Some(pid))
+    }
+
     pub fn ipc_dispatch(&mut self, client_id: u64, bytes: &[u8]) {
         // Everything that arrives, at debug. The out-of-process shell talks
         // over this socket like any other client, so without this there is no
@@ -449,6 +514,30 @@ impl ViewportState {
             self.shell_announced = true;
             tracing::info!("shell is talking to us");
         }
+
+        // Whose coordinates these are.
+        //
+        // A page lays its windows out in its own document, which starts at
+        // (0, 0) however far across the desk the page itself begins — the DOM
+        // has no idea it is on the second monitor. So a rectangle from a shell
+        // is in that page's coordinates and has to be moved into the layout's
+        // before anything is placed by it.
+        //
+        // What that cost, before this: with a `--url` page on the first screen
+        // and the desktop on the second, a terminal opened on the second
+        // monitor was drawn a frame there — the shell's own drawing is offset
+        // correctly, being part of the page — and the window itself was mapped
+        // at the same numbers taken as layout coordinates, which put it on the
+        // *first* screen, on top of the page. A border with no window in it,
+        // and a window where nothing asked for one.
+        //
+        // Left at zero for everything else: a script driving the socket speaks
+        // layout coordinates, because it has no page to speak in.
+        self.dispatch_origin = self
+            .shell_for_client(client_id)
+            .and_then(|at| self.shell_clients.get(at))
+            .map(|shell| shell.region.loc)
+            .unwrap_or_default();
 
         match viewport_ipc::parse(bytes) {
             Ok(request) => self.handle_request(request),

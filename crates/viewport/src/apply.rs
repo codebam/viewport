@@ -117,10 +117,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         } => {
             // The older, single-rectangle form of `shell.overlay`. A zero size
             // is the shell saying there is nothing above the windows now.
+            let origin = state.dispatch_origin;
             let rects = if width > 0 && height > 0 {
                 {
                     vec![smithay::utils::Rectangle::new(
-                        (x, y).into(),
+                        (x + origin.x, y + origin.y).into(),
                         (width, height).into(),
                     )]
                 }
@@ -131,12 +132,17 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         }
 
         Request::ShellOverlay { rects } => {
+            // The sender's page coordinates, as in `view_layout`: these are
+            // rectangles of the shell's own document, and the compositor holds
+            // them in the layout's coordinates because it hit-tests the pointer
+            // against them.
+            let origin = state.dispatch_origin;
             let rects = rects
                 .into_iter()
                 .filter(|rect| rect.width > 0 && rect.height > 0)
                 .map(|rect| {
                     smithay::utils::Rectangle::new(
-                        (rect.x, rect.y).into(),
+                        (rect.x + origin.x, rect.y + origin.y).into(),
                         (rect.width, rect.height).into(),
                     )
                 })
@@ -394,7 +400,33 @@ fn configure_size(box_: (i32, i32), min: (i32, i32)) -> (i32, i32) {
     (box_.0.max(min.0), box_.1.max(min.1))
 }
 
-fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLayout) {
+fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::ViewLayout) {
+    // Out of the page's coordinates and into the layout's, before anything is
+    // resolved against a rectangle that is already in the layout's.
+    //
+    // See `ViewportState::dispatch_origin`. A desktop confined to the second
+    // monitor lays out from (0, 0), because that is where its document starts,
+    // and a window placed at those numbers lands on the *first* monitor — while
+    // the frame the shell drew for it, being part of the page, is offset
+    // correctly and appears on the second. A border with no window in it, and a
+    // window where nothing asked for one.
+    //
+    // Positions only: a width is a width wherever the page begins.
+    let origin = state.dispatch_origin;
+    let asked = (layout.box_.x, layout.box_.y);
+    if origin.x != 0 || origin.y != 0 {
+        layout.box_.x = layout.box_.x.map(|x| x + origin.x);
+        layout.box_.y = layout.box_.y.map(|y| y + origin.y);
+        if let Some(clip) = layout.clip.as_mut() {
+            clip.x = clip.x.map(|x| x + origin.x);
+            clip.y = clip.y.map(|y| y + origin.y);
+        }
+        if let Some(frame) = layout.frame.as_mut() {
+            frame.x += origin.x;
+            frame.y += origin.y;
+        }
+    }
+
     let Some(view) = state.views.get(layout.id) else {
         return;
     };
@@ -402,6 +434,22 @@ fn view_layout(state: &mut ViewportState, layout: viewport_ipc::request::ViewLay
         // A degenerate box is dropped without an error, as in the C build.
         return;
     };
+
+    // Where the window ended up, in the layout's coordinates, and where the
+    // page asked for it. The first question whenever a window is on the wrong
+    // screen, and the two differ by exactly the page's origin.
+    tracing::debug!(
+        "view {}: placed at {}x{}{:+}{:+}; the page asked for {:?},{:?} from {:+}{:+}",
+        layout.id,
+        resolved.box_.width,
+        resolved.box_.height,
+        resolved.box_.x,
+        resolved.box_.y,
+        asked.0,
+        asked.1,
+        origin.x,
+        origin.y
+    );
 
     let window = view.window.clone();
 

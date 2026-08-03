@@ -117,6 +117,11 @@ impl ClientShell {
     pub fn surface(&self) -> Option<&WlSurface> {
         self.toplevel.as_ref().map(|toplevel| toplevel.wl_surface())
     }
+
+    /// The process, for matching a control-socket connection to this page.
+    pub fn pid(&self) -> Option<i32> {
+        self.child.id().try_into().ok()
+    }
 }
 
 impl ViewportState {

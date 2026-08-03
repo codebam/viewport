@@ -77,11 +77,20 @@ wpe_check() {
     # A target directory of the container's own, for the same reason the nix
     # steps have one: a check run against Arch's libraries leaves artefacts
     # that the host's toolchain would rebuild anyway.
+    #
+    # And one per worktree inside it, which is not a nicety. Every worktree is
+    # mounted at the same `/src`, so Cargo sees the same paths for every one of
+    # them and reuses whatever it built last — a check of this branch failing on
+    # `missing field background_terminal`, a field that exists only in another
+    # worktree entirely. The slug is the worktree's path, so the caching this
+    # volume exists for survives and the aliasing does not.
+    local slug
+    slug=$(printf '%s' "$root" | sha256sum | cut -c1-12)
     "$engine" run --rm \
         -v "$root:/src:z" \
         -v viewport-check-cargo:/root/.cargo \
         -v viewport-check-target:/target \
-        -e CARGO_TARGET_DIR=/target \
+        -e CARGO_TARGET_DIR=/target/$slug \
         -w /src \
         viewport-check \
         bash -lc 'cargo check -p viewport --features wpe'
