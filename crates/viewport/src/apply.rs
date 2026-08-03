@@ -147,9 +147,17 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // involves the pointer moving. Same reason as `set_shell_overlays`.
             state.refresh_pointer_focus();
             if active {
-                if let Some(keyboard) = state.seat.get_keyboard() {
-                    let serial = SERIAL_COUNTER.next_serial();
-                    keyboard.set_focus(state, None, serial);
+                // To the desktop page where the shell is a client: the overview
+                // is drawn by the shell and driven from the keyboard, so keys
+                // have to reach it. Clearing the focus outright is right only
+                // for the in-process engine, which is not a client and is
+                // handed keys by `Action::Web` precisely because the focus is
+                // empty.
+                if !state.focus_shell_at(None) {
+                    if let Some(keyboard) = state.seat.get_keyboard() {
+                        let serial = SERIAL_COUNTER.next_serial();
+                        keyboard.set_focus(state, None, serial);
+                    }
                 }
                 // The overview owns the keys, so no window is focused while it
                 // is up and none should be drawn as though it were.

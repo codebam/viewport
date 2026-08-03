@@ -393,35 +393,34 @@ impl ViewportState {
     /// callback runs underneath a dispatch that already holds this state.
     #[cfg(feature = "wpe")]
     pub fn drain_shell(&mut self) {
-        if self.shell.is_none() {
+        if self.shells.is_empty() {
             return;
         }
 
-        // Before the messages: a shell whose process has died has nothing
-        // further to say, and anything still queued was posted by a page that
-        // no longer exists.
-        if let Some(reason) = self
-            .shell
-            .as_ref()
-            .and_then(|shell| shell.take_termination())
-        {
-            self.restart_shell(reason);
-        }
+        // By index, and every page: each engine has a mailbox of its own, so
+        // which one a message came from is which one it was taken out of.
+        for page in 0..self.shells.len() {
+            // Before the messages: a page whose web process has died has
+            // nothing further to say, and anything still queued was posted by
+            // a document that no longer exists.
+            if let Some(reason) = self.shells[page].engine.take_termination() {
+                self.restart_shell(page, reason);
+            }
 
-        // Taken up front so nothing holds a borrow of `self` across the
-        // dispatch, which needs it mutably.
-        let messages = self
-            .shell
-            .as_ref()
-            .map(|shell| shell.take_messages())
-            .unwrap_or_default();
+            // Taken up front so nothing holds a borrow of `self` across the
+            // dispatch, which needs it mutably.
+            let messages = match self.shells.get(page) {
+                Some(shell) => shell.engine.take_messages(),
+                None => Vec::new(),
+            };
 
-        for message in messages {
-            tracing::debug!("from shell: {message}");
-            // Client id 0: the shell is not one of the socket clients, and an
-            // error it caused goes to the broadcast channel it already
-            // listens to rather than to a connection that does not exist.
-            self.ipc_dispatch(0, message.as_bytes());
+            for message in messages {
+                tracing::debug!("from shell {page}: {message}");
+                // Client id 0: the shell is not one of the socket clients, and
+                // an error it caused goes to the broadcast channel it already
+                // listens to rather than to a connection that does not exist.
+                self.ipc_dispatch(0, message.as_bytes());
+            }
         }
 
         // A new frame is a reason to draw, and nothing else will ask: the

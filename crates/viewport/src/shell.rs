@@ -254,6 +254,71 @@ impl CrashSink for Crashes {
 // were sound before was that everything stayed on one thread, and the shell is
 // on its way to a thread of its own.
 
+/// One page the in-process engine is drawing, and where it goes.
+///
+/// The same shape as `shell_client::ClientShell`, because the two backends
+/// answer the same question differently and the compositor above them should
+/// not have to care which: a list of pages, each with a rectangle in the output
+/// layout, one of which runs the desktop. See `shell_client::plan_shells` for
+/// what decides the list.
+pub struct Page {
+    pub engine: Shell,
+    /// The document it was started on, so a restart loads the same thing and
+    /// `sync_shells` can tell one page from another.
+    pub url: String,
+    /// Where in the output layout it lives.
+    pub region: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    /// Whether this is the page that runs the desktop.
+    pub desktop: bool,
+    /// The size it was last told it is, so a layout change that does not alter
+    /// it costs no repaint.
+    pub size: Option<(u32, u32)>,
+    /// The compositor's own copy of its newest frame, and that copy's size.
+    ///
+    /// A copy, unlike the out-of-process backend: WebKit paints into its own
+    /// pool and reuses a buffer the moment it is released, so the frame has to
+    /// be somewhere else before it is given back. See
+    /// `ViewportState::import_shell_frame`.
+    pub owned: Option<(
+        smithay::backend::allocator::dmabuf::Dmabuf,
+        smithay::utils::Size<i32, smithay::utils::Physical>,
+    )>,
+    /// What changed in that copy since the last frame. Required rather than an
+    /// optimisation: an element that reports no damage tells the tracker
+    /// nothing ever changes, and the output goes quiet after one frame.
+    pub damage: smithay::backend::renderer::utils::DamageBag<i32, smithay::utils::Buffer>,
+    /// Its render element id, stable for the life of the page.
+    pub element_id: smithay::backend::renderer::element::Id,
+    /// How many times this page's web process has died, and when the run
+    /// began. Per page, because one page crashing says nothing about the other.
+    pub restarts: u32,
+    pub restart_window: Option<std::time::Instant>,
+    /// Whether the shell has been told the desktop exists yet.
+    pub announced: bool,
+}
+
+impl Page {
+    /// A page in the layout's own coordinates, turned into one of its own.
+    ///
+    /// WebKit knows nothing about where its view sits on the desk: a click at
+    /// the top-left of the second monitor is (0, 0) to the page drawn there.
+    pub fn local(
+        &self,
+        at: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> smithay::utils::Point<f64, smithay::utils::Logical> {
+        (
+            at.x - self.region.loc.x as f64,
+            at.y - self.region.loc.y as f64,
+        )
+            .into()
+    }
+
+    /// Whether a point in layout coordinates is on this page.
+    pub fn contains(&self, at: smithay::utils::Point<f64, smithay::utils::Logical>) -> bool {
+        self.region.to_f64().contains(at)
+    }
+}
+
 /// How long the compositor waits for the web thread to report itself up.
 ///
 /// Long enough that a cold WebKit on a slow disk, compiling shaders for a GPU

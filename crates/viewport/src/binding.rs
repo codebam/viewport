@@ -372,6 +372,56 @@ pub fn match_binding<'a>(
         .map(|binding| &binding.action)
 }
 
+/// The chord that always leaves, added when nothing else does.
+///
+/// Every other binding is the config file's to decide, and this one nearly is:
+/// `binds` replaces the defaults outright, and `binds_override` can unbind a
+/// chord with a `null`. Either can produce a session with no way out of it —
+/// docs/configuration.md warns about exactly that — and the warning is only
+/// any use to somebody who read it before rebooting into the session they
+/// wrote.
+///
+/// It matters most where there is no shell to fall back on. `--url
+/// https://example.com` is a web page and nothing else: no launcher, no
+/// terminal binding it can reach, nothing on screen that quits. Mod4+Shift+E
+/// is then the whole interface, and a config file that happened to drop it
+/// leaves a machine that has to be held down by the power button.
+///
+/// Added last, so it loses to anything the file did bind to that chord — this
+/// is a floor, not an override. `Ctrl+Alt+Backspace` is still there underneath
+/// as the chord no config file can touch (`crate::input::shortcut`); this is
+/// the one people are told about.
+pub fn guarantee_an_exit(bindings: &mut Vec<Binding>) {
+    let leaves = bindings
+        .iter()
+        .any(|binding| binding.mode.is_empty() && binding.action == Action::Exit);
+    if leaves {
+        return;
+    }
+    let Some(exit) = parse("Mod4+Shift+e=exit") else {
+        // Unreachable short of the parser losing `exit`, and a panic here
+        // would be a compositor that will not start over a keybinding.
+        tracing::error!("could not build the fallback exit binding");
+        return;
+    };
+    // Only if the chord itself is free. A file that bound Mod4+Shift+E to
+    // something else meant it, and quietly doing something different from what
+    // it says is worse than the risk this exists to cover.
+    if bindings.iter().any(|binding| {
+        binding.mode == exit.mode
+            && binding.modifiers == exit.modifiers
+            && binding.keysym == exit.keysym
+    }) {
+        tracing::warn!(
+            "no binding leaves this session and Mod4+Shift+E is taken; \
+             Ctrl+Alt+Backspace is the way out"
+        );
+        return;
+    }
+    tracing::info!("no binding leaves this session; adding Mod4+Shift+e=exit");
+    bindings.push(exit);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,5 +663,72 @@ mod tests {
             find(&solar),
             Some(Action::Shell("solar.ray left".to_owned()))
         );
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+
+    fn exits(bindings: &[Binding]) -> bool {
+        bindings
+            .iter()
+            .any(|b| b.action == Action::Exit && b.mode.is_empty())
+    }
+
+    #[test]
+    fn the_defaults_already_leave() {
+        let mut bindings = defaults("foot", "wmenu-run", "tiling");
+        let before = bindings.len();
+        guarantee_an_exit(&mut bindings);
+        assert_eq!(bindings.len(), before, "nothing was needed");
+        assert!(exits(&bindings));
+    }
+
+    #[test]
+    fn a_config_that_forgot_one_gets_it_back() {
+        // `binds` replaces the defaults, so this is a whole config file.
+        let mut bindings: Vec<Binding> = ["Mod4+Return=exec foot"]
+            .iter()
+            .filter_map(|spec| parse(spec))
+            .collect();
+        guarantee_an_exit(&mut bindings);
+        assert!(exits(&bindings), "a session with no way out of it");
+    }
+
+    #[test]
+    fn a_chord_the_file_claimed_is_not_taken_back() {
+        // Adding an exit here would fire whatever the file asked for *and*
+        // quit, or shadow it — either way it is not what the file says.
+        let mut bindings: Vec<Binding> = ["Mod4+Shift+e=exec firefox"]
+            .iter()
+            .filter_map(|spec| parse(spec))
+            .collect();
+        guarantee_an_exit(&mut bindings);
+        assert_eq!(bindings.len(), 1);
+        assert!(!exits(&bindings));
+    }
+
+    #[test]
+    fn an_exit_on_some_other_chord_is_enough() {
+        let mut bindings: Vec<Binding> = ["Mod4+q=exit"]
+            .iter()
+            .filter_map(|spec| parse(spec))
+            .collect();
+        guarantee_an_exit(&mut bindings);
+        assert_eq!(bindings.len(), 1, "there is already a way out");
+    }
+
+    #[test]
+    fn an_exit_that_only_works_in_a_mode_is_not_a_way_out() {
+        // A binding mode is a second keymap: nothing in it matches until the
+        // mode is entered, and entering it is itself a binding the file may
+        // not have made.
+        let mut bindings: Vec<Binding> = ["resize/e=exit"]
+            .iter()
+            .filter_map(|spec| parse(spec))
+            .collect();
+        guarantee_an_exit(&mut bindings);
+        assert!(exits(&bindings), "a moded exit left the session with none");
     }
 }

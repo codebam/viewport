@@ -192,6 +192,16 @@ fn run() -> Result<()> {
         tracing::info!("shell url from the command line: {resolved}");
         state.shell_url = Some(resolved);
     }
+    // Whether that page takes every monitor or only the first.
+    //
+    // Only the first by default, with the shipped desktop on the rest: `--url
+    // https://example.com` means "that site on my main monitor", and a session
+    // with no window manager anywhere is not what anybody asked for by naming a
+    // web page. A shell under development is the other case — it *is* the
+    // desktop — and this is how it says so.
+    if args.iter().any(|a| a == "--url-span") {
+        state.shell_url_spans = true;
+    }
 
     // A terminal for a wallpaper, from the command line.
     //
@@ -672,6 +682,7 @@ const OPTIONS: &[&str] = &[
     "--height",
     "--exit-after",
     "--url",
+    "--url-span",
     "--shell-backend",
     "--background-terminal",
 ];

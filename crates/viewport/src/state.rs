@@ -157,9 +157,13 @@ pub struct ViewportState {
     /// running.
     #[cfg(feature = "wpe")]
 
-    /// The web engine drawing the desktop, once it has started.
+    /// The pages the in-process engine is drawing, once they have started.
+    ///
+    /// A list for the same reason `shell_clients` is one: `--url` on a session
+    /// with more than one monitor is that page on the first screen and the
+    /// shipped desktop on the rest. Empty, or one entry, everywhere else.
     #[cfg(feature = "wpe")]
-    pub shell: Option<crate::shell::Shell>,
+    pub shells: Vec<crate::shell::Page>,
 
     /// Wakes the loop when the shell posts something.
     #[cfg(feature = "wpe")]
@@ -198,7 +202,22 @@ pub struct ViewportState {
     /// The shell as a client of this compositor, for the backend that runs it
     /// out of process. Never set at the same time as `shell`: one desktop, one
     /// engine drawing it.
-    pub shell_client: Option<crate::shell_client::ClientShell>,
+    ///
+    /// A list rather than one, because `--url` on a session with more than one
+    /// monitor runs the page asked for on the first screen and the shipped
+    /// desktop on the rest — two processes, two pages, two rectangles. See
+    /// `shell_client::plan_shells`. Everything else is one entry long.
+    pub shell_clients: Vec<crate::shell_client::ClientShell>,
+    /// The id the next shell process is given, so a restarted one is not
+    /// mistaken for the process it replaced.
+    pub next_shell_id: u32,
+    /// Whether a page named by `--url` spans every monitor rather than taking
+    /// the first one and leaving the rest to the desktop.
+    ///
+    /// Off, because "that site on my monitor" is what asking for a page
+    /// usually means. On for a shell being developed, which is one page across
+    /// the whole desk by definition — `--url-span`.
+    pub shell_url_spans: bool,
     /// The terminal drawn as the wallpaper, when one was asked for.
     ///
     /// A client like any other, drawn under the shell and given no input at
@@ -214,17 +233,6 @@ pub struct ViewportState {
     /// Whether the out-of-process shell has already been told it is painting
     /// into shared memory. Once per shell, not once per frame.
     pub shell_shm_warned: bool,
-    #[cfg(feature = "wpe")]
-    /// The size the shell was last told it is, so a layout change that does
-    /// not alter it costs nothing.
-    pub shell_size: Option<(u32, u32)>,
-    /// The compositor's own copy of the shell's newest frame, and its size.
-    ///
-    /// Reused between frames; reallocated only when the layout changes size.
-    pub shell_owned: Option<(
-        smithay::backend::allocator::dmabuf::Dmabuf,
-        smithay::utils::Size<i32, smithay::utils::Physical>,
-    )>,
     /// How many frames the shell has painted. Both backends count into this —
     /// WebKit handing over a buffer and a client committing one are the same
     /// event from here — which is what makes a rate out of it comparable
@@ -241,26 +249,9 @@ pub struct ViewportState {
     /// another reason. `VIEWPORT_SHELL_RATE=1` turns it on, which is what
     /// scripts/bench-shell.py sets.
     pub shell_rate_verbose: bool,
-    /// How many times the shell has been restarted after its web process
-    /// died, and when the run of restarts began.
+    /// The ids for the copies of the shell drawn *over* the windows.
     ///
-    /// Both, because a restart limit on its own is wrong in each direction: a
-    /// desktop up for a week that has crashed five times over that week is
-    /// healthy, and one that crashes five times in five seconds is a page that
-    /// cannot load and must not be retried forever. The window separates them.
-    #[cfg(feature = "wpe")]
-    pub shell_restarts: u32,
-    #[cfg(feature = "wpe")]
-    pub shell_restart_window: Option<std::time::Instant>,
-    /// The shell element's identity, stable for the life of the compositor.
-    ///
-    /// A fresh `Id` per frame would make every damage tracker treat the shell
-    /// as a new element each time, so it could never work out what actually
-    /// changed and would repaint the whole output forever.
-    pub shell_element_id: smithay::backend::renderer::element::Id,
-    /// A second id for the copy of the shell drawn *over* the windows.
-    ///
-    /// Its own, because the damage tracker keys on the id and one element
+    /// Their own, because the damage tracker keys on the id and one element
     /// appearing twice under a single id is a frame it cannot describe.
     /// One id per overlay rectangle, stable by position for as long as the
     /// list is that long: a render element whose id changes every frame tells
@@ -274,14 +265,6 @@ pub struct ViewportState {
     /// anything it draws is behind them by construction, which for a dialog
     /// asking a question is the one place that will not do.
     pub shell_overlays: Vec<smithay::utils::Rectangle<i32, Logical>>,
-    /// What changed in the shell's buffer since the last frame.
-    ///
-    /// Required, not an optimisation. With a stable id the damage tracker
-    /// decides whether to redraw by asking the element what changed, and an
-    /// element built with `DamageSnapshot::empty()` answers "nothing" for
-    /// ever — so the outputs go quiet after the first frame while WebKit
-    /// carries on painting into buffers nobody draws.
-    pub shell_damage: smithay::backend::renderer::utils::DamageBag<i32, smithay::utils::Buffer>,
 
     /// The pointer image: the client's own surface where one is set, the
     /// theme's otherwise. Nothing draws a cursor unless this says what.
@@ -946,37 +929,30 @@ impl ViewportState {
                 "tiling",
             ),
             #[cfg(feature = "wpe")]
-            shell: None,
-            #[cfg(feature = "wpe")]
             shell_ping: None,
             capture: None,
             shell_backend: crate::shell_backend::ShellBackend::default_for_build(),
             shell_backend_from_flag: false,
-            shell_client: None,
+            shell_clients: Vec::new(),
+            next_shell_id: 0,
+            shell_url_spans: false,
             background_terminal: None,
             background_command: None,
             terminal: std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
             shell_shm_warned: false,
             #[cfg(feature = "wpe")]
-            shell_size: None,
+            shells: Vec::new(),
             #[cfg(feature = "wpe")]
             shell_renderer: None,
             #[cfg(feature = "wpe")]
             shell_allocator: None,
             #[cfg(feature = "wpe")]
             shell_copy_refused: false,
-            shell_owned: None,
             shell_frames: 0,
             shell_rate_mark: None,
             shell_rate_verbose: std::env::var_os("VIEWPORT_SHELL_RATE").is_some(),
-            #[cfg(feature = "wpe")]
-            shell_restarts: 0,
-            #[cfg(feature = "wpe")]
-            shell_restart_window: None,
-            shell_element_id: smithay::backend::renderer::element::Id::new(),
             shell_overlay_ids: Vec::new(),
             shell_overlays: Vec::new(),
-            shell_damage: Default::default(),
 
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             tablet_cursor_status: None,
@@ -1272,16 +1248,18 @@ impl ViewportState {
     ///
     /// One buffer across the whole layout, mapped at the layout's origin, so a
     /// position in layout coordinates is already surface-local.
-    fn shell_under(&self, _pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let surface = self.shell_client_surface()?;
+    fn shell_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         // Where the *surface* is, not where the pointer is: smithay subtracts
         // this from the pointer's position to get the surface-local
         // coordinate. Returning the pointer's own position made every click
         // arrive at (0, 0) — the top-left corner of the page, whatever had
         // been aimed at — which is why nothing the shell drew could be
-        // clicked. The shell is one buffer across the whole layout, mapped at
-        // the layout's origin, so the origin is where it is.
-        Some((surface.clone(), (0.0, 0.0).into()))
+        // clicked.
+        //
+        // The corner of whichever page is under the pointer, not the layout's
+        // origin: a desktop on its own is mapped at the origin and the two are
+        // the same, and a `--url` page on the second monitor is not.
+        self.shell_at(pos)
     }
 
     /// Advertise linux-dmabuf, with the formats this renderer can import.
@@ -3093,7 +3071,7 @@ impl ViewportState {
     pub fn shell_is_up(&self) -> bool {
         #[cfg(feature = "wpe")]
         {
-            self.shell.is_some()
+            !self.shells.is_empty()
         }
         #[cfg(not(feature = "wpe"))]
         {
@@ -3432,7 +3410,7 @@ impl ViewportState {
     /// screen — and both are invisible to a load-failed signal.
     #[cfg(feature = "wpe")]
     pub fn check_shell_loaded(&mut self) {
-        if self.shell_frames > 0 || self.shell.is_none() {
+        if self.shell_frames > 0 || self.shells.is_empty() {
             return;
         }
         let url = self
@@ -3443,11 +3421,13 @@ impl ViewportState {
             "the shell painted nothing within {}ms; loading {url}",
             self.load_timeout_ms
         );
-        if let Some(shell) = self.shell.as_ref() {
+        // Every page, because the deadline is on the session painting at all:
+        // if nothing has, none of them is showing anything to lose.
+        for page in &self.shells {
             // Fire and forget: the load happens on the web thread, so there is
             // no error to catch here. One that fails says so in the log from
             // there.
-            shell.load(&url);
+            page.engine.load(&url);
         }
     }
 
@@ -3894,24 +3874,74 @@ impl ViewportState {
 
         let cursor = self.cursor_for(output, output_geometry, scale);
 
-        // Whichever backend painted it. `shell_owned` is a DMA-BUF and a size,
-        // and the element below it does not care whether WebKit handed it over
-        // through an engine call or a client attached it to a surface.
-        let shell = self
-            .shell_owned
-            .as_ref()
-            .map(|(buffer, _)| crate::render::Shell {
+        // Whichever backend painted it: a DMA-BUF, a rectangle in the layout
+        // and a damage bag, which is all the element below needs. It does not
+        // care whether WebKit handed the buffer over through an engine call or
+        // a client attached it to a surface.
+        //
+        // Every page is placed by its own rectangle rather than at the layout's
+        // origin. A desktop on its own spans the layout and the two are the
+        // same; a `--url` page given one screen is not.
+        let placed = |buffer: &smithay::backend::allocator::dmabuf::Dmabuf,
+                      region: smithay::utils::Rectangle<i32, Logical>,
+                      damage: smithay::backend::renderer::utils::DamageSnapshot<
+            i32,
+            smithay::utils::Buffer,
+        >,
+                      id: smithay::backend::renderer::element::Id| {
+            crate::render::Shell {
                 buffer: buffer.clone(),
-                // Negative of the output's position: the shell is one buffer
-                // across the whole layout.
                 location: (
-                    -output_geometry.loc.x as f64 * scale,
-                    -output_geometry.loc.y as f64 * scale,
+                    (region.loc.x - output_geometry.loc.x) as f64 * scale,
+                    (region.loc.y - output_geometry.loc.y) as f64 * scale,
                 )
                     .into(),
-                damage: self.shell_damage.snapshot(),
-                id: self.shell_element_id.clone(),
-            });
+                damage,
+                id,
+            }
+        };
+
+        // Both backends' pages, in one list: only one of them is ever running.
+        let mut drawn: Vec<(bool, crate::render::Shell)> = Vec::new();
+        #[cfg(feature = "wpe")]
+        for page in &self.shells {
+            if let Some((buffer, _)) = page.owned.as_ref() {
+                drawn.push((
+                    page.desktop,
+                    placed(
+                        buffer,
+                        page.region,
+                        page.damage.snapshot(),
+                        page.element_id.clone(),
+                    ),
+                ));
+            }
+        }
+        for page in &self.shell_clients {
+            if let Some((buffer, _)) = page.owned.as_ref() {
+                drawn.push((
+                    page.desktop,
+                    placed(
+                        buffer,
+                        page.region,
+                        page.damage.snapshot(),
+                        page.element_id.clone(),
+                    ),
+                ));
+            }
+        }
+        // The desktop page is the one the overlays are cropped out of, so it is
+        // the one that goes in `shell`; the rest are drawn beside it, under
+        // everything, at their own corners.
+        let mut shell = None;
+        let mut pages = Vec::new();
+        for (desktop, element) in drawn {
+            if desktop && shell.is_none() {
+                shell = Some(element);
+            } else {
+                pages.push(element);
+            }
+        }
 
         // The wallpaper terminal, placed the same way and for the same reason:
         // one surface across the whole layout, so an output at x=2560 shows
@@ -3956,6 +3986,7 @@ impl ViewportState {
             windows,
             layers_below,
             shell,
+            pages,
             background,
             overlay,
             cursor,
@@ -4233,6 +4264,9 @@ impl ViewportState {
         if let Some(url) = file.url {
             self.shell_url = Some(url);
         }
+        if let Some(span) = file.url_span {
+            self.shell_url_spans = span;
+        }
         // Only where the command line said nothing: a flag is a decision made
         // for this run, and a config file that could override it would make
         // `--shell-backend` untestable on a machine that has one.
@@ -4375,6 +4409,7 @@ impl ViewportState {
             ),
             None => bindings.extend(crate::binding::defaults(&terminal, &menu, &layout)),
         }
+        crate::binding::guarantee_an_exit(&mut bindings);
         self.bindings = bindings;
     }
 
@@ -4560,8 +4595,8 @@ impl ViewportState {
         for lock in self.lock_surfaces.values() {
             with_surfaces_surface_tree(lock.wl_surface(), &release);
         }
-        if let Some(surface) = self.shell_client_surface() {
-            with_surfaces_surface_tree(surface, &release);
+        for surface in self.shell_client_surfaces() {
+            with_surfaces_surface_tree(&surface, &release);
         }
         // After the walks, so the closure's borrows are done with.
         let signalled = signalled.get();
@@ -5002,6 +5037,12 @@ impl ViewportState {
         // the layout rather than to an output, so the layout changing is the
         // only thing that resizes it. And a monitor that was just plugged in
         // is an output the shell has not entered.
+        // A monitor arriving or leaving can change how many pages there
+        // are, not only how big they are: a `--url` session on one screen runs
+        // the page as the desktop, and the same session on two runs the page on
+        // the first and the shipped desktop on the second. This starts and
+        // stops them to match, and configures whatever is left running.
+        self.sync_shell_processes();
         self.configure_client_shell();
         self.announce_shell_outputs();
         // And the wallpaper terminal, which is sized and placed exactly as the
@@ -5094,12 +5135,12 @@ impl ViewportState {
     pub fn notify(&mut self, event: &Event) {
         self.ipc.broadcast(event);
         #[cfg(feature = "wpe")]
-        if let Some(shell) = self.shell.as_ref() {
+        for page in &self.shells {
             // Both directions, because a message that is sent and one that
             // arrives look the same from here and only one of them explains a
             // shell that draws its wallpaper and nothing else.
             tracing::debug!("to shell: {event:?}");
-            if let Err(e) = shell.post(event) {
+            if let Err(e) = page.engine.post(event) {
                 tracing::warn!("could not post to the shell: {e:#}");
             }
         }
@@ -5181,7 +5222,11 @@ impl ViewportState {
         // map, so nothing above reaches it — and a client that paints only when
         // invited and is never invited is a desktop that draws one frame and
         // stops.
-        if let Some(surface) = self.shell_client_surface().cloned() {
+        //
+        // Every page, not only the desktop: a `--url` page on the first monitor
+        // is as much a client waiting to be told to draw as the desktop on the
+        // second.
+        for surface in self.shell_client_surfaces() {
             smithay::desktop::utils::send_frames_surface_tree(
                 &surface,
                 output,
@@ -5564,6 +5609,13 @@ pub struct ClientState {
     /// A connection is not: this one was handed to a process the compositor
     /// spawned, over a socket pair nothing else has an end of.
     pub shell: bool,
+    /// Which of them, when there is more than one.
+    ///
+    /// `--url` on a multi-monitor session runs two pages — the one asked for
+    /// and the desktop — and both are shells by the test above. Their
+    /// connections are what tells them apart, for the same reason the flag
+    /// above is a connection rather than an `app_id`.
+    pub shell_id: Option<u32>,
     /// Set on the one connection made for the wallpaper terminal, and
     /// unforgeable for the same reason `shell` is.
     ///
@@ -5747,13 +5799,6 @@ impl ViewportState {
             anyhow::bail!("the drm nodes have no device paths");
         };
 
-        // Where the shell lives: the config file's "url", then the
-        // environment, then the copy in the source tree.
-        let url = self
-            .shell_url
-            .clone()
-            .or_else(|| std::env::var("VIEWPORT_SHELL_URL").ok())
-            .unwrap_or_else(|| shipped_asset("shell/index.html"));
         let console = std::env::var("VIEWPORT_LOG")
             .map(|level| level.contains("debug") || level.contains("trace"))
             .unwrap_or(false);
@@ -5764,13 +5809,55 @@ impl ViewportState {
             "the shell needs an output to size itself against"
         );
 
-        tracing::info!("starting the shell at {url}, {}x{}", size.0, size.1);
-        let shell =
-            crate::shell::Shell::start(&card_path, &render_path, &formats, size, &url, console)?;
-        if let Some(ping) = self.shell_ping.clone() {
-            shell.wake_with(ping);
+        // Which pages, where, and which of them runs the desktop. The same
+        // decision the out-of-process backend makes, from the same function:
+        // `--url` on a session with more than one monitor is that page on the
+        // first screen and the shipped shell on the rest. See
+        // `shell_client::plan_shells`.
+        let planned = self.plan_shells();
+        let mut started = Vec::with_capacity(planned.len());
+        for plan in planned {
+            let size = (
+                plan.region.size.w.max(0) as u32,
+                plan.region.size.h.max(0) as u32,
+            );
+            if size.0 == 0 || size.1 == 0 {
+                tracing::warn!("not starting {}: it was given no room", plan.url);
+                continue;
+            }
+            tracing::info!(
+                "starting the shell at {}, {}x{}{}",
+                plan.url,
+                size.0,
+                size.1,
+                if plan.desktop { "" } else { " (page only)" }
+            );
+            let engine = crate::shell::Shell::start(
+                &card_path,
+                &render_path,
+                &formats,
+                size,
+                &plan.url,
+                console,
+            )?;
+            if let Some(ping) = self.shell_ping.clone() {
+                engine.wake_with(ping);
+            }
+            started.push(crate::shell::Page {
+                engine,
+                url: plan.url,
+                region: plan.region,
+                desktop: plan.desktop,
+                size: Some(size),
+                owned: None,
+                damage: Default::default(),
+                element_id: smithay::backend::renderer::element::Id::new(),
+                restarts: 0,
+                restart_window: None,
+                announced: false,
+            });
         }
-        self.shell = Some(shell);
+        self.shells = started;
         Ok(())
     }
 }
@@ -5845,24 +5932,36 @@ impl ViewportState {
     /// pixels are on screen — and it means the engine may run one frame ahead
     /// of the display.
     pub fn import_shell_frame(&mut self) {
+        // By index, because the copy below hands the renderer back out of
+        // `self` and then reaches into it again: a borrow of one page held
+        // across that is a borrow of the whole compositor.
+        for at in 0..self.shells.len() {
+            self.import_page_frame(at);
+        }
+    }
+
+    /// The same, for one page.
+    fn import_page_frame(&mut self, page: usize) {
         use smithay::backend::allocator::Buffer as _;
         use smithay::backend::renderer::ImportDma as _;
 
-        if let Some(pending) = self.shell.as_ref().and_then(|shell| shell.take_frame()) {
+        if let Some(pending) = self.shells[page].engine.take_frame() {
             let size: smithay::utils::Size<i32, smithay::utils::Physical> = (
                 pending.buffer.width() as i32,
                 pending.buffer.height() as i32,
             )
                 .into();
-            let first = self.shell_owned.is_none();
+            let first = self.shells[page].owned.is_none();
 
             // The whole buffer, because WebKit's per-frame damage rectangles
             // are not carried across the shim. Redrawing more than changed
             // costs a composite; reporting none at all stops the output.
-            self.shell_damage.add([smithay::utils::Rectangle::from_size(
-                size.to_logical(1)
-                    .to_buffer(1, smithay::utils::Transform::Normal),
-            )]);
+            self.shells[page]
+                .damage
+                .add([smithay::utils::Rectangle::from_size(
+                    size.to_logical(1)
+                        .to_buffer(1, smithay::utils::Transform::Normal),
+                )]);
 
             // Allocated before the old one is given up, not after.
             //
@@ -5872,7 +5971,7 @@ impl ViewportState {
             // render list entirely, which is a grey half of a desktop that
             // comes back only if WebKit paints again. Holding a stale frame is
             // the better failure: it is wrong by one layout, not absent.
-            let stale = match self.shell_owned.as_ref() {
+            let stale = match self.shells[page].owned.as_ref() {
                 Some((_, at)) => *at != size,
                 // First frame.
                 None => true,
@@ -5888,7 +5987,7 @@ impl ViewportState {
                     .as_mut()
                     .map(|allocator| crate::dump::owned_image(allocator, size, &modifiers))
                 {
-                    Some(Ok(buffer)) => self.shell_owned = Some((buffer, size)),
+                    Some(Ok(buffer)) => self.shells[page].owned = Some((buffer, size)),
                     Some(Err(e)) => tracing::error!(
                         "could not allocate a {}x{} image for the shell's frame: {e:#}",
                         size.w,
@@ -5913,9 +6012,13 @@ impl ViewportState {
                             // never painted, or it painted and the frame was
                             // not drawn.
                             if first {
-                                tracing::info!("first shell frame imported, {}x{}", size.w, size.h);
+                                tracing::info!(
+                                    "shell {page}: first frame imported, {}x{}",
+                                    size.w,
+                                    size.h
+                                );
                             }
-                            match self.shell_owned.take() {
+                            match self.shells[page].owned.take() {
                                 // Only into a buffer the frame actually fits.
                                 // The allocation above failed if this does not
                                 // match, and copying anyway would paint a new
@@ -5934,13 +6037,13 @@ impl ViewportState {
                                     }
                                     // Whichever renderer draws this output
                                     // imports it itself — see `render::build`.
-                                    self.shell_owned = Some((buffer, at));
+                                    self.shells[page].owned = Some((buffer, at));
                                 }
                                 Some(kept) => {
                                     tracing::warn!(
                                         "keeping the shell's last frame; this one has nowhere to go"
                                     );
-                                    self.shell_owned = Some(kept);
+                                    self.shells[page].owned = Some(kept);
                                 }
                                 None => {
                                     tracing::error!("no image to copy the shell's frame into")
@@ -5976,7 +6079,8 @@ impl ViewportState {
             }
             self.shell_renderer = renderer;
 
-            if let Some(shell) = self.shell.as_ref() {
+            {
+                let shell = &self.shells[page].engine;
                 // Both, immediately, and in this order.
                 //
                 // Acknowledging advances WebKit's frame clock; releasing puts
@@ -5992,16 +6096,15 @@ impl ViewportState {
                 // so WebKit would paint into the picture on screen.
                 shell.frame_done(&pending.token);
                 shell.frame_release(pending.token);
-                self.shell_frames += 1;
-                tracing::debug!("shell frame {} released", self.shell_frames);
             }
+            self.shell_frames += 1;
+            tracing::debug!("shell frame {} released", self.shell_frames);
         }
 
-        if let Some(shell) = self.shell.as_ref() {
-            // Frames the mailbox threw away before anything drew them.
-            for token in shell.take_stale() {
-                shell.frame_release(token);
-            }
+        let shell = &self.shells[page].engine;
+        // Frames the mailbox threw away before anything drew them.
+        for token in shell.take_stale() {
+            shell.frame_release(token);
         }
     }
 
@@ -6018,41 +6121,50 @@ impl ViewportState {
     /// keep, and a transient crash then costs a second of a stale bar rather
     /// than a black screen. It is cleared only when recovery is given up on,
     /// where a frozen picture would be a lie about the state of the desktop.
-    pub fn restart_shell(&mut self, reason: viewport_web::webkit::Termination) {
+    pub fn restart_shell(&mut self, page: usize, reason: viewport_web::webkit::Termination) {
         use crate::shell::Recovery;
 
+        if self.shells.get(page).is_none() {
+            return;
+        }
         if !reason.is_recoverable() {
-            tracing::warn!("not restarting the shell: {reason}");
+            tracing::warn!("not restarting shell {page}: {reason}");
             return;
         }
 
-        let attempt = crate::shell::budget(
-            &mut self.shell_restarts,
-            &mut self.shell_restart_window,
-            std::time::Instant::now(),
-        );
+        // Per page, not per session. One page crashing says nothing about the
+        // health of the other, and a shared budget would let a site that
+        // reloads badly use up the desktop's attempts.
+        let attempt = {
+            let shell = &mut self.shells[page];
+            crate::shell::budget(
+                &mut shell.restarts,
+                &mut shell.restart_window,
+                std::time::Instant::now(),
+            )
+        };
 
         let attempt = match attempt {
             Recovery::Restart(attempt) => attempt,
             Recovery::GiveUp(count) => {
-                // The desktop is gone either way; what stopping preserves is a
+                // The page is gone either way; what stopping preserves is a
                 // machine that can still be logged into and read the log.
                 tracing::error!(
-                    "the shell has died {count} times in {:?}; giving up",
+                    "shell {page} has died {count} times in {:?}; giving up",
                     crate::shell::RESTART_WINDOW
                 );
-                // Dropping the copy takes the shell out of the element list,
+                // Dropping the copy takes the page out of the element list,
                 // and the damage tracker repaints what it covered because the
-                // element it knew is gone. Nothing has to be added to
-                // `shell_damage`: that bag is only read while there is a
-                // buffer to describe.
-                self.shell_owned = None;
+                // element it knew is gone. Nothing has to be added to its
+                // damage bag: that is only read while there is a buffer to
+                // describe.
+                self.shells[page].owned = None;
                 self.needs_render = true;
                 return;
             }
         };
 
-        tracing::warn!("restarting the shell after {reason} (attempt {attempt})");
+        tracing::warn!("restarting shell {page} after {reason} (attempt {attempt})");
 
         // The new process is a fresh page: it has painted nothing, said
         // nothing, and knows nothing about the layout. Everything derived from
@@ -6060,19 +6172,15 @@ impl ViewportState {
         // talking and painting while the screen shows neither.
         self.shell_frames = 0;
         self.shell_announced = false;
-        self.shell_size = None;
+        self.shells[page].announced = false;
+        self.shells[page].size = None;
 
-        let restarted = self.shell.as_ref().map(|shell| shell.restart());
-        match restarted {
-            Some(Ok(())) => {
-                // Unconditionally, because `shell_size` was just cleared:
-                // WebKit paints nothing into a view of no size, and a restarted
-                // process that is never told its size loads the page and then
-                // sits there.
-                self.resize_shell();
-            }
-            Some(Err(e)) => tracing::error!("could not restart the shell: {e:#}"),
-            None => {}
+        match self.shells[page].engine.restart() {
+            // Unconditionally, because the size was just cleared: WebKit paints
+            // nothing into a view of no size, and a restarted process that is
+            // never told its size loads the page and then sits there.
+            Ok(()) => self.resize_shell(),
+            Err(e) => tracing::error!("could not restart shell {page}: {e:#}"),
         }
     }
 
@@ -6081,42 +6189,93 @@ impl ViewportState {
     /// WebKit paints nothing into a view with no size, so without this the
     /// page loads, runs, talks to the compositor — and never produces a frame.
     pub fn resize_shell(&mut self) {
-        let size = self.layout_size();
-        if size.0 == 0 || size.1 == 0 {
+        let (width, height) = self.layout_size();
+        if width == 0 || height == 0 {
             return;
         }
-        // Only on a change: this is called from notify_output_layout, which
-        // runs for anything that touches the layout — including a layer
-        // surface arriving — and telling WebKit to resize to the size it
-        // already has costs a full repaint.
-        if self.shell_size == Some(size) {
+        // What the screens now imply, which for a `--url` session can be a
+        // different *number* of pages as well as different sizes — see
+        // `sync_shells`.
+        self.sync_shells();
+
+        for at in 0..self.shells.len() {
+            let size = {
+                let region = self.shells[at].region;
+                (region.size.w.max(0) as u32, region.size.h.max(0) as u32)
+            };
+            if size.0 == 0 || size.1 == 0 {
+                continue;
+            }
+            // Only on a change: this is called from notify_output_layout, which
+            // runs for anything that touches the layout — including a layer
+            // surface arriving — and telling WebKit to resize to the size it
+            // already has costs a full repaint.
+            if self.shells[at].size == Some(size) {
+                continue;
+            }
+            self.shells[at].size = Some(size);
+            tracing::info!(
+                "shell {at} is {}x{} now, for {}",
+                size.0,
+                size.1,
+                self.space
+                    .outputs()
+                    .map(|output| {
+                        let geometry = self.space.output_geometry(output).unwrap_or_default();
+                        format!(
+                            "{} {}x{}{:+}{:+} {:?}",
+                            output.name(),
+                            geometry.size.w,
+                            geometry.size.h,
+                            geometry.loc.x,
+                            geometry.loc.y,
+                            output.current_transform()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            self.shells[at].engine.resize(size.0, size.1);
+        }
+    }
+
+    /// Start or stop pages so that what is running matches what the screens
+    /// call for, and move the ones that stay.
+    ///
+    /// The out-of-process twin of this is `sync_shell_processes`, and the rule
+    /// is the same: reconcile by the document each page is showing rather than
+    /// rebuilding, so plugging a monitor into a `--url` session resizes the
+    /// page that was already up instead of reloading it.
+    ///
+    /// A page that has to be *started* here cannot be: `Shell::start` needs the
+    /// DRM nodes and the importable format list, which live in the backend and
+    /// not in this state. So a plan that calls for one is reported and the
+    /// pages that exist are placed as well as they can be — the desktop keeps
+    /// the whole layout, which is what it had before the monitor arrived.
+    fn sync_shells(&mut self) {
+        if self.shells.is_empty() {
             return;
         }
-        self.shell_size = Some(size);
-        tracing::info!(
-            "the shell is {}x{} now, for {}",
-            size.0,
-            size.1,
-            self.space
-                .outputs()
-                .map(|output| {
-                    let geometry = self.space.output_geometry(output).unwrap_or_default();
-                    format!(
-                        "{} {}x{}{:+}{:+} {:?}",
-                        output.name(),
-                        geometry.size.w,
-                        geometry.size.h,
-                        geometry.loc.x,
-                        geometry.loc.y,
-                        output.current_transform()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        if let Some(shell) = self.shell.as_ref() {
-            tracing::info!("shell size {}x{}", size.0, size.1);
-            shell.resize(size.0, size.1);
+        let planned = self.plan_shells();
+        if planned.len() != self.shells.len() {
+            tracing::warn!(
+                "the screens now call for {} page(s) and {} are running; the in-process engine \
+                 cannot start one after the session has begun, so the layout is unchanged",
+                planned.len(),
+                self.shells.len()
+            );
+            return;
+        }
+        for (page, plan) in self.shells.iter_mut().zip(planned) {
+            if page.url != plan.url {
+                // The plan is positional and both entries are running, so this
+                // is the page and the desktop having swapped places, which
+                // nothing produces today.
+                tracing::warn!("shell plan changed under a running page; leaving it where it is");
+                continue;
+            }
+            page.region = plan.region;
+            page.desktop = plan.desktop;
         }
     }
 }

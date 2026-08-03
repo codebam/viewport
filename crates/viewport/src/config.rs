@@ -80,6 +80,9 @@ pub enum BackgroundTerminal {
 #[serde(default)]
 pub struct File {
     pub url: Option<String>,
+    /// Whether `url` spans every monitor rather than taking the first and
+    /// leaving the rest to the shipped desktop. See `shell_client::plan_shells`.
+    pub url_span: Option<bool>,
     /// Draw a terminal as the wallpaper: `true` for the configured
     /// `terminal`, or a command line of its own.
     ///

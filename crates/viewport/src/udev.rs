@@ -2155,9 +2155,9 @@ impl ViewportState {
         // frame had been presented exactly never, and fell back to its own
         // 60Hz clock — which measured as Blink painting a fifth as often as
         // WebKit and read as the engine being slow. It was this.
-        if let Some(surface) = self.shell_client_surface() {
+        for surface in self.shell_client_surfaces() {
             smithay::desktop::utils::take_presentation_feedback_surface_tree(
-                surface,
+                &surface,
                 &mut feedback,
                 // The output outright, not `surface_primary_scanout_output`.
                 //
@@ -2282,9 +2282,9 @@ impl ViewportState {
         // The shell, for the same reason its feedback is taken above: a
         // surface with no primary scanout output recorded is dropped from the
         // feedback entirely, so this has to happen or that does nothing.
-        if let Some(shell) = self.shell_client_surface() {
+        for shell in self.shell_client_surfaces() {
             smithay::wayland::compositor::with_surface_tree_downward(
-                shell,
+                &shell,
                 (),
                 |_, _, _| smithay::wayland::compositor::TraversalAction::DoChildren(()),
                 |surface, surface_states, _| {
@@ -3001,6 +3001,21 @@ impl ViewportState {
         for lock in self.lock_surfaces.values() {
             smithay::desktop::utils::send_frames_surface_tree(
                 lock.wl_surface(),
+                output,
+                start,
+                throttle,
+                |_, _| Some(output.clone()),
+            );
+        }
+        // And the out-of-process shell, for exactly the same reason: it is not
+        // in the space and not a layer surface. The frame clock also invites
+        // it, but only while nothing is flipping — `frame_tick` stands down as
+        // soon as a vblank has arrived recently — so on a running screen this
+        // is the only invitation it ever gets. Without it the shell paints its
+        // first frame and stops, and the desktop is a photograph.
+        for surface in self.shell_client_surfaces() {
+            smithay::desktop::utils::send_frames_surface_tree(
+                &surface,
                 output,
                 start,
                 throttle,

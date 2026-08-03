@@ -126,7 +126,17 @@ pub struct Frame {
     /// The windows on this output, front to back.
     pub windows: Vec<WindowFrame>,
     pub layers_below: Vec<(LayerSurface, Point<i32, Physical>)>,
+    /// The page that runs the desktop. Windows are holes in it, and
+    /// `overlay` is cropped out of it.
     pub shell: Option<Shell>,
+    /// Other pages, drawn at the same depth as the desktop and each at its own
+    /// corner.
+    ///
+    /// `--url` on a session with more than one monitor is the only thing that
+    /// produces one: the page asked for takes the first screen while the
+    /// desktop takes the rest. They do not overlap, so their order between
+    /// themselves does not matter.
+    pub pages: Vec<Shell>,
     /// A terminal drawn as the wallpaper, and where this output starts in it.
     ///
     /// Under the shell rather than over it, which is the only place it can go:
@@ -417,6 +427,15 @@ where
     // The shell itself, under everything. Every window is a hole in it.
     if let Some(shell) = frame.shell.as_ref() {
         if let Some(element) = shell_element(renderer, shell, shell.id.clone()) {
+            elements.push(OutputElement::from(element));
+        }
+    }
+    // And any page beside it — a `--url` page on the first monitor while the
+    // desktop has the rest. At the same depth, because they cover different
+    // screens; a window over one of them is still a hole in the desktop, which
+    // is drawn above this and covers none of the page's screen.
+    for page in &frame.pages {
+        if let Some(element) = shell_element(renderer, page, page.id.clone()) {
             elements.push(OutputElement::from(element));
         }
     }
