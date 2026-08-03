@@ -1322,7 +1322,22 @@ fn open_device(
             Gpu::Gles(Box::new(gles_renderer(&gbm)?))
         }
         _ => {
-            let vulkan = VulkanDevice::for_node(&instance, render)
+            // `for_node_exactly`, not `for_node`. The loose version falls back
+            // to whatever Vulkan device exists when none of them owns this
+            // display's node, and in a virtual machine that is lavapipe — which
+            // opens, builds a renderer, reports success, and then cannot
+            // allocate anything the display controller will scan out:
+            //
+            //   Virtual-1: could not initialise: llvmpipe does not support
+            //   DrmFourcc(AR24) with modifier 0xff
+            //
+            // Every output fails that way, the compositor comes up with no
+            // outputs, nothing is ever committed, and the screen stays black
+            // while the log says the renderer was created. GLES on this GPU's
+            // own GBM device draws that same display without complaint, so a
+            // Vulkan device that is not this GPU is worth less than OpenGL that
+            // is.
+            let vulkan = VulkanDevice::for_node_exactly(&instance, render)
                 .context("opening a vulkan device on the primary GPU")
                 .and_then(|device| {
                     VulkanRenderer::with_allocator(&device, allocator.clone())
@@ -1330,7 +1345,21 @@ fn open_device(
                 });
             match vulkan {
                 Ok(renderer) => Gpu::Vulkan(renderer),
-                Err(e) if asked == "vulkan" => return Err(e),
+                // Asked for Vulkan by name: any Vulkan device, including a
+                // software one on another node, because that is what was asked
+                // for and the alternative is refusing to start.
+                Err(e) if asked == "vulkan" => {
+                    tracing::warn!(
+                        "VIEWPORT_RENDERER=vulkan: no Vulkan on this GPU ({e:#}); \
+                         taking whatever device there is"
+                    );
+                    let device = VulkanDevice::for_node(&instance, render)
+                        .context("opening any vulkan device")?;
+                    Gpu::Vulkan(
+                        VulkanRenderer::with_allocator(&device, allocator.clone())
+                            .map_err(|e| anyhow!("creating the vulkan renderer: {e}"))?,
+                    )
+                }
                 Err(e) => {
                     // A virtual machine is the usual reason: software Vulkan
                     // has no VK_EXT_image_drm_format_modifier and Venus aborts
