@@ -8,6 +8,7 @@
 
 mod appearance;
 mod apply;
+mod background;
 mod binding;
 mod capture;
 // Not gated on the web engine: an output composite is worth capturing
@@ -191,6 +192,31 @@ fn run() -> Result<()> {
         tracing::info!("shell url from the command line: {resolved}");
         state.shell_url = Some(resolved);
     }
+
+    // A terminal for a wallpaper, from the command line.
+    //
+    // Bare `--background-terminal` runs the configured terminal;
+    // `--background-terminal='foot -e btop'` runs that instead, which is the
+    // form worth typing — the wallpaper is never given input, so a login shell
+    // in it sits at a prompt forever and a program in it is the point.
+    //
+    // After the config, so the flag wins, and both forms are handled here
+    // because `flag` reads the next argument as a value and a bare switch has
+    // none: `--background-terminal --drm` would otherwise run `--drm`.
+    if let Some(command) = flag(&args, "--background-terminal")
+        .filter(|value| !value.starts_with("--"))
+        .filter(|value| !value.trim().is_empty())
+    {
+        tracing::info!("background terminal from the command line: {command}");
+        state.background_command = Some(command.to_owned());
+        state.config.background_terminal = true;
+    } else if args.iter().any(|arg| arg == "--background-terminal") {
+        let terminal = state.terminal.clone();
+        tracing::info!("background terminal from the command line: {terminal}");
+        state.background_command = Some(terminal);
+        state.config.background_terminal = true;
+    }
+
     // Which backend, when nobody said.
     //
     // A compositor started from a TTY has no display to nest in, and one
@@ -431,6 +457,8 @@ fn run() -> Result<()> {
                 // handlers, and a desktop that has been gone for at most a
                 // second is not a thing anyone can see.
                 state.check_client_shell();
+                // And the wallpaper terminal, on the same terms.
+                state.check_background_terminal();
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
                     std::time::Duration::from_secs(1),
                 )
@@ -645,6 +673,7 @@ const OPTIONS: &[&str] = &[
     "--exit-after",
     "--url",
     "--shell-backend",
+    "--background-terminal",
 ];
 
 /// Say so when an option is not one of ours.

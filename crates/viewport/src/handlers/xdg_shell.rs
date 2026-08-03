@@ -60,6 +60,14 @@ impl XdgShellHandler for ViewportState {
             self.adopt_shell_toplevel(surface);
             return;
         }
+        // The wallpaper terminal, for the same reasons and one more: a window
+        // can be focused, and this one must never be. Registering it as a view
+        // is the only thing that would make a keystroke reachable — see
+        // `crate::background`.
+        if self.is_background_client(surface.wl_surface()) {
+            self.adopt_background_toplevel(surface);
+            return;
+        }
         let window = Window::new_wayland_window(surface);
         let id = self.views.insert(window);
         tracing::debug!("new toplevel, view {id}");
@@ -108,6 +116,9 @@ impl XdgShellHandler for ViewportState {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if self.shell_toplevel_destroyed(surface.wl_surface()) {
+            return;
+        }
+        if self.background_toplevel_destroyed(surface.wl_surface()) {
             return;
         }
         let Some(view) = self.views.find_by_surface(surface.wl_surface()) else {

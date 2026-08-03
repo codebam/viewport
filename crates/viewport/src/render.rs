@@ -127,6 +127,18 @@ pub struct Frame {
     pub windows: Vec<WindowFrame>,
     pub layers_below: Vec<(LayerSurface, Point<i32, Physical>)>,
     pub shell: Option<Shell>,
+    /// A terminal drawn as the wallpaper, and where this output starts in it.
+    ///
+    /// Under the shell rather than over it, which is the only place it can go:
+    /// the shell's buffer carries the bar, the taskbar and every window frame,
+    /// so anything drawn on top of it hides the desktop. It shows through
+    /// because the page stops painting its own background once the compositor
+    /// tells it there is something behind — see `Config::background_terminal`.
+    ///
+    /// One surface across the whole layout, like the shell, which is why this
+    /// carries a location: an output at x=2560 shows the part of the terminal
+    /// starting there.
+    pub background: Option<(WlSurface, Point<i32, Physical>)>,
     /// The part of the shell to draw *above* the windows, in this output's
     /// physical coordinates, and nothing if there is none.
     ///
@@ -407,6 +419,27 @@ where
         if let Some(element) = shell_element(renderer, shell, shell.id.clone()) {
             elements.push(OutputElement::from(element));
         }
+    }
+
+    // The wallpaper terminal, under even that.
+    //
+    // Last in the list is furthest back, so this is the only thing on the
+    // screen the shell is in front of — and it is drawn at all only because
+    // the shell has been told to leave its own background transparent.
+    if let Some((surface, location)) = frame.background.as_ref() {
+        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+        elements.extend(
+            render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+                renderer,
+                surface,
+                *location,
+                scale,
+                1.0,
+                Kind::Unspecified,
+            )
+            .into_iter()
+            .map(OutputElement::from),
+        );
     }
 
     elements

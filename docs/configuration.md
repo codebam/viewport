@@ -96,6 +96,75 @@ is the shell's.
 | `Mod4+Shift+d` | toggle dark mode |
 | `Mod4+Shift+q` / `+e` / `+c` | close / exit / reload the shell |
 
+## A terminal as the wallpaper
+
+`background_terminal` runs a terminal emulator and draws it behind everything —
+under the windows, under the bar, in place of the desktop background.
+
+```jsonc
+{
+  "background_terminal": true,              // the "terminal" configured above
+  "background_terminal": "foot -e btop",    // or something specific
+}
+```
+
+or `--background-terminal` on the command line, bare for the configured
+terminal and `--background-terminal='foot -e btop'` for a command of its own.
+Absent or `false` is off, which is the default.
+
+**It is never given keyboard or pointer input, and that is the point.** The
+terminal is not a window: it is not registered as a view, so `view.focus`
+cannot name it and the shell is never told it exists; it is not in the window
+space, so a click passes over it; and it is not the shell, so the key path that
+delivers to the desktop does not reach it either. There is no setting to turn
+that off.
+
+The reason is that a wallpaper is the one surface on the screen that is always
+present, always unobscured at the edges, and never deliberately focused. A
+terminal there that could be typed into is a shell prompt underneath every
+window, and every way focus can go wrong — a window closing between two
+keystrokes, a race while the next window is focused, a password typed a moment
+after its prompt disappeared — becomes a way for input to arrive at a command
+line. Read-only costs nothing here, because what this is for is `btop`,
+`journalctl -f`, a clock, a log. An interactive shell will run; it will also
+sit at its prompt forever.
+
+What the compositor gains is nothing: it spawns the command with `/bin/sh -c`,
+which is what an `exec` keybinding already does, and the emulator owns its pty
+exactly as it does in a window. No IPC verb runs a program, and none was added
+for this.
+
+Two other consequences worth knowing:
+
+- **It is in screenshots and screen shares.** The wallpaper is part of every
+  frame, so whatever is on it is part of anything that captures the screen.
+- **The shell stops painting its own background.** The page is the bottom layer
+  of the desktop and its gradient *is* the wallpaper, so with this on the
+  compositor tells the shell to leave it transparent and the terminal shows
+  through. A custom shell that paints an opaque background of its own will
+  cover it; honour `background_terminal` in the `config` event.
+- **It needs `wpe` or `webkitgtk`.** Those two composite the page over nothing.
+  Chromium does not, in either of the two ways this ships it: with CEF's
+  `background_color` set to transparent on the browser settings, the view *and*
+  the window, the composited output is still Chromium's own `#1f1f1f` across
+  the whole screen — windowed Chromium has no translucent-surface path on
+  Wayland, and its transparent-painting one is windowless rendering, which is a
+  different backend to this. On `cef` or `chromium` the terminal is therefore
+  not started at all, and the log says so: an invisible terminal under an
+  opaque desktop is a process nobody can see spending a core. Since `cef` is
+  the default package, using this means `--shell-backend=webkitgtk`.
+
+It is restarted if it exits, up to five times a minute, and then left down with
+a line in the log.
+
+**A wallpaper program wins.** swaybg, hyprpaper, wbg and the rest are
+layer-shell clients on the background layer, which is drawn over everything the
+terminal puts on the screen — so when one appears the terminal is asked to
+close, and is killed five seconds later if it ignores that. When the last one
+goes, a new terminal is started. Running both is otherwise a program painting
+frames nobody can see, which on a laptop is a core's worth of battery spent on
+a picture that is covered up.
+
 ## Dark mode
 
 Styling the shell cannot make client applications dark. Firefox, GTK and Qt

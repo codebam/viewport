@@ -122,7 +122,19 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
     // nothing behind it that should ever show through. Left at the default,
     // the page's own background is composited over WebKit's white, and a shell
     // that has not finished loading flashes white across every monitor.
-    view.set_background_color(&gtk::gdk::RGBA::BLACK);
+    //
+    // Unless the compositor says there is something back there — a terminal
+    // drawn as the wallpaper — in which case this colour is precisely what
+    // would cover it, and the page composites over nothing instead. The white
+    // flash is traded for the desktop being briefly see-through while the page
+    // loads, which is the right way round: one is a bug and the other is what
+    // was asked for.
+    let behind = std::env::var_os("VIEWPORT_SHELL_TRANSPARENT").is_some();
+    view.set_background_color(if behind {
+        &gtk::gdk::RGBA::TRANSPARENT
+    } else {
+        &gtk::gdk::RGBA::BLACK
+    });
 
     if options.inspector {
         if let Some(settings) = webkit6::prelude::WebViewExt::settings(&view) {
@@ -188,6 +200,26 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
         .decorated(false)
         .child(&view)
         .build();
+
+    // The window under the page, which is opaque by default and is *not* the
+    // same thing as the web view's background colour.
+    //
+    // Setting the view's background to transparent only stops WebKit painting
+    // one; what shows through then is GTK's own window background — Adwaita's
+    // #353535 — and that covered the wallpaper terminal just as thoroughly as
+    // black would have. Both have to go, and the window's is CSS.
+    if behind {
+        let css = gtk::CssProvider::new();
+        // `load_from_data`, not `load_from_string`: the latter needs the v4_12
+        // feature on the gtk4 crate, and this backend builds against whatever
+        // GTK the system has.
+        css.load_from_data("window, window > * { background: transparent; }");
+        gtk::style_context_add_provider_for_display(
+            &gtk::prelude::WidgetExt::display(&window),
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 
     bridge(&view, &manager, options, app)?;
 

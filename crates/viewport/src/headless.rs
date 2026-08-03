@@ -193,6 +193,10 @@ pub fn init(
     // also what makes the out-of-process backend testable without a screen:
     // the shell is a client, and a headless compositor is still a compositor.
     state.start_shell_process();
+    // And the wallpaper terminal, if one was asked for. Beside the shell
+    // because it needs the same thing the shell does: outputs, so it can be
+    // told how big the desktop is.
+    state.start_background_process();
     Ok(())
 }
 

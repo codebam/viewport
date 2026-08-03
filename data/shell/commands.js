@@ -240,6 +240,12 @@ window.addEventListener('viewport', (event) => {
         message.logo === false);
       document.documentElement.classList.toggle('no-tutorial',
         message.tutorial === false);
+      /* Something is being drawn behind the page — a terminal, as the
+         wallpaper — so the gradient in `body` has to go, or it is painted over
+         the thing it is meant to reveal. Absent means nothing is back there,
+         which is every desktop that has not asked for one. */
+      document.documentElement.classList.toggle('behind',
+        message.background_terminal === true);
       /* Absent means on, matching the compositor's own default: only an
          explicit false keeps focus on the monitor it is on. */
       focusCrossesOutputs = message.focus_crosses_outputs !== false;

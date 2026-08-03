@@ -254,10 +254,26 @@ wrap_browser_process_handler! {
 
     impl BrowserProcessHandler {
         fn on_context_initialized(&self) {
+            // Whether anything is drawn behind the page.
+            //
+            // Chromium composites the document over a colour of its own, and
+            // the default is opaque white — so with a terminal drawn as the
+            // wallpaper, that colour is exactly what covers it. Zero is CEF's
+            // "fully transparent", which is what turns transparent painting on
+            // (`cef_browser_settings_t::background_color`).
+            //
+            // The window gets the same treatment in `on_window_created`: the
+            // browser view painting nothing only reveals whatever the Views
+            // window paints, which is opaque as well.
+            let behind = std::env::var_os("VIEWPORT_SHELL_TRANSPARENT").is_some();
+            let settings = BrowserSettings {
+                background_color: if behind { 0 } else { BrowserSettings::default().background_color },
+                ..Default::default()
+            };
             let Some(view) = browser_view_create(
                 None,
                 Some(&CefString::from(self.url.as_str())),
-                Some(&BrowserSettings::default()),
+                Some(&settings),
                 None,
                 None,
                 None,
@@ -292,6 +308,17 @@ wrap_window_delegate! {
             // conversion is a cast between two views of the same refcounted
             // object, not a move.
             let mut child = View::from(&self.view);
+            // Transparent all the way down, when something is behind the page.
+            //
+            // Three things paint here — the document, the browser view and the
+            // Views window — and any one of them left opaque is a wallpaper
+            // nobody can see. The document is the shell's own CSS, the browser
+            // view is `BrowserSettings::background_color` above, and this is
+            // the third.
+            if std::env::var_os("VIEWPORT_SHELL_TRANSPARENT").is_some() {
+                child.set_background_color(0);
+                window.set_background_color(0);
+            }
             window.add_child_view(Some(&mut child));
             window.show();
             // The desktop is the whole layout, and CEF's Views window comes up

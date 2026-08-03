@@ -199,6 +199,18 @@ pub struct ViewportState {
     /// out of process. Never set at the same time as `shell`: one desktop, one
     /// engine drawing it.
     pub shell_client: Option<crate::shell_client::ClientShell>,
+    /// The terminal drawn as the wallpaper, when one was asked for.
+    ///
+    /// A client like any other, drawn under the shell and given no input at
+    /// all — `crate::background` says why.
+    pub background_terminal: Option<crate::background::BackgroundTerminal>,
+    /// The command line it is started with, and the switch that turns the
+    /// whole thing on: `None` is a desktop with an ordinary wallpaper.
+    pub background_command: Option<String>,
+    /// The terminal Mod4+Return opens, resolved from the config file and the
+    /// environment. Kept because `--background-terminal` with no command means
+    /// "that one", and the keymap is built from it and then thrown away.
+    pub terminal: String,
     /// Whether the out-of-process shell has already been told it is painting
     /// into shared memory. Once per shell, not once per frame.
     pub shell_shm_warned: bool,
@@ -896,6 +908,9 @@ impl ViewportState {
                 // The tree of splits the shell has always built; a dynamic
                 // mode is opt-in.
                 tiling_mode: None,
+                // No wallpaper but the shell's own, until a config file or a
+                // flag says otherwise.
+                background_terminal: false,
             },
             shell_url: None,
             output_config: std::collections::HashMap::new(),
@@ -938,6 +953,9 @@ impl ViewportState {
             shell_backend: crate::shell_backend::ShellBackend::default_for_build(),
             shell_backend_from_flag: false,
             shell_client: None,
+            background_terminal: None,
+            background_command: None,
+            terminal: std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
             shell_shm_warned: false,
             #[cfg(feature = "wpe")]
             shell_size: None,
@@ -3895,6 +3913,18 @@ impl ViewportState {
                 id: self.shell_element_id.clone(),
             });
 
+        // The wallpaper terminal, placed the same way and for the same reason:
+        // one surface across the whole layout, so an output at x=2560 shows
+        // the part of it that starts there.
+        let background = self.background_surface().cloned().map(|surface| {
+            let location = (
+                (-output_geometry.loc.x as f64 * scale).round() as i32,
+                (-output_geometry.loc.y as f64 * scale).round() as i32,
+            )
+                .into();
+            (surface, location)
+        });
+
         // The part of the shell that goes above the windows, in this output's
         // own physical coordinates.
         let visible = smithay::utils::Rectangle::<i32, Logical>::from_size(
@@ -3926,6 +3956,7 @@ impl ViewportState {
             windows,
             layers_below,
             shell,
+            background,
             overlay,
             cursor,
             scale,
@@ -4307,6 +4338,23 @@ impl ViewportState {
             .or_else(|| std::env::var("VIEWPORT_MENU").ok())
             .unwrap_or_else(|| "wmenu-run".to_owned());
         let layout = self.config.layout.clone();
+
+        // Which terminal the wallpaper is, resolved against the same
+        // `terminal` the keymap uses so `true` means the one Mod4+Return
+        // already opens.
+        //
+        // Only when the file says something: a reload that leaves the key out
+        // must not take down a wallpaper a flag asked for, which is the rule
+        // every other key here follows. Nothing is started or stopped from
+        // here either — `start_background_process` does that once the outputs
+        // exist, and a config reload cannot spawn a process behind the
+        // desktop.
+        self.terminal = terminal.clone();
+        if file.background_terminal.is_some() {
+            self.background_command =
+                crate::background::resolve(file.background_terminal.as_ref(), &terminal);
+            self.config.background_terminal = self.background_command.is_some();
+        }
 
         let mut bindings = Vec::new();
         // Overrides go in front: bindings are matched first-wins, so a chord
@@ -4956,6 +5004,11 @@ impl ViewportState {
         // is an output the shell has not entered.
         self.configure_client_shell();
         self.announce_shell_outputs();
+        // And the wallpaper terminal, which is sized and placed exactly as the
+        // shell is. A terminal is a grid of cells, so a monitor plugged in
+        // changes how many columns it has and it has to be told.
+        self.configure_background();
+        self.announce_background_outputs();
 
         let event = Event::OutputLayout { outputs };
         self.notify(&event);
@@ -5511,6 +5564,14 @@ pub struct ClientState {
     /// A connection is not: this one was handed to a process the compositor
     /// spawned, over a socket pair nothing else has an end of.
     pub shell: bool,
+    /// Set on the one connection made for the wallpaper terminal, and
+    /// unforgeable for the same reason `shell` is.
+    ///
+    /// What it buys is the opposite of what `shell` buys: it takes capability
+    /// away rather than granting it. A client carrying this is never made a
+    /// view, never enters the `Space` and is never a focus target, so nothing
+    /// typed or clicked can reach it. See `crate::background`.
+    pub background: bool,
 }
 
 impl ClientData for ClientState {

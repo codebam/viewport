@@ -143,6 +143,10 @@ pub fn init(
     // client of this compositor like any other, and nesting changes nothing
     // about that.
     state.start_shell_process();
+    // And the wallpaper terminal, if one was asked for. Beside the shell
+    // because it needs the same thing the shell does: outputs, so it can be
+    // told how big the desktop is.
+    state.start_background_process();
 
     // The shell, nested. It needs DRM nodes to allocate on — the same GPU the
     // host compositor is using, which is what the EGL device names.
@@ -267,7 +271,17 @@ pub fn init(
                                     at.elapsed() >= std::time::Duration::from_secs(2)
                                 })
                                 .unwrap_or(true);
-                            if due && (painted || !frame.windows.is_empty() || frame.locked_blank) {
+                            // A wallpaper terminal counts as something worth
+                            // capturing: on the out-of-process backends there
+                            // is no `shell_frames` to wait for, and a desktop
+                            // with nothing but a wallpaper on it is exactly
+                            // the case someone dumps a frame to look at.
+                            if due
+                                && (painted
+                                    || !frame.windows.is_empty()
+                                    || frame.background.is_some()
+                                    || frame.locked_blank)
+                            {
                                 dumped = Some(std::time::Instant::now());
                                 if let Err(e) = crate::dump::output_frame::<
                                     _,
@@ -358,6 +372,17 @@ pub fn init(
                 for lock in state.lock_surfaces.values() {
                     smithay::desktop::utils::send_frames_surface_tree(
                         lock.wl_surface(),
+                        &output,
+                        at,
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                }
+                // The wallpaper terminal, which is neither of the above and
+                // would otherwise draw once and stop.
+                if let Some(surface) = state.background_surface().cloned() {
+                    smithay::desktop::utils::send_frames_surface_tree(
+                        &surface,
                         &output,
                         at,
                         Some(Duration::ZERO),

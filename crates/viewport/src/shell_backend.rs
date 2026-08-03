@@ -131,6 +131,34 @@ impl ShellBackend {
         }
     }
 
+    /// Whether anything drawn *behind* the shell can be seen through it.
+    ///
+    /// The shell is the bottom layer of the desktop, so a wallpaper terminal
+    /// under it is visible only if the engine will composite the page over
+    /// nothing. Two will:
+    ///
+    ///   * **wpe** paints into a buffer this compositor owns and clears to
+    ///     transparent, which is what `data/shell/shell.css` has always said.
+    ///   * **webkitgtk** takes a transparent `WebView` background and a
+    ///     transparent GTK window, which `viewport-shell-gtk` sets when it is
+    ///     told there is something behind.
+    ///
+    /// Chromium will not, in either of the two ways this ships it. CEF's
+    /// `background_color = 0` is honoured by the *document* and the Views
+    /// window still paints Chromium's own #1f1f1f over it — measured, with
+    /// every one of `BrowserSettings::background_color`, `View`'s and
+    /// `Window`'s set to transparent, and the composited output is that colour
+    /// across the whole screen. Windowed Chromium has no translucent-surface
+    /// path on Wayland; the transparent-painting one is windowless rendering,
+    /// which is a different backend to the one here.
+    ///
+    /// So this is a real capability and not a preference, and the answer
+    /// decides whether the terminal is started at all — an invisible terminal
+    /// under an opaque desktop is a process nobody can see burning a core.
+    pub fn shows_what_is_behind(self) -> bool {
+        matches!(self, Self::Wpe | Self::WebKitGtk)
+    }
+
     /// Whether the shell runs in a process of its own.
     pub fn is_out_of_process(self) -> bool {
         matches!(self, Self::WebKitGtk | Self::Chromium | Self::Cef)
