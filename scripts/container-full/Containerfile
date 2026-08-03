@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The whole workspace, checked in a container, for a machine that does not want
+# to build the web engines.
+#
+# packaging/arch/Containerfile carries what the wpe recipe declares and nothing
+# else, which is enough to build the package and not enough to check the tree:
+# `cargo check --workspace` reaches viewport-shell-gtk and stops at
+#
+#   The system library `gdk-pixbuf-2.0` required by crate `gdk-pixbuf-sys` was
+#   not found.
+#
+# So this adds the gtk and webkitgtk side. Everything here is a repository
+# package: pacman installs a built webkitgtk in seconds where the nix dev shell
+# the pre-commit hook uses fetches or builds one, which is the whole reason to
+# reach for this.
+#
+#   podman build -t viewport-check -f scripts/container-full/Containerfile \
+#       scripts/container-full
+#   podman run --rm -v "$PWD:/src" -v viewport-cargo:/root/.cargo \
+#       -v viewport-target:/target -e CARGO_TARGET_DIR=/target \
+#       -e XDG_RUNTIME_DIR=/run/user/0 -w /src viewport-check bash -lc '
+#           mkdir -p /run/user/0 && chmod 700 /run/user/0
+#           cargo fmt --all --check
+#           cargo clippy --workspace --all-targets -- -D warnings
+#           cargo test --workspace
+#           cargo check --workspace --all-targets
+#           cargo check -p viewport --features wpe'
+#
+# The volumes are what make the second run take seconds rather than minutes,
+# and XDG_RUNTIME_DIR is what the control-socket tests need: the compositor
+# refuses to start without one, and the failure reads as "the compositor never
+# created /tmp/viewport-test-*.sock" rather than as a missing variable.
+FROM docker.io/library/archlinux:latest
+
+# The wpe recipe's own dependencies, the same list as
+# packaging/arch/Containerfile, because this image is built from the base
+# rather than from that one — it is a check image and does not want makepkg.
+RUN pacman -Syu --noconfirm --disable-sandbox --needed \
+      base-devel git rust cargo pkgconf clang \
+      wayland wayland-protocols libxkbcommon pixman libdrm libinput seatd \
+      systemd-libs mesa libglvnd vulkan-icd-loader vulkan-headers \
+      wpewebkit glib2 json-glib libxcb xcb-util-wm pipewire shared-mime-info \
+ && pacman -Scc --noconfirm
+
+# And the rest of the workspace: viewport-shell-gtk links gtk4 and
+# webkitgtk-6.0, and the glib bindings under it probe for each of the others by
+# name.
+RUN pacman -Syu --noconfirm --disable-sandbox --needed \
+      gdk-pixbuf2 gtk4 webkitgtk-6.0 libsoup3 pango cairo graphene \
+      at-spi2-core harfbuzz gettext \
+ && pacman -Scc --noconfirm
+
+WORKDIR /src
