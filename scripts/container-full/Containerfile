@@ -12,8 +12,9 @@
 #
 # So this adds the gtk and webkitgtk side. Everything here is a repository
 # package: pacman installs a built webkitgtk in seconds where the nix dev shell
-# the pre-commit hook uses fetches or builds one, which is the whole reason to
-# reach for this.
+# fetches or builds one, which is the whole reason to reach for this — and why
+# .githooks/pre-commit runs its `--features wpe` check in this image rather
+# than in `nix develop`. The rest of that hook stays on nix.
 #
 #   podman build -t viewport-check -f scripts/container-full/Containerfile \
 #       scripts/container-full

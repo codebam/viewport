@@ -40,6 +40,53 @@ if ! $rust && ! $shell; then
     exit 0
 fi
 
+# The one check that does not run on this machine's nix.
+#
+# `nix develop "$root"` is the shell with the web engine in it, and on a host
+# whose store does not already have wpewebkit that means building WebKit from
+# source — an hour of every core for a `cargo check`, which is how this hook
+# came to be answered with --no-verify. Arch has a built `wpewebkit` package
+# that pacman installs in seconds, so the wpe half runs there instead:
+# scripts/container-full is the image, and the two named volumes are what make
+# every run after the first take seconds.
+#
+# Everything else stays on nix. This is the only configuration nix is
+# expensive for, and a container per check would cost more than it saved.
+wpe_check() {
+    local engine=${CONTAINER_ENGINE:-}
+    if [ -z "$engine" ]; then
+        for candidate in podman docker; do
+            command -v "$candidate" >/dev/null 2>&1 && engine=$candidate && break
+        done
+    fi
+
+    # No container engine: fall back to nix rather than passing a check that
+    # was never run. Slow is the point — it says why, and --no-verify is there
+    # for anyone who cannot wait.
+    if [ -z "$engine" ]; then
+        echo "pre-commit: no podman or docker; falling back to the nix dev shell," >&2
+        echo "pre-commit: which builds wpewebkit from source if the store lacks it" >&2
+        nix develop "$root" --command cargo check -p viewport --features wpe
+        return
+    fi
+
+    "$engine" build -q -t viewport-check \
+        -f "$root/scripts/container-full/Containerfile" \
+        "$root/scripts/container-full" >/dev/null || return 1
+
+    # A target directory of the container's own, for the same reason the nix
+    # steps have one: a check run against Arch's libraries leaves artefacts
+    # that the host's toolchain would rebuild anyway.
+    "$engine" run --rm \
+        -v "$root:/src:z" \
+        -v viewport-check-cargo:/root/.cargo \
+        -v viewport-check-target:/target \
+        -e CARGO_TARGET_DIR=/target \
+        -w /src \
+        viewport-check \
+        bash -lc 'cargo check -p viewport --features wpe'
+}
+
 failed=0
 step() {
     local what=$1
@@ -98,8 +145,7 @@ if $rust; then
     # default dev shell has and `.#rust` does not.
     step "check without the web engine" nix develop "$root#rust" --command \
         cargo check --workspace --all-targets
-    step "check with the web engine" nix develop "$root" --command \
-        cargo check -p viewport --features wpe
+    step "check with the web engine" wpe_check
 fi
 
 if [ "$failed" -ne 0 ]; then
