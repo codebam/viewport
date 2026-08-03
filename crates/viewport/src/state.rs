@@ -4563,6 +4563,20 @@ impl ViewportState {
         if let Some(surface) = self.shell_client_surface() {
             with_surfaces_surface_tree(surface, &release);
         }
+        // And the wallpaper terminal, which is in none of the four collections
+        // above and is as entitled to be paced as anything else that paints.
+        //
+        // Leaving it out is a client that paints its swapchain full and then
+        // stops for ever. rio does exactly that: mesa's Vulkan WSI paces on
+        // wp-fifo, three buffers went out in the first thirty milliseconds,
+        // the fourth commit blocked on a barrier nothing here ever signalled,
+        // and what was on screen was a terminal's first blank frame. It looked
+        // precisely like the wallpaper not being drawn at all — which is what
+        // it was reported as — and foot hid it, because foot paints into
+        // shared memory and asks for no pacing.
+        if let Some(surface) = self.background_surface() {
+            with_surfaces_surface_tree(surface, &release);
+        }
         // After the walks, so the closure's borrows are done with.
         let signalled = signalled.get();
         if signalled > 0 {
@@ -4643,6 +4657,15 @@ impl ViewportState {
                 };
             for window in self.space.elements() {
                 window.with_surfaces(&mut look);
+            }
+            // And the wallpaper terminal, which is not in the space.
+            //
+            // Without it the clock stops under a blocked wallpaper: nothing
+            // else on an otherwise empty desktop is waiting, so the tick
+            // decides there is nothing to keep running for and the one client
+            // that needed the next round never gets it.
+            if let Some(surface) = self.background_surface() {
+                smithay::desktop::utils::with_surfaces_surface_tree(surface, &mut look);
             }
         }
         waiting
