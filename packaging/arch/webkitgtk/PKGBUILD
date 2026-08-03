@@ -1,4 +1,4 @@
-# Maintainer: Sean Behan <swb1998@gmail.com>
+# Maintainer: Sean Behan <codebam@riseup.net>
 #
 # The shell drawn by WebKitGTK, in a process of its own as an ordinary Wayland
 # client of this compositor. Nothing here builds an engine: `webkitgtk-6.0` is
@@ -17,9 +17,9 @@ arch=('x86_64' 'aarch64')
 url='https://github.com/codebam/viewport-smithay'
 license=('GPL-3.0-or-later')
 
-# The commit this package was cut from. A tag would be nicer; there is not one
-# yet, and a moving branch in a PKGBUILD is not a package anyone can reproduce.
-_commit=761e3f5f6e4104bcbc830fc04eba7a6689bbdf20
+# The tag this package was cut from. A branch would move under it, and a
+# PKGBUILD that follows a moving branch is not a package anyone can reproduce.
+_tag=v0.1.0
 
 depends=(
   'wayland'
@@ -80,13 +80,13 @@ makedepends=(
 
 )
 
-provides=('viewport' 'viewport-smithay')
+provides=("viewport=$pkgver" "viewport-smithay=$pkgver")
 conflicts=('viewport'
            'viewport-smithay-wpe'
            'viewport-smithay-chromium')
 options=('!lto')
 
-source=("git+https://github.com/codebam/viewport-smithay.git#commit=$_commit")
+source=("git+https://github.com/codebam/viewport-smithay.git#tag=$_tag")
 sha256sums=('SKIP')
 
 prepare() {
