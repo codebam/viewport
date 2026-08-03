@@ -7,6 +7,8 @@
 #   ./scripts/arch-vm.sh --variant cef
 #   ./scripts/arch-vm.sh --package ~/viewport-smithay-wpe-0.1.1-1-x86_64.pkg.tar.zst
 #   ./scripts/arch-vm.sh --shell                 # a login shell, no compositor
+#   ./scripts/arch-vm.sh --url https://example.com   # a page rather than the shell
+#   ./scripts/arch-vm.sh --screens 2                 # two virtual monitors
 #
 # `nix run .#vm` boots this compositor on NixOS, which proves the flake and
 # nothing about the three PKGBUILDs beside it. Those declare their own
@@ -40,12 +42,34 @@ cores=4
 shell_only=0
 fresh=0
 backend=
+url=
+url_span=0
+screens=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --variant) variant=$2; shift 2 ;;
         --package) package=$2; shift 2 ;;
         --backend) backend=$2; shift 2 ;;
+        # Passed through to the compositor. `--url` on a machine with one
+        # screen is that page as the desktop, which is the shape this VM can
+        # show: it has a single virtual display, so the two-monitor split that
+        # `--url` produces on a real desk cannot be exercised in here.
+        --url) url=$2; shift 2 ;;
+        --url-span) url_span=1; shift ;;
+        # How many connectors virtio-gpu offers. Most of what goes wrong in
+        # this compositor goes wrong on the second screen, and this is the
+        # nearest thing to one that does not need hardware.
+        #
+        # It is not sufficient on its own, measured: with `--screens 2` the
+        # guest sees Virtual-2 and the compositor logs only Virtual-1, because
+        # QEMU leaves the extra connector *disconnected* until its display
+        # frontend brings the head up. Forcing it — `echo on >
+        # /sys/kernel/debug/dri/0/Virtual-2/force` in the guest, or
+        # `video=Virtual-2:1280x1024e` on the kernel command line — is the
+        # missing half, and neither is wired up here yet.
+        # scripts/virtual-monitors.sh is the same idea on hardware, and works.
+        --screens) screens=$2; shift 2 ;;
         --memory) memory=$2; shift 2 ;;
         --cores) cores=$2; shift 2 ;;
         --shell) shell_only=1; shift ;;
@@ -87,6 +111,9 @@ if ! command -v qemu-system-x86_64 >/dev/null || ! command -v cloud-localds >/de
     again=(--package "$package" --memory "$memory" --cores "$cores")
     [ -n "$variant" ] && again+=(--variant "$variant")
     [ -n "$backend" ] && again+=(--backend "$backend")
+    [ -n "$url" ] && again+=(--url "$url")
+    [ "$url_span" = 1 ] && again+=(--url-span)
+    again+=(--screens "$screens")
     [ "$shell_only" = 1 ] && again+=(--shell)
     [ "$fresh" = 1 ] && again+=(--fresh)
     exec nix shell nixpkgs#qemu nixpkgs#cloud-utils --command "$0" "${again[@]}"
@@ -127,8 +154,14 @@ if [ "$shell_only" = 1 ]; then
     # about the packaging rather than about whether the desktop comes up.
     launcher='        : # --shell: not starting the compositor'
 else
+    # Worked out before the string rather than inside it: a `$(...)` whose
+    # command is false takes the assignment's exit status with it, and under
+    # `set -e` that ends the script here with nothing said.
+    span=
+    [ "$url_span" = 1 ] && span=--url-span
     launcher="        if [ -x /usr/bin/viewport ]; then
-          exec viewport ${backend:+--shell-backend $backend} 2>&1 \\
+          exec viewport ${backend:+--shell-backend $backend} \\
+            ${url:+--url $url} $span 2>&1 \\
             | tee /mnt/xchg/viewport.log
         else
           echo 'no /usr/bin/viewport: the package installed no compositor.' >&2
@@ -244,6 +277,6 @@ exec qemu-system-x86_64 \
     -virtfs "local,path=$xchg,mount_tag=xchg,security_model=none" \
     -device virtio-rng-pci \
     -device virtio-keyboard -usb -device usb-tablet \
-    -vga none -device virtio-vga-gl \
+    -vga none -device "virtio-vga-gl,max_outputs=$screens" \
     -display gtk,gl=on,show-cursor=on \
     -serial stdio
