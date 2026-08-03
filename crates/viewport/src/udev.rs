@@ -315,6 +315,11 @@ pub struct Device {
     /// The render node, for the Vulkan device and for dmabuf feedback.
     pub render_node: DrmNode,
     pub renderer: Gpu,
+    /// The GBM device this GPU's renderer was built on, kept so the renderer
+    /// can be built again. A Vulkan device that turns out not to be able to
+    /// drive this display is only discovered once an output is attempted, and
+    /// by then the device that made it is inside the manager.
+    pub gbm: GbmDevice<DrmDeviceFd>,
     pub manager: Manager,
     pub surfaces: HashMap<crtc::Handle, Surface>,
     /// What a client should allocate against for a surface being shown on this
@@ -924,7 +929,7 @@ pub fn init(
     );
 
     let mut session = session;
-    let (manager, mut renderer, drm_notifier) = open_device(&mut session, &card, &render)?;
+    let (manager, mut renderer, gbm, drm_notifier) = open_device(&mut session, &card, &render)?;
 
     // Input.
     let mut libinput = smithay::reexports::input::Libinput::new_with_udev::<
@@ -1026,6 +1031,7 @@ pub fn init(
             render_node: render,
             feedback: device_feedback(&render, &mut renderer),
             renderer,
+            gbm,
             manager,
             surfaces: HashMap::new(),
         }],
@@ -1068,13 +1074,14 @@ pub fn init(
             break;
         };
         match open_device(&mut udev.session, other, &other_render) {
-            Ok((manager, mut renderer, notifier)) => {
+            Ok((manager, mut renderer, gbm, notifier)) => {
                 let index = udev.devices.len();
                 udev.devices.push(Device {
                     node: *other,
                     render_node: other_render,
                     feedback: device_feedback(&other_render, &mut renderer),
                     renderer,
+                    gbm,
                     manager,
                     surfaces: HashMap::new(),
                 });
@@ -1258,7 +1265,12 @@ fn open_device(
     session: &mut LibSeatSession,
     card: &DrmNode,
     render: &DrmNode,
-) -> Result<(Manager, Gpu, smithay::backend::drm::DrmDeviceNotifier)> {
+) -> Result<(
+    Manager,
+    Gpu,
+    GbmDevice<DrmDeviceFd>,
+    smithay::backend::drm::DrmDeviceNotifier,
+)> {
     let path = card
         .dev_path()
         .ok_or_else(|| anyhow!("{card:?} has no device path"))?;
@@ -1361,14 +1373,32 @@ fn open_device(
                     )
                 }
                 Err(e) => {
-                    // A virtual machine is the usual reason: software Vulkan
-                    // has no VK_EXT_image_drm_format_modifier and Venus aborts
-                    // in its own driver, while virgl gives OpenGL ES on the
-                    // GBM platform and works. Refusing here is a session that
-                    // shows nothing, which is worse than one without colour
-                    // management.
+                    // A virtual machine is the usual reason, and OpenGL is the
+                    // answer there rather than the software Vulkan device that
+                    // is also on offer: virgl gives OpenGL ES on the GBM
+                    // platform and draws the display, while lavapipe owns no
+                    // DRM node and cannot allocate anything the display
+                    // controller will take.
                     tracing::warn!("no usable Vulkan renderer ({e:#}); falling back to OpenGL");
-                    Gpu::Gles(Box::new(gles_renderer(&gbm)?))
+                    match gles_renderer(&gbm) {
+                        Ok(gles) => Gpu::Gles(Box::new(gles)),
+                        // Neither this GPU's Vulkan nor its OpenGL. Software
+                        // Vulkan last, because it is the only thing left and a
+                        // session that draws slowly beats one that does not
+                        // start — the order being what matters: OpenGL on the
+                        // real device before Vulkan on a pretend one.
+                        Err(gles_error) => {
+                            tracing::warn!(
+                                "OpenGL would not start either ({gles_error:#});                                  taking whatever Vulkan device there is, which                                  is likely to be software"
+                            );
+                            let device = VulkanDevice::for_node(&instance, render)
+                                .context("opening any vulkan device")?;
+                            Gpu::Vulkan(
+                                VulkanRenderer::with_allocator(&device, allocator.clone())
+                                    .map_err(|e| anyhow!("creating the vulkan renderer: {e}"))?,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1380,6 +1410,7 @@ fn open_device(
     // takes the node so it can tell a buffer allocated here from one imported
     // from another GPU.
     let exporter = GbmFramebufferExporter::new(gbm.clone(), (*render).into());
+    let gbm_kept = gbm.clone();
 
     let manager = DrmOutputManager::new(
         drm,
@@ -1390,7 +1421,7 @@ fn open_device(
         render_formats,
     );
 
-    Ok((manager, renderer, notifier))
+    Ok((manager, renderer, gbm_kept, notifier))
 }
 
 /// What a client should allocate against for a surface shown on this GPU.
@@ -1615,6 +1646,9 @@ impl ViewportState {
             .map(|id| id.crtc)
             .collect();
 
+        // Counted before the loop consumes them: the fallback below has to
+        // tell "every connector failed" from "there were none".
+        let attempted = connectors.len();
         for connector in connectors {
             let name = format!(
                 "{}-{}",
@@ -1817,6 +1851,47 @@ impl ViewportState {
                     });
                 }
                 Err(e) => tracing::warn!("{name}: could not initialise: {e}"),
+            }
+        }
+
+        // A Vulkan device that cannot drive this display.
+        //
+        // Whether it can is not knowable until an output is attempted: the
+        // renderer opens, reports its formats, and only `DrmCompositor` compares
+        // them against what the plane will actually take. In a guest with Venus
+        // that comparison fails on every connector —
+        //
+        //   Virtual-1: could not initialise: Virtio-GPU Venus (...) does not
+        //   support DrmFourcc(AR24) with modifier 0xffffffffffffff
+        //
+        // `0x00ffffffffffffff` being `DRM_FORMAT_MOD_INVALID`, the implicit
+        // modifier a virtio plane advertises — and the session comes up with no
+        // outputs at all, which is a black screen and a log full of warnings
+        // that each name one connector.
+        //
+        // OpenGL on this same GPU draws that display without complaint, so it
+        // is taken rather than kept. Only when every connector failed and none
+        // is left: one output refusing a mode is not this, and a machine with a
+        // working Vulkan renderer never reaches here.
+        if udev.devices[index].surfaces.is_empty()
+            && attempted > 0
+            && matches!(udev.devices[index].renderer, Gpu::Vulkan(_))
+        {
+            match gles_renderer(&udev.devices[index].gbm) {
+                Ok(gles) => {
+                    tracing::warn!(
+                        "no output could be initialised with Vulkan on gpu {index}; \
+                         drawing with OpenGL instead"
+                    );
+                    udev.devices[index].renderer = Gpu::Gles(Box::new(gles));
+                    // Once: the renderer is OpenGL now, so this cannot arrive
+                    // back here and swap again.
+                    self.scan_device(index);
+                    return;
+                }
+                Err(e) => tracing::error!(
+                    "no output works with Vulkan on gpu {index} and OpenGL                      would not start either ({e:#}); this GPU has no display"
+                ),
             }
         }
 

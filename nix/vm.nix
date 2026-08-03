@@ -56,6 +56,25 @@
     # run until this VM existed. See the renderer choice in udev.rs.
     qemu.options = [
       "-vga none"
+      # OpenGL through virgl, which is the host's GPU: the compositor's EGL
+      # comes up on /dev/dri/card0 and draws with it, and so does anything in
+      # here that draws with GL. Nothing on the display path is software.
+      #
+      # Vulkan is the part a guest does not get, and it is not for want of
+      # asking. `-device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=4G` does
+      # hand the guest a real Vulkan device — "Virtio-GPU Venus (AMD Radeon RX
+      # 7900 XTX (RADV NAVI31))", the host's own card — and every output then
+      # fails to initialise on it:
+      #
+      #   Virtual-1: could not initialise: Virtio-GPU Venus (...) does not
+      #   support DrmFourcc(AR24) with modifier 0xffffffffffffff
+      #
+      # which is `DRM_FORMAT_MOD_INVALID`, the implicit modifier the virtio
+      # plane advertises. So Venus buys a Vulkan device that cannot drive the
+      # display, and the compositor draws with OpenGL either way — it tries
+      # Vulkan, every output refuses, and it rebuilds the renderer and comes up.
+      # That path is worth having and was tested by turning this on; it is not
+      # worth 4G of host memory on every run, so the plain device is what stays.
       "-device virtio-vga-gl"
       "-display gtk,gl=on,show-cursor=on"
       # The kernel is told to log to both `tty0` and `ttyS0`, and without this
