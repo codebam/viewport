@@ -1,10 +1,10 @@
 # Maintainer: Sean Behan <swb1998@gmail.com>
 #
 # The shell drawn by WebKitGTK, in a process of its own as an ordinary Wayland
-# client of this compositor. Nothing here builds an engine: `webkit2gtk-6.0` is
+# client of this compositor. Nothing here builds an engine: `webkitgtk-6.0` is
 # a package.
 #
-# One of five recipes beside each other in packaging/arch, one per engine the
+# One of three recipes beside each other in packaging/arch, one per engine the
 # shell can be drawn by — see docs/shell-backends.md. Every one of them installs
 # a binary called `viewport`, so they conflict with each other and with the C
 # compositor's `viewport` package: a system takes one.
@@ -35,7 +35,7 @@ depends=(
   'pipewire'
   'libxcb'
   'xcb-util-wm'
-  'webkit2gtk-6.0'
+  'webkitgtk-6.0'
   'gtk4'
   # WebKit guesses the type of a file:// page from the shared MIME database.
   # Without it the bundled shell loads "successfully" and draws nothing.
@@ -56,8 +56,9 @@ optdepends=(
 )
 
 makedepends=(
+  # cargo comes with it: Arch has no separate cargo package, and naming
+  # one fails dependency resolution before a line is compiled.
   'rust'
-  'cargo'
   'git'
   'pkgconf'
   'clang'
@@ -69,9 +70,7 @@ makedepends=(
 provides=('viewport' 'viewport-smithay')
 conflicts=('viewport'
            'viewport-smithay-wpe'
-           'viewport-smithay-chromium'
-           'viewport-smithay-cef'
-           'viewport-smithay-full')
+           'viewport-smithay-chromium')
 options=('!lto')
 
 source=("git+https://github.com/codebam/viewport-smithay.git#commit=$_commit")

@@ -4,7 +4,7 @@
 # DevTools protocol. This links no engine at all: the browser is a runtime
 # dependency, and which Chromium it runs can change without a rebuild.
 #
-# One of five recipes beside each other in packaging/arch, one per engine the
+# One of three recipes beside each other in packaging/arch, one per engine the
 # shell can be drawn by — see docs/shell-backends.md. Every one of them installs
 # a binary called `viewport`, so they conflict with each other and with the C
 # compositor's `viewport` package: a system takes one.
@@ -52,8 +52,9 @@ optdepends=(
 )
 
 makedepends=(
+  # cargo comes with it: Arch has no separate cargo package, and naming
+  # one fails dependency resolution before a line is compiled.
   'rust'
-  'cargo'
   'git'
   'pkgconf'
   'clang'
@@ -65,9 +66,7 @@ makedepends=(
 provides=('viewport' 'viewport-smithay')
 conflicts=('viewport'
            'viewport-smithay-wpe'
-           'viewport-smithay-webkitgtk'
-           'viewport-smithay-cef'
-           'viewport-smithay-full')
+           'viewport-smithay-webkitgtk')
 options=('!lto')
 
 source=("git+https://github.com/codebam/viewport-smithay.git#commit=$_commit")

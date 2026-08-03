@@ -197,20 +197,30 @@ Two shells ship with it, at opposite ends of the same protocol:
 
 ## Installing
 
-On Arch or CachyOS, `packaging/arch/` has a PKGBUILD. Every dependency is
-already packaged there — including `wpewebkit` built with the WPE platform API,
-which is the one that would otherwise mean compiling a browser engine — so it
-builds in about a minute:
+On Arch or CachyOS, `packaging/arch/` has one PKGBUILD per engine — `wpe`,
+`webkitgtk` and `chromium`. Every dependency is already packaged there,
+including `wpewebkit` built with the WPE platform API, which is the one that
+would otherwise mean compiling a browser engine, so each builds in about a
+minute:
 
 ```sh
-git archive --format=tar.gz --prefix=viewport-0.1.0/ -o viewport-0.1.0.tar.gz HEAD
-cp packaging/arch/PKGBUILD . && makepkg -si
+cd packaging/arch/wpe && makepkg -si
 ```
+
+They all install a binary called `viewport` and conflict with each other: a
+system takes one. `./packaging/arch/build-in-container.sh wpe` builds any of
+them on a machine that is not Arch, which is how they are tested here, and
+`./scripts/arch-vm.sh --variant wpe` installs the result into a throwaway Arch
+guest and boots the desktop in it.
+
+The `cef` backend is not packaged for Arch. CEF is a prebuilt binary bundle,
+the only Arch package of it is `cef-minimal` in the AUR, and that is CEF 121
+against the 149 this tree needs. `chromium` gives Arch the same engine with
+nothing outside the repositories.
 
 An installed copy needs no arguments: it ships its own shell and defaults to
 it, and a `wayland-sessions` entry means a display manager will offer it as
-something to log into. See `packaging/arch/README.md` for building it in a
-container, which has two non-obvious wrinkles.
+something to log into.
 
 On NixOS, `flake.nix` provides packages, a dev shell and two modules, and
 `programs.viewport.shellBackend` picks which engine the session is installed

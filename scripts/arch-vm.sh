@@ -114,6 +114,21 @@ fi
 # and running this again does not touch the disk at all.
 seed=$cache/seed.iso
 userdata=$cache/user-data
+
+# What tty1 does after logging in. Built here rather than edited into the file
+# afterwards: the `--shell` case used to be a sed over the generated YAML, and
+# an `if` replaced by a comment leaves its own `fi` behind.
+if [ "$shell_only" = 1 ]; then
+    # Install the package and stop, which is what to run when the question is
+    # about the packaging rather than about whether the desktop comes up.
+    launcher='        : # --shell: not starting the compositor'
+else
+    launcher="        if [ -x /usr/bin/viewport ]; then
+          exec viewport ${backend:+--shell-backend $backend} 2>&1 | tee /tmp/viewport.log
+        else
+          echo 'no /usr/bin/viewport: the package installed no compositor.' >&2
+        fi"
+fi
 cat > "$userdata" <<EOF
 #cloud-config
 users:
@@ -134,14 +149,19 @@ write_files:
       [Service]
       ExecStart=
       ExecStart=-/sbin/agetty --autologin viewport --noclear %I \$TERM
-  - path: /home/viewport/.bash_profile
-    owner: viewport:viewport
+  # In /etc/profile.d rather than the user's ~/.bash_profile, which is where
+  # this started and did not run: cloud-init creates the user around the same
+  # time it writes files, and a home directory that already exists is a home
+  # directory useradd will not populate from /etc/skel — so which of the two
+  # ~/.bash_profile survives depends on ordering nobody should have to know.
+  # /etc/profile sources this for every login shell, and owns no such race.
+  - path: /etc/profile.d/viewport.sh
     permissions: '0644'
     content: |
       # tty1 only: the other VTs stay a shell, which is where to look when the
       # compositor does not start.
-      if [ "\$(tty)" = /dev/tty1 ] && [ -x /usr/bin/viewport ]; then
-        exec viewport ${backend:+--shell-backend $backend} 2>&1 | tee /tmp/viewport.log
+      if [ "\$(tty)" = /dev/tty1 ]; then
+$launcher
       fi
   - path: /etc/tmpfiles.d/viewport-xdg-runtime.conf
     content: |
@@ -160,7 +180,10 @@ runcmd:
   # driver of its own, and without these the compositor fails at startup naming
   # a library rather than the missing driver.
   - [ pacman, -S, --noconfirm, --needed, mesa, vulkan-swrast, foot, vulkan-tools, mesa-utils ]
-  - [ sh, -c, "pacman -U --noconfirm /mnt/pkgs/*.pkg.tar.zst" ]
+  # The compositor, and not the 79 MB of detached debug symbols makepkg leaves
+  # beside it — which installs a package with no compositor in it and takes
+  # longer to do it than everything above put together.
+  - [ sh, -c, "pacman -U --noconfirm \$(ls /mnt/pkgs/*.pkg.tar.zst | grep -v -- -debug-)" ]
   - [ systemctl, enable, --now, seatd ]
   - [ systemctl, restart, getty@tty1 ]
 
@@ -171,13 +194,6 @@ cat > "$cache/meta-data" <<'EOF'
 instance-id: viewport-arch-vm
 local-hostname: viewport-arch
 EOF
-
-if [ "$shell_only" = 1 ]; then
-    # Everything above except the compositor: install it and stop, which is
-    # what to run when the question is about the package rather than about
-    # whether the desktop comes up.
-    sed -i 's/^      if \[ "\$(tty)".*$/      : # --shell: not starting the compositor/' "$userdata"
-fi
 
 cloud-localds "$seed" "$userdata" "$cache/meta-data"
 

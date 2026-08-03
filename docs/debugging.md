@@ -274,16 +274,33 @@ closable.
 
 ## Running it in a virtual machine
 
-It does not work in a plain one, and the reasons are worth knowing before
-somebody spends an evening on it. Tested against a QEMU guest running current
-Arch, with the package from `packaging/arch/smithay`.
+It does work now, and `nix run .#vm` is the shortest way to see it: a NixOS
+guest that boots straight into the compositor on a virtio-gpu, with the log
+teed into the directory QEMU shares with the host. `scripts/arch-vm.sh` does
+the same against an Arch cloud image with a built package installed into it.
+What follows is what had to be true first, because most of it was not.
 
-**Software Vulkan cannot drive it.** `vulkan-swrast` (lavapipe) installs and
-`vulkaninfo` is happy, but the renderer needs
-`VK_EXT_image_drm_format_modifier` to hand buffers to KMS and lavapipe does not
-implement it. The compositor says so and stops:
+**Software Vulkan cannot drive it, and used to do so silently.** `vulkan-swrast`
+(lavapipe) installs, `vulkaninfo` is happy, and the compositor would open it,
+build a renderer and report success — because `for_node` falls back to any
+Vulkan device when none of them owns the display's DRM node, which in a virtual
+machine is always. The failure then surfaced somewhere else entirely, once per
+output:
 
-    llvmpipe (LLVM 22.1.8, 256 bits) is missing VK_EXT_image_drm_format_modifier
+    Virtual-1: could not initialise: llvmpipe (LLVM 21.1.8, 256 bits) does not
+    support DrmFourcc(AR24) with modifier 0xff
+
+`0xff` there is `DRM_FORMAT_MOD_INVALID`, the implicit modifier a plane
+advertises, and a software device cannot allocate for it. Every output failed
+that way, the compositor came up with none, the shell was configured to `0x0`,
+nothing was ever committed, and QEMU showed "Display output is not active" from
+boot to shutdown. The renderer now asks for Vulkan on the display's own GPU
+(`for_node_exactly`) and takes GLES when nothing owns it, which is the case
+this paragraph describes.
+
+A shell that traps a few seconds in — CEF took `SIGTRAP` at about thirteen
+seconds, with no message — is worth suspecting of the same root cause before
+anything else: a shell told its size is `0x0` has no good options.
 
 **Accelerated Vulkan through virtio-gpu aborts.** With
 `-device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=2G` and `vulkan-virtio` in
@@ -313,9 +330,10 @@ desktop, and a terminal in it composites and reads back:
       -drive file=arch.qcow2,if=virtio \
       -device virtio-gpu-gl-pci -display egl-headless
 
-`VIEWPORT_RENDERER=gles` or `--renderer gles` asks for it outright, and
-`VIEWPORT_RENDERER=vulkan` refuses the fallback so that a machine which should
-be using Vulkan says why it is not.
+`VIEWPORT_RENDERER=gles` or `--renderer gles` asks for it outright.
+`VIEWPORT_RENDERER=vulkan` means Vulkan on whatever device there is, including
+a software one that does not own the display — which is how to reproduce the
+black screen above deliberately, and the only reason to want it.
 
 ## Render churn, and why the throttle is off
 
