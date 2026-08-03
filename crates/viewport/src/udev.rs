@@ -79,7 +79,7 @@ pub enum Choice {
 /// silently is what made that the visible symptom, so it is said out loud —
 /// the fallback is kept, because the compositor's own use of the node does
 /// work and refusing to start would be worse.
-fn client_render_node(card: &DrmNode) -> DrmNode {
+pub fn client_render_node(card: &DrmNode) -> DrmNode {
     match card
         .node_with_type(NodeType::Render)
         .and_then(|node| node.ok())
@@ -208,6 +208,15 @@ pub struct Surface {
     /// visible as flicker whenever a client repaints quickly, like a terminal
     /// being typed into.
     pub pending: bool,
+    /// When that frame was queued.
+    ///
+    /// `pending` alone says a flip is out; this says how long it has been out,
+    /// which is the difference between a screen that is about to update and one
+    /// that has stopped. A GPU reset eats the queued flip and the vblank that
+    /// would clear `pending` never arrives, so without a clock on it the output
+    /// is frozen for the rest of the session with nothing in the log. See
+    /// [`crate::recovery`].
+    pub queued_at: Option<std::time::Instant>,
 }
 
 /// Everything the DRM backend holds.
@@ -298,8 +307,12 @@ impl Gpu {
 /// second GPU redraws an output on the first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OutputId {
-    /// Index into `Udev::devices`. Stable: devices are pushed at startup and
-    /// never removed, because unplugging a GPU is not a thing this handles.
+    /// Index into `Udev::devices`.
+    ///
+    /// Stable for the life of the session. A GPU that goes away keeps its slot
+    /// and comes back into it — see [`crate::recovery`] — because every vblank
+    /// closure has captured the index it was inserted with, so the list may
+    /// grow but must never shift.
     pub device: usize,
     pub crtc: crtc::Handle,
 }
@@ -334,6 +347,47 @@ pub struct Device {
     /// `None` if the feedback could not be built, which costs the per-surface
     /// hint and nothing else — the default global still applies.
     pub feedback: Option<smithay::wayland::dmabuf::DmabufFeedback>,
+    /// Whether this slot currently holds a card that answers.
+    ///
+    /// False between a GPU being unregistered and the same GPU coming back.
+    /// The slot stays — `OutputId::device` is an index into this list — and the
+    /// dead device stays in it until a working one replaces it, because there
+    /// is no such thing as an empty `DrmOutputManager`. Nothing touches it
+    /// meanwhile: the scan skips it, the session handler skips it, and it has
+    /// no surfaces because they were dropped when the card went.
+    pub online: bool,
+    /// The bus address this card sits at, from sysfs.
+    ///
+    /// The one name for a GPU that survives it being unregistered and
+    /// registered again. See [`crate::recovery::bus_id_of`].
+    pub bus: Option<String>,
+    /// The loop registration watching this device's vblanks.
+    ///
+    /// Kept so it can be taken out again. A `Generic` source on an fd the
+    /// kernel has revoked polls ready for ever, which is a compositor burning a
+    /// core over a GPU that is not there — so a card that goes stops being
+    /// watched the moment we hear about it.
+    pub vblank: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// Where this device is in the recovery ladder. See [`crate::recovery`].
+    pub recovery: crate::recovery::Step,
+    /// Commits or renders that have failed since the last vblank.
+    pub errors: u32,
+    /// When the current recovery step was taken, so the next one is not tried
+    /// before the hardware has had a chance. See [`crate::recovery::DWELL`].
+    pub stepped_at: Option<std::time::Instant>,
+    /// Watchdog ticks left in which to re-scan a card that has just come back.
+    ///
+    /// A DRM device is announced before its connectors are necessarily
+    /// readable, and a scan that came up empty is repeated by nothing — no
+    /// surface means no flip, no flip means no vblank, and the frame clock does
+    /// not scan. Counted down rather than waited on once, because how long the
+    /// driver takes is not something to guess at.
+    pub settle: u32,
+    /// How many times this card has been reopened without coming back, which is
+    /// what the retry backoff is measured in.
+    pub attempts: u32,
+    /// When it went, so the backoff has something to count from.
+    pub offline_since: Option<std::time::Instant>,
 }
 
 pub struct Udev {
@@ -953,11 +1007,17 @@ pub fn init(
         .map_err(|e| anyhow!("inserting the libinput source: {e}"))?;
 
     // VBlank: the frame is done, so the next one may start.
-    event_loop
+    let primary_vblank = event_loop
         .handle()
         .insert_source(drm_notifier, move |event, metadata, state| match event {
             DrmEvent::VBlank(crtc) => state.on_vblank(OutputId { device: 0, crtc }, metadata),
-            DrmEvent::Error(error) => tracing::error!("drm: {error}"),
+            DrmEvent::Error(error) => {
+                tracing::error!("drm: {error}");
+                // The driver telling us something went wrong on the device is
+                // exactly what a GPU reset looks like from here, and the flip
+                // that was outstanding when it happened is not coming back.
+                state.note_gpu_error(0);
+            }
         })
         .map_err(|e| anyhow!("inserting the drm source: {e}"))?;
 
@@ -970,8 +1030,15 @@ pub fn init(
         })
         .map_err(|e| anyhow!("inserting the session source: {e}"))?;
 
-    // Connector hotplug. Whole-device hotplug is not handled; a GPU appearing
-    // mid-session is not something this compositor claims to survive.
+    // Connector hotplug, and whole-device hotplug.
+    //
+    // A GPU appearing and disappearing mid-session is not only someone pulling
+    // a card out of an eGPU dock. It is what a driver does when a reset does not
+    // take: amdgpu falls back to a bus reset, which unregisters the DRM device
+    // and registers it again, and from here that is indistinguishable from an
+    // unplug followed by a plug. Ignoring the pair, which is what this did, left
+    // a compositor polling a revoked fd with every monitor on that card dark for
+    // the rest of the session.
     let udev = UdevBackend::new(&seat).map_err(|e| anyhow!("udev: {e}"))?;
     event_loop
         .handle()
@@ -981,7 +1048,8 @@ pub fn init(
                     state.on_connectors_changed();
                 }
             }
-            UdevEvent::Added { .. } | UdevEvent::Removed { .. } => {}
+            UdevEvent::Added { device_id, path } => state.on_gpu_added(device_id, &path),
+            UdevEvent::Removed { device_id } => state.on_gpu_removed(device_id),
         })
         .map_err(|e| anyhow!("inserting the udev source: {e}"))?;
 
@@ -1034,6 +1102,15 @@ pub fn init(
             gbm,
             manager,
             surfaces: HashMap::new(),
+            online: true,
+            bus: crate::recovery::bus_id(&card),
+            vblank: Some(primary_vblank),
+            recovery: crate::recovery::Step::Healthy,
+            errors: 0,
+            attempts: 0,
+            offline_since: None,
+            stepped_at: None,
+            settle: 0,
         }],
         blanked: false,
         active: true,
@@ -1084,12 +1161,21 @@ pub fn init(
                     gbm,
                     manager,
                     surfaces: HashMap::new(),
+                    online: true,
+                    bus: crate::recovery::bus_id(other),
+                    vblank: None,
+                    recovery: crate::recovery::Step::Healthy,
+                    errors: 0,
+                    attempts: 0,
+                    offline_since: None,
+                    stepped_at: None,
+                    settle: 0,
                 });
                 tracing::info!("gpu {index}: {other:?} also driving outputs");
 
                 // Its vblanks carry its own index, because a crtc handle only
                 // means something on the device that issued it.
-                if let Err(e) = event_loop.handle().insert_source(
+                match event_loop.handle().insert_source(
                     notifier,
                     move |event, metadata, state: &mut ViewportState| match event {
                         DrmEvent::VBlank(crtc) => state.on_vblank(
@@ -1099,12 +1185,16 @@ pub fn init(
                             },
                             metadata,
                         ),
-                        DrmEvent::Error(e) => tracing::error!("drm error on gpu {index}: {e}"),
+                        DrmEvent::Error(e) => {
+                            tracing::error!("drm error on gpu {index}: {e}");
+                            state.note_gpu_error(index);
+                        }
                     },
                 ) {
-                    tracing::warn!(
+                    Ok(token) => udev.devices[index].vblank = Some(token),
+                    Err(e) => tracing::warn!(
                         "gpu {index}: no vblank source ({e}); its outputs will not draw"
-                    );
+                    ),
                 }
             }
             Err(e) => {
@@ -1261,7 +1351,7 @@ pub fn init(
 }
 
 /// Open the DRM device and build everything that hangs off it.
-fn open_device(
+pub fn open_device(
     session: &mut LibSeatSession,
     card: &DrmNode,
     render: &DrmNode,
@@ -1290,6 +1380,44 @@ fn open_device(
     let (drm, notifier) = DrmDevice::new(fd.clone(), true).context("creating the drm device")?;
     let gbm = GbmDevice::new(fd).context("creating the gbm device")?;
 
+    let renderer = build_renderer(&gbm, render)?;
+    let render_formats = renderer.dmabuf_formats();
+
+    // SCANOUT as well as RENDERING: these buffers go to the display
+    // controller, and a buffer allocated without it may not be scannable.
+    let allocator = GbmAllocator::new(
+        gbm.clone(),
+        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+    );
+
+    // The exporter turns a rendered buffer into a DRM framebuffer handle. It
+    // takes the node so it can tell a buffer allocated here from one imported
+    // from another GPU.
+    let exporter = GbmFramebufferExporter::new(gbm.clone(), (*render).into());
+    let gbm_kept = gbm.clone();
+
+    let manager = DrmOutputManager::new(
+        drm,
+        allocator,
+        exporter,
+        Some(gbm),
+        SCANOUT_FORMATS.iter().copied(),
+        render_formats,
+    );
+
+    Ok((manager, renderer, gbm_kept, notifier))
+}
+
+/// A renderer for one GPU, on a GBM device that is already open.
+///
+/// Split out from `open_device` because it is the one part of a device that has
+/// to be replaceable on its own. A Vulkan device that takes
+/// `VK_ERROR_DEVICE_LOST` — which is what a GPU reset does to it — fails every
+/// submission from then on and cannot be revived, while the GBM device it was
+/// built on is still perfectly good. Rebuilding just this is the difference
+/// between a reset costing a frame and costing the session. See
+/// [`crate::recovery::Step::Rebuild`].
+pub fn build_renderer(gbm: &GbmDevice<DrmDeviceFd>, render: &DrmNode) -> Result<Gpu> {
     // The Vulkan device has to be the same GPU, or every imported buffer is a
     // copy over PCIe. Selecting by node is what viewport_vulkan::open does.
     let instance = smithay::backend::vulkan::Instance::new(
@@ -1334,7 +1462,7 @@ fn open_device(
         // answering differently is a bug in its own right — see there.
         _ if renderer_forced_gles() => {
             tracing::info!("VIEWPORT_RENDERER={asked}: the OpenGL renderer");
-            Gpu::Gles(Box::new(gles_renderer(&gbm)?))
+            Gpu::Gles(Box::new(gles_renderer(gbm)?))
         }
         _ => {
             // `for_node_exactly`, not `for_node`. The loose version falls back
@@ -1383,7 +1511,7 @@ fn open_device(
                     // DRM node and cannot allocate anything the display
                     // controller will take.
                     tracing::warn!("no usable Vulkan renderer ({e:#}); falling back to OpenGL");
-                    match gles_renderer(&gbm) {
+                    match gles_renderer(gbm) {
                         Ok(gles) => Gpu::Gles(Box::new(gles)),
                         // Neither this GPU's Vulkan nor its OpenGL. Software
                         // Vulkan last, because it is the only thing left and a
@@ -1407,24 +1535,7 @@ fn open_device(
         }
     };
 
-    let render_formats = renderer.dmabuf_formats();
-
-    // The exporter turns a rendered buffer into a DRM framebuffer handle. It
-    // takes the node so it can tell a buffer allocated here from one imported
-    // from another GPU.
-    let exporter = GbmFramebufferExporter::new(gbm.clone(), (*render).into());
-    let gbm_kept = gbm.clone();
-
-    let manager = DrmOutputManager::new(
-        drm,
-        allocator,
-        exporter,
-        Some(gbm),
-        SCANOUT_FORMATS.iter().copied(),
-        render_formats,
-    );
-
-    Ok((manager, renderer, gbm_kept, notifier))
+    Ok(renderer)
 }
 
 /// What a client should allocate against for a surface shown on this GPU.
@@ -1439,7 +1550,7 @@ fn open_device(
 /// plane, and claiming it for a format the display controller cannot actually
 /// scan out is worse than not claiming it — it belongs with the plane formats,
 /// which are per CRTC and not known here.
-fn device_feedback(
+pub fn device_feedback(
     render_node: &DrmNode,
     renderer: &mut Gpu,
 ) -> Option<smithay::wayland::dmabuf::DmabufFeedback> {
@@ -1587,6 +1698,11 @@ impl ViewportState {
             return;
         }
         if index >= udev.devices.len() {
+            return;
+        }
+        if !udev.devices[index].online {
+            // The card is gone. Every ioctl below would answer ENODEV, and the
+            // slot exists only so the index stays put until it comes back.
             return;
         }
 
@@ -1861,6 +1977,7 @@ impl ViewportState {
                             refuses_tearing: false,
                             enabled: true,
                             pending: false,
+                            queued_at: None,
                         },
                     );
                     // Device 0: this scan walks the primary GPU. When the
@@ -2214,6 +2331,10 @@ impl ViewportState {
         };
         // The flip happened, so this output may be drawn into again.
         surface.pending = false;
+        // And the clock on it stops. A flip that reached the screen is the one
+        // piece of evidence that this GPU is answering, which is what puts it
+        // back at the top of the recovery ladder below.
+        surface.queued_at = None;
         let vblank_refresh = surface
             .output
             .current_mode()
@@ -2334,6 +2455,11 @@ impl ViewportState {
             Ok(_) => {}
             Err(e) => tracing::warn!("frame_submitted: {e}"),
         }
+
+        // A frame reached the screen, which is the one piece of evidence that
+        // this GPU is answering. Whatever the watchdog was part-way through
+        // recovering, it is finished with. See [`crate::recovery`].
+        self.note_gpu_alive(id.device);
 
         // Anything blocked waiting for this frame: a client pacing itself with
         // wp-fifo, or timing a commit with wp-commit-timing.
@@ -2648,6 +2774,8 @@ impl ViewportState {
         // Whether this call put a frame in the air, which decides whether the
         // clients on this output are invited to draw another one.
         let mut submitted = false;
+        // Whether the device refused it. See the error arms below.
+        let mut failed = false;
         let result = surface.drm_output.render_frame(
             renderer,
             &elements,
@@ -2682,9 +2810,13 @@ impl ViewportState {
                 };
                 if let Err(e) = surface.drm_output.queue_frame(Some(feedback)) {
                     // The vblank that would have driven the next frame never
-                    // arrives, so a failure here stops the output for good
-                    // rather than dropping one frame.
+                    // arrives, so nothing else will ask this output to draw —
+                    // which is why the failure is counted rather than only
+                    // logged. A single refused commit is a frame; a run of them
+                    // is a GPU that has stopped, and the watchdog is what tells
+                    // the two apart. See [`crate::recovery`].
                     tracing::warn!("queue_frame: {e}");
+                    failed = true;
 
                     // A tearing flip is the one thing here a driver may refuse
                     // for a frame it would otherwise have taken — the
@@ -2725,6 +2857,9 @@ impl ViewportState {
                 } else {
                     submitted = true;
                     surface.pending = true;
+                    // Started here and stopped by the vblank. A flip that never
+                    // comes back is the quiet way a GPU reset freezes a screen.
+                    surface.queued_at = Some(std::time::Instant::now());
                     // The flip is away. Whatever commit started the wait has
                     // been carried, so time it and start the next wait from
                     // the next commit.
@@ -2756,7 +2891,15 @@ impl ViewportState {
                 }
                 tracing::debug!("{}: nothing to draw", output.name());
             }
-            Err(e) => tracing::warn!("render_frame: {e}"),
+            Err(e) => {
+                // A renderer whose device has been lost fails here and goes on
+                // failing: `VK_ERROR_DEVICE_LOST` is permanent for the
+                // `VkDevice` that took it, and nothing but a new one helps. So
+                // this is counted too, and the watchdog rebuilds the renderer
+                // if the count keeps going up.
+                tracing::warn!("render_frame: {e}");
+                failed = true;
+            }
         }
 
         // After the match, not inside it: the arm that queues the flip holds a
@@ -2765,6 +2908,18 @@ impl ViewportState {
             if let Some(log) = udev.frame_log.as_mut() {
                 log.flips += 1;
             }
+        }
+        if failed {
+            if let Some(device) = udev.devices.get_mut(id.device) {
+                device.errors = device.errors.saturating_add(1);
+            }
+        }
+        // Something is outstanding on this device: either a flip that has to
+        // come back, or a failure that has to be answered. Either way there is
+        // now a deadline, and the watchdog is what holds it. `self.udev` is out
+        // on the caller's stack here, and none of this touches it.
+        if submitted || failed {
+            self.watch_gpus();
         }
         // The wait this flip ended, and the wait the next one inherits. Both
         // out here for the same reason the flip count is.
@@ -2863,7 +3018,7 @@ impl ViewportState {
         // every fd is about to be revoked, and it is: logind takes them all
         // back on a VT switch. Pausing only the primary left every secondary
         // GPU's `DrmDevice` believing it still held a live fd.
-        for device in &mut udev.devices {
+        for device in udev.devices.iter_mut().filter(|device| device.online) {
             device.manager.pause();
         }
         tracing::info!("session paused");
@@ -2889,9 +3044,22 @@ impl ViewportState {
         // dark monitor, which is worth a line naming it; taking the session
         // down for it would make every monitor dark.
         for (index, device) in udev.devices.iter_mut().enumerate() {
+            // A slot whose card is gone has nothing to reclaim; the watchdog is
+            // what brings that one back, and it stays out of the way until the
+            // session is active again.
+            if !device.online {
+                continue;
+            }
             if let Err(e) = device.manager.lock().activate(true) {
                 tracing::error!("reactivating drm on gpu {index}: {e}");
             }
+            // Whatever failed while the fds were revoked failed for that reason
+            // and not because the card had crashed. Left standing, the count
+            // would send the watchdog down the recovery ladder on the first tick
+            // after every VT switch.
+            device.errors = 0;
+            device.recovery = crate::recovery::Step::Healthy;
+            device.stepped_at = None;
         }
         tracing::info!("session resumed");
 
@@ -2900,6 +3068,7 @@ impl ViewportState {
         for surface in udev.surfaces_mut() {
             surface.drm_output.reset_buffers();
             surface.pending = false;
+            surface.queued_at = None;
         }
 
         let crtcs: Vec<OutputId> = udev.ids();

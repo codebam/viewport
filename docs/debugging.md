@@ -196,10 +196,9 @@ overlaps that surface it has to be composited, and a buffer that cannot be
 sampled has nowhere to go. Advertising it would trade a rare zero-copy frame for
 a window that vanishes when a notification appears over it.
 
-Still missing: GPU hotplug (plugging a monitor into an already-open card is
-handled; plugging in a card is not), and any sharing of a rendered frame between
-devices. **Untested on real multi-GPU hardware** — it was written on a machine
-with one GPU, where every secondary path is unreachable.
+Still missing: any sharing of a rendered frame between devices. **Untested on
+real multi-GPU hardware** — it was written on a machine with one GPU, where
+every secondary path is unreachable.
 
 Which GPU is primary — the one clients and the shell allocate against — is the
 part that bites on a hybrid laptop. The candidates are ranked by whether a Vulkan device actually
@@ -220,6 +219,101 @@ added from.
 
 The startup log names every GPU it found and which it took whenever there is
 more than one, so the wrong choice is visible without guessing.
+
+
+## A GPU that crashes and comes back
+
+An overclocked card that pushes too far does not fail politely. The kernel
+notices a job that never finished and resets the engine, which takes a second or
+several; if that does not take, the driver falls back to a bus reset, which
+unregisters the DRM device and registers it again. From userspace the second one
+is indistinguishable from the card being unplugged and plugged back in.
+
+Neither should cost the session, and `crates/viewport/src/recovery.rs` is what
+makes sure it does not. The failure it exists for is quieter than a crash: a page
+flip is queued, the reset eats it, the vblank that would say "that frame is on
+screen" never arrives, and the output is skipped from then on as having a frame
+already in flight. The compositor keeps running, keeps taking input and keeps
+answering the control socket, with a frozen screen and nothing in the log.
+
+So every queued flip is timed. One that has not come back within 1.2 seconds —
+or a commit that failed outright, which is the same thing without the waiting —
+starts a ladder, each rung tried once and given 1.5 seconds to work before the
+next:
+
+1. **Resume.** Clear the stuck flip, throw away the damage history, draw again.
+   The whole fix when the reset only ate the event.
+2. **Reactivate.** Take DRM master again and put the mode back, exactly as a VT
+   switch back does — after a reset nothing the compositor believes about the
+   device's state is known to be true.
+3. **Rebuild.** Build a new renderer on the same card. A Vulkan device that has
+   taken `VK_ERROR_DEVICE_LOST` fails every submission from then on and cannot
+   be revived, while the GBM device under it is still good.
+4. **Reopen.** Close the card and open it again. The only thing that helps when
+   the DRM device was unregistered, and the one rung that repeats — with a
+   backoff up to 30 seconds, because a card behind a bus reset comes back on its
+   own schedule.
+
+A vblank at any point puts the device straight back to healthy, so a card that
+recovers at the first rung never reaches the second.
+
+Whole-device hotplug is handled alongside it, because it is the same event.
+A card that goes takes its outputs, its `wl_output` globals and its vblank source
+with it — the last of those mattering most: a source watching a revoked fd polls
+ready forever, which is a compositor burning a core over a GPU that is not there.
+A card that arrives is matched back to the slot it left by its **PCI address**
+rather than its node path, since a card that returns while anything still holds
+an fd on the old one takes the next free minor and comes back as `card2`. A GPU
+this session has never seen is added at the end of the list.
+
+Device indices never shift. `OutputId { device, crtc }` indexes the device list
+and every vblank closure has captured one, so a slot whose card is gone is kept
+and the same card comes back into it.
+
+In the log, the whole sequence names itself:
+
+```
+gpu 0 (DrmNode(card1)) stopped responding: resuming the flip chain
+gpu 0 (DrmNode(card1)) stopped responding: resetting the device
+gpu 0 (DrmNode(card1)) is answering again
+```
+
+Three lines and no third rung is a soft reset that took two tries. A run that
+reaches `reopening the card` and then `is up; bringing its outputs back` is a bus
+reset. One that reaches `will not open` and stays there is a GPU that is
+genuinely gone — the retry keeps going for as long as the session does, so
+re-binding the driver by hand brings the monitors back without a restart.
+
+To cause one on amdgpu, **read** the debugfs entry. It triggers on the read and
+has no write handler at all, so the obvious `echo 1 >` fails with a permission
+error even as root, which reads like a lockdown or a mount problem and is
+neither:
+
+```
+cat /sys/kernel/debug/dri/N/amdgpu_gpu_recover
+```
+
+`N` is the card's DRM minor; `cat /sys/kernel/debug/dri/N/name` says which card
+it is. For the bottom rung — reopen, and the matching of a returning card by its
+PCI address — take the device off the bus instead:
+
+```
+echo 1 > /sys/bus/pci/devices/0000:03:00.0/remove
+sleep 5
+echo 1 > /sys/bus/pci/rescan
+```
+
+Do either from SSH rather than from a terminal inside the session being reset.
+Not only because a bug here leaves no way back in, but because that terminal is
+one of the things that will not survive.
+
+**The clients do not come back, and cannot be made to from here.** A reset loses
+every context on the device, so anything drawing through Vulkan or GL — a
+terminal with GPU rendering, a browser, a player — has the device torn out from
+under it and dies. Surviving that is the client's own job, through robustness
+extensions it has to ask for and handle; a compositor cannot do it on their
+behalf. What this is answerable for is being there afterwards to open a new one
+in, with the desktop, the shell and the layout intact.
 
 
 ## A video player dying with "Invalid stride"

@@ -30,6 +30,7 @@ mod notification;
 mod output_management;
 mod output_power;
 mod pointer;
+mod recovery;
 mod render;
 mod screencast;
 mod screencopy;

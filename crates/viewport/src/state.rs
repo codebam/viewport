@@ -579,6 +579,14 @@ pub struct ViewportState {
     /// The timer the barrier tick is armed on. Same reasoning, and the same
     /// consequence for getting it wrong: see [`ViewportState::arm_barrier_tick`].
     pub barrier_timer: Option<std::os::fd::OwnedFd>,
+    /// The timer the GPU watchdog is armed on. Same reasoning again, and here
+    /// it matters most: this tick is the fallback for a desktop where the
+    /// vblank chain and the frame clock have both stopped, which is exactly the
+    /// state in which nothing else will wake the loop. See [`crate::recovery`].
+    pub gpu_timer: Option<std::os::fd::OwnedFd>,
+    /// Whether that watchdog is already armed, so a flip on every output does
+    /// not arm a timer per output.
+    pub gpu_watch: bool,
     /// How many ticks in a row have released nothing.
     pub barrier_quiet: u32,
     /// The shell's workspaces, mirrored for `ext-workspace-v1`. Empty until
@@ -1031,6 +1039,8 @@ impl ViewportState {
             frame_pending: false,
             frame_timer: None,
             barrier_timer: None,
+            gpu_timer: None,
+            gpu_watch: false,
             barrier_quiet: 0,
             _security_context_state: security_context_state,
             _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
@@ -5185,7 +5195,7 @@ impl ViewportState {
     /// A plain `fn` rather than a closure so that the tick body stays a named
     /// method — these run a frame apart from everything else and are easier to
     /// find when they are not anonymous.
-    fn create_tick(
+    pub(crate) fn create_tick(
         &mut self,
         what: &'static str,
         run: fn(&mut Self),
@@ -5234,7 +5244,7 @@ impl ViewportState {
     /// One shot rather than repeating: a repeating timer would keep waking a
     /// desktop that has settled, which is the cost these clocks exist to
     /// avoid. Each tick arms the next itself for as long as there is a reason.
-    fn arm_tick(
+    pub(crate) fn arm_tick(
         what: &'static str,
         fd: Option<&std::os::fd::OwnedFd>,
         interval: std::time::Duration,
