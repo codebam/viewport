@@ -145,6 +145,11 @@ function renderBarModules(name) {
   }
   if (output.modeEl.hidden !== (labels.length === 0)) {
     output.modeEl.hidden = labels.length === 0;
+    /* Only on the way in, and only on the edge. This function runs on every
+       status sample — every two seconds, awake or idle — and a badge that
+       re-popped each time would be a piece of the desktop animating on its own
+       for as long as resize mode was held. */
+    if (!output.modeEl.hidden) animateModeIn(output.modeEl);
   }
 
   const s = lastStatus;

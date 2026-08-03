@@ -275,6 +275,7 @@ function showNotification(message) {
   });
 
   notificationsEl.append(el);
+  animateNotificationIn(el);
 
   const timeout = message.timeout;
   const critical = (message.urgency ?? 1) >= 2;
@@ -299,8 +300,17 @@ function dropNotification(id, expired) {
   if (!entry) return;
 
   clearTimeout(entry.timer);
-  entry.el.remove();
+  /* Dropped from the map now, kept on screen a moment longer. The map is what
+     answers a second dismissal, a late expiry and a replacement arriving under
+     the same id, and all three should find this notification already gone —
+     but the element it names is still there being animated away, so the
+     removal is what the animation is handed rather than something that has
+     already happened by the time it starts. */
   notifications.delete(id);
+  animateNotificationOut(entry.el, () => {
+    entry.el.remove();
+    reportNotificationRect();
+  });
   reportNotificationRect();
 
   if (expired) send({ type: 'notification.expire', id });
@@ -308,9 +318,13 @@ function dropNotification(id, expired) {
 
 /* Where the notifications are, so the compositor can draw them above the
    windows. Nothing when there are none: the container is still there, and a
-   rectangle of empty shell drawn over a window would be a hole in it. */
+   rectangle of empty shell drawn over a window would be a hole in it.
+   One that is animating away still counts as one — see notificationsLeaving in
+   motion.js, which is what keeps the strip composited for the length of its
+   own exit. */
 function reportNotificationRect() {
-  setOverlay('notifications', notifications.size ? notificationsEl : null);
+  const showing = notifications.size > 0 || notificationsLeaving > 0;
+  setOverlay('notifications', showing ? notificationsEl : null);
 }
 
 /* The first rule matching a window, or null.

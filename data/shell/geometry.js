@@ -283,10 +283,14 @@ function reducedMotion() {
  * This one cannot be CSS. The frame is the shell's, but the window's contents
  * are a surface the compositor draws, and no style here touches it — so the
  * opacity is tweened in JS and sent over IPC, where the compositor applies it
- * to the surface itself. Short, and skipped entirely when motion is reduced. */
-const FADE_MS = 120;
-
-/* Returns whether a tween was actually started, which is what lets a caller
+ * to the surface itself. Skipped entirely when motion is reduced.
+ *
+ * What is left here is the part that is about windows: where the fade stops,
+ * and what to do when there is not going to be one. The tween itself is
+ * surfaceOpacityTween in motion.js, along with the rest of the shell's
+ * hand-driven animation.
+ *
+ * Returns whether a tween was actually started, which is what lets a caller
  * that also has an opinion about this window's opacity — solar, whose tiers
  * rest well below 1 — leave a fade in progress alone rather than talking over
  * it. */
@@ -308,29 +312,16 @@ function fadeIn(id) {
 
   send({ type: 'view.opacity', id, opacity: 0 });
 
-  const started = performance.now();
-  let frame = 0;
-  const step = (now) => {
-    const t = Math.min((now - started) / FADE_MS, 1);
-    /* Sampled every other frame. The compositor answers each view.opacity by
-       walking the window's whole surface tree with
-       wlr_scene_node_for_each_buffer(), so the price of the tween is one tree
-       walk per sample per window opened — and over 120ms a 30Hz ramp is
-       indistinguishable from a 60Hz one. The value cannot simply be left to
-       the compositor to interpolate: it holds whatever it was last told and
-       animates nothing, so the intermediate samples *are* the fade.
-       The final sample is never skipped, because it is the one that leaves the
-       window fully opaque. */
-    if (t === 1 || ++frame % 2 === 0) {
-      /* Ease-out, matching the CSS curve closely enough that a window opening
-         beside one that is moving does not look like a different animation. */
-      send({ type: 'view.opacity', id,
-        opacity: resting * (1 - Math.pow(1 - t, 3)) });
-    }
-    if (t < 1) requestAnimationFrame(step);
-  };
-  requestAnimationFrame(step);
-  return true;
+  const started = surfaceOpacityTween(resting, (opacity) => {
+    send({ type: 'view.opacity', id, opacity });
+  });
+
+  /* The window was just told to be invisible. If no tween is going to bring it
+     back up — a shell whose tween engine did not load is the way that happens
+     — this has to, or the fade that never started is a window that never
+     appears. */
+  if (!started) send({ type: 'view.opacity', id, opacity: resting });
+  return started;
 }
 
 /* Fade in every window a relayout has just brought on screen.
@@ -512,7 +503,24 @@ function relayoutAll() {
     const hidden = barMode === 'auto'
       ? (output.barHidden && !logoHeld)
       : output.barHidden;
+    /* The reveal is an edge, not a state, and this runs on every relayout, so
+       what the bar was doing last time is remembered rather than read back off
+       the element — the first pass over a new output finds no `bar-hidden`
+       class on it and has to count as an arrival all the same.
+
+       An edge is what there is to work with: `display` cannot be transitioned
+       and an element coming from display:none has no previous style to move
+       from, so the entrance has to be started by whatever did the revealing.
+
+       Both ways of hiding it count. `bar-hidden` is the toggle and the auto
+       mode; fullscreen covers the output, bar included, through a class of its
+       own — and coming back out of a fullscreen video is the bar arriving
+       exactly as much as pressing Mod4+n is. */
+    const onScreen = !hidden && !(fullscreenHere && !overviewActive);
+    const revealed = onScreen && !output.barShown;
+    output.barShown = onScreen;
     output.el.classList.toggle('bar-hidden', hidden);
+    if (revealed) animateBarIn(output);
     /* Auto draws the bar over the windows rather than above them, so revealing
        it does not resize anything. */
     output.el.classList.toggle('bar-auto', barMode === 'auto');
@@ -524,9 +532,7 @@ function relayoutAll() {
        drawn again, cropped to the bar, in front.
        Only under 'auto': the other modes reserve space, so nothing is over
        anything and there is nothing to lift. */
-    const barFloats = barMode === 'auto'
-      && !hidden
-      && !(fullscreenHere && !overviewActive);
+    const barFloats = barMode === 'auto' && onScreen;
     setOverlay(`bar:${name}`, barFloats ? output.barEl : null);
     renderBar(name);
   }

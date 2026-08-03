@@ -48,6 +48,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | File | What is in it |
 | --- | --- |
 | `state.js` | The bridge to the compositor, and every piece of shell state. Loaded first because the rest is declarations and these are the values they act on. |
+| `motion.js` | The animations that cannot be written as CSS — an element leaving, a stagger, an opacity that is an IPC message. Nothing else in the shell starts a tween. |
 | `tiling.js` | The i3-style tree, and rendering it to nested flexboxes. |
 | `scrolling.js` | niri's endless strip of columns, and the overview. |
 | `solar.js` | one window in the middle, the rest in orbit. The only layout arithmetic in the shell; see [docs/solar.md](../../docs/solar.md). |
@@ -61,3 +62,33 @@ rather than keeping its own list, so the two cannot drift apart.
 | `commands.js` | Commands from the compositor and the inbound message loop. Loaded last: its bottom asks for the state the shell starts from, so everything handling the answer must already exist. |
 
 `shell.css` styles all of it, and `index.html` is the document.
+
+`vendor/` holds built dependencies, checked in rather than fetched: this is a
+`file://` page with no bundler and no network, and the packaging installs the
+directory with `cp -r`. Today that is GSAP, which `motion.js` uses as a tween
+engine and nothing else. The version is declared in `package.json` at the
+repository root and refreshed with `npm install && npm run vendor`; its licence
+is not this repository's, and `vendor/README.md` says so.
+
+## Motion
+
+Most of what moves here is the stylesheet, and it should stay that way: a
+window sliding between two layouts is `transition: flex-grow`, and the browser
+does it on the compositor's behalf for nothing. `motion.js` holds the
+remainder — an element being *removed*, which no rule can style; a stagger,
+which in CSS is a delay per child written against a count the markup owns; and
+a window's own opacity, which is not a style at all but a message, because the
+contents of a window are a surface the compositor draws.
+
+Two rules apply to anything animated, either way:
+
+**Nothing measured may be transformed.** Window frames, `.viewport` holes,
+overview thumbnails, the strip and anything handed to `setOverlay` are read
+back with `getBoundingClientRect` and sent to the compositor. A transform on
+one of those, or on any ancestor of one, is not an effect — it is a stream of
+new geometry for every client on the screen, for as long as it runs. Where
+something measured needs an entrance, it fades.
+
+**Nothing repeats forever.** Every frame the shell paints is a composited frame
+for the whole desktop, so an idle loop is a permanent cost paid by a machine
+that is doing nothing.

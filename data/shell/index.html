@@ -89,12 +89,21 @@ Mod4+d       launcher</pre>
   </section>
 </template>
 
+<!-- The tween engine, vendored. A file:// page resolves no packages and
+     fetches nothing, so what the shell loads is a built copy checked in
+     beside it; the version is declared in package.json at the repository
+     root and refreshed by scripts/vendor-shell-deps.sh. First, because
+     motion.js reads the global it defines. See vendor/README.md — its
+     licence is not this repository's. -->
+<script src="vendor/gsap.min.js"></script>
+
 <!-- Ordered classic scripts, not modules: they share one global scope,
      so a binding declared in state.js is the same binding everywhere.
      This order is the shell's load order and the only place it is
      defined — tests/shell.test.js reads these tags rather than keeping
      a second list that could drift. See shell.md. -->
 <script src="state.js"></script>
+<script src="motion.js"></script>
 <script src="tiling.js"></script>
 <script src="scrolling.js"></script>
 <script src="dynamic.js"></script>
