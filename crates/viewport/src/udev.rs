@@ -1329,7 +1329,10 @@ fn open_device(
     // the first thing worth knowing and should not require a rebuild.
     let asked = std::env::var("VIEWPORT_RENDERER").unwrap_or_default();
     let renderer = match asked.as_str() {
-        "gles" | "gl" | "opengl" => {
+        // Through `renderer_forced_gles` rather than matching the names here,
+        // because the shell's copy renderer asks the same question and the two
+        // answering differently is a bug in its own right — see there.
+        _ if renderer_forced_gles() => {
             tracing::info!("VIEWPORT_RENDERER={asked}: the OpenGL renderer");
             Gpu::Gles(Box::new(gles_renderer(&gbm)?))
         }
@@ -1511,6 +1514,23 @@ fn output_feedback(
             None
         }
     }
+}
+
+/// Whether the session was told to draw with OpenGL.
+///
+/// Every renderer this compositor builds asks, not only the one that draws the
+/// outputs. A session forced onto OpenGL that still copied the shell's frames
+/// with Vulkan was two renderers disagreeing about one buffer: the copy was
+/// allocated for the renderer that was asked for and imported by the one that
+/// was not, and "it works with the other one" then answered nothing, because
+/// the other one was never entirely out of the picture.
+pub fn renderer_forced_gles() -> bool {
+    matches!(
+        std::env::var("VIEWPORT_RENDERER")
+            .unwrap_or_default()
+            .as_str(),
+        "gles" | "gl" | "opengl"
+    )
 }
 
 /// An OpenGL ES renderer on the same GBM device.
