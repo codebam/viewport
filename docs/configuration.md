@@ -41,7 +41,9 @@ settings (shell URL, backend, socket path) are re-read but do nothing until
 restart.
 
 Actions are `exec COMMAND`, `close`, `exit`, `reload`, `focus DIRECTION`,
-`mode NAME`, `appearance toggle`, `lock`, `blank` and `shell COMMAND ARGS…`.
+`mode NAME`, `appearance toggle`, `lock`, `blank`, `background` and
+`shell COMMAND ARGS…`. `background` is the wallpaper terminal's only way in —
+see below.
 `lock` runs the same `idle.lock_command` the idle timer would, so there is one
 place to configure what locking means; `blank` turns the outputs off until the
 next input, exactly as the idle timer does. Chords use sway's
@@ -95,6 +97,7 @@ is the shell's.
 | `Mod4+n` | toggle the bar |
 | `Mod4+Shift+d` | toggle dark mode |
 | `Mod4+Shift+q` / `+e` / `+c` | close / exit / reload the shell |
+| `Mod4+Shift+Return` | give the keyboard to the wallpaper terminal, and take it back |
 
 ## A terminal as the wallpaper
 
@@ -113,22 +116,27 @@ or `--background-terminal` on the command line, bare for the configured
 terminal and `--background-terminal='foot -e btop'` for a command of its own.
 Absent or `false` is off, which is the default.
 
-**It is never given keyboard or pointer input, and that is the point.** The
-terminal is not a window: it is not registered as a view, so `view.focus`
-cannot name it and the shell is never told it exists; it is not in the window
-space, so a click passes over it; and it is not the shell, so the key path that
-delivers to the desktop does not reach it either. There is no setting to turn
-that off.
+**Input reaches it only when you ask, by name.** `Mod4+Shift+Return` — the
+`background` action, or `{"type":"background.focus"}` on the control socket —
+gives the keyboard to the wallpaper terminal on the monitor you are looking at,
+and the same chord gives it back to the window that had it. That is the whole
+of the way in.
 
-The reason is that a wallpaper is the one surface on the screen that is always
-present, always unobscured at the edges, and never deliberately focused. A
-terminal there that could be typed into is a shell prompt underneath every
-window, and every way focus can go wrong — a window closing between two
-keystrokes, a race while the next window is focused, a password typed a moment
-after its prompt disappeared — becomes a way for input to arrive at a command
-line. Read-only costs nothing here, because what this is for is `btop`,
-`journalctl -f`, a clock, a log. An interactive shell will run; it will also
-sit at its prompt forever.
+Nothing else can put focus there. The terminal is not a window: it is not
+registered as a view, so `view.focus` cannot name it and the shell is never
+told it exists; it is not in the window space, so a click on the desktop passes
+over it; and it is not the shell, so the key path that delivers to the desktop
+does not reach it either. There is no click-to-focus and no focus-follows-mouse
+for it, deliberately.
+
+The reason for the asymmetry is that a wallpaper is the one surface on the
+screen that is always present, always unobscured at the edges, and never
+deliberately focused. A terminal there that *drifted* into focus would be a
+shell prompt underneath every window, and every way focus can go wrong — a
+window closing between two keystrokes, a race while the next window is focused,
+a password typed a moment after its prompt disappeared — becomes a way for
+input to arrive at a command line. A chord you pressed is not one of those
+ways, which is why that one is allowed and the accidents are not.
 
 What the compositor gains is nothing: it spawns the command with `/bin/sh -c`,
 which is what an `exec` keybinding already does, and the emulator owns its pty

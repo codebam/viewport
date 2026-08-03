@@ -383,6 +383,45 @@ fn every_monitor_gets_a_terminal() {
     );
 }
 
+/// The keyboard reaches it only when asked, and comes back.
+///
+/// The one deliberate way in. What this checks is that the request works and
+/// that it is a toggle — the accidental routes are checked by
+/// `the_wallpaper_terminal_is_not_a_window`, which is the assertion that it is
+/// not a focusable thing in the first place.
+#[test]
+fn the_keyboard_can_be_handed_over_and_taken_back() {
+    let Some(terminal) = terminal() else {
+        eprintln!("skipped: no terminal emulator on PATH");
+        return;
+    };
+
+    let flag = format!("--background-terminal={terminal}");
+    let compositor = Compositor::start("focus", &[&flag]);
+    if !compositor.saw("background: its toplevel arrived", Duration::from_secs(20)) {
+        eprintln!("skipped: {terminal} never mapped under a headless compositor");
+        return;
+    }
+
+    let mut client = compositor.connect();
+    client.send(r#"{"type":"background.focus"}"#);
+    assert!(
+        compositor.saw(
+            "the keyboard is on the wallpaper terminal",
+            Duration::from_secs(5)
+        ),
+        "asking for it did not hand the keyboard over:\n{}",
+        compositor.log()
+    );
+
+    client.send(r#"{"type":"background.focus"}"#);
+    assert!(
+        compositor.saw("the keyboard went back to view", Duration::from_secs(5)),
+        "the same request did not give the keyboard back:\n{}",
+        compositor.log()
+    );
+}
+
 /// With the flag absent, nothing is started at all.
 ///
 /// The switch is the presence of a command, and a desktop that has not asked

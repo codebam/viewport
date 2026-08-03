@@ -1184,6 +1184,7 @@ impl ViewportState {
                     toplevel.send_close();
                 }
             }
+            Bound::Background => self.toggle_background_focus(),
             Bound::Reload => {
                 #[cfg(feature = "wpe")]
                 if let Some(shell) = self.shell.as_ref() {

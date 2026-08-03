@@ -580,6 +580,93 @@ impl ViewportState {
             .any(|layer| layer.layer() == Layer::Background)
     }
 
+    /// Give the keyboard to the wallpaper terminal on the active monitor, or
+    /// take it back.
+    ///
+    /// The one way in, and it is a chord someone pressed. Everything else
+    /// about this client is arranged so that focus cannot arrive by accident —
+    /// it is not a view, so `view.focus` cannot name it; it is not in the
+    /// `Space`, so a click on the desktop passes over it; it is not the shell,
+    /// so the desktop's own focus path does not reach it. None of that changes
+    /// here. What changes is that a deliberate request now exists, because a
+    /// terminal nobody can ever type into is a picture of a terminal.
+    ///
+    /// Toggling, and back to where focus was: the same chord returns the
+    /// keyboard to the window that had it, so this is a visit rather than a
+    /// mode to escape from. A window that has closed in the meantime leaves
+    /// focus nowhere, which is what closing the focused window does anyway.
+    pub fn toggle_background_focus(&mut self) {
+        use smithay::utils::SERIAL_COUNTER;
+
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+
+        // Already there: give it back.
+        //
+        // Asked of the seat rather than trusted from the flag. Focus moves for
+        // reasons this never hears about — a window opening and being focused
+        // by the shell, a lock screen, a layer surface that asked for the
+        // keyboard — and a flag left set through one of those would make the
+        // next press "restore" focus from a terminal that had not had it.
+        let holds = match (&self.background_focused, keyboard.current_focus()) {
+            (Some(name), Some(current)) => self.background_terminals.iter().any(|background| {
+                background.output == *name && background.surface() == Some(&current)
+            }),
+            _ => false,
+        };
+        if holds {
+            let restore = self.focus_before_background.take();
+            self.background_focused = None;
+            let target = restore
+                .filter(|id| *id != crate::views::NO_VIEW)
+                .and_then(|id| self.views.get(id))
+                .and_then(|view| view.window.toplevel().map(|t| t.wl_surface().clone()));
+            let restored = target.is_some();
+            let serial = SERIAL_COUNTER.next_serial();
+            keyboard.set_focus(self, target, serial);
+            let id = if restored {
+                restore.unwrap_or(crate::views::NO_VIEW)
+            } else {
+                crate::views::NO_VIEW
+            };
+            self.notify_focus(id);
+            tracing::info!("background: the keyboard went back to view {id}");
+            return;
+        }
+
+        // The wallpaper of the monitor being looked at, which is the one a
+        // chord is about. Falling back to the only one there is, because a
+        // single-screen desktop has no ambiguity to resolve.
+        let output = self
+            .active_output
+            .as_deref()
+            .and_then(|name| self.output_by_name(name))
+            .or_else(|| self.space.outputs().next().cloned());
+        let Some(output) = output else {
+            return;
+        };
+        let Some(surface) = self.background_surface_for(&output).cloned() else {
+            tracing::info!(
+                "background: nothing to focus on {} — no wallpaper terminal there",
+                output.name()
+            );
+            return;
+        };
+
+        self.focus_before_background = Some(self.focused);
+        self.background_focused = Some(output.name());
+        let serial = SERIAL_COUNTER.next_serial();
+        keyboard.set_focus(self, Some(surface), serial);
+        // No window is focused now, and the shell has to stop drawing one as
+        // if it were — the same thing `ShellFocus` does for the desktop.
+        self.notify_focus(crate::views::NO_VIEW);
+        tracing::info!(
+            "background: the keyboard is on the wallpaper terminal on {}",
+            output.name()
+        );
+    }
+
     /// Notice one dying, and start it again.
     ///
     /// Polled from the slow tick beside `check_client_shell`, and for the same

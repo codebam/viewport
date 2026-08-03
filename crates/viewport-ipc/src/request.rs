@@ -69,6 +69,17 @@ pub enum Request {
     #[serde(rename = "view.query")]
     ViewQuery,
 
+    /// Give the keyboard to the wallpaper terminal on the active monitor, or
+    /// take it back.
+    ///
+    /// The same toggle the `background` keybinding fires, and the only other
+    /// way in. It is a request rather than a property of the client because
+    /// the whole point of that client is that focus never reaches it by
+    /// accident: it is not a view, so `view.focus` cannot name it, and this
+    /// says "deliberately, now".
+    #[serde(rename = "background.focus")]
+    BackgroundFocus,
+
     /// Move keyboard focus to the shell itself.
     #[serde(rename = "shell.focus")]
     ShellFocus,

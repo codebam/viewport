@@ -210,6 +210,15 @@ pub struct ViewportState {
     /// Whether the "this shell paints an opaque background" refusal has been
     /// said. Once per session, not once per monitor per layout change.
     pub background_backend_warned: bool,
+    /// The monitor whose wallpaper terminal currently has the keyboard, when
+    /// one does.
+    ///
+    /// Only ever set by `toggle_background_focus`, which is only ever reached
+    /// from a keybinding or the equivalent request. Nothing else in the
+    /// compositor can put focus here — see `crate::background`.
+    pub background_focused: Option<String>,
+    /// The view that had the keyboard before, so the same chord gives it back.
+    pub focus_before_background: Option<u32>,
     /// The terminal Mod4+Return opens, resolved from the config file and the
     /// environment. Kept because `--background-terminal` with no command means
     /// "that one", and the keymap is built from it and then thrown away.
@@ -959,6 +968,8 @@ impl ViewportState {
             background_terminals: Vec::new(),
             background_command: None,
             background_backend_warned: false,
+            background_focused: None,
+            focus_before_background: None,
             terminal: std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
             shell_shm_warned: false,
             #[cfg(feature = "wpe")]

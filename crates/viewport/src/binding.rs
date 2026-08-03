@@ -46,6 +46,15 @@ pub enum Action {
     Lock,
     /// Turn the screens off now, rather than waiting for `idle.blank_after`.
     Blank,
+    /// Give the keyboard to the wallpaper terminal on the active monitor, or
+    /// take it back.
+    ///
+    /// The only way input ever reaches it. Everything else about that client
+    /// is arranged so that focus cannot land there by accident — it is not a
+    /// view, not in the `Space`, not a pointer target — and this is the one
+    /// deliberate exception, which is why it is a chord someone has to press
+    /// rather than a click on the desktop. See `crate::background`.
+    Background,
     /// Hand the rest to the shell as a `shell.command`.
     ///
     /// The default for anything this does not implement itself, because the
@@ -177,6 +186,7 @@ fn parse_action(action: &str) -> Action {
             // recognise. Two built-in chords that did nothing, silently.
             "lock" => Action::Lock,
             "blank" => Action::Blank,
+            "background" => Action::Background,
             // Everything else is the shell's, including `focus left` and the
             // layout verbs.
             other => Action::Shell(other.to_owned()),
@@ -232,6 +242,10 @@ pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
         "Mod4+n=shell bar.toggle".to_owned(),
         "Mod4+o=shell layout.overview".to_owned(),
         "Mod4+grave=shell workspace.back".to_owned(),
+        // The wallpaper terminal, when there is one. Bound whether or not it
+        // is switched on: a chord that reaches nothing is one line in the log
+        // rather than a keymap that changes shape with a config key.
+        "Mod4+Shift+Return=background".to_owned(),
         "Mod4+Shift+x=lock".to_owned(),
         "Mod4+Shift+b=blank".to_owned(),
         // HDR on the monitor you are looking at rather than all of them: a
@@ -554,12 +568,12 @@ mod tests {
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
-        // 26 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // 27 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", "wmenu-run", "tiling");
         assert_eq!(
             bindings.len(),
-            26 + 16 + 18 + 11 + 1,
+            27 + 16 + 18 + 11 + 1,
             "a default failed to parse"
         );
 
