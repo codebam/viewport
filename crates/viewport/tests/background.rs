@@ -99,6 +99,31 @@ impl Compositor {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
+    /// The Wayland display it created, from its own log.
+    ///
+    /// `WAYLAND_DISPLAY=<name>`, which is what the shell scripts in tests/
+    /// grep for as well — one contract for both suites. Matching a bare word
+    /// starting with `wayland-` would also hit Smithay's own `Created new
+    /// socket name=Some("wayland-2")`.
+    fn wayland_display(&self) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Ok(log) = std::fs::read_to_string(&self.log) {
+                if let Some(name) = log
+                    .split_whitespace()
+                    .find_map(|word| word.strip_prefix("WAYLAND_DISPLAY="))
+                {
+                    return Some(
+                        name.trim_end_matches(|c: char| !c.is_alphanumeric())
+                            .to_owned(),
+                    );
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
     fn connect(&self) -> Client {
         let stream = UnixStream::connect(&self.socket).expect("connect");
         stream
@@ -148,13 +173,15 @@ impl Client {
 
 /// A terminal to use as the wallpaper, or nothing.
 fn terminal() -> Option<&'static str> {
-    ["foot", "alacritty", "kitty", "xterm"]
-        .into_iter()
-        .find(|program| {
-            std::env::var_os("PATH")
-                .map(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
-                .unwrap_or(false)
-        })
+    first_on_path(&["foot", "alacritty", "kitty", "xterm"])
+}
+
+fn first_on_path(programs: &[&'static str]) -> Option<&'static str> {
+    programs.iter().copied().find(|program| {
+        std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+            .unwrap_or(false)
+    })
 }
 
 /// The terminal is adopted as the wallpaper and never becomes a window.
@@ -204,6 +231,82 @@ fn the_wallpaper_terminal_is_not_a_window() {
     assert!(
         UnixStream::connect(&compositor.socket).is_ok(),
         "the compositor died:\n{}",
+        compositor.log()
+    );
+}
+
+/// A wallpaper program takes the position, and gets it back.
+///
+/// swaybg is a layer-shell client on the background layer, which is drawn over
+/// everything the wallpaper terminal puts on the screen. Two things claiming
+/// the same position is one of them painting frames nobody will ever see, so
+/// the terminal closes — and starts again when the wallpaper program goes.
+#[test]
+fn a_wallpaper_program_takes_the_position() {
+    let Some(terminal) = terminal() else {
+        eprintln!("skipped: no terminal emulator on PATH");
+        return;
+    };
+    let Some(wallpaper) = first_on_path(&["swaybg", "wbg", "hyprpaper"]) else {
+        eprintln!("skipped: no wallpaper program on PATH");
+        return;
+    };
+
+    let flag = format!("--background-terminal={terminal}");
+    let compositor = Compositor::start("wallpaper", &[&flag]);
+    if !compositor.saw("background: its toplevel arrived", Duration::from_secs(20)) {
+        eprintln!("skipped: {terminal} never mapped under a headless compositor");
+        return;
+    }
+
+    let Some(display) = compositor.wayland_display() else {
+        panic!(
+            "the compositor never announced a display:\n{}",
+            compositor.log()
+        );
+    };
+
+    // swaybg is the one with a colour-only mode, which needs no image file on
+    // a machine that may have none. The others are started plain and skipped
+    // if they will not run without arguments.
+    let mut program = Command::new(wallpaper);
+    if wallpaper == "swaybg" {
+        program.args(["-c", "#112233"]);
+    }
+    let mut program = match program
+        .env("WAYLAND_DISPLAY", &display)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("skipped: could not start {wallpaper}: {e}");
+            return;
+        }
+    };
+
+    assert!(
+        compositor.saw(
+            "background: a wallpaper program took the background layer",
+            Duration::from_secs(15)
+        ),
+        "the terminal kept the wallpaper under {wallpaper}:\n{}",
+        compositor.log()
+    );
+
+    // And the position comes back. A wallpaper program being killed and
+    // restarted is what changing the wallpaper looks like from here, so the
+    // terminal returning is not a nicety — without it, one `swaybg -c` from a
+    // script would end the wallpaper terminal for the rest of the session.
+    let _ = program.kill();
+    let _ = program.wait();
+    assert!(
+        compositor.saw(
+            "background: the wallpaper is free again",
+            Duration::from_secs(15)
+        ),
+        "the terminal never came back after {wallpaper} went:\n{}",
         compositor.log()
     );
 }

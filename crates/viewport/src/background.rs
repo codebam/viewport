@@ -53,6 +53,14 @@ use crate::state::{ClientState, ViewportState};
 const RESTART_LIMIT: u32 = 5;
 const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long a terminal asked to close has before it is killed.
+///
+/// Long enough for a shell to run its exit traps and for a terminal to tear
+/// its window down, short enough that a client which ignores the request is
+/// not still painting a frame a second under an opaque wallpaper a minute
+/// later.
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct BackgroundTerminal {
     child: Child,
     /// The command line it was started with, so a restart runs the same one.
@@ -63,6 +71,9 @@ pub struct BackgroundTerminal {
     configured: Option<(u32, u32)>,
     restarts: u32,
     restart_window: Option<std::time::Instant>,
+    /// When it was asked to close, because a wallpaper program took the
+    /// position. `None` while it is running for its own sake.
+    closing: Option<std::time::Instant>,
 }
 
 impl BackgroundTerminal {
@@ -84,6 +95,15 @@ impl ViewportState {
         let Some(command) = self.background_command.clone() else {
             return;
         };
+        // Something is already drawing the wallpaper. Starting a terminal
+        // under an opaque layer surface is starting one nobody will ever see.
+        if self.wallpaper_layer_present() {
+            tracing::info!(
+                "background: {command:?} is not being started — a wallpaper program has \
+                 the background layer"
+            );
+            return;
+        }
         if let Err(e) = self.start_background_terminal(&command) {
             // Not fatal, and deliberately so: the desktop is the shell, and a
             // wallpaper that would not start is not a reason to have no
@@ -163,6 +183,7 @@ impl ViewportState {
             configured: None,
             restarts: 0,
             restart_window: None,
+            closing: None,
         });
         Ok(())
     }
@@ -324,6 +345,80 @@ impl ViewportState {
         true
     }
 
+    /// Stand down: something else is drawing the wallpaper now.
+    ///
+    /// swaybg, hyprpaper, mpvpaper, azote — a wallpaper program is a
+    /// layer-shell client on the background layer, which is drawn over
+    /// everything this module puts on the screen. The terminal underneath it
+    /// is then invisible and still painting, which is a program nobody can see
+    /// spending a core's worth of a laptop's battery on frames that are thrown
+    /// away.
+    ///
+    /// Asked to close rather than killed, so the shell inside it and whatever
+    /// that shell is running get to exit the way they would if the window had
+    /// been closed. A client that ignores `xdg_toplevel.close` is killed once
+    /// the grace period is up — that is what `closing` is for.
+    pub fn background_yield_to_wallpaper(&mut self) {
+        // Nothing running, or it has already been told.
+        let Some(background) = self.background_terminal.as_mut() else {
+            return;
+        };
+        if background.closing.is_some() {
+            return;
+        }
+        tracing::info!(
+            "background: a wallpaper program took the background layer, so {:?} is closing",
+            background.command
+        );
+        background.closing = Some(std::time::Instant::now());
+        if let Some(toplevel) = background.toplevel.as_ref() {
+            toplevel.send_close();
+        }
+        // Never mapped, so there is nothing to ask politely: a process that
+        // has not put a surface up has nothing to save.
+        else {
+            let _ = background.child.kill();
+        }
+    }
+
+    /// Take the wallpaper back, if the program that took it has gone.
+    ///
+    /// The terminal is started again from scratch rather than resumed: it was
+    /// closed, and a closed terminal has no session left to return to.
+    pub fn background_reclaim_wallpaper(&mut self) {
+        if self.wallpaper_layer_present() {
+            return;
+        }
+        // Still going down. `check_background_terminal` starts the next one
+        // when it has actually gone, and starting one now would leave two.
+        if self
+            .background_terminal
+            .as_ref()
+            .is_some_and(|background| background.closing.is_some())
+        {
+            return;
+        }
+        if self.background_terminal.is_none() && self.background_command.is_some() {
+            tracing::info!("background: the wallpaper is free again");
+            self.start_background_process();
+        }
+    }
+
+    /// Whether anything is on the background layer of any output.
+    ///
+    /// The background layer specifically, and not `Bottom`: a bar or a dock
+    /// that sits under the windows is not claiming the wallpaper, and killing
+    /// the terminal for one would be a surprise. What lives on `Background` is
+    /// wallpaper programs, and that is the whole of it.
+    pub fn wallpaper_layer_present(&self) -> bool {
+        use smithay::wayland::shell::wlr_layer::Layer;
+        self.space.outputs().any(|output| {
+            smithay::desktop::layer_map_for_output(output)
+                .layers()
+                .any(|layer| layer.layer() == Layer::Background)
+        })
+    }
+
     /// Notice it dying, and start it again.
     ///
     /// Polled from the slow tick beside `check_client_shell`, and for the same
@@ -335,10 +430,41 @@ impl ViewportState {
         };
         let status = match background.child.try_wait() {
             Ok(Some(status)) => status,
-            // Still running, or we cannot tell — either way there is nothing
-            // to do, and reaping it twice is not a thing to attempt.
-            Ok(None) | Err(_) => return,
+            Ok(None) | Err(_) => {
+                // Still running. If it was asked to close and has not, it is
+                // ignoring the request — every terminal worth running honours
+                // it, and the ones that do not are not entitled to keep
+                // painting under a wallpaper for the rest of the session.
+                if let Some(asked) = background.closing {
+                    if asked.elapsed() > CLOSE_GRACE {
+                        tracing::warn!(
+                            "background: {:?} ignored the close, so it is being killed",
+                            background.command
+                        );
+                        let _ = background.child.kill();
+                    }
+                }
+                return;
+            }
         };
+
+        // Closed on purpose, so this is not a crash and there is nothing to
+        // restart: the wallpaper belongs to something else now, and
+        // `background_reclaim_wallpaper` starts a new one if it gives it back.
+        if background.closing.is_some() {
+            tracing::info!(
+                "background: {:?} closed for the wallpaper program",
+                background.command
+            );
+            self.background_terminal = None;
+            self.needs_render = true;
+            // And if the wallpaper program has already gone in the meantime —
+            // a swaybg that was killed a moment after it started, which is
+            // what changing wallpaper with a restart looks like — the position
+            // is free and nothing else would notice.
+            self.background_reclaim_wallpaper();
+            return;
+        }
 
         let command = background.command.clone();
         let now = std::time::Instant::now();

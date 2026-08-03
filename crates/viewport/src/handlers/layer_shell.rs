@@ -32,7 +32,7 @@ impl WlrLayerShellHandler for ViewportState {
         &mut self,
         surface: WlrLayerSurface,
         wl_output: Option<WlOutput>,
-        _layer: Layer,
+        layer: Layer,
         namespace: String,
     ) {
         // The output the client named, the active one, or the first there is.
@@ -63,6 +63,14 @@ impl WlrLayerShellHandler for ViewportState {
         }
         drop(map);
 
+        // A wallpaper program — swaybg, hyprpaper — asks for the background
+        // layer, which is drawn over the terminal this compositor can draw as
+        // the wallpaper. Two things claiming the same position is one of them
+        // painting for nothing, so the terminal stands down.
+        if layer == Layer::Background {
+            self.background_yield_to_wallpaper();
+        }
+
         // An exclusive zone changes where windows may go, and the shell is
         // what puts them there.
         self.notify_output_layout();
@@ -81,10 +89,19 @@ impl WlrLayerShellHandler for ViewportState {
         let Some((output, layer)) = found else {
             return;
         };
+        let was_wallpaper = layer.layer() == Layer::Background;
         let mut map = layer_map_for_output(&output);
         map.unmap_layer(&layer);
         map.arrange();
         drop(map);
+
+        // The wallpaper program has gone — swaybg killed, hyprpaper restarting
+        // — so the terminal can have the position back. Checked rather than
+        // assumed: a second wallpaper client on another monitor is still one,
+        // and this runs after the unmap so what it counts is what is left.
+        if was_wallpaper {
+            self.background_reclaim_wallpaper();
+        }
 
         // The space it reserved is usable again.
         self.notify_output_layout();

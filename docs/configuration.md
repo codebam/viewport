@@ -147,6 +147,14 @@ Two other consequences worth knowing:
 It is restarted if it exits, up to five times a minute, and then left down with
 a line in the log.
 
+**A wallpaper program wins.** swaybg, hyprpaper, wbg and the rest are
+layer-shell clients on the background layer, which is drawn over everything the
+terminal puts on the screen — so when one appears the terminal is asked to
+close, and is killed five seconds later if it ignores that. When the last one
+goes, a new terminal is started. Running both is otherwise a program painting
+frames nobody can see, which on a laptop is a core's worth of battery spent on
+a picture that is covered up.
+
 ## Dark mode
 
 Styling the shell cannot make client applications dark. Firefox, GTK and Qt
