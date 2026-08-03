@@ -128,6 +128,11 @@
   # readable from the host while the VM is still running and after it is gone.
   programs.bash.loginShellInit = ''
     if [ "$(tty)" = /dev/tty1 ]; then
+      # How fast the shell is painting, once a second. The question a test VM
+      # is always asking is "is the desktop actually being drawn", and without
+      # this the log has a first-frame line and then nothing — a shell painting
+      # four frames a second and one painting none look identical.
+      export VIEWPORT_SHELL_RATE=1
       exec ${config.programs.viewport.package}/bin/viewport 2>&1 \
         | tee /tmp/xchg/viewport.log
     fi
@@ -144,6 +149,17 @@
     htop
   ];
   programs.viewport.terminal = lib.mkDefault "${pkgs.foot}/bin/foot";
+
+  # The bar draws its icons in a Nerd Font, and data/shell/shell.css names the
+  # families as fontconfig reports them: "FiraCode Nerd Font" first, "Symbols
+  # Nerd Font" as the fallback that carries the glyphs without the monospace
+  # face. Without them the bar lays out correctly and every icon in it is a
+  # replacement box — which is a working desktop and a useless screenshot, and
+  # this VM exists to be looked at.
+  fonts.packages = with pkgs; [
+    nerd-fonts.fira-code
+    nerd-fonts.symbols-only
+  ];
 
   networking.hostName = "viewport-vm";
   system.stateVersion = lib.mkDefault config.system.nixos.release;

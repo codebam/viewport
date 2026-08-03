@@ -102,12 +102,22 @@ where
 /// desktop changes rather than continuously, so it is not a per-frame cost.
 // Only the web engine's paths use this; dead, honestly, without it.
 #[cfg_attr(not(feature = "wpe"), allow(dead_code))]
-pub fn copy_texture(
-    renderer: &mut VulkanRenderer,
-    texture: &VulkanTexture,
+///
+/// Generic over the renderer, because the shell's copy runs on whichever one
+/// owns the device — Vulkan where a Vulkan device does, OpenGL in a virtual
+/// machine where none does. The body is written once and compiled twice, which
+/// is what keeps the two honest.
+pub fn copy_texture<R>(
+    renderer: &mut R,
+    texture: &R::TextureId,
     into: &mut smithay::backend::allocator::dmabuf::Dmabuf,
     size: Size<i32, Physical>,
-) -> Result<()> {
+) -> Result<()>
+where
+    R: smithay::backend::renderer::Renderer
+        + smithay::backend::renderer::Bind<smithay::backend::allocator::dmabuf::Dmabuf>,
+    <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+{
     let mut framebuffer = renderer.bind(into).context("binding the shell copy")?;
     let mut frame = renderer
         .render(&mut framebuffer, size, Transform::Normal)
@@ -131,14 +141,32 @@ pub fn copy_texture(
 /// Allocate an image the compositor owns, for [`copy_texture`].
 // Only the web engine's paths use this; dead, honestly, without it.
 #[cfg_attr(not(feature = "wpe"), allow(dead_code))]
+///
+/// From the GBM allocator rather than from the renderer: OpenGL cannot hand out
+/// a DMA-BUF, and asking the renderer for one is what tied this path to Vulkan
+/// and so to whatever Vulkan device happened to load.
 pub fn owned_image(
-    renderer: &mut VulkanRenderer,
+    allocator: &mut smithay::backend::allocator::gbm::GbmAllocator<
+        smithay::backend::drm::DrmDeviceFd,
+    >,
     size: Size<i32, Physical>,
 ) -> Result<smithay::backend::allocator::dmabuf::Dmabuf> {
-    let buffer_size: Size<i32, BufferCoord> = (size.w, size.h).into();
-    renderer
-        .create_buffer(Fourcc::Argb8888, buffer_size)
-        .context("allocating an image for the shell")
+    use smithay::backend::allocator::dmabuf::AsDmabuf as _;
+    use smithay::backend::allocator::{Allocator as _, Modifier};
+    let buffer = allocator
+        .create_buffer(
+            size.w as u32,
+            size.h as u32,
+            Fourcc::Argb8888,
+            // Implicit: the buffer is imported by this compositor's own
+            // renderer and never scanned out directly, so there is nothing to
+            // negotiate a modifier with.
+            &[Modifier::Invalid],
+        )
+        .context("allocating an image for the shell")?;
+    buffer
+        .export()
+        .context("exporting the shell's image as a dma-buf")
 }
 
 /// Draw `texture` on its own and write the result as a binary PPM.

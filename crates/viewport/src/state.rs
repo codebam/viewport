@@ -167,11 +167,23 @@ pub struct ViewportState {
 
     /// A renderer of the compositor's own, for copying WebKit's frames into
     /// buffers it owns. Independent of the backend — see `start_shell`.
+    ///
+    /// The same two-armed renderer the display uses, and for the same reason.
+    /// This was a `VulkanRenderer` and opened whatever Vulkan device existed,
+    /// which in a virtual machine is lavapipe: it owns no DRM node, imported
+    /// WebKit's buffer without complaining, copied nothing anybody could see,
+    /// and left a grey desktop with frames arriving and no error anywhere. A
+    /// copy is only meaningful on the device that owns the buffers.
     #[cfg(feature = "wpe")]
-    pub shell_renderer: Option<viewport_vulkan::VulkanRenderer>,
-    /// Whether opening a Vulkan renderer for the shell's copy has already
-    /// failed, so it is not attempted once per frame for the rest of the
-    /// session.
+    pub shell_renderer: Option<crate::udev::Gpu>,
+    /// What the copy's target buffer is allocated from. GLES cannot allocate a
+    /// DMA-BUF itself, and asking the renderer for one is what tied this to
+    /// Vulkan in the first place.
+    #[cfg(feature = "wpe")]
+    pub shell_allocator:
+        Option<smithay::backend::allocator::gbm::GbmAllocator<smithay::backend::drm::DrmDeviceFd>>,
+    /// Whether opening a renderer for the shell's copy has already failed, so
+    /// it is not attempted once per frame for the rest of the session.
     #[cfg(feature = "wpe")]
     pub shell_copy_refused: bool,
     /// The host's shortcuts, held back while this nested window has the
@@ -923,6 +935,8 @@ impl ViewportState {
             shell_size: None,
             #[cfg(feature = "wpe")]
             shell_renderer: None,
+            #[cfg(feature = "wpe")]
+            shell_allocator: None,
             #[cfg(feature = "wpe")]
             shell_copy_refused: false,
             shell_owned: None,
@@ -5522,8 +5536,6 @@ impl ViewportState {
         card: &smithay::backend::drm::DrmNode,
         render: &smithay::backend::drm::DrmNode,
     ) -> anyhow::Result<()> {
-        use smithay::backend::renderer::ImportDma as _;
-
         // A renderer of the compositor's own, on the render node, for copying
         // WebKit's frames into buffers it owns.
         //
@@ -5531,21 +5543,26 @@ impl ViewportState {
         // about the output, and nesting under another compositor has no DRM
         // renderer at all. Both backends then import the copy into whatever
         // they draw with, which is what lets the nested one show the desktop.
-        // Best-effort, because a machine without a usable Vulkan device still
-        // has a desktop to show. Without it the shell's frame is not copied
-        // into an image of the compositor's own, so WebKit's next paint lands
-        // in the buffer being sampled — the shell can flicker. That is worse
-        // than the copy and better than no session, and it is said out loud
-        // once rather than guessed at.
+        // The copy is not optional: `shell_owned` is what the compositor draws,
+        // and without it the shell is absent from every frame. What is
+        // best-effort is which renderer performs it — Vulkan on this GPU where
+        // there is one, OpenGL on this GPU otherwise. Releasing WebKit's buffer
+        // back to it depends on the copy having happened, so there is no
+        // "skip the copy and show the buffer" to fall back to: the engine
+        // paints into the picture on screen, and the alternative to that is
+        // holding the buffer, which deadlocks the engine after one frame.
         if self.shell_renderer.is_none() && !self.shell_copy_refused {
-            let make = || -> anyhow::Result<viewport_vulkan::VulkanRenderer> {
+            let make = || -> anyhow::Result<(
+                crate::udev::Gpu,
+                smithay::backend::allocator::gbm::GbmAllocator<smithay::backend::drm::DrmDeviceFd>,
+            )> {
                 let instance = smithay::backend::vulkan::Instance::new(
                     smithay::backend::vulkan::version::Version::VERSION_1_3,
                     None,
                 )
                 .map_err(|e| anyhow::anyhow!("creating a vulkan instance for the shell: {e}"))?;
-                let device = viewport_vulkan::Device::for_node(&instance, render)
-                    .map_err(|e| anyhow::anyhow!("opening a vulkan device for the shell: {e}"))?;
+                let device = viewport_vulkan::Device::for_node_exactly(&instance, render)
+                    .map_err(|e| anyhow::anyhow!("opening a vulkan device for the shell: {e}"));
                 // With an allocator: the copy needs somewhere of its own to draw
                 // into, and a renderer without one cannot make an offscreen at
                 // all — which presents as "no image to copy the shell's frame
@@ -5564,24 +5581,48 @@ impl ViewportState {
                     .map_err(|e| {
                         anyhow::anyhow!("opening {} for the shell: {e}", path.display())
                     })?;
-                let gbm = smithay::backend::allocator::gbm::GbmDevice::new(file)
+                // Through `DrmDeviceFd` rather than holding the `File`: it is
+                // an `Arc` around the descriptor and so clones, and both the
+                // GBM device and the allocator taken from it have to.
+                let fd = smithay::backend::drm::DrmDeviceFd::new(smithay::utils::DeviceFd::from(
+                    std::os::fd::OwnedFd::from(file),
+                ));
+                let gbm = smithay::backend::allocator::gbm::GbmDevice::new(fd)
                     .map_err(|e| anyhow::anyhow!("creating a gbm device for the shell: {e}"))?;
                 let allocator = smithay::backend::allocator::gbm::GbmAllocator::new(
-                    gbm,
+                    gbm.clone(),
                     smithay::backend::allocator::gbm::GbmBufferFlags::RENDERING,
                 );
-                let renderer = viewport_vulkan::VulkanRenderer::with_allocator(&device, allocator)
-                    .map_err(|e| {
-                        anyhow::anyhow!("creating a vulkan renderer for the shell: {e}")
-                    })?;
-                Ok(renderer)
+                // Vulkan on *this* device or OpenGL on this device — never
+                // Vulkan on some other one. `for_node_exactly` is the whole
+                // difference: the loose `for_node` falls back to any Vulkan
+                // device there is, and in a virtual machine that is lavapipe,
+                // which owns no DRM node and cannot see these buffers.
+                let renderer = match device {
+                    Ok(device) => viewport_vulkan::VulkanRenderer::with_allocator(
+                        &device,
+                        allocator.clone(),
+                    )
+                    .map(crate::udev::Gpu::Vulkan)
+                    .map_err(|e| anyhow::anyhow!("creating a vulkan renderer: {e}"))?,
+                    Err(e) => {
+                        tracing::info!(
+                            "no Vulkan on the shell's GPU ({e:#}); copying its frames with OpenGL"
+                        );
+                        crate::udev::Gpu::Gles(Box::new(crate::udev::gles_renderer(&gbm)?))
+                    }
+                };
+                Ok((renderer, allocator))
             };
             match make() {
-                Ok(renderer) => self.shell_renderer = Some(renderer),
+                Ok((renderer, allocator)) => {
+                    self.shell_renderer = Some(renderer);
+                    self.shell_allocator = Some(allocator);
+                }
                 Err(e) => {
                     tracing::warn!(
-                        "no Vulkan renderer to copy the shell's frame with ({e:#}); \
-                         the shell may flicker"
+                        "no renderer to copy the shell's frame with ({e:#}); \
+                         the shell will not be drawn"
                     );
                     self.shell_copy_refused = true;
                 }
@@ -5659,122 +5700,127 @@ impl ViewportState {
         use smithay::backend::renderer::ImportDma as _;
 
         if let Some(pending) = self.shell.as_ref().and_then(|shell| shell.take_frame()) {
-            let imported = self
-                .shell_renderer
-                .as_mut()
-                .map(|renderer| renderer.import_dmabuf(&pending.buffer, None));
+            let size: smithay::utils::Size<i32, smithay::utils::Physical> = (
+                pending.buffer.width() as i32,
+                pending.buffer.height() as i32,
+            )
+                .into();
+            let first = self.shell_owned.is_none();
 
-            match imported {
-                Some(Ok(texture)) => {
-                    // Once. "The shell did not appear" has two causes that
-                    // look identical in the log otherwise: WebKit never
-                    // painted, or it painted and the frame was not drawn.
-                    if self.shell_owned.is_none() {
-                        tracing::info!(
-                            "first shell frame imported, {}x{}",
-                            pending.buffer.width(),
-                            pending.buffer.height()
-                        );
-                    }
-                    // Once, before anything else can have touched it. What
-                    // WebKit actually painted is the one thing the log cannot
-                    // say, and it is the difference between an empty right
-                    // half and a right half put on screen wrongly.
-                    if let (Some(path), Some(udev)) = (crate::dump::target(), self.udev.as_mut()) {
-                        if self.shell_owned.is_none() {
-                            // The dump path is Vulkan's: it is a diagnostic
-                            // for the renderer that has colour management, and
-                            // teaching it a second one buys nothing.
-                            if let crate::udev::Gpu::Vulkan(renderer) =
-                                &mut udev.primary_mut().renderer
-                            {
-                                if let Err(e) = crate::dump::shell_frame(renderer, &texture, &path)
-                                {
-                                    tracing::error!("could not dump the shell's frame: {e:#}");
+            // The whole buffer, because WebKit's per-frame damage rectangles
+            // are not carried across the shim. Redrawing more than changed
+            // costs a composite; reporting none at all stops the output.
+            self.shell_damage.add([smithay::utils::Rectangle::from_size(
+                size.to_logical(1)
+                    .to_buffer(1, smithay::utils::Transform::Normal),
+            )]);
+
+            // Allocated before the old one is given up, not after.
+            //
+            // The old buffer is the picture on screen. Taking it first and then
+            // failing to replace it — the layout changed and the device is out
+            // of memory, or the renderer is gone — drops the shell out of the
+            // render list entirely, which is a grey half of a desktop that
+            // comes back only if WebKit paints again. Holding a stale frame is
+            // the better failure: it is wrong by one layout, not absent.
+            let stale = match self.shell_owned.as_ref() {
+                Some((_, at)) => *at != size,
+                // First frame.
+                None => true,
+            };
+            if stale {
+                match self
+                    .shell_allocator
+                    .as_mut()
+                    .map(|allocator| crate::dump::owned_image(allocator, size))
+                {
+                    Some(Ok(buffer)) => self.shell_owned = Some((buffer, size)),
+                    Some(Err(e)) => tracing::error!(
+                        "could not allocate a {}x{} image for the shell's frame: {e:#}",
+                        size.w,
+                        size.h
+                    ),
+                    None => tracing::error!("no allocator for the shell's frame"),
+                }
+            }
+
+            // Import and copy in one place, because the texture belongs to the
+            // renderer that made it: a Vulkan texture and a GLES texture share
+            // a trait and nothing else, so the copy has to happen while that
+            // renderer is still in hand. Taken out of `self` for the duration
+            // so the body can reach the rest of it.
+            let mut renderer = self.shell_renderer.take();
+            if let Some(gpu) = renderer.as_mut() {
+                crate::with_gpu!(gpu, |shell_renderer| {
+                    match shell_renderer.import_dmabuf(&pending.buffer, None) {
+                        Ok(texture) => {
+                            // Once. "The shell did not appear" has two causes
+                            // that look identical in the log otherwise: WebKit
+                            // never painted, or it painted and the frame was
+                            // not drawn.
+                            if first {
+                                tracing::info!("first shell frame imported, {}x{}", size.w, size.h);
+                            }
+                            match self.shell_owned.take() {
+                                // Only into a buffer the frame actually fits.
+                                // The allocation above failed if this does not
+                                // match, and copying anyway would paint a new
+                                // frame into part of an old one — a torn
+                                // composite of two layouts, which reads as a
+                                // rendering bug rather than as the allocation
+                                // failure it is.
+                                Some((mut buffer, at)) if at == size => {
+                                    if let Err(e) = crate::dump::copy_texture(
+                                        shell_renderer,
+                                        &texture,
+                                        &mut buffer,
+                                        at,
+                                    ) {
+                                        tracing::error!("could not copy the shell's frame: {e:#}");
+                                    }
+                                    // Whichever renderer draws this output
+                                    // imports it itself — see `render::build`.
+                                    self.shell_owned = Some((buffer, at));
+                                }
+                                Some(kept) => {
+                                    tracing::warn!(
+                                        "keeping the shell's last frame; this one has nowhere to go"
+                                    );
+                                    self.shell_owned = Some(kept);
+                                }
+                                None => {
+                                    tracing::error!("no image to copy the shell's frame into")
                                 }
                             }
                         }
+                        Err(e) => tracing::error!("could not import the shell's frame: {e}"),
                     }
-                    // The whole buffer, because WebKit's per-frame damage
-                    // rectangles are not carried across the shim. Redrawing
-                    // more than changed costs a composite; reporting none at
-                    // all stops the output.
-                    self.shell_damage.add([smithay::utils::Rectangle::from_size(
-                        (
-                            pending.buffer.width() as i32,
-                            pending.buffer.height() as i32,
-                        )
-                            .into(),
-                    )]);
-                    // Into an image of our own, because the buffer goes back
-                    // to WebKit below and WebKit will paint into it again.
-                    // Sampling it after that is reading the frame the engine
-                    // is drawing, which alternates with whatever it drew last
-                    // — a picture that changes without the compositor asking,
-                    // which is what flicker is.
-                    let size: smithay::utils::Size<i32, smithay::utils::Physical> = (
-                        pending.buffer.width() as i32,
-                        pending.buffer.height() as i32,
-                    )
-                        .into();
-                    // Allocated before the old one is given up, not after.
-                    //
-                    // The old buffer is the picture on screen. Taking it first
-                    // and then failing to replace it — the layout changed and
-                    // the device is out of memory, or the renderer is gone —
-                    // drops the shell out of the render list entirely, which
-                    // is a grey half of a desktop that comes back only if
-                    // WebKit paints again. Holding a stale frame is the better
-                    // failure: it is wrong by one layout, not absent.
-                    let stale = match self.shell_owned.as_ref() {
-                        Some((_, at)) => *at != size,
-                        // First frame.
-                        None => true,
-                    };
-                    if stale {
-                        match self
-                            .shell_renderer
-                            .as_mut()
-                            .and_then(|renderer| crate::dump::owned_image(renderer, size).ok())
-                        {
-                            Some(buffer) => self.shell_owned = Some((buffer, size)),
-                            None => tracing::error!(
-                                "could not allocate a {}x{} image for the shell's frame",
-                                size.w,
-                                size.h
-                            ),
-                        }
-                    }
-                    match self.shell_owned.take() {
-                        // Only into a buffer the frame actually fits. The
-                        // reallocation above failed if this does not match, and
-                        // copying anyway would paint a new frame into part of
-                        // an old one — a torn composite of two layouts, which
-                        // reads as a rendering bug rather than as the
-                        // allocation failure it is.
-                        Some((mut buffer, at)) if at == size => {
-                            let copied = self.shell_renderer.as_mut().map(|renderer| {
-                                crate::dump::copy_texture(renderer, &texture, &mut buffer, at)
-                            });
-                            if let Some(Err(e)) = copied {
-                                tracing::error!("could not copy the shell's frame: {e:#}");
+                });
+            }
+
+            // What WebKit actually painted, once, before anything else can
+            // have touched it — the one thing the log cannot say, and the
+            // difference between an empty right half and a right half put on
+            // screen wrongly. Vulkan only: it is a diagnostic for the renderer
+            // that has colour management, and teaching it a second one buys
+            // nothing. Re-imported rather than threaded out of the body above,
+            // because it runs on the first frame of a session that asked for
+            // it and nowhere else.
+            if first {
+                if let (Some(path), Some(crate::udev::Gpu::Vulkan(vulkan))) =
+                    (crate::dump::target(), renderer.as_mut())
+                {
+                    match vulkan.import_dmabuf(&pending.buffer, None) {
+                        Ok(texture) => {
+                            if let Err(e) = crate::dump::shell_frame(vulkan, &texture, &path) {
+                                tracing::error!("could not dump the shell's frame: {e:#}");
                             }
-                            // Whichever renderer draws this output imports it
-                            // itself — see `render::build`.
-                            self.shell_owned = Some((buffer, at));
                         }
-                        Some(kept) => {
-                            tracing::warn!(
-                                "keeping the shell's last frame; this one has nowhere to go"
-                            );
-                            self.shell_owned = Some(kept);
-                        }
-                        None => tracing::error!("no image to copy the shell's frame into"),
+                        Err(e) => tracing::error!("could not import for the dump: {e}"),
                     }
                 }
-                Some(Err(e)) => tracing::error!("could not import the shell's frame: {e}"),
-                None => {}
             }
+            self.shell_renderer = renderer;
 
             if let Some(shell) = self.shell.as_ref() {
                 // Both, immediately, and in this order.

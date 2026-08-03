@@ -1487,9 +1487,15 @@ fn output_feedback(
 /// EGL rather than Vulkan, which is what makes it work where Vulkan cannot:
 /// virgl in a guest exposes GL through the GBM platform, and this is the path
 /// the nested backend has always used.
-fn gles_renderer(
-    gbm: &GbmDevice<DrmDeviceFd>,
-) -> Result<smithay::backend::renderer::gles::GlesRenderer> {
+/// Generic over what the GBM device was opened on, because the shell's copy
+/// renderer opens the render node itself — it needs no DRM master, so it holds
+/// a plain `File` where the display path holds a session-managed `DrmDeviceFd`.
+pub fn gles_renderer<A>(
+    gbm: &GbmDevice<A>,
+) -> Result<smithay::backend::renderer::gles::GlesRenderer>
+where
+    A: std::os::fd::AsFd + Clone + Send + 'static,
+{
     let display = unsafe { smithay::backend::egl::EGLDisplay::new(gbm.clone()) }
         .context("opening an EGL display on the GBM device")?;
     let context =
