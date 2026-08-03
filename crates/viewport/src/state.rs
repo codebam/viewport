@@ -203,10 +203,13 @@ pub struct ViewportState {
     ///
     /// A client like any other, drawn under the shell and given no input at
     /// all — `crate::background` says why.
-    pub background_terminal: Option<crate::background::BackgroundTerminal>,
-    /// The command line it is started with, and the switch that turns the
+    pub background_terminals: Vec<crate::background::BackgroundTerminal>,
+    /// The command line they are started with, and the switch that turns the
     /// whole thing on: `None` is a desktop with an ordinary wallpaper.
     pub background_command: Option<String>,
+    /// Whether the "this shell paints an opaque background" refusal has been
+    /// said. Once per session, not once per monitor per layout change.
+    pub background_backend_warned: bool,
     /// The terminal Mod4+Return opens, resolved from the config file and the
     /// environment. Kept because `--background-terminal` with no command means
     /// "that one", and the keymap is built from it and then thrown away.
@@ -953,8 +956,9 @@ impl ViewportState {
             shell_backend: crate::shell_backend::ShellBackend::default_for_build(),
             shell_backend_from_flag: false,
             shell_client: None,
-            background_terminal: None,
+            background_terminals: Vec::new(),
             background_command: None,
+            background_backend_warned: false,
             terminal: std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
             shell_shm_warned: false,
             #[cfg(feature = "wpe")]
@@ -3913,17 +3917,16 @@ impl ViewportState {
                 id: self.shell_element_id.clone(),
             });
 
-        // The wallpaper terminal, placed the same way and for the same reason:
-        // one surface across the whole layout, so an output at x=2560 shows
-        // the part of it that starts there.
-        let background = self.background_surface().cloned().map(|surface| {
-            let location = (
-                (-output_geometry.loc.x as f64 * scale).round() as i32,
-                (-output_geometry.loc.y as f64 * scale).round() as i32,
-            )
-                .into();
-            (surface, location)
-        });
+        // This monitor's wallpaper terminal, at this monitor's own origin.
+        //
+        // Not placed like the shell, which is one buffer across the layout and
+        // is offset by where the output starts in it. There is a terminal per
+        // screen, each configured to that screen's size, so each one begins at
+        // the corner of the screen it belongs to.
+        let background = self
+            .background_surface_for(output)
+            .cloned()
+            .map(|surface| (surface, Point::from((0, 0))));
 
         // The part of the shell that goes above the windows, in this output's
         // own physical coordinates.
@@ -4574,8 +4577,8 @@ impl ViewportState {
         // precisely like the wallpaper not being drawn at all — which is what
         // it was reported as — and foot hid it, because foot paints into
         // shared memory and asks for no pacing.
-        if let Some(surface) = self.background_surface() {
-            with_surfaces_surface_tree(surface, &release);
+        for surface in self.background_surfaces() {
+            with_surfaces_surface_tree(&surface, &release);
         }
         // After the walks, so the closure's borrows are done with.
         let signalled = signalled.get();
@@ -4664,8 +4667,8 @@ impl ViewportState {
             // else on an otherwise empty desktop is waiting, so the tick
             // decides there is nothing to keep running for and the one client
             // that needed the next round never gets it.
-            if let Some(surface) = self.background_surface() {
-                smithay::desktop::utils::with_surfaces_surface_tree(surface, &mut look);
+            for surface in self.background_surfaces() {
+                smithay::desktop::utils::with_surfaces_surface_tree(&surface, &mut look);
             }
         }
         waiting
@@ -5027,9 +5030,12 @@ impl ViewportState {
         // is an output the shell has not entered.
         self.configure_client_shell();
         self.announce_shell_outputs();
-        // And the wallpaper terminal, which is sized and placed exactly as the
-        // shell is. A terminal is a grid of cells, so a monitor plugged in
-        // changes how many columns it has and it has to be told.
+        // And the wallpaper terminals. Unlike the shell there is one per
+        // monitor, so a layout change is three things: a screen that has gone
+        // takes its terminal with it, a screen that has arrived gets one, and
+        // a screen that changed mode has to be told its new size.
+        self.prune_background_terminals();
+        self.start_background_process();
         self.configure_background();
         self.announce_background_outputs();
 

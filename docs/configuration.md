@@ -98,8 +98,9 @@ is the shell's.
 
 ## A terminal as the wallpaper
 
-`background_terminal` runs a terminal emulator and draws it behind everything —
-under the windows, under the bar, in place of the desktop background.
+`background_terminal` runs a terminal emulator on every monitor and draws each
+behind everything — under the windows, under the bar, in place of the desktop
+background.
 
 ```jsonc
 {
@@ -154,14 +155,30 @@ Two other consequences worth knowing:
   opaque desktop is a process nobody can see spending a core. Since `cef` is
   the default package, using this means `--shell-backend=webkitgtk`.
 
-It is restarted if it exits, up to five times a minute, and then left down with
-a line in the log.
+**One per screen, not one across the layout.** A terminal is a grid of cells
+and the cells have to land on a monitor: stretched across two, half the columns
+are on the other one and every line is cut down the middle by the gap between
+them. So each output gets a process of its own, sized to that output, plugged
+in and unplugged with it. Each is told which screen it is on through
+`VIEWPORT_OUTPUT`, which is how one setting can do something different per
+monitor:
 
-**A wallpaper program wins.** swaybg, hyprpaper, wbg and the rest are
-layer-shell clients on the background layer, which is drawn over everything the
-terminal puts on the screen — so when one appears the terminal is asked to
-close, and is killed five seconds later if it ignores that. When the last one
-goes, a new terminal is started. Running both is otherwise a program painting
+```jsonc
+{
+  "background_terminal":
+    "sh -c 'case $VIEWPORT_OUTPUT in DP-1) foot -e btop;; *) foot -e journalctl -f;; esac'"
+}
+```
+
+Each is restarted if it exits, up to five times a minute, and then left down
+with a line in the log.
+
+**A wallpaper program wins, per screen.** swaybg, hyprpaper, wbg and the rest
+are layer-shell clients on the background layer, which is drawn over everything
+the terminal puts on that monitor — so when one appears the terminal on *that*
+monitor is asked to close, and is killed five seconds later if it ignores that.
+`swaybg -o DP-1` therefore takes one screen and leaves the terminal on the
+other. When the program goes, that screen's terminal comes back. Running both is otherwise a program painting
 frames nobody can see, which on a laptop is a core's worth of battery spent on
 a picture that is covered up.
 
