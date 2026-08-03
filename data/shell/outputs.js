@@ -81,6 +81,10 @@ function syncOutputs(list) {
           net: el.querySelector('.net'),
         },
         barHidden: barMode !== 'visible',
+        /* Whether the bar was on screen last time the layout was applied, so
+           that revealing it can be told from leaving it revealed. Only the
+           entrance animation reads it; see the note in geometry.js. */
+        barShown: false,
         workspace: 0,
       };
       el.dataset.output = info.name;

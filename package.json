@@ -1,0 +1,14 @@
+{
+  "name": "viewport-shell",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Build-time dependencies of the reference shell in data/shell.",
+  "license": "MIT",
+  "scripts": {
+    "vendor": "scripts/vendor-shell-deps.sh",
+    "test": "node tests/shell.test.js data/shell tiling && node tests/shell.test.js data/shell scrolling"
+  },
+  "dependencies": {
+    "gsap": "^3.15.0"
+  }
+}

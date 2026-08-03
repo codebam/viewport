@@ -39,6 +39,15 @@ function hideScreencastPicker(id) {
 }
 
 function renderScreencastPicker() {
+  /* Whether this is the chooser appearing or the chooser being redrawn.
+   *
+   * The compositor owns the highlight and answers every arrow key by sending
+   * the whole list again, so this function runs once per keypress and builds a
+   * new dialog element every time. An entrance declared on the element — which
+   * is what this was — therefore played again on each move down the list.
+   * Asked before the rebuild, because afterwards there is nothing left to ask. */
+  const wasUp = !screencastEl.hidden;
+
   /* replaceChildren rather than clearing textContent: the second draws over
      the first only if the first is really gone, and a chooser that stacked
      would keep the old highlight visible under the new one. */
@@ -117,6 +126,7 @@ function renderScreencastPicker() {
   dialog.append(keys);
 
   screencastEl.append(dialog);
+  if (!wasUp) animateScreencastIn(dialog, [...list.children]);
 
   /* Keep the highlight in view. The list of windows is as long as the desktop
      is busy, and the one that is highlighted is the only row that matters. */

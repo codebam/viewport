@@ -197,32 +197,24 @@ body {
 .desktop.bar-hidden .bar,
 .desktop.has-fullscreen .bar { display: none; }
 
-/* Revealing the bar.
+/* Revealing the bar is animateBarIn() in motion.js, and not a rule here.
  *
- * This was an opacity *transition*, and it never once ran: `display: none`
- * above is what hides the bar, display cannot be transitioned, and an element
+ * It was an opacity *transition* once, and it never ran: `display: none` above
+ * is what hides the bar, display cannot be transitioned, and an element
  * arriving from display:none has no previous style to move from. A keyframed
- * entrance does run — going from display:none to displayed starts one — which
- * is the same mechanism the mode badge above uses.
+ * entrance did run, and got as far as fading the strip and sliding its two
+ * halves — but the modules inside those halves come and go with what the
+ * compositor has to say, and dealing them out one after another is a delay per
+ * child written against a count this markup does not own. That is a tween, so
+ * it lives in JS with the rest of them.
  *
- * The strip itself only fades. Under 'auto' its rect is measured and handed to
- * the compositor as an overlay so the bar can be drawn in front of the windows
- * it floats over — see setOverlay — and a bar that slid would be drawn cropped
- * to a rectangle it had already left. The contents slide instead: a transform
- * on a child changes no ancestor's box, and nothing measures these two. */
-.bar { animation: bar-in var(--anim-slow) var(--ease); }
-.bar-left, .bar-right { animation: bar-slide var(--anim-slow) var(--ease); }
-
-@keyframes bar-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes bar-slide {
-  from { opacity: 0; transform: translateY(-.4rem); }
-  to { opacity: 1; transform: none; }
-}
-
+ * The split it observes belongs here, because the reason for it is: under
+ * 'auto' the strip's rect is measured and handed to the compositor as an
+ * overlay so the bar can be drawn in front of the windows it floats over — see
+ * setOverlay — and a bar that slid would be drawn cropped to a rectangle it
+ * had already left. So the strip only ever fades, and the contents move: a
+ * transform on a child changes no ancestor's box, and nothing measures these
+ * two. */
 .bar-left, .bar-right { display: flex; align-items: center; gap: .35rem; }
 
 .workspaces { display: flex; gap: .25rem; }
@@ -294,23 +286,18 @@ body {
 /* Active binding mode, e.g. RESIZE. Hidden in the default mode.
  *
  * It appears because a key was pressed and the keyboard now means something
- * else, which is worth a beat of motion: `display` cannot be transitioned, so
- * the entrance is keyframed. It runs once, on a state the user just entered
- * deliberately, and the badge is a couple of centimetres of bar. */
+ * else, which is worth a beat of motion. `display` cannot be transitioned, so
+ * the entrance is a tween — animateModeIn() in motion.js, started by the one
+ * place that unhides this, because a rule here would have no way to tell the
+ * badge appearing from the badge being redrawn two seconds later. */
 .mode {
   padding: .1rem .5rem;
   border-radius: var(--radius-sm);
   background: var(--urgent);
   color: #10141c;
   font-weight: bold;
-  animation: mode-in var(--anim) var(--ease);
 }
 .mode[hidden] { display: none; }
-
-@keyframes mode-in {
-  from { opacity: 0; transform: scale(.88); }
-  to { opacity: 1; transform: none; }
-}
 
 .module { color: var(--muted); padding: 0 .35rem; white-space: nowrap; }
 .module.clock { color: var(--text); }
@@ -952,26 +939,27 @@ html.no-tutorial .empty .tutorial { display: none; }
      part that would be added is exactly the part that gets cut off. */
   box-shadow: var(--shadow-2);
   cursor: pointer;
-  animation: notification-in var(--anim-slow) var(--ease);
   transition: border-color var(--anim) var(--ease);
 }
 
-@keyframes notification-in {
-  from { opacity: 0; transform: translateX(1rem); }
-  to { opacity: 1; transform: none; }
-}
+/* Arriving and leaving are both tweens — animateNotificationIn() and
+   animateNotificationOut() in motion.js. The entrance could have been a rule
+   here and was one; the exit could not, because dismissing a notification
+   removes the element, and there is no styling an element that is not there.
+   Keeping the two together is worth more than keeping the entrance in CSS: a
+   notification that slides in and vanishes is worse than either. */
 
 /* Something arrived and is about to be dismissed by clicking it, so it is
    worth saying which one the pointer would take. */
 .notification:hover { border-color: var(--border-hover); }
 
-/* Every keyframed entrance in the file, by name. Zeroing --anim-slow above
-   covers the durations, but a zero-length animation still shows its from-state
-   for the frame it occupies — which for the bar is a frame of nothing where
-   the bar should be. */
+/* Every keyframed entrance left in the file, by name. Zeroing --anim-slow
+   above covers the durations, but a zero-length animation still shows its
+   from-state for the frame it occupies. The tweens in motion.js are not listed
+   because they are never started at all under this setting — each one asks
+   reducedMotion() first. */
 @media (prefers-reduced-motion: reduce) {
-  .notification, .overview, .mode, .screencast-dialog,
-  .bar, .bar-left, .bar-right, .window.focus-flare { animation: none; }
+  .overview, .window.focus-flare { animation: none; }
 }
 
 /* Low urgency recedes; critical asks to be dealt with and, per the
@@ -1089,16 +1077,16 @@ html.no-tutorial .empty .tutorial { display: none; }
   background: #161a22;
   box-shadow: inset 0 0 0 1px var(--fill);
 
-  /* Opacity only, for the same reason as the crop above: the rect handed to
+  /* The entrance is animateScreencastIn() in motion.js. It fades and does
+     nothing else, for the same reason as the crop above: the rect handed to
      the compositor is measured off this element, so a dialog that scaled or
      slid in would be drawn against a stale rectangle for the length of the
-     animation. Fading changes no rectangle at all. */
-  animation: dialog-in var(--anim-slow) var(--ease);
-}
+     animation. Fading changes no rectangle at all.
 
-@keyframes dialog-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+     It is a tween because it must not run every time: the compositor owns the
+     highlight and answers each arrow key by sending the whole list back, so
+     this element is rebuilt once per keypress, and an entrance declared here
+     played again on every move down the list. */
 }
 
 .screencast-title {

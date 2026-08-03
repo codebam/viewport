@@ -106,12 +106,30 @@ function buildDesktop() {
   const root = new El('div');
   const main = new El('main');
   main.className = 'desktop';
-  for (const c of ['windows', 'empty', 'workspaces', 'taskbar', 'mode',
-      'clock', 'cpu', 'memory', 'load', 'disk', 'net']) {
+  for (const c of ['windows', 'empty']) {
     const el = new El('div');
     el.className = `${c} module`;
     main.append(el);
   }
+  /* The bar, nested as index.html nests it rather than flattened alongside
+     everything else. The shell finds all of these with querySelector either
+     way, but its entrance animation walks the two halves for the modules to
+     deal out — so a flat desktop would leave that code running against nothing
+     here and against real markup on a real screen. */
+  const bar = new El('div');
+  bar.className = 'bar';
+  for (const [half, contents] of [['bar-left', ['workspaces', 'taskbar']],
+    ['bar-right', ['mode', 'clock', 'cpu', 'memory', 'load', 'disk', 'net']]]) {
+    const el = new El('div');
+    el.className = half;
+    for (const c of contents) {
+      const child = new El('div');
+      child.className = `${c} module`;
+      el.append(child);
+    }
+    bar.append(el);
+  }
+  main.append(bar);
   root.append(main);
   return root;
 }
@@ -136,6 +154,10 @@ const pendingFocus = [];
 const outputsEl = new El('div');
 /* Held rather than made inline, so a test can look at what the chooser drew. */
 const screencastEl = new El('div');
+/* And the same for the notification strip, which additionally has to be one
+   element rather than a fresh one per lookup: what a dismissal leaves behind
+   is only visible if the container is the one the shell appended to. */
+const notificationsEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -160,7 +182,7 @@ global.document = {
   documentElement,
   getElementById: (id) => ({
     outputs: outputsEl,
-    notifications: new El('div'),
+    notifications: notificationsEl,
     screencast: screencastEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
@@ -188,6 +210,90 @@ let fakeClock = 0;
 global.requestAnimationFrame = (fn) => { fakeClock += 16; fn(fakeClock); };
 global.performance = { now: () => fakeClock };
 global.matchMedia = () => ({ matches: false });
+
+/* The tween engine, stubbed.
+ *
+ * The real one is data/shell/vendor/gsap.min.js and it is not loaded here: it
+ * wants a window with a layout, and this file has an object with a Proxy for a
+ * style. What the shell asks of it, though, is small and worth exercising
+ * rather than stubbing to nothing — a fade whose samples never arrive is a
+ * window that opens invisible, and that is exactly the kind of thing these
+ * tests are for. So this runs the tween: numeric properties are interpolated
+ * on the fake clock above, every callback fires, and the end state is applied.
+ *
+ * It is not GSAP. Eases are ignored, strings are assigned rather than parsed,
+ * and staggers land together. Nothing here checks what an animation looks
+ * like; what it checks is what the animation *sends* and what it leaves
+ * behind. */
+const TWEEN_KEYS = new Set(['duration', 'ease', 'stagger', 'onUpdate',
+  'onComplete', 'onStart', 'clearProps', 'overwrite', 'immediateRender']);
+
+function applyTweenValues(target, values) {
+  for (const [key, value] of Object.entries(values)) {
+    if (TWEEN_KEYS.has(key)) continue;
+    if (target.style) target.style[key] = value;
+    else target[key] = value;
+  }
+}
+
+function runTween(targets, from, to) {
+  const list = Array.isArray(targets) ? targets : [targets];
+  const frames = Math.max(1, Math.round(((to.duration ?? 0.2) * 1000) / 16));
+
+  for (const target of list) {
+    if (from) applyTweenValues(target, from);
+    /* Only plain objects are interpolated. An element's styles are strings and
+       units as far as this file is concerned, so they jump to their end value;
+       a number on a bare object is the surface-opacity tween, and its
+       intermediate values are the whole point of it. */
+    const numeric = !target.style
+      ? Object.keys(to).filter((k) => !TWEEN_KEYS.has(k)
+        && typeof to[k] === 'number' && typeof target[k] === 'number')
+      : [];
+    const start = Object.fromEntries(numeric.map((k) => [k, target[k]]));
+
+    for (let frame = 1; frame <= frames; frame++) {
+      const t = frame / frames;
+      for (const key of numeric) target[key] = start[key] + (to[key] - start[key]) * t;
+      to.onUpdate?.();
+    }
+    applyTweenValues(target, to);
+  }
+  to.onComplete?.();
+}
+
+global.gsap = {
+  /* Accepted and ignored: what it sets — when the engine's frame callback goes
+     back to sleep, whether it promotes a layer — is about a browser, and there
+     is not one here. */
+  config: () => {},
+  defaults: () => {},
+  to: (targets, vars) => runTween(targets, null, vars),
+  from: (targets, vars) => runTween(targets, vars, { ...vars, duration: vars.duration }),
+  fromTo: (targets, from, to) => runTween(targets, from, to),
+  set: (targets, vars) => runTween(targets, null, { ...vars, duration: 0 }),
+  /* A timeline runs each tween as it is added and there is no clock to hold
+     the next one back, so it has finished as soon as it has anything on it.
+     onComplete therefore fires once, after the first tween: later ones still
+     run, on whatever the callback left behind. That is close enough for the
+     one thing that depends on it — a notification's exit ending in the element
+     being removed — and it is why nothing here should be given work to do
+     after an animation that this file cannot actually sequence. */
+  timeline: (config = {}) => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      config.onComplete?.();
+    };
+    const self = {
+      to: (targets, vars) => { runTween(targets, null, vars); finish(); return self; },
+      from: (targets, vars) => { runTween(targets, vars, vars); finish(); return self; },
+      fromTo: (targets, from, to) => { runTween(targets, from, to); finish(); return self; },
+    };
+    return self;
+  },
+};
 
 /* Top-level const/let inside an eval stay in that eval's own scope, so the
  * shell's state is unreachable from out here unless it hands it over. */
@@ -222,7 +328,15 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
 const shellDir = process.argv[2];
 const document_html = fs.readFileSync(`${shellDir}/index.html`, 'utf8');
 const order = [...document_html.matchAll(/<script src="([^"]+)"><\/script>/g)]
-  .map((m) => m[1]);
+  .map((m) => m[1])
+  /* Everything the shell was written here, minus what it was given. The
+     vendored bundle is a real browser library and this is not a real browser:
+     it would be evaluating a minified engine against a Proxy pretending to be
+     a style declaration, which tests nothing and fails for reasons about the
+     stub. The stub above stands in for it. Excluded by where it lives rather
+     than by name, so a second vendored file needs no change here — but note
+     that anything put under vendor/ is then untested by this file. */
+  .filter((file) => !file.startsWith('vendor/'));
 
 if (order.length === 0) {
   console.error(`no <script src> tags found in ${shellDir}/index.html`);
@@ -402,14 +516,27 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
 
 /* Notifications are the compositor's on D-Bus and the shell's on screen. */
 {
+  const strip = document.getElementById('notifications');
+
   emit({ type: 'notification.add', id: 7, app_name: 'test',
     summary: 'hello', body: 'world', urgency: 1, timeout: 0,
     actions: [{ key: 'reply', label: 'Reply' }] });
+  check('a notification arriving is drawn', strip.children.length === 1);
 
   const before = sent.length;
   emit({ type: 'notification.close', id: 7 });
   check('an application withdrawing one sends nothing back',
     !sent.slice(before).some((m) => String(m.type).startsWith('notification')));
+
+  /* One that has been dismissed animates out, and the removal is what the
+     animation is handed rather than something that has already happened — so
+     the thing worth checking is that the element does eventually go. A
+     notification left behind is not a stale animation, it is a rectangle of
+     shell composited over a window for the rest of the session. */
+  check('and the element goes with it', strip.children.length === 0);
+  check('so the strip stops being drawn over the windows',
+    !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
+      ?.rects ?? []).some((r) => r.width > 0 && r.height > 0));
 
   /* A critical notification never expires on its own, so it must still be
      there after any timer would have run. */
