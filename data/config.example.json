@@ -49,6 +49,14 @@
     "             Mod4+[ and Mod4+] rotate the orbit, Mod4+= and Mod4+- grow",
     "             and shrink the middle one, Mod4+Shift+s throws a window at",
     "             the other monitor. See docs/solar.md.",
+    "\"matrix\"    the focused window at 60% of the width on the left, and the",
+    "             focus history halving away down the right: the one before",
+    "             this at half the column, the one before that a quarter, and",
+    "             so on until a slot would be under 100px. What is left over",
+    "             is stacked in the last slot with a count on it. Order is",
+    "             Alt+Tab order, so nothing is placed by where it sits in the",
+    "             tree. No keys of its own — focus is the only input the model",
+    "             takes. See docs/matrix.md.",
     "",
     "\"shell layout.model\" switches at runtime; with no argument it cycles."
   ],
@@ -56,8 +64,8 @@
 
   "_tiling_mode": [
     "How the tiling tree arranges itself. Only meaningful with",
-    "\"layout\": \"tiling\" — the scrolling strip and the solar layout are each",
-    "their own model.",
+    "\"layout\": \"tiling\" — the scrolling strip, the solar layout and the",
+    "matrix are each their own model.",
     "",
     "  \"manual\"        the tree of splits you make. The default.",
     "  \"master-stack\"  first window one side, the rest in a column beside it.",

@@ -18,7 +18,7 @@ a TTY.
   "url_span": true,         // that page on every monitor; see below
   "shell_backend": "wpe",   // or "webkitgtk"; see docs/shell-backends.md
   "timeout_ms": 5000,
-  "layout": "tiling",       // or "scrolling", or "solar"
+  "layout": "tiling",       // or "scrolling", "solar", or "matrix"
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
   "idle": { "lock_after": 600, "lock_command": "swaylock -f",
             "blank_after": 900 },
@@ -352,7 +352,7 @@ Precedence is flags > config file > defaults.
 -t, --timeout MS       first-paint deadline before falling back (default 5000)
 -s, --socket PATH      control socket
 -c, --config PATH      config file (default ~/.config/viewport/config.json)
-    --layout NAME      tiling, scrolling or solar; overrides the file's "layout"
+    --layout NAME      tiling, scrolling, solar or matrix; overrides "layout"
 -T, --terminal CMD     command bound to Mod4+Return
 -M, --menu CMD         command bound to Mod4+d
 -b, --bind CHORD=ACT   add a keybinding; repeatable
@@ -493,7 +493,23 @@ It has no resize mode and no dividers: a satellite's size is a function of the
 middle window's, so growing that one is the only dimension the layout has. The
 full model, its formulas and its tunables are in [solar.md](solar.md).
 
-All three models share one tree — the strip's columns and the orbits' order are
+**`matrix`** — the focused window at 60% of the width on the left, and the rest
+of your focus history halving away down the right: the window you were in
+before this one takes half the column, the one before that a quarter, and so on
+until a slot would be shorter than 100px. Everything past that point is stacked
+in the last slot with a count badge, most recently used on top.
+
+The order is Alt+Tab order, so nothing is ever laid out by where it happens to
+sit in the tree — the window you keep returning to keeps a large slot, and the
+one you have not touched since this morning sinks to the stack. Focusing a
+window promotes it to the primary and pushes the one it displaced to the top of
+the column.
+
+It has no keys of its own and no resize mode: focus is the only input the model
+takes, so `Mod4+h/j/k/l`, `Mod4+Tab` and clicking a window are the whole
+interaction. Its ratios are in [matrix.md](matrix.md).
+
+All four models share one tree — the strip's columns and the orbits' order are
 both the workspace root's children — so switching `layout` and reloading
 rearranges what is open rather than discarding it. `shell layout.model`
 switches at runtime, with a name or with no argument to cycle:
@@ -542,9 +558,10 @@ the shape that is there — a window opening or closing, mostly, and also a
 monitor rotating under `bsp`, which cuts along whichever side is longer. Every
 dynamic tiler behaves this way, and it is why `manual` is still the default.
 
-None of this touches `"layout": "scrolling"` or `"layout": "solar"`, each of
-which is its own model. Solar in particular has no sub-arrangements: where a
-window goes is decided by its position in the order and nothing else.
+None of this touches `"layout": "scrolling"`, `"layout": "solar"` or
+`"layout": "matrix"`, each of which is its own model. Solar and the matrix in
+particular have no sub-arrangements: where a window goes is decided by its
+position in the order and nothing else.
 
 
 ## Focus at the edge of a monitor

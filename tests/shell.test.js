@@ -315,6 +315,13 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' solarForTest: { placements: solarPlacements, sunOf: solarSunOf,'
   + '   recalculate: recalculateSolarLayout, get SOLAR() { return SOLAR; },'
   + '   get field() { return solarField; } },'
+  /* The matrix layout's kernel, which is a pure function of (windows, screen)
+     — the same case as solar's, and checkable here for the same reason. The
+     focus history is handed over as the live array rather than a copy, so a
+     test can watch what a view.focused did to it. */
+  + ' matrixForTest: { calculate: calculateLayout, capacity: matrixCapacity,'
+  + '   order: matrixOrderOf, recalculate: recalculateMatrixLayout,'
+  + '   stack: focusStack, get MATRIX() { return MATRIX; } },'
   + ' get activeOutput() { return activeOutput; } };';
 /* The shell is a set of ordered classic scripts sharing one global scope, so
  * concatenating them in load order and evaluating the result is exactly what
@@ -752,6 +759,158 @@ if (mode === 'tiling') {
   check('consume/expel/width/move all run', process.exitCode !== 1);
 
   /* The four this block opened, ignoring any a rules test opened and closed. */
+  const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
+    .map((m) => m.id).filter((id) => id <= 4));
+  check('every window still reachable', laidOut.size === 4);
+} else if (mode === 'matrix') {
+  /* The matrix.
+   *
+   * The other layout that computes rectangles, and the other one this harness
+   * can check properly: calculateLayout() is a pure function of (windows,
+   * screen) with no DOM in it at all, so it can be handed a synthetic screen
+   * and asked what it produced. Where those rectangles land on a real panel is
+   * tests/layout.test.js, which needs one. */
+  const matrix = globalThis.__shell.matrixForTest;
+  const SCREEN = { x: 0, y: 0, width: 1920, height: 1050 };
+  const { gap, primaryRatio, minSlotHeight } = matrix.MATRIX;
+  const lay = (n, screen = SCREEN) =>
+    matrix.calculate(Array.from({ length: n }, (_, i) => i + 1), screen);
+
+  {
+    const one = lay(1);
+    check('one window is the whole screen', one.length === 1
+      && one[0].width === SCREEN.width && one[0].height === SCREEN.height);
+    /* Sixty per cent with a hole beside it is not a layout anybody asked for:
+       the split only means something once there is something to put in it. */
+    check('and it is the primary', one[0].tier === 'primary');
+  }
+
+  {
+    const two = lay(2);
+    const [primary, second] = two;
+    check('the focused window takes the share of the width it is meant to',
+      Math.abs(primary.width - (SCREEN.width - gap) * primaryRatio) <= 1);
+    check('at full height, on the left',
+      primary.x === 0 && primary.y === 0 && primary.height === SCREEN.height);
+    check('and the column is what is left of the width, less the gap',
+      second.x === primary.width + gap
+      && second.x + second.width === SCREEN.width);
+    /* Two windows: there is nothing to give the other half of the column to,
+       so the second one has all of it rather than half and a hole. */
+    check('a lone second window has the whole column',
+      second.height === SCREEN.height);
+  }
+
+  {
+    /* The halving itself. Each slot takes half of what the one before it left,
+       and the last one placed takes the remainder — so the column is full to
+       the bottom whatever the count. */
+    const four = lay(4);
+    const slots = four.filter((g) => g.tier === 'slot');
+    check('every window past the first is a slot in the column',
+      slots.length === 3 && four.length === 4);
+    check('and each slot is about half of the one above it',
+      Math.abs(slots[1].height - slots[0].height / 2) <= gap
+      && Math.abs(slots[2].height - slots[1].height) <= gap);
+    check('the slots do not overlap',
+      slots.every((s, i) => i === 0
+        || s.y === slots[i - 1].y + slots[i - 1].height + gap));
+    check('and the column reaches the bottom of the screen',
+      slots.at(-1).y + slots.at(-1).height === SCREEN.height);
+  }
+
+  {
+    /* Logarithmic depth. The bound is a minimum height, not a count, so how
+       many windows the column shows is a function of how tall it is — and it
+       is the *same* function the placement uses, which is why capacity() is
+       asked rather than a number being written down here. */
+    const capacity = matrix.capacity(SCREEN.height, gap, minSlotHeight);
+    check('a column divides into a handful of slots, not a hundred',
+      capacity >= 3 && capacity <= 6);
+    check('and a shorter screen divides into fewer',
+      matrix.capacity(SCREEN.height / 4, gap, minSlotHeight) < capacity);
+    check('never into none, however short',
+      matrix.capacity(10, gap, minSlotHeight) === 1);
+
+    const many = lay(40);
+    check('every window handed in comes back with a rectangle',
+      many.length === 40);
+
+    const drawn = many.filter((g) => !g.hidden);
+    check('but only as many are drawn as the column has room for',
+      drawn.length === capacity + 1);
+    check('and nothing drawn is under the minimum',
+      drawn.filter((g) => g.tier !== 'primary')
+        .every((g) => g.height >= minSlotHeight));
+
+    /* Past the bound they are stacked in the deepest slot: one on top and the
+       rest in the buffer behind it, all at the same rectangle so that
+       whichever comes forward needs no second arithmetic. */
+    const stacked = many.filter((g) => g.tier === 'stacked');
+    check('the overflow is stacked in the last slot',
+      stacked.length === 40 - capacity
+      && stacked.every((g) => g.slot === capacity - 1));
+    check('exactly one of the stack is visible',
+      stacked.filter((g) => !g.hidden).length === 1
+      && stacked[0].hidden === false);
+    check('and they all share one rectangle',
+      stacked.every((g) => g.x === stacked[0].x && g.y === stacked[0].y
+        && g.width === stacked[0].width && g.height === stacked[0].height));
+  }
+
+  {
+    /* Deterministic, which is the whole claim: the same two arguments give the
+       same rectangles, and nothing about when it was called reaches them. */
+    check('the layout is a function of its arguments and nothing else',
+      JSON.stringify(lay(7)) === JSON.stringify(lay(7)));
+    check('and it survives a screen with nothing to divide',
+      matrix.calculate([], SCREEN).length === 0
+      && matrix.calculate([1], { x: 0, y: 0, width: 0, height: 0 }).length === 0);
+
+    /* On screen by construction rather than by clamping. */
+    check('no window is placed off the screen it was given',
+      lay(12).every((g) => g.x >= 0 && g.y >= 0
+        && g.x + g.width <= SCREEN.width
+        && g.y + g.height <= SCREEN.height));
+  }
+
+  {
+    /* The state transition. Focus is the entire input to the order, so a
+       view.focused has to move the window it names to the front of the history
+       and leave everything else in the order it already had. */
+    emit({ type: 'view.focused', id: 3 });
+    check('focusing a window puts it at the head of the history',
+      matrix.stack[0] === 3);
+    const behind = matrix.stack.slice(1).filter((id) => id <= 4 && id !== 1);
+    emit({ type: 'view.focused', id: 1 });
+    check('and the one it displaced is next',
+      matrix.stack[0] === 1 && matrix.stack[1] === 3);
+    check('with the rest in the order they already had',
+      matrix.stack.slice(2).filter((id) => id <= 4).join() === behind.join());
+
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    const order = matrix.order(workspace);
+    check('which is the order the layout is built in',
+      order[0] === 1 && order[1] === 3);
+    const live = matrix.recalculate(workspace, SCREEN);
+    check('so the window in focus is the one holding the primary slot',
+      live[0].id === 1 && live[0].tier === 'primary');
+  }
+
+  {
+    /* Leaving the layout has to undo it, for the same reason solar does: a
+       window still carrying a slot's left/top would be placed in the middle of
+       a tiling column, and one still hidden under a stack would stay invisible
+       for the rest of the session. */
+    const view = globalThis.__shell.views.get(2);
+    check('the matrix positions a window absolutely',
+      view.el.classList.contains('tile') && view.el.style.left !== '');
+    emit({ type: 'config', layout: 'tiling' });
+    check('and leaving it clears that off again',
+      view.el.style.left === '' && view.el.style.top === ''
+      && !view.el.classList.contains('tile') && view.el.hidden === false);
+    emit({ type: 'config', layout: 'matrix' });
+  }
   const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
     .map((m) => m.id).filter((id) => id <= 4));
   check('every window still reachable', laidOut.size === 4);
@@ -1944,10 +2103,11 @@ if (mode === 'scrolling') {
     focusColour !== '' && restColour !== '' && focusColour !== restColour);
 
   /* Two windows differing in one class, so this is the class doing it.
-     Solar draws the window beside the focused one in its own colour — an orbit
-     is a tier and not merely "not focused" — so the second half of the pair is
-     asked for there rather than the resting grey. */
-  const besideColour = mode === 'solar'
+     Solar and the matrix both draw the window beside the focused one in a
+     colour of their own — a tier, or a slot in the focus history, is not
+     merely "not focused" — so the second half of the pair is asked for there
+     rather than the resting grey. */
+  const besideColour = (mode === 'solar' || mode === 'matrix')
     ? sheet.custom(documentElement, '--border-hover') : restColour;
   check('the focused window wears the focus colour',
     sides(framed.el, 'color') === focusColour);
@@ -1973,9 +2133,12 @@ if (mode === 'scrolling') {
   const gap = sheet.custom(documentElement, '--gap');
   /* Solar has no dividers, because it has no shared edges: windows overlap on
      purpose there and the space between two of them is not a thing anyone
-     could drag. The area's own inset below still applies to it. */
+     could drag. The matrix has none either, for the nearer reason that its
+     rectangles are arithmetic: the space between two slots is a number in
+     matrix.js, not an element. The area's own inset below still applies to
+     both. */
   const divider = output.windowsEl.querySelector('.divider');
-  if (mode !== 'solar') {
+  if (mode !== 'solar' && mode !== 'matrix') {
     check('the shell drew a real element in the gap', divider !== null);
     check('as wide as the gap, and it never grows',
       sheet.value(divider, 'flex-basis') === gap &&

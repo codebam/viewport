@@ -88,8 +88,8 @@ function handleShellCommand(command, args) {
     }
     /* Switch layout model without editing the config file. No argument cycles,
        which is what a single key wants to do; a name picks one outright. The
-       tree survives the switch — the three models read the same one — so this
-       is a change of presentation and not of what is open. */
+       tree survives the switch — every model reads the same one — so this is a
+       change of presentation and not of what is open. */
     case 'layout.model': {
       const next = LAYOUT_MODES.includes(arg)
         ? arg
@@ -307,6 +307,12 @@ window.addEventListener('viewport', (event) => {
         clearSelection();
       }
       focusedId = nextId;
+      /* The whole state transition for the matrix layout: one splice, and the
+         relayout at the bottom of this case reads the array as it now stands.
+         Kept here rather than inside that layout's own plan because the
+         history is what was focused *in what order*, which a plan built from
+         the current focus alone cannot recover. */
+      matrixFocused(focusedId);
       const found = focusedId != null ? findLeaf(focusedId) : null;
       if (found) {
         /* Focusing a window on a hidden workspace brings that workspace to a

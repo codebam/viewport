@@ -180,6 +180,14 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   });
   resizeObserver.observe(viewport);
 
+  /* The matrix layout's history, before the window is placed anywhere: it is
+     ordered by focus rather than by the tree, so a new window is at the top of
+     it whichever of the paths below ends up inserting this one.
+     A replayed window is not new — it is a restart's worth of windows arriving
+     at once — so it is left out and takes tree order until something focuses
+     it, rather than the replay's arrival order deciding the whole column. */
+  if (!replay) matrixOpened(id);
+
   /* A rule can send the window somewhere else entirely, float it, or set the
      width of the column it opens in. Applied before anything is inserted, so
      the window goes straight where it belongs rather than appearing in one
@@ -344,6 +352,10 @@ function removeView(id) {
      the record, because it is a property of the workspace rather than of the
      window — so it does have to be forgotten by hand. */
   solarForget(id);
+  /* And the focus history the matrix layout lays itself out from, for the
+     same reason: it is state about a window kept outside the record. A stale
+     id there would hold a slot for a window that no longer exists. */
+  matrixClosed(id);
   treeGeneration++;
   const fullscreenWorkspace = workspace !== null && fullscreens.get(workspace) === id
     ? workspace : null;

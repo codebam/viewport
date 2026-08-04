@@ -16,10 +16,11 @@ The full message set is in [docs/ipc.md](../../docs/ipc.md).
 
 **Layout is CSS, not arithmetic.** The tiling tree renders to nested flexboxes
 and the browser computes every rectangle. Splitting, moving and fullscreen only
-restructure the tree; no code here calculates a window position. `solar.js` is
-the documented exception and the only one — an orbit is not expressible as rows
-and columns, so it positions absolutely. It still writes rectangles as style and
-lets the rule below measure the result.
+restructure the tree; no code here calculates a window position. `solar.js` and
+`matrix.js` are the documented exceptions and the only ones — neither an orbit
+nor a column that halves at every step is expressible as rows and columns, so
+they position absolutely. Both still write rectangles as style and let the rule
+below measure the result.
 
 **Geometry is measured, never assumed.** A hole's screen rect changes for
 reasons no message announces — transitions, font loading, a reflow three
@@ -51,7 +52,8 @@ rather than keeping its own list, so the two cannot drift apart.
 | `motion.js` | The animations that cannot be written as CSS — an element leaving, a stagger, an opacity that is an IPC message. Nothing else in the shell starts a tween. |
 | `tiling.js` | The i3-style tree, and rendering it to nested flexboxes. |
 | `scrolling.js` | niri's endless strip of columns, and the overview. |
-| `solar.js` | one window in the middle, the rest in orbit. The only layout arithmetic in the shell; see [docs/solar.md](../../docs/solar.md). |
+| `solar.js` | one window in the middle, the rest in orbit. Layout arithmetic rather than flexbox; see [docs/solar.md](../../docs/solar.md). |
+| `matrix.js` | the focused window large, the focus history halving away beside it. The other layout that computes rectangles; see [docs/matrix.md](../../docs/matrix.md). |
 | `session.js` | Saving and restoring the layout, window rules, notifications. |
 | `resize.js` | Dragging the gap between two windows, and resize mode. |
 | `geometry.js` | Measuring what the browser laid out and reporting it to the compositor. The hinge of the whole design. |

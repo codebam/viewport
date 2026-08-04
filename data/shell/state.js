@@ -131,10 +131,14 @@ let currentMode = 'default';
  *   tiling     i3-style splits — tiling.js
  *   scrolling  niri's endless strip of columns — scrolling.js
  *   solar      one window in the middle, the rest in orbit — solar.js
+ *   matrix     the focused window large, the focus history halving away
+ *              beside it — matrix.js
  *
  * Listed here rather than in each file so that the config handler, the runtime
- * command and the cycle order cannot disagree about what exists. */
-const LAYOUT_MODES = ['tiling', 'scrolling', 'solar'];
+ * command and the cycle order cannot disagree about what exists. The
+ * compositor holds the same list in state.rs (apply_config) so that a name it
+ * builds a keymap for is one the shell will actually run. */
+const LAYOUT_MODES = ['tiling', 'scrolling', 'solar', 'matrix'];
 let layoutMode = 'tiling';
 /* How the tiling tree arranges itself: 'manual' is the splits you make, and
  * 'master-stack', 'spiral' and 'bsp' derive the shape from which windows are

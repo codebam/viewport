@@ -412,12 +412,24 @@ function relayoutAll() {
      undo. */
   if (layoutMode !== 'solar' || overviewActive) clearSolarState();
 
+  /* The matrix positions absolutely and hides what is buried in its deepest
+     slot, neither of which any other layout would undo: a window left with a
+     slot's left/top would sit in the middle of a tiling column, and one left
+     hidden would stay invisible for the rest of the session. */
+  if (layoutMode !== 'matrix' || overviewActive) clearMatrixState();
+
   /* Every output's orbits, worked out in one pass before any of them is drawn.
      A Lagrange field puts one monitor's cold windows on another, and the
      outputs are rendered in whatever order the map is in, so the companion has
      to already know what it is holding by the time its turn comes. */
   const solar = (layoutMode === 'solar' && !overviewActive)
     ? planSolar() : null;
+
+  /* The matrix's rectangles, for every output at once. One pass rather than
+     one per output as it is drawn, so that whether a monitor is empty is
+     answerable from the plan rather than from how far the drawing has got. */
+  const matrix = (layoutMode === 'matrix' && !overviewActive)
+    ? planMatrix() : null;
 
   /* Where everything was, before the tree is thrown away and rebuilt. */
   const before = new Map();
@@ -453,15 +465,18 @@ function relayoutAll() {
       ? renderOverview(output, assignment.get(name) ?? [])
       : (solar
         ? renderSolar(solar.get(name) ?? [], output)
-        : (root
-          ? (layoutMode === 'scrolling'
-            ? renderStrip(root, output)
-            : renderTree(root))
-          : null));
+        : (matrix
+          ? renderMatrix(matrix.get(name) ?? [], output)
+          : (root
+            ? (layoutMode === 'scrolling'
+              ? renderStrip(root, output)
+              : renderTree(root))
+            : null)));
 
     output.windowsEl.replaceChildren();
     output.windowsEl.classList.toggle('scrolling', layoutMode === 'scrolling');
     output.windowsEl.classList.toggle('solar', layoutMode === 'solar');
+    output.windowsEl.classList.toggle('matrix', layoutMode === 'matrix');
     if (rendered) output.windowsEl.append(rendered);
 
     /* Floating windows are positioned rather than laid out, so they are

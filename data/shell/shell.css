@@ -860,6 +860,59 @@ html.behind body { background: transparent; }
    and the point of the field is that you can read what is in it. */
 .window.lagrange { border-color: var(--muted); opacity: 0.85; }
 
+/* ---------------------------------------------------------------------
+ * Matrix
+ *
+ * The other layout whose rectangles are arithmetic: the focused window on the
+ * left and the focus history halving away down the right. matrix.js writes
+ * left/top/width/height per window and this supplies only what those
+ * rectangles mean — how deep in the history a window is, and how many are
+ * stacked under the last of them. See docs/matrix.md.
+ * ------------------------------------------------------------------ */
+
+/* The containing block, matching .windows exactly so that a slot's
+   coordinates and a floating window's mean the same thing. */
+.matrix-field {
+  position: absolute;
+  inset: 0;
+}
+
+.window.tile {
+  position: absolute;
+  /* As for a floating window: the rect describes the hole, not the frame, so a
+     client is not handed a size two pixels smaller on each side than the one
+     it was configured with. */
+  box-sizing: content-box;
+}
+
+/* The window in focus. Lifted off the desktop, so which of the two columns is
+   the one being worked in is answerable by looking at it. */
+.window.primary { box-shadow: var(--shadow-2); }
+
+/* A slot in the column: warm, but not the one in use. The same quieter frame
+   an orbiting satellite gets, and for the same reason. */
+.window.slot { border-color: var(--border-hover); }
+
+/* The deepest slot, holding everything past the point where halving again
+   would go under the minimum. The badge counts what is underneath: without it
+   the difference between "one more window" and "eleven more" is invisible,
+   since they are all drawn in the same rectangle. */
+.window.stacked { border-color: var(--muted); }
+
+.window.stacked[data-stack]::after {
+  content: attr(data-stack);
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-hi);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+
 /* Hidden on another workspace: kept in the DOM so the client stays alive. */
 .window[hidden], .split[hidden] { display: none; }
 
