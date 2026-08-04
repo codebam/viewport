@@ -15,6 +15,8 @@ bench-results/
 # covered by the rule for the one at the root.
 crates/viewport-shell-cef/target/
 
+.wrangler/
+
 # npm resolves the shell's dependencies here; what the shell actually loads is
 # the built copy under data/shell/vendor, which is committed. See
 # scripts/vendor-shell-deps.sh.
