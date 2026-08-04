@@ -1720,12 +1720,23 @@ impl ViewportState {
             return;
         };
 
-        let connectors: Vec<connector::Info> = resources
+        let mut connectors: Vec<connector::Info> = resources
             .connectors()
             .iter()
             .filter_map(|handle| device.get_connector(*handle, true).ok())
             .filter(|info| info.state() == connector::State::Connected)
             .collect();
+        // Stable sort by interface name and id, so outputs are placed left to
+        // right in a deterministic order regardless of the kernel's enumeration.
+        // A DisplayPort monitor that blanked drops and reconnects, and the DRM
+        // driver may report its connectors in a different order afterwards —
+        // which puts the same monitors in swapped positions.
+        connectors.sort_by(|a, b| {
+            a.interface()
+                .as_str()
+                .cmp(b.interface().as_str())
+                .then(a.interface_id().cmp(&b.interface_id()))
+        });
 
         // Worked out here, while the device is borrowed for reading, because
         // offering one for lease needs the lease state — which is a mutable
