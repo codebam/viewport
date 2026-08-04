@@ -736,17 +736,60 @@ fn export_session_environment() {
         ),
     ];
 
+    let mut children = Vec::new();
     for (program, arguments) in commands {
         match std::process::Command::new(program).args(&arguments).spawn() {
-            // Reaped on a thread of its own: both exit at once, and a
-            // compositor that never waits would leave two zombies for the life
-            // of the session.
-            Ok(mut child) => {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-            }
+            Ok(child) => children.push(child),
             Err(e) => tracing::debug!("could not run {program}: {e}"),
         }
+    }
+
+    // One thread for both: they exit at once, a compositor that never waits
+    // would leave two zombies for the life of the session, and the session
+    // target has to be started after them rather than beside them. Bringing
+    // the target up activates units, and a unit activated before the variables
+    // land is one that starts without them — which for the portal backends is
+    // the failure this whole function exists to avoid.
+    std::thread::spawn(move || {
+        for mut child in children {
+            let _ = child.wait();
+        }
+        start_session_target();
+    });
+}
+
+/// Put the user manager into a graphical session, which nothing else here will
+/// do.
+///
+/// xdg-desktop-portal has guarded its unit with
+///
+///   Requisite=graphical-session.target
+///
+/// since 1.22, and a requisite that is inactive fails the job outright instead
+/// of pulling it in. Nothing activates that target on its own: it sets
+/// RefuseManualStart, so the compositor cannot start it directly, and the
+/// display manager that would is not in the picture for a session launched
+/// from a TTY. viewport-session.target is bound to it and carries no such
+/// guard, so starting that one brings both up.
+///
+/// The symptom when this is missing is remote from the cause: the portal
+/// frontend never starts, so `org.freedesktop.portal.Settings` is unanswered,
+/// so every application reads no colour scheme and draws itself light. The
+/// compositor's own Settings backend is on the bus and correct the whole time
+/// — there is simply no frontend in front of it.
+///
+/// Failure is fine, and quiet on purpose: a session without systemd, or one
+/// where the unit was never installed, wants none of this and works regardless.
+fn start_session_target() {
+    // --no-block because the target pulls in whatever the session declares
+    // wants of it, and this thread has no reason to wait for any of it.
+    match std::process::Command::new("systemctl")
+        .args(["--user", "start", "--no-block", "viewport-session.target"])
+        .spawn()
+    {
+        Ok(mut child) => {
+            let _ = child.wait();
+        }
+        Err(e) => tracing::debug!("could not start viewport-session.target: {e}"),
     }
 }

@@ -139,6 +139,13 @@ package() {
   install -Dm644 data/portal-share/xdg-desktop-portal/portals/viewport.portal \
     "$pkgdir/usr/share/xdg-desktop-portal/portals/viewport.portal"
 
+  # The session target the compositor starts on launch. Without it
+  # graphical-session.target stays inactive, and xdg-desktop-portal — which
+  # holds Requisite=graphical-session.target — refuses to start at all, taking
+  # the Settings interface and every application's dark theme with it.
+  install -Dm644 data/systemd/user/viewport-session.target \
+    "$pkgdir/usr/lib/systemd/user/viewport-session.target"
+
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE" 2>/dev/null || true
 
   install -Dm644 /dev/stdin "$pkgdir/usr/share/wayland-sessions/viewport.desktop" <<'EOF'

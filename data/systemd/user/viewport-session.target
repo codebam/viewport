@@ -1,0 +1,19 @@
+[Unit]
+# The handle the compositor has on graphical-session.target, which it is not
+# allowed to touch directly: that target sets RefuseManualStart, so the only
+# way to bring it up is to start something bound to it. On a system with a
+# display manager this is that manager's job; a compositor started from a TTY
+# has nobody to do it.
+#
+# It matters because xdg-desktop-portal 1.22 guards its unit with
+#
+#   Requisite=graphical-session.target
+#
+# and a requisite that is inactive fails the job rather than pulling it in.
+# The portal frontend then never starts, every Settings read fails, and each
+# application falls back to a light theme with nothing in any log naming the
+# reason.
+Description=Viewport compositor session
+BindsTo=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target

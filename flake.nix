@@ -406,6 +406,14 @@
             mkdir -p $out/share/xdg-desktop-portal/portals
             cp ${self}/data/portal-share/xdg-desktop-portal/portals/viewport.portal \
               $out/share/xdg-desktop-portal/portals/viewport.portal
+            # The session target the compositor starts, so that the portal
+            # frontend's Requisite=graphical-session.target is satisfied. Under
+            # NixOS the module declares this itself; the copy here is for a
+            # system installing the package on its own.
+            mkdir -p $out/lib/systemd/user
+            cp ${self}/data/systemd/user/viewport-session.target \
+              $out/lib/systemd/user/viewport-session.target
+
             cp ${self}/data/fallback.html $out/share/viewport/fallback.html
             cp ${self}/data/config.example.json $out/share/viewport/config.example.json
 
@@ -1203,6 +1211,23 @@
               mkDefault self.packages.${pkgs.system}.${cfg.shellBackend};
 
             environment.systemPackages = [ cfg.package ];
+
+            # What makes the user manager's session graphical, which on a
+            # compositor started from a TTY nothing else does.
+            #
+            # graphical-session.target refuses a manual start, so the
+            # compositor starts this instead and the binding brings the other
+            # one with it. xdg-desktop-portal carries
+            # Requisite=graphical-session.target as of 1.22 and fails its job
+            # outright while that is inactive — no frontend, no Settings
+            # interface, and every application on a light theme with nothing in
+            # the log to say why.
+            systemd.user.targets.viewport-session = {
+              description = "Viewport compositor session";
+              bindsTo = [ "graphical-session.target" ];
+              wants = [ "graphical-session-pre.target" ];
+              after = [ "graphical-session-pre.target" ];
+            };
 
             services.seatd.enable = true;
             security.polkit.enable = true;
