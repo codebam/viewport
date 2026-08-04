@@ -877,12 +877,16 @@ html.behind body { background: transparent; }
   inset: 0;
 }
 
+/* Deliberately *not* `box-sizing: content-box`, which is what a floating window
+   and an orbit both take. There the rect describes the hole and the frame is
+   drawn outside it, because those windows are placed in open space and two
+   pixels either way reach nothing. A slot is not open space: it is a division
+   of the screen, exactly like a tiling column, and the frame belongs inside it.
+   Content-box here made every window four pixels wider and taller than the slot
+   it was given, which is invisible in the middle of the column and is a window
+   cropped along the right and bottom edges of the screen. */
 .window.tile {
   position: absolute;
-  /* As for a floating window: the rect describes the hole, not the frame, so a
-     client is not handed a size two pixels smaller on each side than the one
-     it was configured with. */
-  box-sizing: content-box;
 }
 
 /* The window in focus. Lifted off the desktop, so which of the two columns is

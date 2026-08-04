@@ -74,6 +74,10 @@ primary and the depth otherwise; `hidden` marks a window buried under the top
 of the stack — it still carries the rectangle it would occupy, so coming
 forward is a change of visibility rather than a second calculation.
 
+The rectangle is the *slot*, frame included — a slot is a division of the
+screen the way a tiling column is, so the frame's border comes out of it rather
+than being added around it, and the client's hole is whatever is left inside.
+
 Pure, total and deterministic: no DOM, no globals, no clock. The same two
 arguments always give the same rectangles, every window handed in comes back
 out with one, and it is O(N) in a single pass. `tests/shell.test.js` checks the
@@ -110,7 +114,7 @@ In `MATRIX`, at the top of `data/shell/matrix.js`:
 | --- | --- | --- |
 | `primaryRatio` | `0.60` | the focused window's share of the width |
 | `minSlotHeight` | `100` | how short a slot may get before the column stops dividing — the bound on the depth |
-| `gap` | `8` | between the primary and the column, and between slots; matches `--gap` in `shell.css` |
+| `gap` | `8` | fallback only — the shell reads `--gap` out of the stylesheet at use and passes it in, so a theme that changes the gap changes this layout with it. It is taken off all four outside edges as well as between windows |
 
 ## Keys
 

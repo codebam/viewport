@@ -52,12 +52,15 @@ const MATRIX = {
      would be handed two pixels, which is not a window, it is a line. */
   minSlotHeight: 100,
 
-  /* Space between the primary and the column, and between slots. Matches
-     `--gap` in shell.css by eye rather than by reading it: this file is
-     arithmetic over an area the browser has already measured, and a
-     getComputedStyle per relayout to recover a number that has not changed
-     since the theme loaded would be a measurement for nothing. A theme that
-     moves --gap should move this. */
+  /* Space between the primary and the column, and between slots — and, taken
+     off the area before anything is placed, around the outside of both.
+
+     The number itself is `--gap` from the stylesheet, which the shell reads at
+     use through gapPx() and passes in: a theme that sets a different gap moves
+     this layout with it, exactly as it moves the tiling tree's dividers and the
+     scrolling strip's columns. What is written here is only the fallback the
+     pure kernel falls back on when a caller supplies nothing, which is the same
+     8 gapPx() answers with where there are no computed styles. */
   gap: 8,
 };
 
@@ -169,8 +172,14 @@ function matrixCapacity(height, gap = MATRIX.gap, minimum = MATRIX.minSlotHeight
   return Math.max(1, capacity);
 }
 
-/* A placed window: the rectangle its client gets, and what the rectangle
- * means.
+/* A placed window: the rectangle it occupies, and what the rectangle means.
+ *
+ * The *slot*, frame included, not the client's hole. A slot is a division of
+ * the screen the way a tiling column is, so the two pixels of border the
+ * stylesheet draws come out of it rather than being added around it — which is
+ * what keeps the window against the right or bottom edge from overhanging the
+ * screen by exactly that border. The hole is whatever is left inside, and
+ * geometry.js measures it rather than being told.
  *
  * `slot` is -1 for the primary and the slot index otherwise, so the caller can
  * style by depth without re-deriving it. `hidden` is a window buried under
@@ -275,16 +284,30 @@ function calculateLayout(windows, screen, options = {}) {
 
 /* The area of an output windows may be placed in.
  *
- * Measured, not derived from the output's mode: the bar, a panel's exclusive
- * zone and the gap are all in the stylesheet, and `.windows` is the element
- * they have already been subtracted from. The origin is zero because what
- * comes out of the layout is written straight back as `left` and `top` on a
- * window absolutely positioned inside that element — in page coordinates every
- * window on the second monitor would be offset by the width of the first. */
+ * Measured, not derived from the output's mode: the bar and a panel's exclusive
+ * zone are both in the stylesheet, and `.windows` is the element they have
+ * already been subtracted from. The origin is the area's own top left rather
+ * than the page's, because what comes out of the layout is written straight
+ * back as `left` and `top` on a window absolutely positioned inside that
+ * element — in page coordinates every window on the second monitor would be
+ * offset by the width of the first.
+ *
+ * The gap is the one inset that is *not* already taken out. `.windows` is
+ * padded by `--gap` in the stylesheet, but an absolutely positioned child is
+ * laid out against its padding box, so `.matrix-field` at inset:0 covers that
+ * padding rather than sitting inside it — and getBoundingClientRect returns the
+ * border box, which includes it too. Both halves of the outer gap therefore
+ * have to come off by hand, or the layout runs to the edge of the screen and
+ * the desktop the stylesheet describes is not the one that is drawn. The
+ * scrolling strip subtracts the same padding for the same reason. */
 function matrixAreaOf(output) {
   const rect = output?.windowsEl?.getBoundingClientRect();
-  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
-  return { x: 0, y: 0, width: rect.width, height: rect.height };
+  if (!rect) return null;
+  const gap = gapPx();
+  const width = rect.width - gap * 2;
+  const height = rect.height - gap * 2;
+  if (width <= 0 || height <= 0) return null;
+  return { x: gap, y: gap, width, height };
 }
 
 /* The layout for one workspace, on the output showing it.
@@ -292,11 +315,12 @@ function matrixAreaOf(output) {
  * The entry point the rest of the shell asks for by name, and a thin one: it
  * resolves the workspace's windows and their order out of shell state and
  * hands them to calculateLayout(), which is where the arithmetic is and which
- * knows nothing about any of that. */
+ * knows nothing about any of that — including where the gap between two windows
+ * comes from, which is why it is read here and passed in. */
 function recalculateMatrixLayout(workspace, outputGeometry = null) {
   const area = outputGeometry
     ?? matrixAreaOf(outputs.get(hostOfWorkspace(workspace)));
-  return calculateLayout(matrixOrderOf(workspace), area);
+  return calculateLayout(matrixOrderOf(workspace), area, { gap: gapPx() });
 }
 
 /* Every output's rectangles, worked out on the way into a relayout. One pass

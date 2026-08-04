@@ -859,6 +859,36 @@ if (mode === 'tiling') {
   }
 
   {
+    /* The gap is the theme's, not this file's. A layout that hard-coded eight
+       pixels would drift the moment a config theme set --gap to anything else,
+       and the drift is invisible until you look at two windows side by side. */
+    const wide = matrix.calculate([1, 2, 3], SCREEN, { gap: 40 });
+    check('the gap between the primary and the column is the one asked for',
+      wide[1].x === wide[0].width + 40);
+    check('and so is the gap between two slots',
+      wide[2].y === wide[1].y + wide[1].height + 40);
+    check('a wider gap leaves the primary narrower rather than overflowing',
+      wide[0].width < lay(3)[0].width
+      && wide[1].x + wide[1].width === SCREEN.width);
+
+    /* And the outer one, which is the padding on `.windows`: an absolutely
+       positioned field is laid out against the padding box rather than inside
+       it, so nothing takes that off unless this does. Measured through the live
+       path, since it is matrixAreaOf that has to do the subtracting. */
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    const live = matrix.recalculate(workspace);
+    const inset = matrix.MATRIX.gap;
+    check('the layout is inset from the edge of the tiling area', live.length > 0
+      && live[0].x === inset && live[0].y === inset);
+    check('on all four sides, not merely the two it starts at',
+      live.every((g) => g.x + g.width <= 1920 - inset
+        && g.y + g.height <= 1050 - inset));
+    check('and the column still reaches the inset bottom',
+      live.filter((g) => g.tier !== 'primary').at(-1).y
+      + live.filter((g) => g.tier !== 'primary').at(-1).height === 1050 - inset);
+  }
+
+  {
     /* Deterministic, which is the whole claim: the same two arguments give the
        same rectangles, and nothing about when it was called reaches them. */
     check('the layout is a function of its arguments and nothing else',

@@ -112,8 +112,12 @@ if $shell; then
         set -eu
         node tests/shell.test.js data/shell tiling
         node tests/shell.test.js data/shell scrolling
+        node tests/shell.test.js data/shell solar
+        node tests/shell.test.js data/shell matrix
         node tests/shell.test.js data/shell tiling session
         node tests/shell.test.js data/shell scrolling session
+        node tests/shell.test.js data/shell solar session
+        node tests/shell.test.js data/shell matrix session
         node tests/kiosk.test.js examples/kiosk
     '
 fi
