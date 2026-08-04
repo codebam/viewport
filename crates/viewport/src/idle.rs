@@ -40,7 +40,7 @@ pub struct Actions {
 /// the press that asks for it and the release that follows. Without this the
 /// release is activity, activity wakes the screens, and the binding appears to
 /// do nothing at all (`src/idle.c:53`).
-const BLANK_GRACE: Duration = Duration::from_millis(500);
+const BLANK_GRACE: Duration = Duration::from_millis(2000);
 
 /// How long since the last input, and what has already fired.
 #[derive(Debug)]
