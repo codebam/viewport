@@ -3421,11 +3421,19 @@ impl ViewportState {
             return;
         }
 
-        // Nobody to draw it. A shell that is not up — a test, a crash, a build
-        // without the web engine — should still be able to share a screen, so
-        // this falls back to what was on screen when the user pressed share.
-        if !self.shell_is_up() {
+        // Nobody to draw it. A shell that is not up — a test, a crash — should
+        // still be able to share a screen, so this falls back to what was on
+        // screen when the user pressed share.
+        //
+        // Asked of the page rather than of `shell_is_up`, which answers a
+        // narrower question and answered it wrong here: see `shell_can_draw`.
+        if !self.shell_can_draw() {
             let source = sources.into_iter().next().expect("checked above");
+            // Said out loud, because from outside it looks like the chooser
+            // was skipped for no reason — which is how this went unnoticed on
+            // every shipped build. A share that was never asked about is worth
+            // a line in the log whatever the reason.
+            tracing::info!("no desktop page is drawing, so sharing {source:?} without asking");
             let answer = self.begin_cast(source);
             let _ = reply.try_send(answer);
             return;
@@ -3465,7 +3473,15 @@ impl ViewportState {
         );
     }
 
-    /// Whether there is a shell — to draw a chooser, or to be sent input.
+    /// Whether there is an engine in this process to be sent input.
+    ///
+    /// Narrower than it sounds, and deliberately false on every shipped build:
+    /// only the `wpe` backend runs the page inside the compositor, and only
+    /// that one needs pointer and key events forwarded to it by hand. The
+    /// out-of-process backends are Wayland clients and receive their own.
+    ///
+    /// Which makes this the wrong question to ask about *drawing*, and asking
+    /// it was a bug — see `shell_can_draw`.
     pub fn shell_is_up(&self) -> bool {
         #[cfg(feature = "wpe")]
         {
@@ -3475,6 +3491,33 @@ impl ViewportState {
         {
             false
         }
+    }
+
+    /// Whether there is a desktop page on screen, whichever backend draws it.
+    ///
+    /// The question anything the shell has to *show* must ask. `shell_is_up`
+    /// is about input and is false for every backend except `wpe`, so the
+    /// screen-share chooser — which asked it — never appeared on any shipped
+    /// build: `packages.default` is `cef`, and every request fell through to
+    /// the no-shell fallback and shared the focused window without asking.
+    /// That is a screen handed over on the strength of a keystroke nobody
+    /// made, which is exactly what the chooser exists to prevent.
+    ///
+    /// A committed buffer rather than a live process: a page that has started
+    /// and not yet painted cannot show anything either, and a chooser sent to
+    /// one is a share that hangs until the timeout.
+    pub fn shell_can_draw(&self) -> bool {
+        #[cfg(feature = "wpe")]
+        if self
+            .shells
+            .iter()
+            .any(|page| page.desktop && page.owned.is_some())
+        {
+            return true;
+        }
+        self.shell_clients
+            .iter()
+            .any(|page| page.desktop && page.owned.is_some())
     }
 
     /// Everything the application could be given a picture of.
