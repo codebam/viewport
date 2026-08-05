@@ -78,8 +78,11 @@ pub struct Image {
     usage: vk::ImageUsageFlags,
 
     /// Images arrive from outside this device's queue family, and the first
-    /// barrier has to say so. Tracked because it is only true once: after the
-    /// first acquire the image belongs to us.
+    /// barrier has to say so. True whenever somebody else owns it: at import,
+    /// and again after every [`Image::release_barrier`] — a render target is
+    /// handed back to the foreign queue at the end of each frame, so the next
+    /// frame has to claim it again.
+    ///
     /// An `AtomicBool` rather than a `Cell` so an `Image` is `Sync`. Smithay's
     /// `MemoryRenderBuffer` — which is how the cursor is drawn — keeps
     /// per-renderer textures in a shared map and requires it.
@@ -486,7 +489,16 @@ impl Image {
     /// mapping — none of which are this queue family. Releasing it to
     /// `VK_QUEUE_FAMILY_FOREIGN_EXT` in `GENERAL` layout is what makes the
     /// contents defined for all of them.
+    ///
+    /// And it is foreign again afterwards. A target is bound once and reused
+    /// for every frame it is the output's buffer, so without this the release
+    /// happens each frame while the matching acquire happens only on the
+    /// first: from the second frame on, rendering starts on an image this
+    /// queue family does not own — which is undefined, and undefined in the
+    /// way that works on the driver it was written against.
     pub fn release_barrier(&self, from: vk::ImageLayout) -> vk::ImageMemoryBarrier<'static> {
+        self.foreign
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .dst_access_mask(vk::AccessFlags::empty())
@@ -974,6 +986,48 @@ mod tests {
         // ownership transfer the driver has to honour.
         let second = image.acquire_barrier(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         assert_eq!(second.src_queue_family_index, device.queue_family());
+    }
+
+    /// A render target is bound once and drawn into every frame, and every
+    /// frame ends by releasing it to the foreign queue. So the frame after
+    /// that has to take it back, exactly as the first one did.
+    #[test]
+    fn a_released_image_is_foreign_again() {
+        let Some(TestGpu { device, node }) = require_gpu() else {
+            return;
+        };
+        let mut allocator = match gbm_allocator(&node) {
+            Some(allocator) => allocator,
+            None => return,
+        };
+        let supported: Vec<_> = format::modifiers(device.physical(), Fourcc::Argb8888)
+            .into_iter()
+            .filter(|s| s.rendering && s.planes == 1)
+            .map(|s| s.modifier)
+            .collect();
+        if supported.is_empty() {
+            crate::test_support::skip("no renderable ARGB8888 modifier");
+            return;
+        }
+        let dmabuf = allocator
+            .create_buffer(32, 32, Fourcc::Argb8888, &supported)
+            .expect("gbm allocation")
+            .export()
+            .expect("export");
+        let image = Image::import(&device, &dmabuf, Purpose::Render).expect("import");
+
+        // Frame one, whole: claim it, draw, hand it back.
+        let _ = image.acquire_barrier(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let release = image.release_barrier(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        assert_eq!(release.dst_queue_family_index, vk::QUEUE_FAMILY_FOREIGN_EXT);
+
+        // Frame two starts where frame one left it.
+        let again = image.acquire_barrier(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        assert_eq!(
+            again.src_queue_family_index,
+            vk::QUEUE_FAMILY_FOREIGN_EXT,
+            "a target released to the foreign queue has to be claimed back"
+        );
     }
 
     /// Whether this device can sample NV12 at all, and would let a test that
