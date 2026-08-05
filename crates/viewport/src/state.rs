@@ -14,7 +14,7 @@ use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, LoopSignal, M
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle, Resource as _};
-use smithay::utils::{Logical, Point, Rectangle};
+use smithay::utils::{Logical, Physical, Point, Rectangle};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
@@ -964,6 +964,7 @@ impl ViewportState {
                 rules: None,
                 theme: None,
                 gaps: None,
+                border: None,
                 // Off the end of a monitor carries on to the next one, which
                 // is what this has always done and what sway does.
                 focus_crosses_outputs: true,
@@ -4635,7 +4636,7 @@ impl ViewportState {
                 // The shell's border for this window, where it has said one
                 // has to be drawn above whatever is underneath — as four
                 // sides around the hole rather than one rectangle over it.
-                let overlay = view
+                let overlay: Vec<_> = view
                     .and_then(|view| view.frame.map(|frame| (frame, view.box_)))
                     .map(|(frame, hole)| {
                         crate::render::border_sides(frame, hole)
@@ -4668,11 +4669,58 @@ impl ViewportState {
                     .to_physical(scale)
                     .to_i32_round();
 
+                // The corner the shell drew, in physical pixels on this
+                // output. A fullscreen window has none — the stylesheet takes
+                // the border and the radius off one, and a rounded video
+                // filling the screen would be four notches of wallpaper in the
+                // corners of the monitor.
+                let radius = if view.is_some_and(|view| view.wants_fullscreen()) {
+                    0
+                } else {
+                    self.config
+                        .border
+                        .as_ref()
+                        .and_then(|border| border.radius)
+                        .unwrap_or(crate::config::DEFAULT_BORDER_RADIUS)
+                };
+                let physical = |logical: i32| (f64::from(logical) * scale).round() as i32;
+                // The box the shell drew, before any thumbnail scale: the
+                // element rounding it is wrapped by the one that shrinks it,
+                // so a corner is described once at full size.
+                let box_ = smithay::utils::Rectangle::<i32, Physical>::new(
+                    origin,
+                    layout.size.to_f64().to_physical(scale).to_i32_round(),
+                );
+                let rounded = (radius > crate::config::BORDER_WIDTH)
+                    .then(|| (box_, physical(radius - crate::config::BORDER_WIDTH)));
+                // The outside of the same corner, for the border sides drawn
+                // above the windows underneath a floating one.
+                let overlay_rounded = (radius > 0 && !overlay.is_empty())
+                    .then(|| {
+                        view.and_then(|view| view.frame).map(|frame| {
+                            let frame = smithay::utils::Rectangle::<i32, Logical>::new(
+                                (
+                                    frame.x - output_geometry.loc.x,
+                                    frame.y - output_geometry.loc.y,
+                                )
+                                    .into(),
+                                (frame.width, frame.height).into(),
+                            );
+                            (
+                                frame.to_f64().to_physical(scale).to_i32_round(),
+                                physical(radius),
+                            )
+                        })
+                    })
+                    .flatten();
+
                 Some(crate::render::WindowFrame {
                     window: window.clone(),
                     location,
                     origin,
                     clip,
+                    rounded,
+                    overlay_rounded,
                     // Both were stored and neither was ever applied: the
                     // overview drew its thumbnails and the compositor painted
                     // full-size windows into them, and a window faded out by
@@ -5109,6 +5157,11 @@ impl ViewportState {
                 inner: file.gaps.inner,
                 outer: file.gaps.outer,
                 smart: file.gaps.smart,
+            });
+        }
+        if file.border != crate::config::BorderConfig::default() {
+            self.config.border = Some(viewport_ipc::event::Border {
+                radius: file.border.radius,
             });
         }
         if let Some(url) = file.url {

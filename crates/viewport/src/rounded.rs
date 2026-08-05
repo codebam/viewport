@@ -1,0 +1,643 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Rounded corners, for an element that has no idea it has any.
+//
+// The shell draws a window's frame with a `border-radius`, and until this
+// existed that radius was invisible: the client's surface is not part of the
+// page, the compositor drew it as the rectangle it is, and a square corner
+// over a rounded border is a border that was never there.
+//
+// The obvious way to round a corner is a shader — the fragment picks up an
+// alpha from the distance to the corner and the edge comes out smooth. There is
+// no such hook here: the DRM backend draws through the Vulkan renderer, which
+// has no custom-shader path, and doing it for GLES alone would round the
+// corners on the nested backend and leave the real screen square. So the corner
+// is cut instead of shaded — the element is drawn as a run of horizontal bands,
+// each inset by however much the circle is inset at that height, and the
+// corner pixels are simply never painted.
+//
+// What that costs is antialiasing: the cut is a staircase and not a curve. It
+// is a *short* staircase — the shell's border is drawn behind the client with
+// the page's own antialiasing, so what steps is the boundary between the client
+// and the border, not the outline of the window against the wallpaper — and it
+// is one draw call per band rather than one element per band, which is what
+// keeps the damage tracker seeing a single window rather than a dozen slivers
+// of one.
+
+use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
+use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
+use smithay::backend::renderer::Renderer;
+use smithay::utils::user_data::UserDataMap;
+use smithay::utils::{Buffer as BufferCoord, Physical, Rectangle, Scale, Transform};
+
+/// The bands one rounded rectangle is drawn as, top to bottom.
+///
+/// Rows of equal inset are one band: a radius of 8 is 16 rows of corner and
+/// five or six distinct insets, so merging them turns sixteen draw calls into
+/// six. The middle — everything below the top corner and above the bottom one —
+/// is a single band the full width of the rectangle.
+///
+/// Returns the whole rectangle as one band for a radius of zero or less, which
+/// is what makes "no rounding" cost nothing but the wrapper.
+pub fn bands(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32, Physical>> {
+    let radius = radius.min(rect.size.w / 2).min(rect.size.h / 2);
+    if radius <= 0 || rect.is_empty() {
+        return vec![rect];
+    }
+
+    let mut bands: Vec<Rectangle<i32, Physical>> = Vec::new();
+    let mut push = |y: i32, height: i32, inset: i32| {
+        let width = rect.size.w - inset * 2;
+        if width > 0 && height > 0 {
+            bands.push(Rectangle::new(
+                (rect.loc.x + inset, y).into(),
+                (width, height).into(),
+            ));
+        }
+    };
+
+    // The top corner, as runs of rows that share an inset.
+    let mut run_start = 0;
+    let mut run_inset = inset(radius, 0);
+    for row in 1..=radius {
+        let this = if row == radius {
+            -1
+        } else {
+            inset(radius, row)
+        };
+        if this != run_inset {
+            push(rect.loc.y + run_start, row - run_start, run_inset);
+            run_start = row;
+            run_inset = this;
+        }
+    }
+
+    // The middle, full width.
+    push(rect.loc.y + radius, rect.size.h - radius * 2, 0);
+
+    // The bottom corner, the top one upside down.
+    let bottom = rect.loc.y + rect.size.h;
+    let mut run_end = 0;
+    let mut run_inset = inset(radius, 0);
+    for row in 1..=radius {
+        let this = if row == radius {
+            -1
+        } else {
+            inset(radius, row)
+        };
+        if this != run_inset {
+            push(bottom - row, row - run_end, run_inset);
+            run_end = row;
+            run_inset = this;
+        }
+    }
+
+    bands
+}
+
+/// How far in from the edge the circle is at `row` rows from the top of the
+/// corner.
+///
+/// Measured at the middle of the row rather than its edge, so a radius of 1
+/// clips the single corner pixel rather than nothing or a whole row, and the
+/// steps land where a curve drawn through them would.
+fn inset(radius: i32, row: i32) -> i32 {
+    let r = f64::from(radius);
+    let dy = r - (f64::from(row) + 0.5);
+    let chord = (r * r - dy * dy).max(0.0).sqrt();
+    ((r - chord).round() as i32).clamp(0, radius)
+}
+
+/// An element with the corners of `rect` cut off it.
+///
+/// The rectangle is in the same space as the wrapped element's geometry, which
+/// for a window is the box the shell drew for it rather than the surface: a
+/// client with shadows draws outside its own window, and rounding the shadow
+/// rounds nothing anyone can see. Everything outside the rectangle is dropped
+/// along with the corners — a rounded window that keeps its square shadow is
+/// the same square corner over the same border.
+#[derive(Debug)]
+pub struct RoundedRenderElement<E> {
+    element: E,
+    /// The wrapped element's own geometry, at the scale this was built with.
+    ///
+    /// Kept whole rather than narrowed to the rounded shape, because it is the
+    /// rectangle the element's `src` covers: the renderer is handed the pair
+    /// and stretches one onto the other, so a geometry that is not what `src`
+    /// describes is a window drawn at the wrong magnification. What the corner
+    /// takes away is expressed in the bands and nowhere else.
+    geometry: Rectangle<i32, Physical>,
+    /// Absolute, in the same space as `geometry`, and already clipped to it.
+    bands: Vec<Rectangle<i32, Physical>>,
+    /// The largest rectangles wholly inside the rounded shape, for the opaque
+    /// region. Three of them: the middle full-width band and the two
+    /// corner bands inset by the radius.
+    solid: Vec<Rectangle<i32, Physical>>,
+}
+
+impl<E: Element> RoundedRenderElement<E> {
+    /// Round `element` to `radius` inside `rect`.
+    ///
+    /// `None` when the element and the rectangle do not meet — the same answer
+    /// `CropRenderElement` gives, and for the same reason: there is nothing to
+    /// draw and the caller should not add an element for it.
+    pub fn from_element(
+        element: E,
+        scale: impl Into<Scale<f64>>,
+        rect: Rectangle<i32, Physical>,
+        radius: i32,
+    ) -> Option<Self> {
+        let scale = scale.into();
+        let geometry = element.geometry(scale);
+        if geometry.is_empty() {
+            return None;
+        }
+
+        // Cut from the rectangle and then clipped to the element, rather than
+        // rounding whatever the two happen to share: a window scrolled half
+        // off its output has a geometry that is not the box the shell drew,
+        // and the corner belongs to the box.
+        let bands = bands(rect, radius)
+            .into_iter()
+            .filter_map(|band| band.intersection(geometry))
+            .filter(|band| !band.is_empty())
+            .collect::<Vec<_>>();
+        if bands.is_empty() {
+            return None;
+        }
+
+        let radius = radius.min(rect.size.w / 2).min(rect.size.h / 2).max(0);
+        let solid = [
+            Rectangle::new(
+                (rect.loc.x, rect.loc.y + radius).into(),
+                (rect.size.w, rect.size.h - radius * 2).into(),
+            ),
+            Rectangle::new(
+                (rect.loc.x + radius, rect.loc.y).into(),
+                (rect.size.w - radius * 2, radius).into(),
+            ),
+            Rectangle::new(
+                (rect.loc.x + radius, rect.loc.y + rect.size.h - radius).into(),
+                (rect.size.w - radius * 2, radius).into(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|part| part.intersection(geometry))
+        .filter(|part| !part.is_empty())
+        .collect();
+
+        Some(RoundedRenderElement {
+            element,
+            geometry,
+            bands,
+            solid,
+        })
+    }
+
+    /// A rectangle of `self.geometry` moved into the `dst` the renderer handed
+    /// us.
+    ///
+    /// The two are the same rectangle for an element drawn where it is, and
+    /// differ when something outside has scaled it — the overview draws every
+    /// window as a thumbnail, and it wraps this rather than the other way
+    /// round, because the corner is a property of the window and not of how
+    /// large it is being shown. Mapping through the ratio is what lets one set
+    /// of bands serve both.
+    fn to_dst(
+        &self,
+        part: Rectangle<i32, Physical>,
+        dst: Rectangle<i32, Physical>,
+    ) -> Rectangle<i32, Physical> {
+        if dst == self.geometry {
+            return part;
+        }
+        let sx = f64::from(dst.size.w) / f64::from(self.geometry.size.w.max(1));
+        let sy = f64::from(dst.size.h) / f64::from(self.geometry.size.h.max(1));
+        let left = f64::from(part.loc.x - self.geometry.loc.x) * sx;
+        let top = f64::from(part.loc.y - self.geometry.loc.y) * sy;
+        let right = left + f64::from(part.size.w) * sx;
+        let bottom = top + f64::from(part.size.h) * sy;
+        // Rounded as edges rather than as an origin and a size, so two bands
+        // that touched before the scale still touch after it and no seam of
+        // wallpaper opens up between them.
+        let (left, top) = (left.round() as i32, top.round() as i32);
+        let (right, bottom) = (right.round() as i32, bottom.round() as i32);
+        Rectangle::new(
+            (dst.loc.x + left, dst.loc.y + top).into(),
+            (right - left, bottom - top).into(),
+        )
+    }
+}
+
+impl<E: Element> Element for RoundedRenderElement<E> {
+    fn id(&self) -> &Id {
+        self.element.id()
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.element.current_commit()
+    }
+
+    fn src(&self) -> Rectangle<f64, BufferCoord> {
+        self.element.src()
+    }
+
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        // The element's own, corners included. See the note on the field: this
+        // rectangle is one half of the pair the renderer stretches, and the
+        // corner is not a change of shape but a set of pieces left unpainted.
+        self.element.geometry(scale)
+    }
+
+    fn transform(&self) -> Transform {
+        self.element.transform()
+    }
+
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        // Unchanged: damage is relative to a geometry this element did not
+        // narrow. A corner reported as damaged and then not painted is a
+        // corner the tracker lets whatever is behind it repaint, which is
+        // exactly what has to happen there.
+        self.element.damage_since(scale, commit)
+    }
+
+    fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        let origin = self.element.geometry(scale).loc;
+        // Only what is both opaque in the element and inside the rounded
+        // shape. Claiming a corner is opaque when it is never painted leaves
+        // whatever is behind it culled and the corner full of the last frame.
+        self.element
+            .opaque_regions(scale)
+            .into_iter()
+            .flat_map(|rect| {
+                self.solid.iter().filter_map(move |solid| {
+                    let mut solid = *solid;
+                    solid.loc -= origin;
+                    rect.intersection(solid)
+                })
+            })
+            .filter(|rect| !rect.is_empty())
+            .collect()
+    }
+
+    fn alpha(&self) -> f32 {
+        self.element.alpha()
+    }
+
+    fn kind(&self) -> Kind {
+        self.element.kind()
+    }
+
+    fn is_framebuffer_effect(&self) -> bool {
+        self.element.is_framebuffer_effect()
+    }
+}
+
+impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for RoundedRenderElement<E> {
+    fn draw(
+        &self,
+        frame: &mut R::Frame<'_, '_>,
+        src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
+    ) -> Result<(), R::Error> {
+        for piece in self.pieces(src, dst, damage, opaque_regions) {
+            self.element.draw(
+                frame,
+                piece.src,
+                piece.dst,
+                &piece.damage,
+                &piece.opaque,
+                cache,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn underlying_storage(&self, renderer: &mut R) -> Option<UnderlyingStorage<'_>> {
+        self.element.underlying_storage(renderer)
+    }
+
+    fn capture_framebuffer(
+        &self,
+        frame: &mut R::Frame<'_, '_>,
+        src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>,
+        cache: &UserDataMap,
+    ) -> Result<(), R::Error> {
+        self.element.capture_framebuffer(frame, src, dst, cache)
+    }
+}
+
+/// One band as the renderer is asked to draw it.
+///
+/// A band is handed to the wrapped element as though it were the whole of a
+/// smaller element — its own piece of the source, its own destination, and
+/// damage and opaque regions relative to it — because that is the only shape
+/// `draw` takes.
+#[derive(Debug, PartialEq)]
+pub struct Piece {
+    pub src: Rectangle<f64, BufferCoord>,
+    pub dst: Rectangle<i32, Physical>,
+    pub damage: Vec<Rectangle<i32, Physical>>,
+    pub opaque: Vec<Rectangle<i32, Physical>>,
+}
+
+impl<E: Element> RoundedRenderElement<E> {
+    /// Split a draw into one piece per band.
+    ///
+    /// Separate from `draw` so it can be tested without a renderer: the
+    /// arithmetic is the whole of what can go wrong here, and getting it wrong
+    /// shows up as a window drawn at the wrong magnification or a seam of
+    /// wallpaper across it — neither of which a type checks.
+    ///
+    /// A band with nothing damaged in it is left out: drawing it would repaint
+    /// pixels nobody said had changed.
+    pub fn pieces(
+        &self,
+        src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Vec<Piece> {
+        let transform = self.element.transform();
+        // Damage and opaque regions arrive relative to `dst`; the bands are
+        // absolute. One of the two has to move, and moving the two lists once
+        // is cheaper than moving every band back.
+        let relative_to = |rects: &[Rectangle<i32, Physical>], band: Rectangle<i32, Physical>| {
+            rects
+                .iter()
+                .filter_map(|rect| {
+                    let mut rect = *rect;
+                    rect.loc += dst.loc;
+                    rect.intersection(band).map(|mut hit| {
+                        hit.loc -= band.loc;
+                        hit
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut pieces = Vec::with_capacity(self.bands.len());
+        for band in &self.bands {
+            let Some(band) = self.to_dst(*band, dst).intersection(dst) else {
+                continue;
+            };
+            if band.is_empty() {
+                continue;
+            }
+            let damage = relative_to(damage, band);
+            if damage.is_empty() {
+                continue;
+            }
+            pieces.push(Piece {
+                src: sub_src(src, dst, transform, band),
+                dst: band,
+                damage,
+                opaque: relative_to(opaque_regions, band),
+            });
+        }
+        pieces
+    }
+}
+
+/// The part of `src` that lands in `part`, where `src` as a whole lands in
+/// `dst`.
+///
+/// The same arithmetic `CropRenderElement` does when it is built, done here
+/// per band instead: the source rectangle is in buffer coordinates and the
+/// destination in physical ones, and the transform between them is the
+/// client's own — a rotated buffer maps its top edge somewhere other than the
+/// top.
+fn sub_src(
+    src: Rectangle<f64, BufferCoord>,
+    dst: Rectangle<i32, Physical>,
+    transform: Transform,
+    part: Rectangle<i32, Physical>,
+) -> Rectangle<f64, BufferCoord> {
+    let mut relative = part;
+    relative.loc -= dst.loc;
+
+    let physical_to_buffer = src.size / transform.invert().transform_size(dst.size).to_f64();
+    let mut sub = relative.to_f64().to_logical(1.0).to_buffer(
+        physical_to_buffer,
+        transform,
+        &dst.size.to_f64().to_logical(1.0),
+    );
+    sub.loc += src.loc;
+    sub
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    /// Enough of an element to be wrapped: a rectangle on screen and the piece
+    /// of a buffer that fills it. Nothing here draws, and `pieces` is the part
+    /// that has to be right whatever does.
+    #[derive(Debug)]
+    struct Fake {
+        id: Id,
+        geometry: Rectangle<i32, Physical>,
+        opaque: Vec<Rectangle<i32, Physical>>,
+    }
+
+    impl Fake {
+        fn new(geometry: Rectangle<i32, Physical>) -> Self {
+            Self {
+                id: Id::new(),
+                geometry,
+                opaque: vec![Rectangle::from_size(geometry.size)],
+            }
+        }
+    }
+
+    impl Element for Fake {
+        fn id(&self) -> &Id {
+            &self.id
+        }
+        fn current_commit(&self) -> CommitCounter {
+            CommitCounter::default()
+        }
+        fn src(&self) -> Rectangle<f64, BufferCoord> {
+            Rectangle::from_size(
+                (
+                    f64::from(self.geometry.size.w),
+                    f64::from(self.geometry.size.h),
+                )
+                    .into(),
+            )
+        }
+        fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
+            self.geometry
+        }
+        fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+            self.opaque.iter().copied().collect()
+        }
+    }
+
+    fn rounded(geometry: Rectangle<i32, Physical>, radius: i32) -> RoundedRenderElement<Fake> {
+        RoundedRenderElement::from_element(Fake::new(geometry), 1.0, geometry, radius)
+            .expect("the element is its own rectangle")
+    }
+
+    /// The pieces of a whole-element draw put the buffer back together: each
+    /// band takes the part of the source that lies under it, at the same
+    /// magnification, and no two overlap.
+    #[test]
+    fn every_piece_samples_the_part_of_the_buffer_under_it() {
+        let geometry = rect(40, 30, 120, 90);
+        let element = rounded(geometry, 8);
+        let damage = [Rectangle::from_size(geometry.size)];
+        let pieces = element.pieces(element.element.src(), geometry, &damage, &[]);
+
+        assert!(pieces.len() > 1, "a rounded element is drawn in pieces");
+        for piece in &pieces {
+            // The buffer is the same size as the element here, so the piece of
+            // one is the piece of the other — offset by where the element is.
+            assert_eq!(piece.src.loc.x, f64::from(piece.dst.loc.x - geometry.loc.x));
+            assert_eq!(piece.src.loc.y, f64::from(piece.dst.loc.y - geometry.loc.y));
+            assert_eq!(piece.src.size.w, f64::from(piece.dst.size.w));
+            assert_eq!(piece.src.size.h, f64::from(piece.dst.size.h));
+            // Damage covered everything, so each band is damaged in full.
+            assert_eq!(
+                piece.damage,
+                vec![Rectangle::from_size(piece.dst.size)],
+                "a band is damaged over the whole of itself"
+            );
+        }
+    }
+
+    /// Under a thumbnail the destination is not the geometry, and the bands
+    /// have to follow it without leaving a seam: the bottom of one piece is
+    /// the top of the next.
+    #[test]
+    fn a_scaled_draw_leaves_no_seam_between_the_bands() {
+        let geometry = rect(0, 0, 100, 100);
+        let element = rounded(geometry, 10);
+        let dst = rect(500, 200, 50, 50);
+        let damage = [Rectangle::from_size(dst.size)];
+        let pieces = element.pieces(element.element.src(), dst, &damage, &[]);
+
+        let mut rows: Vec<_> = pieces.iter().map(|p| (p.dst.loc.y, p.dst.size.h)).collect();
+        rows.sort();
+        assert_eq!(rows.first().map(|r| r.0), Some(dst.loc.y));
+        for pair in rows.windows(2) {
+            assert_eq!(pair[0].0 + pair[0].1, pair[1].0, "the bands meet: {rows:?}");
+        }
+        let (last_y, last_h) = *rows.last().expect("there are bands");
+        assert_eq!(last_y + last_h, dst.loc.y + dst.size.h);
+        for piece in &pieces {
+            assert!(piece.dst.size.w <= dst.size.w);
+            assert!(piece.dst.loc.x >= dst.loc.x);
+        }
+    }
+
+    /// A band nothing has damaged is not drawn at all — the point of the
+    /// tracker is that an unchanged corner costs nothing.
+    #[test]
+    fn an_undamaged_band_is_not_drawn() {
+        let geometry = rect(0, 0, 100, 100);
+        let element = rounded(geometry, 10);
+        // One row in the middle of the element, relative to it.
+        let damage = [rect(0, 50, 100, 1)];
+        let pieces = element.pieces(element.element.src(), geometry, &damage, &[]);
+        assert_eq!(pieces.len(), 1, "only the band holding the damage");
+        assert_eq!(
+            pieces[0].damage,
+            vec![rect(0, 50 - pieces[0].dst.loc.y, 100, 1)]
+        );
+    }
+
+    /// The corners are never claimed as opaque. Whatever is behind them has to
+    /// be drawn, and the tracker culls anything it is told is covered.
+    #[test]
+    fn the_corners_are_not_opaque() {
+        let geometry = rect(0, 0, 100, 100);
+        let element = rounded(geometry, 10);
+        let opaque = element.opaque_regions(1.0.into());
+        assert!(!opaque.is_empty(), "the middle of a window is still opaque");
+        for region in opaque.iter() {
+            // No opaque region reaches the very corner of the element.
+            assert!(
+                region.loc.x >= 10 || region.loc.y >= 10,
+                "an opaque region covers the top-left corner: {region:?}"
+            );
+        }
+    }
+
+    /// The whole rectangle, once, and no arithmetic: square corners are the
+    /// old behaviour and have to cost nothing.
+    #[test]
+    fn no_radius_is_one_band() {
+        assert_eq!(bands(rect(0, 0, 100, 50), 0), vec![rect(0, 0, 100, 50)]);
+    }
+
+    /// Every row of the rectangle is covered exactly once, whatever the
+    /// radius: a row drawn twice is a translucent window drawn twice, and a
+    /// row missed is a stripe of wallpaper through the middle of a client.
+    #[test]
+    fn the_bands_tile_the_rectangle() {
+        for radius in 1..=16 {
+            let bands = bands(rect(10, 20, 120, 80), radius);
+            for row in 20..100 {
+                let covering: Vec<_> = bands
+                    .iter()
+                    .filter(|b| b.loc.y <= row && row < b.loc.y + b.size.h)
+                    .collect();
+                assert_eq!(
+                    covering.len(),
+                    1,
+                    "radius {radius}, row {row} covered {} times",
+                    covering.len()
+                );
+            }
+        }
+    }
+
+    /// The corner is cut, and cut symmetrically: the first row of an 8px
+    /// radius is inset by most of it, the row at the radius by none.
+    #[test]
+    fn the_corner_narrows_toward_the_edge() {
+        let bands = bands(rect(0, 0, 100, 100), 8);
+        let width_at = |row: i32| {
+            bands
+                .iter()
+                .find(|b| b.loc.y <= row && row < b.loc.y + b.size.h)
+                .map(|b| (b.loc.x, b.size.w))
+                .expect("every row is covered")
+        };
+        let (first_x, first_w) = width_at(0);
+        let (mid_x, mid_w) = width_at(50);
+        assert!(first_w < mid_w, "the top row is narrower than the middle");
+        assert_eq!(first_x + first_w, 100 - first_x, "inset on both sides");
+        assert_eq!((mid_x, mid_w), (0, 100), "the middle is the full width");
+        // Top and bottom are mirror images.
+        assert_eq!(width_at(99), (first_x, first_w));
+        assert!(width_at(1).1 >= first_w);
+    }
+
+    /// A radius larger than the rectangle is clamped rather than turning the
+    /// window inside out. The shell can be told any number; half the shorter
+    /// side is a circle and there is nothing past it.
+    #[test]
+    fn a_radius_larger_than_the_box_is_clamped() {
+        let bands = bands(rect(0, 0, 20, 10), 400);
+        assert!(!bands.is_empty());
+        for band in &bands {
+            assert!(band.size.w > 0 && band.size.h > 0);
+            assert!(band.loc.x >= 0 && band.loc.x + band.size.w <= 20);
+            assert!(band.loc.y >= 0 && band.loc.y + band.size.h <= 10);
+        }
+    }
+}

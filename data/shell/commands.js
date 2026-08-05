@@ -234,6 +234,7 @@ window.addEventListener('viewport', (event) => {
       windowRules = Array.isArray(message.rules) ? message.rules : [];
       applyTheme(message.theme);
       applyGaps(message.gaps);
+      applyBorder(message.border);
       applyBarMode(message.bar);
       /* Absent means on: a config file that says nothing should get the
          explanation, and only someone who has read it once turns it off. */

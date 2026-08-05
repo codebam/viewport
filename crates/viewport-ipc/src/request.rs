@@ -291,6 +291,25 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         smart: Option<bool>,
     },
+
+    /// Set the window border at runtime, as the `border` block in the config
+    /// file.
+    ///
+    /// The same path as `config.gaps`: the compositor's `Config` is updated
+    /// and re-sent, and the shell lands the radius on the `--window-radius`
+    /// custom property. Unlike the gaps this is not the shell's business
+    /// alone — the compositor crops each client to the corners the shell
+    /// draws — so the number is read on both sides of the same message.
+    ///
+    /// Every field is optional; only the ones given are changed. A radius of
+    /// zero is deliberate (square corners); a negative one is rejected.
+    #[serde(rename = "config.border")]
+    ConfigBorder {
+        /// The corner radius in logical pixels, as `border.radius`. Negative
+        /// values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        radius: Option<i32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -749,5 +768,26 @@ mod tests {
         assert_eq!(inner, None);
         assert_eq!(outer, None);
         assert_eq!(smart, None);
+    }
+
+    #[test]
+    fn config_border_carries_the_radius() {
+        let Request::ConfigBorder { radius } = parse(r#"{"type":"config.border","radius":12}"#)
+        else {
+            panic!("not a config.border message");
+        };
+        assert_eq!(radius, Some(12));
+
+        // Square corners, asked for on purpose.
+        let Request::ConfigBorder { radius } = parse(r#"{"type":"config.border","radius":0}"#)
+        else {
+            panic!("not a config.border message");
+        };
+        assert_eq!(radius, Some(0));
+
+        let Request::ConfigBorder { radius } = parse(r#"{"type":"config.border"}"#) else {
+            panic!("not a config.border message");
+        };
+        assert_eq!(radius, None);
     }
 }

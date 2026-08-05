@@ -1976,6 +1976,20 @@ if (mode === 'scrolling') {
   /* Reset for the checks that follow, which read --gap expecting its default. */
   emit({ type: 'config', layout: mode, gaps: { inner: 8, outer: 0, smart: false } });
 
+  /* The border block from the config file. The compositor crops each client
+     to this same corner, so a radius the page does not draw with is a client
+     cut to a curve that is not there. */
+  emit({ type: 'config', layout: mode, border: { radius: 12 } });
+  check('border.radius lands on --window-radius',
+    gapsStyle.getPropertyValue('--window-radius') === '12px');
+  emit({ type: 'config', layout: mode, border: { radius: 0 } });
+  check('a radius of zero is square and not absent',
+    gapsStyle.getPropertyValue('--window-radius') === '0px');
+  emit({ type: 'config', layout: mode });
+  check('a config with no border block leaves the radius standing',
+    gapsStyle.getPropertyValue('--window-radius') === '0px');
+  emit({ type: 'config', layout: mode, border: { radius: 6 } });
+
   /* The empty desktop's two parts, switched from the config file. */
   const root = document.documentElement.classList;
   emit({ type: 'config', layout: mode, logo: false, tutorial: false });

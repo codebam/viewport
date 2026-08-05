@@ -34,6 +34,7 @@ mod output_power;
 mod pointer;
 mod recovery;
 mod render;
+mod rounded;
 mod screencast;
 mod screencopy;
 mod session;

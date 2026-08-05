@@ -228,6 +228,18 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gaps: Option<Gaps>,
 
+    /// The window border settings, carried from the config file to the shell,
+    /// which lands the radius on the `--window-radius` custom property
+    /// `.window` rounds its corners with.
+    ///
+    /// The compositor reads the same number: a rounded border with a
+    /// square-cornered client drawn over it is a border that is not there, so
+    /// the client is cropped to the corners the shell drew — see
+    /// `render::RoundedRenderElement`. Absent means the shell's own default,
+    /// which is `--radius`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border: Option<Border>,
+
     /// Whether directional focus may leave the monitor it is on.
     ///
     /// Both halves of the desktop need this and neither owns it. Tiling asks
@@ -281,6 +293,18 @@ pub struct Gaps {
     pub inner: Option<i32>,
     pub outer: Option<i32>,
     pub smart: Option<bool>,
+}
+
+/// Window border settings, as `border` in the config file, carried to the
+/// shell.
+///
+/// `radius` is the corner of the frame the shell draws around a window, in
+/// logical pixels. Optional so an absent field leaves the shell's default
+/// standing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Border {
+    pub radius: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,6 +447,7 @@ mod tests {
             rules: None,
             theme: None,
             gaps: None,
+            border: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -431,7 +456,26 @@ mod tests {
         assert!(value.get("rules").is_none());
         assert!(value.get("theme").is_none());
         assert!(value.get("gaps").is_none());
+        assert!(value.get("border").is_none());
         assert_eq!(value["layout"], "tiling");
+    }
+
+    #[test]
+    fn the_border_radius_is_carried_to_the_shell() {
+        let value = json(&Event::Config(Config {
+            layout: "tiling".into(),
+            logo: true,
+            tutorial: true,
+            bar: None,
+            rules: None,
+            theme: None,
+            gaps: None,
+            border: Some(Border { radius: Some(12) }),
+            focus_crosses_outputs: true,
+            tiling_mode: None,
+            background_terminal: false,
+        }));
+        assert_eq!(value["border"]["radius"], 12);
     }
 
     #[test]
@@ -448,6 +492,7 @@ mod tests {
                 outer: Some(4),
                 smart: Some(true),
             }),
+            border: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -484,6 +529,7 @@ mod tests {
             rules: None,
             theme: None,
             gaps: None,
+            border: None,
             focus_crosses_outputs: false,
             tiling_mode: None,
             background_terminal: false,
@@ -501,6 +547,7 @@ mod tests {
             rules: Some(serde_json::json!([{"app_id": "mpv", "floating": true}])),
             theme: None,
             gaps: None,
+            border: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -587,6 +634,7 @@ mod tests {
                 rules: None,
                 theme: None,
                 gaps: None,
+                border: None,
                 focus_crosses_outputs: true,
                 tiling_mode: None,
                 background_terminal: false,

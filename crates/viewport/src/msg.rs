@@ -231,6 +231,11 @@ const TYPES: &[Type] = &[
         hint: "[--inner N --outer N --smart BOOL]   (set window gaps; each is optional)",
     },
     Type {
+        name: "config.border",
+        fields: &["radius"],
+        hint: "[--radius N]   (set the window corner radius)",
+    },
+    Type {
         name: "shell.command",
         fields: &["command", "args"],
         hint: "--command VERB [--args ARG]...",
@@ -919,6 +924,14 @@ mod tests {
     }
 
     #[test]
+    fn config_border_builds_a_number_not_a_string() {
+        assert_eq!(
+            value(&["-t", "config.border", "--radius", "12"]),
+            serde_json::json!({"type": "config.border", "radius": 12})
+        );
+    }
+
+    #[test]
     fn values_are_json_where_they_are_json_and_text_where_they_are_not() {
         assert_eq!(
             value(&["-t", "output.hdr", "--name", "DP-1", "--enabled", "false"]),
@@ -1112,10 +1125,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 32 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 33 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 32);
+        assert_eq!(TYPES.len(), 33);
     }
 
     #[test]

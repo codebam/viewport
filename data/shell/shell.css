@@ -50,6 +50,15 @@
   --radius-sm: 4px;
   --radius-lg: 8px;
 
+  /* The corner of a window, which is the one radius the compositor has to
+     agree with: the client is a surface it draws itself, and it crops that
+     surface to this corner. It follows --radius so a theme that rounds the
+     desktop rounds the windows with it, but a theme is CSS and the compositor
+     cannot read CSS — it takes this number from `border.radius` in the config
+     file. Move one without the other and the client is cut to a corner the
+     page did not draw. */
+  --window-radius: var(--radius);
+
   /* Translucent fills, for anything that sits *on* a surface rather than
      beside it: a button in the bar, the divider under the pointer. White at a
      low alpha rather than a colour, so they take on whatever is behind them
@@ -665,7 +674,7 @@ html.behind body { background: transparent; }
 
 .window {
   border: 2px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--window-radius);
   overflow: hidden;
   display: flex;
 

@@ -28,6 +28,8 @@ use smithay::desktop::{LayerSurface, Window};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Buffer as BufferCoord, Logical, Physical, Point, Rectangle, Transform};
 
+use crate::rounded::RoundedRenderElement;
+
 smithay::backend::renderer::element::render_elements! {
     /// Everything one output draws.
     ///
@@ -38,15 +40,25 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputElement<R> where R: ImportAll + ImportMem;
     Surface=WaylandSurfaceRenderElement<R>,
     CroppedSurface=CropRenderElement<WaylandSurfaceRenderElement<R>>,
+    /// A window with the corners of the shell's border cut out of it. Always
+    /// cropped first, because rounding a window is also a promise that nothing
+    /// of it is drawn outside the box the shell measured.
+    RoundedSurface=RoundedRenderElement<CropRenderElement<WaylandSurfaceRenderElement<R>>>,
     /// A window drawn smaller than it is: the overview, where every window on
     /// every workspace is on screen at once and no client is asked to resize
     /// itself into a thumbnail.
     ScaledSurface=RescaleRenderElement<CropRenderElement<WaylandSurfaceRenderElement<R>>>,
+    ScaledRoundedSurface=RescaleRenderElement<RoundedRenderElement<CropRenderElement<WaylandSurfaceRenderElement<R>>>>,
     ScaledWholeSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
     Shell=TextureRenderElement<<R as RendererSuper>::TextureId>,
     /// A piece of the shell drawn above the windows: the frame around a
     /// floating window, or a dialog the shell put up.
     CroppedShell=CropRenderElement<TextureRenderElement<<R as RendererSuper>::TextureId>>,
+    /// A side of a floating window's border, with the outside of the corner
+    /// taken off it. Without this the square end of a rounded border paints
+    /// the desktop's own background over whatever the window is floating
+    /// above.
+    RoundedShell=RoundedRenderElement<CropRenderElement<TextureRenderElement<<R as RendererSuper>::TextureId>>>,
     Cursor=MemoryRenderBufferRenderElement<R>,
 }
 
@@ -113,6 +125,20 @@ pub struct WindowFrame {
     /// lower one's border stays under the upper one's surface, which is where
     /// it belongs.
     pub overlay: Vec<(Id, Rectangle<i32, Physical>)>,
+    /// The box the shell drew for this window, and the corner radius to cut
+    /// out of it — both in physical pixels on this output.
+    ///
+    /// `None` for a square window, which is a radius of zero, a fullscreen
+    /// window, or a build talking to a shell that does not round anything.
+    /// The rectangle is the window's own box rather than its surface: a
+    /// client with shadows draws well outside the frame, and it is the frame
+    /// that has corners.
+    pub rounded: Option<(Rectangle<i32, Physical>, i32)>,
+    /// The same for `overlay`: the frame the shell drew and the radius on the
+    /// *outside* of its border. A border side is a straight band, so the end
+    /// of one is the outside of a corner — the desktop's own background, sent
+    /// over whatever this window is floating above unless it is cut off here.
+    pub overlay_rounded: Option<(Rectangle<i32, Physical>, i32)>,
 }
 
 /// What one output should show.
@@ -287,6 +313,8 @@ where
         scale: window_scale,
         opacity: frame_opacity,
         overlay,
+        rounded,
+        overlay_rounded,
     } in &frame.windows
     {
         // This window's border, above the windows it is stacked over and below
@@ -297,8 +325,18 @@ where
                 let Some(element) = shell_element(renderer, shell, id.clone()) else {
                     break;
                 };
-                if let Some(cropped) = CropRenderElement::from_element(element, scale, *side) {
-                    elements.push(OutputElement::from(cropped));
+                let Some(cropped) = CropRenderElement::from_element(element, scale, *side) else {
+                    continue;
+                };
+                match overlay_rounded {
+                    Some((rect, radius)) => {
+                        if let Some(rounded) =
+                            RoundedRenderElement::from_element(cropped, scale, *rect, *radius)
+                        {
+                            elements.push(OutputElement::from(rounded));
+                        }
+                    }
+                    None => elements.push(OutputElement::from(cropped)),
                 }
             }
         }
@@ -383,6 +421,29 @@ where
         // Scaled about the window's own corner, so a thumbnail shrinks toward
         // where the shell put it rather than toward the origin of the screen.
         let shrink = (*window_scale - 1.0).abs() > f64::EPSILON;
+
+        // Rounded windows take one path for both, because rounding already
+        // implies cropping: the corner is cut out of the box the shell drew,
+        // and anything of the client outside that box — a shadow, a client
+        // half off its column — is not part of a window with corners.
+        if let Some((rect, radius)) = rounded {
+            let crop = clip.unwrap_or(*rect);
+            elements.extend(surfaces.into_iter().filter_map(|surface| {
+                let cropped = CropRenderElement::from_element(surface, scale, crop)?;
+                let rounded = RoundedRenderElement::from_element(cropped, scale, *rect, *radius)?;
+                Some(if shrink {
+                    OutputElement::from(RescaleRenderElement::from_element(
+                        rounded,
+                        *origin,
+                        *window_scale,
+                    ))
+                } else {
+                    OutputElement::from(rounded)
+                })
+            }));
+            continue;
+        }
+
         match (clip, shrink) {
             // Cropped to the hole the shell drew. Without this a window
             // mid-animation, or one scrolled half off its column, covers the

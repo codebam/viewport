@@ -426,6 +426,50 @@ compositor's config and re-announces it over the same channel a config
 reload uses, so the change applies immediately. A gap of zero is accepted
 deliberately; a negative gap is refused.
 
+## Window borders
+
+The frame drawn around a window.
+
+```jsonc
+{
+  "border": { "radius": 6 }
+}
+```
+
+`border.radius` is the corner radius in pixels, measured on the *outside* of
+the border. Absent keeps the shell's default of 6; zero is a square desktop.
+
+This is the one appearance setting the compositor reads as well as the shell.
+A window's contents are a client surface the compositor draws itself, not part
+of the page — so a rounded frame with the client's square corner sitting on top
+of it is a rounded frame nobody can see. The compositor crops each client to
+the same corner the page drew, tighter by the two pixels of border so the two
+curves are concentric. Fullscreen windows keep their square corners, as they
+lose their border.
+
+The corner is cut rather than shaded: there is no antialiasing on it, because
+the DRM path draws through a Vulkan renderer with no shader hook of its own and
+rounding only the nested backend would be worse than rounding neither. What
+steps is the edge between the client and the border behind it, both of which
+are drawn — not the outline of the window against the wallpaper, which is the
+page's own antialiased curve.
+
+The theme key `radius` sets `--radius`, which `--window-radius` follows, so a
+theme still rounds the whole desktop at once. The compositor cannot read CSS,
+though: a theme that changes `radius` and leaves `border.radius` alone moves
+the frame the page draws without moving the crop, and the client is cut to a
+corner that is no longer there. Set both, or set `border.radius`.
+
+**At runtime.** `config.border` on the control socket, the same way
+`config.gaps` works:
+
+```sh
+viewport msg -t config.border --radius 12
+```
+
+Each field is optional; only the ones given change. A radius of zero is
+accepted; a negative one is refused.
+
 ## Reloading the shell while it runs
 
 The shell is a web page, and the loop of working on one is editing a file and

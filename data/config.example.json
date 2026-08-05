@@ -133,6 +133,16 @@
   ],
   "gaps": {},
 
+  "_border": [
+    "The frame around a window. `radius` is the corner in pixels, on the",
+    "outside of the border; absent keeps the shell's default of 6 and zero",
+    "is a square desktop. Read by the compositor as well as the shell: the",
+    "client is a surface the compositor draws, and it crops that surface to",
+    "the same corner, or the rounded frame would be hidden behind a square",
+    "client. Fullscreen windows keep square corners."
+  ],
+  "border": {},
+
   "_outputs": [
     "Modes are left to the display by default. max_refresh takes the fastest",
     "refresh rate available at the preferred resolution, which is what a",

@@ -434,6 +434,31 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ConfigBorder { radius } => {
+            let current = state
+                .config
+                .border
+                .get_or_insert_with(viewport_ipc::event::Border::default);
+            let mut changed = false;
+            if let Some(v) = radius {
+                if v < 0 {
+                    reject(state, "config.border", &format!("radius {v}"));
+                    return;
+                }
+                current.radius = Some(v);
+                changed = true;
+            }
+            if changed {
+                // Both sides of the desktop read this one: the shell rounds
+                // the frame it draws from the Config event, and the renderer
+                // crops the client to the same corner out of `state.config`.
+                // So a redraw is not a courtesy here — without it the windows
+                // keep the corners they were last cropped to.
+                state.needs_render = true;
+                state.notify_config();
+            }
+        }
+
         Request::Quit => state.shutdown(),
     }
 }

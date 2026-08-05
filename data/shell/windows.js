@@ -448,6 +448,24 @@ function applyGaps(gaps) {
   }
 }
 
+/* The window border from the config file's `border` block. `radius` lands on
+   `--window-radius`, which `.window` draws its corners with.
+
+   The one property here the compositor also reads. Everything else the shell
+   is told about its own appearance it keeps to itself; this number describes
+   a corner that has a client surface in it, and the compositor crops that
+   surface to the same corner — so the value that arrives here has already
+   been used on the other side, and disagreeing with it is not an option the
+   shell has. Absence leaves --window-radius as the stylesheet declares it. */
+function applyBorder(border) {
+  if (border === undefined || border === null) return;
+  const style = document.documentElement.style;
+  if (border.radius !== null && border.radius !== undefined) {
+    const px = Number(border.radius);
+    if (Number.isFinite(px)) style.setProperty('--window-radius', px + 'px');
+  }
+}
+
 function applyBarMode(mode) {
   const next = mode === 'hidden' || mode === 'auto' || mode === 'visible'
     ? mode : 'visible';
