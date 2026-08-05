@@ -84,7 +84,7 @@ options=('!strip' '!debug')
 # Downloaded under a name that is not *.pkg.tar.*, so the artifact sitting in
 # the build directory is not mistaken for the package this recipe produced.
 source_x86_64=("$pkgname-$pkgver.tar.zst::$url/releases/download/v$pkgver/viewport-smithay-webkitgtk-$pkgver-$_pkgrel-x86_64.pkg.tar.zst")
-sha256sums_x86_64=('2228211bfa4d038069a4192345686952c016099e8a42a0092e2e4d275a7a75c7')
+sha256sums_x86_64=('96a26fd638712579214b67e64eadac6b9083e9e17a28230d86f4559d8f05ac12')
 
 package() {
   # The source is an Arch package, so makepkg has already unpacked a $pkgdir
