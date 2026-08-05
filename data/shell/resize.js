@@ -20,11 +20,14 @@ const MIN_WEIGHT = 0.15;
  * moved or ceased to exist, stranding a window at whatever fraction it held. */
 let treeGeneration = 0;
 
-/* Shift weight between two adjacent children, keeping their total constant so
- * the rest of the layout does not shuffle. */
-function shiftWeight(parent, index, fraction) {
-  const a = parent.children[index];
-  const b = parent.children[index + 1];
+/* Shift weight between two children, keeping their total constant so the rest
+ * of the layout does not shuffle.
+ *
+ * By node rather than by index, because the two the user is dragging between
+ * are not always adjacent in `children`: a leaf whose window is not on screen
+ * — an unclaimed session slot, an empty split — renders nothing, so the two
+ * sides of a gap can have anything in between them in the tree. */
+function shiftWeightBetween(a, b, fraction) {
   if (!a || !b) return false;
 
   const total = (a.weight ?? 1) + (b.weight ?? 1);
@@ -37,7 +40,16 @@ function shiftWeight(parent, index, fraction) {
   return true;
 }
 
-function beginDividerDrag(event, node, index) {
+/* By index, for the callers that have one: the keyboard paths walk the tree
+ * and know where in `children` they are. */
+function shiftWeight(parent, index, fraction) {
+  return shiftWeightBetween(
+    parent.children[index], parent.children[index + 1], fraction);
+}
+
+/* `before` and `after` are the two nodes the gap is between, which is what the
+ * renderer knows and an index into `children` is not. */
+function beginDividerDrag(event, node, before, after) {
   event.preventDefault();
   event.stopPropagation();
 
@@ -60,7 +72,7 @@ function beginDividerDrag(event, node, index) {
     const delta = now - last;
     if (delta === 0) return;
     last = now;
-    if (shiftWeight(node, index, delta / extent)) relayoutAll();
+    if (shiftWeightBetween(before, after, delta / extent)) relayoutAll();
   };
 
   const onUp = () => {

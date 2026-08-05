@@ -814,6 +814,52 @@ if (mode === 'tiling') {
   emit({ type: 'view.removed', id: 90 });
   check('closing it rearranges back', ids().length === opened);
   emit({ type: 'shell.command', command: 'layout.mode', args: ['manual'] });
+
+  {
+    /* Dragging the gap between two windows, with something between them in
+       the tree that is not on screen.
+     *
+       An unclaimed session slot is a leaf with no window, so it renders
+       nothing — and the divider used to be told which gap it was by counting
+       the elements that did render. Against `children` that number names a
+       different pair: with a slot first, the gap between the two windows
+       carried index 0, and dragging it resized the slot. */
+    const home = root();
+    const shape = JSON.stringify(home);
+    const [firstWindow, secondWindow] = ids();
+    home.children = [
+      { type: 'leaf', id: -500, app: 'ghost', weight: 1 },
+      { type: 'leaf', id: firstWindow, weight: 1 },
+      { type: 'leaf', id: secondWindow, weight: 1 },
+    ];
+    home.dir = 'horizontal';
+    emit({ type: 'view.focused', id: firstWindow });
+
+    const area = globalThis.__shell.outputs
+      .get(globalThis.__shell.activeOutput).windowsEl;
+    const divider = area.querySelector('.divider');
+    check('a gap between the two windows is drawn', divider !== null);
+    if (divider) {
+      const [ghost, left, right] = home.children;
+      for (const fn of divider.listeners.mousedown ?? []) {
+        fn({
+          preventDefault() {}, stopPropagation() {},
+          currentTarget: divider, clientX: 100, clientY: 100,
+        });
+      }
+      for (const fn of windowListeners.mousemove ?? []) {
+        fn({ clientX: 160, clientY: 100 });
+      }
+      for (const fn of windowListeners.mouseup ?? []) fn({});
+
+      check('dragging it resizes the two windows it sits between',
+        left.weight !== 1 && right.weight !== 1);
+      check('and leaves the slot nobody can see alone', ghost.weight === 1);
+    }
+
+    Object.assign(home, JSON.parse(shape));
+    emit({ type: 'view.focused', id: firstWindow });
+  }
 } else if (mode === 'scrolling') {
   const before = sent.length;
   emit({ type: 'shell.command', command: 'layout.focus', args: ['left'] });

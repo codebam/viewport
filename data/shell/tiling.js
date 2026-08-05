@@ -366,11 +366,16 @@ function renderTree(node) {
     if (i > 0) {
       /* A real element in the gap, so the edge between two windows can be
        * dragged. The gap is shell-drawn pixels, which is why edge resizing
-       * needs no compositor support at all. */
+       * needs no compositor support at all.
+       *
+       * The two nodes it resizes, not where they sit in `node.children`: a
+       * sibling that rendered nothing — an unclaimed slot after a restart, an
+       * empty split — is in the tree and not in this list, and an index taken
+       * from here would name the wrong pair on the other side of it. */
       const divider = document.createElement('div');
       divider.className = 'divider';
       divider.addEventListener('mousedown', (event) =>
-        beginDividerDrag(event, node, i - 1));
+        beginDividerDrag(event, node, rendered[i - 1][0], child));
       el.append(divider);
     }
     el.append(childEl);
