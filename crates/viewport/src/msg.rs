@@ -40,12 +40,14 @@ const DEFAULT_TIMEOUT: f64 = 2.0;
 /// at a prompt.
 const IDLE: Duration = Duration::from_millis(250);
 
-/// How long to listen for a refusal after a message that has no reply.
+/// Sent behind a message that has no reply, to find out whether it was taken.
 ///
 /// A rejected message comes back as an `error` event to the client that sent
-/// it, so a send that returns immediately would report success for a message
-/// the compositor threw away.
-const GRACE: Duration = Duration::from_millis(200);
+/// it and an accepted one comes back as nothing at all, so the only way to
+/// tell the two apart without a clock is to ask a question afterwards and see
+/// which arrives first. `output.query` is that question: every build answers
+/// it, it answers at once, and it changes nothing.
+const BARRIER: &str = "{\"type\":\"output.query\"}\n";
 
 /// The fields whose values are always a list, so that one `--args right`
 /// builds `["right"]` rather than `"right"`.
@@ -319,7 +321,8 @@ struct Invocation {
 
 /// What to wait for once the message has gone out.
 enum Reply {
-    /// Nothing answers this one; listen briefly for a refusal.
+    /// Nothing answers this one; a refusal is read out from behind a
+    /// [`BARRIER`].
     None,
     /// One event of this type, and then done.
     First(&'static str),
@@ -644,20 +647,28 @@ fn run(invocation: Invocation) -> Result<(), String> {
         }
 
         Reply::None => {
-            // Nothing to wait for but a refusal, and a message that is not
-            // refused is the ordinary case — so this is a grace period and not
-            // the timeout, which would make every send take two seconds.
-            let until = Instant::now() + GRACE;
+            // Nothing comes back but a refusal, and waiting a while for one
+            // that may never come is a guess: too short and a busy compositor
+            // reports success for a message it threw away, too long and every
+            // send costs the wait. So the wait is for something that does
+            // answer, sent behind it.
+            //
+            // The compositor reads and dispatches a connection's messages in
+            // the order they arrive, and answers them on the same buffer, so
+            // an `output.layout` here is proof that the message before it has
+            // already been handled — and an `error` read on the way to it is
+            // that message's own.
+            let _ = (&stream).write_all(BARRIER.as_bytes());
             loop {
-                if !arm(&stream, until)? {
+                if !arm(&stream, deadline.unwrap_or_else(forever))? {
                     return Ok(());
                 }
                 match read_event(&mut reader) {
-                    Ok(Incoming::Event(event)) => {
-                        if kind_of(&event) == "error" {
-                            return Err(complaint(&event));
-                        }
-                    }
+                    Ok(Incoming::Event(event)) => match kind_of(&event) {
+                        "error" => return Err(complaint(&event)),
+                        "output.layout" => return Ok(()),
+                        _ => continue,
+                    },
                     // The compositor going away is what `quit` asked for, and
                     // an unreadable line here belongs to somebody else's
                     // conversation.

@@ -45,8 +45,11 @@ in that directory — which is the session just started, and so the one being
 escaped from on a second TTY. `--socket` names one outright.
 
 A query prints its answer and stops; anything else exits once the compositor has
-had the chance to refuse it, and a refusal is a non-zero exit with the reason on
-stderr. Usage mistakes exit 2 without sending anything: a field the message does
+handled it, and a refusal is a non-zero exit with the reason on stderr. Handled
+rather than after a wait: an accepted message is answered with nothing, so the
+client sends an `output.query` behind it and reads until the `output.layout`
+comes back — the connection is dispatched in order, so anything the compositor
+had to say about the first message is already in front of it. Usage mistakes exit 2 without sending anything: a field the message does
 not have is refused rather than dropped, because serde ignores what it does not
 recognise and `--visable false` would otherwise report success for the opposite
 of what was asked.
