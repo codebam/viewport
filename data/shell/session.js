@@ -176,10 +176,16 @@ function dropUnclaimedSlots() {
 
 /* The slot a newly opened window belongs in, if it left one behind.
  *
- * Matched on application, in tree order, preferring a workspace that is not
- * currently occupied by another instance — three terminals reopening should
- * land in the three places three terminals were, and which of them goes where
- * is not something the layout can know or needs to. */
+ * Matched on application, first one in tree order, and each is taken only
+ * once — so three terminals reopening land in the three places three
+ * terminals were, and which of them goes where is not something the layout
+ * can know or needs to.
+ *
+ * Which is also why there is no preference here for a workspace that has no
+ * instance on it yet. Every slot gets filled either way; a preference would
+ * only change which of three identical terminals ends up on which screen,
+ * and the saved layout is a better answer to that than the order the
+ * applications happened to start in. */
 function claimSlot(id, app) {
   if (slotsPending === 0 || !app) return false;
 
