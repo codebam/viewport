@@ -5,7 +5,7 @@
 #
 #   ./scripts/arch-vm.sh                     # newest package under packaging/arch/out
 #   ./scripts/arch-vm.sh --variant cef
-#   ./scripts/arch-vm.sh --package ~/viewport-smithay-wpe-0.1.2-1-x86_64.pkg.tar.zst
+#   ./scripts/arch-vm.sh --package ~/viewport-smithay-wpe-0.1.3-1-x86_64.pkg.tar.zst
 #   ./scripts/arch-vm.sh --shell                 # a login shell, no compositor
 #   ./scripts/arch-vm.sh --url https://example.com   # a page rather than the shell
 #   ./scripts/arch-vm.sh --screens 2                 # two virtual monitors
