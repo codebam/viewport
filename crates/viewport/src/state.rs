@@ -7134,6 +7134,13 @@ fn parse_transform(text: &str) -> Option<Transform> {
 /// and the layout is the shell's.
 pub struct PointerDrag {
     pub id: u32,
+    /// The button held down, which is the one whose release ends this drag.
+    ///
+    /// Kept because the other one can be pressed and released in the middle of
+    /// a drag without meaning anything to it, and a drag that ended on
+    /// whichever button came up next let go of the window while it was still
+    /// being held.
+    pub button: u32,
     /// The right button rather than the left: resizing rather than moving.
     pub resize: bool,
     /// Where the pointer was when the last delta was worked out.

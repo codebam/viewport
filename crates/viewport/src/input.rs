@@ -151,6 +151,34 @@ fn shortcut(modifiers: &ModifiersState, keysym: Keysym) -> Option<Action> {
     None
 }
 
+/// What a button event means to a window drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DragEffect {
+    /// No drag is running: the event is the button handler's own, and a press
+    /// may start one.
+    Free,
+    /// The button that started the drag came up. The drag is over.
+    End,
+    /// A button belonging to a drag already running. It goes no further —
+    /// neither to the client under the pointer, which is being moved rather
+    /// than clicked, nor back into the drag-start path, which would turn a
+    /// move into a resize under the hand that was moving it.
+    Swallow,
+}
+
+/// Which of those a button event is.
+///
+/// `held` is the button the running drag was started with, if there is one.
+/// Split out from the handler because it is the whole of the state machine and
+/// the handler around it needs a compositor to run.
+fn drag_effect(held: Option<u32>, button: u32, pressed: bool) -> DragEffect {
+    match held {
+        None => DragEffect::Free,
+        Some(held) if !pressed && held == button => DragEffect::End,
+        Some(_) => DragEffect::Swallow,
+    }
+}
+
 /// Whether this event is someone using the pointer.
 ///
 /// What `cursor.hide_after_ms` measures, and the reason it is not simply every
@@ -584,6 +612,22 @@ impl ViewportState {
                 // written, and nothing ever sent it: `layout.move.delta` and
                 // `layout.resize.delta` had a handler, a comment saying the
                 // compositor forwards the drag, and no sender anywhere.
+                //
+                // While one is running the buttons are its own, so that is
+                // settled first.
+                match drag_effect(
+                    self.pointer_drag.as_ref().map(|drag| drag.button),
+                    event.button_code(),
+                    state == ButtonState::Pressed,
+                ) {
+                    DragEffect::End => {
+                        self.pointer_drag = None;
+                        return;
+                    }
+                    DragEffect::Swallow => return,
+                    DragEffect::Free => {}
+                }
+
                 if state == ButtonState::Pressed
                     && !pointer.is_grabbed()
                     && keyboard.modifier_state().logo
@@ -607,6 +651,7 @@ impl ViewportState {
                     }) {
                         self.pointer_drag = Some(crate::state::PointerDrag {
                             id,
+                            button: event.button_code(),
                             resize: event.button_code() == BTN_RIGHT,
                             last: pointer.current_location(),
                             pending: (0.0, 0.0),
@@ -617,12 +662,6 @@ impl ViewportState {
                         // button it thinks is still down.
                         return;
                     }
-                }
-
-                // The end of one, wherever the pointer has got to.
-                if state == ButtonState::Released && self.pointer_drag.is_some() {
-                    self.pointer_drag = None;
-                    return;
                 }
 
                 if state == ButtonState::Pressed && !pointer.is_grabbed() {
@@ -1746,6 +1785,42 @@ mod tests {
         assert_eq!(
             shortcut(&modifiers(true, true), backspace),
             Some(Action::Quit)
+        );
+    }
+
+    /// Mod4 and the left button moves a window; the right one resizes it. What
+    /// happens in between is the part that had no answer: the other button
+    /// pressed mid-drag restarted the drag as the other kind, and its release
+    /// ended a drag whose own button was still held.
+    #[test]
+    fn a_drag_belongs_to_the_button_that_started_it() {
+        assert_eq!(drag_effect(None, BTN_LEFT, true), DragEffect::Free);
+        assert_eq!(drag_effect(None, BTN_LEFT, false), DragEffect::Free);
+
+        // The other button, pressed and released, while the first is held.
+        assert_eq!(
+            drag_effect(Some(BTN_LEFT), BTN_RIGHT, true),
+            DragEffect::Swallow
+        );
+        assert_eq!(
+            drag_effect(Some(BTN_LEFT), BTN_RIGHT, false),
+            DragEffect::Swallow
+        );
+
+        // A press of the drag's own button is not a second drag either.
+        assert_eq!(
+            drag_effect(Some(BTN_LEFT), BTN_LEFT, true),
+            DragEffect::Swallow
+        );
+
+        // Only its release ends it.
+        assert_eq!(
+            drag_effect(Some(BTN_LEFT), BTN_LEFT, false),
+            DragEffect::End
+        );
+        assert_eq!(
+            drag_effect(Some(BTN_RIGHT), BTN_RIGHT, false),
+            DragEffect::End
         );
     }
 
