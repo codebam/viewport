@@ -538,6 +538,7 @@ open*, so opening one rearranges what is already there.
 | `master-stack` | the first window takes one side, the rest share a column beside it |
 | `spiral` | each window takes half of what is left, turning ninety degrees every time |
 | `bsp` | the same nest, but each cut goes along the region's longer side, so nothing is driven to a silly shape |
+| `grid` | every window the same size, in rows. Four come out 2x2 on an ordinary screen, nine 3x3, and the row count follows the shape of the monitor |
 
 `Mod4+Shift+h` and `Mod4+Shift+l` reorder rather than resplit, so promoting a
 window to master is moving it to the front — there is no separate command for
@@ -555,8 +556,10 @@ what the tree *should* be, applied when the set of windows changes.
 That last part is the one thing to know: resize weights are reset whenever the
 arrangement is rebuilt, which is whenever the shape it asks for differs from
 the shape that is there — a window opening or closing, mostly, and also a
-monitor rotating under `bsp`, which cuts along whichever side is longer. Every
-dynamic tiler behaves this way, and it is why `manual` is still the default.
+monitor rotating under `bsp` or `grid`, both of which read the shape of the
+screen: one cuts along whichever side is longer, the other picks the row count
+whose cells come out closest to square. Every dynamic tiler behaves this way,
+and it is why `manual` is still the default.
 
 None of this touches `"layout": "scrolling"`, `"layout": "solar"` or
 `"layout": "matrix"`, each of which is its own model. Solar and the matrix in

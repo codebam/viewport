@@ -234,7 +234,7 @@ pub struct Config {
     pub focus_crosses_outputs: bool,
 
     /// How the tiling tree arranges itself: `"manual"`, `"master-stack"`,
-    /// `"spiral"` or `"bsp"`.
+    /// `"spiral"`, `"bsp"` or `"grid"`.
     ///
     /// The shell's business entirely — the compositor has no layout and only
     /// carries this across. Absent means `"manual"`, which is the tree of

@@ -114,7 +114,7 @@ pub struct File {
     pub focus_crosses_outputs: Option<bool>,
 
     /// How the tiling tree arranges itself: `"manual"`, `"master-stack"`,
-    /// `"spiral"` or `"bsp"`. Absent is `"manual"`.
+    /// `"spiral"`, `"bsp"` or `"grid"`. Absent is `"manual"`.
     ///
     /// Carried across to the shell rather than acted on: the compositor has no
     /// layout, so what an arrangement *is* belongs there.
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn the_tiling_modes_round_trip() {
-        for mode in ["manual", "master-stack", "spiral", "bsp"] {
+        for mode in ["manual", "master-stack", "spiral", "bsp", "grid"] {
             let file: File =
                 serde_json::from_str(&format!(r#"{{"tiling_mode": "{mode}"}}"#)).expect("parses");
             assert_eq!(file.tiling_mode.as_deref(), Some(mode));

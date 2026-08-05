@@ -71,6 +71,8 @@
     "  \"master-stack\"  first window one side, the rest in a column beside it.",
     "  \"spiral\"        each window halves what is left, turning each time.",
     "  \"bsp\"           the same, cutting along the region's longer side.",
+    "  \"grid\"          every window the same size, in rows: 2x2 for four,",
+    "                  3x3 for nine, and fewer rows on a wider screen.",
     "",
     "The dynamic modes derive the shape from which windows are open, so",
     "opening one rearranges what is already there — and resize weights reset",

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Dynamic tiling arrangements: master-stack, spiral and bsp.
+ * Dynamic tiling arrangements: master-stack, spiral, bsp and grid.
  *
  * The manual tree is the default and is not touched by any of this. There, the
  * shape is whatever the splits you made say it is, and a window goes next to
@@ -24,7 +24,7 @@
  * load order and shell.md for what the whole is meant to do.
  */
 
-const TILING_MODES = ['manual', 'master-stack', 'spiral', 'bsp'];
+const TILING_MODES = ['manual', 'master-stack', 'spiral', 'bsp', 'grid'];
 
 /* A node's structure, with everything a rebuild would destroy left out.
  *
@@ -114,8 +114,116 @@ function masterStack(ids, root) {
   return [newLeaf(ids[0]), stack];
 }
 
+/* Every window the same size, in rows.
+ *
+ * The one arrangement here that gives no window preference over any other:
+ * master-stack picks a master, the nest hands each window half of what the one
+ * before it left, and both are the right answer when one thing matters more
+ * than the rest. A wall of terminals watching four services is the case where
+ * none of them does, and there the nest is actively wrong — the fourth log gets
+ * an eighth of the screen for no reason anybody chose.
+ *
+ * Rows of equal cells rather than a fixed lattice: with N not a multiple of the
+ * row count, the last row holds fewer windows and they are wider. The
+ * alternative is a lattice with a hole in it, and a hole is screen nobody can
+ * use. Every row is the same height either way, so the sizes stay within a
+ * factor of two of each other however ragged the count is.
+ *
+ * Order is the tree's, so Mod4+Shift+h and l move a window through the grid in
+ * reading order, exactly as they reorder the stack in master-stack.
+ */
+
+/* What a cell is aimed at being, as width over height.
+ *
+ * Slightly wide rather than square: a window is a piece of text or a terminal
+ * far more often than it is a photograph, and the shape that ruins one of those
+ * is the tall narrow one. 4:3 is also close enough to square that the row count
+ * it picks is the one you would draw by hand on an ordinary screen — four
+ * windows on 16:9 come out 2x2, nine come out 3x3 — and it is only on a 32:9,
+ * where a square cell would mean five rows of stamps, that it visibly differs. */
+const GRID = { cellAspect: 4 / 3 };
+
+/* How many rows this many windows divide into on a screen of these proportions.
+ *
+ * Every row count from one to N is tried and the one whose cells come out
+ * closest to GRID.cellAspect wins. `w` and `h` are the tiling area's
+ * proportions, the same pair bsp cuts along, so the answer follows the screen:
+ * four windows are 2x2 on 16:9, one row of four on 32:9 and three rows on a
+ * monitor turned on its end.
+ *
+ * Compared in logs, so that a cell twice as wide as it should be and one half
+ * as wide score the same. A ratio of ratios compared linearly does not — it
+ * bottoms out at zero on one side and runs to infinity on the other, which
+ * silently biases every choice towards the taller of two equally wrong shapes.
+ *
+ * The loop is N iterations of arithmetic, run when the window set changes. A
+ * closed form exists — rows is about sqrt(cellAspect * h * N / w) — but it has
+ * to be rounded to an integer afterwards, and rounding the square root is not
+ * always the integer that scores best. */
+function gridRows(count, w, h) {
+  if (count <= 1) return 1;
+
+  let best = 1;
+  let bestScore = Infinity;
+  for (let rows = 1; rows <= count; rows++) {
+    /* count/rows windows in each row, so a cell is w/(count/rows) wide and
+       h/rows tall. Proportions only: the shell computes no rectangles. */
+    const aspect = (w * rows * rows) / (h * count);
+    const score = Math.abs(Math.log(aspect / GRID.cellAspect));
+    /* Strictly better, so a tie keeps the fewer rows — which on a landscape
+       screen is the wider row, and the one worth having. */
+    if (score < bestScore - 1e-9) {
+      bestScore = score;
+      best = rows;
+    }
+  }
+  return best;
+}
+
+/* How many windows go in each row, as evenly as they divide.
+ *
+ * The remainder is spread over the first rows rather than piled into the last,
+ * so a grid of five on two rows is three then two — the reading order most
+ * grids have — and never four then one. */
+function gridCounts(count, rows) {
+  const base = Math.floor(count / rows);
+  const extra = count % rows;
+  return Array.from({ length: rows },
+    (_, row) => base + (row < extra ? 1 : 0));
+}
+
+/* The rows, as tree nodes.
+ *
+ * A row holding one window is that window rather than a split around it. Both
+ * render the same, but the tree is what focus_parent walks and what the session
+ * writes down, and a container with one child in it is a level of nesting that
+ * means nothing to anybody reading either. */
+function grid(ids, w, h) {
+  if (ids.length === 0) return { dir: 'horizontal', children: [] };
+
+  const rows = gridRows(ids.length, w, h);
+  if (rows <= 1) {
+    return { dir: 'horizontal', children: ids.map((id) => newLeaf(id)) };
+  }
+
+  const children = [];
+  let at = 0;
+  for (const take of gridCounts(ids.length, rows)) {
+    const row = ids.slice(at, at + take);
+    at += take;
+    if (row.length === 1) {
+      children.push(newLeaf(row[0]));
+      continue;
+    }
+    const split = newSplit('horizontal');
+    split.children = row.map((id) => newLeaf(id));
+    children.push(split);
+  }
+  return { dir: 'vertical', children };
+}
+
 /* The proportions of the area a workspace's windows are laid out in, for bsp's
- * cuts.
+ * cuts and the grid's row count.
  *
  * The *tiling area*, not the output. The bar and any panel's exclusive zone
  * come off it before a window is placed anywhere, and on a screen that is close
@@ -157,6 +265,9 @@ function arrangementFor(workspace, root) {
   }
 
   const [w, h] = workspaceAspect(workspace);
+
+  if (tilingMode === 'grid') return grid(ids, w, h);
+
   const pick = tilingMode === 'spiral' ? spiralPick : bspPick;
   /* The root is one split already, so the first cut is its direction and the
      nest continues underneath it. */

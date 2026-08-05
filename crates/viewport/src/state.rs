@@ -4718,7 +4718,7 @@ impl ViewportState {
             // name can be rejected with the file it came from. An unknown one
             // would otherwise reach the shell, fail to match any arrangement,
             // and leave the tree manual with nothing said.
-            const MODES: [&str; 4] = ["manual", "master-stack", "spiral", "bsp"];
+            const MODES: [&str; 5] = ["manual", "master-stack", "spiral", "bsp", "grid"];
             if MODES.contains(&mode.as_str()) {
                 self.config.tiling_mode = Some(mode);
             } else {

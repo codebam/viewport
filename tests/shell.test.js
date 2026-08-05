@@ -322,6 +322,12 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' matrixForTest: { calculate: calculateLayout, capacity: matrixCapacity,'
   + '   order: matrixOrderOf, recalculate: recalculateMatrixLayout,'
   + '   stack: focusStack, get MATRIX() { return MATRIX; } },'
+  /* The grid's row count, which decides the whole shape and is a pure function
+     of (count, w, h). The arrangement it feeds is checked through the tree the
+     mode builds, like the other dynamic ones; this is here because the aspects
+     worth checking are the ones no stubbed getBoundingClientRect can produce —
+     a 32:9 and a monitor on its end. */
+  + ' gridForTest: { rows: gridRows, counts: gridCounts, build: grid },'
   + ' get activeOutput() { return activeOutput; } };';
 /* The shell is a set of ordered classic scripts sharing one global scope, so
  * concatenating them in load order and evaluating the result is exactly what
@@ -675,6 +681,79 @@ if (mode === 'tiling') {
     emit({ type: 'shell.command', command: 'layout.mode', args: ['bsp'] });
     check('and follows the screen back when it is turned upright',
       root().dir === 'horizontal');
+  }
+
+  {
+    /* The grid. Every window the same size, in rows — so what is checked is
+       that the rows are the ones a person would draw, that they hold every
+       window, and that the count follows the screen rather than being fixed.
+       The row count is a pure function of (count, w, h) and is checked
+       directly: the shapes worth knowing about are on a 32:9 and on a monitor
+       stood on its end, and the stub has one rect for everything. */
+    const { rows, counts, build } = globalThis.__shell.gridForTest;
+    const [WIDE, TALL] = [[16, 9], [9, 16]];
+
+    check('four windows on 16:9 are two rows of two',
+      rows(4, ...WIDE) === 2 && counts(4, 2).join() === '2,2');
+    check('nine are three rows of three',
+      rows(9, ...WIDE) === 3 && counts(9, 3).join() === '3,3,3');
+    check('six are two rows of three',
+      rows(6, ...WIDE) === 2 && counts(6, 2).join() === '3,3');
+    check('two sit side by side rather than one above the other',
+      rows(2, ...WIDE) === 1);
+    check('one window is one row', rows(1, ...WIDE) === 1);
+
+    check('an ultrawide gets fewer rows than 16:9 for the same windows',
+      rows(4, 32, 9) < rows(4, ...WIDE));
+    check('and a screen on its end gets more',
+      rows(4, ...TALL) > rows(4, ...WIDE));
+
+    /* An odd count cannot fill a lattice, and the choice is between a wider
+       cell in the last row and a hole in the grid. A hole is screen nobody can
+       use, so the remainder goes to the earlier rows and every row stays
+       full. */
+    check('a remainder is spread over the earlier rows, not piled in the last',
+      counts(5, 2).join() === '3,2' && counts(7, 3).join() === '3,2,2');
+    /* One label for the sweep rather than twenty: what is being checked is
+       that no count has a shape that loses a window or asks for an empty
+       row, and the interesting part is which n fails, if any. */
+    let ragged = 0;
+    for (let n = 1; n <= 32; n++) {
+      const shape = counts(n, rows(n, ...WIDE));
+      if (shape.reduce((a, b) => a + b, 0) !== n || shape.some((c) => c < 1)) {
+        ragged = n;
+        break;
+      }
+    }
+    check('every count from one to thirty-two fills every row it asks for',
+      ragged === 0);
+
+    /* A row of one is that window, not a container around it: both render the
+       same, and the extra level is one focus_parent walks and the session
+       writes down for no reason. */
+    const three = build([1, 2, 3], ...WIDE);
+    check('a row holding one window is that window',
+      three.children.length === 2
+      && three.children[0].type === 'split'
+      && three.children[1].type === 'leaf');
+    check('rows stack down the screen and windows run across them',
+      three.dir === 'vertical' && three.children[0].dir === 'horizontal');
+    check('a single row is the root itself rather than a row inside it',
+      build([1, 2], ...WIDE).dir === 'horizontal'
+      && build([1, 2], ...WIDE).children.every((c) => c.type === 'leaf'));
+    check('no windows is no children', build([], ...WIDE).children.length === 0);
+
+    /* And through the shell, on the tree the mode actually builds. */
+    emit({ type: 'shell.command', command: 'layout.mode', args: ['grid'] });
+    check('grid keeps every window', ids().length === opened);
+    check('grid is reachable by name from layout.mode',
+      globalThis.__shell.tilingMode === 'grid');
+    check('and by cycling, like every other arrangement',
+      globalThis.__shell.TILING_MODES.includes('grid'));
+    check('every cell is the same weight, so none is favoured',
+      root().children.every((c) => c.weight === 1
+        && (c.type === 'leaf' || c.children.every((g) => g.weight === 1))));
+    emit({ type: 'shell.command', command: 'layout.mode', args: ['bsp'] });
   }
 
   {
