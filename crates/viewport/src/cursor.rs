@@ -12,6 +12,7 @@
 // while the page is busy, and a cursor drawn in DOM would lag a slow frame.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
@@ -273,6 +274,119 @@ pub fn active_image(
     tablet.cloned().unwrap_or_else(|| pointer.clone())
 }
 
+/// What a deadline that has come around decided to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tick {
+    /// Long enough: the pointer image comes off the screen.
+    Hide,
+    /// The pointer moved since the timer was armed, so this much is left.
+    ///
+    /// Re-armed for the remainder rather than on every motion event: a mouse
+    /// reporting a thousand times a second would otherwise mean a thousand
+    /// `timerfd_settime` calls a second, all of them to say the same thing.
+    Wait(Duration),
+    /// Nothing to do — already hidden, or never asked for.
+    Nothing,
+}
+
+/// Take the pointer off the screen once it has been still for long enough.
+///
+/// Off unless the config file asks for it. A pointer that vanishes on its own
+/// is a surprise on a desktop that never said it wanted one, and the image
+/// sitting in the middle of a film is the only reason to want it at all.
+///
+/// Only the drawn image goes. Focus, motion and the client's own idea of where
+/// the pointer is are all untouched, because nothing about a hidden cursor
+/// means the pointer has moved — a client that redraws its hover state when
+/// the image disappears would be reacting to something that did not happen.
+#[derive(Debug)]
+pub struct Hide {
+    /// How long without pointer input before the image goes. `None` is off.
+    after: Option<Duration>,
+    /// When the pointer was last used.
+    since: Instant,
+    hidden: bool,
+}
+
+impl Default for Hide {
+    fn default() -> Self {
+        Self {
+            after: None,
+            since: Instant::now(),
+            hidden: false,
+        }
+    }
+}
+
+impl Hide {
+    /// What the config file asked for, in milliseconds. Zero and absent are
+    /// both off, as they are for every other deadline here.
+    ///
+    /// Returns whether a cursor that was hidden has to be drawn again, which is
+    /// what a reload turning this off has to undo — the deadline that hid it is
+    /// gone, so nothing else would ever bring it back.
+    pub fn set_after_ms(&mut self, ms: Option<i64>) -> bool {
+        self.after = ms
+            .filter(|ms| *ms > 0)
+            .map(|ms| Duration::from_millis(ms as u64));
+        if self.after.is_none() && self.hidden {
+            self.hidden = false;
+            return true;
+        }
+        self.since = Instant::now();
+        false
+    }
+
+    /// Whether anything here needs a timer at all.
+    pub fn wanted(&self) -> bool {
+        self.after.is_some()
+    }
+
+    /// How long the deadline is, or `None` when there is none.
+    pub fn after(&self) -> Option<Duration> {
+        self.after
+    }
+
+    /// Whether the image is currently off the screen.
+    pub fn hidden(&self) -> bool {
+        self.hidden
+    }
+
+    /// How long since the pointer was last used.
+    pub fn idle_for(&self) -> Duration {
+        self.since.elapsed()
+    }
+
+    /// Pointer input arrived, so the deadline starts again.
+    ///
+    /// Returns whether the image was hidden and has to be drawn again. Nothing
+    /// else would: the compositor draws on damage, and a pointer coming back is
+    /// damage only this knows about.
+    pub fn activity(&mut self) -> bool {
+        self.since = Instant::now();
+        let was_hidden = self.hidden;
+        self.hidden = false;
+        was_hidden
+    }
+
+    /// What to do, given how long the pointer has been still.
+    pub fn tick(&mut self, elapsed: Duration) -> Tick {
+        let Some(after) = self.after else {
+            return Tick::Nothing;
+        };
+        if self.hidden {
+            return Tick::Nothing;
+        }
+        if elapsed < after {
+            // Armed before the last flick of the mouse. What is left of the
+            // deadline as measured from that flick, not a fresh full period.
+            return Tick::Wait(after - elapsed);
+        }
+        self.hidden = true;
+        Tick::Hide
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +480,89 @@ mod tests {
         // strand it under a pointer that has moved somewhere else entirely.
         let pointer = CursorImageStatus::default_named();
         assert_eq!(active_image(None, &pointer), pointer);
+    }
+
+    fn hiding_after(ms: i64) -> Hide {
+        let mut hide = Hide::default();
+        hide.set_after_ms(Some(ms));
+        hide
+    }
+
+    #[test]
+    fn nothing_hides_without_a_deadline() {
+        // Off unless asked for. A pointer that vanishes on its own is a
+        // surprise on a desktop that never said it wanted one.
+        let mut hide = Hide::default();
+        assert!(!hide.wanted());
+        assert_eq!(hide.tick(Duration::from_secs(10_000)), Tick::Nothing);
+        assert!(!hide.hidden());
+    }
+
+    #[test]
+    fn a_zero_deadline_is_off_rather_than_immediate() {
+        // As for every other deadline here. Otherwise `"hide_after_ms": 0`
+        // reads as "hide it now and for ever", which nobody means by it.
+        let mut hide = Hide::default();
+        assert!(!hide.set_after_ms(Some(0)));
+        assert!(!hide.wanted());
+        assert_eq!(hide.tick(Duration::from_secs(60)), Tick::Nothing);
+    }
+
+    #[test]
+    fn the_deadline_hides_the_pointer_once() {
+        let mut hide = hiding_after(1000);
+        assert_eq!(hide.tick(Duration::from_millis(1000)), Tick::Hide);
+        assert!(hide.hidden());
+        // And does not ask for a redraw every tick for as long as it stays
+        // still, which is a compositor that never sleeps.
+        assert_eq!(hide.tick(Duration::from_secs(30)), Tick::Nothing);
+    }
+
+    #[test]
+    fn a_timer_armed_before_the_last_motion_waits_out_the_remainder() {
+        // The timer is armed once and re-armed by its own expiry, so motion
+        // half way through a deadline is answered by this rather than by a
+        // `timerfd_settime` per event — a mouse reports a thousand times a
+        // second and every one of them would be a syscall.
+        let mut hide = hiding_after(1000);
+        assert_eq!(
+            hide.tick(Duration::from_millis(400)),
+            Tick::Wait(Duration::from_millis(600))
+        );
+        assert!(
+            !hide.hidden(),
+            "not yet, and not until the remainder passes"
+        );
+    }
+
+    #[test]
+    fn motion_brings_a_hidden_pointer_back() {
+        let mut hide = hiding_after(1000);
+        hide.tick(Duration::from_secs(2));
+        assert!(hide.hidden());
+
+        // The one thing activity has to undo rather than merely reset: the
+        // compositor draws on damage and this is damage nothing else knows of.
+        assert!(hide.activity(), "the image was off and must come back");
+        assert!(!hide.hidden());
+        assert!(!hide.activity(), "already drawn");
+
+        // And the deadline can fire again.
+        assert_eq!(hide.tick(Duration::from_secs(2)), Tick::Hide);
+    }
+
+    #[test]
+    fn turning_the_option_off_brings_a_hidden_pointer_back() {
+        // A reload that removes the key takes the deadline with it, and the
+        // deadline is the only thing that would ever undo what it did — so
+        // without this the pointer stays gone for the rest of the session.
+        let mut hide = hiding_after(1000);
+        hide.tick(Duration::from_secs(2));
+        assert!(hide.hidden());
+
+        assert!(hide.set_after_ms(None), "and it must be drawn again");
+        assert!(!hide.hidden());
+        assert!(!hide.wanted());
     }
 
     #[test]

@@ -306,6 +306,17 @@ pub struct ViewportState {
     /// Whether the missing-theme warning has been said. Once is a diagnosis;
     /// every frame is a flood.
     pub cursor_warned: bool,
+    /// Taking the pointer image away once it has been still for long enough.
+    /// Off unless `cursor.hide_after_ms` asks for it.
+    pub cursor_hide: crate::cursor::Hide,
+    /// Whether that deadline is already armed, so a thousand motion events do
+    /// not arm a thousand timers.
+    pub cursor_hide_armed: bool,
+    /// The timer it is armed on. A timerfd for the reason `frame_timer` gives,
+    /// and here the reason is the whole feature: the deadline is reached
+    /// precisely when nothing is happening, so a tick that needs the loop to
+    /// wake for other reasons is a tick that never comes.
+    pub cursor_hide_timer: Option<std::os::fd::OwnedFd>,
 
     /// When the shell last moved a window, so a diagnostic capture can wait
     /// for the open animation to finish. Five shell frames is the middle of
@@ -1006,6 +1017,9 @@ impl ViewportState {
             tablet_cursor_status: None,
             cursor_theme: crate::cursor::Theme::new(),
             cursor_warned: false,
+            cursor_hide: crate::cursor::Hide::default(),
+            cursor_hide_armed: false,
+            cursor_hide_timer: None,
             last_layout: None,
             needs_render: false,
             dirty_outputs: std::collections::HashSet::new(),
@@ -4160,6 +4174,82 @@ impl ViewportState {
         self.set_outputs_enabled(false);
     }
 
+    /// The pointer was used, so the hide deadline starts again.
+    ///
+    /// Called for pointer, tablet and touch input and for nothing else.
+    /// Typing deliberately does not count: someone writing with the mouse
+    /// parked over the text is exactly who asked for this, and waking the
+    /// cursor on every keystroke would leave it up the whole time.
+    pub fn cursor_activity(&mut self) {
+        if !self.cursor_hide.wanted() {
+            return;
+        }
+        if self.cursor_hide.activity() {
+            // It was off the screen. Nothing else would draw it: this
+            // compositor draws on damage, and there is none.
+            self.needs_render = true;
+        }
+        self.arm_cursor_hide();
+    }
+
+    /// Start the countdown, if it is not already running.
+    ///
+    /// Armed once and re-armed by its own expiry rather than on every motion
+    /// event — see [`crate::cursor::Tick::Wait`].
+    pub fn arm_cursor_hide(&mut self) {
+        if self.cursor_hide_armed {
+            return;
+        }
+        let Some(after) = self.cursor_hide.after() else {
+            return;
+        };
+        self.arm_cursor_hide_in(after);
+    }
+
+    /// Arm it for a particular stretch: the whole deadline, or what a tick
+    /// that came around early found was left of it.
+    fn arm_cursor_hide_in(&mut self, after: std::time::Duration) {
+        if self.cursor_hide_timer.is_none() {
+            self.cursor_hide_timer = self.create_tick("cursor hide", Self::cursor_hide_tick);
+        }
+        if Self::arm_tick("cursor hide", self.cursor_hide_timer.as_ref(), after) {
+            self.cursor_hide_armed = true;
+            return;
+        }
+
+        // No timerfd. calloop's own timer still works whenever calloop is the
+        // one waiting, which is every backend except the web engine's.
+        self.cursor_hide_armed = true;
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(after);
+        if let Err(e) = self.loop_handle.insert_source(timer, move |_, _, state| {
+            state.cursor_hide_tick();
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        }) {
+            tracing::warn!("cursor hide: {e}");
+            self.cursor_hide_armed = false;
+        }
+    }
+
+    /// One turn of the hide deadline: take the pointer away, or wait out what
+    /// is left of it.
+    fn cursor_hide_tick(&mut self) {
+        self.cursor_hide_armed = false;
+        let elapsed = self.cursor_hide.idle_for();
+        match self.cursor_hide.tick(elapsed) {
+            crate::cursor::Tick::Hide => {
+                tracing::debug!("the pointer has been still for {elapsed:?}; hiding it");
+                // The image is gone as far as `cursor_for` is concerned, but
+                // what is on the screen is the last frame, which has it. One
+                // more frame is what actually removes it.
+                self.needs_render = true;
+            }
+            crate::cursor::Tick::Wait(left) => {
+                self.arm_cursor_hide_in(left);
+            }
+            crate::cursor::Tick::Nothing => {}
+        }
+    }
+
     /// Apply the config file's `outputs` block, once the outputs exist.
     ///
     /// Through the same path `output.configure` takes, so the file and the
@@ -4499,6 +4589,13 @@ impl ViewportState {
         use smithay::input::pointer::CursorImageStatus;
 
         let _ = output;
+        // Still for long enough that the deadline took it away. Before the
+        // client's own image is looked at, because the setting is about the
+        // pointer being on the screen at all — a text field's I-beam parked
+        // over a film is the same thing it is there to remove.
+        if self.cursor_hide.hidden() {
+            return crate::render::Cursor::Hidden;
+        }
         let Some(pointer) = self.seat.get_pointer() else {
             return crate::render::Cursor::Hidden;
         };
@@ -4809,9 +4906,20 @@ impl ViewportState {
         if let Some(size) = file.cursor.size {
             unsafe { std::env::set_var("XCURSOR_SIZE", size.to_string()) };
         }
-        if file.cursor != crate::config::CursorConfig::default() {
+        // Only when one of those two moved. Rebuilding on any change to the
+        // block would throw the loaded images away because a reload touched
+        // the hide deadline, which has nothing to do with what they look like.
+        if file.cursor.theme.is_some() || file.cursor.size.is_some() {
             self.cursor_theme = crate::cursor::Theme::new();
         }
+        if self.cursor_hide.set_after_ms(file.cursor.hide_after_ms) {
+            // The deadline that hid it has just been taken away, so nothing
+            // else would ever bring it back.
+            self.needs_render = true;
+        }
+        // A file that turned it on gets a countdown without waiting for the
+        // pointer to move first, which for a desk nobody is at is never.
+        self.arm_cursor_hide();
 
         // The keymap, if the file names one. Replacing the keyboard is how
         // this is set — there is no way to change the layout of one that

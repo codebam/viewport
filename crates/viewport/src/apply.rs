@@ -341,6 +341,10 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             pointer.frame(state);
             // The cursor moved and nothing else would draw it.
             state.needs_render = true;
+            // And a scripted pointer is a pointer being used, so the hide
+            // deadline starts again — otherwise a test that drives the mouse
+            // from the socket watches its cursor disappear underneath it.
+            state.cursor_activity();
         }
 
         Request::InputButton { button, pressed } => {
@@ -381,6 +385,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 },
             );
             pointer.frame(state);
+            state.cursor_activity();
         }
 
         Request::InputKey { keycode, pressed } => state.inject_key(keycode, pressed),

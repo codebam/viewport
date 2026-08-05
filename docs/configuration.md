@@ -22,6 +22,8 @@ a TTY.
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
   "idle": { "lock_after": 600, "lock_command": "swaylock -f",
             "blank_after": 900 },
+  "cursor": { "theme": "Bibata-Modern-Classic", "size": 24,
+              "hide_after_ms": 3000 },   // see below; absent is never
   "terminal": "rio",
   "menu": "wmenu-run -i",
   "binds": {
@@ -99,6 +101,25 @@ is the shell's.
 | `Mod4+Shift+d` | toggle dark mode |
 | `Mod4+Shift+q` / `+e` / `+c` | close / exit / reload the shell |
 | `Mod4+Shift+Return` | give the keyboard to the wallpaper terminal, and take it back |
+
+## The pointer
+
+`cursor.theme` and `cursor.size` set `XCURSOR_THEME` and `XCURSOR_SIZE` for the
+compositor and for everything it starts, which is what makes the pointer drawn
+over a window and the one drawn over the desktop the same picture. A theme name
+with spaces is also looked for hyphenated, because the directory on disk
+usually is.
+
+`cursor.hide_after_ms` takes the pointer off the screen once it has been still
+for that long — an arrow parked in the middle of a film. Zero or absent is off,
+which is the default. Any use of the pointer brings it straight back: motion, a
+button, the scroll wheel, a touchpad gesture or a tablet pen. Typing does not,
+deliberately — someone writing with the mouse pushed aside is exactly who asked
+for this, and a cursor that came back on every keystroke would never leave.
+
+Only the drawn image goes. The pointer has not moved, keeps its focus, and
+clients are told nothing, so a hidden cursor cannot make a page think the mouse
+left it.
 
 ## A terminal as the wallpaper
 

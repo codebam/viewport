@@ -160,6 +160,21 @@
     "blank_after": 900
   },
 
+  "_cursor": [
+    "The pointer. 'theme' and 'size' are set for the compositor and for",
+    "everything it starts, so the arrow over a window and the one over the",
+    "desktop are the same picture.",
+    "",
+    "'hide_after_ms' takes the image off the screen once the pointer has been",
+    "still that long — the arrow parked in the middle of a film. Zero or",
+    "omitted is off. Any use of the pointer brings it back at once; typing",
+    "does not, because someone writing with the mouse pushed aside is who",
+    "asked for this."
+  ],
+  "cursor": {
+    "hide_after_ms": 0
+  },
+
   "terminal": "rio",
   "menu": "wmenu-run -f 'Fira Code NerdFont 11' -i",
 

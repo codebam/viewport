@@ -151,6 +151,39 @@ fn shortcut(modifiers: &ModifiersState, keysym: Keysym) -> Option<Action> {
     None
 }
 
+/// Whether this event is someone using the pointer.
+///
+/// What `cursor.hide_after_ms` measures, and the reason it is not simply every
+/// input event: typing is what someone does while the mouse sits still, and
+/// counting a keystroke would keep the cursor up for exactly the person who
+/// asked for it to go away. Touch is out for the other reason — a finger on a
+/// touchscreen moves no cursor, so waking one would put an arrow on a screen
+/// that had none.
+///
+/// A tablet tool counts: it draws the cursor like a mouse does, through
+/// `tablet_cursor_status`.
+fn uses_the_pointer<I: InputBackend>(event: &InputEvent<I>) -> bool {
+    matches!(
+        event,
+        InputEvent::PointerMotion { .. }
+            | InputEvent::PointerMotionAbsolute { .. }
+            | InputEvent::PointerButton { .. }
+            | InputEvent::PointerAxis { .. }
+            | InputEvent::GestureSwipeBegin { .. }
+            | InputEvent::GestureSwipeUpdate { .. }
+            | InputEvent::GestureSwipeEnd { .. }
+            | InputEvent::GesturePinchBegin { .. }
+            | InputEvent::GesturePinchUpdate { .. }
+            | InputEvent::GesturePinchEnd { .. }
+            | InputEvent::GestureHoldBegin { .. }
+            | InputEvent::GestureHoldEnd { .. }
+            | InputEvent::TabletToolAxis { .. }
+            | InputEvent::TabletToolProximity { .. }
+            | InputEvent::TabletToolTip { .. }
+            | InputEvent::TabletToolButton { .. }
+    )
+}
+
 impl ViewportState {
     /// A key from the control socket rather than from libinput.
     ///
@@ -210,6 +243,12 @@ impl ViewportState {
         // business to decide but is its business to report.
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
+
+        // And the pointer's own deadline, which counts a narrower set of
+        // events than either of those — see `uses_the_pointer`.
+        if uses_the_pointer(&event) {
+            self.cursor_activity();
+        }
 
         match event {
             InputEvent::Keyboard { event, .. } => {

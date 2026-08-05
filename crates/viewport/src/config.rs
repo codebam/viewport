@@ -51,6 +51,13 @@ pub struct KeyboardConfig {
 pub struct CursorConfig {
     pub theme: Option<String>,
     pub size: Option<u32>,
+    /// Milliseconds of no pointer input before the cursor is taken off the
+    /// screen. Zero or absent is off, as for every other deadline here.
+    ///
+    /// Milliseconds rather than the seconds the idle block uses, because this
+    /// deadline is a second or two and the useful settings are not whole
+    /// numbers of seconds — sway spells the same setting the same way.
+    pub hide_after_ms: Option<i64>,
 }
 
 /// The idle block.
@@ -497,7 +504,7 @@ mod tests {
         let file: File = serde_json::from_str(
             r#"{
                 "keyboard": {"layout":"us","repeat_rate":25},
-                "cursor": {"theme":"Adwaita","size":32},
+                "cursor": {"theme":"Adwaita","size":32,"hide_after_ms":1500},
                 "idle": {"lock_after":300,"lock_command":"swaylock"},
                 "outputs": {"DP-1":{"mode":"2560x1440@120","x":0,"hdr":true}}
             }"#,
@@ -506,6 +513,7 @@ mod tests {
         assert_eq!(file.keyboard.layout.as_deref(), Some("us"));
         assert_eq!(file.keyboard.repeat_rate, Some(25));
         assert_eq!(file.cursor.size, Some(32));
+        assert_eq!(file.cursor.hide_after_ms, Some(1500));
         assert_eq!(file.idle.lock_after, Some(300));
         let dp1 = file.outputs.get("DP-1").expect("DP-1");
         assert_eq!(dp1.mode.as_deref(), Some("2560x1440@120"));
