@@ -9,11 +9,12 @@
 # handle cannot survive. tests/portal-frontend does the frontend's half, which
 # is storing the restore data and handing it back.
 #
-# It runs on a session bus of its own. The compositor claims
-# org.freedesktop.impl.portal.desktop.viewport, and zbus fails the whole
+# It runs on a session bus and a PipeWire daemon of its own. The compositor
+# claims org.freedesktop.impl.portal.desktop.viewport, and zbus fails the whole
 # connection when the name is taken — so on a machine already running viewport,
 # a test that joined the live bus would test nothing and a test that replaced
-# the name would break the session it was running in.
+# the name would break the session it was running in. The daemon is the same
+# argument plus one: a runner has none at all, and a share is carried on it.
 #
 #   tests/screencast-restore.test.sh target/debug/viewport \
 #     target/debug/examples/portal-frontend
@@ -52,18 +53,25 @@ fi
 workdir=$(mktemp -d)
 viewport_pid=
 client_pid=
+pipewire_pid=
 
-# By PID only. Pattern matching on "viewport" has killed a live session more
-# than once, and this script runs on the same machine as one.
+# By PID only, and named pids at that. Pattern matching on "viewport" has
+# killed a live session more than once, and this script runs on the same
+# machine as one; a bare `wait` would take the PipeWire daemon below with it,
+# which is a background job of this shell too and the one thing here that is
+# meant to outlive every compositor.
 stop_viewport() {
 	[ -n "$client_pid" ] && kill "$client_pid" 2>/dev/null
 	[ -n "$viewport_pid" ] && kill "$viewport_pid" 2>/dev/null
-	wait 2>/dev/null
+	[ -n "$client_pid" ] && wait "$client_pid" 2>/dev/null
+	[ -n "$viewport_pid" ] && wait "$viewport_pid" 2>/dev/null
 	client_pid=
 	viewport_pid=
 }
 cleanup() {
 	stop_viewport
+	[ -n "$pipewire_pid" ] && kill "$pipewire_pid" 2>/dev/null
+	pipewire_pid=
 	rm -rf "$workdir"
 }
 trap cleanup EXIT INT TERM
@@ -77,6 +85,32 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 # did with a piece of restore data it would not read is the whole assertion,
 # and at info it does it silently.
 export VIEWPORT_LOG="${VIEWPORT_LOG:-viewport=debug}"
+
+# PipeWire, which is what a screen share is carried on: the portal's answer is
+# a node id, and a compositor that cannot reach a daemon fails Start outright.
+# Its own daemon in its own runtime dir, for the same reason as the bus above —
+# a hosted runner has no daemon at all, which is what made every check here
+# fail there while passing on a desk, and a developer's machine has one that a
+# test has no business putting nodes into.
+start_pipewire() {
+	if ! command -v pipewire >/dev/null; then
+		echo "pipewire is not installed" >&2
+		exit 2
+	fi
+	export PIPEWIRE_RUNTIME_DIR="$workdir/pipewire"
+	mkdir -p "$PIPEWIRE_RUNTIME_DIR"
+	pipewire >"$workdir/pipewire.log" 2>&1 &
+	pipewire_pid=$!
+	for _ in $(seq 1 100); do
+		[ -S "$PIPEWIRE_RUNTIME_DIR/pipewire-0" ] && return 0
+		kill -0 "$pipewire_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	echo "the pipewire daemon did not come up; its log:" >&2
+	tail -20 "$workdir/pipewire.log" >&2
+	exit 2
+}
+start_pipewire
 
 failures=0
 check() {
