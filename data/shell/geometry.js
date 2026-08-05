@@ -477,6 +477,11 @@ function relayoutAll() {
     output.windowsEl.classList.toggle('scrolling', layoutMode === 'scrolling');
     output.windowsEl.classList.toggle('solar', layoutMode === 'solar');
     output.windowsEl.classList.toggle('matrix', layoutMode === 'matrix');
+    /* Smart gaps: a lone window on the workspace drops the inner gap, and the
+       CSS padding has to match what edgeGapPx() (used by the layout math)
+       computes, or the drawn edge and the measured one drift apart. */
+    output.windowsEl.classList.toggle('smart-single',
+      gapsSmart && singleWindowOn(output.workspace));
     if (rendered) output.windowsEl.append(rendered);
 
     /* Floating windows are positioned rather than laid out, so they are

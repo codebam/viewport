@@ -423,18 +423,29 @@ function applyTheme(theme) {
   }
 }
 
-/* The gap between windows, as pixels, from the config file's `gaps.inner` —
-   the first-class way to set it, in contrast to the theme key `gap` which is
-   a length for anyone who wants a unit they choose. Both land on the same
-   `--gap` custom property, and `gapPx()` is what reads it back for the
-   layout. Applied after the theme so the explicit option wins on reload; a
-   `gaps` block and a theme `gap` that disagree are the user's own conflict.
-   Absence leaves the stylesheet's own default (8px) standing. */
+/* The gaps from the config file's `gaps` block — the first-class way to set
+   them, in contrast to the theme keys `gap` / `gap-outer` which are lengths
+   for anyone who wants a unit they choose. `inner` lands on `--gap` and
+   `outer` on `--gap-outer`, which `gapPx()` / `gapOuterPx()` read back for
+   the layouts, and `smart` is remembered so a lone window can drop the inner
+   gap. Applied after the theme so the explicit option wins on reload; a
+   `gaps` block and a theme that disagree are the user's own conflict.
+   Absence leaves each field's shell default standing (inner 8, outer 0,
+   smart off). */
 function applyGaps(gaps) {
   if (gaps === undefined || gaps === null) return;
-  const px = Number(gaps);
-  if (!Number.isFinite(px)) return;
-  document.documentElement.style.setProperty('--gap', px + 'px');
+  const style = document.documentElement.style;
+  if (gaps.inner !== null && gaps.inner !== undefined) {
+    const px = Number(gaps.inner);
+    if (Number.isFinite(px)) style.setProperty('--gap', px + 'px');
+  }
+  if (gaps.outer !== null && gaps.outer !== undefined) {
+    const px = Number(gaps.outer);
+    if (Number.isFinite(px)) style.setProperty('--gap-outer', px + 'px');
+  }
+  if (gaps.smart !== null && gaps.smart !== undefined) {
+    gapsSmart = gaps.smart === true;
+  }
 }
 
 function applyBarMode(mode) {

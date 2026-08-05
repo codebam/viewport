@@ -1913,6 +1913,22 @@ if (mode === 'scrolling') {
   emit({ type: 'config', layout: mode, bar: 'visible' });
   check('switching back to visible shows the bar', !barHidden());
 
+  /* A gaps block from the config file lands as the inner and outer gap custom
+     properties, and remembers the smart flag. */
+  emit({ type: 'config', layout: mode,
+    gaps: { inner: 15, outer: 4, smart: true } });
+  const gapsStyle = document.documentElement.style;
+  check('gaps.inner lands on --gap',
+    gapsStyle.getPropertyValue('--gap') === '15px');
+  check('gaps.outer lands on --gap-outer',
+    gapsStyle.getPropertyValue('--gap-outer') === '4px');
+  /* An absent field leaves the prior/default value standing. */
+  emit({ type: 'config', layout: mode, gaps: { inner: 20 } });
+  check('an omitted outer keeps the previous value',
+    gapsStyle.getPropertyValue('--gap-outer') === '4px');
+  /* Reset for the checks that follow, which read --gap expecting its default. */
+  emit({ type: 'config', layout: mode, gaps: { inner: 8, outer: 0, smart: false } });
+
   /* The empty desktop's two parts, switched from the config file. */
   const root = document.documentElement.classList;
   emit({ type: 'config', layout: mode, logo: false, tutorial: false });
@@ -2372,9 +2388,16 @@ if (mode === 'scrolling') {
     check('and its container leaves no CSS gap for it to sit on top of',
       sheet.value(divider.parentElement, 'gap') === '');
   }
+  /* The edge padding is inner + outer. With the defaults (outer 0) the two
+     resolve to a calc whose value is the inner gap, so the inset is still the
+     gap — but an outer gap should widen it, and it is the calc that says so. */
+  const edgePadding = sheet.value(output.windowsEl, 'padding-top');
+  const gapOuter = sheet.custom(documentElement, '--gap-outer');
   check('the tiling area is inset by that same gap',
     ['top', 'right', 'bottom', 'left'].every((side) =>
-      sheet.value(output.windowsEl, `padding-${side}`) === gap));
+      sheet.value(output.windowsEl, `padding-${side}`) === edgePadding));
+  check('and the edge padding is the inner gap plus the outer gap',
+    edgePadding === `calc(${gap} + ${gapOuter})`);
   /* scrolling.js reads --gap out of the stylesheet at runtime and falls back to
      8 where there are no computed styles, which is every run of this harness.
      The two have to agree or the column arithmetic checked above is not the

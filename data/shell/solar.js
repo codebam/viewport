@@ -365,7 +365,10 @@ function solarSunOf(workspace, ids = solarIdsOf(workspace)) {
 function solarAreaOf(output) {
   const rect = output?.windowsEl?.getBoundingClientRect();
   if (!rect || rect.width <= 0 || rect.height <= 0) return null;
-  return { x: 0, y: 0, width: rect.width, height: rect.height };
+  // The border box includes `.windows`'s padding, so the edge gap (inner +
+  // outer) has to come off by hand, exactly as matrix and scrolling do.
+  const edge = edgeGapPx(output?.workspace);
+  return { x: 0, y: 0, width: rect.width - edge * 2, height: rect.height - edge * 2 };
 }
 
 /* The layout for one workspace on one output.

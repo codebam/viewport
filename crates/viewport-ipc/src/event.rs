@@ -218,13 +218,15 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<serde_json::Value>,
 
-    /// The space between windows, in pixels. Carry `gaps.inner` from the
-    /// config file to the shell, which sets it on the document as the `--gap`
-    /// custom property every layout reads through `gapPx()`. Absent means the
-    /// shell keeps its own default (8), so a message that omits it from an
-    /// older build behaves as it always did.
+    /// The window gap settings, carried from the config file to the shell,
+    /// which lands them on the `--gap` (inner) and `--gap-outer` custom
+    /// properties every layout reads through `gapPx()` / `gapOuterPx()`,
+    /// plus the `smart` toggle that drops the inner gap on a single window.
+    /// Absent means the shell keeps its own defaults (inner 8, outer 0, smart
+    /// off), so a message that omits it from an older build behaves as it
+    /// always did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gaps: Option<i32>,
+    pub gaps: Option<Gaps>,
 
     /// Whether directional focus may leave the monitor it is on.
     ///
@@ -265,6 +267,20 @@ pub struct Config {
 
 fn yes() -> bool {
     true
+}
+
+/// Window gap settings, as `gaps` in the config file, carried to the shell.
+///
+/// `inner` is the space between adjacent windows, `outer` the extra space
+/// around the edge of the output (added on top of `inner`), and `smart` drops
+/// the inner gap for a lone window. Every field is optional so an absent one
+/// leaves the shell's default standing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Gaps {
+    pub inner: Option<i32>,
+    pub outer: Option<i32>,
+    pub smart: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,6 +432,29 @@ mod tests {
         assert!(value.get("theme").is_none());
         assert!(value.get("gaps").is_none());
         assert_eq!(value["layout"], "tiling");
+    }
+
+    #[test]
+    fn gaps_are_carried_to_the_shell_with_all_three_fields() {
+        let value = json(&Event::Config(Config {
+            layout: "tiling".into(),
+            logo: true,
+            tutorial: true,
+            bar: None,
+            rules: None,
+            theme: None,
+            gaps: Some(Gaps {
+                inner: Some(15),
+                outer: Some(4),
+                smart: Some(true),
+            }),
+            focus_crosses_outputs: true,
+            tiling_mode: None,
+            background_terminal: false,
+        }));
+        assert_eq!(value["gaps"]["inner"], 15);
+        assert_eq!(value["gaps"]["outer"], 4);
+        assert_eq!(value["gaps"]["smart"], true);
     }
 
     #[test]

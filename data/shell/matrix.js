@@ -303,11 +303,11 @@ function calculateLayout(windows, screen, options = {}) {
 function matrixAreaOf(output) {
   const rect = output?.windowsEl?.getBoundingClientRect();
   if (!rect) return null;
-  const gap = gapPx();
-  const width = rect.width - gap * 2;
-  const height = rect.height - gap * 2;
+  const edge = edgeGapPx(output?.workspace);
+  const width = rect.width - edge * 2;
+  const height = rect.height - edge * 2;
   if (width <= 0 || height <= 0) return null;
-  return { x: gap, y: gap, width, height };
+  return { x: edge, y: edge, width, height };
 }
 
 /* The layout for one workspace, on the output showing it.

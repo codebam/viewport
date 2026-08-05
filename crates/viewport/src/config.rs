@@ -71,16 +71,24 @@ pub struct IdleConfig {
 
 /// The `gaps` block.
 ///
-/// Only inner is configurable for now. The shell spaces windows with a single
-/// `--gap` custom property — the same value is the space between windows and
-/// the padding around the outside of the tiling area, so there is not yet an
-/// outer gap to set separately.
+/// The shell spaces windows with a pair of CSS custom properties: the inner
+/// gap between adjacent windows, and the outer gap at the edge of the output.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct GapsConfig {
-    /// Pixels between windows (and around the desktop's edge), as sway's
-    /// `gaps.inner`. Absent keeps the shell's own default, which is 8.
+    /// Pixels between adjacent windows, as sway's `gaps.inner`. Absent keeps
+    /// the shell's own default, which is 8.
     pub inner: Option<i32>,
+    /// Extra pixels around the edge of the output, added *outside* the inner
+    /// gap — sway's `gaps.outer`. So the space where the desktop meets the
+    /// screen edge is `inner + outer`, while between two windows it is still
+    /// just `inner`. Absent means 0 (the edge is only the inner gap).
+    pub outer: Option<i32>,
+    /// When true and a workspace holds exactly one window, only the outer gap
+    /// is applied and the inner one is dropped — so a lone window does not get
+    /// a large border on its empty workspace. Sway's `smart_gaps`. Absent
+    /// means off (a single window keeps both gaps).
+    pub smart: Option<bool>,
 }
 
 /// What `background_terminal` was set to.

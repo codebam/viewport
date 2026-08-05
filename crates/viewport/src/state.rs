@@ -5101,10 +5101,15 @@ impl ViewportState {
             self.config.theme = file.theme;
         }
         if file.gaps != crate::config::GapsConfig::default() {
-            // Only inner is meaningful; the shell has no outer gap. A gap of
-            // zero means no spacing at all, which is a deliberate request, so
-            // the value is forwarded as-is rather than skipped for being small.
-            self.config.gaps = file.gaps.inner;
+            // Only fields the file actually names are forwarded; an absent one
+            // leaves the shell's own default. A gap of zero is a deliberate
+            // request (no spacing at all), so values are forwarded as-is
+            // rather than skipped for being small.
+            self.config.gaps = Some(viewport_ipc::event::Gaps {
+                inner: file.gaps.inner,
+                outer: file.gaps.outer,
+                smart: file.gaps.smart,
+            });
         }
         if let Some(url) = file.url {
             self.shell_url = Some(url);

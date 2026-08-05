@@ -26,9 +26,10 @@
  * Same set as niri's default preset list. */
 const COLUMN_WIDTHS = [1 / 3, 1 / 2, 2 / 3, 1];
 
-/* Width of the divider between columns, which is --gap. Read from the
- * stylesheet so the two cannot drift apart, with a fallback for the case where
- * computed styles are unavailable (the test harness has no layout engine). */
+/* Width of the divider between columns, which is --gap (the inner gap). Read
+   from the stylesheet so the two cannot drift apart, with a fallback for the
+   case where computed styles are unavailable (the test harness has no layout
+   engine). */
 function gapPx() {
   const raw = typeof getComputedStyle === 'function'
     ? getComputedStyle(document.documentElement).getPropertyValue('--gap')
@@ -36,6 +37,35 @@ function gapPx() {
   const value = parseInt(raw, 10);
   return Number.isFinite(value) ? value : 8;
 }
+
+/* The outer gap: extra space around the edge of the output, added *on top of*
+   the inner gap. Sway's `gaps.outer`. Default 0, so without it the desktop's
+   edge is just the inner gap, exactly as it has always been. */
+function gapOuterPx() {
+  const raw = typeof getComputedStyle === 'function'
+    ? getComputedStyle(document.documentElement).getPropertyValue('--gap-outer')
+    : '';
+  const value = parseInt(raw, 10);
+  return Number.isFinite(value) ? value : 0;
+}
+
+/* Whether smart gaps drop the inner gap for a lone window. */
+let gapsSmart = false;
+
+/* True when the workspace shows a single window — the condition under which
+   smart gaps collapse to the outer gap only. */
+function singleWindowOn(workspace) {
+  return workspace != null && leavesOf(workspace).length === 1;
+}
+
+/* The effective padding around the edge of this workspace's tiling area. It
+   is inner + outer normally; with smart gaps and a single window it is just
+   the outer gap, so a lone window does not sit far from its own screen edge. */
+function edgeGapPx(workspace) {
+  if (gapsSmart && singleWindowOn(workspace)) return gapOuterPx();
+  return gapPx() + gapOuterPx();
+}
+
 const COLUMN_HEIGHTS = [1 / 3, 1 / 2, 2 / 3, 1];
 
 /* `area` may be supplied by the caller. The overview renders a strip into a
@@ -47,13 +77,13 @@ function renderStrip(root, output, area = null) {
   strip.className = 'strip';
 
   if (area === null) {
-    /* The measured rect is the border box, and `.windows` is padded by a gap
-       on every side. Sizing columns against it makes a full-width column two
-       gaps wider than the space it can actually occupy — it overflowed the
-       right edge and never sat centred. The strip lives inside the padding, so
-       that is what it has to be measured against. */
+    /* The measured rect is the border box, and `.windows` is padded by the
+       edge gap (inner + outer) on every side. Sizing columns against it makes
+       a full-width column two gaps wider than the space it can actually occupy
+       — it overflowed the right edge and never sat centred. The strip lives
+       inside the padding, so that is what it has to be measured against. */
     const rect = output.windowsEl.getBoundingClientRect();
-    const pad = gapPx();
+    const pad = edgeGapPx(output.workspace);
     area = { width: rect.width - pad * 2, height: rect.height - pad * 2 };
   }
   const columns = root.children.filter(

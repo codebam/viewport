@@ -265,21 +265,31 @@ pub enum Request {
     #[serde(rename = "quit")]
     Quit,
 
-    /// Set the gap between windows at runtime, as `gaps.inner` in the config
+    /// Set the window gaps at runtime, as the `gaps` block in the config
     /// file.
     ///
-    /// The shell reads the gap from the `--gap` CSS custom property, so this
-    /// updates the compositor's `Config` and re-sends it, exactly as a config
-    /// reload would — without touching the file on disk. Useful for a
-    /// keybinding, a settings panel, or a script that wants to try a value
-    /// before editing the config file.
+    /// The shell reads the gaps from the `--gap` (inner) and `--gap-outer`
+    /// CSS custom properties, so this updates the compositor's `Config` and
+    /// re-sends it, exactly as a config reload would — without touching the
+    /// file on disk. Useful for a keybinding, a settings panel, or a script
+    /// that wants to try a value before editing the config file.
     ///
-    /// A gap of zero is deliberate (no spacing at all) and accepted.
+    /// Every field is optional; only the ones given are changed. A gap of
+    /// zero is deliberate (no spacing at all) and accepted; a negative gap is
+    /// rejected.
     #[serde(rename = "config.gaps")]
     ConfigGaps {
-        /// Pixels between windows, as `gaps.inner`. Negative values are
-        /// rejected.
-        inner: i32,
+        /// Pixels between adjacent windows, as `gaps.inner`. Negative values
+        /// are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inner: Option<i32>,
+        /// Pixels of extra space around the output edge, as `gaps.outer`.
+        /// Negative values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outer: Option<i32>,
+        /// Drop the inner gap for a lone window, as `gaps.smart`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        smart: Option<bool>,
     },
 }
 
@@ -709,15 +719,35 @@ mod tests {
         // Not in the C-parity table above: this request has no counterpart in
         // the C build, and adding a row would make that table's count
         // assertion mean something else.
-        let Request::ConfigGaps { inner } = parse(r#"{"type":"config.gaps","inner":15}"#) else {
+        let Request::ConfigGaps {
+            inner,
+            outer,
+            smart,
+        } = parse(r#"{"type":"config.gaps","inner":15,"outer":4,"smart":true}"#)
+        else {
             panic!("not a config.gaps message");
         };
-        assert_eq!(inner, 15);
+        assert_eq!(inner, Some(15));
+        assert_eq!(outer, Some(4));
+        assert_eq!(smart, Some(true));
 
         // A gap of zero is a deliberate request (no spacing at all).
-        let Request::ConfigGaps { inner } = parse(r#"{"type":"config.gaps","inner":0}"#) else {
+        let Request::ConfigGaps { inner, .. } = parse(r#"{"type":"config.gaps","inner":0}"#) else {
             panic!("not a config.gaps message");
         };
-        assert_eq!(inner, 0);
+        assert_eq!(inner, Some(0));
+
+        // Every field is optional, so a bare message changes nothing.
+        let Request::ConfigGaps {
+            inner,
+            outer,
+            smart,
+        } = parse(r#"{"type":"config.gaps"}"#)
+        else {
+            panic!("not a config.gaps message");
+        };
+        assert_eq!(inner, None);
+        assert_eq!(outer, None);
+        assert_eq!(smart, None);
     }
 }

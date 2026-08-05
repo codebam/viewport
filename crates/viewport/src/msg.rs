@@ -227,8 +227,8 @@ const TYPES: &[Type] = &[
     },
     Type {
         name: "config.gaps",
-        fields: &["inner"],
-        hint: "--inner N   (set the gap between windows, in pixels)",
+        fields: &["inner", "outer", "smart"],
+        hint: "[--inner N --outer N --smart BOOL]   (set window gaps; each is optional)",
     },
     Type {
         name: "shell.command",
@@ -900,6 +900,21 @@ mod tests {
         assert_eq!(
             value(&["-t", "config.gaps", "--inner", "15"]),
             serde_json::json!({"type": "config.gaps", "inner": 15})
+        );
+        assert_eq!(
+            value(&[
+                "-t",
+                "config.gaps",
+                "--inner",
+                "15",
+                "--outer",
+                "4",
+                "--smart",
+                "true"
+            ]),
+            serde_json::json!({
+                "type": "config.gaps", "inner": 15, "outer": 4, "smart": true
+            })
         );
     }
 

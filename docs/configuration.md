@@ -385,35 +385,43 @@ Precedence is flags > config file > defaults.
 
 ## Gaps
 
-The space between windows — and, taken off the desktop's edge, around the
-outside of the tiling area too. Every layout model reads the same value: the
-tiling tree's dividers, the scrolling strip's columns and the matrix's slots
-all come out of it, so one number spaces the whole desktop.
+The space around and between windows. Every layout model reads the same
+values: the tiling tree's dividers, the scrolling strip's columns and the
+matrix's slots all come out of them, so a few numbers space the whole
+desktop.
 
 ```jsonc
 {
-  "gaps": { "inner": 8 }
+  "gaps": { "inner": 8, "outer": 0, "smart": false }
 }
 ```
 
-`gaps.inner` is in pixels. Absent means the shell's default of 8.
+`gaps.inner` is the gap between adjacent windows, in pixels. `gaps.outer` is
+extra space around the edge of the output, added *on top of* the inner gap —
+so the space where the desktop meets the screen edge is `inner + outer`,
+while between two windows it is still just `inner`. `gaps.smart`, when true,
+drops the inner gap on a workspace that holds a single window, so a lone
+window does not sit far from its own screen edge. Absent fields keep the
+shell's defaults: inner 8, outer 0, smart off.
 
-The same custom property is what the theme key `gap` sets when you want to
-choose the unit yourself; `gaps.inner` is the explicit option and wins when
-both are present. Either way it lands on `--gap`, which `gapPx()` reads back
-at layout time, so a change takes effect on the next reload.
+The same custom properties are what the theme keys `gap` and `gap-outer` set
+when you want to choose the units yourself; `gaps.inner` / `gaps.outer` are
+the explicit options and win when both are present. Either way they land on
+`--gap` and `--gap-outer`, which the layouts read back at layout time, so a
+change takes effect on the next reload.
 
-**At runtime.** `config.gaps` on the control socket sets the gap without
-touching the file on disk — for a keybinding, a settings panel, or trying a
-value before editing the config:
+**At runtime.** `config.gaps` on the control socket sets the gaps without
+touching the file on disk — for a keybinding, a settings panel, or trying
+values before editing the config:
 
 ```sh
-viewport msg -t config.gaps --inner 15
+viewport msg -t config.gaps --inner 8 --outer 0 --smart false
 ```
 
-It updates the compositor's config and re-announces it over the same channel
-a config reload uses, so the change applies immediately. A gap of zero is
-accepted deliberately; a negative value is refused.
+Each field is optional; only the ones given change. It updates the
+compositor's config and re-announces it over the same channel a config
+reload uses, so the change applies immediately. A gap of zero is accepted
+deliberately; a negative gap is refused.
 
 ## Reloading the shell while it runs
 

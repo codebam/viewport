@@ -390,18 +390,48 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::InputKey { keycode, pressed } => state.inject_key(keycode, pressed),
 
-        Request::ConfigGaps { inner } => {
-            if inner < 0 {
-                reject(state, "config.gaps", &format!("inner {inner}"));
-                return;
+        Request::ConfigGaps {
+            inner,
+            outer,
+            smart,
+        } => {
+            // Only the fields given change; the others keep whatever they are.
+            // This is how a keybinding on `inner` does not clobber an `outer`
+            // set from the config file or an earlier IPC call.
+            let current = state
+                .config
+                .gaps
+                .get_or_insert_with(viewport_ipc::event::Gaps::default);
+            let mut changed = false;
+            if let Some(v) = inner {
+                if v < 0 {
+                    reject(state, "config.gaps", &format!("inner {v}"));
+                    return;
+                }
+                current.inner = Some(v);
+                changed = true;
             }
-            // The shell only reads the gap through the --gap custom property
-            // that a Config event carries, so changing the value is a matter
-            // of updating the compositor's copy and re-announcing it — the
-            // same path a config-file reload takes, without the disk write.
-            state.config.gaps = Some(inner);
-            state.needs_render = true;
-            state.notify_config();
+            if let Some(v) = outer {
+                if v < 0 {
+                    reject(state, "config.gaps", &format!("outer {v}"));
+                    return;
+                }
+                current.outer = Some(v);
+                changed = true;
+            }
+            if let Some(v) = smart {
+                current.smart = Some(v);
+                changed = true;
+            }
+            if changed {
+                // The shell only reads the gaps through the CSS custom
+                // properties a Config event carries, so changing the value is
+                // a matter of updating the compositor's copy and re-announcing
+                // it — the same path a config-file reload takes, without the
+                // disk write.
+                state.needs_render = true;
+                state.notify_config();
+            }
         }
 
         Request::Quit => state.shutdown(),

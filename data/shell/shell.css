@@ -37,6 +37,7 @@
   --text: #e7e9ee;
   --muted: #8b92a3;
   --gap: 8px;
+  --gap-outer: 0px;
   --bar: 30px;
   --radius: 6px;
   --tab: 24px;
@@ -329,7 +330,15 @@ html.behind body { background: transparent; }
   position: absolute;
   inset: calc(var(--bar) + var(--rsv-top)) var(--rsv-right) var(--rsv-bottom)
     var(--rsv-left);
-  padding: var(--gap);
+  /* The edge gap is inner + outer: the outer gap is extra space around the
+     output, added on top of the space between windows. */
+  padding: calc(var(--gap) + var(--gap-outer));
+}
+
+/* Smart gaps: with a single window on the workspace the inner gap is dropped,
+   so a lone window sits at the outer gap rather than the doubled edge gap. */
+.windows.smart-single {
+  padding: var(--gap-outer);
 }
 
 .desktop.bar-hidden .windows {
