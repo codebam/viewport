@@ -67,12 +67,27 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Features stay per-crate — the renderer needs three, the compositor needs a
 # dozen — and Cargo unions them.
 [workspace.dependencies.smithay]
-# A fork, for one patch: DrmCompositor::set_allow_tearing, without which
-# tearing-control-v1 is a protocol the compositor can advertise and never
-# honour — the async flip flag lives inside the atomic commit smithay
-# builds, and nothing upstream reaches it.
+# A fork: codebam/smithay, branch explicit-sync-scanout, which is upstream
+# master with five patches on top. Rebased onto master rather than left to
+# drift, so the delta stays reviewable and the day one of these lands upstream
+# it drops out of the rebase instead of having to be untangled.
+#
+# - drm: allow a frame to be flipped in asynchronously. The one without which
+#   tearing-control-v1 is a protocol this compositor can advertise and never
+#   honour — the async flip flag lives inside the atomic commit smithay builds,
+#   and nothing upstream reaches it.
+# - virtual_keyboard, twice: let the compositor see the keys, and hand over the
+#   symbol on the key as well. Upstream swallows both.
+# - drm_lease: treat EACCES from DROP_MASTER like EINVAL. Measured on 7.1 with
+#   amdgpu, where every open of the card node answers EACCES and the lease
+#   global was therefore never created.
+# - drm/renderer: carry a client's acquire point instead of assuming it waited.
+#
+# The previous tip is tagged pre-rebase-a8f1c00 over there, because a revision
+# no ref reaches is one GitHub may collect, and older checkouts of this
+# compositor pin it.
 git = "https://github.com/codebam/smithay.git"
-rev = "a8f1c0054b47c95362374a9b808235ea64837cc0"
+rev = "b6e5bf02b43a429f225772cd03a449b568cca594"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -88,11 +103,16 @@ default-features = false
 # the pair link. It has to be in the workspace root: `[patch]` is ignored in any
 # manifest that is not the one being built.
 #
-# Both revisions still have to be bumped together. Upstream moving is fine —
-# the renderer's pin is its own business — but this fork has to be rebased onto
-# something the renderer still compiles against before its pin here changes.
+# The two revisions still have to be bumped together, and this one has to match
+# the entry above exactly — a patch pointing somewhere else would put the second
+# Smithay back rather than remove it.
+#
+# They currently agree by construction: the fork is upstream master rebased, and
+# the renderer pins the master commit it was rebased onto. Keeping it that way
+# is what makes this a redirect and not a downgrade — rebase the fork before
+# bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "a8f1c0054b47c95362374a9b808235ea64837cc0" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "b6e5bf02b43a429f225772cd03a449b568cca594" }
 
 [profile.release]
 debug = 1
