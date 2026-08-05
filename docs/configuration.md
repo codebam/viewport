@@ -403,6 +403,18 @@ choose the unit yourself; `gaps.inner` is the explicit option and wins when
 both are present. Either way it lands on `--gap`, which `gapPx()` reads back
 at layout time, so a change takes effect on the next reload.
 
+**At runtime.** `config.gaps` on the control socket sets the gap without
+touching the file on disk — for a keybinding, a settings panel, or trying a
+value before editing the config:
+
+```sh
+viewport msg -t config.gaps --inner 15
+```
+
+It updates the compositor's config and re-announces it over the same channel
+a config reload uses, so the change applies immediately. A gap of zero is
+accepted deliberately; a negative value is refused.
+
 ## Reloading the shell while it runs
 
 The shell is a web page, and the loop of working on one is editing a file and

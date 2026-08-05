@@ -226,6 +226,11 @@ const TYPES: &[Type] = &[
         hint: "--chord Mod4+a --action focus.parent",
     },
     Type {
+        name: "config.gaps",
+        fields: &["inner"],
+        hint: "--inner N   (set the gap between windows, in pixels)",
+    },
+    Type {
         name: "shell.command",
         fields: &["command", "args"],
         hint: "--command VERB [--args ARG]...",
@@ -891,6 +896,14 @@ mod tests {
     }
 
     #[test]
+    fn config_gaps_builds_a_number_not_a_string() {
+        assert_eq!(
+            value(&["-t", "config.gaps", "--inner", "15"]),
+            serde_json::json!({"type": "config.gaps", "inner": 15})
+        );
+    }
+
+    #[test]
     fn values_are_json_where_they_are_json_and_text_where_they_are_not() {
         assert_eq!(
             value(&["-t", "output.hdr", "--name", "DP-1", "--enabled", "false"]),
@@ -1084,10 +1097,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 31 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 32 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 31);
+        assert_eq!(TYPES.len(), 32);
     }
 
     #[test]

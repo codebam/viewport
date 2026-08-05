@@ -149,6 +149,7 @@ fn is_known_type(name: &str) -> bool {
             | "input.pointer"
             | "input.button"
             | "input.key"
+            | "config.gaps"
     )
 }
 

@@ -390,6 +390,20 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::InputKey { keycode, pressed } => state.inject_key(keycode, pressed),
 
+        Request::ConfigGaps { inner } => {
+            if inner < 0 {
+                reject(state, "config.gaps", &format!("inner {inner}"));
+                return;
+            }
+            // The shell only reads the gap through the --gap custom property
+            // that a Config event carries, so changing the value is a matter
+            // of updating the compositor's copy and re-announcing it — the
+            // same path a config-file reload takes, without the disk write.
+            state.config.gaps = Some(inner);
+            state.needs_render = true;
+            state.notify_config();
+        }
+
         Request::Quit => state.shutdown(),
     }
 }

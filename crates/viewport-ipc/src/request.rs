@@ -264,6 +264,23 @@ pub enum Request {
 
     #[serde(rename = "quit")]
     Quit,
+
+    /// Set the gap between windows at runtime, as `gaps.inner` in the config
+    /// file.
+    ///
+    /// The shell reads the gap from the `--gap` CSS custom property, so this
+    /// updates the compositor's `Config` and re-sends it, exactly as a config
+    /// reload would — without touching the file on disk. Useful for a
+    /// keybinding, a settings panel, or a script that wants to try a value
+    /// before editing the config file.
+    ///
+    /// A gap of zero is deliberate (no spacing at all) and accepted.
+    #[serde(rename = "config.gaps")]
+    ConfigGaps {
+        /// Pixels between windows, as `gaps.inner`. Negative values are
+        /// rejected.
+        inner: i32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -685,5 +702,22 @@ mod tests {
         };
         assert_eq!(command, "layout.overview");
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn config_gaps_carries_the_inner_value() {
+        // Not in the C-parity table above: this request has no counterpart in
+        // the C build, and adding a row would make that table's count
+        // assertion mean something else.
+        let Request::ConfigGaps { inner } = parse(r#"{"type":"config.gaps","inner":15}"#) else {
+            panic!("not a config.gaps message");
+        };
+        assert_eq!(inner, 15);
+
+        // A gap of zero is a deliberate request (no spacing at all).
+        let Request::ConfigGaps { inner } = parse(r#"{"type":"config.gaps","inner":0}"#) else {
+            panic!("not a config.gaps message");
+        };
+        assert_eq!(inner, 0);
     }
 }
