@@ -84,10 +84,12 @@ pub struct GapsConfig {
     /// screen edge is `inner + outer`, while between two windows it is still
     /// just `inner`. Absent means 0 (the edge is only the inner gap).
     pub outer: Option<i32>,
-    /// When true and a workspace holds exactly one window, only the outer gap
-    /// is applied and the inner one is dropped — so a lone window does not get
-    /// a large border on its empty workspace. Sway's `smart_gaps`. Absent
-    /// means off (a single window keeps both gaps).
+    /// When true and a workspace holds exactly one window that fills the tiling
+    /// area, only the outer gap is applied and the inner one is dropped — so a
+    /// lone window does not get a large border on its empty workspace. Sway's
+    /// `smart_gaps`. In the scrolling layout a lone column narrower than the
+    /// output does not reach the screen edge to begin with and keeps both gaps.
+    /// Absent means off (a single window keeps both gaps).
     pub smart: Option<bool>,
 }
 

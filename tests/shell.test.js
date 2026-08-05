@@ -322,6 +322,10 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' matrixForTest: { calculate: calculateLayout, capacity: matrixCapacity,'
   + '   order: matrixOrderOf, recalculate: recalculateMatrixLayout,'
   + '   stack: focusStack, get MATRIX() { return MATRIX; } },'
+  /* What smart gaps decide, which is a question about the tree and the layout
+     mode rather than about any pixel: whether this workspace holds a lone
+     window that fills the tiling area. */
+  + ' smartGapsForTest: { single: singleWindowOn, edge: edgeGapPx },'
   /* The grid's row count, which decides the whole shape and is a pure function
      of (count, w, h). The arrangement it feeds is checked through the tree the
      mode builds, like the other dynamic ones; this is here because the aspects
@@ -1472,6 +1476,49 @@ if (mode === 'scrolling') {
       args: [String(firstId ?? 1), '-192', '0'] });
   }
   check('column width is clamped above zero', target.width >= 0.1);
+
+  /* Smart gaps in the strip.
+   *
+   * A column keeps the width it was given, so a lone half-width column does not
+   * touch its own screen edge whatever the padding is — dropping the edge gap
+   * there only widened it and slid it sideways, which is not what smart gaps
+   * are for. Only a full-width column counts. */
+  {
+    const out = globalThis.__shell.outputs.get(globalThis.__shell.activeOutput);
+    const home = out.workspace;
+    const alone = home === 7 ? 9 : 7;
+    const smart = globalThis.__shell.smartGapsForTest;
+
+    emit({ type: 'config', layout: mode,
+      gaps: { inner: 8, outer: 0, smart: true } });
+    emit({ type: 'shell.command', command: 'workspace.switch',
+      args: [String(alone)] });
+    emit({ type: 'view.added', id: 320, title: 'lone', app_id: 'lone',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+      width: 800, height: 600 });
+    emit({ type: 'view.focused', id: 320 });
+
+    const column = globalThis.__shell.workspaces.get(alone).children[0];
+    column.width = 1 / 2;
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+    check('a lone half-width column keeps the full edge gap',
+      !smart.single(alone)
+      && !out.windowsEl.classList.contains('smart-single')
+      && smart.edge(alone) === 8);
+
+    column.width = 1;
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+    check('a lone full-width column drops the inner gap',
+      smart.single(alone)
+      && out.windowsEl.classList.contains('smart-single')
+      && smart.edge(alone) === 0);
+
+    emit({ type: 'view.removed', id: 320 });
+    emit({ type: 'shell.command', command: 'workspace.switch',
+      args: [String(home)] });
+    emit({ type: 'config', layout: mode,
+      gaps: { inner: 8, outer: 0, smart: false } });
+  }
 }
 
 /* Moving a window animates: the tree is rebuilt from scratch on every relayout,

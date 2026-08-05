@@ -52,10 +52,25 @@ function gapOuterPx() {
 /* Whether smart gaps drop the inner gap for a lone window. */
 let gapsSmart = false;
 
-/* True when the workspace shows a single window — the condition under which
-   smart gaps collapse to the outer gap only. */
+/* True when the workspace shows a single window that fills the tiling area —
+   the condition under which smart gaps collapse to the outer gap only.
+
+   Filling it is half the condition, not an afterthought. In the strip a column
+   keeps the width it was given, so a lone half-width column does not reach its
+   own screen edge no matter what the padding is: dropping the edge gap there
+   only makes the column a little wider and slides it, which is not what smart
+   gaps are for. Every other layout gives a single window the whole area, so
+   there the count alone settles it. */
 function singleWindowOn(workspace) {
-  return workspace != null && leavesOf(workspace).length === 1;
+  if (workspace == null) return false;
+  if (leavesOf(workspace).length !== 1) return false;
+  if (layoutMode !== 'scrolling') return true;
+
+  /* Same filter renderStrip uses: a child with no view of its own is a slot
+     nothing has claimed yet and is not drawn, so it is not a column. */
+  const columns = (workspaces.get(workspace)?.children ?? []).filter(
+    (child) => child.type === 'split' || views.has(child.id));
+  return columns.length === 1 && (columns[0].width ?? 0) >= 1;
 }
 
 /* The effective padding around the edge of this workspace's tiling area. It

@@ -400,9 +400,12 @@ desktop.
 extra space around the edge of the output, added *on top of* the inner gap —
 so the space where the desktop meets the screen edge is `inner + outer`,
 while between two windows it is still just `inner`. `gaps.smart`, when true,
-drops the inner gap on a workspace that holds a single window, so a lone
-window does not sit far from its own screen edge. Absent fields keep the
-shell's defaults: inner 8, outer 0, smart off.
+drops the inner gap on a workspace that holds a single window filling the
+tiling area, so a lone window does not sit far from its own screen edge. In
+the scrolling layout a column keeps the width it was given, so this applies
+only to a lone column at full width: a half-width column does not reach the
+screen edge anyway, and collapsing the gap around it would only move it.
+Absent fields keep the shell's defaults: inner 8, outer 0, smart off.
 
 The same custom properties are what the theme keys `gap` and `gap-outer` set
 when you want to choose the units yourself; `gaps.inner` / `gaps.outer` are
