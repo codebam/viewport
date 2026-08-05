@@ -179,6 +179,21 @@ fn drag_effect(held: Option<u32>, button: u32, pressed: bool) -> DragEffect {
     }
 }
 
+/// Whether a button event is the shell's.
+///
+/// `grabbed` is the implicit grab a press over the shell takes: it holds until
+/// the release, so a drag that starts on the shell and crosses onto a window
+/// stays the shell's, exactly as it would for a client.
+///
+/// The other way round, it does not. A press over a window is that window's,
+/// and where the pointer has wandered to by the time it comes up does not
+/// change that — so `over_shell` only counts for a press. Without that, a
+/// press on a window released over empty space arrived at the page as a button
+/// up with no button down before it.
+fn shell_gets_button(grabbed: bool, over_shell: bool, pressed: bool) -> bool {
+    grabbed || (pressed && over_shell)
+}
+
 /// Whether this event is someone using the pointer.
 ///
 /// What `cursor.hide_after_ms` measures, and the reason it is not simply every
@@ -726,9 +741,18 @@ impl ViewportState {
                 // holds it until release, so a drag that crosses onto a window
                 // is still the shell's — the same implicit grab Wayland gives
                 // a client.
+                //
+                // And a release goes by the grab alone. Where the pointer has
+                // got to says nothing about who the button belongs to: press
+                // on a window, drag off it onto the shell, let go, and the
+                // page was handed a button up for a button it never saw go
+                // down.
                 let pressed = state == ButtonState::Pressed;
-                let on_shell = self.pointer_grabbed_by_shell
-                    || self.surface_under(pointer.current_location()).is_none();
+                let on_shell = shell_gets_button(
+                    self.pointer_grabbed_by_shell,
+                    self.surface_under(pointer.current_location()).is_none(),
+                    pressed,
+                );
                 if on_shell && self.shell_is_up() {
                     if pressed {
                         self.pointer_grabbed_by_shell = true;
@@ -1822,6 +1846,24 @@ mod tests {
             drag_effect(Some(BTN_RIGHT), BTN_RIGHT, false),
             DragEffect::End
         );
+    }
+
+    #[test]
+    fn the_page_only_gets_a_release_for_a_press_it_saw() {
+        // Pressed over the shell, released over the shell.
+        assert!(shell_gets_button(false, true, true));
+        assert!(shell_gets_button(true, true, false));
+
+        // Pressed over the shell, dragged onto a window, released there: the
+        // grab holds, the way it does for a client.
+        assert!(shell_gets_button(true, false, false));
+
+        // Pressed over a window, dragged onto the shell, released there. The
+        // press was never the page's, so neither is this.
+        assert!(!shell_gets_button(false, true, false));
+
+        // And an ordinary click on a window is not the page's either.
+        assert!(!shell_gets_button(false, false, true));
     }
 
     #[test]
