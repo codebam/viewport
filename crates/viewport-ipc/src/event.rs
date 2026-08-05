@@ -229,8 +229,8 @@ pub struct Config {
     pub gaps: Option<Gaps>,
 
     /// The window border settings, carried from the config file to the shell,
-    /// which lands the radius on the `--window-radius` custom property
-    /// `.window` rounds its corners with.
+    /// which lands them on the `--window-radius` and `--window-border` custom
+    /// properties `.window` draws its corners and its edge with.
     ///
     /// The compositor reads the same number: a rounded border with a
     /// square-cornered client drawn over it is a border that is not there, so
@@ -298,13 +298,14 @@ pub struct Gaps {
 /// Window border settings, as `border` in the config file, carried to the
 /// shell.
 ///
-/// `radius` is the corner of the frame the shell draws around a window, in
-/// logical pixels. Optional so an absent field leaves the shell's default
-/// standing.
+/// `radius` is the corner of the frame the shell draws around a window and
+/// `width` is how thick that frame is, both in logical pixels. Optional so an
+/// absent field leaves the shell's default standing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Border {
     pub radius: Option<i32>,
+    pub width: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -461,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn the_border_radius_is_carried_to_the_shell() {
+    fn the_border_is_carried_to_the_shell() {
         let value = json(&Event::Config(Config {
             layout: "tiling".into(),
             logo: true,
@@ -470,12 +471,16 @@ mod tests {
             rules: None,
             theme: None,
             gaps: None,
-            border: Some(Border { radius: Some(12) }),
+            border: Some(Border {
+                radius: Some(12),
+                width: Some(3),
+            }),
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
         }));
         assert_eq!(value["border"]["radius"], 12);
+        assert_eq!(value["border"]["width"], 3);
     }
 
     #[test]

@@ -434,7 +434,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
-        Request::ConfigBorder { radius } => {
+        Request::ConfigBorder { radius, width } => {
             let current = state
                 .config
                 .border
@@ -446,6 +446,14 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     return;
                 }
                 current.radius = Some(v);
+                changed = true;
+            }
+            if let Some(v) = width {
+                if v < 0 {
+                    reject(state, "config.border", &format!("width {v}"));
+                    return;
+                }
+                current.width = Some(v);
                 changed = true;
             }
             if changed {

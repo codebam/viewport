@@ -105,6 +105,15 @@ pub struct BorderConfig {
     /// Absent keeps the shell's own default, which is `--radius` (6). Zero is
     /// square corners, and turns the cropping off along with them.
     pub radius: Option<i32>,
+    /// How thick the border is, in logical pixels. Absent keeps the shell's
+    /// own default of 2. Zero is no border at all — the windows then meet the
+    /// gap between them directly, which is a desktop that separates windows by
+    /// space rather than by a line.
+    ///
+    /// The compositor reads it for the same reason it reads the radius: the
+    /// client's corner is the outer one less the border, so a thicker border
+    /// is a tighter curve on the surface inside it.
+    pub width: Option<i32>,
 }
 
 /// The corner the shell rounds a window to when the config says nothing:
@@ -115,14 +124,15 @@ pub struct BorderConfig {
 /// config yet has already drawn one. Keep it in step with the stylesheet.
 pub const DEFAULT_BORDER_RADIUS: i32 = 6;
 
-/// The thickness of `.window`'s border in the same stylesheet.
+/// The thickness of `.window`'s border in the same stylesheet, when the config
+/// says nothing.
 ///
 /// The radius in the config is the one on the *outside* of the border, which
 /// is where a person looking at the screen sees the corner. The client sits
 /// inside the border, so its own corner is this much tighter — the rule CSS
 /// applies to a padding box, done on this side because the compositor is what
 /// cuts the client.
-pub const BORDER_WIDTH: i32 = 2;
+pub const DEFAULT_BORDER_WIDTH: i32 = 2;
 
 /// What `background_terminal` was set to.
 ///
@@ -604,8 +614,10 @@ mod tests {
 
     #[test]
     fn border_block_parses() {
-        let set: File = serde_json::from_str(r#"{"border":{"radius":12}}"#).expect("should parse");
+        let set: File =
+            serde_json::from_str(r#"{"border":{"radius":12,"width":3}}"#).expect("should parse");
         assert_eq!(set.border.radius, Some(12));
+        assert_eq!(set.border.width, Some(3));
         // Zero is a decision — square corners — and not an absent field.
         let square: File =
             serde_json::from_str(r#"{"border":{"radius":0}}"#).expect("should parse");

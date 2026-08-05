@@ -4674,15 +4674,19 @@ impl ViewportState {
                 // the border and the radius off one, and a rounded video
                 // filling the screen would be four notches of wallpaper in the
                 // corners of the monitor.
+                let border = self.config.border.as_ref();
                 let radius = if view.is_some_and(|view| view.wants_fullscreen()) {
                     0
                 } else {
-                    self.config
-                        .border
-                        .as_ref()
+                    border
                         .and_then(|border| border.radius)
                         .unwrap_or(crate::config::DEFAULT_BORDER_RADIUS)
                 };
+                // How much tighter the client's own corner is than the frame
+                // around it. Configured, because the frame's thickness is.
+                let width = border
+                    .and_then(|border| border.width)
+                    .unwrap_or(crate::config::DEFAULT_BORDER_WIDTH);
                 let physical = |logical: i32| (f64::from(logical) * scale).round() as i32;
                 // The box the shell drew, before any thumbnail scale: the
                 // element rounding it is wrapped by the one that shrinks it,
@@ -4691,8 +4695,7 @@ impl ViewportState {
                     origin,
                     layout.size.to_f64().to_physical(scale).to_i32_round(),
                 );
-                let rounded = (radius > crate::config::BORDER_WIDTH)
-                    .then(|| (box_, physical(radius - crate::config::BORDER_WIDTH)));
+                let rounded = (radius > width).then(|| (box_, physical(radius - width)));
                 // The outside of the same corner, for the border sides drawn
                 // above the windows underneath a floating one.
                 let overlay_rounded = (radius > 0 && !overlay.is_empty())
@@ -5162,6 +5165,7 @@ impl ViewportState {
         if file.border != crate::config::BorderConfig::default() {
             self.config.border = Some(viewport_ipc::event::Border {
                 radius: file.border.radius,
+                width: file.border.width,
             });
         }
         if let Some(url) = file.url {

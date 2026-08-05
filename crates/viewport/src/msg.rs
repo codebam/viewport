@@ -232,8 +232,8 @@ const TYPES: &[Type] = &[
     },
     Type {
         name: "config.border",
-        fields: &["radius"],
-        hint: "[--radius N]   (set the window corner radius)",
+        fields: &["radius", "width"],
+        hint: "[--radius N --width N]   (set the window border; each is optional)",
     },
     Type {
         name: "shell.command",
@@ -926,8 +926,8 @@ mod tests {
     #[test]
     fn config_border_builds_a_number_not_a_string() {
         assert_eq!(
-            value(&["-t", "config.border", "--radius", "12"]),
-            serde_json::json!({"type": "config.border", "radius": 12})
+            value(&["-t", "config.border", "--radius", "12", "--width", "3"]),
+            serde_json::json!({"type": "config.border", "radius": 12, "width": 3})
         );
     }
 

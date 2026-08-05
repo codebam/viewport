@@ -59,6 +59,12 @@
      page did not draw. */
   --window-radius: var(--radius);
 
+  /* How thick that frame is. Read by the compositor as well, for the same
+     reason as the radius and through the same `border` block: the corner the
+     client is cropped to is the outer one less this, which is what CSS does
+     to the padding box of anything with a border and a radius. */
+  --window-border: 2px;
+
   /* Translucent fills, for anything that sits *on* a surface rather than
      beside it: a button in the bar, the divider under the pointer. White at a
      low alpha rather than a colour, so they take on whatever is behind them
@@ -673,7 +679,14 @@ html.behind body { background: transparent; }
 .column > * { flex: 1 1 auto; min-width: 0; }
 
 .window {
-  border: 2px solid var(--border);
+  /* Longhands, not the `border` shorthand: a shorthand is read left to right
+     and a custom property in it could be any of the three parts, so a width
+     written as `var(...)` is indistinguishable from a colour written the same
+     way. `.window.fullscreen` still says `border: 0` and still resets all
+     three, which is what that rule needs. */
+  border-width: var(--window-border);
+  border-style: solid;
+  border-color: var(--border);
   border-radius: var(--window-radius);
   overflow: hidden;
   display: flex;

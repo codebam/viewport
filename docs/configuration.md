@@ -432,19 +432,22 @@ The frame drawn around a window.
 
 ```jsonc
 {
-  "border": { "radius": 6 }
+  "border": { "radius": 6, "width": 2 }
 }
 ```
 
 `border.radius` is the corner radius in pixels, measured on the *outside* of
 the border. Absent keeps the shell's default of 6; zero is a square desktop.
+`border.width` is how thick the border is, in pixels. Absent keeps the
+shell's default of 2; zero draws no border at all, leaving the gap between
+windows to separate them.
 
-This is the one appearance setting the compositor reads as well as the shell.
+These are the appearance settings the compositor reads as well as the shell.
 A window's contents are a client surface the compositor draws itself, not part
 of the page — so a rounded frame with the client's square corner sitting on top
 of it is a rounded frame nobody can see. The compositor crops each client to
-the same corner the page drew, tighter by the two pixels of border so the two
-curves are concentric. Fullscreen windows keep their square corners, as they
+the same corner the page drew, tighter by the border's width so the two curves
+are concentric. Fullscreen windows keep their square corners, as they
 lose their border.
 
 The corner is cut rather than shaded: there is no antialiasing on it, because
@@ -464,11 +467,11 @@ corner that is no longer there. Set both, or set `border.radius`.
 `config.gaps` works:
 
 ```sh
-viewport msg -t config.border --radius 12
+viewport msg -t config.border --radius 12 --width 3
 ```
 
-Each field is optional; only the ones given change. A radius of zero is
-accepted; a negative one is refused.
+Each field is optional; only the ones given change. Zero is accepted for
+either; a negative value is refused.
 
 ## Reloading the shell while it runs
 

@@ -309,6 +309,10 @@ pub enum Request {
         /// values are rejected.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         radius: Option<i32>,
+        /// How thick the border is, in logical pixels, as `border.width`.
+        /// Zero is no border; negative values are rejected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<i32>,
     },
 }
 
@@ -772,22 +776,25 @@ mod tests {
 
     #[test]
     fn config_border_carries_the_radius() {
-        let Request::ConfigBorder { radius } = parse(r#"{"type":"config.border","radius":12}"#)
+        let Request::ConfigBorder { radius, width } =
+            parse(r#"{"type":"config.border","radius":12,"width":3}"#)
         else {
             panic!("not a config.border message");
         };
         assert_eq!(radius, Some(12));
+        assert_eq!(width, Some(3));
 
-        // Square corners, asked for on purpose.
-        let Request::ConfigBorder { radius } = parse(r#"{"type":"config.border","radius":0}"#)
+        // Square corners and no border at all, both asked for on purpose.
+        let Request::ConfigBorder { radius, width } =
+            parse(r#"{"type":"config.border","radius":0,"width":0}"#)
         else {
             panic!("not a config.border message");
         };
-        assert_eq!(radius, Some(0));
+        assert_eq!((radius, width), (Some(0), Some(0)));
 
-        let Request::ConfigBorder { radius } = parse(r#"{"type":"config.border"}"#) else {
+        let Request::ConfigBorder { radius, width } = parse(r#"{"type":"config.border"}"#) else {
             panic!("not a config.border message");
         };
-        assert_eq!(radius, None);
+        assert_eq!((radius, width), (None, None));
     }
 }

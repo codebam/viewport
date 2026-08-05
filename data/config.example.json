@@ -136,10 +136,12 @@
   "_border": [
     "The frame around a window. `radius` is the corner in pixels, on the",
     "outside of the border; absent keeps the shell's default of 6 and zero",
-    "is a square desktop. Read by the compositor as well as the shell: the",
-    "client is a surface the compositor draws, and it crops that surface to",
-    "the same corner, or the rounded frame would be hidden behind a square",
-    "client. Fullscreen windows keep square corners."
+    "is a square desktop. `width` is how thick the border is; absent keeps",
+    "the default of 2 and zero draws none at all. Both are read by the",
+    "compositor as well as the shell: the client is a surface the",
+    "compositor draws, and it crops that surface to the same corner — the",
+    "outer radius less the border — or the rounded frame would be hidden",
+    "behind a square client. Fullscreen windows keep square corners."
   ],
   "border": {},
 
