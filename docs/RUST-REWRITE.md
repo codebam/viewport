@@ -321,6 +321,9 @@ otherwise upstreamable, and the fork should go away when it lands.
     reason to own the interface, and it is what niri and hyprland concluded
     too. Frames are composited straight into a DMA-BUF the consumer imports.
 13. **Done. The screen-share chooser**, drawn by the shell and steered by the
+    compositor. Version 4 of the interface, so a share can be restored:
+    OBS and anything else that keeps a token gets the same monitor or window
+    back without the chooser, by name rather than by an id that dies with the
     compositor.
 
 ### Still open

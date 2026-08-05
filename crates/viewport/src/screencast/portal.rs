@@ -22,6 +22,8 @@ use std::sync::{Arc, Mutex};
 
 use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
+use super::Remembered;
+
 /// What the compositor is asked to do, and where to send the answer.
 ///
 /// The reply travels back on a channel of its own: the D-Bus thread has to
@@ -33,6 +35,11 @@ pub enum Message {
         /// What kind of source the client asked for, as the portal numbers
         /// them.
         types: u32,
+        /// What was shared last time, if the application came back with a
+        /// token for it. Only a wish: the monitor may be unplugged and the
+        /// window closed, and the compositor asks the user when it cannot be
+        /// honoured.
+        restore: Option<Remembered>,
         reply: async_channel::Sender<Result<Started, String>>,
     },
     Close {
@@ -41,7 +48,7 @@ pub enum Message {
 }
 
 /// What a client needs to receive the stream.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Started {
     pub node: u32,
     pub width: i32,
@@ -49,6 +56,12 @@ pub struct Started {
     /// Which kind it turned out to be — a request for either is answered with
     /// whichever the user picked.
     pub source_type: u32,
+    /// What was shared, written down for next time.
+    ///
+    /// Sent back whether or not this share was a restored one: the token the
+    /// frontend hands the application is minted from this, and a share that
+    /// answered with nothing is one the application can never ask for again.
+    pub remembered: Option<Remembered>,
 }
 
 /// The response codes the portal interface uses.
@@ -56,11 +69,32 @@ const RESPONSE_SUCCESS: u32 = 0;
 const RESPONSE_CANCELLED: u32 = 1;
 const RESPONSE_FAILED: u32 = 2;
 
+/// Who wrote a piece of restore data, and which shape it is in.
+///
+/// The frontend stores it and hands it back without looking inside, to
+/// whichever implementation is running now. That may not be this one — a
+/// session started under another compositor leaves a token behind that this
+/// one would otherwise read as its own — so it is signed, and anything not
+/// signed this way is ignored and the user is asked instead.
+const RESTORE_VENDOR: &str = "viewport";
+const RESTORE_VERSION: u32 = 1;
+
+/// The application does not want the choice remembered.
+const PERSIST_NONE: u32 = 0;
+
 /// One conversation with an application.
 #[derive(Debug, Default)]
 pub struct Session {
     /// What SelectSources asked for, which Start then acts on.
     types: u32,
+    /// What this application shared last time, if the frontend recognised the
+    /// token it presented.
+    restore: Option<Remembered>,
+    /// How long the application asked for the choice to be remembered: none,
+    /// while it runs, or until revoked. Only the answer is this end's
+    /// business — the frontend is what keeps the token — but it decides
+    /// whether an answer is sent at all.
+    persist: u32,
     /// The stream handed out, so closing the session stops it.
     node: Option<u32>,
     /// Who asked — the portal frontend's connection, not the application's.
@@ -205,13 +239,29 @@ impl ScreenCast {
             // interface has always defaulted to.
             .unwrap_or(super::SOURCE_MONITOR);
 
-        tracing::debug!("screencast: select sources, types {types}");
+        // What the application shared last time. The application holds an
+        // opaque token; the frontend is what turns it back into this, and it
+        // only does so for a token it issued to the same application, which is
+        // what makes restoring without asking a continuation of a choice
+        // already made rather than a new one made on the application's say-so.
+        let restore = options.get("restore_data").and_then(decode);
+        let persist = options
+            .get("persist_mode")
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(PERSIST_NONE);
+
+        tracing::debug!(
+            "screencast: select sources, types {types}, persist {persist}, \
+             restoring {restore:?}"
+        );
         let mut sessions = self.sessions.lock().unwrap();
         let Some(session) = sessions.get_mut(&OwnedObjectPath::from(session_handle)) else {
             tracing::warn!("screencast: select sources for a session that does not exist");
             return (RESPONSE_FAILED, HashMap::new());
         };
         session.types = types;
+        session.restore = restore;
+        session.persist = persist;
         (RESPONSE_SUCCESS, HashMap::new())
     }
 
@@ -250,10 +300,10 @@ impl ScreenCast {
         _options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
         let path = OwnedObjectPath::from(session_handle);
-        let types = {
+        let (types, restore, persist) = {
             let sessions = self.sessions.lock().unwrap();
             match sessions.get(&path) {
-                Some(session) => session.types,
+                Some(session) => (session.types, session.restore.clone(), session.persist),
                 None => return (RESPONSE_FAILED, HashMap::new()),
             }
         };
@@ -265,6 +315,7 @@ impl ScreenCast {
             .ask(
                 Message::Start {
                     types,
+                    restore,
                     reply: sender,
                 },
                 receiver,
@@ -311,8 +362,126 @@ impl ScreenCast {
             // never be named.
             Err(e) => tracing::warn!("screencast: could not describe the stream: {e}"),
         }
+
+        // And what to ask for next time, if the application wanted that.
+        //
+        // Both keys or neither: the frontend stores the data against the mode,
+        // and data with no mode is a token it mints and then throws away,
+        // which is a restore that silently never happens.
+        if persist != PERSIST_NONE {
+            match started.remembered.as_ref().map(encode) {
+                Some(Ok(data)) => {
+                    results.insert("restore_data".to_owned(), data);
+                    results.insert("persist_mode".to_owned(), OwnedValue::from(persist));
+                }
+                // Nothing to restore from, either because writing it down
+                // failed or because the compositor shared something it cannot
+                // name again. Said out loud as a zero rather than by leaving
+                // the key out: a Start that answers with no mode is read as
+                // the mode that was asked for, and the frontend would keep a
+                // permission for a token it can never fill in.
+                other => {
+                    if let Some(Err(e)) = other {
+                        tracing::warn!("screencast: could not write down what was shared: {e}");
+                    }
+                    results.insert("persist_mode".to_owned(), OwnedValue::from(PERSIST_NONE));
+                }
+            }
+        }
         (RESPONSE_SUCCESS, results)
     }
+}
+
+/// Write a source down as the interface carries it: `(suv)`, which is who
+/// wrote it, which shape it is in, and the thing itself.
+///
+/// A dictionary inside rather than a bare string, because the fields differ by
+/// kind and a reader of the next version has to be able to skip what it does
+/// not know.
+fn encode(remembered: &Remembered) -> zvariant::Result<OwnedValue> {
+    let mut fields: HashMap<String, Value<'static>> = HashMap::new();
+    let kind = match remembered {
+        Remembered::Output(name) => {
+            fields.insert("output".to_owned(), Value::from(name.clone()));
+            "output"
+        }
+        Remembered::Window { app_id, title } => {
+            fields.insert("app_id".to_owned(), Value::from(app_id.clone()));
+            fields.insert("title".to_owned(), Value::from(title.clone()));
+            "window"
+        }
+        Remembered::AllOutputs => "all-outputs",
+        Remembered::FollowWindow => "follow-window",
+        Remembered::FollowOutput => "follow-output",
+    };
+    fields.insert("kind".to_owned(), Value::from(kind));
+
+    let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
+    OwnedValue::try_from(Value::from((RESTORE_VENDOR, RESTORE_VERSION, data)))
+}
+
+/// Read one back, if it is one of ours.
+///
+/// Every way of not being one is the same answer — a different compositor
+/// wrote it, a later version of this one did, the frontend handed back
+/// something malformed, the window kind names a field it did not send. None of
+/// them are worth failing the call over: the user is asked, which is what
+/// would have happened without a token at all.
+fn decode(value: &OwnedValue) -> Option<Remembered> {
+    let Value::Structure(structure) = &**value else {
+        return None;
+    };
+    let [vendor, version, data] = structure.fields() else {
+        return None;
+    };
+    let (Value::Str(vendor), Value::U32(version)) = (inside(vendor), inside(version)) else {
+        return None;
+    };
+    if vendor.as_str() != RESTORE_VENDOR || *version != RESTORE_VERSION {
+        tracing::debug!("screencast: ignoring restore data from {vendor} version {version}");
+        return None;
+    }
+
+    let Value::Dict(dict) = inside(data) else {
+        return None;
+    };
+    let field = |wanted: &str| -> Option<String> {
+        dict.iter().find_map(|(key, value)| match inside(key) {
+            Value::Str(key) if key.as_str() == wanted => match inside(value) {
+                Value::Str(value) => Some(value.as_str().to_owned()),
+                _ => None,
+            },
+            _ => None,
+        })
+    };
+
+    match field("kind")?.as_str() {
+        "output" => Some(Remembered::Output(field("output")?)),
+        "window" => Some(Remembered::Window {
+            app_id: field("app_id")?,
+            title: field("title")?,
+        }),
+        "all-outputs" => Some(Remembered::AllOutputs),
+        "follow-window" => Some(Remembered::FollowWindow),
+        "follow-output" => Some(Remembered::FollowOutput),
+        other => {
+            tracing::debug!("screencast: restore data names a source kind, {other}, nobody offers");
+            None
+        }
+    }
+}
+
+/// What is inside a variant, however many of them there are.
+///
+/// A dictionary of `a{sv}` is one wrapper deep when it comes off the wire and
+/// none at all when it was built in this process, and a reader that assumes
+/// either one is a reader that works in the tests and not on the bus.
+fn inside<'v>(value: &'v Value<'v>) -> &'v Value<'v> {
+    let mut value = value;
+    while let Value::Value(inner) = value {
+        value = inner;
+    }
+    value
 }
 
 /// The session object the frontend closes when the application is done.
@@ -427,4 +596,112 @@ pub fn watch_frontend(
         })
         .map(|_| ())
         .unwrap_or_else(|e| tracing::warn!("could not start the portal watcher: {e}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Through the wire and back, which is the only round trip that matters.
+    ///
+    /// The frontend writes the data to disk and reads it back into a fresh
+    /// process, so what `decode` is handed has been serialised and parsed
+    /// again — and a variant that survives inside this process can come back
+    /// wrapped in another one. A test that passed the value straight from
+    /// `encode` to `decode` would prove nothing about the case that happens.
+    fn round_trip(remembered: &Remembered) -> Option<Remembered> {
+        let encoded = encode(remembered).expect("writing it down");
+        let context = zvariant::serialized::Context::new_dbus(zvariant::Endian::Little, 0);
+        let bytes = zvariant::to_bytes(context, &encoded).expect("serialising it");
+        let (value, _) = bytes
+            .deserialize::<zvariant::Value<'_>>()
+            .expect("parsing it");
+        decode(&OwnedValue::try_from(value).expect("owning it"))
+    }
+
+    /// Every kind of share can be asked for again. A kind that could not be
+    /// written down is one OBS has to be told about by hand on every launch.
+    #[test]
+    fn every_source_survives_the_frontend() {
+        for remembered in [
+            Remembered::Output("DP-1".to_owned()),
+            Remembered::Window {
+                app_id: "org.mozilla.firefox".to_owned(),
+                title: "A tab".to_owned(),
+            },
+            Remembered::AllOutputs,
+            Remembered::FollowWindow,
+            Remembered::FollowOutput,
+        ] {
+            assert_eq!(round_trip(&remembered).as_ref(), Some(&remembered));
+        }
+    }
+
+    /// A token another compositor wrote is not read as one of ours. The
+    /// frontend hands back whatever it stored for the application, and a
+    /// session that started under a different desktop leaves data whose fields
+    /// mean something else — restoring from it would share whatever this
+    /// reader made of somebody else's dictionary.
+    #[test]
+    fn another_compositors_token_is_ignored() {
+        let mut fields: HashMap<String, Value<'static>> = HashMap::new();
+        fields.insert("kind".to_owned(), Value::from("output"));
+        fields.insert("output".to_owned(), Value::from("DP-1"));
+        let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
+        let foreign =
+            OwnedValue::try_from(Value::from(("someone-else", 1u32, data))).expect("building it");
+        assert_eq!(decode(&foreign), None);
+    }
+
+    /// So is one from a later version of this one, which is what makes the
+    /// version number worth carrying: a field that changes meaning in version
+    /// two must not be read by version one.
+    #[test]
+    fn a_later_version_is_ignored() {
+        let mut fields: HashMap<String, Value<'static>> = HashMap::new();
+        fields.insert("kind".to_owned(), Value::from("output"));
+        fields.insert("output".to_owned(), Value::from("DP-1"));
+        let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
+        let later = OwnedValue::try_from(Value::from((RESTORE_VENDOR, RESTORE_VERSION + 1, data)))
+            .expect("building it");
+        assert_eq!(decode(&later), None);
+    }
+
+    /// Anything else is nothing, rather than a panic on the bus thread. The
+    /// data comes from a file the compositor does not own, and a malformed one
+    /// must end in the chooser rather than in a dead portal.
+    #[test]
+    fn nonsense_is_not_a_restore() {
+        for value in [
+            OwnedValue::from(7u32),
+            OwnedValue::try_from(Value::from("not a structure")).expect("building it"),
+            // The shape is right and the dictionary says nothing.
+            OwnedValue::try_from(Value::from((
+                RESTORE_VENDOR,
+                RESTORE_VERSION,
+                Value::Value(Box::new(Value::from(zvariant::Dict::from(HashMap::<
+                    String,
+                    Value<'static>,
+                >::new(
+                ))))),
+            )))
+            .expect("building it"),
+        ] {
+            assert_eq!(decode(&value), None);
+        }
+    }
+
+    /// A window remembered without its title is not restored to some other
+    /// window of the same application by accident of the fields being there.
+    /// Both are written and both are required back.
+    #[test]
+    fn a_window_needs_both_names() {
+        let mut fields: HashMap<String, Value<'static>> = HashMap::new();
+        fields.insert("kind".to_owned(), Value::from("window"));
+        fields.insert("app_id".to_owned(), Value::from("foot"));
+        let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
+        let half = OwnedValue::try_from(Value::from((RESTORE_VENDOR, RESTORE_VERSION, data)))
+            .expect("building it");
+        assert_eq!(decode(&half), None);
+    }
 }
