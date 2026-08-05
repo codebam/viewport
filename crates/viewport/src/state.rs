@@ -1182,7 +1182,19 @@ impl ViewportState {
                         .map(|_| std::time::Instant::now());
 
                     // Safety: the display is not dropped here.
-                    let messages = unsafe { display.get_mut().dispatch_clients(state).unwrap() };
+                    //
+                    // An error is one turn of dispatch that went wrong, and
+                    // the desktop around it carries on — as it does for a
+                    // client that could not be accepted just above. Unwinding
+                    // through the event loop here would take every other
+                    // client with it.
+                    let messages = match unsafe { display.get_mut().dispatch_clients(state) } {
+                        Ok(messages) => messages,
+                        Err(e) => {
+                            tracing::error!("dispatching Wayland clients: {e}");
+                            return Ok(PostAction::Continue);
+                        }
+                    };
 
                     if let Some(started) = started {
                         let spent = started.elapsed().as_nanos() as u64;
