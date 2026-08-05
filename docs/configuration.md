@@ -383,6 +383,26 @@ Precedence is flags > config file > defaults.
 -d, --debug            verbose logging, and mirror the shell's console
 ```
 
+## Gaps
+
+The space between windows — and, taken off the desktop's edge, around the
+outside of the tiling area too. Every layout model reads the same value: the
+tiling tree's dividers, the scrolling strip's columns and the matrix's slots
+all come out of it, so one number spaces the whole desktop.
+
+```jsonc
+{
+  "gaps": { "inner": 8 }
+}
+```
+
+`gaps.inner` is in pixels. Absent means the shell's default of 8.
+
+The same custom property is what the theme key `gap` sets when you want to
+choose the unit yourself; `gaps.inner` is the explicit option and wins when
+both are present. Either way it lands on `--gap`, which `gapPx()` reads back
+at layout time, so a change takes effect on the next reload.
+
 ## Reloading the shell while it runs
 
 The shell is a web page, and the loop of working on one is editing a file and

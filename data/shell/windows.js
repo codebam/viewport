@@ -423,6 +423,20 @@ function applyTheme(theme) {
   }
 }
 
+/* The gap between windows, as pixels, from the config file's `gaps.inner` —
+   the first-class way to set it, in contrast to the theme key `gap` which is
+   a length for anyone who wants a unit they choose. Both land on the same
+   `--gap` custom property, and `gapPx()` is what reads it back for the
+   layout. Applied after the theme so the explicit option wins on reload; a
+   `gaps` block and a theme `gap` that disagree are the user's own conflict.
+   Absence leaves the stylesheet's own default (8px) standing. */
+function applyGaps(gaps) {
+  if (gaps === undefined || gaps === null) return;
+  const px = Number(gaps);
+  if (!Number.isFinite(px)) return;
+  document.documentElement.style.setProperty('--gap', px + 'px');
+}
+
 function applyBarMode(mode) {
   const next = mode === 'hidden' || mode === 'auto' || mode === 'visible'
     ? mode : 'visible';

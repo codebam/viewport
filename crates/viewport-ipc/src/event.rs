@@ -218,6 +218,14 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<serde_json::Value>,
 
+    /// The space between windows, in pixels. Carry `gaps.inner` from the
+    /// config file to the shell, which sets it on the document as the `--gap`
+    /// custom property every layout reads through `gapPx()`. Absent means the
+    /// shell keeps its own default (8), so a message that omits it from an
+    /// older build behaves as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gaps: Option<i32>,
+
     /// Whether directional focus may leave the monitor it is on.
     ///
     /// Both halves of the desktop need this and neither owns it. Tiling asks
@@ -398,6 +406,7 @@ mod tests {
             bar: None,
             rules: None,
             theme: None,
+            gaps: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -405,6 +414,7 @@ mod tests {
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
         assert!(value.get("theme").is_none());
+        assert!(value.get("gaps").is_none());
         assert_eq!(value["layout"], "tiling");
     }
 
@@ -434,6 +444,7 @@ mod tests {
             bar: None,
             rules: None,
             theme: None,
+            gaps: None,
             focus_crosses_outputs: false,
             tiling_mode: None,
             background_terminal: false,
@@ -450,6 +461,7 @@ mod tests {
             bar: Some("top".into()),
             rules: Some(serde_json::json!([{"app_id": "mpv", "floating": true}])),
             theme: None,
+            gaps: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -535,6 +547,7 @@ mod tests {
                 bar: None,
                 rules: None,
                 theme: None,
+                gaps: None,
                 focus_crosses_outputs: true,
                 tiling_mode: None,
                 background_terminal: false,

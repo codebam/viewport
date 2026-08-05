@@ -123,6 +123,15 @@
   ],
   "theme": {},
 
+  "_gaps": [
+    "Space between windows, in pixels. The one number every layout reads for",
+    "the gap between windows and around the edge of the desktop. A dedicated",
+    "option is the first-class way to set it; the theme key 'gap' above sets",
+    "the same custom property when you want to choose the unit. Absent keeps",
+    "the shell's default of 8."
+  ],
+  "gaps": {},
+
   "_outputs": [
     "Modes are left to the display by default. max_refresh takes the fastest",
     "refresh rate available at the preferred resolution, which is what a",

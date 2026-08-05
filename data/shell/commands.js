@@ -233,6 +233,7 @@ window.addEventListener('viewport', (event) => {
          the tree survives, it is only presented differently. */
       windowRules = Array.isArray(message.rules) ? message.rules : [];
       applyTheme(message.theme);
+      applyGaps(message.gaps);
       applyBarMode(message.bar);
       /* Absent means on: a config file that says nothing should get the
          explanation, and only someone who has read it once turns it off. */

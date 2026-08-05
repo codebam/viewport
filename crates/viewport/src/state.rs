@@ -963,6 +963,7 @@ impl ViewportState {
                 bar: None,
                 rules: None,
                 theme: None,
+                gaps: None,
                 // Off the end of a monitor carries on to the next one, which
                 // is what this has always done and what sway does.
                 focus_crosses_outputs: true,
@@ -5098,6 +5099,12 @@ impl ViewportState {
         }
         if file.theme.is_some() {
             self.config.theme = file.theme;
+        }
+        if file.gaps != crate::config::GapsConfig::default() {
+            // Only inner is meaningful; the shell has no outer gap. A gap of
+            // zero means no spacing at all, which is a deliberate request, so
+            // the value is forwarded as-is rather than skipped for being small.
+            self.config.gaps = file.gaps.inner;
         }
         if let Some(url) = file.url {
             self.shell_url = Some(url);

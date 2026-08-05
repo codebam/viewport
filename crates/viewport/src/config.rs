@@ -69,6 +69,20 @@ pub struct IdleConfig {
     pub lock_command: Option<String>,
 }
 
+/// The `gaps` block.
+///
+/// Only inner is configurable for now. The shell spaces windows with a single
+/// `--gap` custom property — the same value is the space between windows and
+/// the padding around the outside of the tiling area, so there is not yet an
+/// outer gap to set separately.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct GapsConfig {
+    /// Pixels between windows (and around the desktop's edge), as sway's
+    /// `gaps.inner`. Absent keeps the shell's own default, which is 8.
+    pub inner: Option<i32>,
+}
+
 /// What `background_terminal` was set to.
 ///
 /// Two shapes because there are two things people mean by it: `true` is "the
@@ -144,6 +158,7 @@ pub struct File {
     pub keyboard: KeyboardConfig,
     pub cursor: CursorConfig,
     pub idle: IdleConfig,
+    pub gaps: GapsConfig,
 
     /// The whole keymap. Presence means "these and no built-ins", which is why
     /// an empty `"binds": {}` is meaningful — it asks for none at all.
@@ -532,6 +547,17 @@ mod tests {
         .expect("should parse");
         assert!(file.rules.as_ref().unwrap().is_array());
         assert!(file.theme.as_ref().unwrap().is_object());
+    }
+
+    #[test]
+    fn gaps_block_parses() {
+        let set: File = serde_json::from_str(r#"{"gaps":{"inner":15}}"#).expect("should parse");
+        assert_eq!(set.gaps.inner, Some(15));
+        // Absent within the block, and an absent block, are both absent.
+        let empty_block: File = serde_json::from_str(r#"{"gaps":{}}"#).expect("should parse");
+        assert_eq!(empty_block.gaps.inner, None);
+        let absent: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(absent.gaps, GapsConfig::default());
     }
 
     #[test]
