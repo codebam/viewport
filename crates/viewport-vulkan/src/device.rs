@@ -104,10 +104,6 @@ struct Inner {
 }
 
 impl Device {
-    /// Open the GPU exposing `node`.
-    ///
-    /// `node` is normally the render node the compositor already has open —
-    /// `/dev/dri/renderD128` and friends.
     /// Open the GPU exposing `node`, and nothing else.
     ///
     /// The compositor asks this of each card before choosing one, because
@@ -126,6 +122,12 @@ impl Device {
         Self::open(physical)
     }
 
+    /// Open the GPU exposing `node`, or the best one there is.
+    ///
+    /// `node` is normally the render node the compositor already has open —
+    /// `/dev/dri/renderD128` and friends. Unlike [`Device::for_node_exactly`]
+    /// this falls back to another device, which is right once a card has been
+    /// picked: the alternative is a session with no renderer at all.
     pub fn for_node(instance: &Instance, node: &DrmNode) -> Result<Self> {
         let devices: Vec<PhysicalDevice> = PhysicalDevice::enumerate(instance)
             .context("vkEnumeratePhysicalDevices")?
@@ -370,13 +372,6 @@ impl Device {
         Ok(conversion)
     }
 
-    /// The index of a memory type satisfying `requirements` and allowed by
-    /// `allowed`, preferring device-local memory.
-    ///
-    /// `allowed` comes from `vkGetMemoryFdPropertiesKHR` when importing: the
-    /// driver decides which memory types an imported fd is compatible with,
-    /// and intersecting that with the image's own requirements is what stops
-    /// an import binding memory the GPU cannot actually read.
     /// The index of a memory type satisfying `requirements` whose property
     /// flags pass `wanted`.
     ///
@@ -397,6 +392,13 @@ impl Device {
         })
     }
 
+    /// The index of a memory type satisfying `requirements` and allowed by
+    /// `allowed`, preferring device-local memory.
+    ///
+    /// `allowed` comes from `vkGetMemoryFdPropertiesKHR` when importing: the
+    /// driver decides which memory types an imported fd is compatible with,
+    /// and intersecting that with the image's own requirements is what stops
+    /// an import binding memory the GPU cannot actually read.
     pub fn memory_type(&self, requirements: u32, allowed: u32) -> Option<u32> {
         let instance = self.0.physical.instance().handle();
         let properties =
