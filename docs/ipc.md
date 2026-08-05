@@ -18,6 +18,39 @@ External tooling uses a UNIX socket of newline-delimited JSON:
 socat - UNIX:$VIEWPORT_SOCKET
 ```
 
+`viewport msg` is that socket with the message named rather than spelled, and is
+installed with the compositor because it *is* the compositor — the same binary,
+so the client and the protocol it speaks are never two versions:
+
+```sh
+viewport msg -t view.focus --id 12
+viewport msg -t output.query --pretty
+viewport msg -t output.configure --name DP-1 --mode.width 2560 --mode.height 1440
+viewport msg -t shell.command --command output.focus --args right
+viewport msg -t subscribe view.focused view.removed   # follow events until ^C
+viewport msg -t quit
+viewport msg --help                                   # every message and its fields
+```
+
+The type is the wire name and the fields are the wire fields, so anything in the
+tables below can be sent without learning a second vocabulary. Values are read
+as JSON where they parse as one and as text where they do not — `--id 12` is a
+number, `--name DP-1` is a string, `--enabled false` is a boolean, and a flag
+with nothing after it is `true`. A nested field is dotted (`--mode.width`), and
+`--raw '{"type":"..."}'` sends an object verbatim.
+
+It finds the session from `$VIEWPORT_SOCKET`, then from
+`$XDG_RUNTIME_DIR/viewport-$WAYLAND_DISPLAY.sock`, then from the newest socket
+in that directory — which is the session just started, and so the one being
+escaped from on a second TTY. `--socket` names one outright.
+
+A query prints its answer and stops; anything else exits once the compositor has
+had the chance to refuse it, and a refusal is a non-zero exit with the reason on
+stderr. Usage mistakes exit 2 without sending anything: a field the message does
+not have is refused rather than dropped, because serde ignores what it does not
+recognise and `--visable false` would otherwise report success for the opposite
+of what was asked.
+
 ### Compositor → shell
 
 | Message | Payload |

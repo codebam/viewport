@@ -97,6 +97,20 @@ terminal costs a window rather than the machine. `Mod4+Shift+e` quits, and
 `-- --exit-after 30` gives it a deadline in case that is the thing that is
 broken.
 
+The same binary is the client for its own control socket, so a running session
+can be driven from a terminal without anything else installed:
+
+```sh
+viewport msg -t view.focus --id 12
+viewport msg -t output.query --pretty
+viewport msg -t subscribe view.focused    # follow events until ^C
+viewport msg -t quit                      # from a second TTY, when the first is stuck
+viewport msg --help                       # every message and its fields
+```
+
+Every message in [`docs/ipc.md`](docs/ipc.md) can be sent this way, under its
+wire name.
+
 The default package embeds Chromium through CEF: nothing in that closure builds
 an engine, and it is the cheapest per painted frame of the three that do not —
 see [`docs/benchmarks.md`](docs/benchmarks.md). `.#webkitgtk` is 156 MB lighter

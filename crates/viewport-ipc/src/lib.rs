@@ -108,7 +108,13 @@ pub fn parse(bytes: &[u8]) -> Result<Request, ParseError> {
     })
 }
 
-/// Every type in the C dispatch table (`src/ipc.c:1415`).
+/// Every type this build dispatches: the C table (`src/ipc.c:1415`) and the
+/// requests added since.
+///
+/// The later ones were missing here, and the only thing that reads this list is
+/// the error message — so `{"type":"shell.command","args":[2]}` was reported as
+/// an unknown message type rather than as the bad body it is, and the sender
+/// went looking for a verb the compositor had never heard of.
 fn is_known_type(name: &str) -> bool {
     matches!(
         name,
@@ -135,6 +141,14 @@ fn is_known_type(name: &str) -> bool {
             | "output.test_remove"
             | "bind.add"
             | "quit"
+            | "background.focus"
+            | "screencast.rect"
+            | "shell.overlay"
+            | "workspace.list"
+            | "shell.command"
+            | "input.pointer"
+            | "input.button"
+            | "input.key"
     )
 }
 
@@ -195,6 +209,17 @@ mod tests {
         let error = parse(br#"{"type":"view.focus","id":"seven"}"#).unwrap_err();
         assert_eq!(error.context(), "view.focus");
         assert!(matches!(error, ParseError::BadBody { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_request_added_after_the_c_build_is_still_a_known_type() {
+        // `args` is a list of strings, so this is a bad body — and it used to
+        // come back as "unknown IPC message type 'shell.command'", which sent
+        // whoever wrote it looking for a message that does exist.
+        let error =
+            parse(br#"{"type":"shell.command","command":"view.move","args":[2]}"#).unwrap_err();
+        assert!(matches!(error, ParseError::BadBody { .. }), "{error:?}");
+        assert_eq!(error.context(), "shell.command");
     }
 
     #[test]

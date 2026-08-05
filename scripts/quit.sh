@@ -3,6 +3,11 @@
 #
 # Ask a running compositor to quit, over its control socket.
 #
+# `viewport msg -t quit` does the same thing and finds the socket the same way.
+# This stays because it needs nothing built: a checkout with no compiled binary,
+# or a session started from a package that is being replaced, still has bash and
+# python3.
+#
 # The safe way to stop one from another TTY. It targets a socket rather than a
 # process name, which matters on a machine where the C build is also called
 # "viewport" and is running the desktop you are sitting in front of.

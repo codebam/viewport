@@ -27,6 +27,7 @@ mod headless;
 mod idle;
 mod input;
 mod ipc;
+mod msg;
 mod notification;
 mod output_management;
 mod output_power;
@@ -81,6 +82,33 @@ use crate::state::ViewportState;
 /// unreffing it there, so the default is never made — fixes this one global
 /// and not the next. WebKit registers several.
 fn main() -> ! {
+    // `viewport msg`, before any of the above applies: it talks to a
+    // compositor that is already running rather than starting one, so it wants
+    // no backend, no seat and no log — and no exit path that skips flushing
+    // the answer it just printed.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|first| first == "msg") {
+        let code = msg::main(&args[2..]);
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        std::process::exit(code);
+    }
+
+    // Before the log is set up and before a backend is chosen: asking what the
+    // options are should not need a seat, and should not print a line of
+    // tracing above the answer.
+    if args
+        .iter()
+        .skip(1)
+        .any(|arg| arg == "--help" || arg == "-h")
+    {
+        print_help();
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        std::process::exit(0);
+    }
+
     let code = match run() {
         Ok(()) => 0,
         Err(e) => {
@@ -677,24 +705,124 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.get(at + 1).map(String::as_str)
 }
 
-/// Every option the compositor understands, so an unrecognised one can be
-/// named rather than ignored.
-const OPTIONS: &[&str] = &[
-    "--socket",
-    "--headless",
-    "--drm",
-    "--renderer",
-    "--config",
-    "--layout",
-    "--width",
-    "--height",
-    "--exit-after",
-    "--url",
-    "--url-span",
-    "--shell-backend",
-    "--background-terminal",
-    "--watch-shell",
+struct Opt {
+    flag: &'static str,
+    /// What follows it, for the help text. Empty for a switch.
+    value: &'static str,
+    what: &'static str,
+}
+
+/// Every option the compositor understands.
+///
+/// One table for two jobs: what `--help` prints, and what an unrecognised
+/// option is checked against. They were two lists once — a flag added to the
+/// parser and to neither is a flag that works and is warned about.
+const OPTIONS: &[Opt] = &[
+    Opt {
+        flag: "--drm",
+        value: "",
+        what: "take the screens and the seat: a session of its own, from a TTY",
+    },
+    Opt {
+        flag: "--headless",
+        value: "",
+        what: "no renderer and no window: everything but drawing, for tests",
+    },
+    Opt {
+        flag: "--width",
+        value: "N",
+        what: "the headless output's width (default 1920)",
+    },
+    Opt {
+        flag: "--height",
+        value: "N",
+        what: "and its height (default 1080)",
+    },
+    Opt {
+        flag: "--config",
+        value: "PATH",
+        what: "the config file, instead of the default one",
+    },
+    Opt {
+        flag: "--layout",
+        value: "NAME",
+        what: "tiling or scrolling, over whatever the config says",
+    },
+    Opt {
+        flag: "--renderer",
+        value: "NAME",
+        what: "vulkan or gles, over $VIEWPORT_RENDERER",
+    },
+    Opt {
+        flag: "--shell-backend",
+        value: "NAME",
+        what: "which engine draws the desktop; see docs/shell-backends.md",
+    },
+    Opt {
+        flag: "--url",
+        value: "URL",
+        what: "a page to run instead of the bundled desktop",
+    },
+    Opt {
+        flag: "--url-span",
+        value: "",
+        what: "give that page every monitor, not just the first",
+    },
+    Opt {
+        flag: "--watch-shell",
+        value: "",
+        what: "reload the shell when its files change",
+    },
+    Opt {
+        flag: "--background-terminal",
+        value: "[CMD]",
+        what: "a terminal for a wallpaper, running CMD if one is given",
+    },
+    Opt {
+        flag: "--socket",
+        value: "PATH",
+        what: "the control socket, instead of the one named after the display",
+    },
+    Opt {
+        flag: "--exit-after",
+        value: "SECS",
+        what: "stop after this long, in case stopping is what is broken",
+    },
 ];
+
+const USAGE: &str = "\
+usage: viewport [options]
+       viewport msg [options] -t TYPE [--field value]...
+
+A Wayland compositor whose desktop is a web page. With no options it nests
+inside the session it was started from, which is what trying it costs a window
+rather than the machine; --drm takes the screens instead.
+";
+
+fn print_help() {
+    print!("{USAGE}");
+    println!();
+    println!("Options:");
+    for option in OPTIONS {
+        let flag = if option.value.is_empty() {
+            option.flag.to_owned()
+        } else {
+            format!("{} {}", option.flag, option.value)
+        };
+        println!("  {flag:<28} {}", option.what);
+    }
+    let help = "-h, --help";
+    println!("  {help:<28} this");
+    println!();
+    println!("Subcommands:");
+    let msg = "msg";
+    println!("  {msg:<28} drive a running compositor over its control socket;");
+    let pad = "";
+    println!("  {pad:<28} `viewport msg --help` lists every message");
+    println!();
+    println!("$VIEWPORT_LOG takes an env_logger filter — `VIEWPORT_LOG=debug` for");
+    println!("everything the shell says. docs/configuration.md is the rest.");
+}
 
 /// Say so when an option is not one of ours.
 ///
@@ -703,7 +831,7 @@ const OPTIONS: &[&str] = &[
 fn warn_about_unknown_options(args: &[String]) {
     for arg in args.iter().skip(1).filter(|a| a.starts_with("--")) {
         let name = arg.split_once('=').map(|(n, _)| n).unwrap_or(arg);
-        if !OPTIONS.contains(&name) {
+        if !OPTIONS.iter().any(|option| option.flag == name) {
             tracing::warn!("unknown option {name}; it has been ignored");
         }
     }
