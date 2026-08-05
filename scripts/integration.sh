@@ -95,6 +95,22 @@ run capture-tiling "$root/tests/capture.test.sh" \
 run capture-scrolling "$root/tests/capture.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client" scrolling
 run output-order "$root/tests/output-order.test.sh" "$VIEWPORT"
+
+# The screencast frontend is Rust — it speaks D-Bus rather than Wayland, so it
+# is a cargo example beside the compositor's own crate rather than one more
+# client compiled by hand up there. Skipped rather than failed where there is
+# no toolchain: this suite also runs against a binary built by nix on a machine
+# that has no cargo at all.
+frontend="$root/target/debug/examples/portal-frontend"
+if [ ! -x "$frontend" ] && command -v cargo >/dev/null; then
+	(cd "$root" && cargo build -p viewport --example portal-frontend) || true
+fi
+if [ -x "$frontend" ]; then
+	run screencast-restore "$root/tests/screencast-restore.test.sh" \
+		"$VIEWPORT" "$frontend"
+else
+	echo "=== screencast-restore: skipped, no portal-frontend to run it with"
+fi
 run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"
 

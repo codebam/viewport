@@ -3429,7 +3429,10 @@ impl ViewportState {
         if let Some(remembered) = restore {
             match self.restore_source(&remembered, types) {
                 Some(source) => {
-                    tracing::info!("sharing {source:?} again, as the application asked");
+                    // The remembered form rather than the source: an `Output`
+                    // prints its every mode and instance, and a line nobody
+                    // can read in a log is a line that is not there.
+                    tracing::info!("sharing {remembered:?} again, as the application asked");
                     let _ = reply.try_send(self.begin_cast(source));
                     return;
                 }
