@@ -3487,7 +3487,10 @@ impl ViewportState {
             // was skipped for no reason — which is how this went unnoticed on
             // every shipped build. A share that was never asked about is worth
             // a line in the log whatever the reason.
-            tracing::info!("no desktop page is drawing, so sharing {source:?} without asking");
+            tracing::info!(
+                "no desktop page is drawing, so sharing {} without asking",
+                source.describe()
+            );
             let answer = self.begin_cast(source);
             let _ = reply.try_send(answer);
             return;

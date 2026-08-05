@@ -58,6 +58,24 @@ impl Source {
             Self::Window(_) | Self::FollowWindow => SOURCE_WINDOW,
         }
     }
+
+    /// What to call this in a log line.
+    ///
+    /// Not `Debug`, which is what the line that says a screen was shared
+    /// without asking used to print: an `Output` debugs as every mode it has,
+    /// every instance bound to it and its whole xdg twin, which is fourteen
+    /// hundred characters where a name was wanted. A line nobody can read is a
+    /// line that is not there, and that one is the record of a share the user
+    /// was never asked about.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Output(output) => format!("the monitor {}", output.name()),
+            Self::Window(id) => format!("window {id}"),
+            Self::AllOutputs => "all monitors".to_owned(),
+            Self::FollowWindow => "the focused window".to_owned(),
+            Self::FollowOutput => "the active monitor".to_owned(),
+        }
+    }
 }
 
 /// A source written down, so the same thing can be shared again without
