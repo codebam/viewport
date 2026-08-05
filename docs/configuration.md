@@ -669,3 +669,20 @@ The rate is matched to the nearest whole hertz, because the kernel reports
 239765 millihertz where a person writes 240. A size that exists at no such rate
 uses the fastest mode of that size and says so in the log — the resolution is
 the part you can see.
+
+**A monitor that comes back goes back where it was.** A connector reappearing —
+a display waking from its own standby, a cable replugged, a KVM switching over —
+is a brand new output to the scan that finds it: it would be mapped to the right
+of everything else, in whatever order the connectors are enumerated, turned the
+way it left the factory. Two identical panels switched off overnight therefore
+came back swapped, and a rotated one came back landscape.
+
+So the position, rotation, scale and mode of every output are remembered by
+connector name, and put back after each scan. What is remembered is what was
+asked for — by this block, by `output.configure`, or by wlr-output-management,
+which is what `wlr-randr` and a settings app's display panel use — and the last
+of those wins, so moving a monitor with any of them is not undone by the next
+unplug. This block is applied after the restore, so a position written here
+still has the final say. A mode is only restored if the display advertises it,
+since the connector is the only identity there is and what comes back on a port
+need not be the panel that left it.

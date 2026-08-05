@@ -664,6 +664,9 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         state.map_output_at(&output, (x, y));
     }
 
+    // Where this monitor goes when it is plugged in again. Asked for rather
+    // than drifted into, which is the only kind of arrangement worth restoring.
+    state.remember_output(&output);
     state.notify_output_layout();
 }
 

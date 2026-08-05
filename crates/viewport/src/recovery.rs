@@ -508,6 +508,9 @@ impl ViewportState {
         device.renderer = renderer;
         tracing::info!("gpu {index}: a new renderer; bringing its outputs back");
         self.on_connectors_changed();
+        // Rebuilt outputs are placed by the scan, same as freshly plugged ones,
+        // so the arrangement has to be put back before the file is applied.
+        self.restore_output_layout();
         self.apply_output_config();
     }
 
@@ -665,6 +668,7 @@ impl ViewportState {
         // and a monitor may well have been moved to another GPU while this one
         // was away.
         self.on_connectors_changed();
+        self.restore_output_layout();
         self.apply_output_config();
         self.restore_gamma();
         true

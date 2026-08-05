@@ -1046,6 +1046,13 @@ pub fn init(
             UdevEvent::Changed { device_id } => {
                 if DrmNode::from_dev_id(device_id).is_ok() {
                     state.on_connectors_changed();
+                    // A monitor that comes back is a new output as far as the
+                    // scan is concerned: mapped to the right of everything
+                    // else, in connector-enumeration order, turned the way it
+                    // left the factory. The arrangement it had, and then the
+                    // config file, put it back.
+                    state.restore_output_layout();
+                    state.apply_output_config();
                 }
             }
             UdevEvent::Added { device_id, path } => state.on_gpu_added(device_id, &path),
@@ -1276,6 +1283,10 @@ pub fn init(
     state.on_connectors_changed();
 
     // Now that the outputs exist, the config file can say what they should be.
+    // The restore is what notes down where they started, so a later unplug has
+    // something to come back to even on a system whose config names no
+    // positions at all.
+    state.restore_output_layout();
     state.apply_output_config();
     if state.adaptive_sync {
         state.set_adaptive_sync(true);

@@ -71,6 +71,21 @@ pub struct PendingCopy {
     pub with_damage: bool,
 }
 
+/// Where a monitor was and how it was turned, so that unplugging it is not the
+/// same as never having configured it.
+///
+/// The mode is here too: a connector coming back is re-scanned from scratch and
+/// takes the config file's mode or the panel's preferred one, so a rate chosen
+/// through `output.configure` was lost with everything else.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RememberedOutput {
+    pub x: i32,
+    pub y: i32,
+    pub transform: smithay::utils::Transform,
+    pub scale: f64,
+    pub mode: Option<smithay::output::Mode>,
+}
+
 pub struct ViewportState {
     pub start_time: std::time::Instant,
     pub socket_name: OsString,
@@ -97,6 +112,14 @@ pub struct ViewportState {
     /// The config file's `outputs` block, kept because an output named there
     /// may be plugged in later.
     pub output_config: std::collections::HashMap<String, crate::config::OutputConfig>,
+    /// How each monitor was arranged when it was last seen, by connector name.
+    ///
+    /// A connector that comes back is a new output as far as the backend is
+    /// concerned: it is placed to the right of everything else, in whatever
+    /// order the connectors are enumerated, turned the way it left the factory.
+    /// Two monitors switched off overnight therefore came back swapped, and a
+    /// rotated one came back landscape. This is what they go back to.
+    pub output_memory: std::collections::HashMap<String, RememberedOutput>,
     /// What to run once the compositor is up.
     pub startup: Option<String>,
     /// The D-Bus notification service, forwarding to the shell.
@@ -952,6 +975,7 @@ impl ViewportState {
             },
             shell_url: None,
             output_config: std::collections::HashMap::new(),
+            output_memory: std::collections::HashMap::new(),
             startup: None,
             notifications: crate::notification::Notifications::default(),
             appearance: crate::appearance::Appearance::default(),
@@ -2117,6 +2141,10 @@ impl ViewportState {
             if let Some(vrr) = change.adaptive_sync {
                 self.set_output_adaptive_sync(&output, vrr);
             }
+            // `wlr-randr` and the display panel of a settings app arrange
+            // monitors through here rather than through `output.configure`, and
+            // an arrangement made with one of those is worth restoring too.
+            self.remember_output(&output);
         }
 
         // Put every window that should be on screen back in the space.
@@ -2294,17 +2322,25 @@ impl ViewportState {
         }
 
         if enabled {
-            // Back where it was is not knowable — an unmapped output has no
-            // geometry — so it goes to the right of everything, which is where
-            // a newly plugged monitor goes too.
-            let x = self
-                .space
-                .outputs()
-                .filter_map(|other| self.space.output_geometry(other))
-                .map(|geometry| geometry.loc.x + geometry.size.w)
-                .max()
-                .unwrap_or(0);
-            self.map_output_at(output, (x, 0));
+            // Back where it was, from the memory — an unmapped output has no
+            // geometry of its own to read. Without an entry there it goes to
+            // the right of everything, which is where a newly plugged monitor
+            // goes too.
+            let location = self
+                .output_memory
+                .get(&output.name())
+                .map(|remembered| (remembered.x, remembered.y))
+                .unwrap_or_else(|| {
+                    let x = self
+                        .space
+                        .outputs()
+                        .filter_map(|other| self.space.output_geometry(other))
+                        .map(|geometry| geometry.loc.x + geometry.size.w)
+                        .max()
+                        .unwrap_or(0);
+                    (x, 0)
+                });
+            self.map_output_at(output, location);
         } else {
             self.space.unmap_output(output);
         }
@@ -4374,6 +4410,97 @@ impl ViewportState {
                 self.arm_cursor_hide_in(left);
             }
             crate::cursor::Tick::Nothing => {}
+        }
+    }
+
+    /// Write down where an output is and how it is turned.
+    ///
+    /// Every deliberate arrangement goes through here: the config file, the
+    /// shell's `output.configure`, wlr-output-management, and the first sight
+    /// of a connector. What is not written down is the placement the backend
+    /// invents while bringing a monitor up, which is the thing being corrected.
+    pub fn remember_output(&mut self, output: &Output) {
+        let Some(geometry) = self.space.output_geometry(output) else {
+            // Off, or not mapped yet. Its old entry is the one worth keeping:
+            // that is where it goes when it comes back.
+            return;
+        };
+        self.output_memory.insert(
+            output.name(),
+            RememberedOutput {
+                x: geometry.loc.x,
+                y: geometry.loc.y,
+                transform: output.current_transform(),
+                scale: output.current_scale().fractional_scale(),
+                mode: output.current_mode(),
+            },
+        );
+    }
+
+    /// Put the monitors back the way they were, and note down the ones being
+    /// seen for the first time.
+    ///
+    /// A connector that comes back is a brand new output to the backend: it is
+    /// mapped to the right of everything else in connector-enumeration order,
+    /// with a default transform and a freshly picked mode. Nothing before this
+    /// undid that, so monitors left unplugged for a while came back in the
+    /// wrong order and the wrong orientation, and stayed that way until the
+    /// session was restarted.
+    ///
+    /// Through the same path `output.configure` takes, so a restored rotation
+    /// resizes the layer map and reaches the shell exactly as a fresh one does.
+    /// Run before [`Self::apply_output_config`], so a file that names a
+    /// position still has the last word.
+    pub fn restore_output_layout(&mut self) {
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        for output in outputs {
+            let name = output.name();
+            let Some(want) = self.output_memory.get(&name).cloned() else {
+                // Never seen before. Where it landed is what it goes back to.
+                self.remember_output(&output);
+                continue;
+            };
+
+            let geometry = self.space.output_geometry(&output).unwrap_or_default();
+            let current = RememberedOutput {
+                x: geometry.loc.x,
+                y: geometry.loc.y,
+                transform: output.current_transform(),
+                scale: output.current_scale().fractional_scale(),
+                mode: output.current_mode(),
+            };
+            if current == want {
+                // Already right, which is every output that did not move. A
+                // modeset for one of those is a black screen for no reason.
+                continue;
+            }
+
+            tracing::info!("{name}: back to {},{} {:?}", want.x, want.y, want.transform);
+            // Only a mode this display actually advertises. The memory is kept
+            // by connector name, which is the only identity a connector has
+            // here, so what comes back on a port is not necessarily the panel
+            // that left it — and asking a different monitor for the old one's
+            // modeline is a custom mode it may well refuse.
+            let mode = want.mode.filter(|mode| {
+                output.modes().into_iter().any(|candidate| {
+                    candidate.size == mode.size && candidate.refresh == mode.refresh
+                })
+            });
+            let request = viewport_ipc::request::OutputConfigure {
+                name: name.clone(),
+                enabled: None,
+                mode: mode.map(|mode| viewport_ipc::request::ModeRequest {
+                    width: mode.size.w,
+                    height: mode.size.h,
+                    refresh: mode.refresh,
+                }),
+                scale: Some(want.scale),
+                transform: Some(crate::apply::from_smithay_transform(want.transform)),
+                adaptive_sync: None,
+                x: Some(want.x),
+                y: Some(want.y),
+            };
+            crate::apply::apply(self, viewport_ipc::Request::OutputConfigure(request));
         }
     }
 
