@@ -139,10 +139,17 @@ scripts/integration.sh target/debug/viewport   # real clients, headless
 
 `.#rust` deliberately carries no WPE WebKit: the web engine is behind a
 non-default feature, so the tests do not need it and the shell is not linked
-into what they run. `nix develop` on its own is the fuller workstation shell.
+into what they run. `nix develop` on its own is the fuller workstation shell —
+debugger, test clients, and the CEF and WebKitGTK engines, all of which
+substitute from cache.nixos.org.
 
-WPE WebKit is a full WebKit build — hours, and tens of gigabytes — and nothing
-substitutes it, because `wpewebkit` is packaged by nobody.
+No engine there is WPE WebKit either. That one is a full WebKit build — hours,
+and tens of gigabytes — and nothing substitutes it, because `wpewebkit` is
+packaged by nobody, so it is behind a shell of its own:
+
+```sh
+nix develop .#wpe    # the workstation shell plus the WPE engine
+```
 
 ```sh
 nix build .#wpewebkit   # do this once, deliberately, before anything else

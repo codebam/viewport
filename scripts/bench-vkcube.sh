@@ -262,7 +262,7 @@ if [ -n "$second" ] && includes_viewport &&
     echo "open the next window on. Without a shell there is nothing to ask," >&2
     echo "and every client lands on the same screen." >&2
     echo >&2
-    echo "  nix develop --command cargo build --release -p viewport --features wpe" >&2
+    echo "  nix develop .#wpe --command cargo build --release -p viewport --features wpe" >&2
     exit 1
 fi
 
@@ -1155,7 +1155,7 @@ PY
                 echo "which monitor to open a window on, so every client would" >&2
                 echo "land on one screen and the run would report two." >&2
                 echo >&2
-                echo "  nix develop --command cargo build --release -p viewport --features wpe" >&2
+                echo "  nix develop .#wpe --command cargo build --release -p viewport --features wpe" >&2
                 exit 1
             fi
             ;;

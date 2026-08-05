@@ -193,6 +193,34 @@
           pipewire
         ];
 
+        # The same list without WPE WebKit.
+        #
+        # One engine of the four is a WebKit build: four hours, tens of
+        # gigabytes, and no binary cache has it, because `wpewebkit` is packaged
+        # by nobody. Entering the shell is not asking for that, so the shell you
+        # get by typing `nix develop` must not name it — the cost belongs to
+        # `nix develop .#wpe`, which is the shell for working on that backend.
+        #
+        # The other three are unaffected: CEF and the GTK shell are prebuilt in
+        # cache.nixos.org and stay in the default shell, below.
+        runtimeDepsWithoutEngine = builtins.filter (dep: dep != wpewebkit) runtimeDeps;
+
+        # The engines that cost a download rather than a compile.
+        #
+        # `.#cef` is the default package and `.#webkitgtk` is the one for a
+        # machine short of memory, so a shell that cannot build either is not a
+        # workstation shell. Both substitute in seconds.
+        prebuiltEngines = with pkgs; [
+          # crates/viewport-shell-gtk links these directly.
+          gtk4
+          webkitgtk_6_0
+          # `libcef_dll_wrapper` is C++ from the CEF distribution's own source;
+          # the engine beside it is a blob. `CEF_PATH` below is what stops
+          # `cef-dll-sys` trying to download a copy of its own.
+          cmake
+          ninja
+        ];
+
         # ------------------------------------------------------------------
         # CEF, in the layout the Rust bindings expect.
         #
@@ -604,6 +632,147 @@
           '';
         };
 
+        # The workstation shell, in two versions: with the engine and without.
+        #
+        # `nix develop` takes the one without, because entering the shell is the
+        # first thing anyone does with this repository and it used to mean a
+        # four-hour WebKit build nobody asked for. `nix develop .#wpe` is the
+        # one that has it, and is what working on crates/viewport-web needs.
+        workstationShell = { engine }: pkgs.mkShell {
+          packages = nativeDeps
+            ++ (if engine then runtimeDeps else runtimeDepsWithoutEngine)
+            ++ prebuiltEngines
+            ++ (with pkgs; [
+            gdb
+            valgrind
+            clang-tools
+            wayland-utils
+            weston # weston-terminal / weston-simple-egl as test clients
+            foot
+            # start.sh runs the compositor under `nix develop`, so this PATH is
+            # inherited by every client it spawns, terminals included. The
+            # stdenv bash is built --disable-readline --disable-progcomp, which
+            # makes ~/.bashrc error out and leaks starship's PS1 escapes.
+            bashInteractive
+
+            # The Rust rewrite. nixpkgs ships a `cargo` on this system without a
+            # matching `rustc`, which fails at the first build rather than at
+            # setup, so both are named explicitly here.
+            rustc
+            cargo
+            rustfmt
+            clippy
+            rust-analyzer
+
+            # ------------------------------------------------------------
+            # Servo.
+            #
+            # Taken from nixpkgs' own servo derivation
+            # (pkgs/by-name/se/servo/package.nix) rather than worked out by
+            # trial and error. Servo is a Cargo source dependency, not an
+            # installable package: it is an rlib, and Rust has no stable ABI,
+            # so it has to be compiled inside our build. The nixpkgs
+            # derivation is therefore useful for its recipe and not its
+            # output.
+            # ------------------------------------------------------------
+            cmake
+            llvm
+            llvmPackages.libstdcxxClang
+            m4
+            perl
+            yasm
+            python311
+            rustPlatform.bindgenHook
+
+            fontconfig
+            freetype
+            harfbuzz
+            libunwind
+            libGL
+            zlib
+            udev
+            gst_all_1.gstreamer
+            gst_all_1.gst-plugins-base
+            gst_all_1.gst-plugins-good
+            gst_all_1.gst-plugins-bad
+
+            # The shell's buffer is allocated with GBM and imported through
+            # EGL. nixpkgs splits libgbm out of mesa, and the EGL dispatch
+            # library lives in libglvnd — the vendor driver under
+            # /run/opengl-driver only provides libEGL_mesa.
+            libgbm
+            libglvnd
+          ]);
+
+          # viewport-web links against libgbm, and smithay's wayland_frontend
+          # pulls in xkbcommon, both at build time.
+          LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [ pkgs.libgbm pkgs.libxkbcommon ]}";
+
+          # The same distribution `packages.cef` builds against, in the flat
+          # layout `cef-dll-sys` expects. Without it that crate downloads a CEF
+          # of its own, so building the default backend by hand and building it
+          # through Nix would not be building the same thing.
+          CEF_PATH = cefDistribution;
+
+          shellHook = ''
+            # Everything the Rust build dlopens rather than links.
+            #
+            # winit is built with `wayland-dlopen`, so it looks for
+            # libwayland-client.so.0 at runtime and reports nothing more useful
+            # than "Failed to initialize an event loop" when it cannot find it.
+            # khronos-egl dlopens libEGL.so.1, which lives in libglvnd —
+            # /run/opengl-driver only provides the mesa vendor driver.
+            #
+            # Appended, not assigned: replacing this variable is what broke the
+            # winit backend the first time.
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+              pkgs.wayland
+              pkgs.libxkbcommon
+              pkgs.libglvnd
+              pkgs.libgbm
+              # ash dlopens libvulkan.so.1.
+              pkgs.vulkan-loader
+              # Servo dlopens these at runtime.
+              pkgs.fontconfig
+              pkgs.freetype
+              pkgs.harfbuzz
+              pkgs.libunwind
+              pkgs.libGL
+              pkgs.zlib
+              pkgs.udev
+              pkgs.xorg.libX11
+              pkgs.xorg.libXcursor
+              pkgs.xorg.libXi
+              pkgs.xorg.libXrandr
+            ]}:/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+            echo "viewport devshell"
+            echo "  wlroots     : $(pkg-config --modversion wlroots-0.20 2>/dev/null || echo MISSING)"
+            # MISSING here is the ordinary state, not a broken shell: the engine
+            # is only in `nix develop .#wpe`. Said this way so that a wpe build
+            # failing to find it points at which shell to be in.
+            echo "  wpe-webkit  : $(pkg-config --modversion wpe-webkit-2.0 2>/dev/null || echo 'MISSING (nix develop .#wpe)')"
+            echo "  wpe-platform: $(pkg-config --modversion wpe-platform-2.0 2>/dev/null || echo 'MISSING (nix develop .#wpe)')"
+            echo "  rustc       : $(rustc --version 2>/dev/null || echo MISSING)"
+            echo
+            echo "  meson setup build && ninja -C build   # the C compositor"
+            echo "  cargo test --workspace                # the Rust rewrite"
+            echo "  VIEWPORT_REQUIRE_GPU=1 cargo test -p viewport-web   # dma-buf, for real"
+
+            # The checks moved into .githooks when CI was disabled, and they
+            # are off until git is told where the hooks live. Nothing else can
+            # say so: a hook that is not installed does not run, so it cannot
+            # complain about not running, and the first sign is a commit that
+            # would not have passed. This shell is the one place every
+            # contributor already goes through.
+            if [ -d .git ] && [ "$(git config --get core.hooksPath || true)" != ".githooks" ]; then
+              echo
+              echo "  ! the pre-commit checks are not installed. To enable them:"
+              echo "        git config core.hooksPath .githooks"
+            fi
+          '';
+        };
+
       in
       {
         packages = {
@@ -744,128 +913,11 @@
           ASAN_OPTIONS = "detect_leaks=0:detect_odr_violation=0:abort_on_error=1";
         });
 
-        devShells.default = pkgs.mkShell {
-          packages = nativeDeps ++ runtimeDeps ++ (with pkgs; [
-            gdb
-            valgrind
-            clang-tools
-            wayland-utils
-            weston # weston-terminal / weston-simple-egl as test clients
-            foot
-            # start.sh runs the compositor under `nix develop`, so this PATH is
-            # inherited by every client it spawns, terminals included. The
-            # stdenv bash is built --disable-readline --disable-progcomp, which
-            # makes ~/.bashrc error out and leaks starship's PS1 escapes.
-            bashInteractive
 
-            # The Rust rewrite. nixpkgs ships a `cargo` on this system without a
-            # matching `rustc`, which fails at the first build rather than at
-            # setup, so both are named explicitly here.
-            rustc
-            cargo
-            rustfmt
-            clippy
-            rust-analyzer
-
-            # ------------------------------------------------------------
-            # Servo.
-            #
-            # Taken from nixpkgs' own servo derivation
-            # (pkgs/by-name/se/servo/package.nix) rather than worked out by
-            # trial and error. Servo is a Cargo source dependency, not an
-            # installable package: it is an rlib, and Rust has no stable ABI,
-            # so it has to be compiled inside our build. The nixpkgs
-            # derivation is therefore useful for its recipe and not its
-            # output.
-            # ------------------------------------------------------------
-            cmake
-            llvm
-            llvmPackages.libstdcxxClang
-            m4
-            perl
-            yasm
-            python311
-            rustPlatform.bindgenHook
-
-            fontconfig
-            freetype
-            harfbuzz
-            libunwind
-            libGL
-            zlib
-            udev
-            gst_all_1.gstreamer
-            gst_all_1.gst-plugins-base
-            gst_all_1.gst-plugins-good
-            gst_all_1.gst-plugins-bad
-
-            # The shell's buffer is allocated with GBM and imported through
-            # EGL. nixpkgs splits libgbm out of mesa, and the EGL dispatch
-            # library lives in libglvnd — the vendor driver under
-            # /run/opengl-driver only provides libEGL_mesa.
-            libgbm
-            libglvnd
-          ]);
-
-          # viewport-web links against libgbm, and smithay's wayland_frontend
-          # pulls in xkbcommon, both at build time.
-          LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [ pkgs.libgbm pkgs.libxkbcommon ]}";
-
-          shellHook = ''
-            # Everything the Rust build dlopens rather than links.
-            #
-            # winit is built with `wayland-dlopen`, so it looks for
-            # libwayland-client.so.0 at runtime and reports nothing more useful
-            # than "Failed to initialize an event loop" when it cannot find it.
-            # khronos-egl dlopens libEGL.so.1, which lives in libglvnd —
-            # /run/opengl-driver only provides the mesa vendor driver.
-            #
-            # Appended, not assigned: replacing this variable is what broke the
-            # winit backend the first time.
-            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
-              pkgs.wayland
-              pkgs.libxkbcommon
-              pkgs.libglvnd
-              pkgs.libgbm
-              # ash dlopens libvulkan.so.1.
-              pkgs.vulkan-loader
-              # Servo dlopens these at runtime.
-              pkgs.fontconfig
-              pkgs.freetype
-              pkgs.harfbuzz
-              pkgs.libunwind
-              pkgs.libGL
-              pkgs.zlib
-              pkgs.udev
-              pkgs.xorg.libX11
-              pkgs.xorg.libXcursor
-              pkgs.xorg.libXi
-              pkgs.xorg.libXrandr
-            ]}:/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-            echo "viewport devshell"
-            echo "  wlroots     : $(pkg-config --modversion wlroots-0.20 2>/dev/null || echo MISSING)"
-            echo "  wpe-webkit  : $(pkg-config --modversion wpe-webkit-2.0 2>/dev/null || echo MISSING)"
-            echo "  wpe-platform: $(pkg-config --modversion wpe-platform-2.0 2>/dev/null || echo MISSING)"
-            echo "  rustc       : $(rustc --version 2>/dev/null || echo MISSING)"
-            echo
-            echo "  meson setup build && ninja -C build   # the C compositor"
-            echo "  cargo test --workspace                # the Rust rewrite"
-            echo "  VIEWPORT_REQUIRE_GPU=1 cargo test -p viewport-web   # dma-buf, for real"
-
-            # The checks moved into .githooks when CI was disabled, and they
-            # are off until git is told where the hooks live. Nothing else can
-            # say so: a hook that is not installed does not run, so it cannot
-            # complain about not running, and the first sign is a commit that
-            # would not have passed. This shell is the one place every
-            # contributor already goes through.
-            if [ -d .git ] && [ "$(git config --get core.hooksPath || true)" != ".githooks" ]; then
-              echo
-              echo "  ! the pre-commit checks are not installed. To enable them:"
-              echo "        git config core.hooksPath .githooks"
-            fi
-          '';
-        };
+        devShells.default = workstationShell { engine = false; };
+        # The engine, for crates/viewport-web and the `wpe` feature. Named so
+        # that the build is asked for rather than walked into.
+        devShells.wpe = workstationShell { engine = true; };
       }) // {
 
       # ----------------------------------------------------------------------

@@ -43,7 +43,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # Re-enter the dev shell once, then come back here with the flag set.
 if [ -z "${VIEWPORT_DEV_SHELL:-}" ]; then
     echo "entering the dev shell for the library path..." >&2
-    exec nix develop "$here" --command \
+    exec nix develop "$here#wpe" --command \
         env VIEWPORT_DEV_SHELL=1 "${BASH_SOURCE[0]}" "$@"
 fi
 
@@ -61,7 +61,7 @@ binary="$here/target/release/viewport"
 [ -x "$binary" ] || binary="$here/target/debug/viewport"
 if [ ! -x "$binary" ]; then
     echo "no binary; build one first:" >&2
-    echo "  nix develop --command cargo build -p viewport --features wpe" >&2
+    echo "  nix develop .#wpe --command cargo build -p viewport --features wpe" >&2
     exit 1
 fi
 
@@ -75,7 +75,7 @@ fi
 if ! grep -qa "starting the shell at" "$binary"; then
     echo "$binary has no shell in it: built without --features wpe," >&2
     echo "or overwritten by a cargo test run. Build it again:" >&2
-    echo "  nix develop --command cargo build --release -p viewport --features wpe" >&2
+    echo "  nix develop .#wpe --command cargo build --release -p viewport --features wpe" >&2
     exit 1
 fi
 

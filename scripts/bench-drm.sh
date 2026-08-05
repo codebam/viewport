@@ -42,7 +42,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # is what produced the failure this script exists to prevent.
 if [ -z "${VIEWPORT_DEV_SHELL:-}" ]; then
     echo "entering the dev shell for the library path..." >&2
-    exec nix develop "$here" --command \
+    exec nix develop "$here#wpe" --command \
         env VIEWPORT_DEV_SHELL=1 "${BASH_SOURCE[0]}" "$@"
 fi
 
