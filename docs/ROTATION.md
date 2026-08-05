@@ -87,7 +87,7 @@ Smithay's convention, which `GlesRenderer::render` is the statement of:
   out against `output_transform.transform_size(output_size)`.
 
 So a 2560x1440 panel rotated 90 degrees scans out a 2560x1440 framebuffer
-holding a 1440x2560 desktop. `crates/viewport-vulkan/src/transform.rs` had it
+holding a 1440x2560 desktop. The renderer's `src/transform.rs` had it
 the other way about — it normalised into clip space by the *transformed* size
 and treated `dst` as being in the *untransformed* one — so the desktop was
 squeezed into a fraction of the framebuffer and hung off the edge. The GPU tests

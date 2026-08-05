@@ -297,7 +297,8 @@ otherwise upstreamable, and the fork should go away when it lands.
 4. **Done.** udev/DRM backend, verified on hardware: two 2560x1440 displays
    side by side on an RX 7900 XTX, the Vulkan renderer drawing to both, VT
    switching and the quit chord working. Explicit sync and colour transforms
-   are in `crates/viewport-vulkan`.
+   are in the renderer, which is now its own repository:
+   [viewport-vulkan](https://github.com/codebam/viewport-vulkan).
 5. **Done.** Config file, layer-shell (bars and launchers), xdg-activation,
    linux-dmabuf, xdg-decoration, Xwayland, the cursor, and directional focus.
 6. **Done.** session-lock, verified against swaylock.

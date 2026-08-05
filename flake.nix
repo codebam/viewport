@@ -336,11 +336,16 @@
 
           cargoLock = {
             lockFile = ./Cargo.lock;
-            # A fork of smithay, for the tearing-control patch. A git
-            # dependency has no crates.io hash to check against, so its
-            # contents are pinned here instead.
+            # Two git dependencies — a fork of smithay for the tearing-control
+            # patch, and the Vulkan renderer, which is a repository of its own
+            # rather than a crate in this workspace. Neither has a crates.io
+            # hash to check against, so their contents are pinned here instead.
+            #
+            # Both have to be updated whenever the revision in Cargo.toml is.
+            # The build fails loudly on a stale one, quoting the hash it got.
             outputHashes = {
               "smithay-0.7.0" = "sha256-V8Ly3tQwChYJzZKEeRA//Vh7OmbzhgayJKlMQW3byt0=";
+              "viewport-vulkan-0.1.3" = "sha256-3fl1dPVtyhOvOPL+YksC+bLYCI6FcnyyRGOKUB/cMdA=";
             };
           };
 
@@ -577,8 +582,10 @@
 
           shellHook = ''
             # ash dlopens libvulkan.so.1 and winit dlopens libwayland-client;
-            # the viewport-vulkan tests that ask for a device skip themselves
-            # without one, but they have to get as far as the dlopen to do it.
+            # the tests that ask for a device skip themselves without one, but
+            # they have to get as far as the dlopen to do it. The renderer's
+            # own tests live in its repository now, but this compositor still
+            # opens a Vulkan device in its own.
             #
             # libglvnd is libEGL.so.1, which Smithay dlopens through a
             # LazyLock that panics rather than returning an error. The headless

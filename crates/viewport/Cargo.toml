@@ -18,7 +18,7 @@ wpe = ["viewport-web/wpe"]
 xcursor = "0.3"
 viewport-ipc.workspace = true
 viewport-web.workspace = true
-viewport-vulkan = { path = "../viewport-vulkan" }
+viewport-vulkan.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -65,8 +65,9 @@ pkg-config = "0.3"
 # themselves are ordinary dependencies now — see the note above them.
 serde_json.workspace = true
 
-# The fork and the revision are in the workspace manifest, shared with
-# `viewport-vulkan`. Only the features are this crate's.
+# The fork and the revision are in the workspace manifest, which also carries
+# the `[patch]` that points `viewport-vulkan`'s upstream Smithay at the same
+# one. Only the features are this crate's.
 [dependencies.smithay]
 workspace = true
 features = [

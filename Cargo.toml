@@ -7,7 +7,6 @@ members = [
     "crates/viewport-shell-chromium",
     "crates/viewport-shell-gtk",
     "crates/viewport-web",
-    "crates/viewport-vulkan",
 ]
 
 # Not a member, deliberately.
@@ -40,6 +39,19 @@ viewport-ipc = { path = "crates/viewport-ipc" }
 viewport-shell-bridge = { path = "crates/viewport-shell-bridge" }
 viewport-web = { path = "crates/viewport-web" }
 
+# The Vulkan renderer, which used to be `crates/viewport-vulkan` and is now its
+# own repository.
+#
+# It left because it could: it depends on no other crate here and exposes no
+# type of ours, which made it the one part of this compositor another compositor
+# could take. It is MIT where `viewport` is GPL-3.0, for the same reason.
+#
+# The cost of the split is this pin. A renderer change is now two commits — one
+# there, one bumping the revision here — and `cargo test --workspace` no longer
+# runs its tests, which run in its own CI instead. See the `[patch]` at the
+# bottom of this file for the other half of the arrangement.
+viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "01c755da201acb7d9b79457cac485e4f2b5c8bab" }
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
@@ -47,17 +59,13 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# One pin, inherited by both `viewport` and `viewport-vulkan`. They were
-# separate entries with the same revision, which is a revision that has to be
-# bumped in lockstep: two crates in one binary cannot link two Smithays, so a
-# drift between them is a build failure at best and a silent duplicate type at
-# worst. Features stay per-crate — the renderer needs three, the compositor
-# needs a dozen — and Cargo unions them.
-#
 # Pinned to a revision rather than the 0.7.0 release: the release predates the
 # dispatch2 rework, and the API this code is written against is the one in the
 # tree — `delegate_dispatch2!`, `backend.bind()` returning a framebuffer, and
 # `render_output` taking one. Bump deliberately, not automatically.
+#
+# Features stay per-crate — the renderer needs three, the compositor needs a
+# dozen — and Cargo unions them.
 [workspace.dependencies.smithay]
 # A fork, for one patch: DrmCompositor::set_allow_tearing, without which
 # tearing-control-v1 is a protocol the compositor can advertise and never
@@ -66,6 +74,25 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 git = "https://github.com/codebam/smithay.git"
 rev = "a8f1c0054b47c95362374a9b808235ea64837cc0"
 default-features = false
+
+# The other half of moving the renderer out of this workspace.
+#
+# `viewport-vulkan` depends on upstream Smithay, which is right for it: nothing
+# in a renderer wants `set_allow_tearing`, and a crate meant to be reusable
+# should not make its users adopt somebody else's fork. But two crates in one
+# binary cannot link two Smithays — the types would be distinct and nothing
+# would convert between them — and Cargo unifies git dependencies by URL and
+# revision, so the fork and upstream are two packages however close the trees.
+#
+# This redirects the renderer's copy onto the fork above, which is what makes
+# the pair link. It has to be in the workspace root: `[patch]` is ignored in any
+# manifest that is not the one being built.
+#
+# Both revisions still have to be bumped together. Upstream moving is fine —
+# the renderer's pin is its own business — but this fork has to be rebased onto
+# something the renderer still compiles against before its pin here changes.
+[patch."https://github.com/Smithay/smithay"]
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "a8f1c0054b47c95362374a9b808235ea64837cc0" }
 
 [profile.release]
 debug = 1
