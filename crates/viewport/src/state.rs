@@ -3412,7 +3412,11 @@ impl ViewportState {
         use crate::screencast::portal::Message;
 
         match message {
-            Message::Start { types, reply } => self.open_screencast_picker(types, reply),
+            Message::Start {
+                types,
+                restore,
+                reply,
+            } => self.open_screencast_picker(types, restore, reply),
             Message::Close { node } => self.stop_cast(node),
         }
     }
@@ -3428,6 +3432,7 @@ impl ViewportState {
     fn open_screencast_picker(
         &mut self,
         types: u32,
+        restore: Option<crate::screencast::Remembered>,
         reply: async_channel::Sender<Result<crate::screencast::portal::Started, String>>,
     ) {
         // One at a time. Two choosers on screen with one keyboard between them
@@ -3435,6 +3440,30 @@ impl ViewportState {
         if self.picker.is_some() {
             let _ = reply.try_send(Err("something else is already being chosen".to_owned()));
             return;
+        }
+
+        // The same thing as last time, if the application asked for that and
+        // the thing is still there. Before the chooser rather than as a row in
+        // it: the point of a remembered share is that a recorder set up in
+        // March still records the right screen in June without anybody at the
+        // keyboard, and a chooser that has to be answered is exactly what the
+        // application asked to avoid.
+        if let Some(remembered) = restore {
+            match self.restore_source(&remembered, types) {
+                Some(source) => {
+                    tracing::info!("sharing {source:?} again, as the application asked");
+                    let _ = reply.try_send(self.begin_cast(source));
+                    return;
+                }
+                // Not a failure. The monitor is unplugged or the window is
+                // closed, and the honest answer is the chooser — sharing some
+                // other screen because it is the one left would hand over a
+                // desk nobody agreed to.
+                None => tracing::info!(
+                    "the application asked to share {remembered:?} again, \
+                     which is not here, so asking"
+                ),
+            }
         }
 
         let sources = self.screencast_sources(types);
@@ -3711,14 +3740,94 @@ impl ViewportState {
         source: crate::screencast::Source,
     ) -> Result<crate::screencast::portal::Started, String> {
         let source_type = source.kind();
+        // Written down before the share starts, because starting it takes the
+        // source, and what a window is called has to be read while there is
+        // still a window to ask.
+        let remembered = self.remember_cast(&source);
         self.start_cast(source)
             .map(|(node, size)| crate::screencast::portal::Started {
                 node,
                 width: size.w,
                 height: size.h,
                 source_type,
+                remembered,
             })
             .map_err(|e| e.to_string())
+    }
+
+    /// Say what is being shared in terms that outlive it.
+    ///
+    /// A window whose id names nothing is not written down: a token that
+    /// restores to an empty app id and an empty title would match the first
+    /// nameless window on the desk next time, which is a share of whatever
+    /// happens to be open rather than of what was agreed to.
+    fn remember_cast(
+        &self,
+        source: &crate::screencast::Source,
+    ) -> Option<crate::screencast::Remembered> {
+        use crate::screencast::{Remembered, Source};
+        match source {
+            Source::Output(output) => Some(Remembered::Output(output.name())),
+            Source::Window(id) => {
+                let view = self.views.get(*id)?;
+                let (app_id, title) = (view.app_id(), view.title());
+                (!app_id.is_empty() || !title.is_empty())
+                    .then_some(Remembered::Window { app_id, title })
+            }
+            Source::AllOutputs => Some(Remembered::AllOutputs),
+            Source::FollowWindow => Some(Remembered::FollowWindow),
+            Source::FollowOutput => Some(Remembered::FollowOutput),
+        }
+    }
+
+    /// Turn what was written down back into something to share, or nothing.
+    ///
+    /// Checked against what the application asked for as well as against what
+    /// is on the desk: a token minted when a browser wanted either kind comes
+    /// back when it wants only a window, and handing it a monitor because that
+    /// is what it shared last time is a screen shared by a tab that asked for
+    /// a tab.
+    fn restore_source(
+        &self,
+        remembered: &crate::screencast::Remembered,
+        types: u32,
+    ) -> Option<crate::screencast::Source> {
+        use crate::screencast::{Remembered, Source};
+        if types & remembered.kind() == 0 {
+            return None;
+        }
+
+        let source = match remembered {
+            Remembered::Output(name) => Source::Output(self.output_by_name(name)?),
+            Remembered::Window { app_id, title } => {
+                Source::Window(self.remembered_window(app_id, title)?)
+            }
+            Remembered::AllOutputs => Source::AllOutputs,
+            Remembered::FollowWindow => Source::FollowWindow,
+            Remembered::FollowOutput => Source::FollowOutput,
+        };
+        // And that there is something behind it now. A following source with
+        // nothing to follow starts a stream that would show a black rectangle
+        // until somebody opened a window, which is worse than being asked.
+        self.resolve_cast(&source).map(|_| source)
+    }
+
+    /// The window a remembered share meant, if it is still open.
+    ///
+    /// The choosing is `screencast::matching_window`, which is where it can be
+    /// tested without a compositor around it.
+    fn remembered_window(&self, app_id: &str, title: &str) -> Option<u32> {
+        let open: Vec<_> = self
+            .views
+            .iter()
+            .filter(|view| view.mapped)
+            .map(|view| crate::screencast::Open {
+                id: view.id,
+                app_id: view.app_id(),
+                title: view.title(),
+            })
+            .collect();
+        crate::screencast::matching_window(app_id, title, &open)
     }
 
     /// Whether an output is currently in HDR.

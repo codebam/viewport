@@ -60,6 +60,79 @@ impl Source {
     }
 }
 
+/// A source written down, so the same thing can be shared again without
+/// asking.
+///
+/// A recorder is set up once and used for months: OBS remembers which screen a
+/// scene captures, and a portal that cannot answer "the same one as last time"
+/// makes the user pick it again on every launch — and every compositor
+/// restart. The interface has a way to say it, and this is what it says.
+///
+/// Not the live source. A [`Source::Output`] holds an `Output`, and a
+/// [`Source::Window`] holds a view id, and neither survives the compositor
+/// exiting: ids are handed out afresh and the output object is a new one. What
+/// does survive is what a person would say — the name on the monitor, the
+/// application in the window — so that is what is written down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Remembered {
+    /// A monitor, by the name the rest of the desktop calls it.
+    Output(String),
+    /// A window, by what is in it rather than by which one it was.
+    ///
+    /// Both, because neither is enough on its own: a browser has ten windows
+    /// with one app id between them, and a title changes as soon as somebody
+    /// types. The title picks the right one of ten when it still matches, and
+    /// the app id is what is left to go on when it does not.
+    Window {
+        app_id: String,
+        title: String,
+    },
+    AllOutputs,
+    FollowWindow,
+    FollowOutput,
+}
+
+impl Remembered {
+    /// What the portal calls this kind of source, so a restored share can be
+    /// checked against what the application asked for.
+    pub fn kind(&self) -> u32 {
+        match self {
+            Self::Output(_) | Self::AllOutputs | Self::FollowOutput => SOURCE_MONITOR,
+            Self::Window { .. } | Self::FollowWindow => SOURCE_WINDOW,
+        }
+    }
+}
+
+/// One open window, as much of it as choosing between them needs.
+pub struct Open {
+    pub id: u32,
+    pub app_id: String,
+    pub title: String,
+}
+
+/// Which open window a remembered one meant, if any of them.
+///
+/// The exact one first — same application, same title — and any window of the
+/// same application after that, in the order they are given. A title is what
+/// tells ten browser windows apart and it is also the first thing to change,
+/// so it decides while it holds and is dropped when it does not.
+///
+/// Nothing when the application is not running. Sharing some other window
+/// because it is the one left is how a screen share ends up showing a password
+/// manager, and no answer here means the user is asked.
+pub fn matching_window(app_id: &str, title: &str, open: &[Open]) -> Option<u32> {
+    open.iter()
+        .find(|window| window.app_id == app_id && window.title == title)
+        // An empty app id matches every window that has none, which is every
+        // window whose client never said. Those are told apart by title or not
+        // at all.
+        .or_else(|| {
+            open.iter()
+                .find(|window| !app_id.is_empty() && window.app_id == app_id)
+        })
+        .map(|window| window.id)
+}
+
 /// What a [`Source`] means right now.
 ///
 /// The three following sources collapse into the two concrete ones plus the
@@ -146,6 +219,55 @@ mod tests {
         assert_eq!(Source::FollowOutput.kind(), SOURCE_MONITOR);
         assert_eq!(Source::Window(1).kind(), SOURCE_WINDOW);
         assert_eq!(Source::FollowWindow.kind(), SOURCE_WINDOW);
+    }
+
+    fn open(id: u32, app_id: &str, title: &str) -> Open {
+        Open {
+            id,
+            app_id: app_id.to_owned(),
+            title: title.to_owned(),
+        }
+    }
+
+    /// The window that still has the same title is the one that was shared,
+    /// not merely one of the same application. A browser with ten windows open
+    /// is the ordinary case, and restoring the wrong one shares the wrong tab.
+    #[test]
+    fn a_remembered_window_is_matched_by_title_first() {
+        let windows = [
+            open(1, "firefox", "Mail"),
+            open(2, "firefox", "The slides"),
+            open(3, "foot", "a shell"),
+        ];
+        assert_eq!(matching_window("firefox", "The slides", &windows), Some(2));
+    }
+
+    /// A title that has changed still leaves the application to go on, which
+    /// is the whole reason both are written down: a recorder set up on a
+    /// browser window should not stop working because somebody switched tabs.
+    #[test]
+    fn a_renamed_window_falls_back_to_its_application() {
+        let windows = [open(1, "foot", "a shell"), open(2, "firefox", "Something")];
+        assert_eq!(matching_window("firefox", "The slides", &windows), Some(2));
+    }
+
+    /// An application that is not running matches nothing. Handing back
+    /// whatever else is open would share a window nobody agreed to; no answer
+    /// is what puts the chooser up instead.
+    #[test]
+    fn a_closed_application_matches_nothing() {
+        let windows = [open(1, "foot", "a shell")];
+        assert_eq!(matching_window("firefox", "The slides", &windows), None);
+    }
+
+    /// A window whose client never said what it is does not match every other
+    /// nameless window. Empty is not an identity, and the fallback would
+    /// otherwise hand back the first anonymous window on the desk.
+    #[test]
+    fn an_empty_application_matches_only_by_title() {
+        let windows = [open(1, "", "Something else"), open(2, "", "The slides")];
+        assert_eq!(matching_window("", "The slides", &windows), Some(2));
+        assert_eq!(matching_window("", "A window that closed", &windows), None);
     }
 
     /// Every source is one of the two the interface knows about. A third
