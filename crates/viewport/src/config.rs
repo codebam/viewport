@@ -376,7 +376,7 @@ fn encode_path(path: &str) -> String {
 /// Anything that is not a well-formed escape is passed through, because this
 /// only feeds an existence check — a wrong guess there produces a worse error
 /// message, not a worse outcome.
-fn percent_decode(text: &str) -> String {
+pub(crate) fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;

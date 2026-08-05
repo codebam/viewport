@@ -40,6 +40,7 @@ mod session;
 mod shell;
 mod shell_backend;
 mod shell_client;
+mod shell_watch;
 mod state;
 mod status;
 mod tearing;
@@ -201,6 +202,13 @@ fn run() -> Result<()> {
     // desktop — and this is how it says so.
     if args.iter().any(|a| a == "--url-span") {
         state.shell_url_spans = true;
+    }
+
+    // Watching the shell's own files, if asked. After the URL, because the URL
+    // is what says which directory to watch, and before any of it is loaded,
+    // because a change between here and the first paint should still count.
+    if shell_watch::wanted(&args) {
+        state.watch_shell_assets();
     }
 
     // A terminal for a wallpaper, from the command line.
@@ -685,6 +693,7 @@ const OPTIONS: &[&str] = &[
     "--url-span",
     "--shell-backend",
     "--background-terminal",
+    "--watch-shell",
 ];
 
 /// Say so when an option is not one of ours.

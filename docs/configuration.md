@@ -358,14 +358,36 @@ Precedence is flags > config file > defaults.
 -b, --bind CHORD=ACT   add a keybinding; repeatable
 -e, --startup CMD      command to run once up
 -H, --headless         headless backend instead of DRM
+    --watch-shell      reload the shell when its files change
 -d, --debug            verbose logging, and mirror the shell's console
 ```
 
-`--debug` also disables WebKit's cache and, for a `file://` shell, watches its
-directory and reloads on change — so editing any of the shell scripts updates the running
-desktop without restarting the compositor. Saves are debounced, since editors
-write-then-rename and emit several events per save. A shell served over HTTP is
-left alone: that is a dev server's job, and watching it would mean polling.
+## Reloading the shell while it runs
+
+The shell is a web page, and the loop of working on one is editing a file and
+looking at the result. Two ways to close that loop without restarting the
+compositor — which would take the windows with it, and on DRM the screen.
+
+**The keybinding.** `reload` — `Mod4+Shift+c` in the shipped config — reloads
+the page now, bypassing the engine's cache. Always available, nothing to turn
+on.
+
+**The watch.** `--watch-shell`, or `VIEWPORT_WATCH_SHELL=1`, watches the
+directory the page was loaded from and reloads when a file in it changes, so
+saving *is* the reload. Off by default: a reload throws the shell's state away,
+and an installed desktop's files do not change under it.
+
+What is watched is the directory holding the `file://` URL that was loaded —
+`--url`'s, and the shipped shell's — and its subdirectories, four levels down.
+A shell served over HTTP is left alone: that is a dev server's job, and
+watching it would mean polling.
+
+Changes are debounced by 200ms, and only files a browser would fetch count
+(`.html`, `.css`, `.js`, images, fonts). Both matter for the same reason: an
+editor saving one file writes a temporary beside it and renames it over the
+top, and vim leaves a `.swp` and a numeric probe file behind before a character
+is typed. Without the filter, opening a file would reload the desktop; without
+the debounce, a `git checkout` would reload it once per file.
 
 Reloading resets shell state, so windows return via the `view.added` replay but
 workspace assignments do not survive.

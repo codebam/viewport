@@ -1194,18 +1194,10 @@ impl ViewportState {
                 }
             }
             Bound::Background => self.toggle_background_focus(),
-            Bound::Reload => {
-                #[cfg(feature = "wpe")]
-                for page in &self.shells {
-                    page.engine.reload();
-                }
-                // Out of process there is no engine here to call, so the
-                // request travels the way everything else does and the shell
-                // process acts on it.
-                if !self.shell_clients.is_empty() {
-                    self.notify(&viewport_ipc::Event::ShellReload);
-                }
-            }
+            // The same reload `--watch-shell` fires when a file changes, and
+            // the only one available when it was not asked for. See
+            // [`crate::shell_watch`].
+            Bound::Reload => self.reload_shells(),
             Bound::Mode(mode) => {
                 tracing::info!(
                     "binding mode: {}",

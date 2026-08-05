@@ -602,6 +602,12 @@ pub struct ViewportState {
     /// Whether that watchdog is already armed, so a flip on every output does
     /// not arm a timer per output.
     pub gpu_watch: bool,
+    /// The timer the shell's live reload settles on, when `--watch-shell` set
+    /// one up. Same reasoning again — see [`crate::shell_watch`].
+    pub shell_reload_timer: Option<std::os::fd::OwnedFd>,
+    /// Whether a reload is already waiting on the fallback loop timer, so a
+    /// save touching twenty files queues one rather than twenty.
+    pub shell_reload_pending: bool,
     /// How many ticks in a row have released nothing.
     pub barrier_quiet: u32,
     /// The shell's workspaces, mirrored for `ext-workspace-v1`. Empty until
@@ -1077,6 +1083,8 @@ impl ViewportState {
             barrier_timer: None,
             gpu_timer: None,
             gpu_watch: false,
+            shell_reload_timer: None,
+            shell_reload_pending: false,
             barrier_quiet: 0,
             _security_context_state: security_context_state,
             _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,

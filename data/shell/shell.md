@@ -65,6 +65,12 @@ rather than keeping its own list, so the two cannot drift apart.
 
 `shell.css` styles all of it, and `index.html` is the document.
 
+Editing any of them takes effect without restarting the compositor:
+`Mod4+Shift+c` reloads the page, and starting the compositor with
+`--watch-shell` reloads it whenever a file here is saved. A reload resets shell
+state — windows come back through the `view.query` replay, workspace
+assignments do not. See [docs/configuration.md](../../docs/configuration.md).
+
 `vendor/` holds built dependencies, checked in rather than fetched: this is a
 `file://` page with no bundler and no network, and the packaging installs the
 directory with `cp -r`. Today that is GSAP, which `motion.js` uses as a tween
