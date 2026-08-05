@@ -35,7 +35,7 @@ socat - UNIX:$VIEWPORT_SOCKET
 | `status.update` | `cpu`, `memory`, `load`, `net_rx`, `net_tx`, `disk_free`, `disk_total` |
 | `notification.add` | `id`, `app_name`, `icon`, `summary`, `body`, `urgency`, `timeout`, `actions[]` with `key` and `label` |
 | `notification.close` | `id` — the application withdrew it |
-| `screencast.pick` | `id`, `sources[]` with `kind` (`"output"` or `"window"`), `label`, `detail`, and `selected` — an application has asked to share the screen, and this is the list to draw with the highlight where the compositor is holding it. Re-sent whole every time the highlight moves |
+| `screencast.pick` | `id`, `sources[]` with `kind` (`"output"`, `"window"`, `"all-outputs"`, `"follow-window"` or `"follow-output"`), `label`, `detail`, and `selected` — an application has asked to share the screen, and this is the list to draw with the highlight where the compositor is holding it. Re-sent whole every time the highlight moves |
 | `screencast.pick.done` | `id` — the choice was made or abandoned; take the chooser down |
 | `error` | `context`, `message` |
 
@@ -43,6 +43,26 @@ The chooser is drawn by the shell and steered by the compositor, which is the
 same split the overview runs on. The shell receives no input of its own, so the
 keys are routed here: the compositor takes the keyboard while a chooser is up
 and re-sends the list with a new `selected` on each press.
+
+Two of the five kinds name a particular thing. The other three do not, and are
+re-resolved on every frame of the share:
+
+| `kind` | What is captured |
+| --- | --- |
+| `output` | that monitor, for as long as it exists |
+| `window` | that window, on whichever screen it is on, without whatever is covering it |
+| `all-outputs` | every monitor at once, in one picture, laid out as they are on the desk |
+| `follow-window` | whichever window has the keyboard, changing as focus does |
+| `follow-output` | whichever monitor is being worked on, changing as that does |
+
+The last three are offered only where they mean something: `follow-window`
+needs a window to follow, and `all-outputs` and `follow-output` need a second
+monitor — on a laptop both would be the row above them. A following source
+whose target has gone away for a moment — focus on the desktop, a monitor
+unplugged — feeds no new frames rather than tearing the share down, so the
+consumer sees the last picture until there is something to point at again. It
+also renegotiates its size whenever what it is following is a different shape,
+which consumers handle but not always gracefully.
 
 ### Shell → compositor
 

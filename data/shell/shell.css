@@ -1210,9 +1210,26 @@ html.no-tutorial .empty .tutorial { display: none; }
 
 /* A monitor and a window read the same otherwise, and which one is about to
    be handed over matters more here than anywhere else in the shell. */
-.screencast-source[data-kind="output"] .screencast-label::before {
+.screencast-source[data-kind="output"] .screencast-label::before,
+.screencast-source[data-kind="follow-output"] .screencast-label::before {
   content: "monitor · ";
   opacity: .6;
+}
+
+.screencast-source[data-kind="all-outputs"] .screencast-label::before {
+  content: "monitors · ";
+  opacity: .6;
+}
+
+/* The two that follow whatever is in front hand over something different
+   after the choice has been made, which is a bigger difference than the one
+   between a window and a screen. Their detail line says so — somebody who
+   agreed to share one window and then switched to their mail is owed a way to
+   have known — and it is spelled out here rather than dimmed with the rest of
+   the details. */
+.screencast-source[data-kind="follow-window"] .screencast-detail,
+.screencast-source[data-kind="follow-output"] .screencast-detail {
+  opacity: .85;
 }
 
 .screencast-keys {

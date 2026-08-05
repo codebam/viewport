@@ -155,12 +155,22 @@ pub enum Event {
 /// Something an application could be given a picture of.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CastSource {
-    /// `output` or `window`.
+    /// One of `output`, `window`, `all-outputs`, `follow-window` or
+    /// `follow-output`.
+    ///
+    /// The first two name a particular thing and never change. The last three
+    /// name whatever is in front at the time: every monitor at once, whichever
+    /// window has the keyboard, whichever monitor is being worked on. A shell
+    /// that does not know a kind should still draw the row — `label` and
+    /// `detail` carry what it is — and the kind is there to mark it.
     pub kind: String,
-    /// What to show the user: a monitor's name, or a window's title.
+    /// What to show the user: a monitor's name, a window's title, or the
+    /// compositor's own name for a source that points at nothing in
+    /// particular.
     pub label: String,
     /// The line under it — the make and model of a monitor, the application of
-    /// a window. Empty string, never null.
+    /// a window, or what a following source will follow. Empty string, never
+    /// null.
     pub detail: String,
 }
 

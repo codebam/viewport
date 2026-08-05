@@ -663,6 +663,24 @@ type WindowElements<R> = (
     smithay::utils::Size<i32, smithay::utils::Physical>,
 );
 
+/// One output's elements, moved to where that output sits on the desk and
+/// resized to the scale the whole desk is being captured at.
+///
+/// The same pair smithay's own thumbnail helper composes, in the same order:
+/// the rescale is about the element's own origin, so the move has to happen
+/// after it or the offset would be scaled too.
+type DeskElement<R> = smithay::backend::renderer::element::utils::RelocateRenderElement<
+    smithay::backend::renderer::element::utils::RescaleRenderElement<
+        crate::render::OutputElement<R>,
+    >,
+>;
+
+/// Every monitor's elements laid out side by side, and the size they cover.
+type DeskElements<R> = (
+    Vec<DeskElement<R>>,
+    smithay::utils::Size<i32, smithay::utils::Physical>,
+);
+
 impl ViewportState {
     pub fn new(
         event_loop: &mut EventLoop<'static, Self>,
@@ -1564,6 +1582,183 @@ impl ViewportState {
         Ok(())
     }
 
+    /// Every monitor at once, as one picture of the desk.
+    ///
+    /// Built from each output's own frame rather than from a frame of its own:
+    /// what belongs on a screen — which layer surfaces, which part of the
+    /// shell, where the pointer is — is decided per output and there is no
+    /// second answer for the desk. So each is worked out exactly as it is
+    /// displayed and then moved into place, which also means a rotated monitor
+    /// arrives rotated and a scaled one arrives at the desk's scale.
+    ///
+    /// The pointer comes out right for free: `cursor_for` draws it only on the
+    /// output it is over, so exactly one of these frames carries it.
+    fn desk_elements<R>(&mut self, renderer: &mut R) -> Result<DeskElements<R>, String>
+    where
+        R: Renderer
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+    {
+        use smithay::backend::renderer::element::utils::{
+            Relocate, RelocateRenderElement, RescaleRenderElement,
+        };
+
+        let (union, scale) = self
+            .all_outputs_layout()
+            .ok_or_else(|| "there are no monitors".to_owned())?;
+        let size = self
+            .desk_size()
+            .ok_or_else(|| "there are no monitors".to_owned())?;
+
+        // Collected first: building a frame needs the whole state, and the
+        // space cannot be iterated across that.
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+
+        let mut elements: Vec<DeskElement<R>> = Vec::new();
+        for output in outputs {
+            let Some(geometry) = self.space.output_geometry(&output) else {
+                continue;
+            };
+            let frame = self.frame_for(&output);
+            // From the frame rather than from the output, because that is the
+            // scale its elements were laid out at.
+            let magnify = scale / frame.scale.max(f64::MIN_POSITIVE);
+            let at = (geometry.loc - union.loc)
+                .to_f64()
+                .to_physical(scale)
+                .to_i32_round();
+            elements.extend(
+                crate::render::build(&frame, renderer)
+                    .into_iter()
+                    .map(|element| {
+                        RelocateRenderElement::from_element(
+                            RescaleRenderElement::from_element(
+                                element,
+                                smithay::utils::Point::from((0, 0)),
+                                magnify,
+                            ),
+                            at,
+                            Relocate::Relative,
+                        )
+                    }),
+            );
+        }
+
+        // Front to back within an output, and in the space's order between
+        // them. The order between them does not matter: two monitors do not
+        // overlap, so nothing on one is ever in front of anything on another.
+        Ok((elements, size))
+    }
+
+    /// Composite the whole desk straight into a consumer's buffer.
+    fn render_desk_into<R>(
+        &mut self,
+        mut target: smithay::backend::allocator::dmabuf::Dmabuf,
+        renderer: &mut R,
+    ) -> Result<(), String>
+    where
+        R: Renderer
+            + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        let (elements, size) = self.desk_elements(renderer)?;
+
+        let mut framebuffer = renderer
+            .bind(&mut target)
+            .map_err(|e| format!("binding the client's buffer: {e}"))?;
+        // Upright and unscaled: every element was already placed in the desk's
+        // own physical pixels, including whatever rotation its monitor has.
+        let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+            size,
+            1.0,
+            smithay::utils::Transform::Normal,
+        );
+        let result = tracker
+            .render_output(
+                renderer,
+                &mut framebuffer,
+                0,
+                &elements,
+                smithay::backend::renderer::Color32F::from([0.0, 0.0, 0.0, 1.0]),
+            )
+            .map_err(|e| format!("compositing the desk into the client's buffer: {e:?}"))?;
+
+        // Waited for, because nothing else will: the client is handed the
+        // buffer the GPU is still writing into, and a consumer that reads it
+        // straight away sees whatever was there before.
+        result
+            .sync
+            .wait()
+            .map_err(|e| format!("waiting for the capture to finish: {e}"))
+    }
+
+    /// Composite the whole desk and read it back, for a stream that cannot be
+    /// drawn into directly.
+    fn read_desk_pixels<R, B>(
+        &mut self,
+        renderer: &mut R,
+    ) -> Result<(Vec<u8>, smithay::utils::Size<i32, smithay::utils::Physical>), String>
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        let (elements, size) = self.desk_elements(renderer)?;
+
+        // The format it will be read back as, because the Vulkan renderer
+        // refuses to convert while copying — see `read_output_pixels`.
+        let format = smithay::backend::allocator::Fourcc::Xrgb8888;
+        let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
+            (size.w, size.h).into();
+        let mut target = renderer
+            .create_buffer(format, buffer_size)
+            .map_err(|e| format!("allocating a desk capture target: {e}"))?;
+
+        let mapping = {
+            let mut framebuffer = renderer
+                .bind(&mut target)
+                .map_err(|e| format!("binding a desk capture target: {e}"))?;
+            let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+                size,
+                1.0,
+                smithay::utils::Transform::Normal,
+            );
+            tracker
+                .render_output(
+                    renderer,
+                    &mut framebuffer,
+                    0,
+                    &elements,
+                    smithay::backend::renderer::Color32F::from([0.0, 0.0, 0.0, 1.0]),
+                )
+                .map_err(|e| format!("compositing the desk: {e:?}"))?;
+            renderer
+                .copy_framebuffer(
+                    &framebuffer,
+                    smithay::utils::Rectangle::from_size(buffer_size),
+                    format,
+                )
+                .map_err(|e| format!("reading the desk back: {e}"))?
+        };
+        let pixels = renderer
+            .map_texture(&mapping)
+            .map_err(|e| format!("mapping a desk capture: {e}"))?
+            .to_vec();
+        Ok((pixels, size))
+    }
+
     fn copy_one<R, B>(
         &mut self,
         output: &Output,
@@ -2412,27 +2607,16 @@ impl ViewportState {
             self.pipewire = Some(crate::screencast::stream::Pipewire::new()?);
         }
 
-        let (name, size) = match &source {
-            crate::screencast::Source::Output(output) => {
-                let size = output
-                    .current_mode()
-                    .map(|mode| mode.size)
-                    .ok_or_else(|| anyhow::anyhow!("that output has no mode"))?;
-                (output.name(), size)
-            }
-            crate::screencast::Source::Window(id) => {
-                let view = self
-                    .views
-                    .get(*id)
-                    .ok_or_else(|| anyhow::anyhow!("no such window"))?;
-                let size = self
-                    .space
-                    .element_geometry(&view.window)
-                    .map(|geometry| geometry.size)
-                    .ok_or_else(|| anyhow::anyhow!("that window is not on screen"))?;
-                (view.title(), (size.w, size.h).into())
-            }
-        };
+        // Resolved once here for the name and the first size, and again on
+        // every frame after: a following source names whatever is in front
+        // now, and what that is will have changed by the second frame.
+        let target = self
+            .resolve_cast(&source)
+            .ok_or_else(|| anyhow::anyhow!("there is nothing to share"))?;
+        let name = self.cast_name(&source, &target);
+        let size = self
+            .target_size(&target)
+            .ok_or_else(|| anyhow::anyhow!("{name} cannot be captured"))?;
 
         // Buffers the GPU can draw into, if this backend can allocate any.
         // Without them the stream falls back to shared memory, which costs a
@@ -2561,12 +2745,18 @@ impl ViewportState {
         // read, so there is nothing to share between them and nothing to copy.
         self.draw_into_casts(output, renderer);
 
+        // What each share names right now. Resolved once and reused, because a
+        // following source is answered from focus and the answer must not
+        // change between deciding to composite and deciding who receives it —
+        // that is a frame handed to the wrong stream at the wrong size.
+        let targets = self.cast_targets_now();
+
         // Then the ones that need pixels in shared memory. One composite and
         // one readback serves every client watching this output.
-        let watching_output = self.casts.iter().any(|cast| {
+        let watching_output = self.casts.iter().zip(targets.iter()).any(|(cast, target)| {
             cast.stream.wants_frame(RATE)
                 && !cast.stream.uses_dmabuf()
-                && matches!(&cast.source, crate::screencast::Source::Output(o) if o == output)
+                && matches!(target, Some(crate::screencast::Target::Output(o)) if o == output)
         });
         if watching_output {
             if let Some(size) = output
@@ -2579,10 +2769,10 @@ impl ViewportState {
                 // hard to follow.
                 match self.read_output_pixels::<R, B>(output, region, true, renderer) {
                     Ok(pixels) => self.push_to_casts(
-                        |source| {
-                            matches!(source, crate::screencast::Source::Output(o) if o == output)
+                        &targets,
+                        |target| {
+                            matches!(target, crate::screencast::Target::Output(o) if o == output)
                         },
-
                         &pixels,
                         size,
                     ),
@@ -2591,18 +2781,45 @@ impl ViewportState {
             }
         }
 
+        // Then the whole desk, if anything is watching it — once per frame
+        // rather than once per monitor, on whichever output does the work.
+        let watching_desk = self.casts.iter().zip(targets.iter()).any(|(cast, target)| {
+            cast.stream.wants_frame(RATE)
+                && !cast.stream.uses_dmabuf()
+                && matches!(target, Some(crate::screencast::Target::AllOutputs))
+        });
+        if watching_desk && self.desk_capture_output().as_ref() == Some(output) {
+            match self.read_desk_pixels::<R, B>(renderer) {
+                Ok((pixels, size)) => self.push_to_casts(
+                    &targets,
+                    |target| matches!(target, crate::screencast::Target::AllOutputs),
+                    &pixels,
+                    size,
+                ),
+                Err(e) => tracing::warn!("could not read the desk for a screencast: {e}"),
+            }
+        }
+
         // Then windows, one composite each. A window is shared as itself
         // rather than as the part of the screen it covers: whatever is on top
         // of it belongs to the desktop, not to the thing being shared.
-        let windows: Vec<u32> = self
+        //
+        // Each window once, however many streams are watching it: a share
+        // that follows the focused window and a share of that same window by
+        // name both resolve here, and compositing it twice would cost a whole
+        // window per extra viewer for an identical picture.
+        let mut windows: Vec<u32> = self
             .casts
             .iter()
-            .filter(|cast| cast.stream.wants_frame(RATE) && !cast.stream.uses_dmabuf())
-            .filter_map(|cast| match &cast.source {
-                crate::screencast::Source::Window(id) => Some(*id),
+            .zip(targets.iter())
+            .filter(|(cast, _)| cast.stream.wants_frame(RATE) && !cast.stream.uses_dmabuf())
+            .filter_map(|(_, target)| match target {
+                Some(crate::screencast::Target::Window(id)) => Some(*id),
                 _ => None,
             })
             .collect();
+        windows.sort_unstable();
+        windows.dedup();
         for id in windows {
             let on_this_output = self
                 .views
@@ -2616,7 +2833,8 @@ impl ViewportState {
             }
             match self.read_window_pixels::<R, B>(id, renderer) {
                 Ok((pixels, size)) => self.push_to_casts(
-                    |source| matches!(source, crate::screencast::Source::Window(other) if *other == id),
+                    &targets,
+                    |target| matches!(target, crate::screencast::Target::Window(other) if *other == id),
                     &pixels,
                     size,
                 ),
@@ -2634,21 +2852,138 @@ impl ViewportState {
         self.needs_render = true;
     }
 
+    /// What a source names right now.
+    ///
+    /// `None` is "nothing to point at just now" rather than an error: a share
+    /// following the focused window has nothing to show while focus is
+    /// nowhere, and the honest thing to do is leave the last frame up until
+    /// there is a window again. Tearing the share down would mean a click on
+    /// the desktop ended the meeting.
+    fn resolve_cast(
+        &self,
+        source: &crate::screencast::Source,
+    ) -> Option<crate::screencast::Target> {
+        use crate::screencast::{Source, Target};
+        match source {
+            Source::Output(output) => Some(Target::Output(output.clone())),
+            Source::Window(id) => self
+                .views
+                .get(*id)
+                .filter(|view| view.mapped)
+                .map(|view| Target::Window(view.id)),
+            Source::AllOutputs => self.space.outputs().next().map(|_| Target::AllOutputs),
+            Source::FollowOutput => self
+                .active_output
+                .as_ref()
+                .and_then(|name| self.output_by_name(name))
+                .or_else(|| self.space.outputs().next().cloned())
+                .map(Target::Output),
+            Source::FollowWindow => self
+                .views
+                .get(self.focused)
+                .filter(|view| view.mapped)
+                .map(|view| Target::Window(view.id)),
+        }
+    }
+
+    /// What to call a stream, which is what a consumer shows in its own list.
+    ///
+    /// From the source rather than from what it currently resolves to: the name
+    /// is fixed at negotiation and a following share that renamed itself every
+    /// time focus moved would be a recorder whose file name is whatever window
+    /// was in front when it stopped.
+    fn cast_name(
+        &self,
+        source: &crate::screencast::Source,
+        target: &crate::screencast::Target,
+    ) -> String {
+        use crate::screencast::{Source, Target};
+        match (source, target) {
+            (Source::AllOutputs, _) => "all monitors".to_owned(),
+            (Source::FollowOutput, _) => "the active monitor".to_owned(),
+            (Source::FollowWindow, _) => "the focused window".to_owned(),
+            (_, Target::Output(output)) => output.name(),
+            (_, Target::Window(id)) => self
+                .views
+                .get(*id)
+                .map(|view| view.title())
+                .unwrap_or_else(|| "a window".to_owned()),
+            (_, Target::AllOutputs) => "all monitors".to_owned(),
+        }
+    }
+
     /// The size a source is now, whatever it was when the share started.
     fn cast_size(
         &self,
         source: &crate::screencast::Source,
     ) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
-        match source {
-            crate::screencast::Source::Output(output) => output
+        self.target_size(&self.resolve_cast(source)?)
+    }
+
+    /// How big a picture of this would be.
+    fn target_size(
+        &self,
+        target: &crate::screencast::Target,
+    ) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
+        match target {
+            crate::screencast::Target::Output(output) => output
                 .current_mode()
                 .map(|mode| output.current_transform().transform_size(mode.size)),
-            crate::screencast::Source::Window(id) => {
+            crate::screencast::Target::Window(id) => {
                 let view = self.views.get(*id)?;
                 let geometry = self.space.element_geometry(&view.window)?;
                 Some((geometry.size.w.max(1), geometry.size.h.max(1)).into())
             }
+            crate::screencast::Target::AllOutputs => self.desk_size(),
         }
+    }
+
+    /// How big a picture of the whole desk is.
+    ///
+    /// At least one pixel each way: an empty layout would otherwise negotiate
+    /// a zero-sized stream, which PipeWire accepts and no consumer can read.
+    fn desk_size(&self) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
+        let (union, scale) = self.all_outputs_layout()?;
+        let size: smithay::utils::Size<i32, smithay::utils::Physical> =
+            union.size.to_f64().to_physical(scale).to_i32_round();
+        Some((size.w.max(1), size.h.max(1)).into())
+    }
+
+    /// The rectangle every monitor sits inside, and the scale to draw it at.
+    ///
+    /// The largest scale of any of them, not the smallest and not one: the
+    /// point of sharing the whole desk is that somebody watching can read what
+    /// is on it, and a two-monitor desk where one screen is HiDPI would
+    /// otherwise be captured with that screen halved. Oversampling the coarser
+    /// monitor costs pixels; undersampling the finer one costs the text.
+    fn all_outputs_layout(&self) -> Option<(Rectangle<i32, Logical>, f64)> {
+        let mut union: Option<Rectangle<i32, Logical>> = None;
+        let mut scale: f64 = 1.0;
+        for output in self.space.outputs() {
+            let Some(geometry) = self.space.output_geometry(output) else {
+                continue;
+            };
+            scale = scale.max(output.current_scale().fractional_scale());
+            union = Some(match union {
+                Some(union) => union.merge(geometry),
+                None => geometry,
+            });
+        }
+        union.map(|union| (union, scale))
+    }
+
+    /// Which output does the work for a share of the whole desk.
+    ///
+    /// Every output's frame calls into the capture path, and a picture of the
+    /// desk is the same picture whichever of them asked for it — so it is
+    /// composited on one of their frames and skipped on the rest. Without this
+    /// a three-monitor desk composited the whole layout three times a frame.
+    ///
+    /// The first in the space's order, which is stable for as long as the set
+    /// of monitors is: any one of them would do, and one that moved would mean
+    /// a frame missed or drawn twice each time it changed.
+    fn desk_capture_output(&self) -> Option<Output> {
+        self.space.outputs().next().cloned()
     }
 
     /// Agree a new format for anything whose source has resized.
@@ -2714,17 +3049,26 @@ impl ViewportState {
     {
         const RATE: std::time::Duration = std::time::Duration::from_millis(33);
 
+        // What each share names right now, before the casts are taken out of
+        // the state: resolving a following source needs the state, and this
+        // borrows it immutably while `self.casts` is still there to line up
+        // with.
+        let targets = self.cast_targets_now();
+        // Whether a share of the whole desk is this output's job, worked out
+        // for the same reason.
+        let desk_is_ours = self.desk_capture_output().as_ref() == Some(output);
+
         // Both taken out for the duration: compositing needs the whole state,
         // and the stream being drawn into is part of it.
         let mut casts = std::mem::take(&mut self.casts);
         let pipewire = self.pipewire.take();
         if let Some(pipewire) = pipewire.as_ref() {
-            for cast in casts.iter_mut() {
+            for (cast, target) in casts.iter_mut().zip(targets.iter()) {
                 if !cast.stream.uses_dmabuf() || !cast.stream.wants_frame(RATE) {
                     continue;
                 }
-                match &cast.source {
-                    crate::screencast::Source::Output(shared) if shared == output => {
+                match target {
+                    Some(crate::screencast::Target::Output(shared)) if shared == output => {
                         let shared = shared.clone();
                         let size = match shared.current_mode() {
                             Some(mode) => shared.current_transform().transform_size(mode.size),
@@ -2738,7 +3082,7 @@ impl ViewportState {
                                 self.render_output_into(&shared, target.clone(), true, renderer)
                             });
                     }
-                    crate::screencast::Source::Window(id) => {
+                    Some(crate::screencast::Target::Window(id)) => {
                         let id = *id;
                         // Only from the output it is on, so a window straddling
                         // two screens is not composited once for each.
@@ -2759,6 +3103,17 @@ impl ViewportState {
                                 self.render_window_into(id, target.clone(), renderer)
                             });
                     }
+                    // One monitor's frame does the desk, and the rest skip it:
+                    // the picture is the same whichever of them asked.
+                    Some(crate::screencast::Target::AllOutputs) if desk_is_ours => {
+                        let Some(size) = self.desk_size() else {
+                            continue;
+                        };
+                        cast.stream
+                            .with_target(size, &pipewire.thread_loop, |target| {
+                                self.render_desk_into(target.clone(), renderer)
+                            });
+                    }
                     _ => {}
                 }
             }
@@ -2767,20 +3122,39 @@ impl ViewportState {
         self.casts = casts;
     }
 
+    /// What every running share names right now, in `self.casts` order.
+    ///
+    /// Kept alongside the casts rather than inside them: a following source is
+    /// answered from the compositor's state, and storing the answer would mean
+    /// deciding when to refresh it. This way there is nothing to keep in step.
+    fn cast_targets_now(&self) -> Vec<Option<crate::screencast::Target>> {
+        self.casts
+            .iter()
+            .map(|cast| self.resolve_cast(&cast.source))
+            .collect()
+    }
+
     /// Hand a frame to every cast a predicate matches.
+    ///
+    /// Matched on what each share resolves to rather than on what it asked
+    /// for, so a stream following the focused window is fed by the same
+    /// composite that feeds a stream naming that window outright. `targets`
+    /// runs alongside `self.casts`; a share that resolves to nothing is fed
+    /// nothing.
     fn push_to_casts(
         &mut self,
-        matches: impl Fn(&crate::screencast::Source) -> bool,
+        targets: &[Option<crate::screencast::Target>],
+        matches: impl Fn(&crate::screencast::Target) -> bool,
         pixels: &[u8],
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
     ) {
         let mut casts = std::mem::take(&mut self.casts);
         if let Some(pipewire) = self.pipewire.as_ref() {
-            for cast in casts
-                .iter_mut()
-                .filter(|cast| !cast.stream.uses_dmabuf() && matches(&cast.source))
-            {
-                cast.stream.push(pixels, size, &pipewire.thread_loop);
+            for (cast, target) in casts.iter_mut().zip(targets.iter()) {
+                let feed = !cast.stream.uses_dmabuf() && target.as_ref().is_some_and(&matches);
+                if feed {
+                    cast.stream.push(pixels, size, &pipewire.thread_loop);
+                }
             }
         }
         self.casts = casts;
@@ -3108,6 +3482,12 @@ impl ViewportState {
     /// Windows before monitors, and the focused window first: what somebody
     /// means to share is usually what they were just looking at, and the list
     /// is walked from the top.
+    ///
+    /// The sources that name nothing in particular — the whole desk, the
+    /// focused window, the active monitor — come at the end of the group they
+    /// belong to rather than at the top of it. They are the more useful answer
+    /// for a long meeting and the more surprising one for a quick share, and
+    /// the top of the list is what Enter picks without reading.
     fn screencast_sources(&self, types: u32) -> Vec<crate::screencast::Source> {
         let mut sources = Vec::new();
         if types & crate::screencast::SOURCE_WINDOW != 0 {
@@ -3119,6 +3499,12 @@ impl ViewportState {
                 if view.mapped && Some(view.id) != focused.map(|view| view.id) {
                     sources.push(crate::screencast::Source::Window(view.id));
                 }
+            }
+            // Only when there is a window to follow. Offered on an empty
+            // desktop it is a choice that shares a black rectangle until
+            // somebody opens something.
+            if focused.is_some() {
+                sources.push(crate::screencast::Source::FollowWindow);
             }
         }
         if types & crate::screencast::SOURCE_MONITOR != 0 {
@@ -3134,6 +3520,14 @@ impl ViewportState {
                 if Some(output) != active.as_ref() {
                     sources.push(crate::screencast::Source::Output(output.clone()));
                 }
+            }
+            // Both of these are the one monitor there is on a laptop, so they
+            // are offered only where they differ from a row already in the
+            // list. Two rows that share the same picture is a choice that is
+            // not one.
+            if self.space.outputs().count() > 1 {
+                sources.push(crate::screencast::Source::AllOutputs);
+                sources.push(crate::screencast::Source::FollowOutput);
             }
         }
         sources
@@ -3168,6 +3562,25 @@ impl ViewportState {
                         detail: view.map(|view| view.app_id()).unwrap_or_default(),
                     }
                 }
+                // Said in full here rather than left to the shell to name: the
+                // difference between sharing a monitor and sharing whichever
+                // monitor you are on is the whole of what somebody is agreeing
+                // to, and it has to be readable in the row.
+                crate::screencast::Source::AllOutputs => viewport_ipc::CastSource {
+                    kind: "all-outputs".to_owned(),
+                    label: "All monitors".to_owned(),
+                    detail: format!("{} screens, side by side", self.space.outputs().count()),
+                },
+                crate::screencast::Source::FollowWindow => viewport_ipc::CastSource {
+                    kind: "follow-window".to_owned(),
+                    label: "The focused window".to_owned(),
+                    detail: "follows as you switch windows".to_owned(),
+                },
+                crate::screencast::Source::FollowOutput => viewport_ipc::CastSource {
+                    kind: "follow-output".to_owned(),
+                    label: "The active monitor".to_owned(),
+                    detail: "follows as you move between screens".to_owned(),
+                },
             })
             .collect();
 

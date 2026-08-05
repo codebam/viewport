@@ -1967,6 +1967,36 @@ if (mode === 'scrolling') {
     label(rows()[1]) === 'an untitled window');
   check('a monitor is marked as one', rows()[2].dataset.kind === 'output');
 
+  /* The three sources that name nothing in particular. The compositor names
+     them — there is no client title to fall back from — so the shell's job is
+     to draw them as rows like any other and to keep the kind on the element,
+     which is the only thing the stylesheet has to tell them apart by. */
+  emit({ type: 'screencast.pick', id: 7, selected: 0, sources: [
+    { kind: 'window', label: 'a terminal', detail: 'foot' },
+    { kind: 'follow-window', label: 'The focused window',
+      detail: 'follows as you switch windows' },
+    { kind: 'all-outputs', label: 'All monitors', detail: '2 screens, side by side' },
+    { kind: 'follow-output', label: 'The active monitor',
+      detail: 'follows as you move between screens' },
+    /* A kind from a newer compositor than this shell. Drawing nothing would
+       hide a source the user could otherwise have picked. */
+    { kind: 'something-new', label: 'A tablet', detail: '' },
+  ] });
+  check('every kind gets a row', rows().length === 5);
+  check('a following window says so', label(rows()[1]) === 'The focused window');
+  check('and is marked as following', rows()[1].dataset.kind === 'follow-window');
+  check('the whole desk is offered', label(rows()[2]) === 'All monitors');
+  check('a following monitor says so', label(rows()[3]) === 'The active monitor');
+  check('and what it will follow is under it',
+    rows()[3].children[1].textContent === 'follows as you move between screens');
+  check('an unknown kind is still drawn', label(rows()[4]) === 'A tablet');
+  /* Only the two kinds that borrow a client's text can arrive unnamed. */
+  emit({ type: 'screencast.pick', id: 7, selected: 0, sources: [
+    { kind: 'something-new', label: '', detail: '' },
+  ] });
+  check('an unknown kind with no name still says something',
+    label(rows()[0]) === 'something to share');
+
   /* The compositor moved the highlight and re-sent the list, which is the
      whole of the interaction: there is no state here to move. */
   emit({ type: 'screencast.pick', id: 7, selected: 2, sources: [

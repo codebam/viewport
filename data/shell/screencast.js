@@ -16,6 +16,18 @@
  * load order and shell.md for what the whole is meant to do.
  */
 
+/* What to call a source whose own name is empty.
+ *
+ * Only the two kinds that borrow a client's text can be empty: a window with
+ * no title, and — in principle — a monitor with no name. The kinds that stand
+ * for something the compositor decides moment to moment ('all-outputs',
+ * 'follow-window', 'follow-output') arrive named, because there is nothing
+ * else they could be called. */
+const SCREENCAST_UNNAMED = {
+  output: 'a monitor',
+  window: 'an untitled window',
+};
+
 /* What the compositor last sent, so a redraw does not need it re-sent. */
 let screencastPick = null;
 
@@ -104,10 +116,13 @@ function renderScreencastPicker() {
     const label = document.createElement('div');
     label.className = 'screencast-label';
     /* A window with no title is still a window, and a row with no text in it
-       looks like a bug rather than a choice. */
-    label.textContent = source.label || (source.kind === 'output'
-      ? 'a monitor'
-      : 'an untitled window');
+       looks like a bug rather than a choice.
+       The compositor always names the three kinds that point at nothing in
+       particular — there is no title to fall back from — so only the two that
+       carry a client's own text need standing in for. */
+    label.textContent = source.label
+      || SCREENCAST_UNNAMED[source.kind]
+      || 'something to share';
     row.append(label);
 
     if (source.detail) {
