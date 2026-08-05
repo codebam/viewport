@@ -21,6 +21,9 @@ set -u
 
 viewport=${1:-target/debug/viewport}
 frontend=${2:-target/debug/examples/portal-frontend}
+# Optional: without it the window cases are skipped, because a window to share
+# has to be a real client and this suite compiles those elsewhere.
+paint_client=${3:-}
 
 for binary in "$viewport" "$frontend"; do
 	if [ ! -x "$binary" ]; then
@@ -40,17 +43,23 @@ fi
 # its name at startup and there is no way to hand it one afterwards.
 if [ "${VIEWPORT_RESTORE_TEST_BUS:-}" != yes ]; then
 	export VIEWPORT_RESTORE_TEST_BUS=yes
-	exec dbus-run-session -- "$0" "$viewport" "$frontend"
+	if [ -n "$paint_client" ]; then
+		paint_client=$(realpath "$paint_client")
+	fi
+	exec dbus-run-session -- "$0" "$viewport" "$frontend" "$paint_client"
 fi
 
 workdir=$(mktemp -d)
 viewport_pid=
+client_pid=
 
 # By PID only. Pattern matching on "viewport" has killed a live session more
 # than once, and this script runs on the same machine as one.
 stop_viewport() {
+	[ -n "$client_pid" ] && kill "$client_pid" 2>/dev/null
 	[ -n "$viewport_pid" ] && kill "$viewport_pid" 2>/dev/null
-	wait "$viewport_pid" 2>/dev/null
+	wait 2>/dev/null
+	client_pid=
 	viewport_pid=
 }
 cleanup() {
@@ -93,6 +102,34 @@ start_viewport() {
 		sleep 0.1
 	done
 	echo "the compositor did not publish its portal; its log:" >&2
+	tail -20 "$log" >&2
+	exit 2
+}
+
+# A window to share, and a wait for the layout to have placed it: a window with
+# no size yet is one the compositor cannot capture, and a share of it would be
+# refused for a reason that has nothing to do with restoring.
+window_app_id="viewport-restore-test"
+start_client() {
+	local log=$1 display
+	display=$(grep -o 'WAYLAND_DISPLAY=[A-Za-z0-9_-]*' "$log" | head -1 | cut -d= -f2)
+	if [ -z "$display" ]; then
+		echo "the compositor did not name its socket" >&2
+		exit 2
+	fi
+	WAYLAND_DISPLAY="$display" "$paint_client" "$window_app_id" 320 240 0 \
+		ffff0000 ffff0000 >"$workdir/client.log" 2>&1 &
+	client_pid=$!
+	# Either line means it has a size: the shell places it when there is one,
+	# and the built-in layout places it when the shell never answers — which
+	# is what happens here, two and a half seconds in, because a headless run
+	# has no page.
+	for _ in $(seq 1 100); do
+		grep -qE "view .* (boxed|placed at)" "$log" && return 0
+		kill -0 "$client_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	echo "the window was never placed; the compositor's log:" >&2
 	tail -20 "$log" >&2
 	exit 2
 }
@@ -180,6 +217,61 @@ start_viewport "$workdir/fifth.log"
 check "a transient share started" 0 $?
 check "and answered with no restore data" no \
 	"$(field "$workdir/transient.out" got_restore_data)"
+
+# ---------------------------------------------------------------------------
+# A window, which is the case the interface exists for and the one an id
+# cannot carry: the window is closed and opened again between the two shares,
+# so the view id it had the first time belongs to nothing by the second.
+# ---------------------------------------------------------------------------
+if [ -n "$paint_client" ]; then
+	stop_viewport
+	start_viewport "$workdir/window.log"
+	start_client "$workdir/window.log"
+
+	"$frontend" --types 2 --save "$workdir/window-token.bin" \
+		>"$workdir/window.out" 2>&1
+	check "a window share started" 0 $?
+	check "it shared a window" 2 "$(field "$workdir/window.out" source_type)"
+
+	stop_viewport
+	start_viewport "$workdir/window-again.log"
+	start_client "$workdir/window-again.log"
+
+	"$frontend" --types 2 --restore "$workdir/window-token.bin" \
+		>"$workdir/window-restore.out" 2>&1
+	check "the window share was restored" 1 \
+		"$(grep -c "as the application asked" "$workdir/window-again.log")"
+	check "and it is the same window" 1 \
+		"$(grep -c "sharing Window { app_id: \"$window_app_id\"" \
+			"$workdir/window-again.log")"
+	check "the restored window share started" 0 \
+		"$(field "$workdir/window-restore.out" response)"
+
+	# ---------------------------------------------------------------------
+	# And the other half of the same feature: an application holding a token
+	# can still ask to be asked. OBS clears its token when the user presses
+	# the button that reopens the chooser, so what arrives is a request with
+	# no restore data — and answering that from the old token would be a
+	# "select a source" button that cannot select one.
+	# ---------------------------------------------------------------------
+	"$frontend" --types 1 --save "$workdir/new-token.bin" \
+		>"$workdir/reselect.out" 2>&1
+	# Still the one line from the restore above, and none from this request.
+	check "a request with no token is not answered from one" 1 \
+		"$(grep -c "as the application asked" "$workdir/window-again.log")"
+	check "it went to the chooser instead" 1 \
+		"$(grep -c "without asking" "$workdir/window-again.log")"
+	check "it shared the monitor it was offered" 1 \
+		"$(field "$workdir/reselect.out" source_type)"
+	if cmp -s "$workdir/window-token.bin" "$workdir/new-token.bin"; then
+		echo "FAIL: the new source did not replace the remembered one" >&2
+		failures=$((failures + 1))
+	else
+		echo "ok: the new source replaced the remembered one"
+	fi
+else
+	echo "skipped: the window cases need the paint client"
+fi
 
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed" >&2

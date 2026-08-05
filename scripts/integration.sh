@@ -107,7 +107,7 @@ if [ ! -x "$frontend" ] && command -v cargo >/dev/null; then
 fi
 if [ -x "$frontend" ]; then
 	run screencast-restore "$root/tests/screencast-restore.test.sh" \
-		"$VIEWPORT" "$frontend"
+		"$VIEWPORT" "$frontend" "$work/paint-client"
 else
 	echo "=== screencast-restore: skipped, no portal-frontend to run it with"
 fi
