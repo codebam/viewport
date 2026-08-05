@@ -272,9 +272,24 @@ function moveViewToOutput(id, direction) {
   const output = outputs.get(target);
   if (!output) return false;
 
+  /* Before the window leaves the tree it is in, because that is what says
+     which workspace it is on. */
+  const from = workspaceOf(id);
+
   removeLeaf(id);
   const leaf = newLeaf(id);
   workspaceRoot(output.workspace).children.push(leaf);
+
+  /* Fullscreen is recorded per workspace, and carrying a window to the next
+     monitor carries it onto that monitor's workspace — so the record has to
+     travel, exactly as it does in moveViewToWorkspace(). Left behind, the
+     workspace it came from goes on hiding its bar and drawing its layout
+     around a window that is on another screen. */
+  if (from !== null && fullscreens.get(from) === id) {
+    fullscreens.delete(from);
+    fullscreens.set(output.workspace, id);
+  }
+
   treeGeneration++;
 
   setActiveOutput(target);

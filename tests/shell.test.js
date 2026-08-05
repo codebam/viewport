@@ -2055,6 +2055,46 @@ if (mode === 'scrolling') {
   check('and is not left behind on the workspace it came from',
     globalThis.__shell.fullscreenOnForTest(from) === null);
 
+  {
+    /* The same window carried to the next monitor, which is the other way a
+       window changes workspace: at the edge of its own tree the move falls
+       through to moveViewToOutput(), and that path used to move the leaf and
+       leave the fullscreen record behind — bar hidden on a workspace whose
+       fullscreen window is on the other screen. */
+    emit({ type: 'output.layout', outputs: [
+      { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+        usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+        scale: 1, transform: 'normal', modes: [], enabled: true },
+      { name: 'DP-2', x: 1920, y: 0, width: 1920, height: 1080,
+        usable_x: 1920, usable_y: 30, usable_width: 1920, usable_height: 1050,
+        scale: 1, transform: 'normal', modes: [], enabled: true },
+    ] });
+
+    /* Which monitor is to the right of which is read off the elements, and
+       the stub gives every element the same rect until it is told otherwise. */
+    globalThis.__shell.outputs.get('DP-1').el.__rect =
+      { left: 0, top: 0, width: 1920, height: 1080 };
+    globalThis.__shell.outputs.get('DP-2').el.__rect =
+      { left: 1920, top: 0, width: 1920, height: 1080 };
+
+    const start = ws(91);
+    emit({ type: 'view.focused', id: 91 });
+    emit({ type: 'shell.command', command: 'window.move', args: ['right'] });
+    const landed = ws(91);
+    check('a window at the edge is carried to the next monitor',
+      landed !== start);
+    check('fullscreen goes with it across monitors',
+      globalThis.__shell.fullscreenOnForTest(landed) === 91);
+    check('and the workspace it left is no longer fullscreen',
+      globalThis.__shell.fullscreenOnForTest(start) === null);
+
+    emit({ type: 'output.layout', outputs: [
+      { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+        usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+        scale: 1, transform: 'normal', modes: [], enabled: true },
+    ] });
+  }
+
   emit({ type: 'view.removed', id: 90 });
   emit({ type: 'view.removed', id: 91 });
 }
