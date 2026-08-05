@@ -470,6 +470,13 @@ function applyBorder(border) {
     const px = Number(border.width);
     if (Number.isFinite(px)) style.setProperty('--window-border', px + 'px');
   }
+  /* Smart radius, which is not a length and so is remembered rather than set
+     on a property. Absent leaves it following `gaps.smart` — see
+     `borderSmart` — and that is not the same as setting it false, which is
+     why only a value that is actually there is read. */
+  if (border.smart !== null && border.smart !== undefined) {
+    borderSmart = border.smart === true;
+  }
 }
 
 function applyBarMode(mode) {

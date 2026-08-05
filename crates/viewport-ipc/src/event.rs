@@ -306,6 +306,12 @@ pub struct Gaps {
 pub struct Border {
     pub radius: Option<i32>,
     pub width: Option<i32>,
+    /// Square the corners of a window that is alone on its workspace and
+    /// fills it. Absent means "whatever `gaps.smart` says", which is the pair
+    /// moving together: the same lone window is the one the gaps collapse
+    /// around, and rounding it after it has been pushed against the screen
+    /// edge is what leaves wallpaper showing in the corners of the monitor.
+    pub smart: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -474,6 +480,7 @@ mod tests {
             border: Some(Border {
                 radius: Some(12),
                 width: Some(3),
+                smart: Some(true),
             }),
             focus_crosses_outputs: true,
             tiling_mode: None,
@@ -481,6 +488,7 @@ mod tests {
         }));
         assert_eq!(value["border"]["radius"], 12);
         assert_eq!(value["border"]["width"], 3);
+        assert_eq!(value["border"]["smart"], true);
     }
 
     #[test]

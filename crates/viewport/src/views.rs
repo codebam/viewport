@@ -73,6 +73,11 @@ pub struct View {
     /// that was put in front of them on purpose.
     pub floating: bool,
 
+    /// The shell drew this window's frame with square corners, as its last
+    /// `view.layout` said — smart radius, on the one window a workspace holds.
+    /// The client is then not cropped to a corner, because there is none.
+    pub square: bool,
+
     /// Driven a frame at a time by a tween in the shell, which cannot fade a
     /// window with CSS: the frame is DOM, the contents are a surface the
     /// compositor draws.
@@ -340,6 +345,7 @@ impl Views {
             tag: None,
             frame: None,
             floating: false,
+            square: false,
             overlay_ids: std::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
             opacity: 1.0,
             configured: None,

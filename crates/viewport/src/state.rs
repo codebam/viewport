@@ -4153,6 +4153,10 @@ impl ViewportState {
                     frame: None,
                     scale: None,
                     floating: false,
+                    // Rounded like any other window. The rescue layout draws
+                    // no frame of its own, but the corner comes from the
+                    // config and a broken shell is no reason to change it.
+                    square: false,
                 }),
             );
         }
@@ -4670,12 +4674,18 @@ impl ViewportState {
                     .to_i32_round();
 
                 // The corner the shell drew, in physical pixels on this
-                // output. A fullscreen window has none — the stylesheet takes
-                // the border and the radius off one, and a rounded video
-                // filling the screen would be four notches of wallpaper in the
-                // corners of the monitor.
+                // output. Some windows have none: a fullscreen one, where the
+                // stylesheet takes the border and the radius off and a rounded
+                // video would be four notches of wallpaper in the corners of
+                // the monitor, and a window smart radius has squared for the
+                // same reason.
                 let border = self.config.border.as_ref();
-                let radius = if view.is_some_and(|view| view.wants_fullscreen()) {
+                // Square when the shell says so — smart radius, which is the
+                // shell's call because only it knows the window is alone on
+                // its workspace — or when the window is fullscreen, which the
+                // stylesheet also draws without a border or a corner.
+                let square = view.is_some_and(|view| view.square || view.wants_fullscreen());
+                let radius = if square {
                     0
                 } else {
                     border
@@ -5166,6 +5176,7 @@ impl ViewportState {
             self.config.border = Some(viewport_ipc::event::Border {
                 radius: file.border.radius,
                 width: file.border.width,
+                smart: file.border.smart,
             });
         }
         if let Some(url) = file.url {

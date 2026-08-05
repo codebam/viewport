@@ -434,7 +434,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
-        Request::ConfigBorder { radius, width } => {
+        Request::ConfigBorder {
+            radius,
+            width,
+            smart,
+        } => {
             let current = state
                 .config
                 .border
@@ -454,6 +458,10 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                     return;
                 }
                 current.width = Some(v);
+                changed = true;
+            }
+            if let Some(v) = smart {
+                current.smart = Some(v);
                 changed = true;
             }
             if changed {
@@ -554,6 +562,9 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // drawn above anything, which is every tiled window.
     view.frame = layout.frame;
     view.floating = layout.floating;
+    // Smart radius: the shell drew this one square, so the compositor must not
+    // cut a corner off the client that the frame around it no longer has.
+    view.square = layout.square;
     view.placed = true;
     // A rectangle un-hides a window, as in C (`src/xdg_shell.c:832`).
     //

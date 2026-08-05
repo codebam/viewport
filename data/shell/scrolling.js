@@ -52,6 +52,18 @@ function gapOuterPx() {
 /* Whether smart gaps drop the inner gap for a lone window. */
 let gapsSmart = false;
 
+/* Whether smart radius squares that same window's corners, and null for "not
+   said". Null follows the gaps rather than meaning off: smart gaps push a lone
+   window against the edge of the screen, and a rounded corner there is a notch
+   of wallpaper in the corner of the monitor — so the two belong to the same
+   decision unless someone says otherwise. */
+let borderSmart = null;
+
+/* Whether a lone window is drawn square. See `borderSmart`. */
+function smartRadius() {
+  return borderSmart === null ? gapsSmart : borderSmart;
+}
+
 /* True when the workspace shows a single window that fills the tiling area —
    the condition under which smart gaps collapse to the outer gap only.
 

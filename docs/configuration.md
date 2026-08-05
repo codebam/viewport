@@ -432,7 +432,7 @@ The frame drawn around a window.
 
 ```jsonc
 {
-  "border": { "radius": 6, "width": 2 }
+  "border": { "radius": 6, "width": 2, "smart": false }
 }
 ```
 
@@ -441,6 +441,20 @@ the border. Absent keeps the shell's default of 6; zero is a square desktop.
 `border.width` is how thick the border is, in pixels. Absent keeps the
 shell's default of 2; zero draws no border at all, leaving the gap between
 windows to separate them.
+
+`border.smart` squares the corners of a workspace's lone window, the way
+`gaps.smart` drops its inner gap — sway's `smart_borders` for the same window.
+Absent *follows `gaps.smart`* rather than meaning off, because the two are one
+decision: smart gaps push that window against the edge of the screen, and a
+rounded corner there is a notch of wallpaper in the corner of the monitor. Set
+it explicitly to have one without the other. As with the gaps, the scrolling
+layout counts only a lone full-width column — a half-width one does not reach
+its own screen edge to begin with.
+
+Which window is the lone one is a question about the layout, so the shell
+answers it and sends `square` on that window's `view.layout`; the compositor
+takes the corner off the crop when it is told to, and works nothing out for
+itself.
 
 These are the appearance settings the compositor reads as well as the shell.
 A window's contents are a client surface the compositor draws itself, not part
@@ -467,7 +481,7 @@ corner that is no longer there. Set both, or set `border.radius`.
 `config.gaps` works:
 
 ```sh
-viewport msg -t config.border --radius 12 --width 3
+viewport msg -t config.border --radius 12 --width 3 --smart true
 ```
 
 Each field is optional; only the ones given change. Zero is accepted for

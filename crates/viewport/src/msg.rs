@@ -87,7 +87,7 @@ const TYPES: &[Type] = &[
     Type {
         name: "view.layout",
         fields: &[
-            "id", "x", "y", "width", "height", "scale", "clip.*", "frame.*", "floating",
+            "id", "x", "y", "width", "height", "scale", "clip.*", "frame.*", "floating", "square",
         ],
         hint: "--id N [--x N --y N --width N --height N] [--scale F] [--floating]",
     },
@@ -232,8 +232,8 @@ const TYPES: &[Type] = &[
     },
     Type {
         name: "config.border",
-        fields: &["radius", "width"],
-        hint: "[--radius N --width N]   (set the window border; each is optional)",
+        fields: &["radius", "width", "smart"],
+        hint: "[--radius N --width N --smart BOOL]   (set the window border; each is optional)",
     },
     Type {
         name: "shell.command",
@@ -926,8 +926,19 @@ mod tests {
     #[test]
     fn config_border_builds_a_number_not_a_string() {
         assert_eq!(
-            value(&["-t", "config.border", "--radius", "12", "--width", "3"]),
-            serde_json::json!({"type": "config.border", "radius": 12, "width": 3})
+            value(&[
+                "-t",
+                "config.border",
+                "--radius",
+                "12",
+                "--width",
+                "3",
+                "--smart",
+                "true"
+            ]),
+            serde_json::json!({
+                "type": "config.border", "radius": 12, "width": 3, "smart": true
+            })
         );
     }
 

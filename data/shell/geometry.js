@@ -128,14 +128,23 @@ function reportGeometry(id) {
      and the one window being typed into is never occluded. */
   const floating = lifted;
 
+  /* Smart radius: whether this window is being drawn square. The stylesheet
+     rounds the frame and the compositor crops the client, so the second has to
+     be told what the first decided — the class above is CSS, and CSS is not
+     something the compositor can read. */
+  const square = !overviewActive && smartRadius()
+    && singleWindowOn(workspaceOf(id));
+
   const prev = view.box;
   const prevClip = view.clip;
   const prevFrame = view.frame;
   const prevFloating = view.reportedFloating;
+  const prevSquare = view.reportedSquare;
   if (prev && prev.x === box.x && prev.y === box.y &&
       prev.width === box.width && prev.height === box.height &&
       prev.scale === scale && sameBox(prevClip, clip) &&
-      sameBox(prevFrame, frame) && prevFloating === floating) {
+      sameBox(prevFrame, frame) && prevFloating === floating &&
+      prevSquare === square) {
     return false;
   }
 
@@ -143,12 +152,14 @@ function reportGeometry(id) {
   view.clip = clip;
   view.frame = frame;
   view.reportedFloating = floating;
+  view.reportedSquare = square;
 
   const message = { type: 'view.layout', id, ...box };
   if (scale !== 1) message.scale = scale;
   if (clip) message.clip = clip;
   if (frame) message.frame = frame;
   if (floating) message.floating = true;
+  if (square) message.square = true;
   /* Anything that gets past the comparison above differs, so this goes out
      unconditionally — including the case where the scale alone changed, which
      is worth a message even though the rect did not move. */
@@ -482,6 +493,12 @@ function relayoutAll() {
        computes, or the drawn edge and the measured one drift apart. */
     output.windowsEl.classList.toggle('smart-single',
       gapsSmart && singleWindowOn(output.workspace));
+    /* Smart radius: the same lone window, drawn square. A separate class from
+       the one above because the two settings can be set apart — and off in the
+       overview, where the windows are thumbnails whose corners are the
+       thumbnail's, not the desktop's. */
+    output.windowsEl.classList.toggle('smart-square',
+      !overviewActive && smartRadius() && singleWindowOn(output.workspace));
     if (rendered) output.windowsEl.append(rendered);
 
     /* Floating windows are positioned rather than laid out, so they are

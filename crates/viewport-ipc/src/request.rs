@@ -313,6 +313,11 @@ pub enum Request {
         /// Zero is no border; negative values are rejected.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         width: Option<i32>,
+        /// Square the corners of a lone window, as `border.smart`. Absent
+        /// here leaves whatever is set; absent from the *config* means the
+        /// setting follows `gaps.smart`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        smart: Option<bool>,
     },
 }
 
@@ -367,6 +372,19 @@ pub struct ViewLayout {
     /// never sets it sends.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub floating: bool,
+
+    /// Whether the frame the shell drew around this window has square corners,
+    /// whatever `border.radius` says.
+    ///
+    /// The compositor crops each client to the corner the page drew, and only
+    /// the shell knows when it did not draw one: smart radius squares the lone
+    /// window on a workspace, because a rounded window against the edge of the
+    /// screen is four notches of wallpaper in the corners of the monitor. That
+    /// is a question about the layout, and the layout is the shell's.
+    ///
+    /// Absent means the configured corner, which is every other window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub square: bool,
 }
 
 impl ViewLayout {
@@ -776,25 +794,58 @@ mod tests {
 
     #[test]
     fn config_border_carries_the_radius() {
-        let Request::ConfigBorder { radius, width } =
-            parse(r#"{"type":"config.border","radius":12,"width":3}"#)
+        let Request::ConfigBorder {
+            radius,
+            width,
+            smart,
+        } = parse(r#"{"type":"config.border","radius":12,"width":3,"smart":true}"#)
         else {
             panic!("not a config.border message");
         };
         assert_eq!(radius, Some(12));
         assert_eq!(width, Some(3));
+        assert_eq!(smart, Some(true));
 
         // Square corners and no border at all, both asked for on purpose.
-        let Request::ConfigBorder { radius, width } =
+        let Request::ConfigBorder { radius, width, .. } =
             parse(r#"{"type":"config.border","radius":0,"width":0}"#)
         else {
             panic!("not a config.border message");
         };
         assert_eq!((radius, width), (Some(0), Some(0)));
 
-        let Request::ConfigBorder { radius, width } = parse(r#"{"type":"config.border"}"#) else {
+        // Absent is not false: an absent `smart` in the config follows
+        // `gaps.smart`, and a message that omits it changes nothing.
+        let Request::ConfigBorder {
+            radius,
+            width,
+            smart,
+        } = parse(r#"{"type":"config.border"}"#)
+        else {
             panic!("not a config.border message");
         };
-        assert_eq!((radius, width), (None, None));
+        assert_eq!((radius, width, smart), (None, None, None));
+    }
+
+    #[test]
+    fn a_layout_carries_whether_the_window_was_drawn_square() {
+        // Smart radius. The shell knows which window is alone on its
+        // workspace and the compositor does not, so the answer travels with
+        // the rectangle rather than being worked out again on the other side.
+        let Request::ViewLayout(layout) = parse(
+            r#"{"type":"view.layout","id":3,"x":0,"y":0,"width":100,"height":100,"square":true}"#,
+        ) else {
+            panic!("not a view.layout message");
+        };
+        assert!(layout.square);
+
+        // Absent is a window with the configured corner, which is most of
+        // them and every window an older shell sends.
+        let Request::ViewLayout(layout) =
+            parse(r#"{"type":"view.layout","id":3,"x":0,"y":0,"width":100,"height":100}"#)
+        else {
+            panic!("not a view.layout message");
+        };
+        assert!(!layout.square);
     }
 }

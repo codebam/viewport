@@ -356,6 +356,18 @@ html.behind body { background: transparent; }
   padding: var(--gap-outer);
 }
 
+/* Smart radius: that same lone window is drawn square. A window pushed against
+   the edge of the screen with a rounded corner leaves a notch of wallpaper in
+   the corner of the monitor, which is the corner nobody wanted rounded.
+
+   The compositor squares the client to match — it crops each surface to the
+   corner the page drew — and is told per window, through `square` on
+   `view.layout`, because which window is the lone one is a question about the
+   layout and the layout is the shell's. */
+.windows.smart-square .window {
+  border-radius: 0;
+}
+
 .desktop.bar-hidden .windows {
   inset: var(--rsv-top) var(--rsv-right) var(--rsv-bottom) var(--rsv-left);
 }

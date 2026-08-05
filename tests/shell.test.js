@@ -325,7 +325,8 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   /* What smart gaps decide, which is a question about the tree and the layout
      mode rather than about any pixel: whether this workspace holds a lone
      window that fills the tiling area. */
-  + ' smartGapsForTest: { single: singleWindowOn, edge: edgeGapPx },'
+  + ' smartGapsForTest: { single: singleWindowOn, edge: edgeGapPx,'
+  + '   radius: smartRadius },'
   /* The grid's row count, which decides the whole shape and is a pure function
      of (count, w, h). The arrangement it feeds is checked through the tree the
      mode builds, like the other dynamic ones; this is here because the aspects
@@ -1512,12 +1513,34 @@ if (mode === 'scrolling') {
       smart.single(alone)
       && out.windowsEl.classList.contains('smart-single')
       && smart.edge(alone) === 0);
+    /* Smart radius follows smart gaps unless it is set on its own: the same
+       window the gaps pushed against the screen edge is the one whose rounded
+       corner would show wallpaper through it. */
+    check('and squares its corners with them',
+      smart.radius() === true
+      && out.windowsEl.classList.contains('smart-square'));
+    check('which the compositor is told about per window',
+      sent.some((m) => m.type === 'view.layout' && m.id === 320
+        && m.square === true));
+
+    /* Set apart: gaps still smart, corners explicitly not. */
+    emit({ type: 'config', layout: mode, border: { smart: false } });
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+    check('border.smart false keeps the corners while the gaps stay smart',
+      smart.radius() === false
+      && !out.windowsEl.classList.contains('smart-square')
+      && out.windowsEl.classList.contains('smart-single'));
+
+    emit({ type: 'config', layout: mode, border: { smart: true } });
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+    check('and true squares them again',
+      out.windowsEl.classList.contains('smart-square'));
 
     emit({ type: 'view.removed', id: 320 });
     emit({ type: 'shell.command', command: 'workspace.switch',
       args: [String(home)] });
     emit({ type: 'config', layout: mode,
-      gaps: { inner: 8, outer: 0, smart: false } });
+      gaps: { inner: 8, outer: 0, smart: false }, border: { smart: false } });
   }
 }
 
