@@ -302,14 +302,16 @@ function syncBarRight(output) {
     return;
   }
 
-  const els = output.barItemsEls ?? (output.barItemsEls = []);
-  const widgetDefs = [];
-
   /* First time an override is drawn: the shipped modules sit in the markup
      (index.html) and the override replaces all of them, so empty the right
      side before building. Only on the first build — after that the elements
-     are ours and kept by position. */
-  if (output.barItemsEls === undefined) {
+     are ours and kept by position. Check BEFORE binding the fresh array
+     below, or the guard would never see it was undefined. */
+  const firstBuild = output.barItemsEls === undefined;
+  const els = output.barItemsEls ?? (output.barItemsEls = []);
+  const widgetDefs = [];
+
+  if (firstBuild) {
     for (const child of [...container.children]) child.remove();
   }
 

@@ -2070,6 +2070,12 @@ if (mode === 'scrolling') {
     ] });
   check('a bar_items override draws one element per item',
     wout.barItemsEls.length === 4);
+  check('the override replaces the shipped modules, none left behind',
+    (() => {
+      const right = wout.barEl.querySelector('.bar-right');
+      return right.children.length === 4 &&
+        right.children.length === wout.barItemsEls.length;
+    })());
   check('a bare string becomes a module element',
     wout.barItemsEls[0].className === 'module net');
   check('a widget object becomes a widget element',
