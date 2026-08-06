@@ -2097,15 +2097,21 @@ if (mode === 'scrolling') {
   check('a muted mic switches to the muted glyph', micEl.textContent !== '');
   const micExec = () => sent.filter((m) => m.type === 'shell.exec');
   const micBefore = micExec().length;
+  const micSentBefore = sent.length;
   micEl.listeners.wheel.forEach((fn) => fn({ preventDefault() {}, deltaY: 100 }));
   check('scrolling a mic widget down lowers the source volume by 5%',
     micExec().slice(micBefore).some((m) =>
       m.command === 'wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 5%-'));
+  check('scrolling a mic widget refreshes the bar at once',
+    sent.slice(micSentBefore).some((m) => m.type === 'status.refresh'));
   const micBeforeMute = micExec().length;
+  const micSentBeforeMute = sent.length;
   micEl.listeners.contextmenu.forEach((fn) => fn({ preventDefault() {} }));
   check('right-clicking a mic widget toggles the source mute',
     micExec().slice(micBeforeMute).some((m) =>
       m.command === 'wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle'));
+  check('muting a mic widget refreshes the bar at once',
+    sent.slice(micSentBeforeMute).some((m) => m.type === 'status.refresh'));
   emit({ type: 'config', layout: mode });
 
   /* A full bar override, `bar_items`: modules and widgets listed together in
@@ -2156,16 +2162,22 @@ if (mode === 'scrolling') {
   const clockEl = wout.barItemsEls[2];
 
   const before = execAfter().length;
+  const sentBeforeScroll = sent.length;
   volEl.listeners.wheel.forEach((fn) =>
     fn({ preventDefault() {}, deltaY: -100 }));
   check('scrolling a volume widget up raises volume by 5%',
     execAfter().slice(before).some((m) =>
       m.command === 'wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+'));
+  check('scrolling asks the compositor to refresh the bar at once',
+    sent.slice(sentBeforeScroll).some((m) => m.type === 'status.refresh'));
   const beforeMute = execAfter().length;
+  const sentBeforeMute = sent.length;
   volEl.listeners.contextmenu.forEach((fn) => fn({ preventDefault() {} }));
   check('right-clicking a volume widget toggles mute',
     execAfter().slice(beforeMute).some((m) =>
       m.command === 'wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle'));
+  check('muting asks the compositor to refresh the bar at once',
+    sent.slice(sentBeforeMute).some((m) => m.type === 'status.refresh'));
   const beforeDisk = execAfter().length;
   diskEl.listeners.click.forEach((fn) => fn());
   check('clicking a disk widget opens its mount',

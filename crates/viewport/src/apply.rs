@@ -239,6 +239,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             crate::input::spawn(&command);
         }
 
+        // Re-sample the status bar now. An audio widget drives the sink through
+        // wpctl (above) and then asks for this, so the change shows up at once
+        // instead of on the next two-second tick.
+        Request::StatusRefresh => state.status_tick(),
+
         Request::OutputQuery => state.notify_output_layout(),
 
         // Nothing arms a revert yet, so there is nothing to cancel.

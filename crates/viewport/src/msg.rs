@@ -246,6 +246,11 @@ const TYPES: &[Type] = &[
         hint: "--command LINE   (run a shell command on the host)",
     },
     Type {
+        name: "status.refresh",
+        fields: &[],
+        hint: "(re-sample the status bar now, not on the next tick)",
+    },
+    Type {
         name: "input.pointer",
         fields: &["x", "y"],
         hint: "--x F --y F",
@@ -1141,10 +1146,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 34 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 35 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 34);
+        assert_eq!(TYPES.len(), 35);
     }
 
     #[test]

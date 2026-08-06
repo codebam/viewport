@@ -238,6 +238,10 @@ function moduleTitle(name) {
  * widget sits where. */
 function wireWidget(el) {
   const cmd = (line) => send({ type: 'shell.exec', command: line });
+  /* Ask the compositor to re-sample the bar's numbers, so an audio change
+     shows up at once instead of on the next two-second tick. Without it a
+     mute that worked, or a volume that moved, would look like it had not. */
+  const refreshStatus = () => send({ type: 'status.refresh' });
 
   /* The element carries its own widget (`el._widget`), set by the sync pass;
      the handlers below are bound once and read it, so they always act on the
@@ -267,6 +271,7 @@ function wireWidget(el) {
     const node = w.type === 'mic' ? '@DEFAULT_AUDIO_SOURCE@' : '@DEFAULT_AUDIO_SINK@';
     const dir = e.deltaY < 0 ? '+' : '-';
     cmd(`wpctl set-volume ${node} 5%${dir}`);
+    refreshStatus();
   });
   el.addEventListener('contextmenu', (e) => {
     const w = el._widget;
@@ -276,6 +281,7 @@ function wireWidget(el) {
        for a volume widget, the microphone for a mic widget. */
     const node = w.type === 'mic' ? '@DEFAULT_AUDIO_SOURCE@' : '@DEFAULT_AUDIO_SINK@';
     cmd(`wpctl set-mute ${node} toggle`);
+    refreshStatus();
   });
 }
 

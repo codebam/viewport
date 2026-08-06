@@ -238,6 +238,16 @@ pub enum Request {
     #[serde(rename = "shell.exec")]
     ShellExec { command: String },
 
+    /// Ask the compositor to sample the status bar's numbers again now,
+    /// rather than waiting for the next two-second tick.
+    ///
+    /// An audio widget uses this after it has driven the sink through `wpctl`
+    /// — scrolled the volume or toggled mute — so the change appears on screen
+    /// immediately. Without it the display lags up to two seconds, which makes
+    /// a mute that worked look like one that did not.
+    #[serde(rename = "status.refresh")]
+    StatusRefresh,
+
     /// Move the pointer, in the layout's own coordinates.
     ///
     /// For driving the desktop from a script: a test that wants to know
@@ -743,6 +753,17 @@ mod tests {
         for json in table {
             serde_json::from_str::<Request>(json).unwrap_or_else(|e| panic!("{json}: {e}"));
         }
+    }
+
+    #[test]
+    fn status_refresh_is_a_unit_request() {
+        // Not in the C-parity table: this request has no counterpart in the C
+        // build, and adding a row would make that table's count assertion mean
+        // something else.
+        assert!(matches!(
+            parse(r#"{"type":"status.refresh"}"#),
+            Request::StatusRefresh
+        ));
     }
 
     #[test]
