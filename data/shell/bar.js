@@ -451,8 +451,12 @@ function renderBarWidgets(output) {
       const muted = isMic ? s.mic_muted : s.muted;
       if (vol >= 0) {
         const pct = Math.round(vol * 100);
-        const on = isMic ? '󰋛' : '󰕾';
-        const off = isMic ? '󰋜' : '󰝟';
+        /* md-microphone/md-microphone_off (U+F036C/U+F036D) and
+           md-volume_high/md-volume_off. The mic drew U+F02DB and U+F02DC,
+           which are md-hololens and md-home — a headset and a house where a
+           microphone belongs. */
+        const on = isMic ? '󰍬' : '󰕾';
+        const off = isMic ? '󰍭' : '󰝟';
         text = `${muted ? off : on} ${pct}%`;
       }
     } else if (w.type === 'weather') {
@@ -512,9 +516,7 @@ function fetchWeather(location) {
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
     .then((data) => {
       const c = data && data.current;
-      const text = c
-        ? `${Math.round(c.temperature_2m)}°C ${condition(c.weather_code)}`
-        : '';
+      const text = c ? weatherLine(c.weather_code, c.temperature_2m) : '';
       weatherCache.set(key, { text, retryAt: Date.now() + WEATHER_REFRESH });
       renderBarsWidgets();
     })
@@ -535,6 +537,15 @@ function geocode(location) {
       if (!hit) throw new Error(`weather: no match for "${location}"`);
       return [hit.latitude, hit.longitude];
     });
+}
+
+/* What the widget draws: the condition first and the temperature after it,
+ * like every other widget on the bar — the glyph says what the number is
+ * about, so it reads as a label rather than as a unit stuck on the end. A code
+ * with no glyph of its own leaves the temperature on its own rather than
+ * behind a leading space. */
+function weatherLine(code, celsius) {
+  return `${condition(code)} ${Math.round(celsius)}°C`.trim();
 }
 
 /* WMO weather codes to a short condition, matching what a temperature is not

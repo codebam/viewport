@@ -63,6 +63,12 @@ Buttons are named `Mouse1`–`Mouse5`, `BTN_LEFT`/`BTN_RIGHT`/`BTN_MIDDLE`/
 press while the modifier is held, and consumes the click — it is not passed on
 to the window under the pointer.
 
+A name the keymap knows is always the key: `Mod4+Left` is the arrow key, not
+the left button. Write `Mod4+Mouse1` or `Mod4+BTN_LEFT` for the button. This
+matters because a button binding consumes the press — `Mod4+Left` read as a
+button swallows every Mod4-held click, which is all of them on a `bar: auto`
+that is only on screen while Mod4 is down.
+
 The scroll wheel binds the same way: `Mod4+WheelUp=exec …` and
 `Mod4+WheelDown=…` (also `ScrollUp`/`ScrollDown`). A wheel binding fires once
 per notch of a physical wheel while the modifier is held and consumes the

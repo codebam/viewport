@@ -332,6 +332,10 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      Exported so a test can hand it a rect off the pixel grid — the browser
      produces those constantly and this harness's stubs never would. */
   + ' reportGeometryForTest: reportGeometry,'
+  /* What the weather widget draws for a forecast, which is the one part of
+     that widget reachable without a network: the fetch is stubbed nowhere and
+     the line it composes is what the bar shows. */
+  + ' weatherLineForTest: weatherLine,'
   /* The grid's row count, which decides the whole shape and is a pure function
      of (count, w, h). The arrangement it feeds is checked through the tree the
      mode builds, like the other dynamic ones; this is here because the aspects
@@ -2095,6 +2099,16 @@ if (mode === 'scrolling') {
   check('a muted mic keeps its percentage (does not hide)',
     micEl.textContent.includes('30') && micEl.textContent.includes('%'));
   check('a muted mic switches to the muted glyph', micEl.textContent !== '');
+  /* And the glyph is a microphone. The widget shipped drawing U+F02DB and
+     U+F02DC, which are md-hololens and md-home — a headset and a house. */
+  check('a muted mic draws the crossed-out microphone',
+    micEl.textContent.startsWith('\u{f036d}'));
+  emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+    net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+    mounts: [], volume: -1, muted: false,
+    mic_volume: 0.3, mic_muted: false });
+  check('and an unmuted one draws the microphone',
+    micEl.textContent.startsWith('\u{f036c}'));
   const micExec = () => sent.filter((m) => m.type === 'shell.exec');
   const micBefore = micExec().length;
   const micSentBefore = sent.length;
@@ -2147,6 +2161,14 @@ if (mode === 'scrolling') {
     volume: -1, muted: false });
   check('an override widget renders from the status sample',
     wout.barItemsEls[1].textContent.includes('/games'));
+
+  /* The weather widget's line: the condition first, then the temperature —
+     the glyph labels the number rather than trailing it. */
+  const sunny = globalThis.__shell.weatherLineForTest(0, 21.4);
+  check('a weather line leads with the condition glyph',
+    sunny.startsWith('☀') && sunny.endsWith('21°C'));
+  check('a code with no glyph leaves no leading space',
+    globalThis.__shell.weatherLineForTest(85, -3.2) === '-3°C');
 
   /* Widgets carry input, sent to the compositor so it can run the command
      the widget stands for. The volume widget scrolls in 5% steps and a right

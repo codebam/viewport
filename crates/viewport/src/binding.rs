@@ -171,12 +171,24 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         // Scroll wheel: not a key and not a button, but the same chord. Its
         // modifier prefix is the only part it shares with either.
         (0, None, Some(wheel))
-    } else if let Some(button) = button_from_name(rest) {
+    } else if let Some(keysym) = keysym_from_name(rest) {
+        // A key the keymap knows wins over a button spelled the same way.
+        //
+        // The button names overlap the keysyms: `Left` and `Right` are the
+        // arrow keys and also two of the spellings for the buttons beside the
+        // wheel. Asking the button table first made `Mod4+Left=focus left` —
+        // a default, and in every config written before buttons could be
+        // bound at all — a binding on Mod4+left-click, which then swallowed
+        // every Mod4-held click before it reached the client under it. On an
+        // `auto` bar, which is only on screen while Mod4 is held, that is
+        // every click a bar widget could ever get; the scroll wheel kept
+        // working, because nothing was bound to it, which is what the fault
+        // looked like from the outside.
+        (keysym, None, None)
+    } else {
         // A mouse button is its own kind of key, with no keysym to match —
         // the modifier prefix is the only part it shares with a chord.
-        (0, Some(button), None)
-    } else {
-        (keysym_from_name(rest)?, None, None)
+        (0, Some(button_from_name(rest)?), None)
     };
     Some(Binding {
         modifiers,
@@ -241,6 +253,10 @@ fn keysym_from_name(name: &str) -> Option<u32> {
 /// libinput numbers the side buttons `BTN_SIDE` (0x113) and `BTN_EXTRA`
 /// (0x114); everyone else calls them Mouse4 and Mouse5, or XButton1 and
 /// XButton2. All three spellings are accepted, case-insensitively.
+///
+/// Asked only for a name the keymap does not know: `left` and `right` are
+/// listed here and are also the arrow keys, and a chord that could be either
+/// is the key — see `parse_chord`.
 fn button_from_name(name: &str) -> Option<u32> {
     let button = match name.to_ascii_lowercase().as_str() {
         "btn_left" | "mouse1" | "left" | "button1" => 0x110,
@@ -657,6 +673,36 @@ mod tests {
         assert!(match_button(std::slice::from_ref(&key), &held, 0x113, "").is_none());
         // And the button binding has keysym 0, not q.
         assert!(match_binding(&[button], &held, keysyms::KEY_q, "").is_none());
+    }
+
+    #[test]
+    fn an_arrow_key_is_a_key_and_not_the_button_of_the_same_name() {
+        // `Left` and `Right` name both an arrow key and a mouse button, and
+        // the key is what a config means: `Mod4+Left=focus left` is a default.
+        // Read as a button it bound Mod4+left-click, and the button handler
+        // consumes what it matches — so every Mod4-held click was swallowed
+        // before the client under the pointer saw it. The `auto` bar is only
+        // on screen while Mod4 is held, which made its widgets unclickable.
+        for name in ["Left", "Right", "left", "right"] {
+            let binding =
+                parse(&format!("Mod4+{name}=focus {}", name.to_lowercase())).expect("should parse");
+            assert_eq!(binding.button, None, "{name} is a key, not a button");
+            assert_eq!(binding.keysym, keysym_from_name(name).unwrap());
+        }
+
+        // And nothing in the default keymap claims a plain or a modified
+        // left/right click, which is what leaves the shell's own widgets
+        // clickable.
+        let bindings = defaults("foot", "fuzzel", "scrolling");
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        for modifiers in [ModifiersState::default(), held] {
+            for button in [0x110, 0x111] {
+                assert!(match_button(&bindings, &modifiers, button, "").is_none());
+            }
+        }
     }
 
     #[test]
