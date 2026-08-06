@@ -298,6 +298,13 @@ window.addEventListener('viewport', (event) => {
       addView(message);
       break;
 
+    /* A client outside the shell — an external bar, over `ext-workspace-v1` —
+       asked for something to happen to a workspace. Nothing has happened in
+       the compositor yet; see workspaceRequested(). */
+    case 'workspace.request':
+      workspaceRequested(message);
+      break;
+
     case 'view.props': {
       const view = views.get(message.id);
       if (view) {

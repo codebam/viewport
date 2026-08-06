@@ -208,6 +208,116 @@ function focusFirstOn(name) {
     : { type: 'shell.focus' });
 }
 
+/* ------------------------------------------------------------------------
+ * Workspaces, as everything outside the shell sees them
+ * --------------------------------------------------------------------- */
+
+/* The workspaces are the shell's: nothing else knows how many there are, which
+ * is showing or what is on them. `ext-workspace-v1` is a client — waybar's
+ * `ext/workspaces` module, an overview panel, anything — asking to be told, and
+ * the compositor can only relay what arrives here as `workspace.list`. A shell
+ * that never sends it publishes an empty world, which is what a bar with no
+ * workspace buttons on it looks like.
+ *
+ * Which workspaces are in the list is the same question the bar's own buttons
+ * answer: the ones on screen, plus any holding a window. An empty workspace
+ * nobody is showing does not exist yet in any sense a bar could draw.
+ *
+ * The whole list every time, per the message: the shell already has it, and
+ * reconciling two halves of one is how they drift apart. */
+function workspaceList() {
+  const shown = new Map(); // workspace -> output showing it
+  for (const [name, output] of outputs) {
+    shown.set(output.workspace, name);
+    workspaceHomes.set(output.workspace, name);
+  }
+
+  const known = new Set(shown.keys());
+  for (const n of workspaces.keys()) {
+    if (leavesOf(n).length > 0) known.add(n);
+  }
+  /* A workspace holding only floating windows is still occupied. */
+  for (const [, floating] of floatingEntries()) known.add(floating.workspace);
+
+  return [...known].sort((a, b) => a - b).map((n) => {
+    const workspace = { id: String(n), name: String(n) };
+    /* The group it goes in. Where it is now if it is anywhere, and where it
+       was last if it is not; a home on a monitor that has since been unplugged
+       is no home at all, so it goes out ungrouped rather than into a group for
+       a screen that is gone. */
+    const home = shown.get(n) ?? workspaceHomes.get(n);
+    if (home !== undefined && outputs.has(home)) workspace.output = home;
+    if (shown.has(n)) workspace.active = true;
+    /* The protocol's third state: it exists, it is not showing, and nothing on
+       it is asking for attention. */
+    else workspace.hidden = true;
+    return workspace;
+  });
+}
+
+/* What was last published, so an unchanged list costs nothing. This runs from
+ * relayoutAll(), which a divider drag runs once per mousemove — and a workspace
+ * list on the wire per mousemove is a bar redrawn sixty times a second to say
+ * the same thing. */
+let lastWorkspaceList = null;
+
+function publishWorkspaces() {
+  const list = workspaceList();
+  const wire = JSON.stringify(list);
+  if (wire === lastWorkspaceList) return;
+  lastWorkspaceList = wire;
+  send({ type: 'workspace.list', workspaces: list });
+}
+
+/* A client outside the shell asked for something, through `ext-workspace-v1`.
+ *
+ * Requests are of the shell, not of the compositor: nothing has happened yet
+ * when this arrives, and whatever is decided here shows up in the next
+ * `workspace.list` — which is what the asking bar redraws from.
+ *
+ * `activate` and `assign` are the two that mean something to this shell.
+ * Deactivating is not a state it has — a monitor is always showing some
+ * workspace — and creating or removing one is not either: there are WORKSPACES
+ * of them, always, and a workspace comes into existence by having a window put
+ * on it. Those are declined by doing nothing rather than by pretending. */
+function workspaceRequested(message) {
+  const n = Number(message.id);
+  const wanted = Number.isInteger(n) && n >= 1 && n <= WORKSPACES;
+
+  switch (message.action) {
+    case 'activate': {
+      if (!wanted) return;
+      /* A workspace some monitor is already showing is activated by going to
+         that monitor. Not through switchWorkspace(): asking it for the
+         workspace an output is already on is the back-and-forth gesture, and a
+         bar's second click on the workspace it is highlighting would take you
+         somewhere else entirely. */
+      const host = hostOfWorkspace(n);
+      if (host !== null) {
+        setActiveOutput(host);
+        focusFirstOn(host);
+        return;
+      }
+      /* Otherwise it arrives on whichever monitor is active, which is what
+         someone clicking a bar button meant by it. */
+      switchWorkspace(activeOutputName(), n);
+      break;
+    }
+
+    /* "Put this workspace on that screen", which for this shell is the same
+       act as showing it there. */
+    case 'assign':
+      if (!wanted || !outputs.has(message.output)) return;
+      if (outputs.get(message.output).workspace === n) return;
+      switchWorkspace(message.output, n);
+      break;
+
+    default:
+      console.warn('workspace request this shell has no answer for:',
+        message.action);
+  }
+}
+
 /* Move to the monitor in a direction, even if it has no windows.
  *
  * The compositor falls through to this when directional focus finds no window

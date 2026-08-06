@@ -540,9 +540,39 @@ an honest description of a shell that has not implemented them.
 asks for does not exist yet. `assign` carries both `id` and the `output` to
 move it to.
 
+### What the shipped shell does
+
+`data/shell/outputs.js` publishes the list from `relayoutAll()`, which is where
+everything that can change a workspace ends up — a switch, a window opening, the
+last one on a workspace closing — and sends only when the list differs from the
+one last sent. Workspaces are numbered, so `id` and `name` are both the number,
+and the ones published are the ones the bar's own buttons draw: on screen, or
+holding a window.
+
+`output` is the monitor showing it, or the one that showed it last. Nothing in
+the shell needs that second half — a workspace goes wherever it is asked for —
+but every workspace has to name a screen or a bar has no group to draw it in.
+
+Of the requests, `activate` and `assign` are honoured; both mean "show this
+workspace", on the monitor already showing it or on the one named. `deactivate`,
+`create` and `remove` are declined by doing nothing: there are nine workspaces,
+always, and a monitor is always showing one of them.
+
+### Watching it from outside
+
 To see what a bar sees:
 
 ```sh
 cargo run -p viewport --example workspaces
 cargo run -p viewport --example workspaces -- --activate 2
+```
+
+Waybar reads this through its `ext/workspaces` module. Its `sway/workspaces` and
+`hyprland/workspaces` modules speak those compositors' own IPC sockets and find
+nothing here, so a bar configured with one of those shows no workspaces at all
+whatever the compositor publishes:
+
+```json
+"modules-left": ["ext/workspaces"],
+"ext/workspaces": { "all-outputs": true, "format": "{name}" }
 ```

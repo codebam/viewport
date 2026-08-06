@@ -657,6 +657,14 @@ function relayoutAll() {
   /* Offset every window back to where it was and let it slide into place. */
   flipFrom(before);
 
+  /* The workspace set as it now stands, for anything outside the shell that
+     asked to be told through `ext-workspace-v1` — an external bar's workspace
+     buttons are drawn from this and nothing else. Here because everything that
+     changes the workspaces ends in a relayout: a switch, a window opening, the
+     last one on a workspace closing. Cheap when nothing changed; it sends only
+     when the list differs from the one last sent. */
+  publishWorkspaces();
+
   /* Measure after the browser has laid the new tree out, and keep measuring
      for as long as it is still moving. */
   pumpGeometry();

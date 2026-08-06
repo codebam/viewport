@@ -304,6 +304,16 @@ client's request leaves as `workspace.request`. Wire bindings come from
 against the manager that received them and forwarded in order — because a bar
 that assigns a workspace and activates it in one commit means both.
 
+Group membership is tracked per handle rather than set once at creation: a
+workspace moves between monitors, and a client told only which group it was
+made in draws it on the wrong screen for the rest of the session. It leaves the
+old group before it enters the new one, since a handle in two groups at once is
+a workspace a bar draws twice.
+
+The shipped shell publishes its workspaces from `data/shell/outputs.js`; see
+[Workspaces](ipc.md#workspaces) for the list it sends and for the waybar module
+that reads it, which is `ext/workspaces` and not `sway/workspaces`.
+
 ## wp-drm-lease-v1
 
 `crates/viewport/src/workspace.rs`'s neighbour, `crates/viewport/src/udev.rs`

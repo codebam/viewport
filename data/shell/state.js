@@ -81,6 +81,14 @@ const views = new Map();
 //         floating, overview }
 const workspaces = new Map(); // number -> tiling tree root
 
+/* Which monitor each workspace was last shown on. Nothing in the shell needs
+ * it — a workspace goes wherever it is asked for — but `ext-workspace-v1` puts
+ * every workspace in the group of an output, and a workspace nobody is
+ * currently showing still has to say which screen it belongs to or an outside
+ * bar has nowhere to draw it. Remembering where it was last is the only answer
+ * that does not move it about while nobody is looking. */
+const workspaceHomes = new Map(); // number -> output name
+
 /* Floating windows sit outside the tiling tree entirely: they keep their own
  * position and size and overlap whatever is tiled underneath. Dialogs land here
  * automatically because tiling them squeezes the window they belong to, and the

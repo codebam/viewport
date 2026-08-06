@@ -97,9 +97,20 @@ pub struct GroupData {
 struct Bound {
     manager: ExtWorkspaceManagerV1,
     groups: HashMap<String, ExtWorkspaceGroupHandleV1>,
-    handles: HashMap<String, ExtWorkspaceHandleV1>,
+    handles: HashMap<String, Membership>,
     /// What has been asked since this client's last commit.
     pending: Vec<Ask>,
+}
+
+/// One client's handle for a workspace, and the group it is currently in.
+///
+/// The group is tracked rather than derived because entering one is an event,
+/// not a property: a workspace that moves to another screen has to be told to
+/// leave the group it was in, and a handle cannot be asked which that was.
+#[derive(Debug)]
+struct Membership {
+    handle: ExtWorkspaceHandleV1,
+    group: Option<String>,
 }
 
 /// The workspaces as the shell last described them, and who is watching.
@@ -185,6 +196,15 @@ impl WorkspaceState {
             keep
         });
 
+        // A group that went takes its members' membership with it: the object
+        // is gone, so nothing can be told to leave it, and a handle still
+        // claiming to be in it would never be entered into its next one.
+        bound
+            .handles
+            .values_mut()
+            .filter(|m| m.group.as_ref().is_some_and(|g| !wanted.contains(g)))
+            .for_each(|m| m.group = None);
+
         for output in &wanted {
             if bound.groups.contains_key(output) {
                 continue;
@@ -216,17 +236,17 @@ impl WorkspaceState {
 
         // Then the workspaces.
         let ids: BTreeSet<&str> = workspaces.iter().map(|w| w.id.as_str()).collect();
-        bound.handles.retain(|id, handle| {
+        bound.handles.retain(|id, membership| {
             let keep = ids.contains(id.as_str());
             if !keep {
-                handle.removed();
+                membership.handle.removed();
             }
             keep
         });
 
         for workspace in workspaces {
             let handle = match bound.handles.get(&workspace.id) {
-                Some(handle) => handle.clone(),
+                Some(membership) => membership.handle.clone(),
                 None => {
                     let Ok(handle) = client.create_resource::<ExtWorkspaceHandleV1, HandleData, D>(
                         dh,
@@ -246,17 +266,42 @@ impl WorkspaceState {
                             | WorkspaceCapabilities::Remove
                             | WorkspaceCapabilities::Assign,
                     );
-                    if let Some(group) = workspace
-                        .output
-                        .as_ref()
-                        .and_then(|output| bound.groups.get(output))
-                    {
-                        group.workspace_enter(&handle);
-                    }
-                    bound.handles.insert(workspace.id.clone(), handle.clone());
+                    bound.handles.insert(
+                        workspace.id.clone(),
+                        Membership {
+                            handle: handle.clone(),
+                            group: None,
+                        },
+                    );
                     handle
                 }
             };
+
+            // The group it belongs in now, which is not necessarily the one it
+            // was in: a workspace moves between screens, and a bar told only
+            // that it was created on the first draws it on the wrong monitor
+            // for the rest of the session. Leave first, then enter — a handle
+            // in two groups at once is a workspace that appears twice.
+            let membership = bound
+                .handles
+                .get_mut(&workspace.id)
+                .expect("just inserted or already present");
+            if membership.group != workspace.output {
+                if let Some(previous) = membership
+                    .group
+                    .as_ref()
+                    .and_then(|output| bound.groups.get(output))
+                {
+                    previous.workspace_leave(&handle);
+                }
+                membership.group = None;
+                if let Some(output) = workspace.output.as_ref() {
+                    if let Some(group) = bound.groups.get(output) {
+                        group.workspace_enter(&handle);
+                        membership.group = Some(output.clone());
+                    }
+                }
+            }
 
             // Name and state go out every time: they are the two things that
             // change without the workspace itself coming or going.
@@ -303,7 +348,7 @@ impl WorkspaceState {
     fn manager_of_handle(&self, handle: &ExtWorkspaceHandleV1) -> Option<ExtWorkspaceManagerV1> {
         self.bound
             .iter()
-            .find(|bound| bound.handles.values().any(|h| h == handle))
+            .find(|bound| bound.handles.values().any(|m| &m.handle == handle))
             .map(|bound| bound.manager.clone())
     }
 

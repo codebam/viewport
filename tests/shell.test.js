@@ -1945,6 +1945,91 @@ if (mode === 'scrolling') {
   }
 }
 
+/* What a client outside the shell is told about the workspaces, and what it can
+ * ask for.
+ *
+ * The workspaces are the shell's — nothing else knows they exist — so
+ * ext-workspace-v1 publishes an empty world until `workspace.list` arrives. An
+ * external bar with no workspace buttons on it is this message never being
+ * sent, which is what it was doing before. Runs on both monitors from the block
+ * above, because which screen a workspace is on is half of what is published. */
+{
+  const outs = globalThis.__shell.outputs;
+  const [leftName, rightName] = [...outs.keys()];
+  const published = () => sent.filter((m) => m.type === 'workspace.list').at(-1);
+
+  emit({ type: 'shell.command', command: 'output.focus', args: ['left'] });
+
+  const list = published();
+  check('the shell publishes its workspaces at all', !!list);
+
+  const here = list?.workspaces
+    .find((w) => Number(w.id) === outs.get(leftName).workspace);
+  check('the workspace on screen is active', here?.active === true);
+  check('and is in the group of the monitor showing it',
+    here?.output === leftName);
+  check('every workspace carries a name to draw',
+    list?.workspaces.every((w) => typeof w.name === 'string' && w.name !== ''));
+  check('the other monitor\'s workspace is published too',
+    list?.workspaces.some((w) => w.output === rightName && w.active === true));
+
+  /* Nothing changed, so nothing goes out. relayoutAll() runs once per mousemove
+     of a divider drag, and a workspace list per mousemove is an external bar
+     redrawn sixty times a second to say what it already said. */
+  const quiet = sent.length;
+  emit({ type: 'output.layout', outputs: [
+    { name: leftName, x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: rightName, x: 1920, y: 0, width: 1920, height: 1080,
+      usable_x: 1920, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  check('an unchanged workspace set is not republished',
+    !sent.slice(quiet).some((m) => m.type === 'workspace.list'));
+
+  /* A bar clicking a workspace nobody is showing. */
+  const free = [...Array(9).keys()].map((i) => i + 1)
+    .find((n) => ![...outs.values()].some((o) => o.workspace === n));
+  emit({ type: 'workspace.request', action: 'activate', id: String(free) });
+  check('activating an unshown workspace brings it to the active monitor',
+    outs.get(globalThis.__shell.activeOutput).workspace === free);
+  check('and the list says so',
+    published()?.workspaces.some((w) => Number(w.id) === free && w.active));
+
+  /* Clicking one the other monitor is already showing goes to that monitor
+     rather than making a second copy of it — and must not be read as the
+     back-and-forth gesture, which would land somewhere else entirely. */
+  const there = outs.get(rightName).workspace;
+  emit({ type: 'workspace.request', action: 'activate', id: String(there) });
+  check('activating a workspace shown elsewhere moves to that monitor',
+    globalThis.__shell.activeOutput === rightName);
+  check('and leaves it where it was',
+    outs.get(rightName).workspace === there);
+
+  /* Asked for again while it is the one on screen: still that workspace, not
+     the one before it. */
+  emit({ type: 'workspace.request', action: 'activate', id: String(there) });
+  check('asking twice does not bounce off to the previous workspace',
+    outs.get(rightName).workspace === there);
+
+  /* A workspace nobody is showing still says which screen it belongs to, so a
+     bar has somewhere to draw it. `free` was just left behind on the left
+     monitor by the two activations above. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['left'] });
+  const home = published()?.workspaces.find((w) => Number(w.id) === free);
+  check('a workspace that went off screen keeps the monitor it was on',
+    home === undefined || home.output === leftName);
+
+  /* Nothing the shell can honour: there are nine workspaces, always, and a
+     monitor is always showing one of them. Declined by doing nothing. */
+  const before = sent.length;
+  emit({ type: 'workspace.request', action: 'remove', id: '1' });
+  emit({ type: 'workspace.request', action: 'deactivate', id: '1' });
+  check('a request this shell cannot honour changes nothing',
+    !sent.slice(before).some((m) => m.type === 'workspace.list'));
+}
+
 /* Clipping: a window scrolled off the left of its output must be reported with
  * a clip rect covering only the part still on screen. Nothing stops the
  * compositor drawing the rest onto the monitor next door otherwise. */

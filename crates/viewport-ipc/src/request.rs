@@ -601,6 +601,43 @@ mod tests {
     }
 
     #[test]
+    fn the_shells_workspace_list_parses_as_it_sends_it() {
+        // Field for field what data/shell/outputs.js puts on the wire: a
+        // workspace on screen, and one that is not. What is omitted matters as
+        // much as what is there — the shell sends neither `active` nor
+        // `urgent` for a workspace that is neither, and a default that came out
+        // wrong would publish every workspace as active to every bar watching.
+        let Request::WorkspaceList { workspaces } = parse(
+            r#"{"type":"workspace.list","workspaces":[
+                 {"id":"1","name":"1","output":"DP-1","active":true},
+                 {"id":"4","name":"4","output":"DP-1","hidden":true}]}"#,
+        ) else {
+            panic!("should be a workspace list");
+        };
+        assert_eq!(
+            workspaces,
+            vec![
+                Workspace {
+                    id: "1".into(),
+                    name: "1".into(),
+                    output: Some("DP-1".into()),
+                    active: true,
+                    urgent: false,
+                    hidden: false,
+                },
+                Workspace {
+                    id: "4".into(),
+                    name: "4".into(),
+                    output: Some("DP-1".into()),
+                    active: false,
+                    urgent: false,
+                    hidden: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn absent_hdr_enabled_is_a_toggle_not_a_disable() {
         assert_eq!(
             parse(r#"{"type":"output.hdr"}"#),
