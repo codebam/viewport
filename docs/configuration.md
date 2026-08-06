@@ -560,6 +560,23 @@ all. Leave the key out entirely and the bar is the shipped default plus any
 and the widget list drives the same status sampling (mounts and volume) as the
 additions would have.
 
+## Interacting with the bar
+
+Widgets are not passive — the bar is a web page, so the pointer already rests on
+it, and each widget turns that into a command the compositor runs on the host
+through `shell.exec`, the same spawn path a keybinding's `exec` uses.
+
+- **`volume`** — scrolling raises or lowers the default sink's volume in 5%
+  steps (`wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+` / `5%-`); right-click
+  toggles mute (`wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle`).
+- **`disk`** — clicking opens the mount in the default file manager
+  (`xdg-open <path>`), so for a terminal-first setup it drops you at the
+  directory.
+- **`weather`** — clicking opens the place in a browser.
+
+The built-in modules (a bare string in `bar_items`) carry none of this — they
+are read-only.
+
 ## Reloading the shell while it runs
 
 The shell is a web page, and the loop of working on one is editing a file and

@@ -146,6 +146,7 @@ fn is_known_type(name: &str) -> bool {
             | "shell.overlay"
             | "workspace.list"
             | "shell.command"
+            | "shell.exec"
             | "input.pointer"
             | "input.button"
             | "input.key"

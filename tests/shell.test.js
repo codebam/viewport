@@ -2091,6 +2091,44 @@ if (mode === 'scrolling') {
   check('an override widget renders from the status sample',
     wout.barItemsEls[1].textContent.includes('/games'));
 
+  /* Widgets carry input, sent to the compositor so it can run the command
+     the widget stands for. The volume widget scrolls in 5% steps and a right
+     click toggles mute; the disk widget opens its mount; a module element
+     (a bare string in the override) does none of this. */
+  const execAfter = () => sent.filter((m) => m.type === 'shell.exec');
+
+  emit({ type: 'config', layout: mode, bar_items: [
+    { type: 'volume' }, { type: 'disk', path: '/games' }, 'clock',
+  ] });
+  const volEl = wout.barItemsEls[0];
+  const diskEl = wout.barItemsEls[1];
+  const clockEl = wout.barItemsEls[2];
+
+  const before = execAfter().length;
+  volEl.listeners.wheel.forEach((fn) =>
+    fn({ preventDefault() {}, deltaY: -100 }));
+  check('scrolling a volume widget up raises volume by 5%',
+    execAfter().slice(before).some((m) =>
+      m.command === 'wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+'));
+  const beforeMute = execAfter().length;
+  volEl.listeners.contextmenu.forEach((fn) => fn({ preventDefault() {} }));
+  check('right-clicking a volume widget toggles mute',
+    execAfter().slice(beforeMute).some((m) =>
+      m.command === 'wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle'));
+  const beforeDisk = execAfter().length;
+  diskEl.listeners.click.forEach((fn) => fn());
+  check('clicking a disk widget opens its mount',
+    execAfter().slice(beforeDisk).some((m) =>
+      m.command.includes('xdg-open') && m.command.includes('/games')));
+  const beforeClock = execAfter().length;
+  clockEl.listeners.click.forEach((fn) => fn());
+  clockEl.listeners.wheel.forEach((fn) =>
+    fn({ preventDefault() {}, deltaY: 100 }));
+  check('a module (non-widget) element sends nothing on click or scroll',
+    execAfter().length === beforeClock);
+
+  emit({ type: 'config', layout: mode });
+
   /* The empty desktop's two parts, switched from the config file. */
   const root = document.documentElement.classList;
   emit({ type: 'config', layout: mode, logo: false, tutorial: false });

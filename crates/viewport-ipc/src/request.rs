@@ -224,6 +224,20 @@ pub enum Request {
         args: Vec<String>,
     },
 
+    /// Run a shell command on the host, out from under the compositor.
+    ///
+    /// The bridge the bar's widgets use to *do* something: open a directory in
+    /// the default file manager, open a place in a browser, or drive the audio
+    /// sink through `wpctl`. The shell page cannot spawn a process itself — it
+    /// is a sandboxed web view — so it asks the compositor, which runs the line
+    /// through the same `/bin/sh` path a keybinding's `exec` uses. The caller
+    /// composes the exact command line; the compositor just runs it.
+    ///
+    /// Not a privilege escalation: this socket already runs keybindings through
+    /// `shell.command`, which can execute anything, and it is 0600.
+    #[serde(rename = "shell.exec")]
+    ShellExec { command: String },
+
     /// Move the pointer, in the layout's own coordinates.
     ///
     /// For driving the desktop from a script: a test that wants to know
@@ -753,6 +767,19 @@ mod tests {
         };
         assert_eq!(command, "layout.overview");
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn shell_exec_carries_the_command_line() {
+        // Not in the C-parity table above: this request has no counterpart in
+        // the C build, and adding a row would make that table's count
+        // assertion mean something else.
+        let Request::ShellExec { command } =
+            parse(r#"{"type":"shell.exec","command":"wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"}"#)
+        else {
+            panic!("not a shell.exec message");
+        };
+        assert_eq!(command, "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+");
     }
 
     #[test]

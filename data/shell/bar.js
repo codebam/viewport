@@ -227,6 +227,53 @@ function moduleTitle(name) {
   }
 }
 
+/* The widget's element-bound input. The bar is the shell page, so a pointer
+ * over a widget already reaches the DOM; these listeners turn that into shell
+ * commands the compositor runs on the host. Which input means what is per
+ * widget kind: a disk opens its mount, a weather opens the place, a volume
+ * scrolls in 5% steps and a right click mutes. Each element is wired once,
+ * at build — the widget it answers to is read back off the element so the
+ * listener survives a positional rebuild, when the config changes which
+ * widget sits where. */
+function wireWidget(el) {
+  const cmd = (line) => send({ type: 'shell.exec', command: line });
+
+  /* The element carries its own widget (`el._widget`), set by the sync pass;
+     the handlers below are bound once and read it, so they always act on the
+     widget the element currently stands for. */
+  el.addEventListener('click', () => {
+    const w = el._widget;
+    if (!w) return;
+    if (w.type === 'disk') {
+      /* Open the mount in the default file manager — for this user that is
+         a terminal at the directory. `xdg-open` respects the system default,
+         whichever it is. */
+      cmd(`xdg-open ${JSON.stringify(w.path || '/')}`);
+    } else if (w.type === 'weather') {
+      const loc = (w.location || '').trim();
+      if (!loc) return;
+      /* Open the place in a browser, pointed at where it is. */
+      cmd(`xdg-open ${JSON.stringify(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc)}`)}`);
+    }
+  });
+  el.addEventListener('wheel', (e) => {
+    const w = el._widget;
+    if (!w || w.type !== 'volume') return;
+    e.preventDefault();
+    /* Scrolling is the natural volume gesture: up to raise, down to lower,
+       in 5% steps. `deltaY < 0` is wheel-up on a normal wheel. */
+    const dir = e.deltaY < 0 ? '+' : '-';
+    cmd(`wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%${dir}`);
+  });
+  el.addEventListener('contextmenu', (e) => {
+    const w = el._widget;
+    if (!w || w.type !== 'volume') return;
+    e.preventDefault();
+    /* Right click toggles mute, matching the audio convention. */
+    cmd('wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle');
+  });
+}
+
 /* The default shape: the shipped modules (from index.html) stay put and the
  * `bar_widgets` additions are appended after them. Widget elements keep and
  * update by position, like the chrome buttons, so a status sample every two
@@ -240,10 +287,12 @@ function syncBarWidgets(output) {
     if (el === undefined) {
       el = document.createElement('span');
       el.className = 'module widget';
+      wireWidget(el);
       container.append(el);
       els[i] = el;
     }
     const w = barWidgets[i];
+    el._widget = w;
     const key = `${w.type}:${w.path || w.location || ''}`;
     if (el.dataset.widget !== key) el.dataset.widget = key;
     const title = widgetTitle(w);
@@ -319,6 +368,7 @@ function syncBarRight(output) {
     let el = els[i];
     if (el === undefined) {
       el = document.createElement('span');
+      wireWidget(el);
       container.append(el);
       els[i] = el;
     }
@@ -327,9 +377,11 @@ function syncBarRight(output) {
     if (el.className !== cls) el.className = cls;
 
     if (typeof item === 'string') {
+      el._widget = null;
       const title = moduleTitle(item);
       if (el.title !== title) el.title = title;
     } else {
+      el._widget = item;
       const key = `${item.type}:${item.path || item.location || ''}`;
       if (el.dataset.widget !== key) el.dataset.widget = key;
       const title = widgetTitle(item);

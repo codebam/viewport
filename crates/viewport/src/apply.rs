@@ -232,6 +232,13 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             state.notify(&viewport_ipc::event::Event::ShellCommand { command, args });
         }
 
+        // Run a shell command on the host — the bridge the bar's widgets use
+        // to open things or drive the sink through wpctl. Same spawn path a
+        // keybinding's `exec` uses; the shell composes the exact line.
+        Request::ShellExec { command } => {
+            crate::input::spawn(&command);
+        }
+
         Request::OutputQuery => state.notify_output_layout(),
 
         // Nothing arms a revert yet, so there is nothing to cancel.
