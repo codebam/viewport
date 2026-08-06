@@ -237,6 +237,7 @@ window.addEventListener('viewport', (event) => {
       applyBorder(message.border);
       applyBarMode(message.bar);
       applyBarWidgets(message.bar_widgets);
+      applyBarItems(message.bar_items);
       /* Absent means on: a config file that says nothing should get the
          explanation, and only someone who has read it once turns it off. */
       document.documentElement.classList.toggle('no-logo',

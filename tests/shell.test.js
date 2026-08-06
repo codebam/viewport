@@ -2057,6 +2057,34 @@ if (mode === 'scrolling') {
   check('a config without widgets leaves the default bar',
     wout.widgetsEls.length === 0);
 
+  /* A full bar override, `bar_items`: modules and widgets listed together in
+     whatever order the config wants them drawn. Unlike bar_widgets, this
+     replaces the whole right side — the built-in modules that are not listed
+     are not drawn, and a widget can sit in the middle of the modules. */
+  emit({ type: 'config', layout: mode,
+    bar_items: [
+      'net',
+      { type: 'disk', path: '/games' },
+      'clock',
+      { type: 'weather', location: 'Pickering, ON, Canada' },
+    ] });
+  check('a bar_items override draws one element per item',
+    wout.barItemsEls.length === 4);
+  check('a bare string becomes a module element',
+    wout.barItemsEls[0].className === 'module net');
+  check('a widget object becomes a widget element',
+    wout.barItemsEls[1].className === 'module widget');
+  check('modules and widgets stay in the config order',
+    wout.barItemsEls[1].dataset.widget === 'disk:/games');
+  check('the default modules are replaced, not added to',
+    wout.modules.cpu === undefined && wout.modules.clock !== undefined);
+  emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+    net_rx: 10, net_tx: 20, disk_free: 0, disk_total: 0,
+    mounts: [{ path: '/games', free: 1000000, total: 2000000 }],
+    volume: -1, muted: false });
+  check('an override widget renders from the status sample',
+    wout.barItemsEls[1].textContent.includes('/games'));
+
   /* The empty desktop's two parts, switched from the config file. */
   const root = document.documentElement.classList;
   emit({ type: 'config', layout: mode, logo: false, tutorial: false });

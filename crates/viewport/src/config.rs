@@ -142,6 +142,23 @@ pub const DEFAULT_BORDER_RADIUS: i32 = 6;
 /// cuts the client.
 pub const DEFAULT_BORDER_WIDTH: i32 = 2;
 
+/// One entry in a `bar_items` override: either a module the bar already knows
+/// how to draw, or an extra widget.
+///
+/// Untagged, so a config file writes a bare string for a module (`"net"`) or
+/// an object for a widget (`{"type":"disk",...}`). The shell builds the whole
+/// right side of the bar from the list, in order — which is how a widget ends
+/// up anywhere the built-ins can sit, not just after them.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum BarItemConfig {
+    /// A module the bar draws by default: `mode`, `clock`, `cpu`, `memory`,
+    /// `load`, `disk` or `net`.
+    Module(String),
+    /// An extra widget, taking the same options as a `bar_widgets` entry.
+    Widget(BarWidgetConfig),
+}
+
 /// One extra bar widget, beyond the modules the bar ships with.
 ///
 /// The default bar is untouched: nothing here changes what it draws, it only
@@ -259,6 +276,16 @@ pub struct File {
     ///
     /// Empty or absent is the default bar, untouched. See `BarWidgetConfig`.
     pub bar_widgets: Vec<BarWidgetConfig>,
+
+    /// Override the entire right side of the bar with an explicit, ordered
+    /// list of modules and widgets.
+    ///
+    /// When present (even empty), it completely replaces the default module
+    /// set and any `bar_widgets` — the shell draws exactly what is listed, in
+    /// order. A bare string names a built-in module (`"net"`, `"cpu"`,
+    /// `"clock"`, ...); an object is a widget, as in `bar_widgets`. Absent is
+    /// the default bar.
+    pub bar_items: Option<Vec<BarItemConfig>>,
 
     /// The whole keymap. Presence means "these and no built-ins", which is why
     /// an empty `"binds": {}` is meaningful — it asks for none at all.
@@ -677,6 +704,47 @@ mod tests {
         // there at all.
         let file: File = serde_json::from_str("{}").expect("should parse");
         assert!(file.bar_widgets.is_empty());
+        assert!(file.bar_items.is_none());
+    }
+
+    #[test]
+    fn bar_items_parse_mixed_modules_and_widgets() {
+        // A bar_items override names built-in modules as bare strings and
+        // widgets as objects, in whatever order the user wants them drawn.
+        let file: File = serde_json::from_str(
+            r#"{
+                "bar_items": [
+                    "net",
+                    {"type":"disk","path":"/games"},
+                    "clock",
+                    {"type":"weather","location":"Pickering, ON, Canada"}
+                ]
+            }"#,
+        )
+        .expect("should parse");
+        let items = file.bar_items.as_ref().unwrap();
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0], BarItemConfig::Module("net".into()));
+        assert_eq!(
+            items[1],
+            BarItemConfig::Widget(BarWidgetConfig::Disk {
+                path: Some("/games".into())
+            })
+        );
+        assert_eq!(items[2], BarItemConfig::Module("clock".into()));
+        assert_eq!(
+            items[3],
+            BarItemConfig::Widget(BarWidgetConfig::Weather {
+                location: Some("Pickering, ON, Canada".into())
+            })
+        );
+    }
+
+    #[test]
+    fn bar_items_empty_still_overrides() {
+        // Present but empty: the user asked for no right-side contents at all.
+        let file: File = serde_json::from_str(r#"{"bar_items":[]}"#).expect("should parse");
+        assert_eq!(file.bar_items.as_ref().unwrap().len(), 0);
     }
 
     #[test]

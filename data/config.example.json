@@ -165,6 +165,21 @@
   ],
   "bar_widgets": [],
 
+  "_bar_items": [
+    "Override the entire right side of the bar with an explicit, ordered list.",
+    "Each entry is either a module the bar already draws — a bare string like",
+    "\"net\", \"cpu\", \"load\", \"memory\", \"disk\", \"clock\" or \"mode\" — or a widget,",
+    "an object exactly like a bar_widgets entry. When present (even empty) it",
+    "replaces the default modules and any bar_widgets outright — the bar draws",
+    "exactly what is listed, in order, and nothing else. That is how a widget",
+    "ends up sitting in the middle of the modules rather than after them.",
+    "",
+    "  [ \"net\", {\"type\":\"disk\",\"path\":\"/games\"}, \"weather\", \"clock\"]",
+    "",
+    "Leave the key out for the default bar."
+  ],
+  "bar_items": null,
+
   "_outputs": [
     "Modes are left to the display by default. max_refresh takes the fastest",
     "refresh rate available at the preferred resolution, which is what a",

@@ -118,7 +118,7 @@ function renderBarChrome(name) {
     }),
     (key) => send({ type: 'view.focus', id: Number(key) }));
 
-  syncBarWidgets(output);
+  syncBarRight(output);
 }
 
 /* Every write here is guarded, exactly as renderClocks() guards the clock: an
@@ -136,22 +136,25 @@ function renderBarModules(name) {
    * HDR shares the indicator, because it is invisible otherwise: the picture
    * changes and nothing says why, and a monitor left in HDR by a mis-hit key
    * looks like a broken colour profile rather than a setting. Both can be true
-   * at once, so both are shown. */
+   * at once, so both are shown. A bar_items override may have dropped the mode
+   * badge; only draw it if an element is actually standing there. */
   const labels = [];
   if (output.hdr) labels.push('HDR');
   if (currentMode !== 'default') labels.push(currentMode.toUpperCase());
 
-  const modeText = labels.join(' · ');
-  if (output.modeEl.textContent !== modeText) {
-    output.modeEl.textContent = modeText;
-  }
-  if (output.modeEl.hidden !== (labels.length === 0)) {
-    output.modeEl.hidden = labels.length === 0;
-    /* Only on the way in, and only on the edge. This function runs on every
-       status sample — every two seconds, awake or idle — and a badge that
-       re-popped each time would be a piece of the desktop animating on its own
-       for as long as resize mode was held. */
-    if (!output.modeEl.hidden) animateModeIn(output.modeEl);
+  if (output.modeEl) {
+    const modeText = labels.join(' · ');
+    if (output.modeEl.textContent !== modeText) {
+      output.modeEl.textContent = modeText;
+    }
+    if (output.modeEl.hidden !== (labels.length === 0)) {
+      output.modeEl.hidden = labels.length === 0;
+      /* Only on the way in, and only on the edge. This function runs on every
+         status sample — every two seconds, awake or idle — and a badge that
+         re-popped each time would be a piece of the desktop animating on its own
+         for as long as resize mode was held. */
+      if (!output.modeEl.hidden) animateModeIn(output.modeEl);
+    }
   }
 
   const s = lastStatus;
@@ -167,11 +170,11 @@ function renderBarModules(name) {
 }
 
 function setModule(el, text) {
-  if (el.textContent !== text) el.textContent = text;
+  if (el && el.textContent !== text) el.textContent = text;
 }
 
 /* ------------------------------------------------------------------------
- * Extra widgets
+ * Extra widgets / bar override
  * --------------------------------------------------------------------- */
 
 /* The extra widgets a config file asked for, beyond the bar's own modules.
@@ -179,12 +182,27 @@ function setModule(el, text) {
  * the modules it was born with draw. */
 let barWidgets = [];
 
+/* A full override of the right side of the bar, as `bar_items`: a bare string
+ * names a built-in module (`"net"`, `"clock"`, ...), an object names a widget.
+ * Null is the default bar. When set, the shell draws exactly this list, in
+ * order, and nothing else — which is how a widget sits anywhere the built-ins
+ * can, not just after them. */
+let barItems = null;
+
 /* Called when the compositor sends them with the config. The elements are
  * built on the next chrome render, which every output hits when it is laid
  * out; the weather fetch is kicked off here because it owes nothing to any
  * output. */
 function applyBarWidgets(widgets) {
   barWidgets = Array.isArray(widgets) ? widgets.slice() : [];
+  renderBars();
+  refreshWeather();
+}
+
+/* A full bar override, or the default bar when `items` is absent. Present but
+ * empty draws nothing on the right — the user asked for no contents at all. */
+function applyBarItems(items) {
+  barItems = Array.isArray(items) ? items : null;
   renderBars();
   refreshWeather();
 }
@@ -198,11 +216,21 @@ function widgetTitle(w) {
   return '';
 }
 
-/* Widget elements live in the bar's right side, after the modules. Kept and
- * updated positionally, like the chrome buttons: the set only changes when
- * the config does, which is once at startup, and a status sample every two
- * seconds must not rebuild them. Tracked on the output record rather than
- * re-queried, the way the modules are. */
+function moduleTitle(name) {
+  switch (name) {
+    case 'net': return 'network';
+    case 'disk': return 'free on /';
+    case 'cpu': return 'cpu';
+    case 'load': return 'load average';
+    case 'memory': return 'memory';
+    default: return '';
+  }
+}
+
+/* The default shape: the shipped modules (from index.html) stay put and the
+ * `bar_widgets` additions are appended after them. Widget elements keep and
+ * update by position, like the chrome buttons, so a status sample every two
+ * seconds never rebuilds them. */
 function syncBarWidgets(output) {
   const container = output.barEl.querySelector('.bar-right');
   const els = output.widgetsEls ?? (output.widgetsEls = []);
@@ -227,6 +255,111 @@ function syncBarWidgets(output) {
     els[i] = undefined;
   }
   output.widgetsEls = els.filter(Boolean);
+}
+
+/* The module name a right-side element answers to, or null if it is a widget.
+ * Mode is declared a module so the override can place the badge anywhere;
+ * the element class keeps the default `mode` (no `module` prefix) so the
+ * stylesheet matches it as it always has. */
+function rightElementClass(item) {
+  if (typeof item === 'string') {
+    return item === 'mode' ? 'mode' : `module ${item}`;
+  }
+  return 'module widget';
+}
+
+/* Build the bar's right side, kept and updated positionally like the chrome
+ * buttons. Two shapes share this function:
+ *
+ *  - with `barItems` set, the whole right side is rebuilt from the list —
+ *    modules and widgets interleaved in the order the config named them;
+ *  - with it absent, the shipped modules (from index.html) stay and the
+ *    `bar_widgets` additions are appended after them, as they always were.
+ */
+function syncBarRight(output) {
+  const container = output.barEl.querySelector('.bar-right');
+
+  /* No override: the shipped modules (from index.html) stay put and the
+     bar_widgets additions are appended after them. If a previous config did
+     override the bar, take those elements off first so the default shape is
+     clean. */
+  if (barItems === null) {
+    if (output.barItemsEls) {
+      for (const el of output.barItemsEls) el.remove();
+      output.barItemsEls = undefined;
+      /* The default module refs come back from the markup; see outputs.js. */
+      output.modules = {
+        clock: container.querySelector('.clock'),
+        cpu: container.querySelector('.cpu'),
+        memory: container.querySelector('.memory'),
+        load: container.querySelector('.load'),
+        disk: container.querySelector('.disk'),
+        net: container.querySelector('.net'),
+      };
+      output.modeEl = container.querySelector('.mode');
+    }
+    syncBarWidgets(output);
+    return;
+  }
+
+  const els = output.barItemsEls ?? (output.barItemsEls = []);
+  const widgetDefs = [];
+
+  /* First time an override is drawn: the shipped modules sit in the markup
+     (index.html) and the override replaces all of them, so empty the right
+     side before building. Only on the first build — after that the elements
+     are ours and kept by position. */
+  if (output.barItemsEls === undefined) {
+    for (const child of [...container.children]) child.remove();
+  }
+
+  for (let i = 0; i < barItems.length; i++) {
+    let el = els[i];
+    if (el === undefined) {
+      el = document.createElement('span');
+      container.append(el);
+      els[i] = el;
+    }
+    const item = barItems[i];
+    const cls = rightElementClass(item);
+    if (el.className !== cls) el.className = cls;
+
+    if (typeof item === 'string') {
+      const title = moduleTitle(item);
+      if (el.title !== title) el.title = title;
+    } else {
+      const key = `${item.type}:${item.path || item.location || ''}`;
+      if (el.dataset.widget !== key) el.dataset.widget = key;
+      const title = widgetTitle(item);
+      if (el.title !== title) el.title = title;
+      /* Keep the widget's own definition, in order, so the render pass below
+         and the weather fetch can reach it. */
+      widgetDefs[widgetDefs.length] = item;
+    }
+  }
+
+  /* Whatever the previous override asked for and this one does not. */
+  for (let i = barItems.length; i < els.length; i++) {
+    if (els[i]) els[i].remove();
+    els[i] = undefined;
+  }
+  output.barItemsEls = els.filter(Boolean);
+
+  /* Re-point the module refs the render pass reads, so the built-in modules
+     drawn from the override land on their own elements. */
+  const modules = {};
+  for (let i = 0; i < barItems.length; i++) {
+    const item = barItems[i];
+    if (typeof item === 'string' && item !== 'mode') modules[item] = els[i];
+  }
+  output.modules = modules;
+  output.modeEl = els[barItems.findIndex((it) => it === 'mode')] ?? null;
+
+  /* Widgets render through the shared widget path regardless of which shape
+     built them. */
+  barWidgets = widgetDefs;
+  output.widgetsEls = els.filter((_, i) => barItems[i] !== undefined &&
+    typeof barItems[i] !== 'string');
 }
 
 /* Each widget is a short string drawn from the status sample (disk, volume)

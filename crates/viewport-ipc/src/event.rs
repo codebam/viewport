@@ -259,6 +259,13 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bar_widgets: Option<Vec<BarWidget>>,
 
+    /// Override of the entire right side of the bar: an explicit, ordered list
+    /// of built-in modules (`"net"`, `"clock"`, ...) and widgets. When present
+    /// (even empty) it replaces the default modules and `bar_widgets`; absent
+    /// means the default bar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_items: Option<Vec<BarItem>>,
+
     /// Whether directional focus may leave the monitor it is on.
     ///
     /// Both halves of the desktop need this and neither owns it. Tiling asks
@@ -357,6 +364,22 @@ pub enum BarWidget {
     /// The default audio sink's volume, sampled by the compositor.
     #[serde(rename = "volume")]
     Volume,
+}
+
+/// One entry in a `bar_items` override, as `bar_items` in the config file,
+/// carried to the shell.
+///
+/// Untagged: a bare string names a built-in module the bar already draws, and
+/// an object names a widget. The shell draws the whole right side from the
+/// list, in order. Mirrors `crate::config::BarItemConfig`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BarItem {
+    /// A built-in module: `mode`, `clock`, `cpu`, `memory`, `load`, `disk` or
+    /// `net`.
+    Module(String),
+    /// An extra widget, taking the same options as a `bar_widgets` entry.
+    Widget(BarWidget),
 }
 
 /// One mount's usage, as `mounts` in a `status.update` sample.
@@ -509,6 +532,7 @@ mod tests {
             gaps: None,
             border: None,
             bar_widgets: None,
+            bar_items: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -537,6 +561,7 @@ mod tests {
                 smart: Some(true),
             }),
             bar_widgets: None,
+            bar_items: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -562,6 +587,7 @@ mod tests {
             }),
             border: None,
             bar_widgets: None,
+            bar_items: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -600,6 +626,7 @@ mod tests {
             gaps: None,
             border: None,
             bar_widgets: None,
+            bar_items: None,
             focus_crosses_outputs: false,
             tiling_mode: None,
             background_terminal: false,
@@ -619,6 +646,7 @@ mod tests {
             gaps: None,
             border: None,
             bar_widgets: None,
+            bar_items: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -707,6 +735,7 @@ mod tests {
                 gaps: None,
                 border: None,
                 bar_widgets: None,
+                bar_items: None,
                 focus_crosses_outputs: true,
                 tiling_mode: None,
                 background_terminal: false,

@@ -967,6 +967,9 @@ impl ViewportState {
                 border: None,
                 // No widgets: the default bar, until a config file adds some.
                 bar_widgets: None,
+                // Absent: the default module set until a config file overrides
+                // the whole right side of the bar.
+                bar_items: None,
                 // Off the end of a monitor carries on to the next one, which
                 // is what this has always done and what sway does.
                 focus_crosses_outputs: true,
@@ -5194,35 +5197,87 @@ impl ViewportState {
                 smart: file.border.smart,
             });
         }
-        // Extra bar widgets. The list defaults to empty, so a file without the
-        // key is the untouched default bar. The widgets are copied across to
-        // the shell, which builds an element for each; the status sampler is
-        // told what to read here too — which mounts to stat and whether to
-        // ask wpctl for the sink, so a bar with no widgets spawns nothing.
-        self.config.bar_widgets = if file.bar_widgets.is_empty() {
+        // The bar. Two ways to ask for it: `bar_widgets` adds widgets to the
+        // default module set; `bar_items` overrides the entire right side of
+        // the bar with an explicit, ordered list of modules and widgets. When
+        // `bar_items` is present (even empty) it wins outright — the shell
+        // draws exactly what it lists and nothing else.
+        //
+        // The status sampler is told the same what-to-read as the shell lists:
+        // which mounts to stat and whether to ask wpctl for the sink, so a bar
+        // that draws neither spawns nothing.
+        let bar_widgets: Vec<viewport_ipc::event::BarWidget> = file
+            .bar_widgets
+            .iter()
+            .map(|w| match w {
+                crate::config::BarWidgetConfig::Disk { path } => {
+                    viewport_ipc::event::BarWidget::Disk { path: path.clone() }
+                }
+                crate::config::BarWidgetConfig::Weather { location } => {
+                    viewport_ipc::event::BarWidget::Weather {
+                        location: location.clone(),
+                    }
+                }
+                crate::config::BarWidgetConfig::Volume => viewport_ipc::event::BarWidget::Volume,
+            })
+            .collect();
+
+        // The bar_items list, mapped to the IPC form. Bare strings are
+        // modules; objects are widgets.
+        let bar_items = file.bar_items.as_ref().map(|items| {
+            items
+                .iter()
+                .map(|item| match item {
+                    crate::config::BarItemConfig::Module(name) => {
+                        viewport_ipc::event::BarItem::Module(name.clone())
+                    }
+                    crate::config::BarItemConfig::Widget(w) => {
+                        viewport_ipc::event::BarItem::Widget(match w {
+                            crate::config::BarWidgetConfig::Disk { path } => {
+                                viewport_ipc::event::BarWidget::Disk { path: path.clone() }
+                            }
+                            crate::config::BarWidgetConfig::Weather { location } => {
+                                viewport_ipc::event::BarWidget::Weather {
+                                    location: location.clone(),
+                                }
+                            }
+                            crate::config::BarWidgetConfig::Volume => {
+                                viewport_ipc::event::BarWidget::Volume
+                            }
+                        })
+                    }
+                })
+                .collect()
+        });
+
+        // Which widgets actually get drawn: the override's own widgets when
+        // present, else the bar_widgets additions. The sampler only pays for
+        // what will be on screen.
+        let drawn_widgets: Vec<&crate::config::BarWidgetConfig> =
+            if let Some(items) = &file.bar_items {
+                items
+                    .iter()
+                    .filter_map(|item| match item {
+                        crate::config::BarItemConfig::Widget(w) => Some(w),
+                        crate::config::BarItemConfig::Module(_) => None,
+                    })
+                    .collect()
+            } else {
+                file.bar_widgets.iter().collect()
+            };
+
+        self.config.bar_widgets = if file.bar_items.is_some() {
+            // Superseded: the whole right side comes from bar_items, so the
+            // shell is told the override and not the additions it replaces.
+            None
+        } else if bar_widgets.is_empty() {
             None
         } else {
-            Some(
-                file.bar_widgets
-                    .iter()
-                    .map(|w| match w {
-                        crate::config::BarWidgetConfig::Disk { path } => {
-                            viewport_ipc::event::BarWidget::Disk { path: path.clone() }
-                        }
-                        crate::config::BarWidgetConfig::Weather { location } => {
-                            viewport_ipc::event::BarWidget::Weather {
-                                location: location.clone(),
-                            }
-                        }
-                        crate::config::BarWidgetConfig::Volume => {
-                            viewport_ipc::event::BarWidget::Volume
-                        }
-                    })
-                    .collect(),
-            )
+            Some(bar_widgets)
         };
+        self.config.bar_items = bar_items;
         self.status.configure(
-            file.bar_widgets
+            drawn_widgets
                 .iter()
                 .filter_map(|w| match w {
                     crate::config::BarWidgetConfig::Disk { path } => {
@@ -5231,7 +5286,7 @@ impl ViewportState {
                     _ => None,
                 })
                 .collect(),
-            file.bar_widgets
+            drawn_widgets
                 .iter()
                 .any(|w| matches!(w, crate::config::BarWidgetConfig::Volume)),
         );

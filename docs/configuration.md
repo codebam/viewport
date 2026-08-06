@@ -530,6 +530,36 @@ does not show volume, the `wpctl` subprocess is only spawned when a `volume`
 widget is present, and only then does a status sample pay for it. The same
 goes for the extra mounts — a bar with no widgets stats nothing extra.
 
+## Overriding the whole bar
+
+`bar_widgets` adds to the shipped set, but it cannot move a widget into the
+middle of the modules or drop a module you do not want. `bar_items` replaces
+the entire right side of the bar with an explicit, ordered list, where each
+entry is either a module the bar already draws or a widget:
+
+```jsonc
+{
+  "bar_items": [
+    "net",
+    { "type": "disk", "path": "/games" },
+    "clock",
+    { "type": "weather", "location": "Pickering, ON, Canada" }
+  ]
+}
+```
+
+A bare string names a built-in module — `mode`, `net`, `disk`, `cpu`, `load`,
+`memory` or `clock` — and an object names a widget, taking exactly the same
+options as a `bar_widgets` entry. The bar draws only what the list names, in
+the order given, so a widget can sit between the network and the clock, and a
+module you leave out does not appear. Present but empty draws no right side at
+all. Leave the key out entirely and the bar is the shipped default plus any
+`bar_widgets`.
+
+`bar_items` supersedes `bar_widgets` when both are present: the override wins,
+and the widget list drives the same status sampling (mounts and volume) as the
+additions would have.
+
 ## Reloading the shell while it runs
 
 The shell is a web page, and the loop of working on one is editing a file and
