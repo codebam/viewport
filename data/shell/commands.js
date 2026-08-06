@@ -26,6 +26,14 @@ function handleShellCommand(command, args) {
       clearSelection();
       workspaceBack(activeOutputName());
       break;
+    case 'workspace.next':
+      clearSelection();
+      stepWorkspace(activeOutputName(), 1);
+      break;
+    case 'workspace.prev':
+      clearSelection();
+      stepWorkspace(activeOutputName(), -1);
+      break;
     case 'workspace.move':
       if (Number.isFinite(n)) moveToWorkspace(n);
       break;

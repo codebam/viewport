@@ -68,11 +68,27 @@ pub enum Action {
 #[derive(Debug, Clone)]
 pub struct Binding {
     pub modifiers: Modifiers,
+    /// The xkb symbol of the key, when this is a keyboard binding.
     pub keysym: u32,
+    /// The libinput button code, when this is a mouse binding (`Mouse4`,
+    /// `BTN_LEFT`, ...). A binding is one or the other: a chord is drawn on a
+    /// key or on a button, never both.
+    pub button: Option<u32>,
+    /// The direction of a scroll-wheel binding (`WheelUp`/`WheelDown`).
+    pub wheel: Option<Wheel>,
     pub action: Action,
     /// The mode this binding belongs to, empty for the ordinary keymap.
     /// Written `resize/h=...` in a config file.
     pub mode: String,
+}
+
+/// The direction a scroll-wheel binding matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wheel {
+    /// Away from the hand — a conventional wheel's "up".
+    Up,
+    /// Toward the hand.
+    Down,
 }
 
 /// The modifiers a chord requires.
@@ -151,10 +167,22 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         }
     }
 
-    let keysym = keysym_from_name(rest)?;
+    let (keysym, button, wheel) = if let Some(wheel) = wheel_from_name(rest) {
+        // Scroll wheel: not a key and not a button, but the same chord. Its
+        // modifier prefix is the only part it shares with either.
+        (0, None, Some(wheel))
+    } else if let Some(button) = button_from_name(rest) {
+        // A mouse button is its own kind of key, with no keysym to match —
+        // the modifier prefix is the only part it shares with a chord.
+        (0, Some(button), None)
+    } else {
+        (keysym_from_name(rest)?, None, None)
+    };
     Some(Binding {
         modifiers,
         keysym,
+        button,
+        wheel,
         action: Action::Shell(String::new()),
         mode: String::new(),
     })
@@ -206,6 +234,36 @@ fn keysym_from_name(name: &str) -> Option<u32> {
     }
     let loose = xkb::keysym_from_name(name, xkb::KEYSYM_CASE_INSENSITIVE);
     (loose.raw() != keysyms::KEY_NoSymbol).then(|| loose.raw())
+}
+
+/// An evdev button code by name.
+///
+/// libinput numbers the side buttons `BTN_SIDE` (0x113) and `BTN_EXTRA`
+/// (0x114); everyone else calls them Mouse4 and Mouse5, or XButton1 and
+/// XButton2. All three spellings are accepted, case-insensitively.
+fn button_from_name(name: &str) -> Option<u32> {
+    let button = match name.to_ascii_lowercase().as_str() {
+        "btn_left" | "mouse1" | "left" | "button1" => 0x110,
+        "btn_middle" | "mouse2" | "middle" | "button2" => 0x112,
+        "btn_right" | "mouse3" | "right" | "button3" => 0x111,
+        "btn_side" | "mouse4" | "xbutton1" | "button4" => 0x113,
+        "btn_extra" | "mouse5" | "xbutton2" | "button5" => 0x114,
+        _ => return None,
+    };
+    Some(button)
+}
+
+/// A scroll-wheel direction by name.
+///
+/// The wheel is not a button in libinput's terms — it arrives as an axis, not
+/// a press — so it is its own kind of binding, written `WheelUp`/`WheelDown`
+/// (also `ScrollUp`/`ScrollDown`).
+fn wheel_from_name(name: &str) -> Option<Wheel> {
+    match name.to_ascii_lowercase().as_str() {
+        "wheelup" | "scrollup" => Some(Wheel::Up),
+        "wheeldown" | "scrolldown" => Some(Wheel::Down),
+        _ => None,
+    }
 }
 
 /// The bindings a session starts with. Ports `add_default` in src/binding.c.
@@ -386,6 +444,45 @@ pub fn match_binding<'a>(
         .map(|binding| &binding.action)
 }
 
+/// The action a pressed mouse button fires, if any.
+///
+/// The same matcher as [`match_binding`], but for a button and not a key:
+/// modifiers are compared against the keyboard's state, and a binding whose
+/// `button` is `None` (a chord) can never match a button.
+pub fn match_button<'a>(
+    bindings: &'a [Binding],
+    modifiers: &ModifiersState,
+    button: u32,
+    mode: &str,
+) -> Option<&'a Action> {
+    let wanted = Modifiers::from_state(modifiers);
+    bindings
+        .iter()
+        .find(|binding| {
+            binding.mode == mode && binding.modifiers == wanted && binding.button == Some(button)
+        })
+        .map(|binding| &binding.action)
+}
+
+/// The action a scroll up or down fires, if any.
+///
+/// The same matcher as [`match_button`], but for a wheel direction. A binding
+/// whose `wheel` is `None` (a chord or a button) can never match a scroll.
+pub fn match_wheel<'a>(
+    bindings: &'a [Binding],
+    modifiers: &ModifiersState,
+    wheel: Wheel,
+    mode: &str,
+) -> Option<&'a Action> {
+    let wanted = Modifiers::from_state(modifiers);
+    bindings
+        .iter()
+        .find(|binding| {
+            binding.mode == mode && binding.modifiers == wanted && binding.wheel == Some(wheel)
+        })
+        .map(|binding| &binding.action)
+}
+
 /// The chord that always leaves, added when nothing else does.
 ///
 /// Every other binding is the config file's to decide, and this one nearly is:
@@ -515,6 +612,84 @@ mod tests {
         };
         assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "").is_some());
         assert!(match_binding(&bindings, &shifted, keysyms::KEY_q, "").is_none());
+    }
+
+    #[test]
+    fn a_mouse_button_parses_into_a_button_not_a_keysym() {
+        // Mouse4/Mouse5 are libinput's BTN_SIDE and BTN_EXTRA, and a config
+        // names them the way people do.
+        let binding = parse("Mod4+Mouse4=shell workspace.switch 1").expect("should parse");
+        assert!(binding.modifiers.logo);
+        assert_eq!(binding.button, Some(0x113));
+        assert_eq!(binding.keysym, 0, "a button is not a key");
+        assert_eq!(
+            binding.action,
+            Action::Shell("workspace.switch 1".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_button_binding_is_matched_by_button_and_modifier() {
+        let bindings = vec![parse("Mod4+Mouse4=close").unwrap()];
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        let released = ModifiersState::default();
+        assert_eq!(
+            match_button(&bindings, &held, 0x113, ""),
+            Some(&Action::Close)
+        );
+        // Not Mouse5, and not without the modifier.
+        assert!(match_button(&bindings, &held, 0x114, "").is_none());
+        assert!(match_button(&bindings, &released, 0x113, "").is_none());
+    }
+
+    #[test]
+    fn a_button_never_matches_a_key_and_vice_versa() {
+        let key = parse("Mod4+q=close").unwrap();
+        let button = parse("Mod4+Mouse4=close").unwrap();
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        // The key binding has no button, so no button can match it.
+        assert!(match_button(std::slice::from_ref(&key), &held, 0x113, "").is_none());
+        // And the button binding has keysym 0, not q.
+        assert!(match_binding(&[button], &held, keysyms::KEY_q, "").is_none());
+    }
+
+    #[test]
+    fn a_wheel_parses_into_a_direction_not_a_key() {
+        let up = parse("Mod4+WheelUp=shell workspace.next").expect("should parse");
+        assert!(up.modifiers.logo);
+        assert_eq!(up.wheel, Some(Wheel::Up));
+        assert_eq!(up.button, None);
+        assert_eq!(up.keysym, 0, "the wheel is not a key");
+
+        let down = parse("Mod4+ScrollDown=shell workspace.prev").expect("should parse");
+        assert_eq!(down.wheel, Some(Wheel::Down));
+    }
+
+    #[test]
+    fn a_wheel_is_matched_by_direction_and_modifier() {
+        let bindings = vec![parse("Mod4+WheelUp=close").unwrap()];
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        let released = ModifiersState::default();
+        assert_eq!(
+            match_wheel(&bindings, &held, Wheel::Up, ""),
+            Some(&Action::Close)
+        );
+        // Not the other direction, and not without the modifier.
+        assert!(match_wheel(&bindings, &held, Wheel::Down, "").is_none());
+        assert!(match_wheel(&bindings, &released, Wheel::Up, "").is_none());
+        // Nor does a button or a key bind a wheel.
+        let key = parse("Mod4+q=close").unwrap();
+        let button = parse("Mod4+Mouse4=close").unwrap();
+        assert!(match_wheel(&[key, button], &held, Wheel::Up, "").is_none());
     }
 
     #[test]

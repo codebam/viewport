@@ -643,6 +643,26 @@ impl ViewportState {
                     DragEffect::Free => {}
                 }
 
+                // A configured mouse binding, fired on the press like a key
+                // binding is. The modifier prefix is the keyboard's, exactly
+                // as in a chord: `Mod4+Mouse4=shell workspace.switch 1` needs
+                // Mod4 held. Runs before the drag line so a bound button is
+                // the user's gesture, not the window's.
+                if state == ButtonState::Pressed {
+                    if let Some(bound) = crate::binding::match_button(
+                        &self.bindings,
+                        &keyboard.modifier_state(),
+                        event.button_code(),
+                        &self.binding_mode,
+                    ) {
+                        self.handle_action(Action::Bound(bound.clone()));
+                        // Not forwarded: the button was bound, and handing a
+                        // press it did not ask for to a client would leave it
+                        // thinking the button is still down.
+                        return;
+                    }
+                }
+
                 if state == ButtonState::Pressed
                     && !pointer.is_grabbed()
                     && keyboard.modifier_state().logo
@@ -784,6 +804,31 @@ impl ViewportState {
                 let vertical = event.amount(Axis::Vertical).unwrap_or_else(|| {
                     event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0
                 });
+
+                // A scroll binding — `Mod4+WheelUp=shell workspace.next`. Only a
+                // physical wheel, not a touchpad: two-finger scroll is the
+                // page's to answer, and a binding would fire on every tick of a
+                // swipe. Fires once per wheel notch (axis batch) while the
+                // modifier is held, and consumes the scroll — nothing is passed
+                // on to the window under the pointer.
+                if source != AxisSource::Finger && vertical != 0.0 {
+                    if let Some(keyboard) = self.seat.get_keyboard() {
+                        let wheel = if vertical > 0.0 {
+                            crate::binding::Wheel::Up
+                        } else {
+                            crate::binding::Wheel::Down
+                        };
+                        if let Some(bound) = crate::binding::match_wheel(
+                            &self.bindings,
+                            &keyboard.modifier_state(),
+                            wheel,
+                            &self.binding_mode,
+                        ) {
+                            self.handle_action(Action::Bound(bound.clone()));
+                            return;
+                        }
+                    }
+                }
 
                 let mut frame = AxisFrame::new(event.time_msec()).source(source);
                 if horizontal != 0.0 {

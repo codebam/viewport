@@ -188,6 +188,17 @@ function workspaceBack(name) {
   switchWorkspace(name, output.previous);
 }
 
+/* One workspace on from the current (`delta` 1) or back (`delta` -1), wrapping
+ * within 1..WORKSPACES. The thumb-button gesture: forward to the next
+ * workspace, back to the previous — browser back/forward, but for desktops. */
+function stepWorkspace(name, delta) {
+  const output = outputs.get(name);
+  if (!output) return;
+  const n = ((output.workspace - 1 + delta) % WORKSPACES + WORKSPACES)
+    % WORKSPACES + 1;
+  switchWorkspace(name, n);
+}
+
 function focusFirstOn(name) {
   const output = outputs.get(name);
   if (!output) return;

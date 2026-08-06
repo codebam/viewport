@@ -1669,6 +1669,24 @@ if (mode === 'scrolling') {
     output.workspace >= 1 && output.workspace <= 9);
 }
 
+/* The thumb-button gestures step one workspace on or back, wrapping at the
+ * edges — browser back/forward, but for the workspace strip. */
+{
+  const outs = globalThis.__shell.outputs;
+  const output = outs.get(globalThis.__shell.activeOutput);
+  const base = output.workspace;
+  const next = base === 9 ? 1 : base + 1;
+  const prev = base === 1 ? 9 : base - 1;
+
+  emit({ type: 'shell.command', command: 'workspace.next', args: [] });
+  check('next steps one workspace on', output.workspace === next);
+
+  emit({ type: 'shell.command', command: 'workspace.prev', args: [] });
+  check('prev steps back where you came from', output.workspace === base);
+
+  emit({ type: 'shell.command', command: 'workspace.switch', args: [String(base)] });
+}
+
 /* The overview draws every window shrunk rather than resizing it: a thumbnail
  * is smaller than many windows' minimum size, so resizing would be refused as
  * often as it was honoured. The compositor is told the real size plus a scale. */

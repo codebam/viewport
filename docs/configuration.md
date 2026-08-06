@@ -55,6 +55,20 @@ spelling — `Mod4`/`Super`/`Logo`, `Shift`, `Ctrl`, `Alt` — and any key
 lock are masked out of matching. Bindings outrank both the focused client and
 the shell, and fire on press only.
 
+A chord's key may be a mouse button instead: `Mod4+Mouse4=shell workspace.next`
+and `Mod4+Mouse5=shell workspace.prev` are the usual thumb-button gestures (the
+shell defines those commands, so name your own in `handleShellCommand()`).
+Buttons are named `Mouse1`–`Mouse5`, `BTN_LEFT`/`BTN_RIGHT`/`BTN_MIDDLE`/
+`BTN_SIDE`/`BTN_EXTRA`, or `XButton1`/`XButton2`. A button binding fires on the
+press while the modifier is held, and consumes the click — it is not passed on
+to the window under the pointer.
+
+The scroll wheel binds the same way: `Mod4+WheelUp=exec …` and
+`Mod4+WheelDown=…` (also `ScrollUp`/`ScrollDown`). A wheel binding fires once
+per notch of a physical wheel while the modifier is held and consumes the
+scroll; a touchpad's two-finger scroll is never bound — it keeps scrolling
+whatever is under the pointer.
+
 Asking for the workspace you are already on takes you back to the one before
 it, so `Mod4+2` pressed twice from workspace 1 goes to 2 and then back to 1 —
 sway's `workspace_auto_back_and_forth`, and the same toggle it gives you.
