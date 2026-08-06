@@ -2075,6 +2075,39 @@ if (mode === 'scrolling') {
   check('a config without widgets leaves the default bar',
     wout.widgetsEls.length === 0);
 
+  /* A mic widget mirrors the volume widget but aims at the default audio
+     source. It reads the mic half of the sample, and muting must switch its
+     glyph without hiding it — a muted node keeps its percentage. */
+  emit({ type: 'config', layout: mode, bar_widgets: [{ type: 'mic' }] });
+  const micEl = wout.widgetsEls[0];
+  check('a mic widget builds its own element',
+    wout.widgetsEls.length === 1 && micEl.title === 'microphone');
+  emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+    net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+    mounts: [], volume: -1, muted: false,
+    mic_volume: 0.3, mic_muted: false });
+  check('a mic widget shows the source volume',
+    micEl.textContent.includes('30') && micEl.textContent.includes('%'));
+  emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+    net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+    mounts: [], volume: -1, muted: false,
+    mic_volume: 0.3, mic_muted: true });
+  check('a muted mic keeps its percentage (does not hide)',
+    micEl.textContent.includes('30') && micEl.textContent.includes('%'));
+  check('a muted mic switches to the muted glyph', micEl.textContent !== '');
+  const micExec = () => sent.filter((m) => m.type === 'shell.exec');
+  const micBefore = micExec().length;
+  micEl.listeners.wheel.forEach((fn) => fn({ preventDefault() {}, deltaY: 100 }));
+  check('scrolling a mic widget down lowers the source volume by 5%',
+    micExec().slice(micBefore).some((m) =>
+      m.command === 'wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 5%-'));
+  const micBeforeMute = micExec().length;
+  micEl.listeners.contextmenu.forEach((fn) => fn({ preventDefault() {} }));
+  check('right-clicking a mic widget toggles the source mute',
+    micExec().slice(micBeforeMute).some((m) =>
+      m.command === 'wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle'));
+  emit({ type: 'config', layout: mode });
+
   /* A full bar override, `bar_items`: modules and widgets listed together in
      whatever order the config wants them drawn. Unlike bar_widgets, this
      replaces the whole right side — the built-in modules that are not listed

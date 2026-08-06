@@ -212,6 +212,7 @@ function widgetTitle(w) {
     case 'disk': return `free on ${w.path || '/'}`;
     case 'weather': return `weather for ${(w.location || '').trim()}`.trim();
     case 'volume': return 'volume';
+    case 'mic': return 'microphone';
   }
   return '';
 }
@@ -258,19 +259,23 @@ function wireWidget(el) {
   });
   el.addEventListener('wheel', (e) => {
     const w = el._widget;
-    if (!w || w.type !== 'volume') return;
+    if (!w || (w.type !== 'volume' && w.type !== 'mic')) return;
     e.preventDefault();
     /* Scrolling is the natural volume gesture: up to raise, down to lower,
-       in 5% steps. `deltaY < 0` is wheel-up on a normal wheel. */
+       in 5% steps. `deltaY < 0` is wheel-up on a normal wheel. A mic widget
+       drives the microphone rather than the speakers. */
+    const node = w.type === 'mic' ? '@DEFAULT_AUDIO_SOURCE@' : '@DEFAULT_AUDIO_SINK@';
     const dir = e.deltaY < 0 ? '+' : '-';
-    cmd(`wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%${dir}`);
+    cmd(`wpctl set-volume ${node} 5%${dir}`);
   });
   el.addEventListener('contextmenu', (e) => {
     const w = el._widget;
-    if (!w || w.type !== 'volume') return;
+    if (!w || (w.type !== 'volume' && w.type !== 'mic')) return;
     e.preventDefault();
-    /* Right click toggles mute, matching the audio convention. */
-    cmd('wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle');
+    /* Right click toggles mute, matching the audio convention — the speakers
+       for a volume widget, the microphone for a mic widget. */
+    const node = w.type === 'mic' ? '@DEFAULT_AUDIO_SOURCE@' : '@DEFAULT_AUDIO_SINK@';
+    cmd(`wpctl set-mute ${node} toggle`);
   });
 }
 
@@ -430,10 +435,19 @@ function renderBarWidgets(output) {
       const path = w.path || '/';
       const mount = (s.mounts || []).find((m) => m.path === path);
       if (mount && mount.total > 0) text = `󰋊 ${path} ${formatBytes(mount.free)}`;
-    } else if (w.type === 'volume') {
-      if (s.volume >= 0) {
-        const pct = Math.round(s.volume * 100);
-        text = `${s.muted ? '󰝟' : '󰕾'} ${pct}%`;
+    } else if (w.type === 'volume' || w.type === 'mic') {
+      /* The two audio widgets render the same way — a glyph and a percentage
+         — but read different halves of the sample: volume reads the sink,
+         mic reads the source. A muted node keeps its percentage (the two are
+         independent), only the glyph changes. */
+      const isMic = w.type === 'mic';
+      const vol = isMic ? s.mic_volume : s.volume;
+      const muted = isMic ? s.mic_muted : s.muted;
+      if (vol >= 0) {
+        const pct = Math.round(vol * 100);
+        const on = isMic ? '󰋛' : '󰕾';
+        const off = isMic ? '󰋜' : '󰝟';
+        text = `${muted ? off : on} ${pct}%`;
       }
     } else if (w.type === 'weather') {
       text = weatherText(w.location || '');

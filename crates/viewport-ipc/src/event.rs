@@ -113,6 +113,15 @@ pub enum Event {
         /// volume widget is present.
         #[serde(default)]
         muted: bool,
+        /// The default audio source's (microphone) volume in `0.0..=1.0`, or
+        /// `-1.0` when the compositor could not say (no `wpctl`, no source, no
+        /// mic widget).
+        #[serde(default)]
+        mic_volume: f64,
+        /// Whether the default audio source is muted. Meaningful only when a
+        /// mic widget is present.
+        #[serde(default)]
+        mic_muted: bool,
     },
 
     #[serde(rename = "output.layout")]
@@ -364,6 +373,10 @@ pub enum BarWidget {
     /// The default audio sink's volume, sampled by the compositor.
     #[serde(rename = "volume")]
     Volume,
+    /// The default audio source's (microphone) volume and mute state, sampled
+    /// by the compositor. Mirrors `volume` but reads `@DEFAULT_AUDIO_SOURCE@`.
+    #[serde(rename = "mic")]
+    Mic,
 }
 
 /// One entry in a `bar_items` override, as `bar_items` in the config file,

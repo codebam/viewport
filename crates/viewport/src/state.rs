@@ -4297,6 +4297,10 @@ impl ViewportState {
             // it the same way.
             volume: sample.volume.unwrap_or(-1.0),
             muted: sample.muted.unwrap_or(false),
+            // -1 rather than absent, matching volume: the mic widget tests
+            // for it the same way.
+            mic_volume: sample.mic_volume.unwrap_or(-1.0),
+            mic_muted: sample.mic_muted.unwrap_or(false),
         };
         self.notify(&event);
     }
@@ -5219,6 +5223,7 @@ impl ViewportState {
                     }
                 }
                 crate::config::BarWidgetConfig::Volume => viewport_ipc::event::BarWidget::Volume,
+                crate::config::BarWidgetConfig::Mic => viewport_ipc::event::BarWidget::Mic,
             })
             .collect();
 
@@ -5243,6 +5248,9 @@ impl ViewportState {
                             }
                             crate::config::BarWidgetConfig::Volume => {
                                 viewport_ipc::event::BarWidget::Volume
+                            }
+                            crate::config::BarWidgetConfig::Mic => {
+                                viewport_ipc::event::BarWidget::Mic
                             }
                         })
                     }
@@ -5289,6 +5297,9 @@ impl ViewportState {
             drawn_widgets
                 .iter()
                 .any(|w| matches!(w, crate::config::BarWidgetConfig::Volume)),
+            drawn_widgets
+                .iter()
+                .any(|w| matches!(w, crate::config::BarWidgetConfig::Mic)),
         );
         if let Some(url) = file.url {
             self.shell_url = Some(url);

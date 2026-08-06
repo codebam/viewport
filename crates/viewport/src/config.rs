@@ -192,6 +192,11 @@ pub enum BarWidgetConfig {
     /// compositor from the session's PipeWire over `wpctl`.
     #[serde(rename = "volume")]
     Volume,
+    /// The default audio source's (microphone) volume and mute state, sampled
+    /// by the compositor over `wpctl`, like `volume` but reading
+    /// `@DEFAULT_AUDIO_SOURCE@`.
+    #[serde(rename = "mic")]
+    Mic,
 }
 
 /// What `background_terminal` was set to.
@@ -674,12 +679,13 @@ mod tests {
                     {"type":"disk","path":"/home"},
                     {"type":"disk"},
                     {"type":"weather","location":"New York"},
-                    {"type":"volume"}
+                    {"type":"volume"},
+                    {"type":"mic"}
                 ]
             }"#,
         )
         .expect("should parse");
-        assert_eq!(file.bar_widgets.len(), 4);
+        assert_eq!(file.bar_widgets.len(), 5);
         assert_eq!(
             file.bar_widgets[0],
             BarWidgetConfig::Disk {
@@ -696,6 +702,7 @@ mod tests {
             }
         );
         assert_eq!(file.bar_widgets[3], BarWidgetConfig::Volume);
+        assert_eq!(file.bar_widgets[4], BarWidgetConfig::Mic);
     }
 
     #[test]

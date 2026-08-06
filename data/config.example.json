@@ -156,9 +156,10 @@
     "",
     "  { \"type\": \"disk\", \"path\": \"/home\" }   free space on that mount",
     "  { \"type\": \"volume\" }                     default sink's volume and mute",
+    "  { \"type\": \"mic\" }                        default source's (mic) volume and mute",
     "  { \"type\": \"weather\", \"location\": \"New York\" }  conditions for a place",
     "",
-    "Disk and volume are sampled by the compositor with the rest of the",
+    "Disk, volume and mic are sampled by the compositor with the rest of the",
     "status, so they show the machine as it is. Weather is fetched by the",
     "shell itself from open-meteo (no key); the location is a place it can",
     "geocode, like a city name. Several of each kind may be listed."

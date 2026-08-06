@@ -530,6 +530,12 @@ once per status sample; when there is no `wpctl`, no session bus or no sink,
 the widget is simply left empty rather than failing. Like the other modules,
 it uses the V-shaped audio glyph `󰕾` and `󰝟` when muted.
 
+`mic` is the same widget aimed at the microphone: it shows the default audio
+*source's* volume and mute state, read through
+`wpctl get-volume @DEFAULT_AUDIO_SOURCE@`. It uses the microphone glyphs `󰋛`
+and `󰋜` when muted. A muted node keeps showing its percentage — muting silences
+output, it does not zero the knob — only the glyph changes.
+
 `weather` shows the current conditions (temperature and a condition glyph) for
 a location. It is the one widget the shell fetches for itself rather than the
 compositor sampling: the page can reach the network even where it cannot read
@@ -541,7 +547,8 @@ every fifteen minutes, and left empty on failure rather than crashing the bar.
 
 A volume widget is optional plumbing on the compositor: since the default bar
 does not show volume, the `wpctl` subprocess is only spawned when a `volume`
-widget is present, and only then does a status sample pay for it. The same
+or `mic` widget is present, and only then does a status sample pay for it (one
+subprocess per audio widget kind). The same
 goes for the extra mounts — a bar with no widgets stats nothing extra.
 
 ## Overriding the whole bar
@@ -583,6 +590,10 @@ through `shell.exec`, the same spawn path a keybinding's `exec` uses.
 - **`volume`** — scrolling raises or lowers the default sink's volume in 5%
   steps (`wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+` / `5%-`); right-click
   toggles mute (`wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle`).
+- **`mic`** — the same controls on the microphone: scrolling adjusts the
+  default source's volume (`wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 5%+` /
+  `5%-`), right-click toggles its mute (`wpctl set-mute @DEFAULT_AUDIO_SOURCE@
+  toggle`).
 - **`disk`** — clicking opens the mount in the default file manager
   (`xdg-open <path>`), so for a terminal-first setup it drops you at the
   directory.

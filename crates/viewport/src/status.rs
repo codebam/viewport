@@ -34,6 +34,12 @@ pub struct Sample {
     /// being `None`; a muted sink still reports a volume, so this is only
     /// meaningful when `volume` is `Some`.
     pub muted: Option<bool>,
+    /// The default audio source's (microphone) volume in `0.0..=1.0`, or
+    /// `None` when nothing said, e.g. no `wpctl` or no source.
+    pub mic_volume: Option<f64>,
+    /// Whether the default audio source is muted; meaningful only when
+    /// `mic_volume` is `Some`.
+    pub mic_muted: Option<bool>,
 }
 
 /// Free and total bytes on one mount a bar widget asked about.
@@ -158,17 +164,21 @@ pub struct Status {
     mounts: Vec<String>,
     /// Whether a volume widget asked for the default sink's volume.
     want_volume: bool,
+    /// Whether a mic widget asked for the default source's volume.
+    want_mic: bool,
 }
 
 impl Status {
-    /// Which mounts and whether volume to sample on the next ticks.
+    /// Which mounts, and which audio nodes' volumes, to sample on the next
+    /// ticks.
     ///
-    /// Called from config application; `Status::default()` wants neither, which
-    /// is a bar with no widgets and thus no reason to stat extra mounts or
-    /// spawn `wpctl` every two seconds.
-    pub fn configure(&mut self, mounts: Vec<String>, want_volume: bool) {
+    /// Called from config application; `Status::default()` wants none of them,
+    /// which is a bar with no widgets and thus no reason to stat extra mounts
+    /// or spawn `wpctl` every two seconds.
+    pub fn configure(&mut self, mounts: Vec<String>, want_volume: bool, want_mic: bool) {
         self.mounts = mounts;
         self.want_volume = want_volume;
+        self.want_mic = want_mic;
     }
 
     /// Read everything once.
@@ -225,9 +235,15 @@ impl Status {
         }
 
         if self.want_volume {
-            let (volume, muted) = sink_state();
+            let (volume, muted) = audio_state("@DEFAULT_AUDIO_SINK@");
             sample.volume = volume;
             sample.muted = muted;
+        }
+
+        if self.want_mic {
+            let (volume, muted) = audio_state("@DEFAULT_AUDIO_SOURCE@");
+            sample.mic_volume = volume;
+            sample.mic_muted = muted;
         }
 
         self.at = Some(now);
@@ -261,21 +277,24 @@ fn disk_usage(path: &str) -> (f64, f64) {
     (stat.f_bavail as f64 * frsize, stat.f_blocks as f64 * frsize)
 }
 
-/// The default audio sink's volume and mute state, from the session's
+/// The default audio node's volume and mute state, from the session's
 /// PipeWire.
 ///
-/// The page cannot ask for it, any more than it can read /proc, so the
+/// `node` is `@DEFAULT_AUDIO_SINK@` for the speakers a `volume` widget reads,
+/// or `@DEFAULT_AUDIO_SOURCE@` for the microphone a `mic` widget reads. The
+/// page cannot ask for either, any more than it can read /proc, so the
 /// compositor does, through `wpctl` — the WirePlumber command line, which is
-/// what a person would use for the same question. One call answers both halves,
-/// so a sampled tick pays for a single subprocess and nothing else.
+/// what a person would use for the same question. One call answers both
+/// halves of one node, so a sampled tick pays for a single subprocess per
+/// widget kind and nothing else.
 ///
 /// Every failure resolves to `None` rather than an error: no `wpctl`, no
-/// session bus, no sink — all ordinary on a machine the widget is not wanted
-/// on — and none of them should take the bar down.
-fn sink_state() -> (Option<f64>, Option<bool>) {
+/// session bus, no sink or source — all ordinary on a machine the widget is
+/// not wanted on — and none of them should take the bar down.
+fn audio_state(node: &str) -> (Option<f64>, Option<bool>) {
     let Ok(output) = std::process::Command::new("wpctl")
         .arg("get-volume")
-        .arg("@DEFAULT_AUDIO_SINK@")
+        .arg(node)
         .output()
     else {
         return (None, None);
@@ -286,17 +305,31 @@ fn sink_state() -> (Option<f64>, Option<bool>) {
     parse_sink(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Parse `wpctl get-volume @DEFAULT_AUDIO_SINK@` output.
+/// Parse `wpctl get-volume <node>` output.
 ///
 /// The interesting lines are `Volume: 0.45` and `Muted: yes`. `Volume` may be
-/// `0.00` for a muted sink, which is still a volume; the two are independent.
+/// `0.00` for a muted node, which is still a volume; the two are independent.
+/// Modern `wpctl` folds the mute state into the volume line itself as a `[...]`
+/// marker (`Volume: 0.45 [MUTED]`) and prints no `Muted:` line at all, so both
+/// forms are read.
 fn parse_sink(text: &str) -> (Option<f64>, Option<bool>) {
     let mut volume = None;
     let mut muted = None;
     for line in text.lines() {
-        if let Some(rest) = line.trim().strip_prefix("Volume:") {
-            volume = rest.trim().parse::<f64>().ok();
-        } else if let Some(rest) = line.trim().strip_prefix("Muted:") {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Volume:") {
+            // A bracketed marker is always the mute state, which on modern
+            // wpctl rides on the volume line instead of a `Muted:` line.
+            if rest.contains("[MUTED]") || rest.contains('[') {
+                muted = Some(true);
+            }
+            // Take the leading number, discarding any trailing annotation so
+            // `0.60 [MUTED]` still reads as a volume.
+            volume = rest
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<f64>().ok());
+        } else if let Some(rest) = line.strip_prefix("Muted:") {
             muted = match rest.trim() {
                 "yes" => Some(true),
                 "no" => Some(false),
@@ -444,6 +477,8 @@ Inter-|   Receive                                                |  Transmit
         assert!(sample.mounts.is_empty());
         assert_eq!(sample.volume, None);
         assert_eq!(sample.muted, None);
+        assert_eq!(sample.mic_volume, None);
+        assert_eq!(sample.mic_muted, None);
     }
 
     #[test]
@@ -451,7 +486,11 @@ Inter-|   Receive                                                |  Transmit
         // Every path a widget asked for comes back as its own entry, in
         // order; the root mount is only omitted when nobody asked for it.
         let mut status = Status::default();
-        status.configure(vec!["/home".to_owned(), "/mnt/data".to_owned()], false);
+        status.configure(
+            vec!["/home".to_owned(), "/mnt/data".to_owned()],
+            false,
+            false,
+        );
         let sample = status.sample();
         let paths: Vec<&str> = sample.mounts.iter().map(|m| m.path.as_str()).collect();
         assert_eq!(paths, ["/home", "/mnt/data"]);
@@ -474,6 +513,20 @@ Inter-|   Receive                                                |  Transmit
         let (volume, muted) = parse_sink("Volume: 0.00\nMuted: yes\n");
         assert_eq!(volume, Some(0.0));
         assert_eq!(muted, Some(true));
+    }
+
+    #[test]
+    fn a_modern_muted_sink_marks_mute_on_the_volume_line() {
+        // Modern wpctl folds the mute state into the volume line as a `[...]`
+        // marker and prints no `Muted:` line. The trailing marker must not
+        // swallow the volume, or a right-clicked mute would blank the widget.
+        let (volume, muted) = parse_sink("Volume: 0.60 [MUTED]\n");
+        assert_eq!(volume, Some(0.6));
+        assert_eq!(muted, Some(true));
+        // Unmuted there is no marker at all.
+        let (volume, muted) = parse_sink("Volume: 0.60\n");
+        assert_eq!(volume, Some(0.6));
+        assert_eq!(muted, None);
     }
 
     #[test]
