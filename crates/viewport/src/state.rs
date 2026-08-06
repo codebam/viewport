@@ -965,6 +965,8 @@ impl ViewportState {
                 theme: None,
                 gaps: None,
                 border: None,
+                // No widgets: the default bar, until a config file adds some.
+                bar_widgets: None,
                 // Off the end of a monitor carries on to the next one, which
                 // is what this has always done and what sway does.
                 focus_crosses_outputs: true,
@@ -4279,6 +4281,19 @@ impl ViewportState {
             net_tx: sample.net_tx,
             disk_free: sample.disk_free,
             disk_total: sample.disk_total,
+            mounts: sample
+                .mounts
+                .into_iter()
+                .map(|m| viewport_ipc::event::MountUsage {
+                    path: m.path,
+                    free: m.free,
+                    total: m.total,
+                })
+                .collect(),
+            // -1 rather than absent, matching cpu/memory: the widget tests for
+            // it the same way.
+            volume: sample.volume.unwrap_or(-1.0),
+            muted: sample.muted.unwrap_or(false),
         };
         self.notify(&event);
     }
@@ -5179,6 +5194,47 @@ impl ViewportState {
                 smart: file.border.smart,
             });
         }
+        // Extra bar widgets. The list defaults to empty, so a file without the
+        // key is the untouched default bar. The widgets are copied across to
+        // the shell, which builds an element for each; the status sampler is
+        // told what to read here too — which mounts to stat and whether to
+        // ask wpctl for the sink, so a bar with no widgets spawns nothing.
+        self.config.bar_widgets = if file.bar_widgets.is_empty() {
+            None
+        } else {
+            Some(
+                file.bar_widgets
+                    .iter()
+                    .map(|w| match w {
+                        crate::config::BarWidgetConfig::Disk { path } => {
+                            viewport_ipc::event::BarWidget::Disk { path: path.clone() }
+                        }
+                        crate::config::BarWidgetConfig::Weather { location } => {
+                            viewport_ipc::event::BarWidget::Weather {
+                                location: location.clone(),
+                            }
+                        }
+                        crate::config::BarWidgetConfig::Volume => {
+                            viewport_ipc::event::BarWidget::Volume
+                        }
+                    })
+                    .collect(),
+            )
+        };
+        self.status.configure(
+            file.bar_widgets
+                .iter()
+                .filter_map(|w| match w {
+                    crate::config::BarWidgetConfig::Disk { path } => {
+                        Some(path.clone().unwrap_or_else(|| "/".to_owned()))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            file.bar_widgets
+                .iter()
+                .any(|w| matches!(w, crate::config::BarWidgetConfig::Volume)),
+        );
         if let Some(url) = file.url {
             self.shell_url = Some(url);
         }

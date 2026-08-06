@@ -13,7 +13,7 @@
 use std::time::Instant;
 
 /// One sample, as the shell is told it.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Sample {
     /// Percentage, or `None` before there are two samples to compare.
     pub cpu: Option<f64>,
@@ -22,8 +22,26 @@ pub struct Sample {
     /// Bytes per second since the last sample.
     pub net_rx: f64,
     pub net_tx: f64,
+    /// Free and total bytes on the root filesystem, as the default bar shows.
     pub disk_free: f64,
     pub disk_total: f64,
+    /// Free and total bytes on each extra mount a bar widget asked for.
+    pub mounts: Vec<MountUsage>,
+    /// The default audio sink's volume in `0.0..=1.0`, or `None` when nothing
+    /// said, e.g. no `wpctl` or no sink.
+    pub volume: Option<f64>,
+    /// Whether the default audio sink is muted. `None` alongside `volume`
+    /// being `None`; a muted sink still reports a volume, so this is only
+    /// meaningful when `volume` is `Some`.
+    pub muted: Option<bool>,
+}
+
+/// Free and total bytes on one mount a bar widget asked about.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MountUsage {
+    pub path: String,
+    pub free: f64,
+    pub total: f64,
 }
 
 /// Totals from `/proc/stat`, which are cumulative and only useful as a delta.
@@ -136,9 +154,23 @@ pub struct Status {
     rx: u64,
     tx: u64,
     at: Option<Instant>,
+    /// Extra mounts to report, from the bar's disk widgets.
+    mounts: Vec<String>,
+    /// Whether a volume widget asked for the default sink's volume.
+    want_volume: bool,
 }
 
 impl Status {
+    /// Which mounts and whether volume to sample on the next ticks.
+    ///
+    /// Called from config application; `Status::default()` wants neither, which
+    /// is a bar with no widgets and thus no reason to stat extra mounts or
+    /// spawn `wpctl` every two seconds.
+    pub fn configure(&mut self, mounts: Vec<String>, want_volume: bool) {
+        self.mounts = mounts;
+        self.want_volume = want_volume;
+    }
+
     /// Read everything once.
     ///
     /// A file that cannot be read leaves its own figure absent rather than
@@ -179,6 +211,25 @@ impl Status {
         sample.disk_free = free;
         sample.disk_total = total;
 
+        // The extra mounts a bar widget asked about, one entry per configured
+        // path. A widget that names `/` reports the root mount as its own
+        // entry, which is that widget's business — the default disk module
+        // next to it is a separate element.
+        for path in &self.mounts {
+            let (free, total) = disk_usage(path);
+            sample.mounts.push(MountUsage {
+                path: path.clone(),
+                free,
+                total,
+            });
+        }
+
+        if self.want_volume {
+            let (volume, muted) = sink_state();
+            sample.volume = volume;
+            sample.muted = muted;
+        }
+
         self.at = Some(now);
         sample
     }
@@ -208,6 +259,52 @@ fn disk_usage(path: &str) -> (f64, f64) {
     // which is what "free" means to someone reading a bar.
     let frsize = stat.f_frsize as f64;
     (stat.f_bavail as f64 * frsize, stat.f_blocks as f64 * frsize)
+}
+
+/// The default audio sink's volume and mute state, from the session's
+/// PipeWire.
+///
+/// The page cannot ask for it, any more than it can read /proc, so the
+/// compositor does, through `wpctl` — the WirePlumber command line, which is
+/// what a person would use for the same question. One call answers both halves,
+/// so a sampled tick pays for a single subprocess and nothing else.
+///
+/// Every failure resolves to `None` rather than an error: no `wpctl`, no
+/// session bus, no sink — all ordinary on a machine the widget is not wanted
+/// on — and none of them should take the bar down.
+fn sink_state() -> (Option<f64>, Option<bool>) {
+    let Ok(output) = std::process::Command::new("wpctl")
+        .arg("get-volume")
+        .arg("@DEFAULT_AUDIO_SINK@")
+        .output()
+    else {
+        return (None, None);
+    };
+    if !output.status.success() {
+        return (None, None);
+    }
+    parse_sink(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse `wpctl get-volume @DEFAULT_AUDIO_SINK@` output.
+///
+/// The interesting lines are `Volume: 0.45` and `Muted: yes`. `Volume` may be
+/// `0.00` for a muted sink, which is still a volume; the two are independent.
+fn parse_sink(text: &str) -> (Option<f64>, Option<bool>) {
+    let mut volume = None;
+    let mut muted = None;
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("Volume:") {
+            volume = rest.trim().parse::<f64>().ok();
+        } else if let Some(rest) = line.trim().strip_prefix("Muted:") {
+            muted = match rest.trim() {
+                "yes" => Some(true),
+                "no" => Some(false),
+                _ => None,
+            };
+        }
+    }
+    (volume, muted)
 }
 
 #[cfg(test)]
@@ -335,5 +432,55 @@ Inter-|   Receive                                                |  Transmit
         let second = status.sample();
         let cpu = second.cpu.expect("the second sample can compare");
         assert!((0.0..=100.0).contains(&cpu), "cpu out of range: {cpu}");
+    }
+
+    #[test]
+    fn an_unconfigured_sample_wants_no_volume_or_mounts() {
+        // The default `Status` is the no-widget bar: it must not stat extra
+        // mounts or spawn wpctl when nobody asked, and the extra fields stay
+        // empty rather than lying.
+        let mut status = Status::default();
+        let sample = status.sample();
+        assert!(sample.mounts.is_empty());
+        assert_eq!(sample.volume, None);
+        assert_eq!(sample.muted, None);
+    }
+
+    #[test]
+    fn configured_mounts_are_each_reported() {
+        // Every path a widget asked for comes back as its own entry, in
+        // order; the root mount is only omitted when nobody asked for it.
+        let mut status = Status::default();
+        status.configure(vec!["/home".to_owned(), "/mnt/data".to_owned()], false);
+        let sample = status.sample();
+        let paths: Vec<&str> = sample.mounts.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, ["/home", "/mnt/data"]);
+        // Mounts that exist have a size; the default disk numbers still
+        // describe the root mount regardless.
+        assert!(sample.disk_total > 0.0);
+    }
+
+    #[test]
+    fn the_sink_parses_volume_and_mute() {
+        let (volume, muted) = parse_sink("Volume: 0.45\nMuted: no\n");
+        assert_eq!(volume, Some(0.45));
+        assert_eq!(muted, Some(false));
+    }
+
+    #[test]
+    fn a_muted_sink_still_reports_a_volume() {
+        // Muted and quiet are different facts; `0.00` is a volume like any
+        // other.
+        let (volume, muted) = parse_sink("Volume: 0.00\nMuted: yes\n");
+        assert_eq!(volume, Some(0.0));
+        assert_eq!(muted, Some(true));
+    }
+
+    #[test]
+    fn a_sink_that_says_nothing_is_absent() {
+        // No default sink: wpctl prints an error instead of a Volume line.
+        let (volume, muted) = parse_sink("No default audio sink found.\n");
+        assert_eq!(volume, None);
+        assert_eq!(muted, None);
     }
 }

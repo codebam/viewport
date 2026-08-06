@@ -149,6 +149,22 @@
   ],
   "border": {},
 
+  "_bar_widgets": [
+    "Extra widgets to add to the bar, beyond the modules it ships with.",
+    "Leave the key out (or empty) and the bar is exactly as it shipped —",
+    "nothing here changes what it draws by default.",
+    "",
+    "  { \"type\": \"disk\", \"path\": \"/home\" }   free space on that mount",
+    "  { \"type\": \"volume\" }                     default sink's volume and mute",
+    "  { \"type\": \"weather\", \"location\": \"New York\" }  conditions for a place",
+    "",
+    "Disk and volume are sampled by the compositor with the rest of the",
+    "status, so they show the machine as it is. Weather is fetched by the",
+    "shell itself from open-meteo (no key); the location is a place it can",
+    "geocode, like a city name. Several of each kind may be listed."
+  ],
+  "bar_widgets": [],
+
   "_outputs": [
     "Modes are left to the display by default. max_refresh takes the fastest",
     "refresh rate available at the preferred resolution, which is what a",

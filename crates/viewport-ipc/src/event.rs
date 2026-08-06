@@ -101,6 +101,18 @@ pub enum Event {
         net_tx: f64,
         disk_free: f64,
         disk_total: f64,
+        /// Per-mount usage for the bar's disk widgets. Omitted when there are
+        /// none, so a shell that never asked stays exactly as it was.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mounts: Vec<MountUsage>,
+        /// The default audio sink's volume in `0.0..=1.0`, or `-1.0` when the
+        /// compositor could not say (no `wpctl`, no sink, no volume widget).
+        #[serde(default)]
+        volume: f64,
+        /// Whether the default audio sink is muted. Meaningful only when a
+        /// volume widget is present.
+        #[serde(default)]
+        muted: bool,
     },
 
     #[serde(rename = "output.layout")]
@@ -240,6 +252,13 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<Border>,
 
+    /// Extra bar widgets, carried from the config file to the shell, which
+    /// builds an element for each and fills it from the status sample (disk,
+    /// volume) or a fetch of its own (weather). Absent or empty is the default
+    /// bar, untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_widgets: Option<Vec<BarWidget>>,
+
     /// Whether directional focus may leave the monitor it is on.
     ///
     /// Both halves of the desktop need this and neither owns it. Tiling asks
@@ -312,6 +331,40 @@ pub struct Border {
     /// around, and rounding it after it has been pushed against the screen
     /// edge is what leaves wallpaper showing in the corners of the monitor.
     pub smart: Option<bool>,
+}
+
+/// One extra bar widget, as `bar_widgets` in the config file, carried to the
+/// shell.
+///
+/// Tagged on `type` so it names its kind and then the options that kind takes,
+/// matching `crate::config::BarWidgetConfig` from which it is copied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum BarWidget {
+    /// Free space on a particular mount; the compositor samples it with the
+    /// status.
+    #[serde(rename = "disk")]
+    Disk {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    /// Current conditions for a location; the shell fetches them itself.
+    #[serde(rename = "weather")]
+    Weather {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        location: Option<String>,
+    },
+    /// The default audio sink's volume, sampled by the compositor.
+    #[serde(rename = "volume")]
+    Volume,
+}
+
+/// One mount's usage, as `mounts` in a `status.update` sample.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MountUsage {
+    pub path: String,
+    pub free: f64,
+    pub total: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,6 +508,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            bar_widgets: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -482,6 +536,7 @@ mod tests {
                 width: Some(3),
                 smart: Some(true),
             }),
+            bar_widgets: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -506,6 +561,7 @@ mod tests {
                 smart: Some(true),
             }),
             border: None,
+            bar_widgets: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -543,6 +599,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            bar_widgets: None,
             focus_crosses_outputs: false,
             tiling_mode: None,
             background_terminal: false,
@@ -561,6 +618,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            bar_widgets: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
@@ -648,6 +706,7 @@ mod tests {
                 theme: None,
                 gaps: None,
                 border: None,
+                bar_widgets: None,
                 focus_crosses_outputs: true,
                 tiling_mode: None,
                 background_terminal: false,

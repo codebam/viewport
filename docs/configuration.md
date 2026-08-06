@@ -487,6 +487,49 @@ viewport msg -t config.border --radius 12 --width 3 --smart true
 Each field is optional; only the ones given change. Zero is accepted for
 either; a negative value is refused.
 
+## Bar widgets
+
+The bar ships with a fixed set of modules — clock, CPU, memory, load, root
+disk, network. `bar_widgets` *adds* to that set without touching it: leave the
+key out and the bar is exactly as it shipped. Each entry names a widget and
+its options:
+
+```jsonc
+{
+  "bar_widgets": [
+    { "type": "disk", "path": "/home" },
+    { "type": "volume" },
+    { "type": "weather", "location": "New York" }
+  ]
+}
+```
+
+`disk` shows the free space on a mount. `path` defaults to `/`. Several can be
+listed, one per mount you want to watch. Free and total bytes are sampled by
+the compositor with the rest of the status — the page cannot read `statvfs`
+any more than it can read `/proc` — so they appear as soon as the status does,
+and update with it.
+
+`volume` shows the default audio sink's volume and mute state. The compositor
+asks the session's PipeWire, via `wpctl` (`wpctl get-volume @DEFAULT_AUDIO_SINK@`),
+once per status sample; when there is no `wpctl`, no session bus or no sink,
+the widget is simply left empty rather than failing. Like the other modules,
+it uses the V-shaped audio glyph `󰕾` and `󰝟` when muted.
+
+`weather` shows the current conditions (temperature and a condition glyph) for
+a location. It is the one widget the shell fetches for itself rather than the
+compositor sampling: the page can reach the network even where it cannot read
+`/proc`. It uses [open-meteo](https://open-meteo.com) — no API key, answers
+from any origin — resolving the location through its geocoding service, then
+reading `temperature_2m` and `weather_code`. A bare `"location": "New York"`
+is the form to use; several weather widgets may list different places. Refreshed
+every fifteen minutes, and left empty on failure rather than crashing the bar.
+
+A volume widget is optional plumbing on the compositor: since the default bar
+does not show volume, the `wpctl` subprocess is only spawned when a `volume`
+widget is present, and only then does a status sample pay for it. The same
+goes for the extra mounts — a bar with no widgets stats nothing extra.
+
 ## Reloading the shell while it runs
 
 The shell is a web page, and the loop of working on one is editing a file and

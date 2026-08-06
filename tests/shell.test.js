@@ -2025,6 +2025,38 @@ if (mode === 'scrolling') {
     gapsStyle.getPropertyValue('--window-border') === '0px');
   emit({ type: 'config', layout: mode, border: { width: 2 } });
 
+  /* Extra bar widgets from the config file. Each builds an element in the
+     bar's right side, filled from the status sample: a disk widget shows the
+     free space on its mount, a volume widget the sink's volume and mute. The
+     default modules are untouched — nothing here asserts about them. */
+  const wout = globalThis.__shell.outputs.get('DP-1');
+  emit({ type: 'config', layout: mode,
+    bar_widgets: [
+      { type: 'disk', path: '/home' },
+      { type: 'volume' },
+    ] });
+  check('a widget element is built for each configured widget',
+    wout.widgetsEls.length === 2);
+  emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+    net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+    mounts: [{ path: '/home', free: 500000000, total: 1000000000 }],
+    volume: 0.45, muted: false });
+  check('a disk widget shows free space on its mount',
+    wout.widgetsEls[0].textContent.includes('/home'));
+  check('a volume widget shows the sink volume',
+    wout.widgetsEls[1].textContent.includes('45') &&
+    wout.widgetsEls[1].textContent.includes('%'));
+  emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+    net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+    mounts: [], volume: 0.45, muted: true });
+  check('a muted sink switches the volume widget to muted',
+    wout.widgetsEls[1].textContent.includes('%'));
+  /* A config that names no widgets takes them back off, leaving the default
+     bar exactly as it shipped. */
+  emit({ type: 'config', layout: mode });
+  check('a config without widgets leaves the default bar',
+    wout.widgetsEls.length === 0);
+
   /* The empty desktop's two parts, switched from the config file. */
   const root = document.documentElement.classList;
   emit({ type: 'config', layout: mode, logo: false, tutorial: false });

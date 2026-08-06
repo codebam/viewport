@@ -142,6 +142,41 @@ pub const DEFAULT_BORDER_RADIUS: i32 = 6;
 /// cuts the client.
 pub const DEFAULT_BORDER_WIDTH: i32 = 2;
 
+/// One extra bar widget, beyond the modules the bar ships with.
+///
+/// The default bar is untouched: nothing here changes what it draws, it only
+/// lets a config file add to it, one widget per entry. Tagged on `type`, so a
+/// config file names the kind and then the options that kind takes.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum BarWidgetConfig {
+    /// Free space on a particular mount. `path` defaults to `/` when absent.
+    ///
+    /// The free and total bytes are sampled by the compositor, like the bar's
+    /// own disk module — the page cannot read statvfs any more than it can
+    /// read /proc.
+    #[serde(rename = "disk")]
+    Disk {
+        /// The mount point to report, e.g. `"/home"` or `"/mnt/data"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    /// Current conditions for a location. Only this widget is fetched by the
+    /// shell, which talks to a public weather service; the compositor has
+    /// nothing to sample for it.
+    #[serde(rename = "weather")]
+    Weather {
+        /// A place the weather service can find, e.g. `"New York"`. Absent is
+        /// no widget worth drawing, so the shell shows nothing for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        location: Option<String>,
+    },
+    /// The default audio sink's volume and mute state, sampled by the
+    /// compositor from the session's PipeWire over `wpctl`.
+    #[serde(rename = "volume")]
+    Volume,
+}
+
 /// What `background_terminal` was set to.
 ///
 /// Two shapes because there are two things people mean by it: `true` is "the
@@ -219,6 +254,11 @@ pub struct File {
     pub idle: IdleConfig,
     pub gaps: GapsConfig,
     pub border: BorderConfig,
+
+    /// Extra widgets to add to the bar, beyond the modules it draws by default.
+    ///
+    /// Empty or absent is the default bar, untouched. See `BarWidgetConfig`.
+    pub bar_widgets: Vec<BarWidgetConfig>,
 
     /// The whole keymap. Presence means "these and no built-ins", which is why
     /// an empty `"binds": {}` is meaningful — it asks for none at all.
@@ -595,6 +635,48 @@ mod tests {
         assert_eq!(dp1.hdr, Some(true));
         // Absent within a block is still absent, not zero.
         assert_eq!(dp1.y, None);
+    }
+
+    #[test]
+    fn bar_widgets_parse_by_type() {
+        // Each widget names its kind and then the options that kind takes. The
+        // default bar does not change — these only add to it.
+        let file: File = serde_json::from_str(
+            r#"{
+                "bar_widgets": [
+                    {"type":"disk","path":"/home"},
+                    {"type":"disk"},
+                    {"type":"weather","location":"New York"},
+                    {"type":"volume"}
+                ]
+            }"#,
+        )
+        .expect("should parse");
+        assert_eq!(file.bar_widgets.len(), 4);
+        assert_eq!(
+            file.bar_widgets[0],
+            BarWidgetConfig::Disk {
+                path: Some("/home".into())
+            }
+        );
+        // A path is optional and defaults to nothing here; the sampler treats
+        // None as the root mount.
+        assert_eq!(file.bar_widgets[1], BarWidgetConfig::Disk { path: None });
+        assert_eq!(
+            file.bar_widgets[2],
+            BarWidgetConfig::Weather {
+                location: Some("New York".into())
+            }
+        );
+        assert_eq!(file.bar_widgets[3], BarWidgetConfig::Volume);
+    }
+
+    #[test]
+    fn bar_widgets_absent_is_the_default_bar() {
+        // No widgets means the default bar, exactly as if the key were not
+        // there at all.
+        let file: File = serde_json::from_str("{}").expect("should parse");
+        assert!(file.bar_widgets.is_empty());
     }
 
     #[test]

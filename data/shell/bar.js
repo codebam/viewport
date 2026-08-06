@@ -117,6 +117,8 @@ function renderBarChrome(name) {
       };
     }),
     (key) => send({ type: 'view.focus', id: Number(key) }));
+
+  syncBarWidgets(output);
 }
 
 /* Every write here is guarded, exactly as renderClocks() guards the clock: an
@@ -161,11 +163,188 @@ function renderBarModules(name) {
   setModule(m.disk, s.disk_free ? `󰋊 ${formatBytes(s.disk_free)}` : '');
   setModule(m.net, s.net_rx !== undefined
     ? `󰇚 ${formatBytes(s.net_rx)}/s 󰕒 ${formatBytes(s.net_tx)}/s` : '');
+  renderBarWidgets(output);
 }
 
 function setModule(el, text) {
   if (el.textContent !== text) el.textContent = text;
 }
+
+/* ------------------------------------------------------------------------
+ * Extra widgets
+ * --------------------------------------------------------------------- */
+
+/* The extra widgets a config file asked for, beyond the bar's own modules.
+ * Empty is the default bar, exactly as it shipped — nothing here changes what
+ * the modules it was born with draw. */
+let barWidgets = [];
+
+/* Called when the compositor sends them with the config. The elements are
+ * built on the next chrome render, which every output hits when it is laid
+ * out; the weather fetch is kicked off here because it owes nothing to any
+ * output. */
+function applyBarWidgets(widgets) {
+  barWidgets = Array.isArray(widgets) ? widgets.slice() : [];
+  renderBars();
+  refreshWeather();
+}
+
+function widgetTitle(w) {
+  switch (w.type) {
+    case 'disk': return `free on ${w.path || '/'}`;
+    case 'weather': return `weather for ${(w.location || '').trim()}`.trim();
+    case 'volume': return 'volume';
+  }
+  return '';
+}
+
+/* Widget elements live in the bar's right side, after the modules. Kept and
+ * updated positionally, like the chrome buttons: the set only changes when
+ * the config does, which is once at startup, and a status sample every two
+ * seconds must not rebuild them. Tracked on the output record rather than
+ * re-queried, the way the modules are. */
+function syncBarWidgets(output) {
+  const container = output.barEl.querySelector('.bar-right');
+  const els = output.widgetsEls ?? (output.widgetsEls = []);
+
+  for (let i = 0; i < barWidgets.length; i++) {
+    let el = els[i];
+    if (el === undefined) {
+      el = document.createElement('span');
+      el.className = 'module widget';
+      container.append(el);
+      els[i] = el;
+    }
+    const w = barWidgets[i];
+    const key = `${w.type}:${w.path || w.location || ''}`;
+    if (el.dataset.widget !== key) el.dataset.widget = key;
+    const title = widgetTitle(w);
+    if (el.title !== title) el.title = title;
+  }
+  /* Whatever the last config wanted and this one does not. */
+  for (let i = barWidgets.length; i < els.length; i++) {
+    if (els[i]) els[i].remove();
+    els[i] = undefined;
+  }
+  output.widgetsEls = els.filter(Boolean);
+}
+
+/* Each widget is a short string drawn from the status sample (disk, volume)
+ * or the weather cache. Every write is guarded like the modules above: an
+ * assignment to textContent dirties the element whether or not the string is
+ * new, and a dirty element is a repaint. */
+function renderBarWidgets(output) {
+  const s = lastStatus;
+  (output.widgetsEls || []).forEach((el, i) => {
+    const w = barWidgets[i];
+    if (!w) return;
+    let text = '';
+    if (w.type === 'disk') {
+      const path = w.path || '/';
+      const mount = (s.mounts || []).find((m) => m.path === path);
+      if (mount && mount.total > 0) text = `󰋊 ${path} ${formatBytes(mount.free)}`;
+    } else if (w.type === 'volume') {
+      if (s.volume >= 0) {
+        const pct = Math.round(s.volume * 100);
+        text = `${s.muted ? '󰝟' : '󰕾'} ${pct}%`;
+      }
+    } else if (w.type === 'weather') {
+      text = weatherText(w.location || '');
+    }
+    if (el.textContent !== text) el.textContent = text;
+  });
+}
+
+function renderBarsWidgets() {
+  for (const name of outputs.keys()) {
+    const output = outputs.get(name);
+    if (output) renderBarWidgets(output);
+  }
+}
+
+/* Weather is fetched by the shell rather than sampled by the compositor: the
+ * page can reach the network even where it cannot read /proc. open-meteo has
+ * no key and answers from any origin, which is what lets the widget ask it
+ * directly. A geocode lookup resolves the location, then the forecast call
+ * reads the current conditions. Cached per location so several monitors make
+ * one of each per refresh, and a slot is marked in-flight/failed so the
+ * two-second modules pass never starts another request. */
+
+const WEATHER_URL = 'https://api.open-meteo.com/v1/forecast';
+const WEATHER_REFRESH = 15 * 60 * 1000;
+const WEATHER_FAILURE_RETRY = 5 * 60 * 1000;
+const weatherCache = new Map(); // location(lower) -> { text, retryAt }
+
+function weatherText(location) {
+  const hit = location && weatherCache.get(location.trim().toLowerCase());
+  return hit ? hit.text : '';
+}
+
+/* Start a fetch for every weather widget whose slot is ready. Called on
+ * config and on the refresh interval. */
+function refreshWeather() {
+  const now = Date.now();
+  for (const w of barWidgets) {
+    if (w.type !== 'weather') continue;
+    const location = (w.location || '').trim();
+    if (!location) continue;
+    const key = location.toLowerCase();
+    const hit = weatherCache.get(key);
+    if (hit && now < hit.retryAt) continue;
+    weatherCache.set(key, { text: '', retryAt: now + WEATHER_REFRESH });
+    fetchWeather(location);
+  }
+}
+
+function fetchWeather(location) {
+  const key = location.toLowerCase();
+  geocode(location)
+    .then(([lat, lon]) =>
+      fetch(`${WEATHER_URL}?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code`),
+    )
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then((data) => {
+      const c = data && data.current;
+      const text = c
+        ? `${Math.round(c.temperature_2m)}°C ${condition(c.weather_code)}`
+        : '';
+      weatherCache.set(key, { text, retryAt: Date.now() + WEATHER_REFRESH });
+      renderBarsWidgets();
+    })
+    .catch(() => {
+      /* Leave the slot failed so we retry in a few minutes rather than on
+         every sample tick. */
+      weatherCache.set(key, { text: '', retryAt: Date.now() + WEATHER_FAILURE_RETRY });
+    });
+}
+
+function geocode(location) {
+  return fetch(
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`,
+  )
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then((data) => {
+      const hit = data && data.results && data.results[0];
+      if (!hit) throw new Error(`weather: no match for "${location}"`);
+      return [hit.latitude, hit.longitude];
+    });
+}
+
+/* WMO weather codes to a short condition, matching what a temperature is not
+ * enough to say. */
+function condition(code) {
+  if (code === 0) return '☀';
+  if (code === 1 || code === 2) return '◐';
+  if (code === 3) return '☁';
+  if (code >= 45 && code <= 48) return '🌫';
+  if (code >= 51 && code <= 67) return '🌧';
+  if (code >= 71 && code <= 77) return '❄';
+  if (code >= 80 && code <= 82) return '🌧';
+  if (code >= 95) return '⛈';
+  return '';
+}
+
+setInterval(refreshWeather, WEATHER_REFRESH);
 
 function renderBars() {
   for (const name of outputs.keys()) renderBar(name);
