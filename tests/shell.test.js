@@ -327,6 +327,11 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      window that fills the tiling area. */
   + ' smartGapsForTest: { single: singleWindowOn, edge: edgeGapPx,'
   + '   radius: smartRadius },'
+  /* Measuring a window and sending the result, which is the one place where
+     the page's fractional layout has to become the compositor's whole pixels.
+     Exported so a test can hand it a rect off the pixel grid — the browser
+     produces those constantly and this harness's stubs never would. */
+  + ' reportGeometryForTest: reportGeometry,'
   /* The grid's row count, which decides the whole shape and is a pure function
      of (count, w, h). The arrangement it feeds is checked through the tree the
      mode builds, like the other dynamic ones; this is here because the aspects
@@ -2422,6 +2427,38 @@ if (mode === 'scrolling') {
     sheet.value(framed.el, 'overflow') === 'hidden');
   check('two pixels of border on every side',
     sides(framed.el, 'width') === '2px');
+
+  /* A hole is whole pixels and layout is not.
+   *
+   * Rounding a fractional rect to the nearest pixel moves the hole outwards
+   * half the time, and the compositor then draws the client over the pixel the
+   * page painted the border into: invisible at 2px, where the other pixel
+   * survives, and the entire border at 1px. The hole has to be the pixels
+   * *inside* the rect, so the frame is never overdrawn. */
+  {
+    const at = sent.length;
+    const measured = framed.viewport.getBoundingClientRect;
+    framed.viewport.getBoundingClientRect = () => ({
+      left: 100.4, top: 50.6, width: 800.9, height: 600.2,
+      x: 100.4, y: 50.6,
+    });
+    globalThis.__shell.reportGeometryForTest(80);
+    framed.viewport.getBoundingClientRect = measured;
+    const laid = sent.slice(at).find((m) => m.type === 'view.layout' && m.id === 80);
+    /* 100.4 .. 901.3 encloses whole pixels 101 .. 901, so x=101 and width=800.
+       Nearest-rounding would have said x=100, width=801 — a hole reaching a
+       pixel past the frame at both ends. */
+    check('a fractional rect becomes the whole pixels inside it',
+      laid !== undefined && laid.x === 101 && laid.width === 800);
+    /* 50.6 .. 650.8 likewise encloses 51 .. 650, which is 599 rows and not the
+       600 the measured height rounds to. */
+    check('and the same on the other axis',
+      laid !== undefined && laid.y === 51 && laid.height === 599);
+    check('with a clip that does not reach past the hole',
+      laid === undefined || laid.clip === undefined ||
+      (laid.clip.x >= laid.x &&
+       laid.clip.x + laid.clip.width <= laid.x + laid.width));
+  }
 
   /* Against the custom property rather than against #7aa2f7: a theme from the
      config file arrives as an override of exactly these, so a literal here

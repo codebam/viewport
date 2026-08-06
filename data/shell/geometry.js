@@ -39,11 +39,32 @@ function reportGeometry(id) {
      that a focus change — which reshuffles every orbit on the workspace — does
      not reconfigure half the clients on it. See solar.js. */
   const scale = view.overview?.scale ?? view.solar?.scale ?? 1;
+  /* The whole device pixels *inside* the measured rect, rather than the ones
+     nearest its edges.
+
+     Layout is fractional and a hole is not: a column 1671.4 pixels wide starts
+     somewhere in the middle of a pixel, and rounding to nearest moves the hole
+     half a pixel either way. Half of the time that is outwards, and the
+     compositor then draws the client over the pixel the page painted the
+     border into — which is invisible with a 2px border, where one pixel
+     survives, and is the whole border when it is 1px wide. Rounding inwards
+     can only ever leave a sliver of the frame showing, and the frame is what
+     is drawn underneath anyway.
+
+     Sizes stay divided by the thumbnail scale: the compositor is told the size
+     the *client* should be, which is the on-screen rectangle only when it is
+     being drawn at full size. */
+  const inset = {
+    left: Math.ceil(rect.left),
+    top: Math.ceil(rect.top),
+    right: Math.floor(rect.left + rect.width),
+    bottom: Math.floor(rect.top + rect.height),
+  };
   const box = {
-    x: Math.round(rect.left),
-    y: Math.round(rect.top),
-    width: Math.round(rect.width / scale),
-    height: Math.round(rect.height / scale),
+    x: inset.left,
+    y: inset.top,
+    width: Math.round((inset.right - inset.left) / scale),
+    height: Math.round((inset.bottom - inset.top) / scale),
   };
 
   if (box.width <= 0 || box.height <= 0) {
@@ -80,14 +101,17 @@ function reportGeometry(id) {
        The result is then converted back into the window's own coordinates,
        which is the space the compositor expects and the only one that means
        anything to the client's buffer. */
-    const left = Math.max(rect.left, area.left);
-    const top = Math.max(rect.top, area.top);
-    const right = Math.min(rect.left + rect.width, area.right);
-    const bottom = Math.min(rect.top + rect.height, area.bottom);
+    /* Against the inset rect, not the measured one, and inwards again at the
+       output edge for the same reason: a clip that reaches half a pixel past
+       the hole hands the overhang straight back. */
+    const left = Math.max(inset.left, Math.ceil(area.left));
+    const top = Math.max(inset.top, Math.ceil(area.top));
+    const right = Math.min(inset.right, Math.floor(area.right));
+    const bottom = Math.min(inset.bottom, Math.floor(area.bottom));
 
     clip = {
-      x: Math.round(box.x + (left - rect.left) / scale),
-      y: Math.round(box.y + (top - rect.top) / scale),
+      x: Math.round(box.x + (left - inset.left) / scale),
+      y: Math.round(box.y + (top - inset.top) / scale),
       width: Math.max(0, Math.round((right - left) / scale)),
       height: Math.max(0, Math.round((bottom - top) / scale)),
     };
