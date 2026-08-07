@@ -6666,9 +6666,24 @@ impl ViewportState {
         let focused = self.views.get(id).map(|view| view.window.clone());
         // Every window, not only the two that changed. Anything else leaves a
         // window that was activated by some other path still believing it.
+        let mut in_space = false;
         for window in self.space.elements() {
             let active = focused.as_ref() == Some(window);
             window.set_activated(active);
+            if active {
+                in_space = true;
+            }
+        }
+        // A window focused before it is mapped — a launch, where the shell's
+        // `view.focus` goes out before the `view.layout` that maps it into the
+        // Space — is not in the space yet, so the loop above never reaches it
+        // and its client is never told it is activated. Set the state on the
+        // window directly; it sits in the pending configure and goes out with
+        // the window's first layout, or with any later configure.
+        if !in_space {
+            if let Some(window) = focused {
+                window.set_activated(true);
+            }
         }
         self.send_pending_configures();
     }
