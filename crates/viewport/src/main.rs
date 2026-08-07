@@ -893,6 +893,7 @@ fn export_session_environment() {
             let _ = child.wait();
         }
         start_session_target();
+        restart_stale_portal();
     });
 }
 
@@ -919,15 +920,65 @@ fn export_session_environment() {
 /// Failure is fine, and quiet on purpose: a session without systemd, or one
 /// where the unit was never installed, wants none of this and works regardless.
 fn start_session_target() {
-    // --no-block because the target pulls in whatever the session declares
-    // wants of it, and this thread has no reason to wait for any of it.
+    // Waited for, rather than --no-block as this once was: the portal frontend
+    // is restarted immediately after, and that unit carries
+    // Requisite=graphical-session.target. A restart job queued while this
+    // target is still coming up is a job that fails outright.
     match std::process::Command::new("systemctl")
-        .args(["--user", "start", "--no-block", "viewport-session.target"])
+        .args(["--user", "start", "viewport-session.target"])
         .spawn()
     {
         Ok(mut child) => {
             let _ = child.wait();
         }
         Err(e) => tracing::debug!("could not start viewport-session.target: {e}"),
+    }
+}
+
+/// Restart a portal frontend that was started by somebody else's session.
+///
+/// xdg-desktop-portal reads its configuration once, at startup, keyed on the
+/// XDG_CURRENT_DESKTOP the user manager held at that moment, and it builds one
+/// proxy per interface then and there. Both of those go stale the moment a
+/// second compositor takes over a user manager that never went down:
+///
+///   * The backend list is the other desktop's. A frontend started under sway
+///     read sway-portals.conf, so ScreenCast is xdg-desktop-portal-wlr — which
+///     captures through wlr-screencopy against a compositor that is gone, and
+///     answers "no output found".
+///   * The properties it publishes are whatever the proxy read when it was
+///     built. `AvailableSourceTypes` is 0 when this compositor was not yet on
+///     the bus, and nothing refreshes it afterwards.
+///
+/// That second one is why this shows up in one browser and not the other.
+/// Firefox calls SelectSources regardless and gets whatever the backend does;
+/// Chromium reads AvailableSourceTypes first, sees no source type it can use,
+/// decides the portal cannot share a screen, and falls back to its own
+/// getUserMedia picker — the tab list, with no screens or windows in it. No
+/// error is logged on either side: from the portal's point of view nobody
+/// asked.
+///
+/// try-restart rather than restart: a session that boots straight into this
+/// compositor has no frontend running yet, and starting one here would only
+/// race the D-Bus activation that is about to happen anyway. try-restart is a
+/// no-op on an inactive unit and a restart on a live one, which is exactly the
+/// distinction that matters. The backends go with it, for the same reason: one
+/// left over from another session holds a connection to a compositor that
+/// exited.
+fn restart_stale_portal() {
+    match std::process::Command::new("systemctl")
+        .args([
+            "--user",
+            "try-restart",
+            "xdg-desktop-portal.service",
+            "xdg-desktop-portal-wlr.service",
+            "xdg-desktop-portal-gtk.service",
+        ])
+        .spawn()
+    {
+        Ok(mut child) => {
+            let _ = child.wait();
+        }
+        Err(e) => tracing::debug!("could not restart the portal frontend: {e}"),
     }
 }
