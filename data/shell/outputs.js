@@ -67,6 +67,10 @@ function syncOutputs(list) {
         name: info.name,
         el,
         windowsEl: el.querySelector('.windows'),
+        /* Notifications stack in this output's own corner — the shell draws
+           each one over the output of the window it came from, not over some
+           global one. */
+        notificationsEl: el.querySelector('.notifications'),
         barEl: el.querySelector('.bar'),
         emptyEl: el.querySelector('.empty'),
         workspacesEl: el.querySelector('.workspaces'),

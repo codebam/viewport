@@ -162,8 +162,10 @@ let windowRules = [];
  * layout, where it does the directional focus itself. */
 let focusCrossesOutputs = true;
 /* Notifications on screen, newest last. The compositor owns the D-Bus side and
- * hands them here; what they look like and how long they stay is the shell's. */
-const notifications = new Map(); // id -> { el, timer }
+ * hands them here; what they look like and how long they stay is the shell's.
+ * Each entry carries the output its element was appended to, so drop and
+ * report know which corner it belongs in. */
+const notifications = new Map(); // id -> { el, timer, output }
 /* Horizontal scroll offset per workspace, in pixels, for the scrolling layout.
  * Only ever adjusted to bring the focused column into view. */
 const scrollOffsets = new Map();
@@ -197,7 +199,6 @@ function clearOverviewState() {
 }
 
 const outputsEl = document.getElementById('outputs');
-const notificationsEl = document.getElementById('notifications');
 
 /* What the shell has drawn that belongs above the windows.
  *

@@ -106,7 +106,7 @@ function buildDesktop() {
   const root = new El('div');
   const main = new El('main');
   main.className = 'desktop';
-  for (const c of ['windows', 'empty']) {
+  for (const c of ['windows', 'empty', 'notifications']) {
     const el = new El('div');
     el.className = `${c} module`;
     main.append(el);
@@ -541,14 +541,17 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'view.focused', id: 4 });
 }
 
-/* Notifications are the compositor's on D-Bus and the shell's on screen. */
+/* Notifications are the compositor's on D-Bus and the shell's on screen, and
+ * each one is drawn over the output of the app that sent it. 'test' matches no
+ * open window, so it falls back to the active output — the one output there is. */
 {
-  const strip = document.getElementById('notifications');
+  const strip = () => globalThis.__shell.outputs.get('DP-1').notificationsEl;
 
   emit({ type: 'notification.add', id: 7, app_name: 'test',
     summary: 'hello', body: 'world', urgency: 1, timeout: 0,
     actions: [{ key: 'reply', label: 'Reply' }] });
-  check('a notification arriving is drawn', strip.children.length === 1);
+  check('a notification arriving is drawn on its output',
+    strip().children.length === 1);
 
   const before = sent.length;
   emit({ type: 'notification.close', id: 7 });
@@ -560,7 +563,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
      the thing worth checking is that the element does eventually go. A
      notification left behind is not a stale animation, it is a rectangle of
      shell composited over a window for the rest of the session. */
-  check('and the element goes with it', strip.children.length === 0);
+  check('and the element goes with it', strip().children.length === 0);
   check('so the strip stops being drawn over the windows',
     !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
       ?.rects ?? []).some((r) => r.width > 0 && r.height > 0));
@@ -571,6 +574,62 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     summary: 'critical', body: '', urgency: 2, timeout: -1, actions: [] });
   check('a critical notification is kept', true);
   emit({ type: 'notification.close', id: 8 });
+}
+
+/* A notification lands on the output where its source window is. A chat client
+ * open on the right monitor should not pop its message in the left one's
+ * corner, and the reverse. Resolved by app_id; a window placed on one output
+ * and a window of a different app on the other mean each notification belongs
+ * to a different corner. */
+{
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-3', x: 1920, y: 0, width: 1920, height: 1080,
+      usable_x: 1920, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+
+  /* Put a window of each app on its own monitor. `chat` on DP-1, `mail` on
+     DP-3 — a notification from either must follow its window, not the output
+     that happens to be active. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-1'] });
+  emit({ type: 'view.added', id: 71, title: 'chat', app_id: 'chat',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-3'] });
+  emit({ type: 'view.added', id: 72, title: 'mail', app_id: 'mail',
+    output: 'DP-3', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+
+  const left = globalThis.__shell.outputs.get('DP-1').notificationsEl;
+  const right = globalThis.__shell.outputs.get('DP-3').notificationsEl;
+
+  emit({ type: 'notification.add', id: 80, app_name: 'mail',
+    summary: 'you have mail', body: '', urgency: 1, timeout: 0, actions: [] });
+  check('a notification follows its window to the right output',
+    right.children.length === 1 && left.children.length === 0);
+
+  emit({ type: 'notification.close', id: 80 });
+
+  emit({ type: 'notification.add', id: 81, app_name: 'chat',
+    summary: 'hi', body: '', urgency: 1, timeout: 0, actions: [] });
+  check('and a different app on the other monitor goes the other way',
+    left.children.length === 1 && right.children.length === 0);
+
+  emit({ type: 'notification.close', id: 81 });
+
+  /* A notification from an app with no window at all has no output to claim,
+     so it falls back to the one being looked at. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-3'] });
+  emit({ type: 'notification.add', id: 82, app_name: 'daemon',
+    summary: 'background', body: '', urgency: 1, timeout: 0, actions: [] });
+  check('an app with no window falls back to the active output',
+    right.children.length === 1 && left.children.length === 0);
+  emit({ type: 'notification.close', id: 82 });
+
+  for (const id of [71, 72]) emit({ type: 'view.removed', id });
 }
 
 /* Window rules place a window before it is ever laid out, so it never appears
