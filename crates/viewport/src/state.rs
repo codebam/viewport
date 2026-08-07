@@ -4598,6 +4598,7 @@ impl ViewportState {
     /// what stops the nested one drifting into showing something different
     /// from the real thing.
     pub fn frame_for(&mut self, output: &Output) -> crate::render::Frame {
+        use smithay::wayland::seat::WaylandFocus as _;
         use smithay::wayland::shell::wlr_layer::Layer;
 
         let Some(output_geometry) = self.space.output_geometry(output) else {
@@ -4642,9 +4643,9 @@ impl ViewportState {
                     return None;
                 }
                 let view = window
-                    .toplevel()
-                    .map(|toplevel| toplevel.wl_surface().clone())
-                    .and_then(|surface| self.views.find_by_surface(&surface));
+                    .wl_surface()
+                    .as_deref()
+                    .and_then(|surface| self.views.find_by_surface(surface));
                 let overlay_ids: [smithay::backend::renderer::element::Id; 4] = view
                     .map(|view| view.overlay_ids.clone())
                     .unwrap_or_else(|| {
