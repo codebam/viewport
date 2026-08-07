@@ -1326,6 +1326,10 @@ impl ViewportState {
         windows.reverse();
 
         for (window, location) in windows {
+            // Not the part of it that is cropped away. See `clipped_out`.
+            if self.clipped_out(&window, pos) {
+                continue;
+            }
             // Where the surface is drawn, not where the window is mapped.
             //
             // A client with client-side decorations draws its shadows outside
@@ -1343,6 +1347,73 @@ impl ViewportState {
             }
         }
         below.or_else(|| self.shell_under(pos))
+    }
+
+    /// The topmost window at a point, skipping the parts cropped away.
+    ///
+    /// `Space::element_under` answers from the mapped rectangles alone, which
+    /// on a scrolled strip includes columns that are on a monitor without
+    /// being drawn there — see `clipped_out`. Clicking through to whatever is
+    /// really underneath is what this adds.
+    pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<smithay::desktop::Window> {
+        use smithay::desktop::space::SpaceElement;
+
+        // Otherwise as `Space::element_under`: the bounding box rather than the
+        // window's own rectangle, so a client's shadow is still part of it, and
+        // then the input region, so the parts it says are not clickable are not.
+        self.space
+            .elements()
+            .rev()
+            .find(|window| {
+                if self.clipped_out(window, pos) {
+                    return false;
+                }
+                let Some(bbox) = self.space.element_bbox(window) else {
+                    return false;
+                };
+                if !bbox.to_f64().contains(pos) {
+                    return false;
+                }
+                // Where the surface is drawn, not where the window is mapped —
+                // the same correction `surface_under` makes below.
+                let Some(location) = self.space.element_location(window) else {
+                    return false;
+                };
+                let render_location = location - window.geometry().loc;
+                window.is_in_input_region(&(pos - render_location.to_f64()))
+            })
+            .cloned()
+    }
+
+    /// Whether a point falls on the part of a window that is cropped away.
+    ///
+    /// The shell scrolls a strip by moving its columns, not by hiding them: a
+    /// column scrolled off the left of one monitor keeps a rectangle, and that
+    /// rectangle lands on the monitor beside it. Nothing of it is *drawn*
+    /// there — `view.layout` carries a clip and the renderer crops the surface
+    /// to it — but the window is still mapped in the `Space` at its full size,
+    /// so every hit test found it. With the second monitor scrolled a few
+    /// columns along, clicking a window on the first monitor focused an
+    /// invisible column of the second instead, and the strip scrolled back to
+    /// it: the click had gone to a window that is not on that screen.
+    ///
+    /// So the clip bounds input as well as drawing. The two have to agree —
+    /// what is not on the screen cannot be clicked — and the clip is the only
+    /// thing that knows where a window really is.
+    pub fn clipped_out(&self, window: &smithay::desktop::Window, pos: Point<f64, Logical>) -> bool {
+        use smithay::wayland::seat::WaylandFocus;
+
+        let Some(clip) = window
+            .wl_surface()
+            .as_deref()
+            .and_then(|surface| self.views.find_by_surface(surface))
+            .and_then(|view| view.clip)
+        else {
+            // No clip means nothing was cropped: the whole window is on
+            // screen, which is every window on an unscrolled workspace.
+            return false;
+        };
+        !crate::views::clip_covers(clip, pos.x, pos.y)
     }
 
     /// The shell's own surface at a point, for the out-of-process backend.
