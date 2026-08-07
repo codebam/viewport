@@ -21,3 +21,6 @@ crates/viewport-shell-cef/target/
 # the built copy under data/shell/vendor, which is committed. See
 # scripts/vendor-shell-deps.sh.
 node_modules/
+
+# Linked worktrees created by the agent, e.g. .worktrees/fix-mod4-shift-q.
+.worktrees/
