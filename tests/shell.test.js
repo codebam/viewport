@@ -106,7 +106,7 @@ function buildDesktop() {
   const root = new El('div');
   const main = new El('main');
   main.className = 'desktop';
-  for (const c of ['windows', 'empty']) {
+  for (const c of ['windows', 'empty', 'notifications']) {
     const el = new El('div');
     el.className = `${c} module`;
     main.append(el);
@@ -541,14 +541,17 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'view.focused', id: 4 });
 }
 
-/* Notifications are the compositor's on D-Bus and the shell's on screen. */
+/* Notifications are the compositor's on D-Bus and the shell's on screen, and
+ * each one is drawn over the output of the app that sent it. 'test' matches no
+ * open window, so it falls back to the active output — the one output there is. */
 {
-  const strip = document.getElementById('notifications');
+  const strip = () => globalThis.__shell.outputs.get('DP-1').notificationsEl;
 
   emit({ type: 'notification.add', id: 7, app_name: 'test',
     summary: 'hello', body: 'world', urgency: 1, timeout: 0,
     actions: [{ key: 'reply', label: 'Reply' }] });
-  check('a notification arriving is drawn', strip.children.length === 1);
+  check('a notification arriving is drawn on its output',
+    strip().children.length === 1);
 
   const before = sent.length;
   emit({ type: 'notification.close', id: 7 });
@@ -560,7 +563,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
      the thing worth checking is that the element does eventually go. A
      notification left behind is not a stale animation, it is a rectangle of
      shell composited over a window for the rest of the session. */
-  check('and the element goes with it', strip.children.length === 0);
+  check('and the element goes with it', strip().children.length === 0);
   check('so the strip stops being drawn over the windows',
     !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
       ?.rects ?? []).some((r) => r.width > 0 && r.height > 0));

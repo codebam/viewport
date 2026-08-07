@@ -1026,8 +1026,8 @@ html.no-tutorial .empty .tutorial { display: none; }
  * rest of the shell.
  * ------------------------------------------------------------------ */
 
-#notifications {
-  position: fixed;
+.notifications {
+  position: absolute;
   top: calc(var(--bar) + var(--gap));
   right: var(--gap);
   z-index: 100;
@@ -1046,11 +1046,11 @@ html.no-tutorial .empty .tutorial { display: none; }
   border-left: 3px solid var(--border-focus);
   border-radius: var(--radius);
   background: #161a22f2;
-  /* The shadow that falls outside #notifications is cropped away when the
-     compositor redraws this strip in front of a window — see the note on
-     .screencast-dialog, which is the same problem. Kept because most of it
-     lands inside the column, and deliberately not grown on hover, where the
-     part that would be added is exactly the part that gets cut off. */
+  /* The shadow that falls outside the notifications column is cropped away
+     when the compositor redraws this strip in front of a window — see the
+     note on .screencast-dialog, which is the same problem. Kept because most
+     of it lands inside the column, and deliberately not grown on hover, where
+     the part that would be added is exactly the part that gets cut off. */
   box-shadow: var(--shadow-2);
   cursor: pointer;
   transition: border-color var(--anim) var(--ease);

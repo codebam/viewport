@@ -210,8 +210,39 @@ function claimSlot(id, app) {
  * marking something critical has usually decided it needs an answer. */
 const NOTIFICATION_TIMEOUT_MS = 5000;
 
+/* Which output a notification belongs to — the one showing the window of the
+ * app that sent it.
+ *
+ * The notification names its app, and the shell knows where every window of
+ * that app is (an app is a wayland `app_id`, its windows are the `views` that
+ * carry it). Its output is the one hosting the workspace that window is on. An
+ * app with no window — a daemon, a background service, a notifier run headless
+ * — has no output to claim, so the notification lands on the output being
+ * looked at, which is where a fallback ought to sit. */
+function notificationOutputName(message) {
+  const app = String(message.app_name || '').toLowerCase();
+  for (const [id, view] of views) {
+    if (String(view.app_id || '').toLowerCase() !== app) continue;
+    const root = hostOfWorkspace(workspaceOf(id));
+    if (root) return root;
+  }
+  /* The app has no window on screen — a daemon, a headless notifier — so it
+     claims no output; the fallback is the one being looked at. */
+  return activeOutputName();
+}
+
 function showNotification(message) {
   dropNotification(message.id, false);
+
+  /* A notification is drawn over the output its source window is on, not over
+     some global one — a message from an app sitting on the left monitor
+     belongs in that monitor's corner, not the right one's. Resolved by the
+     app that sent it; a notification from an app with no window (a daemon, a
+     background service) falls back to the output being looked at. */
+  const outputName = notificationOutputName(message);
+  const hostEl = (outputs.get(outputName) ?? [...outputs.values()][0])
+    ?.notificationsEl;
+  if (!hostEl) return; // no outputs yet; a later layout will not replay this
 
   const el = document.createElement('div');
   el.className = 'notification urgency-' + (message.urgency ?? 1);
@@ -280,7 +311,7 @@ function showNotification(message) {
     dropNotification(message.id, false);
   });
 
-  notificationsEl.append(el);
+  hostEl.append(el);
   animateNotificationIn(el);
 
   const timeout = message.timeout;
@@ -290,6 +321,7 @@ function showNotification(message) {
 
   notifications.set(message.id, {
     el,
+    output: outputName,
     timer: ms > 0
       ? setTimeout(() => dropNotification(message.id, true), ms)
       : null,
@@ -323,14 +355,19 @@ function dropNotification(id, expired) {
 }
 
 /* Where the notifications are, so the compositor can draw them above the
-   windows. Nothing when there are none: the container is still there, and a
-   rectangle of empty shell drawn over a window would be a hole in it.
-   One that is animating away still counts as one — see notificationsLeaving in
-   motion.js, which is what keeps the strip composited for the length of its
-   own exit. */
+   windows. Nothing when a container is empty: the element is still there, and
+   a rectangle of empty shell drawn over a window would be a hole in it.
+   Reported per output, because a notification now lives in the corner of the
+   output it came from — a single rectangle would put every one of them over
+   one screen.
+   One that is animating away still counts as being there: it is still a child
+   of the container until removal, which is what keeps the strip composited
+   for the length of its own exit. */
 function reportNotificationRect() {
-  const showing = notifications.size > 0 || notificationsLeaving > 0;
-  setOverlay('notifications', showing ? notificationsEl : null);
+  for (const [name, output] of outputs) {
+    const el = output.notificationsEl;
+    setOverlay(`notifications:${name}`, el.children.length > 0 ? el : null);
+  }
 }
 
 /* The first rule matching a window, or null.

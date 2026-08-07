@@ -210,16 +210,11 @@ function animateModeIn(el) {
  * Notifications
  * --------------------------------------------------------------------- */
 
-/* How many are on their way out.
- *
- * The strip's rectangle is handed to the compositor so it can be drawn in
- * front of the windows underneath it, and that rectangle is dropped when the
- * last notification goes. Without this counter the drop would happen on the
- * first frame of the exit — the compositor would stop drawing this piece of
- * the shell, and the animation would play into a strip nobody was compositing.
- * So a notification that is leaving still counts as being there. See
+/* The strip's rectangle is handed to the compositor so it can be drawn in
+ * front of the windows underneath it, and it stays until the last child is
+ * removed: a notification that is animating away is still a child of its
+ * container until removal, so it still counts as being there. See
  * reportNotificationRect. */
-let notificationsLeaving = 0;
 
 /* One arriving.
  *
@@ -265,9 +260,7 @@ function animateNotificationOut(el, remove) {
     return;
   }
 
-  notificationsLeaving += 1;
   const done = () => {
-    notificationsLeaving -= 1;
     remove();
   };
 
