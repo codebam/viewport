@@ -1332,12 +1332,18 @@ impl ViewportState {
             Bound::Exec(command) => spawn(&command),
             Bound::Exit => self.shutdown(),
             Bound::Close => {
-                if let Some(toplevel) = self
-                    .views
-                    .get(self.focused)
-                    .and_then(|view| view.window.toplevel())
-                {
+                // An X11 window has no xdg toplevel, so `toplevel()` alone
+                // drops every XWayland client — close goes to the x11 surface
+                // instead, politely when it asked for it, force above that.
+                let Some(view) = self.views.get(self.focused) else {
+                    return;
+                };
+                if let Some(toplevel) = view.window.toplevel() {
                     toplevel.send_close();
+                } else if let Some(x11) = view.window.x11_surface() {
+                    if let Err(e) = x11.close() {
+                        tracing::error!("could not close the focused X11 window: {e}");
+                    }
                 }
             }
             Bound::Background => self.toggle_background_focus(),
