@@ -669,9 +669,7 @@ impl ViewportState {
                     && matches!(event.button_code(), BTN_LEFT | BTN_RIGHT)
                 {
                     let hit = self
-                        .space
-                        .element_under(pointer.current_location())
-                        .map(|(w, _)| w.clone())
+                        .window_under(pointer.current_location())
                         // Not through something the shell drew in front. A
                         // notification sitting over a window is not a handle
                         // for dragging that window about.
@@ -700,10 +698,7 @@ impl ViewportState {
                 }
 
                 if state == ButtonState::Pressed && !pointer.is_grabbed() {
-                    let hit = self
-                        .space
-                        .element_under(pointer.current_location())
-                        .map(|(w, _)| w.clone());
+                    let hit = self.window_under(pointer.current_location());
                     // Clicking a notification must not raise and focus the
                     // window behind it — the click never reached that window.
                     let on_overlay = crate::pointer::over_overlay(

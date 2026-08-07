@@ -388,9 +388,50 @@ impl Views {
     }
 }
 
+/// Whether a clip rectangle covers a point, in the layout's coordinates.
+///
+/// The clip is what the renderer crops a window to, and input goes by the same
+/// rectangle: a column scrolled off one monitor still has a rectangle on the
+/// monitor beside it, and a click there belongs to whatever is really drawn
+/// under the pointer. See `ViewportState::clipped_out`.
+pub fn clip_covers(clip: Box, x: f64, y: f64) -> bool {
+    x >= clip.x as f64
+        && y >= clip.y as f64
+        && x < (clip.x + clip.width) as f64
+        && y < (clip.y + clip.height) as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_column_scrolled_onto_the_next_monitor_is_not_clicked() {
+        // DP-1 is 0..1920, DP-3 starts at 1920. A column of DP-3's strip
+        // scrolled left keeps a rectangle over DP-1 and is clipped to nothing
+        // of it; the click at 960 belongs to DP-1's own window.
+        let clip = Box {
+            x: 1920,
+            y: 0,
+            width: 0,
+            height: 1080,
+        };
+        assert!(!clip_covers(clip, 960.0, 540.0));
+
+        // Half off the left edge of its own output: the half still drawn takes
+        // the click, the half hanging onto DP-1 does not.
+        let clip = Box {
+            x: 1920,
+            y: 0,
+            width: 600,
+            height: 1080,
+        };
+        assert!(clip_covers(clip, 2000.0, 540.0));
+        assert!(!clip_covers(clip, 1900.0, 540.0));
+
+        // The far edge is exclusive: a point on it is the first pixel outside.
+        assert!(!clip_covers(clip, 2520.0, 540.0));
+    }
 
     #[test]
     fn ids_start_at_one_so_zero_stays_the_no_focus_sentinel() {
