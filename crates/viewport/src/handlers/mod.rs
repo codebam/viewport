@@ -671,23 +671,56 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
 
     fn remove_constraint(
         &mut self,
-        _surface: &WlSurface,
-        _pointer: &smithay::input::pointer::PointerHandle<Self>,
+        surface: &WlSurface,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
     ) {
-        // Nothing to undo: the cursor was never moved while locked, so it is
-        // already where the client left it.
+        // The lock is over, so now the hint applies: put the cursor back
+        // under the crosshair the client was drawing rather than wherever it
+        // was pinned when the lock started (`src/pointer.c:104`).
+        self.apply_cursor_position_hint(surface, pointer);
     }
 
     fn cursor_position_hint(
         &mut self,
         surface: &WlSurface,
-        pointer: &smithay::input::pointer::PointerHandle<Self>,
+        _pointer: &smithay::input::pointer::PointerHandle<Self>,
         location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
-        // Where the cursor should reappear when the grab ends. A game usually
-        // wants it back under the crosshair rather than wherever it happened
-        // to be when the lock started (`src/pointer.c:104`).
+        // Recorded, not acted on. The protocol says the hint takes effect
+        // when the lock is *deactivated*; moving the cursor now would also
+        // send absolute motion to a client that asked for none.
+        //
+        // This is not a nicety. XWayland's warp emulator re-sends the hint
+        // and commits the surface on every single relative motion event
+        // while an X11 game holds the pointer, so acting on arrival turned
+        // every mouse delta into an absolute reposition — which is exactly
+        // what a game in GLFW's warp fallback reads as "the cursor did not
+        // move", leaving the camera dead while clicks still worked.
+        self.cursor_position_hint = Some((surface.clone(), location));
+    }
+}
+
+impl ViewportState {
+    /// Move the cursor to a hint a lock left behind, if that surface left one.
+    ///
+    /// Surface-local, so it needs the window's position; a hint for a window
+    /// that is gone is dropped rather than clamped to somewhere arbitrary.
+    fn apply_cursor_position_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+    ) {
         use smithay::wayland::seat::WaylandFocus as _;
+
+        let Some((hinted, location)) = self.cursor_position_hint.take() else {
+            return;
+        };
+        // A hint belongs to the surface that sent it. Another surface's lock
+        // ending is not permission to use it, so put it back.
+        if &hinted != surface {
+            self.cursor_position_hint = Some((hinted, location));
+            return;
+        }
         let Some(origin) = self
             .space
             .elements()
@@ -709,6 +742,10 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
                 time: 0,
             },
         );
+        // Without the frame the motion sits in the client's pending event
+        // batch: wl_pointer only commits on frame, and XWayland is one of the
+        // clients that waits for it.
+        pointer.frame(self);
         self.needs_render = true;
     }
 }

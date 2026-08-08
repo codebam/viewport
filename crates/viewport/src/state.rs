@@ -428,6 +428,15 @@ pub struct ViewportState {
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
     pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
+    /// Where a locked client wants the cursor to reappear once the lock ends,
+    /// surface-local, with the surface that asked.
+    ///
+    /// Held rather than acted on: the hint takes effect *when the lock is
+    /// deactivated*, not when it arrives. XWayland re-sends it on every
+    /// relative motion event while a game holds the pointer, so applying it
+    /// on arrival would move the cursor — and send absolute motion to a
+    /// client that asked for none — thousands of times a second.
+    pub cursor_position_hint: Option<(WlSurface, Point<f64, Logical>)>,
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
@@ -1109,6 +1118,7 @@ impl ViewportState {
             fractional_scale_state,
             foreign_toplevel_state,
             pointer_constraints_state,
+            cursor_position_hint: None,
             relative_pointer_state,
             session_lock_state,
             locked: false,
