@@ -437,6 +437,11 @@ pub struct ViewportState {
     /// on arrival would move the cursor — and send absolute motion to a
     /// client that asked for none — thousands of times a second.
     pub cursor_position_hint: Option<(WlSurface, Point<f64, Logical>)>,
+    /// How many hints have arrived, for `VIEWPORT_POINTER_DEBUG` to report
+    /// every hundredth rather than every one.
+    pub cursor_position_hints: u64,
+    /// How many relative motions have arrived, for the same reason.
+    pub pointer_motions: u64,
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
@@ -1119,6 +1124,8 @@ impl ViewportState {
             foreign_toplevel_state,
             pointer_constraints_state,
             cursor_position_hint: None,
+            cursor_position_hints: 0,
+            pointer_motions: 0,
             relative_pointer_state,
             session_lock_state,
             locked: false,

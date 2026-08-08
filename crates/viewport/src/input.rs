@@ -521,6 +521,31 @@ impl ViewportState {
                 // constraint applies to where it is now.
                 let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
 
+                if crate::pointer::debug() {
+                    // Once per hundred deltas: what the compositor believes
+                    // about capture right now, which is the one thing the
+                    // symptom cannot tell you.
+                    self.pointer_motions += 1;
+                    if self.pointer_motions % 100 == 1 {
+                        let state = if locked {
+                            "locked".to_owned()
+                        } else if let Some((region, _)) = confine_to.as_ref() {
+                            format!("confined to {} rect(s)", region.len())
+                        } else {
+                            "free".to_owned()
+                        };
+                        tracing::info!(
+                            "pointer: delta {:?} at {from:?}, {state}, over {}",
+                            event.delta(),
+                            if under.is_some() {
+                                "a surface"
+                            } else {
+                                "the shell"
+                            }
+                        );
+                    }
+                }
+
                 // Relative motion first, and always. It is what a game reads,
                 // and a locked pointer has nothing else to go on — an absolute
                 // position saturates at the screen edge, which is a game that
