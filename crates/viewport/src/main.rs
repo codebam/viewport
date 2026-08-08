@@ -298,6 +298,19 @@ fn run() -> Result<()> {
         );
     }
 
+    // Said out loud so a log can be read without having to trust that an
+    // environment variable survived whatever launched the compositor. A
+    // diagnostic that is silent when it is off and silent when it is on is
+    // not a diagnostic.
+    tracing::info!(
+        "pointer capture narration is {}",
+        if pointer::debug() {
+            "on"
+        } else {
+            "off (VIEWPORT_POINTER_DEBUG=1 turns it on)"
+        }
+    );
+
     if drm {
         tracing::info!("drm backend");
         udev::init(&mut event_loop, &mut state)?;

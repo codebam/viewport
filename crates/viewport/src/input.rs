@@ -521,19 +521,27 @@ impl ViewportState {
                 // constraint applies to where it is now.
                 let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
 
-                if crate::pointer::debug() {
-                    // Once per hundred deltas: what the compositor believes
-                    // about capture right now, which is the one thing the
-                    // symptom cannot tell you.
+                {
+                    // What the compositor believes about capture right now,
+                    // which is the one thing the symptom cannot tell you.
+                    //
+                    // Every change of state unconditionally — there are a
+                    // handful in a session and each one matters. The running
+                    // commentary only when asked, because a gaming mouse sends
+                    // thousands of these a second.
                     self.pointer_motions += 1;
-                    if self.pointer_motions % 100 == 1 {
-                        let state = if locked {
-                            "locked".to_owned()
-                        } else if let Some((region, _)) = confine_to.as_ref() {
-                            format!("confined to {} rect(s)", region.len())
-                        } else {
-                            "free".to_owned()
-                        };
+                    let state = if locked {
+                        "locked".to_owned()
+                    } else if let Some((region, _)) = confine_to.as_ref() {
+                        format!("confined to {} rect(s)", region.len())
+                    } else {
+                        "free".to_owned()
+                    };
+                    let changed = self.pointer_capture.as_deref() != Some(state.as_str());
+                    if changed {
+                        self.pointer_capture = Some(state.clone());
+                    }
+                    if changed || (crate::pointer::debug() && self.pointer_motions % 100 == 1) {
                         tracing::info!(
                             "pointer: delta {:?} at {from:?}, {state}, over {}",
                             event.delta(),

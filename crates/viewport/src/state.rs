@@ -442,6 +442,9 @@ pub struct ViewportState {
     pub cursor_position_hints: u64,
     /// How many relative motions have arrived, for the same reason.
     pub pointer_motions: u64,
+    /// What the motion path last decided about capture, so a change of state
+    /// can be logged and a million unchanged deltas cannot.
+    pub pointer_capture: Option<String>,
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
@@ -1126,6 +1129,7 @@ impl ViewportState {
             cursor_position_hint: None,
             cursor_position_hints: 0,
             pointer_motions: 0,
+            pointer_capture: None,
             relative_pointer_state,
             session_lock_state,
             locked: false,

@@ -659,20 +659,21 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
             .surface_under(pointer.current_location())
             .map(|(under, _)| &under == surface)
             .unwrap_or(false);
-        if crate::pointer::debug() {
-            use smithay::wayland::pointer_constraints::PointerConstraint;
-            let kind = with_pointer_constraint(surface, pointer, |constraint| {
-                match constraint.as_deref() {
-                    Some(PointerConstraint::Locked(_)) => "lock",
-                    Some(PointerConstraint::Confined(_)) => "confine",
-                    None => "gone",
-                }
+        // Unconditional, unlike the per-motion narration: a client asks for
+        // capture a handful of times in a session, and which kind it asked
+        // for and whether we activated it is the first thing anyone needs to
+        // know when a game cannot look around.
+        use smithay::wayland::pointer_constraints::PointerConstraint;
+        let kind =
+            with_pointer_constraint(surface, pointer, |constraint| match constraint.as_deref() {
+                Some(PointerConstraint::Locked(_)) => "lock",
+                Some(PointerConstraint::Confined(_)) => "confine",
+                None => "gone",
             });
-            tracing::info!(
-                "pointer: a client asked for a {kind}, and the cursor is {} it",
-                if over { "over" } else { "not over" }
-            );
-        }
+        tracing::info!(
+            "pointer: a client asked for a {kind}, and the cursor is {} it",
+            if over { "over" } else { "not over" }
+        );
         if !over {
             return;
         }
@@ -691,9 +692,7 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
         // The lock is over, so now the hint applies: put the cursor back
         // under the crosshair the client was drawing rather than wherever it
         // was pinned when the lock started (`src/pointer.c:104`).
-        if crate::pointer::debug() {
-            tracing::info!("pointer: a capture ended");
-        }
+        tracing::info!("pointer: a capture ended");
         self.apply_cursor_position_hint(surface, pointer);
     }
 
@@ -713,15 +712,18 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
         // every mouse delta into an absolute reposition — which is exactly
         // what a game in GLFW's warp fallback reads as "the cursor did not
         // move", leaving the camera dead while clicks still worked.
-        if crate::pointer::debug() {
-            // Once per hundred: Xwayland sends one of these per mouse delta.
-            self.cursor_position_hints += 1;
-            if self.cursor_position_hints % 100 == 1 {
-                tracing::info!(
-                    "pointer: hint {} wants the cursor at {location:?} when the lock ends",
-                    self.cursor_position_hints
-                );
-            }
+        //
+        // The first one unconditionally, because whether Xwayland sends these
+        // at all is the question; the rest only when asked, because it sends
+        // one per mouse delta.
+        self.cursor_position_hints += 1;
+        if self.cursor_position_hints == 1
+            || (crate::pointer::debug() && self.cursor_position_hints % 100 == 1)
+        {
+            tracing::info!(
+                "pointer: hint {} wants the cursor at {location:?} when the lock ends",
+                self.cursor_position_hints
+            );
         }
         self.cursor_position_hint = Some((surface.clone(), location));
     }
