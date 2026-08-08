@@ -1689,7 +1689,25 @@ impl ViewportState {
                                     .map(|(_, rect)| *rect)
                                     .collect()
                             })
-                            .unwrap_or_default(),
+                            // No region means the whole surface, not "nowhere".
+                            // Every XWayland confinement arrives this way
+                            // (`xwl_seat_confine_pointer` passes NULL), so
+                            // reading it as an empty region left an X11 game's
+                            // cursor free to walk off its own window.
+                            .unwrap_or_else(|| {
+                                let bbox = smithay::desktop::utils::bbox_from_surface_tree(
+                                    surface,
+                                    (0, 0),
+                                );
+                                // A surface with nothing committed to it has
+                                // no area, and confining to that would pin the
+                                // cursor to a corner. Leave it free instead.
+                                if bbox.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    vec![bbox]
+                                }
+                            }),
                     );
                 }
             }
