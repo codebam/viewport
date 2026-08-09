@@ -27,6 +27,13 @@ if ! pkg-config --exists x11; then
 	exit 77
 fi
 
+# The compositor spawns the server; with no binary on PATH it says so and
+# carries on serving Wayland clients, which leaves nothing here to test.
+if ! command -v Xwayland >/dev/null 2>&1; then
+	echo "SKIP: no Xwayland for the compositor to spawn"
+	exit 77
+fi
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 workdir=$(mktemp -d)
 viewport_pid=
