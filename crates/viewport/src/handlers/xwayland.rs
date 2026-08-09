@@ -225,7 +225,7 @@ impl XwmHandler for ViewportState {
             window.x11_surface().is_some()
                 && window
                     .wl_surface()
-                    .map(|surface| *surface == focus)
+                    .map(|surface| focus.is_surface(&surface))
                     .unwrap_or(false)
         })
     }

@@ -189,7 +189,7 @@ impl ViewportState {
 
         if let Some(keyboard) = self.seat.get_keyboard() {
             let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-            keyboard.set_focus(self, Some(surface.clone()), serial);
+            keyboard.set_focus(self, Some(surface.clone().into()), serial);
         }
         // The shell draws focus rings from this, and a layer surface is not
         // one of its views — so it has to hear that no view holds focus now.

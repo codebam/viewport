@@ -160,14 +160,14 @@ impl ViewportState {
             .seat
             .get_keyboard()
             .and_then(|keyboard| keyboard.current_focus())
-            .map(|focused| &focused == surface)
+            .map(|focused| focused.is_surface(surface))
             .unwrap_or(false);
         if already {
             return;
         }
         if let Some(keyboard) = self.seat.get_keyboard() {
             let serial = SERIAL_COUNTER.next_serial();
-            keyboard.set_focus(self, Some(surface.clone()), serial);
+            keyboard.set_focus(self, Some(surface.clone().into()), serial);
         }
         self.needs_render = true;
     }

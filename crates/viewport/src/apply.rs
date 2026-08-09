@@ -98,7 +98,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // this can only drop client focus and let the key path forward to
             // WebKit. Out of process it is a surface like any other, and
             // focusing it is what makes the keys arrive.
-            let target = state.shell_client_surface().cloned();
+            let target = state.shell_client_surface().cloned().map(Into::into);
             if let Some(keyboard) = state.seat.get_keyboard() {
                 let serial = SERIAL_COUNTER.next_serial();
                 keyboard.set_focus(state, target, serial);
@@ -650,12 +650,19 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {
-    let Some(surface) = state.views.get(id).and_then(|v| v.surface()) else {
+    // By window, not by surface: an X11 window's surface would take the
+    // keyboard on the Wayland side while the X server went on believing
+    // nothing was focused.
+    let Some(focus) = state
+        .views
+        .get(id)
+        .and_then(|view| crate::keyboard_focus::KeyboardFocus::for_window(&view.window))
+    else {
         return;
     };
     if let Some(keyboard) = state.seat.get_keyboard() {
         let serial = SERIAL_COUNTER.next_serial();
-        keyboard.set_focus(state, Some(surface), serial);
+        keyboard.set_focus(state, Some(focus), serial);
     }
     if let Some(view) = state.views.get(id) {
         let window = view.window.clone();
