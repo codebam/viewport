@@ -2616,7 +2616,7 @@ impl ViewportState {
         };
         self.shortcut_inhibitors.iter().any(|inhibitor| {
             inhibitor.wl_surface().alive()
-                && *inhibitor.wl_surface() == focus
+                && focus.is_surface(inhibitor.wl_surface())
                 && inhibitor.is_active()
         })
     }
@@ -3658,7 +3658,11 @@ impl ViewportState {
         // that reached a terminal instead would be typed into it.
         if let Some(keyboard) = self.seat.get_keyboard() {
             let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-            keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+            keyboard.set_focus(
+                self,
+                Option::<crate::keyboard_focus::KeyboardFocus>::None,
+                serial,
+            );
         }
         self.notify_picker();
 

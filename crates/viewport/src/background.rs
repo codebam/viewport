@@ -611,7 +611,7 @@ impl ViewportState {
         // next press "restore" focus from a terminal that had not had it.
         let holds = match (&self.background_focused, keyboard.current_focus()) {
             (Some(name), Some(current)) => self.background_terminals.iter().any(|background| {
-                background.output == *name && background.surface() == Some(&current)
+                background.output == *name && background.surface() == Some(current.surface())
             }),
             _ => false,
         };
@@ -621,7 +621,7 @@ impl ViewportState {
             let target = restore
                 .filter(|id| *id != crate::views::NO_VIEW)
                 .and_then(|id| self.views.get(id))
-                .and_then(|view| view.window.toplevel().map(|t| t.wl_surface().clone()));
+                .and_then(|view| crate::keyboard_focus::KeyboardFocus::for_window(&view.window));
             let restored = target.is_some();
             let serial = SERIAL_COUNTER.next_serial();
             keyboard.set_focus(self, target, serial);
@@ -657,7 +657,7 @@ impl ViewportState {
         self.focus_before_background = Some(self.focused);
         self.background_focused = Some(output.name());
         let serial = SERIAL_COUNTER.next_serial();
-        keyboard.set_focus(self, Some(surface), serial);
+        keyboard.set_focus(self, Some(surface.into()), serial);
         // No window is focused now, and the shell has to stop drawing one as
         // if it were — the same thing `ShellFocus` does for the desktop.
         self.notify_focus(crate::views::NO_VIEW);

@@ -27,6 +27,7 @@ mod headless;
 mod idle;
 mod input;
 mod ipc;
+mod keyboard_focus;
 mod msg;
 mod notification;
 mod output_management;

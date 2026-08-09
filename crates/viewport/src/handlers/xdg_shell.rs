@@ -197,7 +197,7 @@ impl XdgShellHandler for ViewportState {
             return;
         };
 
-        let grab = self.popups.grab_popup(root, kind, &seat, serial);
+        let grab = self.popups.grab_popup(root.into(), kind, &seat, serial);
         let mut grab = match grab {
             Ok(grab) => grab,
             Err(e) => {

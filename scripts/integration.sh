@@ -80,8 +80,14 @@ run() {
 	local name=$1
 	shift
 	echo "=== $name"
-	if "$@"; then
+	local status=0
+	"$@" || status=$?
+	# 77 is the automake convention a test uses to say it could not run at
+	# all, which is not the same as a failure and must not read as one.
+	if [ "$status" -eq 0 ]; then
 		echo "=== $name: pass"
+	elif [ "$status" -eq 77 ]; then
+		echo "=== $name: skipped"
 	else
 		echo "=== $name: FAIL" >&2
 		failed=1
@@ -113,5 +119,9 @@ else
 fi
 run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"
+
+# Compiles its own client, because it is the one test here that needs X11 and
+# the suite is deliberately buildable without it. Skips where there is none.
+run xwayland-focus "$root/tests/xwayland-focus.test.sh" "$VIEWPORT"
 
 exit "$failed"

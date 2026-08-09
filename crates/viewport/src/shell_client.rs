@@ -820,11 +820,14 @@ impl ViewportState {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
         };
-        if keyboard.current_focus().as_ref() == Some(&surface) {
+        if keyboard
+            .current_focus()
+            .is_some_and(|focus| focus.is_surface(&surface))
+        {
             return true;
         }
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        keyboard.set_focus(self, Some(surface), serial);
+        keyboard.set_focus(self, Some(surface.into()), serial);
         true
     }
 

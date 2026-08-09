@@ -27,7 +27,10 @@ use smithay::wayland::selection::SelectionHandler;
 use crate::state::ViewportState;
 
 impl SeatHandler for ViewportState {
-    type KeyboardFocus = WlSurface;
+    // Not `WlSurface`: an X11 window has to be focused through the X server as
+    // well, and smithay only does that for a focus that *is* an `X11Surface`.
+    // See `keyboard_focus.rs`.
+    type KeyboardFocus = crate::keyboard_focus::KeyboardFocus;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
@@ -51,9 +54,13 @@ impl SeatHandler for ViewportState {
         self.needs_render = true;
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+    fn focus_changed(
+        &mut self,
+        seat: &Seat<Self>,
+        focused: Option<&crate::keyboard_focus::KeyboardFocus>,
+    ) {
         let dh = &self.display_handle;
-        let client = focused.and_then(|s| dh.get_client(s.id()).ok());
+        let client = focused.and_then(|focus| dh.get_client(focus.surface().id()).ok());
         set_data_device_focus(dh, seat, client);
     }
 }
@@ -1013,7 +1020,7 @@ impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for V
         &self,
         surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     ) -> Option<Self::KeyboardFocus> {
-        Some(surface.clone())
+        Some(surface.clone().into())
     }
 }
 
