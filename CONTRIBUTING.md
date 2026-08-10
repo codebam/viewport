@@ -48,10 +48,10 @@ rather than reading it.
 
 ## The checks before a commit
 
-There is no CI. `.github/workflows/ci.yml` still describes what used to run on
-a push and no longer does — the comment at the top of it says why, and how to
-put it back. The same checks live in a hook, which has to be turned on once
-per clone:
+CI runs three jobs on every push — `shell`, `rust`, `asan` — as described in
+`.github/workflows/ci.yml`. The same checks also live in a hook, which has to
+be turned on once per clone, so there is a local pre-check before the push
+triggers anything remote:
 
 ```sh
 git config core.hooksPath .githooks

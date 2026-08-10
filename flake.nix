@@ -449,6 +449,8 @@
 
             cp ${self}/data/fallback.html $out/share/viewport/fallback.html
             cp ${self}/data/config.example.json $out/share/viewport/config.example.json
+            mkdir -p $out/share/man/man1
+            cp ${self}/docs/viewport.1 $out/share/man/man1/viewport.1
 
             # Which engine this package was built to use.
             #
@@ -578,6 +580,11 @@
             # version underneath — 2.52.5 — different port.
             gtk4
             webkitgtk_6_0
+
+            # Not linked — spawned, as in runtimeDeps. The compositor brings
+            # up the real Xwayland binary off PATH, and without it in this
+            # shell tests/xwayland-focus.test.sh has no X server to ask.
+            xwayland
         ];
 
         # The environment both need, extracted for the same reason: an ASan

@@ -521,6 +521,39 @@ impl ViewportState {
                 // constraint applies to where it is now.
                 let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
 
+                {
+                    // What the compositor believes about capture right now,
+                    // which is the one thing the symptom cannot tell you.
+                    //
+                    // Every change of state unconditionally — there are a
+                    // handful in a session and each one matters. The running
+                    // commentary only when asked, because a gaming mouse sends
+                    // thousands of these a second.
+                    self.pointer_motions += 1;
+                    let state = if locked {
+                        "locked".to_owned()
+                    } else if let Some((region, _)) = confine_to.as_ref() {
+                        format!("confined to {} rect(s)", region.len())
+                    } else {
+                        "free".to_owned()
+                    };
+                    let changed = self.pointer_capture.as_deref() != Some(state.as_str());
+                    if changed {
+                        self.pointer_capture = Some(state.clone());
+                    }
+                    if changed || (crate::pointer::debug() && self.pointer_motions % 100 == 1) {
+                        tracing::info!(
+                            "pointer: delta {:?} at {from:?}, {state}, over {}",
+                            event.delta(),
+                            if under.is_some() {
+                                "a surface"
+                            } else {
+                                "the shell"
+                            }
+                        );
+                    }
+                }
+
                 // Relative motion first, and always. It is what a game reads,
                 // and a locked pointer has nothing else to go on — an absolute
                 // position saturates at the screen edge, which is a game that
@@ -585,11 +618,47 @@ impl ViewportState {
                 let Some(output_geo) = self.space.output_geometry(output) else {
                     return;
                 };
-                let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
-                let serial = SERIAL_COUNTER.next_serial();
+                let mut pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
                 let Some(pointer) = self.seat.get_pointer() else {
                     return;
                 };
+
+                // A capture holds whatever device is driving the cursor, not
+                // just a mouse. A pen or a touchscreen walking through an
+                // active lock would move a cursor the client has been told is
+                // standing still, and hand a game absolute positions it reads
+                // as an enormous jump.
+                let from = pointer.current_location();
+                let (locked, confine_to) =
+                    self.pointer_constraint(&pointer, self.surface_under(from).as_ref());
+
+                // The delta this absolute position implies. It is what a
+                // captured client is driven by, and the only thing it gets:
+                // the position itself is exactly what a lock withholds.
+                let delta = pos - from;
+                pointer.relative_motion(
+                    self,
+                    self.surface_under(from),
+                    &smithay::input::pointer::RelativeMotionEvent {
+                        delta,
+                        // Nothing accelerated it, so the raw delta is the
+                        // unaccelerated one.
+                        delta_unaccel: delta,
+                        utime: event.time(),
+                    },
+                );
+                if locked {
+                    pointer.frame(self);
+                    return;
+                }
+                if let Some((region, origin)) = confine_to {
+                    let local = pos - origin.to_f64();
+                    if let Some(snapped) = crate::pointer::confine(&region, local) {
+                        pos = snapped + origin.to_f64();
+                    }
+                }
+
+                let serial = SERIAL_COUNTER.next_serial();
                 let under = self.surface_under(pos);
                 let on_shell = under.is_none();
 
@@ -719,12 +788,13 @@ impl ViewportState {
                             // A click on a tiled window must not bury the
                             // floating one that was over it.
                             self.restack();
-                            if let Some(toplevel) = window.toplevel() {
-                                keyboard.set_focus(
-                                    self,
-                                    Some(toplevel.wl_surface().clone()),
-                                    serial,
-                                );
+                            // By window rather than by toplevel: an X11
+                            // window has no toplevel, and reaching for one
+                            // focused nothing at all.
+                            if let Some(focus) =
+                                crate::keyboard_focus::KeyboardFocus::for_window(&window)
+                            {
+                                keyboard.set_focus(self, Some(focus), serial);
                             }
                             self.activate_view(id);
                             if id != self.focused {
@@ -743,7 +813,11 @@ impl ViewportState {
                             // the key path to hand keys to the engine instead.
                             let where_ = pointer.current_location();
                             if !self.focus_shell_at(Some(where_)) {
-                                keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+                                keyboard.set_focus(
+                                    self,
+                                    Option::<crate::keyboard_focus::KeyboardFocus>::None,
+                                    serial,
+                                );
                             }
                             if self.focused != NO_VIEW {
                                 self.notify_focus(NO_VIEW);
@@ -1018,7 +1092,7 @@ impl ViewportState {
                             .map(|pointer| pointer.current_location());
                         if let (Some(at), Some(keyboard)) = (at, self.seat.get_keyboard()) {
                             if let Some((surface, _)) = self.surface_under(at) {
-                                keyboard.set_focus(self, Some(surface), serial);
+                                keyboard.set_focus(self, Some(surface.into()), serial);
                             }
                         }
                     }
@@ -1173,7 +1247,7 @@ impl ViewportState {
                 // pointer to click with and no way to reach a chord.
                 if let Some((surface, _)) = under.as_ref() {
                     if let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(self, Some(surface.clone()), serial);
+                        keyboard.set_focus(self, Some(surface.clone().into()), serial);
                     }
                 }
 
@@ -1689,7 +1763,25 @@ impl ViewportState {
                                     .map(|(_, rect)| *rect)
                                     .collect()
                             })
-                            .unwrap_or_default(),
+                            // No region means the whole surface, not "nowhere".
+                            // Every XWayland confinement arrives this way
+                            // (`xwl_seat_confine_pointer` passes NULL), so
+                            // reading it as an empty region left an X11 game's
+                            // cursor free to walk off its own window.
+                            .unwrap_or_else(|| {
+                                let bbox = smithay::desktop::utils::bbox_from_surface_tree(
+                                    surface,
+                                    (0, 0),
+                                );
+                                // A surface with nothing committed to it has
+                                // no area, and confining to that would pin the
+                                // cursor to a corner. Leave it free instead.
+                                if bbox.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    vec![bbox]
+                                }
+                            }),
                     );
                 }
             }

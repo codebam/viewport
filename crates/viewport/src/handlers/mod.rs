@@ -27,7 +27,10 @@ use smithay::wayland::selection::SelectionHandler;
 use crate::state::ViewportState;
 
 impl SeatHandler for ViewportState {
-    type KeyboardFocus = WlSurface;
+    // Not `WlSurface`: an X11 window has to be focused through the X server as
+    // well, and smithay only does that for a focus that *is* an `X11Surface`.
+    // See `keyboard_focus.rs`.
+    type KeyboardFocus = crate::keyboard_focus::KeyboardFocus;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
@@ -51,9 +54,13 @@ impl SeatHandler for ViewportState {
         self.needs_render = true;
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+    fn focus_changed(
+        &mut self,
+        seat: &Seat<Self>,
+        focused: Option<&crate::keyboard_focus::KeyboardFocus>,
+    ) {
         let dh = &self.display_handle;
-        let client = focused.and_then(|s| dh.get_client(s.id()).ok());
+        let client = focused.and_then(|focus| dh.get_client(focus.surface().id()).ok());
         set_data_device_focus(dh, seat, client);
     }
 }
@@ -659,6 +666,21 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
             .surface_under(pointer.current_location())
             .map(|(under, _)| &under == surface)
             .unwrap_or(false);
+        // Unconditional, unlike the per-motion narration: a client asks for
+        // capture a handful of times in a session, and which kind it asked
+        // for and whether we activated it is the first thing anyone needs to
+        // know when a game cannot look around.
+        use smithay::wayland::pointer_constraints::PointerConstraint;
+        let kind =
+            with_pointer_constraint(surface, pointer, |constraint| match constraint.as_deref() {
+                Some(PointerConstraint::Locked(_)) => "lock",
+                Some(PointerConstraint::Confined(_)) => "confine",
+                None => "gone",
+            });
+        tracing::info!(
+            "pointer: a client asked for a {kind}, and the cursor is {} it",
+            if over { "over" } else { "not over" }
+        );
         if !over {
             return;
         }
@@ -671,23 +693,70 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
 
     fn remove_constraint(
         &mut self,
-        _surface: &WlSurface,
-        _pointer: &smithay::input::pointer::PointerHandle<Self>,
+        surface: &WlSurface,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
     ) {
-        // Nothing to undo: the cursor was never moved while locked, so it is
-        // already where the client left it.
+        // The lock is over, so now the hint applies: put the cursor back
+        // under the crosshair the client was drawing rather than wherever it
+        // was pinned when the lock started (`src/pointer.c:104`).
+        tracing::info!("pointer: a capture ended");
+        self.apply_cursor_position_hint(surface, pointer);
     }
 
     fn cursor_position_hint(
         &mut self,
         surface: &WlSurface,
-        pointer: &smithay::input::pointer::PointerHandle<Self>,
+        _pointer: &smithay::input::pointer::PointerHandle<Self>,
         location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
-        // Where the cursor should reappear when the grab ends. A game usually
-        // wants it back under the crosshair rather than wherever it happened
-        // to be when the lock started (`src/pointer.c:104`).
+        // Recorded, not acted on. The protocol says the hint takes effect
+        // when the lock is *deactivated*; moving the cursor now would also
+        // send absolute motion to a client that asked for none.
+        //
+        // This is not a nicety. XWayland's warp emulator re-sends the hint
+        // and commits the surface on every single relative motion event
+        // while an X11 game holds the pointer, so acting on arrival turned
+        // every mouse delta into an absolute reposition — which is exactly
+        // what a game in GLFW's warp fallback reads as "the cursor did not
+        // move", leaving the camera dead while clicks still worked.
+        //
+        // The first one unconditionally, because whether Xwayland sends these
+        // at all is the question; the rest only when asked, because it sends
+        // one per mouse delta.
+        self.cursor_position_hints += 1;
+        if self.cursor_position_hints == 1
+            || (crate::pointer::debug() && self.cursor_position_hints % 100 == 1)
+        {
+            tracing::info!(
+                "pointer: hint {} wants the cursor at {location:?} when the lock ends",
+                self.cursor_position_hints
+            );
+        }
+        self.cursor_position_hint = Some((surface.clone(), location));
+    }
+}
+
+impl ViewportState {
+    /// Move the cursor to a hint a lock left behind, if that surface left one.
+    ///
+    /// Surface-local, so it needs the window's position; a hint for a window
+    /// that is gone is dropped rather than clamped to somewhere arbitrary.
+    fn apply_cursor_position_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+    ) {
         use smithay::wayland::seat::WaylandFocus as _;
+
+        let Some((hinted, location)) = self.cursor_position_hint.take() else {
+            return;
+        };
+        // A hint belongs to the surface that sent it. Another surface's lock
+        // ending is not permission to use it, so put it back.
+        if &hinted != surface {
+            self.cursor_position_hint = Some((hinted, location));
+            return;
+        }
         let Some(origin) = self
             .space
             .elements()
@@ -709,6 +778,10 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
                 time: 0,
             },
         );
+        // Without the frame the motion sits in the client's pending event
+        // batch: wl_pointer only commits on frame, and XWayland is one of the
+        // clients that waits for it.
+        pointer.frame(self);
         self.needs_render = true;
     }
 }
@@ -790,31 +863,7 @@ crate::delegate_output_management!(ViewportState);
 crate::delegate_gamma_control!(ViewportState);
 crate::delegate_output_power!(ViewportState);
 crate::delegate_foreign_toplevel!(ViewportState);
-crate::delegate_export_dmabuf!(ViewportState);
-crate::delegate_transient_seat!(ViewportState);
-crate::delegate_toplevel_drag!(ViewportState);
 crate::delegate_tearing_control!(ViewportState);
-
-/// wlr-export-dmabuf-v1, see export_dmabuf.rs.
-impl crate::export_dmabuf::ExportDmabufHandler for ViewportState {
-    fn export_dmabuf_state(&mut self) -> &mut crate::export_dmabuf::ExportDmabufState {
-        &mut self.export_dmabuf_state
-    }
-}
-
-/// ext-transient-seat-v1, see transient_seat.rs.
-impl crate::transient_seat::TransientSeatHandler for ViewportState {
-    fn transient_seat_state(&mut self) -> &mut crate::transient_seat::TransientSeatState {
-        &mut self.transient_seat_state
-    }
-}
-
-/// xdg-toplevel-drag-v1, see toplevel_drag.rs.
-impl crate::toplevel_drag::ToplevelDragHandler for ViewportState {
-    fn toplevel_drag_state(&mut self) -> &mut crate::toplevel_drag::ToplevelDragState {
-        &mut self.toplevel_drag_state
-    }
-}
 
 /// xdg-system-bell: a client asking the desktop to make a noise.
 ///
@@ -971,7 +1020,7 @@ impl smithay::wayland::xwayland_keyboard_grab::XWaylandKeyboardGrabHandler for V
         &self,
         surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     ) -> Option<Self::KeyboardFocus> {
-        Some(surface.clone())
+        Some(surface.clone().into())
     }
 }
 

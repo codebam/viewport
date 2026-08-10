@@ -154,6 +154,8 @@ EOF
   install -Dm644 data/systemd/user/viewport-session.target \
     "$pkgdir/usr/lib/systemd/user/viewport-session.target"
 
+  install -Dm644 docs/viewport.1 "$pkgdir/usr/share/man/man1/viewport.1"
+
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE" 2>/dev/null || true
 
   install -Dm644 /dev/stdin "$pkgdir/usr/share/wayland-sessions/viewport.desktop" <<'EOF'

@@ -17,7 +17,6 @@ mod color_management;
 mod config;
 mod cursor;
 mod dump;
-mod export_dmabuf;
 mod focus;
 mod foreign_toplevel;
 mod framing;
@@ -28,6 +27,7 @@ mod headless;
 mod idle;
 mod input;
 mod ipc;
+mod keyboard_focus;
 mod msg;
 mod notification;
 mod output_management;
@@ -47,8 +47,6 @@ mod shell_watch;
 mod state;
 mod status;
 mod tearing;
-mod toplevel_drag;
-mod transient_seat;
 mod udev;
 mod views;
 mod watchdog;
@@ -300,6 +298,19 @@ fn run() -> Result<()> {
              WAYLAND_DISPLAY to nest inside a session, or pass --drm to mean it"
         );
     }
+
+    // Said out loud so a log can be read without having to trust that an
+    // environment variable survived whatever launched the compositor. A
+    // diagnostic that is silent when it is off and silent when it is on is
+    // not a diagnostic.
+    tracing::info!(
+        "pointer capture narration is {}",
+        if pointer::debug() {
+            "on"
+        } else {
+            "off (VIEWPORT_POINTER_DEBUG=1 turns it on)"
+        }
+    );
 
     if drm {
         tracing::info!("drm backend");

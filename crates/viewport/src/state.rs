@@ -428,6 +428,23 @@ pub struct ViewportState {
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
     pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
+    /// Where a locked client wants the cursor to reappear once the lock ends,
+    /// surface-local, with the surface that asked.
+    ///
+    /// Held rather than acted on: the hint takes effect *when the lock is
+    /// deactivated*, not when it arrives. XWayland re-sends it on every
+    /// relative motion event while a game holds the pointer, so applying it
+    /// on arrival would move the cursor — and send absolute motion to a
+    /// client that asked for none — thousands of times a second.
+    pub cursor_position_hint: Option<(WlSurface, Point<f64, Logical>)>,
+    /// How many hints have arrived, for `VIEWPORT_POINTER_DEBUG` to report
+    /// every hundredth rather than every one.
+    pub cursor_position_hints: u64,
+    /// How many relative motions have arrived, for the same reason.
+    pub pointer_motions: u64,
+    /// What the motion path last decided about capture, so a change of state
+    /// can be logged and a million unchanged deltas cannot.
+    pub pointer_capture: Option<String>,
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
@@ -513,9 +530,6 @@ pub struct ViewportState {
     /// switcher can act on. The read-only ext protocol is beside it and
     /// describes the same windows.
     pub foreign_management_state: crate::foreign_toplevel::ForeignToplevelState,
-    pub export_dmabuf_state: crate::export_dmabuf::ExportDmabufState,
-    pub toplevel_drag_state: crate::toplevel_drag::ToplevelDragState,
-    pub transient_seat_state: crate::transient_seat::TransientSeatState,
     /// The screencast portal's streams, one per source a client is watching,
     /// and the PipeWire connection they live on. Absent until something asks
     /// to share a screen: a desktop nobody is sharing should not hold a
@@ -754,9 +768,6 @@ impl ViewportState {
         let output_power_state = crate::output_power::OutputPowerState::new::<Self>(&dh);
         let foreign_management_state =
             crate::foreign_toplevel::ForeignToplevelState::new::<Self>(&dh);
-        let export_dmabuf_state = crate::export_dmabuf::ExportDmabufState::new::<Self>(&dh);
-        let toplevel_drag_state = crate::toplevel_drag::ToplevelDragState::new::<Self>(&dh);
-        let transient_seat_state = crate::transient_seat::TransientSeatState::new::<Self>(&dh);
         // The standardised capture protocols. wlr-screencopy stays beside
         // them: grim and wf-recorder speak that one and nothing else, while a
         // current xdg-desktop-portal looks for these first.
@@ -1093,9 +1104,6 @@ impl ViewportState {
             picker: None,
             next_pick: 1,
             foreign_management_state,
-            export_dmabuf_state,
-            toplevel_drag_state,
-            transient_seat_state,
             image_capture_source_state,
             output_capture_source_state,
             toplevel_capture_source_state,
@@ -1123,6 +1131,10 @@ impl ViewportState {
             fractional_scale_state,
             foreign_toplevel_state,
             pointer_constraints_state,
+            cursor_position_hint: None,
+            cursor_position_hints: 0,
+            pointer_motions: 0,
+            pointer_capture: None,
             relative_pointer_state,
             session_lock_state,
             locked: false,
@@ -2610,7 +2622,7 @@ impl ViewportState {
         };
         self.shortcut_inhibitors.iter().any(|inhibitor| {
             inhibitor.wl_surface().alive()
-                && *inhibitor.wl_surface() == focus
+                && focus.is_surface(inhibitor.wl_surface())
                 && inhibitor.is_active()
         })
     }
@@ -3652,7 +3664,11 @@ impl ViewportState {
         // that reached a terminal instead would be typed into it.
         if let Some(keyboard) = self.seat.get_keyboard() {
             let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-            keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+            keyboard.set_focus(
+                self,
+                Option::<crate::keyboard_focus::KeyboardFocus>::None,
+                serial,
+            );
         }
         self.notify_picker();
 
@@ -5431,6 +5447,18 @@ impl ViewportState {
             // "client" hands the frame back; anything else, including a value
             // nobody recognises, keeps it here (`src/config.c:315`).
             self.server_decorations = mode != "client";
+            // Keep the KDE manager's advertised default in step with the
+            // per-surface answer in handlers/xdg_shell.rs::decoration_mode:
+            // a client that probes the manager to decide whether to draw a
+            // frame and a client that asks per-surface must get the same
+            // answer, or one draws nothing while the other also draws nothing.
+            use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode;
+            self.kde_decoration_state
+                .set_default_mode(if self.server_decorations {
+                    KdeDefaultMode::Server
+                } else {
+                    KdeDefaultMode::Client
+                });
         }
         if file.idle != crate::config::IdleConfig::default() {
             self.idle_settings = crate::idle::Settings {

@@ -25,11 +25,29 @@
 
 use smithay::utils::{Logical, Point, Rectangle};
 
+/// Whether to narrate every step of pointer capture to the log.
+///
+/// Off by default and worth having: capture is negotiated between a game, a
+/// toolkit, Xwayland and the compositor, and from the outside every failure
+/// looks the same — the camera does not turn. Which of the four stopped
+/// cannot be read from the symptom, only from the sequence.
+///
+/// `VIEWPORT_POINTER_DEBUG=1`.
+pub fn debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(
+            std::env::var("VIEWPORT_POINTER_DEBUG").as_deref(),
+            Ok("1") | Ok("true")
+        )
+    })
+}
+
 /// Pull a point back inside a region, if it has left it.
 ///
-/// Returns `None` when the point is already inside, or when there is nothing
-/// to confine it to — an empty region means the whole surface, per the
-/// protocol, and there is no edge to snap to.
+/// Returns `None` when the point is already inside, or when the region is
+/// empty. A *null* region means the whole surface, but that is resolved
+/// before this point: an empty region here is nothing to confine to.
 ///
 /// Rectangles are half-open, so the far edges sit one pixel short of the
 /// bound: a point at exactly `x + width` is outside.

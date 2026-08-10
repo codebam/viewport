@@ -359,3 +359,11 @@ client on its first frame:
 tagged, and cannot create sandboxes of its own) and `xwayland-keyboard-grab`
 (advertised only to Xwayland, by Smithay's own filter, so its absence from
 `wayland-info` is not a fault).
+
+## xdg-toplevel-drag-v1
+
+Not advertised: the spec describes moving a toplevel with the cursor during a drag, and here the shell owns placement. A compositor-driven `xdg_toplevel.move` would fight the layout rather than inform it, and this compositor's `move` is a no-op for the same reason. An advertised-but-inert global would be worse: a browser that probes for it takes the tear-out path expecting the compositor to carry the window, and without a move or an IPC forward the torn tab stays put when it should have followed the pointer. With no global browsers keep Firefox and Chromium's non-drag paths, which is what actually works. If an IPC forward (`view.drag` with the offset hint the shell can land) or a real move is added, this note should be replaced by that implementation and its docs.
+
+## wlr-export-dmabuf-v1 and ext-transient-seat-v1
+
+Not advertised: both describe capabilities this compositor does not presently have — zero-copy scanout export and a second input seat with virtual-input back ends. An `ext-image-copy-capture` and `wlr-screencopy` path covers screenshots, and the single seat is the real one. A `cancel(permanent)` or a `denied` would be spec-legal, but a global that is always refused is one that makes clients that probe and do not fall back worse off than if it were absent. With no global a client that only speaks the missing verb still learns the same thing, through absence rather than refusal, and a client that probes first falls back the same way. These are second behind the one that is already shipped.
