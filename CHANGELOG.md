@@ -12,10 +12,22 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Protocols
-- `zwlr_foreign_toplevel_management_v1`: activate, close and fullscreen for taskbars (`crates/viewport/src/foreign_toplevel.rs` — see also `docs/RUST-REWRITE.md`); maximise/minimise are accepted and not acted on, because the shell owns the layout.
-- `kde-server-decoration` via Smithay's `KdeDecorationState` — a Qt/KDE client that speaks only the KDE verb no longer draws doubled decorations; the manager's default and the per-surface answers derive from the same `\"decorations\": \"client\"` config.
-- `xdg-toplevel-drag-v1`: no longer advertised. The tab-tearing global is withdrawn rather than carried as an advertised-but-inert object that makes browsers take a path the compositor never delivers; see `docs/protocols.md`.
-- `wlr-export-dmabuf-v1` and `ext-transient-seat-v1`: no longer advertised. Zero-copy capture has `ext-image-copy-capture` and `wlr-screencopy`; a second seat has no virtual-input back end. An always-refused global is worse than absence for a client that probes and does not fall back; see `docs/protocols.md`.
+- `zwlr_foreign_toplevel_management_v1`: activate, close and fullscreen for
+  taskbars (`crates/viewport/src/foreign_toplevel.rs` — see also
+  `docs/RUST-REWRITE.md`); maximise and minimise are accepted and not acted
+  on, because the shell owns the layout.
+- `kde-server-decoration` via Smithay's `KdeDecorationState` — a Qt or KDE
+  client that speaks only the KDE verb no longer draws doubled decorations,
+  and the manager's default and the per-surface answers both derive from the
+  `"decorations"` config key.
+- `xdg-toplevel-drag-v1`: not advertised. The tab-tearing global is withdrawn
+  rather than carried as an advertised-but-inert object that makes browsers
+  take a path the compositor never delivers; see `docs/protocols.md`.
+- `wlr-export-dmabuf-v1` and `ext-transient-seat-v1`: not advertised.
+  Zero-copy capture has `ext-image-copy-capture` and `wlr-screencopy`, and a
+  second seat has no virtual-input back end. An always-refused global leaves a
+  client that probes and does not fall back worse off than absence would; see
+  `docs/protocols.md`.
 - Wire up the color management, HDR, output management and tearing-control
   protocol surfaces the shell and clients use — `color-management-v1`,
   `hdr-output-metadata-v1`, `wlr-output-management` and the smithay fork's

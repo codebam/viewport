@@ -104,7 +104,7 @@ run() {
 }
 
 # Every test, then the verdict — a run that stops at the first failure tells
-# you less than one that says which of the four are broken.
+# you less than one that says which of them are broken.
 run capture-tiling "$root/tests/capture.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client" tiling
 run capture-scrolling "$root/tests/capture.test.sh" \

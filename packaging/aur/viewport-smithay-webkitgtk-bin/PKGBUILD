@@ -92,10 +92,13 @@ package() {
   # generates again for this package.
   cp -a "$srcdir/usr" "$pkgdir/usr"
 
+  # The man page comes with the artifact rather than being installed here:
+  # this recipe unpacks a built package, so `$srcdir` holds `usr/` and the
+  # metadata pacman regenerates, and there is no source tree to copy a page
+  # out of. The source recipe installs it, so the `cp -a` above carries it.
+
   # The licence directory is named for the package that installed it, and that
   # is a different name here.
-  install -Dm644 docs/viewport.1 "$pkgdir/usr/share/man/man1/viewport.1"
-
   mv "$pkgdir/usr/share/licenses/viewport-smithay-webkitgtk" \
      "$pkgdir/usr/share/licenses/$pkgname"
 }

@@ -1,8 +1,9 @@
 # Contributing
 
 Thanks for wanting to work on Viewport. This page is what a change has to get
-past — the build, the tests, the hook that stands in for the CI that does not
-run, and the conventions the tree is written under.
+past — the build, the tests, the CI that runs them on every push, the hook
+that runs the same checks before you get there, and the conventions the tree
+is written under.
 
 ## Building and testing
 
