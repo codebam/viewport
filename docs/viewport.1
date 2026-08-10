@@ -1,0 +1,126 @@
+.TH VIEWPORT 1 "August 2026" "viewport 0.1.3" "User Commands"
+.SH NAME
+viewport \- a Wayland compositor whose shell is a web page
+.SH SYNOPSIS
+.B viewport
+.RI [ options ]
+.br
+.B viewport msg
+.RI [ options ]
+.B \-t
+.IR type
+.RI [ \-\-field " value" ]...
+.SH DESCRIPTION
+.B viewport
+is a Wayland compositor whose entire shell\(emwallpaper, dock, window frames,
+titlebars\(emis a web page, composited zero\-copy alongside native Wayland
+clients.  Smithay handles DRM/KMS, input and the xdg\-shell protocol; WebKit
+renders the UI to a DMA\-BUF.
+.PP
+With no options it nests inside the session it was started from, which is what
+trying it costs a window rather than the machine;
+.B \-\-drm
+takes the screens instead.
+.SH OPTIONS
+.TP
+.BI \-\-drm
+Take the screens and the seat: a session of its own, from a TTY.
+.TP
+.B \-\-headless
+No renderer and no window: everything but drawing, for tests.
+.TP
+.BI \-\-width " N"
+The headless output's width (default 1920).
+.TP
+.BI \-\-height " N"
+And its height (default 1080).
+.TP
+.BI \-\-config " PATH"
+The config file, instead of the default one.
+.TP
+.BI \-\-layout " NAME"
+Tiling or scrolling, over whatever the config says.
+.TP
+.BI \-\-renderer " NAME"
+Vulkan or gles, over $VIEWPORT_RENDERER.
+.TP
+.BI \-\-shell-backend " NAME"
+Which engine draws the desktop; see
+.IR docs/shell-backends.md .
+.TP
+.BI \-\-url " URL"
+A page to run instead of the bundled desktop.
+.TP
+.B \-\-url\-span
+Give that page every monitor, not just the first.
+.TP
+.B \-\-watch\-shell
+Reload the shell when its files change.
+.TP
+.BI \-\-background-terminal " [CMD]"
+A terminal for a wallpaper, running CMD if one is given.
+.TP
+.BI \-\-socket " PATH"
+The control socket, instead of the one named after the display.
+.TP
+.BI \-\-exit-after " SECS"
+Stop after this long, in case stopping is what is broken.
+.TP
+.BR \-h ", " \-\-help
+Show this help and exit.
+.SH SUBCOMMANDS
+.TP
+.B msg
+Drive a running compositor over its control socket.
+.B "viewport msg \-\-help"
+lists every message.
+.SH ENVIRONMENT
+.TP
+.B VIEWPORT_LOG
+An env_logger filter that controls log verbosity (default
+.BR info ).
+Set
+.B VIEWPORT_LOG=debug
+for everything the shell says.
+.TP
+.B VIEWPORT_RENDERER
+The renderer to use (vulkan or gles); overridden by
+.BR \-\-renderer .
+.TP
+.B VIEWPORT_SHELL_BACKEND
+Which engine draws the shell; overridden by
+.BR \-\-shell-backend .
+.TP
+.B VIEWPORT_SOCKET
+The control socket
+.B viewport msg
+uses when neither
+.B \-\-socket
+nor the default path applies.
+.SH FILES
+.TP
+.I ~/.config/viewport/config.json
+The configuration file.  The reference material lives in
+.IR docs/configuration.md .
+.SH EXAMPLES
+.TP
+.nf
+viewport                        # nest in this session
+viewport \-\-drm                 # take the screens, from a TTY
+viewport \-\-url http://localhost:3000   # run a page instead of the desktop
+viewport msg \-t view.focus \-\-id 12     # focus a window by id
+viewport msg \-t output.query \-\-pretty  # list outputs
+viewport msg \-t subscribe view.focused  # follow events until ^C
+viewport msg \-t quit            # from a second TTY
+.fi
+.SH SEE ALSO
+.BR docs/configuration.md ,
+.BR docs/ipc.md ,
+.BR docs/shell-backends.md ,
+.BR docs/protocols.md .
+.SH AUTHOR
+Sean Behan <codebam@riseup.net>
+.SH COPYRIGHT
+Copyright \(co 2026 Viewport contributors.
+This is free software under the terms of the GNU General Public License,
+version 3 or later.

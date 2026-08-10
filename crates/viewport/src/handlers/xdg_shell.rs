@@ -274,6 +274,53 @@ fn answer_decoration(toplevel: &ToplevelSurface, mode: DecorationMode) {
     toplevel.send_configure();
 }
 
+/// KDE's older server-decoration protocol, what Plasma clients spoke before
+/// xdg-decoration. Smithay implements the global, so all that is left is to
+/// answer with this compositor's mode and never let a client talk us into a
+/// feedback loop: `request_mode` answers with what we want, not what was
+/// asked for, exactly as the xdg-decoration handler does above.
+impl smithay::wayland::shell::kde::decoration::KdeDecorationHandler for ViewportState {
+    fn kde_decoration_state(
+        &self,
+    ) -> &smithay::wayland::shell::kde::decoration::KdeDecorationState {
+        &self.kde_decoration_state
+    }
+
+    fn new_decoration(
+        &mut self,
+        _surface: &WlSurface,
+        decoration: &smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
+    ) {
+        answer_kde_decoration(decoration, self.decoration_mode());
+    }
+
+    fn request_mode(
+        &mut self,
+        _surface: &WlSurface,
+        decoration: &smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
+        _mode: smithay::reexports::wayland_server::WEnum<
+            smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::Mode,
+        >,
+    ) {
+        // The answer does not depend on what was asked for.
+        answer_kde_decoration(decoration, self.decoration_mode());
+    }
+}
+
+/// The xdg and KDE enums agree numerically (Client=1, Server=2), so a single
+/// conversion covers both.
+fn answer_kde_decoration(
+    decoration: &smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
+    mode: DecorationMode,
+) {
+    use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::Mode as KdeMode;
+    let mode = match mode {
+        DecorationMode::ServerSide => KdeMode::Server,
+        _ => KdeMode::Client,
+    };
+    decoration.mode(mode);
+}
+
 impl ViewportState {
     /// Server side unless the config file says `"decorations": "client"`.
     fn decoration_mode(&self) -> DecorationMode {

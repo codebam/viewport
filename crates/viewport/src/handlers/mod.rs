@@ -790,7 +790,31 @@ crate::delegate_output_management!(ViewportState);
 crate::delegate_gamma_control!(ViewportState);
 crate::delegate_output_power!(ViewportState);
 crate::delegate_foreign_toplevel!(ViewportState);
+crate::delegate_export_dmabuf!(ViewportState);
+crate::delegate_transient_seat!(ViewportState);
+crate::delegate_toplevel_drag!(ViewportState);
 crate::delegate_tearing_control!(ViewportState);
+
+/// wlr-export-dmabuf-v1, see export_dmabuf.rs.
+impl crate::export_dmabuf::ExportDmabufHandler for ViewportState {
+    fn export_dmabuf_state(&mut self) -> &mut crate::export_dmabuf::ExportDmabufState {
+        &mut self.export_dmabuf_state
+    }
+}
+
+/// ext-transient-seat-v1, see transient_seat.rs.
+impl crate::transient_seat::TransientSeatHandler for ViewportState {
+    fn transient_seat_state(&mut self) -> &mut crate::transient_seat::TransientSeatState {
+        &mut self.transient_seat_state
+    }
+}
+
+/// xdg-toplevel-drag-v1, see toplevel_drag.rs.
+impl crate::toplevel_drag::ToplevelDragHandler for ViewportState {
+    fn toplevel_drag_state(&mut self) -> &mut crate::toplevel_drag::ToplevelDragState {
+        &mut self.toplevel_drag_state
+    }
+}
 
 /// xdg-system-bell: a client asking the desktop to make a noise.
 ///

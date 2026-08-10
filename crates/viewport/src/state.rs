@@ -513,6 +513,9 @@ pub struct ViewportState {
     /// switcher can act on. The read-only ext protocol is beside it and
     /// describes the same windows.
     pub foreign_management_state: crate::foreign_toplevel::ForeignToplevelState,
+    pub export_dmabuf_state: crate::export_dmabuf::ExportDmabufState,
+    pub toplevel_drag_state: crate::toplevel_drag::ToplevelDragState,
+    pub transient_seat_state: crate::transient_seat::TransientSeatState,
     /// The screencast portal's streams, one per source a client is watching,
     /// and the PipeWire connection they live on. Absent until something asks
     /// to share a screen: a desktop nobody is sharing should not hold a
@@ -672,6 +675,7 @@ pub struct ViewportState {
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
     pub xdg_decoration_state: smithay::wayland::shell::xdg::decoration::XdgDecorationState,
+    pub kde_decoration_state: smithay::wayland::shell::kde::decoration::KdeDecorationState,
     pub shm_state: ShmState,
     // Kept alive rather than read: dropping the state withdraws the global.
     #[allow(dead_code)]
@@ -750,6 +754,9 @@ impl ViewportState {
         let output_power_state = crate::output_power::OutputPowerState::new::<Self>(&dh);
         let foreign_management_state =
             crate::foreign_toplevel::ForeignToplevelState::new::<Self>(&dh);
+        let export_dmabuf_state = crate::export_dmabuf::ExportDmabufState::new::<Self>(&dh);
+        let toplevel_drag_state = crate::toplevel_drag::ToplevelDragState::new::<Self>(&dh);
+        let transient_seat_state = crate::transient_seat::TransientSeatState::new::<Self>(&dh);
         // The standardised capture protocols. wlr-screencopy stays beside
         // them: grim and wf-recorder speak that one and nothing else, while a
         // current xdg-desktop-portal looks for these first.
@@ -917,6 +924,10 @@ impl ViewportState {
             smithay::wayland::xwayland_shell::XWaylandShellState::new::<Self>(&dh);
         let xdg_decoration_state =
             smithay::wayland::shell::xdg::decoration::XdgDecorationState::new::<Self>(&dh);
+        let kde_decoration_state = smithay::wayland::shell::kde::decoration::KdeDecorationState::new::<Self>(
+            &dh,
+            smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode::Server,
+        );
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -1082,6 +1093,9 @@ impl ViewportState {
             picker: None,
             next_pick: 1,
             foreign_management_state,
+            export_dmabuf_state,
+            toplevel_drag_state,
+            transient_seat_state,
             image_capture_source_state,
             output_capture_source_state,
             toplevel_capture_source_state,
@@ -1139,6 +1153,7 @@ impl ViewportState {
             xdisplay: None,
             xwayland_shell_state,
             xdg_decoration_state,
+            kde_decoration_state,
             shm_state,
             output_manager_state,
             seat_state,
