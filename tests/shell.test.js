@@ -632,6 +632,56 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   for (const id of [71, 72]) emit({ type: 'view.removed', id });
 }
 
+/* A monitor going away while a notification is up on it.
+ *
+ * This is what a screen coming back from DPMS looks like from here: a
+ * DisplayPort connector drops and reconnects, so the shell is handed a layout
+ * without that output and then one with it again. The rectangles it reports
+ * are per output and are reported by walking the outputs that exist — so
+ * whatever the departing one had floating is never revisited, and the
+ * compositor goes on drawing that piece of shell over the windows for the rest
+ * of the session. That is the grey box on the screen after a resume that no
+ * click and no timer will take away. */
+{
+  const layout = (names) => emit({ type: 'output.layout', outputs: names.map(
+    (name, at) => ({ name, x: at * 1920, y: 0, width: 1920, height: 1080,
+      usable_x: at * 1920, usable_y: 30, usable_width: 1920,
+      usable_height: 1050, scale: 1, transform: 'normal', modes: [],
+      enabled: true })) });
+
+  layout(['DP-1', 'DP-3']);
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-3'] });
+  emit({ type: 'notification.add', id: 90, app_name: 'daemon',
+    summary: 'still here', body: '', urgency: 1, timeout: 0, actions: [] });
+
+  const left = globalThis.__shell.outputs.get('DP-1').notificationsEl;
+  check('a notification is up on the monitor that is about to go',
+    globalThis.__shell.outputs.get('DP-3').notificationsEl.children.length === 1);
+
+  const before = sent.length;
+  layout(['DP-1']);
+  const rects = sent.slice(before)
+    .filter((m) => m.type === 'shell.overlay').at(-1)?.rects ?? [];
+
+  /* Still open as far as the application that sent it is concerned, so it
+     moves to a screen that is still there rather than being thrown away. */
+  check('the notification moves to a monitor that is still there',
+    left.children.length === 1);
+  check('and only one rectangle is drawn above the windows, not two',
+    rects.length === 1);
+
+  /* And dismissing it clears that one too: a rect left behind by the monitor
+     that went would survive this and be composited for ever. */
+  const dismissed = sent.length;
+  emit({ type: 'notification.close', id: 90 });
+  const after = sent.slice(dismissed)
+    .filter((m) => m.type === 'shell.overlay').at(-1)?.rects ?? [];
+  check('so nothing of the shell is left over the windows',
+    after.length === 0 && left.children.length === 0);
+
+  layout(['DP-1', 'DP-3']);
+}
+
 /* Window rules place a window before it is ever laid out, so it never appears
  * somewhere and jumps. */
 {

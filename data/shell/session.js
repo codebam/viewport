@@ -325,6 +325,8 @@ function showNotification(message) {
     timer: ms > 0
       ? setTimeout(() => dropNotification(message.id, true), ms)
       : null,
+    /* Set when it is on its way out; see dropNotification. */
+    fallback: null,
   });
   /* The stack grew, so where it is has changed. Reported after the entry
      is registered, because the rectangle is measured from the DOM. */
@@ -345,13 +347,65 @@ function dropNotification(id, expired) {
      removal is what the animation is handed rather than something that has
      already happened by the time it starts. */
   notifications.delete(id);
-  animateNotificationOut(entry.el, () => {
+
+  let removed = false;
+  const remove = () => {
+    if (removed) return;
+    removed = true;
+    clearTimeout(entry.fallback);
     entry.el.remove();
     reportNotificationRect();
-  });
+  };
+  /* The exit is a tween, and a tween runs on animation frames — which stop
+     while the screens are off, because a client that is not being invited to
+     draw is not drawing. A notification dismissed as the monitor goes to sleep
+     has its removal frozen part way through, and what comes back with the
+     screen is an element nothing on it accounts for: the strip still has a
+     child, so the compositor is still told to draw that rectangle of shell
+     over the windows, and no click and no timer will ever take it away.
+     setTimeout is not on the animation clock, so this is the one that lands. */
+  entry.fallback = setTimeout(remove, NOTIFICATION_EXIT_FALLBACK_MS);
+  animateNotificationOut(entry.el, remove);
   reportNotificationRect();
 
   if (expired) send({ type: 'notification.expire', id });
+}
+
+/* How long an exit animation is given before it is finished by hand. Well past
+ * the two tweens it is made of (`--anim` twice, so under half a second), and
+ * short enough that a stuck notification is a blink rather than something the
+ * user has to live with. */
+const NOTIFICATION_EXIT_FALLBACK_MS = 2000;
+
+/* A monitor went away with notifications still on it.
+ *
+ * Their elements went with its half of the desktop, and the rectangle the
+ * compositor was given for that strip is cleared by dropOverlaysForOutput —
+ * but the notifications themselves are still open as far as the applications
+ * that sent them are concerned, and a message does not stop mattering because
+ * a screen went to sleep. So they move to a screen that is still there, timers
+ * and all, rather than being thrown away.
+ *
+ * With no screen left there is nowhere to move them to. They end as dismissed,
+ * which is what the sender is told, because the alternative is a notification
+ * this shell will never draw again and never close. */
+function rehomeNotifications(gone) {
+  const host = [...outputs.values()][0] ?? null;
+
+  for (const [id, entry] of notifications) {
+    if (entry.output !== gone) continue;
+    if (!host) {
+      clearTimeout(entry.timer);
+      clearTimeout(entry.fallback);
+      entry.el.remove();
+      notifications.delete(id);
+      send({ type: 'notification.dismiss', id });
+      continue;
+    }
+    entry.output = host.name;
+    host.notificationsEl.append(entry.el);
+  }
+  reportNotificationRect();
 }
 
 /* Where the notifications are, so the compositor can draw them above the

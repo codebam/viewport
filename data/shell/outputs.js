@@ -140,6 +140,12 @@ function syncOutputs(list) {
     if (seen.has(name)) continue;
     output.el.remove();
     outputs.delete(name);
+    /* Before the rectangles are dropped, because moving a notification to a
+       screen that is still there is what reports the new one. */
+    rehomeNotifications(name);
+    /* And whatever this monitor had floating goes with it. Nothing else would
+       ever clear it: the reports are per output and this output is gone. */
+    dropOverlaysForOutput(name);
     if (activeOutput === name) activeOutput = null;
   }
 

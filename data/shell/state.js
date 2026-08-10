@@ -232,6 +232,28 @@ function setOverlay(name, el) {
   }
   send({ type: 'shell.overlay', rects: [...overlays.values()] });
 }
+
+/* Everything a departing monitor left in the map.
+ *
+ * The per-output rectangles are keyed `kind:name` — `notifications:DP-1`,
+ * `bar:DP-1` — and every one of them is reported by walking the outputs that
+ * exist. A monitor that goes takes its entry out of that walk, so whatever it
+ * had floating at that moment is never revisited and never cleared: the
+ * compositor keeps drawing that piece of shell over the windows for the rest
+ * of the session, as a rectangle nothing on screen accounts for and nothing
+ * can dismiss.
+ *
+ * This is not the rare case it sounds like. A DisplayPort monitor coming back
+ * from DPMS drops and reconnects — see `scan_device` in udev.rs — so an output
+ * disappears and reappears every time the screens wake, and a notification up
+ * when they went to sleep is exactly the thing left behind. */
+function dropOverlaysForOutput(name) {
+  let changed = false;
+  for (const key of [...overlays.keys()]) {
+    if (key.endsWith(`:${name}`) && overlays.delete(key)) changed = true;
+  }
+  if (changed) send({ type: 'shell.overlay', rects: [...overlays.values()] });
+}
 const screencastEl = document.getElementById('screencast');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');

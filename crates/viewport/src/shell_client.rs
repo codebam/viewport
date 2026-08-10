@@ -859,10 +859,20 @@ impl ViewportState {
         };
         tracing::info!("shell {at}: its toplevel went away");
         let shell = &mut self.shell_clients[at];
+        let desktop = shell.desktop;
         shell.toplevel = None;
         shell.configured = None;
         shell.owned = None;
         self.needs_render = true;
+        if desktop {
+            // Its rectangles went with it. They are the shell's to report and
+            // the compositor's to keep, so a page that goes — a crash and a
+            // restart, a reload — leaves its last set behind, and the next
+            // page only sends a list when one of *its* rectangles changes. In
+            // between, this compositor draws pieces of a page that is not
+            // there over the windows, and nothing on screen can dismiss them.
+            self.set_shell_overlays(Vec::new());
+        }
         true
     }
 }

@@ -227,6 +227,18 @@ for the window beneath it. The shipped shell measures each element with
 collapsed to nothing; anything else risks a region that is invisible and still
 eating input.
 
+A rectangle belonging to a monitor is the case to watch. The shipped shell
+keys them per output — `notifications:DP-1`, `bar:DP-1` — and reports them by
+walking the outputs it has, so an output that goes is an output whose last
+rectangle is never revisited. A page that does the same has to clear those
+entries when `output.layout` stops naming a monitor, because a DisplayPort
+screen coming back from DPMS drops and reconnects: without it, a notification
+that was up when the screens slept comes back as a rectangle of shell drawn
+over the windows that nothing on screen accounts for and no click can dismiss.
+The compositor clears the whole list on its side when the desktop page's
+toplevel goes away, so a crash or a reload does not leave the *next* page
+wearing the last one's rectangles.
+
 That applies to focus as well as to clicks. Clicking an overlay does not raise
 or focus the window behind it, and `Mod4`-dragging inside one does not drag
 that window — the click never reached it, so neither should its consequences.
