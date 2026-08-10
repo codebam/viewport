@@ -572,10 +572,13 @@ is what it had a moment earlier.
 an ordinary client can see every window, its title and its app id, and hears
 when one closes.
 
-`zwlr_foreign_toplevel_management_v1` is not, and that is the one most existing
-taskbars use — it carries activate, close and fullscreen requests as well as
-the list. Smithay has no implementation, so it means writing the protocol
-dispatch by hand rather than wiring one up.
+`zwlr_foreign_toplevel_management_v1` is implemented too, and that is the one
+most existing taskbars use — it carries activate, close and fullscreen requests
+as well as the list. Smithay has no implementation, so it meant writing the
+protocol dispatch by hand rather than wiring one up; the result is in
+`foreign_toplevel.rs`, where activate, close and fullscreen each reach the
+matching window. Maximize and minimize are accepted but deliberately not acted
+on — this compositor's shell owns the layout.
 
 ## What the config file does, and does not
 
