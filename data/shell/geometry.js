@@ -38,7 +38,8 @@ function reportGeometry(id) {
      cold window keeps the size of a warm one and is merely drawn small, so
      that a focus change — which reshuffles every orbit on the workspace — does
      not reconfigure half the clients on it. See solar.js. */
-  const scale = view.overview?.scale ?? view.solar?.scale ?? 1;
+  const scale = view.overview?.scale ?? view.solar?.scale
+    ?? view.canvas?.scale ?? 1;
   /* The whole device pixels *inside* the measured rect, rather than the ones
      nearest its edges.
 
@@ -128,8 +129,11 @@ function reportGeometry(id) {
   /* Lifted: above the windows it overlaps, rather than merely somewhere on the
      workspace. Floating is the usual reason and solar's sun is the other one —
      it sits over its own orbits by design, and its border falls inside their
-     holes exactly as a dialog's falls inside the window beneath it. */
-  const lifted = isFloating(id) || view.solar?.lift === true;
+     holes exactly as a dialog's falls inside the window beneath it. The
+     canvas's focused window is the third: windows on a plane overlap freely,
+     so the one being typed into has to be the one in front. */
+  const lifted = isFloating(id) || view.solar?.lift === true
+    || view.canvas?.lift === true;
 
   const frameEl = lifted ? view.el?.getBoundingClientRect() : null;
   const frame = frameEl
@@ -453,6 +457,13 @@ function relayoutAll() {
      hidden would stay invisible for the rest of the session. */
   if (layoutMode !== 'matrix' || overviewActive) clearMatrixState();
 
+  /* The canvas positions absolutely for the same reason both of those do, and
+     leaves the same inline rect behind: a window carrying a place on the plane
+     would sit in the middle of a tiling column. Its *places* survive — see
+     clearCanvasState — so leaving the canvas and coming back finds the plane
+     as it was left. */
+  if (layoutMode !== 'canvas' || overviewActive) clearCanvasState();
+
   /* Every output's orbits, worked out in one pass before any of them is drawn.
      A Lagrange field puts one monitor's cold windows on another, and the
      outputs are rendered in whatever order the map is in, so the companion has
@@ -465,6 +476,12 @@ function relayoutAll() {
      answerable from the plan rather than from how far the drawing has got. */
   const matrix = (layoutMode === 'matrix' && !overviewActive)
     ? planMatrix() : null;
+
+  /* And the canvas's, in one pass for the same reason: placing a window that
+     has never been placed reads the viewport of the workspace it is on, so
+     every output's plan has to be settled before any of them is drawn. */
+  const canvas = (layoutMode === 'canvas' && !overviewActive)
+    ? planCanvas() : null;
 
   /* Where everything was, before the tree is thrown away and rebuilt. */
   const before = new Map();
@@ -502,16 +519,19 @@ function relayoutAll() {
         ? renderSolar(solar.get(name) ?? [], output)
         : (matrix
           ? renderMatrix(matrix.get(name) ?? [], output)
-          : (root
-            ? (layoutMode === 'scrolling'
-              ? renderStrip(root, output)
-              : renderTree(root))
-            : null)));
+          : (canvas
+            ? renderCanvas(canvas.get(name) ?? [], output)
+            : (root
+              ? (layoutMode === 'scrolling'
+                ? renderStrip(root, output)
+                : renderTree(root))
+              : null))));
 
     output.windowsEl.replaceChildren();
     output.windowsEl.classList.toggle('scrolling', layoutMode === 'scrolling');
     output.windowsEl.classList.toggle('solar', layoutMode === 'solar');
     output.windowsEl.classList.toggle('matrix', layoutMode === 'matrix');
+    output.windowsEl.classList.toggle('canvas', layoutMode === 'canvas');
     /* Smart gaps: a lone window on the workspace drops the inner gap, and the
        CSS padding has to match what edgeGapPx() (used by the layout math)
        computes, or the drawn edge and the measured one drift apart. */

@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "vendor": "scripts/vendor-shell-deps.sh",
-    "test": "node tests/shell.test.js data/shell tiling && node tests/shell.test.js data/shell scrolling && node tests/shell.test.js data/shell matrix"
+    "test": "node tests/shell.test.js data/shell tiling && node tests/shell.test.js data/shell scrolling && node tests/shell.test.js data/shell matrix && node tests/shell.test.js data/shell canvas"
   },
   "dependencies": {
     "gsap": "^3.15.0"

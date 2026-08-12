@@ -356,6 +356,11 @@ function removeView(id) {
      same reason: it is state about a window kept outside the record. A stale
      id there would hold a slot for a window that no longer exists. */
   matrixClosed(id);
+  /* And where it sat on the canvas's plane, which is kept outside the record
+     for the same reason again. A stale place there is a rectangle nothing
+     draws — until fit-to-all measures the bounding box it is part of and fits
+     the view around a window that is gone. */
+  canvasClosed(id);
   treeGeneration++;
   const fullscreenWorkspace = workspace !== null && fullscreens.get(workspace) === id
     ? workspace : null;

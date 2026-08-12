@@ -991,6 +991,50 @@ html.behind body { background: transparent; }
   line-height: 18px;
 }
 
+/* ---------------------------------------------------------------------
+ * Canvas
+ *
+ * The third layout whose rectangles are arithmetic, and the one with the least
+ * to say here: where a window sits on the plane is a coordinate someone chose,
+ * so there is no tier, no depth and no history for the stylesheet to draw. All
+ * it supplies is that a window on the plane is positioned rather than laid
+ * out, and that the one in focus is in front of whatever it overlaps.
+ * See docs/canvas.md.
+ * ------------------------------------------------------------------ */
+
+/* The containing block, matching .windows exactly so that a place on the plane
+   and a floating window's rect mean the same thing. */
+.canvas-field {
+  position: absolute;
+  inset: 0;
+}
+
+.window.plane {
+  position: absolute;
+  /* As for a floating window and an orbit: the rect describes the hole, not
+     the frame, so a client is not handed a size two pixels smaller on each
+     side than the one it was configured with. A window on a plane is in open
+     space, where two pixels either way reach nothing — unlike a matrix slot,
+     which is a division of the screen and has to contain its own frame. */
+  box-sizing: content-box;
+}
+
+/* In front of what it overlaps. Windows on a plane are placed by hand and may
+   sit on top of each other by design, so the one being typed into has to be
+   the one you can see. The compositor is told the same thing over view.layout
+   — this only settles which *frame* is drawn over which, since the client
+   surfaces are stacked by the compositor and nothing here can reach them.
+
+   A class of its own rather than `.plane.focused`, which would say the same
+   thing and would be invisible to the sweep at the end of tests/shell.test.js:
+   a rule reachable only by two classes at once reads there as a rule that does
+   nothing. The same reason solar's tiers are written as `.sun` and not
+   `.orbit.sun`. */
+.window.front {
+  z-index: 4;
+  box-shadow: var(--shadow-2);
+}
+
 /* Hidden on another workspace: kept in the DOM so the client stays alive. */
 .window[hidden], .split[hidden] { display: none; }
 

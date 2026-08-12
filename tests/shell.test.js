@@ -322,6 +322,16 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' matrixForTest: { calculate: calculateLayout, capacity: matrixCapacity,'
   + '   order: matrixOrderOf, recalculate: recalculateMatrixLayout,'
   + '   stack: focusStack, get MATRIX() { return MATRIX; } },'
+  /* The canvas layout's kernel, which is a pure function of (items, viewport,
+     area) — the same case again. The places and the viewports are handed over
+     as the live maps rather than as copies, so a test can watch what a pan or
+     a newly opened window did to them. */
+  + ' canvasForTest: { project: canvasProject, fit: canvasFitViewport,'
+  + '   follow: canvasFollow, zoomed: canvasZoomed, bounds: canvasBounds,'
+  + '   clamp: canvasClampZoom, places: canvasPlaces,'
+  + '   viewport: canvasViewportOf, area: canvasAreaOf,'
+  + '   recalculate: recalculateCanvasLayout,'
+  + '   get CANVAS() { return CANVAS; } },'
   /* What smart gaps decide, which is a question about the tree and the layout
      mode rather than about any pixel: whether this workspace holds a lone
      window that fills the tiling area. */
@@ -1189,6 +1199,208 @@ if (mode === 'tiling') {
       && !view.el.classList.contains('tile') && view.el.hidden === false);
     emit({ type: 'config', layout: 'matrix' });
   }
+  const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
+    .map((m) => m.id).filter((id) => id <= 4));
+  check('every window still reachable', laidOut.size === 4);
+} else if (mode === 'canvas') {
+  /* The canvas.
+   *
+   * Two things worth checking and one that cannot be. The projection is a pure
+   * function of (items, viewport, area) and is checked directly. So is what
+   * panning, zooming and following do to a viewport. What cannot be checked
+   * here is that a click lands on the window it appears to — that is the
+   * compositor's hit test, it has no scale in it, and the zoom cap at 1.0 is
+   * this layout's answer to that until it does. See the header of canvas.js.
+   */
+  const canvas = globalThis.__shell.canvasForTest;
+  const AREA = { x: 8, y: 8, width: 1904, height: 1034 };
+  const near = (a, b, slack = 0.5) => Math.abs(a - b) <= slack;
+  const at = (x, y, zoom = 1) => ({ x, y, zoom });
+  const item = (id, x, y, width = 400, height = 300) =>
+    ({ id, rect: { x, y, width, height } });
+
+  {
+    /* The projection, at 1:1. A window at the world origin is drawn at the top
+       left of the area — not of the output, which is the whole point of the
+       area carrying an inset. */
+    const [one] = canvas.project([item(1, 0, 0)], at(0, 0), AREA);
+    check('a window at the origin is drawn at the top left of the area',
+      one.x === AREA.x && one.y === AREA.y);
+    check('and at 1:1 it is drawn at its own size',
+      one.width === 400 && one.height === 300 && one.scale === 1);
+
+    /* Panning right is looking further right, so the windows move left. The
+       map convention, not the scrollbar one. */
+    const [panned] = canvas.project([item(1, 0, 0)], at(200, 0), AREA);
+    check('panning right moves the windows left',
+      panned.x === AREA.x - 200 && panned.y === AREA.y);
+  }
+
+  {
+    /* The invariant the whole layout exists for: zooming out changes what is
+       *drawn*, never what the client is. A window half-size on screen is still
+       reported at its own width, with the factor beside it — geometry.js sends
+       both and the compositor scales the buffer, so nothing is reconfigured by
+       a pan or a zoom. */
+    const [small] = canvas.project([item(1, 0, 0)], at(0, 0, 0.5), AREA);
+    check('zooming out does not resize the client',
+      small.width === 400 && small.height === 300);
+    check('it only says what to draw it at', small.scale === 0.5);
+    check('and the drawing is half as far across the screen',
+      small.x === AREA.x && canvas.project([item(1, 400, 0)],
+        at(0, 0, 0.5), AREA)[0].x === AREA.x + 200);
+  }
+
+  {
+    /* Off the edge of the view is not drawn at all, which is what keeps a
+       plane holding fifty windows costing what four do. Overlapping the edge
+       is a different answer: that one is drawn and cropped. */
+    const far = canvas.project([item(1, 100000, 0)], at(0, 0), AREA)[0];
+    check('a window past the edge of the view is off screen', far.offscreen);
+    const straddling = canvas.project(
+      [item(1, AREA.width - 100, 0)], at(0, 0), AREA)[0];
+    check('one hanging over it is still drawn', !straddling.offscreen);
+    const behind = canvas.project([item(1, -399, 0)], at(0, 0), AREA)[0];
+    check('and one pixel of a window is enough', !behind.offscreen);
+  }
+
+  {
+    /* Fitting. The cap is the interesting half: a plane that would fit at 3x
+       is shown at 1.0, because 1.0 is the only scale the compositor can route
+       a click through. */
+    const spread = [item(1, 0, 0), item(2, 4000, 2000)];
+    const fitted = canvas.fit(spread, AREA);
+    check('fitting a wide plane zooms out', fitted.zoom < 1);
+    check('but never past the floor',
+      fitted.zoom >= canvas.CANVAS.minZoom);
+
+    const tight = canvas.fit([item(1, 0, 0)], AREA);
+    check('and fitting something that already fits does not zoom in',
+      tight.zoom === 1);
+
+    /* Centred, so the fit lands on the middle of the plane rather than on its
+       top left corner — which is what a clamped zoom would otherwise do. */
+    const placed = canvas.project(spread, fitted, AREA);
+    const centre = {
+      x: (placed[0].x + placed[1].x + placed[1].width * fitted.zoom) / 2,
+      y: (placed[0].y + placed[1].y + placed[1].height * fitted.zoom) / 2,
+    };
+    check('with the plane centred in the area',
+      near(centre.x, AREA.x + AREA.width / 2, 2)
+      && near(centre.y, AREA.y + AREA.height / 2, 2));
+  }
+
+  {
+    /* Following focus moves as little as it can: a window already on screen
+       does not move the view at all, which is what stops every focus change
+       from sliding the whole plane about. */
+    const viewport = at(0, 0);
+    const still = canvas.follow({ x: 200, y: 200, width: 400, height: 300 },
+      viewport, AREA);
+    check('following a window already in view moves nothing',
+      still.x === viewport.x && still.y === viewport.y);
+
+    const away = { x: 3000, y: 0, width: 400, height: 300 };
+    const moved = canvas.follow(away, viewport, AREA);
+    check('following one off to the right pans right',
+      moved.x > viewport.x);
+    check('by just enough to fit it, and the margin',
+      near(moved.x,
+        away.x + away.width + canvas.CANVAS.margin - AREA.width));
+    check('and following never changes the zoom',
+      moved.zoom === viewport.zoom);
+
+    /* An oversized window shows its start rather than its end: both branches
+       fire and the top-left one wins. */
+    const huge = canvas.follow({ x: 0, y: 0, width: 9000, height: 9000 },
+      at(500, 500), AREA);
+    check('an oversized window is followed to its top left',
+      huge.x < 0 && huge.y < 0);
+  }
+
+  {
+    /* Zoom is multiplicative about the middle of the screen, so out and back
+       in is where it started. Additive steps do not compose and anchoring at
+       the viewport origin walks the plane sideways on every press. */
+    const start = at(400, 400, 0.8);
+    const out = canvas.zoomed(start, 1 / canvas.CANVAS.zoomStep, AREA);
+    const back = canvas.zoomed(out, canvas.CANVAS.zoomStep, AREA);
+    check('zooming out and back in returns to the same view',
+      near(back.x, start.x) && near(back.y, start.y)
+      && near(back.zoom, start.zoom, 1e-9));
+
+    let zoom = at(0, 0, 1);
+    for (let i = 0; i < 6; i++) zoom = canvas.zoomed(zoom, 2, AREA);
+    check('and zooming in stops at 1:1', zoom.zoom === 1);
+    check('which is the cap the compositor can hit-test',
+      canvas.clamp(4) === 1 && canvas.CANVAS.maxZoom === 1);
+  }
+
+  {
+    /* And now against the live shell, which has four windows open on one
+       workspace. Every one of them is placed: the plane is where windows are,
+       and a window with no place would be a window that is nowhere. */
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    const live = canvas.recalculate(workspace, AREA);
+    check('every window on the workspace is on the plane',
+      new Set(live.map((p) => p.id)).size >= 4);
+
+    /* Nothing overlaps exactly: opening several windows without moving any
+       cascades them, or three terminals are one terminal with two behind. */
+    const spots = live.map((p) => `${p.x},${p.y}`);
+    check('and no two of them are in exactly the same place',
+      new Set(spots).size === spots.length);
+
+    const before = { ...canvas.viewport(workspace) };
+    emit({ type: 'shell.command', command: 'canvas.pan', args: ['right'] });
+    check('panning moves the view',
+      canvas.viewport(workspace).x > before.x);
+
+    emit({ type: 'shell.command', command: 'canvas.zoom', args: ['out'] });
+    check('zooming out takes it below 1:1',
+      canvas.viewport(workspace).zoom < 1);
+
+    emit({ type: 'shell.command', command: 'canvas.fit', args: [] });
+    check('fitting keeps it there or further out',
+      canvas.viewport(workspace).zoom <= 1);
+
+    emit({ type: 'shell.command', command: 'canvas.home', args: [] });
+    check('and home comes back to 1:1',
+      canvas.viewport(workspace).zoom === 1);
+
+    /* Moving a window edits the plane rather than the tree — the tree is what
+       every other layout reads, and the canvas leaves it exactly as it found
+       it. */
+    const tree = JSON.stringify(globalThis.__shell.workspaces.get(workspace));
+    const place = { ...canvas.places.get(4) };
+    emit({ type: 'view.focused', id: 4 });
+    emit({ type: 'shell.command', command: 'window.move', args: ['right'] });
+    check('moving a window moves it across the plane',
+      canvas.places.get(4).x === place.x + canvas.CANVAS.moveStep);
+    check('and leaves the tree alone',
+      JSON.stringify(globalThis.__shell.workspaces.get(workspace)) === tree);
+  }
+
+  {
+    /* Leaving the layout has to undo it, for the same reason solar and the
+       matrix do: a window still carrying a place would be positioned in the
+       middle of a tiling column. The places themselves survive on purpose —
+       coming back should find the plane as it was left. */
+    const view = globalThis.__shell.views.get(2);
+    check('the canvas positions a window absolutely',
+      view.el.classList.contains('plane') && view.el.style.left !== '');
+    const kept = { ...canvas.places.get(2) };
+    emit({ type: 'config', layout: 'tiling' });
+    check('and leaving it clears that off again',
+      view.el.style.left === '' && view.el.style.top === ''
+      && !view.el.classList.contains('plane') && view.el.hidden === false);
+    check('but the plane remembers where everything was',
+      canvas.places.get(2).x === kept.x && canvas.places.get(2).y === kept.y);
+    emit({ type: 'config', layout: 'canvas' });
+    check('and going back puts it back there',
+      canvas.places.get(2).x === kept.x);
+  }
+
   const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
     .map((m) => m.id).filter((id) => id <= 4));
   check('every window still reachable', laidOut.size === 4);
@@ -2487,8 +2699,12 @@ if (mode === 'scrolling') {
      it, so reporting one would be a texture drawn per window for nothing.
      Not in solar, where a window is either the middle one — which does sit
      over the others and does need both — or is in an orbit that nothing
-     overlaps; there is no window in that layout that is tiled in this sense. */
-  if (mode !== 'solar') {
+     overlaps; there is no window in that layout that is tiled in this sense.
+     Nor on the canvas, for the plainer version of the same reason: windows
+     there are placed by hand and overlap by design, so the focused one is
+     lifted over whatever it covers and its border falls inside that window's
+     hole rather than in a gap. */
+  if (mode !== 'solar' && mode !== 'canvas') {
     open(93, 'tiled-one');
     const tiled = sent.filter((m) => m.type === 'view.layout' && m.id === 93).at(-1);
     check('a tiled window reports none',
@@ -2550,7 +2766,11 @@ if (mode === 'scrolling') {
   check('and is not left behind on the workspace it came from',
     globalThis.__shell.fullscreenOnForTest(from) === null);
 
-  {
+  /* Not on the canvas, where a plane has no edge to reach: window.move slides
+     the window across it and the view follows, so there is no fall-through to
+     moveViewToOutput() and nothing to carry. A window gets to the other
+     monitor there the way it does in any layout — by changing workspace. */
+  if (mode !== 'canvas') {
     /* The same window carried to the next monitor, which is the other way a
        window changes workspace: at the edge of its own tree the move falls
        through to moveViewToOutput(), and that path used to move the leaf and
@@ -2935,9 +3155,10 @@ if (mode === 'scrolling') {
      could drag. The matrix has none either, for the nearer reason that its
      rectangles are arithmetic: the space between two slots is a number in
      matrix.js, not an element. The area's own inset below still applies to
-     both. */
+     both. The canvas has none for both reasons at once: its windows overlap
+     and its rectangles are arithmetic. */
   const divider = output.windowsEl.querySelector('.divider');
-  if (mode !== 'solar' && mode !== 'matrix') {
+  if (mode !== 'solar' && mode !== 'matrix' && mode !== 'canvas') {
     check('the shell drew a real element in the gap', divider !== null);
     check('as wide as the gap, and it never grows',
       sheet.value(divider, 'flex-basis') === gap &&

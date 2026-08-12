@@ -16,10 +16,11 @@ The full message set is in [docs/ipc.md](../../docs/ipc.md).
 
 **Layout is CSS, not arithmetic.** The tiling tree renders to nested flexboxes
 and the browser computes every rectangle. Splitting, moving and fullscreen only
-restructure the tree; no code here calculates a window position. `solar.js` and
-`matrix.js` are the documented exceptions and the only ones — neither an orbit
-nor a column that halves at every step is expressible as rows and columns, so
-they position absolutely. Both still write rectangles as style and let the rule
+restructure the tree; no code here calculates a window position. `solar.js`,
+`matrix.js` and `canvas.js` are the documented exceptions and the only ones —
+neither an orbit, nor a column that halves at every step, nor a coordinate on
+an unbounded plane is expressible as rows and columns, so they position
+absolutely. Both still write rectangles as style and let the rule
 below measure the result.
 
 **Geometry is measured, never assumed.** A hole's screen rect changes for
@@ -54,6 +55,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | `scrolling.js` | niri's endless strip of columns, and the overview. |
 | `solar.js` | one window in the middle, the rest in orbit. Layout arithmetic rather than flexbox; see [docs/solar.md](../../docs/solar.md). |
 | `matrix.js` | the focused window large, the focus history halving away beside it. The other layout that computes rectangles; see [docs/matrix.md](../../docs/matrix.md). |
+| `canvas.js` | an unbounded plane per workspace, panned and zoomed over. The third layout that computes rectangles; see [docs/canvas.md](../../docs/canvas.md). |
 | `session.js` | Saving and restoring the layout, window rules, notifications. |
 | `resize.js` | Dragging the gap between two windows, and resize mode. |
 | `geometry.js` | Measuring what the browser laid out and reporting it to the compositor. The hinge of the whole design. |

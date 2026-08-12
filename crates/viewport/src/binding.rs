@@ -289,12 +289,13 @@ fn wheel_from_name(name: &str) -> Option<Wheel> {
 /// two things an opinion about it.
 ///
 /// `layout` names which of the shell's models is running — `"tiling"`,
-/// `"scrolling"` or `"solar"` — because a few chords only mean anything in one
-/// of them. It is a name rather than a flag per model: three booleans would
-/// admit combinations that cannot exist.
+/// `"scrolling"`, `"solar"`, `"matrix"` or `"canvas"` — because a few chords
+/// only mean anything in one of them. It is a name rather than a flag per
+/// model: a boolean each would admit combinations that cannot exist.
 pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
     let scrolling = layout == "scrolling";
     let solar = layout == "solar";
+    let canvas = layout == "canvas";
 
     let mut specs: Vec<String> = vec![
         format!("Mod4+Return=exec {terminal}"),
@@ -368,6 +369,28 @@ pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
         // Binary star or Lagrange field: whether the second monitor runs its
         // own system or holds this one's background applications.
         specs.push("Mod4+Shift+g=shell solar.field".to_owned());
+    } else if canvas {
+        // Move the view over the plane. Bound to the bracket keys and the
+        // page keys rather than to hjkl, which keep meaning "move focus":
+        // panning is what you do *between* windows and focus is what you do
+        // to them, and a layout where the two shared a chord would make
+        // reaching the window beside you depend on how far the view had
+        // drifted.
+        specs.push("Mod4+bracketleft=shell canvas.pan left".to_owned());
+        specs.push("Mod4+bracketright=shell canvas.pan right".to_owned());
+        specs.push("Mod4+Prior=shell canvas.pan up".to_owned());
+        specs.push("Mod4+Next=shell canvas.pan down".to_owned());
+        // Out and in. Zoom stops at 1.0 by design — see the header of
+        // data/shell/canvas.js — so `equal` runs out rather than overshooting
+        // into a scale the compositor's hit test cannot follow.
+        specs.push("Mod4+minus=shell canvas.zoom out".to_owned());
+        specs.push("Mod4+equal=shell canvas.zoom in".to_owned());
+        // The whole plane, and back to 1:1 on what is focused. The second is
+        // the one that matters: 1.0 is the only zoom at which a click reaches
+        // the pixel it appears to, so "let me use this again" needs a key and
+        // not four presses of zoom-in.
+        specs.push("Mod4+Shift+f=shell canvas.fit".to_owned());
+        specs.push("Mod4+Home=shell canvas.home".to_owned());
     } else {
         // Resize mode, as in sway: Mod4+r enters it, hjkl and the arrows
         // resize a step at a time, Escape or Return leaves. Scoped to the mode

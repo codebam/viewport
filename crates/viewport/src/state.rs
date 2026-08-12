@@ -5243,7 +5243,7 @@ impl ViewportState {
             // keymap was built for a layout that does not exist, so the chords
             // belonging to whichever one was meant were simply absent. What
             // that looks like is a config key that was ignored in silence.
-            const LAYOUTS: [&str; 4] = ["tiling", "scrolling", "solar", "matrix"];
+            const LAYOUTS: [&str; 5] = ["tiling", "scrolling", "solar", "matrix", "canvas"];
             if LAYOUTS.contains(&layout.as_str()) {
                 self.config.layout = layout;
             } else {

@@ -11,7 +11,7 @@
 #
 #   ./scripts/run-drm.sh                    # release build if present, else debug
 #   ./scripts/run-drm.sh --exit-after 120   # stop by itself after two minutes
-#   ./scripts/run-drm.sh --layout solar     # tiling, scrolling or solar
+#   ./scripts/run-drm.sh --layout canvas    # or tiling, scrolling, solar, matrix
 #   ./scripts/run-drm.sh --headless         # any argument is passed through
 set -euo pipefail
 
@@ -31,9 +31,9 @@ for arg in "$@"; do
     esac
 done
 case "${layout:-tiling}" in
-    tiling | scrolling | solar) ;;
+    tiling | scrolling | solar | matrix | canvas) ;;
     *)
-        echo "unknown layout '${layout}': expected tiling, scrolling or solar." >&2
+        echo "unknown layout '${layout}': expected tiling, scrolling, solar, matrix or canvas." >&2
         exit 1
         ;;
 esac

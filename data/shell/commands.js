@@ -46,6 +46,17 @@ function handleShellCommand(command, args) {
     case 'window.move': {
       if (focusedId == null && selectedIds.size === 0) break;
 
+      /* On the canvas a window is moved across the plane rather than through a
+         tree, and running off the edge of the screen is not running out of
+         workspace — the plane has no edge, and the view follows. Falling
+         through to moveViewToOutput would carry the window to the other
+         monitor the first time it reached the edge of this one, which is a
+         plane that is not infinite after all. */
+      if (layoutMode === 'canvas') {
+        if (focusedId != null) canvasMoveFocused(arg);
+        break;
+      }
+
       if (layoutMode === 'scrolling') {
         if (selectedIds.size > 0) {
           if (!scrollMoveSelected(arg) && focusedId != null) {
@@ -206,6 +217,23 @@ function handleShellCommand(command, args) {
     case 'solar.field':
       if (layoutMode === 'solar') solarToggleField();
       break;
+
+    /* Canvas. Bound only when the compositor is configured for it, and each of
+       these is a no-op in the other layouts rather than an error — the same
+       bargain solar's chords make. canvasTarget() is where that no-op lives,
+       so nothing here has to ask twice. */
+    case 'canvas.pan':
+      canvasPanDirection(arg);
+      break;
+    case 'canvas.zoom':
+      canvasZoom(arg);
+      break;
+    case 'canvas.fit':
+      canvasFit();
+      break;
+    case 'canvas.home':
+      canvasHome();
+      break;
     case 'output.hdr':
       /* No state of its own: the compositor owns whether an output is in HDR,
          and toggling is asking it to flip whatever it currently has. */
@@ -332,6 +360,10 @@ window.addEventListener('viewport', (event) => {
          history is what was focused *in what order*, which a plan built from
          the current focus alone cannot recover. */
       matrixFocused(focusedId);
+      /* And the canvas pans to whatever was just focused, if it is not already
+         on screen. Here rather than in its own plan for the same reason: the
+         plan is a function of where the view is, and this is what moves it. */
+      canvasFocused(focusedId);
       const found = focusedId != null ? findLeaf(focusedId) : null;
       if (found) {
         /* Focusing a window on a hidden workspace brings that workspace to a

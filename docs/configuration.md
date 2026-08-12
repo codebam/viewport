@@ -18,7 +18,7 @@ a TTY.
   "url_span": true,         // that page on every monitor; see below
   "shell_backend": "wpe",   // or "webkitgtk"; see docs/shell-backends.md
   "timeout_ms": 5000,
-  "layout": "tiling",       // or "scrolling", "solar", or "matrix"
+  "layout": "tiling",       // or "scrolling", "solar", "matrix", "canvas"
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
   "idle": { "lock_after": 600, "lock_command": "swaylock -f",
             "blank_after": 900 },
@@ -393,7 +393,7 @@ Precedence is flags > config file > defaults.
 -t, --timeout MS       first-paint deadline before falling back (default 5000)
 -s, --socket PATH      control socket
 -c, --config PATH      config file (default ~/.config/viewport/config.json)
-    --layout NAME      tiling, scrolling, solar or matrix; overrides "layout"
+    --layout NAME      tiling, scrolling, solar, matrix or canvas; overrides "layout"
 -T, --terminal CMD     command bound to Mod4+Return
 -M, --menu CMD         command bound to Mod4+d
 -b, --bind CHORD=ACT   add a keybinding; repeatable
@@ -777,7 +777,28 @@ It has no keys of its own and no resize mode: focus is the only input the model
 takes, so `Mod4+h/j/k/l`, `Mod4+Tab` and clicking a window are the whole
 interaction. Its ratios are in [matrix.md](matrix.md).
 
-All four models share one tree — the strip's columns and the orbits' order are
+**`canvas`** — every workspace an unbounded plane. Windows sit at coordinates
+you gave them and keep them; the view pans and zooms over the top. Nothing an
+already-placed window does moves any other, opening one never reflows what is
+open, and zooming out draws windows smaller without resizing them — no client
+is asked to relayout itself for any view change.
+
+| Key | Canvas layout |
+| --- | --- |
+| `Mod4+bracketleft` / `Mod4+bracketright` | pan left / right |
+| `Mod4+Prior` / `Mod4+Next` | pan up / down |
+| `Mod4+minus` / `Mod4+equal` | zoom out / in |
+| `Mod4+Shift+f` | fit the whole plane on screen |
+| `Mod4+Home` | back to 1:1 on the focused window |
+| `Mod4+Shift+h/j/k/l` | move the focused window across the plane |
+
+Zoom stops at 1:1 and that cap is load-bearing: the compositor hit-tests a
+click against a window's mapped rectangle with no scale in it, so 1.0 is the
+only zoom at which a click reaches the pixel it appears to. Below it the canvas
+is a view — pan, fit and move, then `Mod4+Home` to work again. The whole model
+is in [canvas.md](canvas.md).
+
+All five models share one tree — the strip's columns and the orbits' order are
 both the workspace root's children — so switching `layout` and reloading
 rearranges what is open rather than discarding it. `shell layout.model`
 switches at runtime, with a name or with no argument to cycle:
@@ -829,10 +850,11 @@ screen: one cuts along whichever side is longer, the other picks the row count
 whose cells come out closest to square. Every dynamic tiler behaves this way,
 and it is why `manual` is still the default.
 
-None of this touches `"layout": "scrolling"`, `"layout": "solar"` or
-`"layout": "matrix"`, each of which is its own model. Solar and the matrix in
-particular have no sub-arrangements: where a window goes is decided by its
-position in the order and nothing else.
+None of this touches `"layout": "scrolling"`, `"layout": "solar"`,
+`"layout": "matrix"` or `"layout": "canvas"`, each of which is its own model.
+Solar and the matrix in particular have no sub-arrangements: where a window
+goes is decided by its position in the order and nothing else — and on the
+canvas by nothing but where you put it.
 
 
 ## Focus at the edge of a monitor

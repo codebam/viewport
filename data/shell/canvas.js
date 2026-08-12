@@ -1,0 +1,694 @@
+/* SPDX-License-Identifier: MIT
+ *
+ * The canvas layout: every workspace an unbounded plane, panned and zoomed.
+ *
+ * The fifth layout model, beside the i3-style tree in tiling.js, niri's strip
+ * in scrolling.js, the orbits in solar.js and the focus history in matrix.js.
+ * Like the last two it computes rectangles rather than handing the problem to
+ * flexbox, and for a reason none of the others have: there is no arrangement
+ * of rows and columns that expresses "wherever you put it". A window on the
+ * canvas has a position because someone gave it one, and the layout's whole
+ * job is to keep that position while the view over it moves.
+ *
+ * The model, in full:
+ *
+ *   - A workspace is a plane with no edges. Windows sit on it at world
+ *     coordinates and keep them: nothing an already-placed window does moves
+ *     any other, and opening one never reflows what is open.
+ *   - Each workspace has a viewport over its plane — an origin and a zoom —
+ *     and since a workspace lives on one monitor at a time, that is one canvas
+ *     per workspace per monitor, each panned where its user left it.
+ *   - Panning moves the viewport, not the windows. Zooming out draws them
+ *     smaller *without resizing them*: the client keeps the size it was
+ *     configured with and the compositor scales the buffer, which is the same
+ *     bargain the overview and solar's outer orbit make. See geometry.js.
+ *   - What falls outside the viewport is not drawn and is reported to the
+ *     compositor as off screen. That is what keeps a plane with fifty windows
+ *     on it costing the same as one with four.
+ *
+ * Zoom is capped at 1.0, and the cap is not a matter of taste. `surface_under`
+ * in the compositor (crates/viewport/src/state.rs) hit-tests a click against a
+ * window's mapped rectangle with no scale term in it, so at any zoom but 1.0 a
+ * click lands somewhere other than where it looks like it landed. Above 1.0
+ * there is a second problem — a buffer drawn larger than it was painted is a
+ * blurry one, and the alternative, reconfiguring every client on every zoom
+ * step, is exactly the per-frame resize storm this layout exists to avoid.
+ *
+ * So: at zoom 1.0 the canvas is fully usable — pan an endless plane, click and
+ * type into anything on screen, because every surface is at its natural scale
+ * and the compositor's existing arithmetic is correct. Below 1.0 it is a view:
+ * you can see where everything is and pan or fit to bring a window back, and
+ * clicks into shrunken clients are not to be trusted until that hit test
+ * learns about scale.
+ *
+ * The tiling tree still says which windows exist and which workspace they are
+ * on; this reads that and never writes it, which is what lets window.move, the
+ * session format and the overview keep working without knowing the canvas
+ * exists. It is the same bargain solar.js and matrix.js make, and the reason
+ * all three are additions rather than rewrites.
+ *
+ * One of the ordered scripts that make up the shell; see index.html for the
+ * load order and shell.md for what the whole is meant to do.
+ */
+
+/* Every number the layout depends on. Read at use rather than captured, so
+ * editing one and reloading the shell takes effect without a restart. */
+const CANVAS = {
+  /* How far out the view may go. Far enough that a plane holding a dozen
+     windows fits on one screen, near enough that what is on it is still
+     readable — past this a window is a coloured rectangle and fit-to-all is
+     showing you nothing you could act on. */
+  minZoom: 0.25,
+
+  /* And how far in. One, exactly, for the reason in the header: the
+     compositor's hit test has no scale in it, so 1.0 is the only zoom at which
+     a click reaches the pixel it appears to. Raising this needs that fixed
+     first, not instead. */
+  maxZoom: 1,
+
+  /* Multiplicative, so stepping out and back in returns to where it started
+     rather than drifting — additive steps do not compose. */
+  zoomStep: 1.25,
+
+  /* How far one pan key moves the view, in *screen* pixels. Converted to world
+     units against the current zoom at use, so a keypress moves the same
+     visible distance however far out the view is — which is what the hand
+     expects, and what a fixed world step conspicuously does not do. */
+  panStep: 240,
+
+  /* And how far one move key carries a window across the plane. In world
+     units, unlike the pan: moving a window is an edit to the plane, so the
+     same key should make the same edit whatever the view happens to be doing.
+     A screen-relative step would move a window four times further when zoomed
+     out, which is the same key meaning two things. */
+  moveStep: 120,
+
+  /* A new window's size, as a fraction of the visible area. Big enough to work
+     in, small enough that a second one beside it is not immediately in the
+     way. */
+  width: 0.45,
+  height: 0.55,
+
+  /* How far each successive new window is offset from the last, so that
+     opening three terminals without moving anything leaves three terminals you
+     can tell apart rather than one with two behind it. The stagger a window
+     manager has used since 1985, for the same reason. */
+  cascade: 48,
+
+  /* Space kept between a followed window and the edge of the screen, in screen
+     pixels. Following focus with no margin puts the window flush against the
+     edge, where the half of it you are about to scroll to is invisible. */
+  margin: 48,
+};
+
+/* ------------------------------------------------------------------------
+ * The plane
+ *
+ * Two pieces of state, both kept outside the window records because both
+ * outlive them: where each window sits on its plane, and where each plane is
+ * being looked at from. A window carried to another workspace keeps its
+ * coordinates, which is what you want — the plane it arrives on is a different
+ * plane, and it lands at the same place on it rather than at an origin nobody
+ * chose.
+ * --------------------------------------------------------------------- */
+
+/* view id -> { x, y, width, height } in world units. Width and height are the
+ * *client's* size and never the drawn one: zoom scales what is painted, not
+ * what the window is, and mixing the two here is what would make zooming out
+ * resize every client on the workspace. */
+const canvasPlaces = new Map();
+
+/* workspace -> { x, y, zoom }. x and y are the world coordinate at the top
+ * left of the visible area, so panning is one subtraction and nothing has to
+ * know where the middle of anything is. */
+const canvasViewports = new Map();
+
+/* The viewport for a workspace, created at the origin if it has none. Every
+ * reader goes through this so that "never looked at yet" and "looked at and
+ * panned back to zero" are the same state, which they are. */
+function canvasViewportOf(workspace) {
+  let viewport = canvasViewports.get(workspace);
+  if (!viewport) {
+    viewport = { x: 0, y: 0, zoom: 1 };
+    canvasViewports.set(workspace, viewport);
+  }
+  return viewport;
+}
+
+/* Drop a closed window's place. Called from removeView beside solarForget and
+ * matrixClosed, for the same reason both of those are: this is state about a
+ * window kept outside the window's own record, so it has to be forgotten by
+ * hand. A stale entry here would hold a rectangle on the plane for a window
+ * that no longer exists — invisible, since nothing draws it, and wrong the
+ * moment fit-to-all measured the bounding box it is part of. */
+function canvasClosed(id) {
+  canvasPlaces.delete(id);
+}
+
+/* ------------------------------------------------------------------------
+ * The layout itself
+ *
+ * Pure functions of (places, viewport, area) — no DOM, no globals, nothing
+ * measured. That is what lets tests/shell.test.js check the arithmetic
+ * directly rather than through a stubbed getBoundingClientRect that returns
+ * fixed numbers and proves nothing about it.
+ * --------------------------------------------------------------------- */
+
+/* Zoom, held inside what the compositor can actually draw a click into. */
+function canvasClampZoom(zoom) {
+  if (!Number.isFinite(zoom)) return 1;
+  return Math.min(CANVAS.maxZoom, Math.max(CANVAS.minZoom, zoom));
+}
+
+/* Where a world rectangle lands on the screen, and whether it lands there at
+ * all.
+ *
+ * `area` is the region windows may be drawn in, in coordinates relative to the
+ * output's `.windows` element — the same space matrixAreaOf works in, and the
+ * space the inline `left`/`top` this produces are resolved against.
+ *
+ * `width` and `height` come back as the *client's* size with `scale` beside
+ * them, exactly as solar's placements do: the element is drawn at
+ * width * scale and geometry.js divides the scale back out to tell the
+ * compositor what size the client should be. A window at zoom 0.5 is drawn
+ * half-size and is still, to the client, the size it always was. */
+function canvasPlacement(id, rect, viewport, area) {
+  const zoom = viewport.zoom;
+  const x = area.x + (rect.x - viewport.x) * zoom;
+  const y = area.y + (rect.y - viewport.y) * zoom;
+  const width = rect.width * zoom;
+  const height = rect.height * zoom;
+
+  /* Off screen is not "past the edge" but "shares no pixel with the area":
+     a window hanging half over the right edge is on screen and is clipped by
+     reportGeometry, and one entirely past it is not drawn at all. The two
+     cases are different — the first is a surface the compositor crops, the
+     second is a surface it stops painting — and the difference is this
+     intersection. */
+  const offscreen = x + width <= area.x || x >= area.x + area.width
+    || y + height <= area.y || y >= area.y + area.height;
+
+  return {
+    id,
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height)),
+    scale: zoom,
+    offscreen,
+  };
+}
+
+/* The layout, for one plane's worth of windows.
+ *
+ * `items` is [{ id, rect }] in world coordinates. Deterministic and total: the
+ * same three arguments always give the same placements, and every window in
+ * comes back out with one, including the ones that end up off screen — they
+ * carry `offscreen` rather than being dropped, so the caller can decide
+ * whether "not drawn" also means "not reported", which it does. O(N). */
+function canvasProject(items, viewport, area) {
+  const out = [];
+  if (!Array.isArray(items) || items.length === 0) return out;
+  if (!area || !(area.width > 0) || !(area.height > 0)) return out;
+
+  for (const item of items) {
+    if (!item || !item.rect) continue;
+    out.push(canvasPlacement(item.id, item.rect, viewport, area));
+  }
+  return out;
+}
+
+/* The bounding box of everything on the plane, in world units. Null when there
+ * is nothing on it, which is a different answer from a zero-sized box and is
+ * why the callers check for it rather than for an empty width. */
+function canvasBounds(items) {
+  let box = null;
+  for (const item of items) {
+    const rect = item?.rect;
+    if (!rect) continue;
+    if (!box) {
+      box = { left: rect.x, top: rect.y,
+        right: rect.x + rect.width, bottom: rect.y + rect.height };
+      continue;
+    }
+    box.left = Math.min(box.left, rect.x);
+    box.top = Math.min(box.top, rect.y);
+    box.right = Math.max(box.right, rect.x + rect.width);
+    box.bottom = Math.max(box.bottom, rect.y + rect.height);
+  }
+  return box;
+}
+
+/* A viewport showing everything at once, centred.
+ *
+ * The zoom is whichever of the two axes is the binding one, clamped — so a
+ * plane that already fits is left at 1.0 rather than being blown up past it,
+ * and one spread far too wide stops at minZoom and is fitted as well as it can
+ * be rather than as well as it was asked to be. Centring after the clamp is
+ * what makes the second case land on the middle of the plane instead of its
+ * top left corner. */
+function canvasFitViewport(items, area, margin = CANVAS.margin) {
+  const box = canvasBounds(items);
+  if (!box || !area || !(area.width > 0) || !(area.height > 0)) {
+    return { x: 0, y: 0, zoom: 1 };
+  }
+
+  const width = Math.max(1, box.right - box.left);
+  const height = Math.max(1, box.bottom - box.top);
+  const zoom = canvasClampZoom(Math.min(
+    (area.width - margin * 2) / width,
+    (area.height - margin * 2) / height));
+
+  /* The visible span in world units, which is what the view has to be centred
+     against — the area is screen pixels and the plane is not. */
+  const span = { x: area.width / zoom, y: area.height / zoom };
+  return {
+    x: (box.left + box.right) / 2 - span.x / 2,
+    y: (box.top + box.bottom) / 2 - span.y / 2,
+    zoom,
+  };
+}
+
+/* The smallest pan that brings a world rectangle fully on screen.
+ *
+ * Minimal on purpose: following focus by centring the focused window would
+ * move the whole plane on every focus change, including the ones where the
+ * window you moved to was already in plain sight. Nothing moves unless
+ * something is off the edge, and then only far enough.
+ *
+ * Zoom is returned unchanged. Following focus is not a reason to change how
+ * far out the view is — that is a decision the user made and this has no
+ * business undoing it. */
+function canvasFollow(rect, viewport, area, margin = CANVAS.margin) {
+  if (!rect || !area || !(area.width > 0) || !(area.height > 0)) return viewport;
+
+  const zoom = viewport.zoom;
+  const span = { x: area.width / zoom, y: area.height / zoom };
+  /* The margin is screen pixels, so it is worth more world units the further
+     out the view is — which is right: it is a gap you can see, not a gap on
+     the plane. */
+  const edge = margin / zoom;
+
+  let { x, y } = viewport;
+
+  /* Right and bottom first, then left and top, so that a window larger than
+     the screen ends up showing its top left corner rather than its bottom
+     right. Both branches fire for it and the second wins, which is the
+     ordinary convention: the part of an oversized window you want is the part
+     that starts. */
+  if (rect.x + rect.width + edge > x + span.x) {
+    x = rect.x + rect.width + edge - span.x;
+  }
+  if (rect.x - edge < x) x = rect.x - edge;
+
+  if (rect.y + rect.height + edge > y + span.y) {
+    y = rect.y + rect.height + edge - span.y;
+  }
+  if (rect.y - edge < y) y = rect.y - edge;
+
+  return { x, y, zoom };
+}
+
+/* Zoom about the middle of the screen.
+ *
+ * The world point under the centre of the area stays under it, which is what
+ * makes stepping out and back in return to the same view — anchoring at the
+ * viewport origin instead would walk the plane sideways a little on every
+ * step, and the drift is not subtle after four of them. */
+function canvasZoomed(viewport, factor, area) {
+  const zoom = canvasClampZoom(viewport.zoom * factor);
+  if (!area || !(area.width > 0) || !(area.height > 0)) {
+    return { x: viewport.x, y: viewport.y, zoom };
+  }
+  const anchor = {
+    x: viewport.x + (area.width / 2) / viewport.zoom,
+    y: viewport.y + (area.height / 2) / viewport.zoom,
+  };
+  return {
+    x: anchor.x - (area.width / 2) / zoom,
+    y: anchor.y - (area.height / 2) / zoom,
+    zoom,
+  };
+}
+
+/* ------------------------------------------------------------------------
+ * Reading the shell's state
+ * --------------------------------------------------------------------- */
+
+/* The area of an output windows may be placed in.
+ *
+ * Measured rather than derived from the output's mode, and inset by the edge
+ * gap by hand, for the reasons written out over matrixAreaOf: the bar and a
+ * panel's exclusive zone are already out of `.windows`, but its padding is not
+ * — an absolutely positioned child is laid out against the padding box, so a
+ * field at inset:0 covers the padding rather than sitting inside it. */
+function canvasAreaOf(output) {
+  const rect = output?.windowsEl?.getBoundingClientRect();
+  if (!rect) return null;
+  const edge = edgeGapPx(output?.workspace);
+  const width = rect.width - edge * 2;
+  const height = rect.height - edge * 2;
+  if (width <= 0 || height <= 0) return null;
+  return { x: edge, y: edge, width, height };
+}
+
+/* The windows the canvas places on a workspace, in tree order.
+ *
+ * Floating windows are left out entirely, as they are in solar and the matrix:
+ * a dialog is floating because the compositor judged that tiling it is the
+ * wrong thing to do (views.rs, wants_floating), and putting one on the plane
+ * is that same mistake with different arithmetic. relayoutAll places them
+ * itself, over whatever the canvas drew.
+ *
+ * Tree order and not focus order, unlike the matrix: nothing about where a
+ * window sits on the plane depends on when it was last used, and an order that
+ * changed under focus would make the cascade of newly-opened windows shuffle
+ * every time you clicked one. */
+function canvasOrderOf(workspace) {
+  const root = workspaces.get(workspace);
+  if (!root) return [];
+  return dynamicOrder(root).filter((id) => views.has(id) && !isFloating(id));
+}
+
+/* Where a window is on the plane, placing it if this is the first time anyone
+ * has asked.
+ *
+ * Two ways of placing one, and the first is the interesting one. A window that
+ * was on screen a moment ago — because the layout was tiling until the user
+ * pressed the key that got us here — has a `view.box`, which is exactly where
+ * it was last drawn. Adopting that freezes the layout you were looking at onto
+ * the plane, so switching into the canvas leaves the desktop looking identical
+ * and merely makes it draggable. Seeding at an origin instead would collapse a
+ * working tiling layout into a pile at the top left, which is a layout switch
+ * that loses your arrangement.
+ *
+ * The box is in page coordinates and the plane is not, so it comes back
+ * through the same projection the renderer applies, inverted: subtract the
+ * output's own origin to get field coordinates, then the area's inset and the
+ * viewport's, dividing out the zoom.
+ *
+ * Failing that — a restored session, a window opened while the canvas was
+ * already running, a workspace nothing has drawn yet — the window is put at
+ * the middle of the visible area at the default size, cascaded past whatever
+ * is already sitting there. */
+function canvasPlaceOf(id, output, viewport, area) {
+  const existing = canvasPlaces.get(id);
+  if (existing) return existing;
+
+  const zoom = viewport.zoom;
+  const box = views.get(id)?.box;
+  const host = output?.windowsEl?.getBoundingClientRect();
+
+  if (box && host && box.width > 0 && box.height > 0) {
+    const place = {
+      x: viewport.x + (box.x - host.left - area.x) / zoom,
+      y: viewport.y + (box.y - host.top - area.y) / zoom,
+      width: box.width,
+      height: box.height,
+    };
+    canvasPlaces.set(id, place);
+    return place;
+  }
+
+  const width = Math.round(area.width * CANVAS.width / zoom);
+  const height = Math.round(area.height * CANVAS.height / zoom);
+  /* The middle of what is being looked at, not the middle of the plane: a new
+     window belongs where the user is, and the plane has no middle. */
+  const centre = {
+    x: viewport.x + (area.width / 2) / zoom,
+    y: viewport.y + (area.height / 2) / zoom,
+  };
+
+  let x = Math.round(centre.x - width / 2);
+  let y = Math.round(centre.y - height / 2);
+  /* Step off anything already at this exact spot. Bounded by the number of
+     windows on the plane, since each pass can only collide with one of them
+     and the offset is the same every time — so the loop cannot revisit a
+     coordinate it has already left. */
+  const taken = new Set();
+  for (const [other, rect] of canvasPlaces) {
+    if (other !== id) taken.add(`${rect.x},${rect.y}`);
+  }
+  for (let step = 0; step < taken.size + 1 && taken.has(`${x},${y}`); step++) {
+    x += CANVAS.cascade;
+    y += CANVAS.cascade;
+  }
+
+  const place = { x, y, width, height };
+  canvasPlaces.set(id, place);
+  return place;
+}
+
+/* One workspace's windows and where they are, ready to project. */
+function canvasItemsOf(workspace, output, viewport, area) {
+  return canvasOrderOf(workspace).map((id) => ({
+    id, rect: canvasPlaceOf(id, output, viewport, area),
+  }));
+}
+
+/* Every output's placements, worked out on the way into a relayout. One pass
+ * for all of them, so the caller has the whole plan before it draws any of it
+ * — the same shape planSolar and planMatrix have, and for the same reason. */
+function planCanvas() {
+  const plan = new Map();
+  for (const [name, output] of outputs) {
+    const area = canvasAreaOf(output);
+    if (!area) {
+      plan.set(name, []);
+      continue;
+    }
+    const viewport = canvasViewportOf(output.workspace);
+    const items = canvasItemsOf(output.workspace, output, viewport, area);
+    plan.set(name, canvasProject(items, viewport, area));
+  }
+  return plan;
+}
+
+/* The plan for one workspace, on the output showing it. The entry point the
+ * tests and the commands below ask for by name, so neither has to know how a
+ * workspace finds its monitor. */
+function recalculateCanvasLayout(workspace, areaGiven = null) {
+  const output = outputs.get(hostOfWorkspace(workspace));
+  const area = areaGiven ?? canvasAreaOf(output);
+  if (!area) return [];
+  const viewport = canvasViewportOf(workspace);
+  return canvasProject(
+    canvasItemsOf(workspace, output, viewport, area), viewport, area);
+}
+
+/* ------------------------------------------------------------------------
+ * Driving the view
+ *
+ * Everything here edits one of the two maps and asks for a relayout. None of
+ * it touches the tree, and none of it sends anything to the compositor: what
+ * the compositor learns about a pan is that some windows have new rectangles,
+ * which is what it learns about every other layout change too.
+ * --------------------------------------------------------------------- */
+
+/* The workspace being looked at, its output and its area, or null when the
+ * canvas is not running or there is nothing to run it on. Every command starts
+ * with this, so a chord left over in someone's config file does nothing rather
+ * than throwing. */
+function canvasTarget() {
+  if (layoutMode !== 'canvas') return null;
+  const output = outputs.get(activeOutputName());
+  if (!output) return null;
+  const area = canvasAreaOf(output);
+  if (!area) return null;
+  return { output, area, workspace: output.workspace };
+}
+
+/* Pan by a screen distance. The step is divided by the zoom so that a key
+ * moves the view the same visible amount however far out it is. */
+function canvasPan(dx, dy) {
+  const target = canvasTarget();
+  if (!target) return;
+  const viewport = canvasViewportOf(target.workspace);
+  viewport.x += dx / viewport.zoom;
+  viewport.y += dy / viewport.zoom;
+  relayoutAll();
+}
+
+/* One pan key, as a direction. Panning right means looking further right,
+ * which moves the windows left — the map convention, not the scrollbar one. */
+function canvasPanDirection(direction) {
+  const step = CANVAS.panStep;
+  canvasPan(
+    direction === 'left' ? -step : direction === 'right' ? step : 0,
+    direction === 'up' ? -step : direction === 'down' ? step : 0);
+}
+
+/* Zoom in or out a step, or to an exact factor. */
+function canvasZoom(arg) {
+  const target = canvasTarget();
+  if (!target) return;
+  const viewport = canvasViewportOf(target.workspace);
+
+  const exact = Number(arg);
+  const next = Number.isFinite(exact) && exact > 0
+    ? canvasZoomed(viewport, exact / viewport.zoom, target.area)
+    : canvasZoomed(viewport,
+      arg === 'out' ? 1 / CANVAS.zoomStep : CANVAS.zoomStep, target.area);
+
+  canvasViewports.set(target.workspace, next);
+  relayoutAll();
+}
+
+/* Show the whole plane. */
+function canvasFit() {
+  const target = canvasTarget();
+  if (!target) return;
+  const viewport = canvasViewportOf(target.workspace);
+  const items = canvasItemsOf(
+    target.workspace, target.output, viewport, target.area);
+  canvasViewports.set(target.workspace,
+    canvasFitViewport(items, target.area));
+  relayoutAll();
+}
+
+/* Back to 1:1, on whatever is focused.
+ *
+ * The counterpart to fit, and the one that matters most: 1.0 is the only zoom
+ * at which clicking into a window works, so this is "let me use this again"
+ * and wants a key of its own rather than four presses of zoom-in. */
+function canvasHome() {
+  const target = canvasTarget();
+  if (!target) return;
+  const viewport = canvasViewportOf(target.workspace);
+  const at = { x: viewport.x, y: viewport.y, zoom: 1 };
+
+  const rect = focusedId != null && workspaceOf(focusedId) === target.workspace
+    ? canvasPlaces.get(focusedId) : null;
+  canvasViewports.set(target.workspace,
+    rect ? canvasFollow(rect, at, target.area) : at);
+  relayoutAll();
+}
+
+/* Move the focused window across the plane. An edit to the plane, so the step
+ * is in world units — see CANVAS.moveStep. */
+function canvasMoveFocused(direction) {
+  const target = canvasTarget();
+  if (!target || focusedId == null) return false;
+  const rect = canvasPlaces.get(focusedId);
+  if (!rect) return false;
+
+  const step = CANVAS.moveStep;
+  rect.x += direction === 'left' ? -step : direction === 'right' ? step : 0;
+  rect.y += direction === 'up' ? -step : direction === 'down' ? step : 0;
+
+  /* Follow it, or moving a window towards the edge walks it off the screen and
+     the next press is moving something you cannot see. */
+  canvasViewports.set(target.workspace,
+    canvasFollow(rect, canvasViewportOf(target.workspace), target.area));
+  relayoutAll();
+  return true;
+}
+
+/* Bring the newly focused window into view.
+ *
+ * Called from the view.focused handler beside matrixFocused, and a no-op in
+ * every other layout. Minimal, per canvasFollow: focusing something already on
+ * screen moves nothing at all. */
+function canvasFocused(id) {
+  if (layoutMode !== 'canvas' || id == null) return;
+  const workspace = workspaceOf(id);
+  if (workspace === null) return;
+  const output = outputs.get(hostOfWorkspace(workspace));
+  const area = canvasAreaOf(output);
+  if (!area) return;
+  const rect = canvasPlaces.get(id);
+  if (!rect) return;
+  canvasViewports.set(workspace,
+    canvasFollow(rect, canvasViewportOf(workspace), area));
+}
+
+/* ------------------------------------------------------------------------
+ * Rendering
+ * --------------------------------------------------------------------- */
+
+/* Forget everything the canvas did to a window, and undo it.
+ *
+ * Called on the way into any relayout that is not the canvas's. The inline
+ * rect is not the stylesheet's to reset: a window left carrying left/top from
+ * the plane would be positioned in the middle of a tiling column. The *places*
+ * are deliberately kept — leaving the canvas and coming back should find the
+ * plane as it was left, which is the one piece of this state that is worth
+ * more than the layout it belongs to. Cheap when there is nothing to undo. */
+function clearCanvasState() {
+  for (const [, view] of views) {
+    if (!view.canvas) continue;
+    view.canvas = null;
+    view.el.classList.remove('plane', 'front');
+    Object.assign(view.el.style,
+      { left: '', top: '', width: '', height: '' });
+  }
+}
+
+/* One output's plane, as elements.
+ *
+ * Positioned absolutely inside a container of its own rather than onto the
+ * output's `.windows` directly, so the container is what the FLIP in
+ * geometry.js measures against and a workspace switch does not animate every
+ * window from wherever the previous workspace's window of the same index
+ * happened to be. Same reason renderSolar and renderMatrix have one. */
+function renderCanvas(placements, output) {
+  const el = document.createElement('div');
+  el.className = 'canvas-field';
+
+  for (const placement of placements) {
+    const view = views.get(placement.id);
+    if (!view) continue;
+
+    /* Off the edge of the view. Left out of renderedIds and out of the DOM,
+       which is the whole of what "not drawn" means here: relayoutAll hides
+       what it did not render and tells the compositor the window is off
+       screen, so its surface stops being painted into a hole that is not
+       there. That is the same route a collapsed tab takes, and it is what
+       stops a plane holding fifty windows from costing fifty holes. */
+    if (placement.offscreen) continue;
+
+    /* A fullscreen window covers the output and is not on the plane while it
+       does. Its place is untouched, so leaving fullscreen puts it back exactly
+       where it was — the same treatment solar gives a covering window. */
+    const covering = isFullscreen(placement.id);
+    const scale = covering ? 1 : placement.scale;
+
+    view.canvas = {
+      scale,
+      /* In front of the windows it overlaps, so its frame is drawn over their
+         holes rather than under them, and so the compositor raises its surface
+         above theirs. Only the focused one: the compositor offers exactly two
+         stacking bands (restack() in state.rs), so marking every window on the
+         plane would put them all in the top band and settle nothing. See
+         reportGeometry, where this becomes `floating` on the wire. */
+      lift: covering || placement.id === focusedId,
+    };
+
+    view.el.classList.add('plane');
+    /* Drawn over what it overlaps, which on a plane is a real question — see
+       the `.front` rule in shell.css. The same condition as `lift` above,
+       since the frame and the surface have to agree about which is in front. */
+    view.el.classList.toggle('front', view.canvas.lift);
+
+    /* Sized at the client's rectangle and drawn at `scale`, so the element is
+       the *drawn* size and reportGeometry divides it back out. Written this way
+       rather than as a smaller rectangle for the reason in the header: a client
+       on a zoomed-out plane is never asked to resize.
+
+       Written for a covering window too, and overridden: `.window.fullscreen`
+       carries `inset: 0 !important` precisely so that a layout holding a rect
+       in inline style does not have to strip and restore it. */
+    Object.assign(view.el.style, {
+      left: `${placement.x}px`,
+      top: `${placement.y}px`,
+      width: `${Math.round(placement.width * scale)}px`,
+      height: `${Math.round(placement.height * scale)}px`,
+      flexGrow: '',
+    });
+
+    renderedIds.add(placement.id);
+    el.append(view.el);
+  }
+
+  return el;
+}

@@ -761,7 +761,7 @@ const OPTIONS: &[Opt] = &[
     Opt {
         flag: "--layout",
         value: "NAME",
-        what: "tiling or scrolling, over whatever the config says",
+        what: "tiling, scrolling, solar, matrix or canvas, over the config",
     },
     Opt {
         flag: "--renderer",

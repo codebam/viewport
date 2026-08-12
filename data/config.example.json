@@ -57,6 +57,14 @@
     "             Alt+Tab order, so nothing is placed by where it sits in the",
     "             tree. No keys of its own — focus is the only input the model",
     "             takes. See docs/matrix.md.",
+    "\"canvas\"    every workspace an unbounded plane. Windows sit where you",
+    "             put them and keep those coordinates; the view pans and",
+    "             zooms over the top, and zooming out draws them smaller",
+    "             without resizing any client. Mod4+[ and Mod4+] pan,",
+    "             Mod4+PageUp/PageDown pan vertically, Mod4+- and Mod4+= zoom,",
+    "             Mod4+Shift+f fits the plane and Mod4+Home returns to 1:1.",
+    "             Zoom stops at 1:1: that is the only scale at which a click",
+    "             reaches the pixel it appears to. See docs/canvas.md.",
     "",
     "\"shell layout.model\" switches at runtime; with no argument it cycles."
   ],
@@ -64,8 +72,8 @@
 
   "_tiling_mode": [
     "How the tiling tree arranges itself. Only meaningful with",
-    "\"layout\": \"tiling\" — the scrolling strip, the solar layout and the",
-    "matrix are each their own model.",
+    "\"layout\": \"tiling\" — the scrolling strip, the solar layout, the",
+    "matrix and the canvas are each their own model.",
     "",
     "  \"manual\"        the tree of splits you make. The default.",
     "  \"master-stack\"  first window one side, the rest in a column beside it.",

@@ -899,11 +899,11 @@ mod tests {
 
     #[test]
     fn the_layout_models_round_trip() {
-        // The same four names `--layout` takes and apply_config checks
+        // The same five names `--layout` takes and apply_config checks
         // against. A model added to one and not the others is a config key
         // that parses, is rejected, and leaves the keymap built for something
         // else.
-        for layout in ["tiling", "scrolling", "solar", "matrix"] {
+        for layout in ["tiling", "scrolling", "solar", "matrix", "canvas"] {
             let file: File =
                 serde_json::from_str(&format!(r#"{{"layout": "{layout}"}}"#)).expect("parses");
             assert_eq!(file.layout.as_deref(), Some(layout));
