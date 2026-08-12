@@ -26,20 +26,20 @@
  *     compositor as off screen. That is what keeps a plane with fifty windows
  *     on it costing the same as one with four.
  *
- * Zoom is capped at 1.0, and the cap is not a matter of taste. `surface_under`
- * in the compositor (crates/viewport/src/state.rs) hit-tests a click against a
- * window's mapped rectangle with no scale term in it, so at any zoom but 1.0 a
- * click lands somewhere other than where it looks like it landed. Above 1.0
- * there is a second problem — a buffer drawn larger than it was painted is a
- * blurry one, and the alternative, reconfiguring every client on every zoom
- * step, is exactly the per-frame resize storm this layout exists to avoid.
+ * Zoom is capped at 1.0, and the cap is about what is *above* it rather than
+ * what is below. A buffer drawn larger than it was painted is a blurry one, and
+ * the alternative — reconfiguring every client on every zoom step — is exactly
+ * the per-frame resize storm this layout exists to avoid.
  *
- * So: at zoom 1.0 the canvas is fully usable — pan an endless plane, click and
- * type into anything on screen, because every surface is at its natural scale
- * and the compositor's existing arithmetic is correct. Below 1.0 it is a view:
- * you can see where everything is and pan or fit to bring a window back, and
- * clicks into shrunken clients are not to be trusted until that hit test
- * learns about scale.
+ * Below 1.0 the canvas is fully usable, including the pointer. That was not
+ * true when this layout was written: `surface_under` in the compositor
+ * hit-tested a click against the window's mapped rectangle with no scale term
+ * in it, so a click on a zoomed-out window landed further into the client the
+ * further across it you clicked, and dragging one moved it from a grip that was
+ * not where the hand was. `ViewportState::unscaled` (state.rs) now takes a
+ * screen position back into the window's own coordinates about the same corner
+ * the renderer scales it about, and the three hit tests — surface_under,
+ * window_under, clipped_out — all go through it.
  *
  * The tiling tree still says which windows exist and which workspace they are
  * on; this reads that and never writes it, which is what lets window.move, the
@@ -60,10 +60,11 @@ const CANVAS = {
      showing you nothing you could act on. */
   minZoom: 0.25,
 
-  /* And how far in. One, exactly, for the reason in the header: the
-     compositor's hit test has no scale in it, so 1.0 is the only zoom at which
-     a click reaches the pixel it appears to. Raising this needs that fixed
-     first, not instead. */
+  /* And how far in. One, exactly: past it the compositor is enlarging a buffer
+     the client painted smaller, which is blur, and the way to avoid the blur is
+     to reconfigure every client on every step — the resize storm this layout
+     exists to avoid. Zooming *out* has no such problem and is not capped here;
+     see the header. */
   maxZoom: 1,
 
   /* Multiplicative, so stepping out and back in returns to where it started

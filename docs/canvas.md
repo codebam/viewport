@@ -51,28 +51,29 @@ in, with a margin, and never changes the zoom.
 
 ## Why the zoom stops at 1.0
 
-Not taste. `surface_under` in `crates/viewport/src/state.rs` hit-tests a click
-against a window's mapped rectangle and there is no scale term in it, so at any
-zoom but 1.0 a click lands somewhere other than where it looks like it landed.
-The overview sidesteps this by taking every click for the shell while it is up;
-a canvas cannot, because the windows on it are the thing you are using.
+The cap is about what is above it, not below. A buffer drawn larger than it
+was painted is a blurry one, and the way to avoid the blur — reconfiguring
+every client on every zoom step — is exactly the per-frame resize storm this
+layout exists to avoid. Zooming *out* costs nothing: the compositor shrinks a
+buffer it already has.
 
-Above 1.0 there is a second problem, independent of the first: a buffer drawn
-larger than it was painted is a blurry one, and the alternative — reconfiguring
-every client on every zoom step — is exactly the per-frame resize storm the
-layout exists to avoid.
+Below 1.0 the canvas is fully usable, pointer included. That was not true when
+the layout was first written, and it is worth knowing what changed. The three
+hit tests — `surface_under`, `window_under` and `clipped_out`, all in
+`crates/viewport/src/state.rs` — asked which window was under the pointer using
+the rectangle the `Space` holds, which is the window's *full* size. A window
+drawn at 0.5 is stored at full size and painted half, so a click landed twice
+as far into the client as it looked, and dragging a window took hold of it from
+somewhere that was not under the hand. The error grew with the distance from
+the window's corner, which is why it read as "the left of the window works and
+the right of it does not" rather than as an offset anyone would spot at once.
 
-So the cap is where the current compositor is correct:
-
-| Zoom | What works |
-| --- | --- |
-| `1.0` | everything. Pan an endless plane, click and type into anything on screen — every surface is at its natural scale and the compositor's arithmetic is right |
-| below `1.0` | looking, panning, fitting, moving windows. Clicks into a shrunken client are **not** to be trusted |
-
-`Mod4+Home` is therefore the key that matters most: back to 1:1 on whatever is
-focused. Lifting the cap means teaching `surface_under`, `window_under` and
-`clipped_out` about `view.scale`, which is already stored per view in
-`views.rs` and already ignored by all three.
+`ViewportState::unscaled` now takes a screen position back into the window's
+own coordinates, about the same corner `RescaleRenderElement` scales it about
+(`element_geometry().loc` — the window's top-left, not the surface's, because a
+client drawing its shadows outside its geometry starts the surface up and left
+of the window). It is identity at 1.0, which is every window in every layout
+that does not shrink one, so nothing else pays for it.
 
 ## Where the state lives
 
@@ -171,8 +172,6 @@ has drifted.
 
 ## What is not done yet
 
-- **Clicks below 1.0 zoom**, per the section above. The compositor change is
-  scoped and separate.
 - **Pointer panning and drag-to-move.** The keys are bound; grabbing the
   background to pan, or a titlebar to drag a window across the plane, is not
   wired up. `resize.js` already has the drag machinery a floating window uses.

@@ -1366,6 +1366,13 @@ impl ViewportState {
             // start from the surface's — which is what `Space::element_under`
             // returns and what reading the map location instead got wrong, by
             // exactly the width of the shadow.
+            // And not the part of it that is merely drawn smaller than it is.
+            // The client was never resized, so the coordinates it is asked
+            // about are its own; without this a click on a window at 0.5 lands
+            // at twice its distance from the corner, which is a pointer that
+            // works in the top-left of a window and misses by more the further
+            // across it you go.
+            let pos = self.unscaled(&window, pos);
             let render_location = location - window.geometry().loc;
             if let Some((surface, at)) =
                 window.surface_under(pos - render_location.to_f64(), WindowSurfaceType::ALL)
@@ -1395,6 +1402,12 @@ impl ViewportState {
                 if self.clipped_out(window, pos) {
                     return false;
                 }
+                // In the window's own coordinates, so that a window merely
+                // drawn smaller is tested against the space it actually
+                // covers. The bounding box is the full size the `Space` holds
+                // it at; against the raw pointer position it claims the screen
+                // around a thumbnail as well as the thumbnail.
+                let pos = self.unscaled(window, pos);
                 let Some(bbox) = self.space.element_bbox(window) else {
                     return false;
                 };
@@ -1427,6 +1440,59 @@ impl ViewportState {
     /// So the clip bounds input as well as drawing. The two have to agree —
     /// what is not on the screen cannot be clicked — and the clip is the only
     /// thing that knows where a window really is.
+    /// What the shell asked this window to be *drawn* at, 1.0 for almost
+    /// everything.
+    fn draw_scale(&self, window: &smithay::desktop::Window) -> f64 {
+        use smithay::wayland::seat::WaylandFocus;
+
+        window
+            .wl_surface()
+            .as_deref()
+            .and_then(|surface| self.views.find_by_surface(surface))
+            .map(|view| view.scale)
+            .filter(|scale| scale.is_finite() && *scale > 0.0)
+            .unwrap_or(1.0)
+    }
+
+    /// A point on the screen, in the coordinates of a window drawn smaller than
+    /// it is.
+    ///
+    /// A shrunken window is a client that has not been resized: it is painted
+    /// at its own size and the renderer scales the result about the window's
+    /// top-left corner (`WindowFrame::origin`, and `RescaleRenderElement` in
+    /// render.rs). The `Space` still holds it at full size, because that is
+    /// what it is — so every hit test asked "which window is under the
+    /// pointer" of a layout drawn at one scale and stored at another, and got
+    /// an answer for a window that is not what anybody can see.
+    ///
+    /// Undoing the scale about the same corner is the whole correction. It is
+    /// identity at 1.0, which is every window in every layout that does not
+    /// shrink one, so the arithmetic is skipped rather than rounded through.
+    ///
+    /// The corner is `element_geometry().loc`: the window's own top-left, not
+    /// the surface's — a client drawing its shadows outside its geometry starts
+    /// its surface some pixels up and left of the window, and scaling about
+    /// *that* is what leaves a strip of window hanging outside the box the
+    /// shell drew. The renderer picks the same corner for the same reason.
+    fn unscaled(
+        &self,
+        window: &smithay::desktop::Window,
+        pos: Point<f64, Logical>,
+    ) -> Point<f64, Logical> {
+        let scale = self.draw_scale(window);
+        if (scale - 1.0).abs() < f64::EPSILON {
+            return pos;
+        }
+        let Some(origin) = self
+            .space
+            .element_geometry(window)
+            .map(|geometry| geometry.loc)
+        else {
+            return pos;
+        };
+        unscale_about(origin.to_f64(), pos, scale)
+    }
+
     pub fn clipped_out(&self, window: &smithay::desktop::Window, pos: Point<f64, Logical>) -> bool {
         use smithay::wayland::seat::WaylandFocus;
 
@@ -1440,6 +1506,10 @@ impl ViewportState {
             // screen, which is every window on an unscrolled workspace.
             return false;
         };
+        /* The clip is in the window's own coordinates — the shell divides the
+        thumbnail scale back out before sending it — so a point on a shrunken
+        window has to come back the same way before it is compared. */
+        let pos = self.unscaled(window, pos);
         !crate::views::clip_covers(clip, pos.x, pos.y)
     }
 
@@ -7634,4 +7704,95 @@ fn state_dispatches(log: &mut crate::udev::FrameLog, nanos: u64, messages: u64) 
     log.protocol_dispatches += 1;
     log.protocol_nanos += nanos;
     log.protocol_messages += messages;
+}
+
+/// A point on screen, in the coordinates of something drawn `scale` smaller
+/// about `origin`.
+///
+/// The inverse of what `RescaleRenderElement` does in render.rs, and the whole
+/// of what a hit test on a shrunken window needs: the client was never resized,
+/// so the point it should be asked about is the one it would have been at if
+/// the shrinking had not happened.
+///
+/// A free function so that the arithmetic — the part that is wrong in a way
+/// nobody can see until they click — is checkable without a `Space`, an output
+/// or a client.
+fn unscale_about(
+    origin: Point<f64, Logical>,
+    pos: Point<f64, Logical>,
+    scale: f64,
+) -> Point<f64, Logical> {
+    (
+        origin.x + (pos.x - origin.x) / scale,
+        origin.y + (pos.y - origin.y) / scale,
+    )
+        .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(x: f64, y: f64) -> Point<f64, Logical> {
+        (x, y).into()
+    }
+
+    /// The corner a window is scaled about does not move, whatever the scale.
+    /// Everything else is measured from it.
+    #[test]
+    fn the_corner_is_where_the_scaling_happens() {
+        let origin = at(100.0, 50.0);
+        for scale in [0.25, 0.5, 1.0] {
+            assert_eq!(unscale_about(origin, origin, scale), origin, "at {scale}");
+        }
+    }
+
+    /// Half size: a point twenty pixels from the corner on screen is forty
+    /// pixels into the client, because the client was never made smaller — it
+    /// is drawn smaller.
+    #[test]
+    fn a_point_on_a_shrunken_window_is_further_into_the_client() {
+        let origin = at(100.0, 50.0);
+        let hit = unscale_about(origin, at(120.0, 70.0), 0.5);
+        assert_eq!(hit, at(140.0, 90.0));
+
+        // And the error grows with the distance, which is why this shows up as
+        // "the left of the window works and the right of it does not" rather
+        // than as a constant offset anybody would spot at once.
+        let near = unscale_about(origin, at(102.0, 52.0), 0.5);
+        let far = unscale_about(origin, at(500.0, 450.0), 0.5);
+        assert_eq!(near, at(104.0, 54.0));
+        assert_eq!(far, at(900.0, 850.0));
+    }
+
+    /// Full size changes nothing at all — every window in every layout that
+    /// does not shrink one.
+    #[test]
+    fn an_unscaled_window_is_left_alone() {
+        let origin = at(100.0, 50.0);
+        for point in [at(0.0, 0.0), at(100.0, 50.0), at(1920.0, 1080.0)] {
+            assert_eq!(unscale_about(origin, point, 1.0), point);
+        }
+    }
+
+    /// Scaling out and back is where it started, which is what makes the
+    /// pointer land on the pixel it is over: the renderer takes the client's
+    /// point to the screen and this takes the screen's point back.
+    #[test]
+    fn it_is_the_inverse_of_what_the_renderer_did() {
+        let origin = at(30.0, 70.0);
+        for scale in [0.25, 0.4, 0.5, 0.75] {
+            let client = at(640.0, 360.0);
+            // What render.rs draws it at: origin + (client - origin) * scale.
+            let drawn = at(
+                origin.x + (client.x - origin.x) * scale,
+                origin.y + (client.y - origin.y) * scale,
+            );
+            let back = unscale_about(origin, drawn, scale);
+            assert!(
+                (back.x - client.x).abs() < 1e-9 && (back.y - client.y).abs() < 1e-9,
+                "at {scale}: {back:?} is not {client:?}"
+            );
+        }
+    }
 }

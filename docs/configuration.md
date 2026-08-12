@@ -792,11 +792,11 @@ is asked to relayout itself for any view change.
 | `Mod4+Home` | back to 1:1 on the focused window |
 | `Mod4+Shift+h/j/k/l` | move the focused window across the plane |
 
-Zoom stops at 1:1 and that cap is load-bearing: the compositor hit-tests a
-click against a window's mapped rectangle with no scale in it, so 1.0 is the
-only zoom at which a click reaches the pixel it appears to. Below it the canvas
-is a view — pan, fit and move, then `Mod4+Home` to work again. The whole model
-is in [canvas.md](canvas.md).
+Zoom stops at 1:1 because past it the compositor would be enlarging a buffer
+the client painted smaller, and the way round that is to reconfigure every
+client on every step — the resize storm the layout exists to avoid. Zooming out
+is unrestricted and fully usable, pointer included. The whole model is in
+[canvas.md](canvas.md).
 
 All five models share one tree — the strip's columns and the orbits' order are
 both the workspace root's children — so switching `layout` and reloading
