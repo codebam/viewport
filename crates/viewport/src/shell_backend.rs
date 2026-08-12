@@ -157,6 +157,28 @@ impl ShellBackend {
     /// So this is a real capability and not a preference, and the answer
     /// decides whether the terminal is started at all — an invisible terminal
     /// under an opaque desktop is a process nobody can see burning a core.
+    ///
+    /// **This list is a measurement, not an oversight.** Reading the gate
+    /// without the history suggests the fix is to add `Cef` here, and the
+    /// transparency calls that would need are already written and already
+    /// insufficient: `viewport-shell-cef` sets all three of them from
+    /// `VIEWPORT_SHELL_TRANSPARENT`, which `shell_client` exports to every
+    /// out-of-process shell whenever a background command is configured. They
+    /// are kept because they cost nothing and are what a translucent Wayland
+    /// surface would need on the day Chromium grows one. Adding the variant
+    /// restores the original bug rather than fixing anything.
+    ///
+    /// `Chromium` is further out of reach than `Cef`: that window belongs to a
+    /// browser this compositor started rather than one it links, and no
+    /// DevTools call makes a foreign Wayland surface translucent —
+    /// `Emulation.setDefaultBackgroundColorOverride` changes what the document
+    /// composites over, not the surface under it.
+    ///
+    /// The route that does work is CEF's windowless rendering, where
+    /// `OnAcceleratedPaint` hands over DMA-BUF planes, a modifier and a format
+    /// — see the header of `crates/viewport-shell-cef/src/main.rs`. That is a
+    /// different rendering backend and worth having for its own sake; the
+    /// wallpaper would follow from it rather than motivate it.
     pub fn shows_what_is_behind(self) -> bool {
         matches!(self, Self::Wpe | Self::WebKitGtk)
     }
