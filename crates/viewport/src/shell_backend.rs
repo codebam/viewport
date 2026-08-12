@@ -40,7 +40,7 @@
 //   script `servoshell --userscripts` injects into the page.
 //
 // * `cef` — the same Blink as `chromium`, embedded as a library rather than
-//   driven as a browser. The default. `crates/viewport-shell-cef` is outside
+//   driven as a browser. `crates/viewport-shell-cef` is outside
 //   this workspace for the same reason `viewport-shell-servo` is: it does not
 //   build without `CEF_PATH`, and `cargo test --workspace` has to run on a
 //   machine that has never heard of it.
@@ -65,10 +65,12 @@ pub enum ShellBackend {
     /// Servo, embedded in a process of its own by `viewport-shell-servo`.
     Servo,
     /// Servo as a browser — nixpkgs' `servoshell` — started as a child process
-    /// and spoken to through a user script. Links no engine.
+    /// and spoken to through a user script. Links no engine, and what
+    /// `flake.nix` installs by default: the lightest desktop measured, and the
+    /// slowest to paint. See docs/benchmarks.md.
     ServoShell,
     /// Chromium through CEF, embedded in a process of its own rather than
-    /// driven over a socket as `Chromium` is. The default.
+    /// driven over a socket as `Chromium` is.
     Cef,
 }
 

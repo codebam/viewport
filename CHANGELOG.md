@@ -76,6 +76,13 @@ deleted C compositor and the tree stopped carrying two implementations.
   drivable from a terminal without anything else installed.
 - The WPE, WebKitGTK and Chromium shell backends, selectable at build time
   with `--features wpe` or at runtime with `--shell-backend`.
+- **`servoshell` is the default backend** — `nix build`, `nix run` and
+  `programs.viewport.shellBackend` all land on it. It is the lightest desktop
+  measured (8.5% of a core under load against 9.9 to 11.5, 357 MB against 449
+  to 639, four processes against nine to twelve) and the slowest to paint by
+  some way (14 frames a second against 43 to 48). `cef`, the previous default,
+  is still the answer for a desktop that should feel quick; see
+  `docs/benchmarks.md`.
 - Two Servo shell backends, `servo` and `servoshell` — the engine embedded and
   the engine driven, as `cef` and `chromium` are for Blink. `servoshell` runs
   nixpkgs' prebuilt browser and compiles no engine (`nix build .#servoshell`);

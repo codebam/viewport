@@ -4,20 +4,27 @@ The shell is a web page. Which engine renders it is a choice, and this is what
 the choices are.
 
 ```
---shell-backend=cef         Chromium embedded through CEF          implemented, default
+--shell-backend=servoshell  Servo, driven as a child process       implemented, default
+--shell-backend=cef         Chromium embedded through CEF          implemented
 --shell-backend=webkitgtk   WebKitGTK, in a process of its own     implemented
 --shell-backend=chromium    Chromium, driven as a child process    implemented
 --shell-backend=wpe         WPE WebKit, inside the compositor      implemented
 --shell-backend=servo       Servo, embedded in the shell process   implemented, built by hand
---shell-backend=servoshell  Servo, driven as a child process       implemented
 ```
 
-`cef` is what the NixOS module installs and what `nix run` on this flake gives:
-it builds no engine, and of the measured backends that build none it is the
-cheapest per frame the shell paints. `webkitgtk` is 156 MB lighter, which on a
-machine short of memory is the better trade — see
-[`benchmarks.md`](benchmarks.md), which has no numbers for either Servo backend
-yet.
+`servoshell` is what the NixOS module installs and what `nix run` on this flake
+gives: it builds no engine, and it is the lightest desktop of the five that
+have been measured — 8.5% of a core under load against 9.9 to 11.5, 357 MB
+against 449 to 639, four processes against nine to twelve.
+
+It is also the slowest to paint, and by enough to be the first thing to know
+about the default: 14 frames a second under that load against 43 to 48, which
+is 0.607% of a core per frame the shell actually painted against 0.230 to
+0.261. The cheapest desktop and the most expensive engine are the same fact
+seen twice. `cef` is the one to name for a desktop that should feel quick, and
+`webkitgtk` for a machine short of memory rather than CPU — see
+[`benchmarks.md`](benchmarks.md). The embedded `servo` backend has not been
+measured at all.
 
 Two of these are the same engine twice, and that is the pattern rather than an
 accident: `cef` links Blink where `chromium` drives it, and `servo` links Servo
@@ -317,20 +324,20 @@ Each package is named for the engine that draws its shell, which is the only
 thing that differs between them:
 
 ```
+# Servo, in nixpkgs' servoshell; builds no engine at all
+nix build .#servoshell      # and this is `.#default`
+
 # the engine in-process; builds WebKit
 nix build .#wpe
 
 # the engine out of process; builds no WebKit at all
-nix build .#webkitgtk       # and this is `.#default`
+nix build .#webkitgtk
 
 # no engine built or linked; runs nixpkgs' chromium
 nix build .#chromium
 
 # the same engine, embedded; builds a C++ wrapper and no engine
 nix build .#cef
-
-# Servo, in nixpkgs' servoshell; builds no engine either
-nix build .#servoshell
 ```
 
 There is no `.#servo`. The embedded Servo shell is a cargo dependency on the
@@ -338,16 +345,18 @@ engine's source, so a package would be a Servo build inside every evaluation
 that touched this flake; it is built by hand instead, once, and the section
 above says how. That is the whole reason there are two Servo backends.
 
-`.#viewport-smithay` is still an alias for `.#wpe`, because that is what any
-existing pin says.
+`.#viewport-smithay` is still an alias, because that is what any existing pin
+says — for `.#default`, which means a pin to that name follows the default
+rather than the backend that happened to be the only one when it was the only
+name. Name a backend to be held to one.
 
 On NixOS:
 
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "cef";   # the default; also "webkitgtk", "chromium",
-                          # "servoshell" or "wpe"
+  shellBackend = "servoshell";   # the default; also "cef", "webkitgtk",
+                                 # "chromium" or "wpe"
 };
 ```
 
