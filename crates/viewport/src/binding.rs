@@ -882,6 +882,36 @@ mod tests {
         let solar = defaults("foot", "wmenu-run", "solar");
         assert_eq!(solar.len(), bindings.len() - 1 + 6);
 
+        // The canvas has no resize mode either — a window on a plane is sized
+        // by dragging it, not by taking space from a neighbour it does not
+        // share any with — and eight of its own in place of it.
+        let canvas = defaults("foot", "wmenu-run", "canvas");
+        assert_eq!(canvas.len(), bindings.len() - 1 + 8);
+
+        // And every one of those eight is really there, by name. The count
+        // above would be satisfied by eight of anything, and the failure this
+        // is written against is a keysym the parser does not know: `filter_map`
+        // drops the whole binding, so a chord that does nothing looks exactly
+        // like a layout that does not respond to the keyboard.
+        for chord in [
+            "Mod4+bracketleft",
+            "Mod4+bracketright",
+            "Mod4+Prior",
+            "Mod4+Next",
+            "Mod4+minus",
+            "Mod4+equal",
+            "Mod4+Shift+f",
+            "Mod4+Home",
+        ] {
+            let wanted = parse_chord(chord).expect("the test's own chord parses");
+            assert!(
+                canvas.iter().any(|binding| binding.mode.is_empty()
+                    && binding.keysym == wanted.keysym
+                    && binding.modifiers == wanted.modifiers),
+                "the canvas keymap is missing {chord}"
+            );
+        }
+
         // An unknown layout is the tiling keymap rather than a keyboard with
         // holes in it: the name reaches here unvalidated, because the
         // compositor has no layout and cannot judge one.

@@ -212,6 +212,21 @@ impl Item {
 /// that died in flight is retried without losing what it had claimed. The log
 /// is trimmed by nothing, which is right for a session's worth of layout
 /// events and would not be for a stream.
+///
+/// **A reload is in that log, and a reloaded page must not act on it.** This
+/// backend is the only one that reloads by telling the page to reload itself —
+/// every other has an engine handle and calls `reload` on it, so the
+/// instruction never enters the event stream at all. Here it does, the log
+/// keeps it like everything else, and the page the reload created starts its
+/// poll at 0: it read the instruction that made it, reloaded, and did so again
+/// for as long as anyone watched. What that looks like is a desktop that never
+/// comes back while every window on it is untouched, because the windows are
+/// real clients and only the shell is in the loop.
+///
+/// So a page says whether it is new, and a new one starts after the last
+/// reload rather than at the beginning. Asked rather than inferred from
+/// `after == 0`: a page that has loaded but not yet been sent anything is also
+/// at 0, and it must still be reachable by the next reload.
 struct Queue {
     state: Mutex<QueueState>,
     changed: Condvar,
@@ -221,6 +236,9 @@ struct Queue {
 struct QueueState {
     items: Vec<Item>,
     closed: bool,
+    /// Where the most recent [`Item::Reload`] sits in `items`, if there has
+    /// been one. The floor for a page that has just started.
+    reloaded_at: Option<usize>,
 }
 
 impl Queue {
@@ -233,6 +251,9 @@ impl Queue {
 
     fn push(&self, item: Item) {
         let mut state = self.state.lock().expect("the queue lock is never poisoned");
+        if matches!(item, Item::Reload) {
+            state.reloaded_at = Some(state.items.len());
+        }
         state.items.push(item);
         drop(state);
         self.changed.notify_all();
@@ -256,15 +277,28 @@ impl Queue {
     ///
     /// Returns the new high-water mark and the items, which is empty when the
     /// wait timed out — the page asks again with the same mark.
-    fn since(&self, after: usize) -> (usize, Vec<serde_json::Value>) {
+    ///
+    /// `fresh` is a page saying it has only just started, and moves the floor
+    /// past the last reload: see the note on [`Queue`] for what happens when it
+    /// does not. The floor is applied *before* the wait rather than after it,
+    /// or a new page with a reload behind it finds `items.len()` already past
+    /// `after`, returns nothing without waiting, and asks again immediately —
+    /// a long poll that has become a spin.
+    fn since(&self, after: usize, fresh: bool) -> (usize, Vec<serde_json::Value>) {
         let state = self.state.lock().expect("the queue lock is never poisoned");
+        let floor = if fresh {
+            state.reloaded_at.map_or(0, |at| at + 1)
+        } else {
+            0
+        };
+        let start = after.max(floor);
         let (state, _) = self
             .changed
             .wait_timeout_while(state, POLL_TIMEOUT, |state| {
-                state.items.len() <= after && !state.closed
+                state.items.len() <= start && !state.closed
             })
             .expect("the queue lock is never poisoned");
-        let from = after.min(state.items.len());
+        let from = start.min(state.items.len());
         (
             state.items.len(),
             state.items[from..].iter().map(Item::to_json).collect(),
@@ -386,7 +420,13 @@ fn handle(stream: TcpStream, bridge: &Bridge) -> Result<()> {
             let after = query_value(&target, "after")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0);
-            let (next, items) = bridge.queue.since(after);
+            // A page that has not yet been handed anything. Absent means an
+            // established page, which is the safe reading: the cost of
+            // treating a new page as established is the reload loop this
+            // parameter exists to stop, and the cost of the reverse is one
+            // reload not acted on by a page that had only just loaded anyway.
+            let fresh = query_value(&target, "fresh").as_deref() == Some("1");
+            let (next, items) = bridge.queue.since(after, fresh);
             if items.is_empty() {
                 return respond(&stream, 204, "", "");
             }
@@ -512,14 +552,25 @@ fn bridge_script(port: u16, token: &str) -> String {
 {shim}
 
   var after = 0;
+  /* Whether this page has been handed anything yet.
+     A reload is delivered *through* this poll — there is no engine handle on
+     the other side to call `reload` on — so it is in the log with everything
+     else, and the page it creates starts again at 0. Saying "I am new" is what
+     stops that page from reading the instruction that made it and reloading
+     for ever, which leaves every window on screen and no desktop around them.
+     Cleared once a batch actually arrives rather than after the first request,
+     so a poll that dies in flight is retried as the new page it still is. */
+  var fresh = 1;
   function pump() {{
-    fetch(ORIGIN + '/events?t=' + TOKEN + '&after=' + after, {{cache: 'no-store'}})
+    fetch(ORIGIN + '/events?t=' + TOKEN + '&after=' + after + '&fresh=' + fresh,
+      {{cache: 'no-store'}})
       .then(function (response) {{
         return response.status === 204 ? null : response.json();
       }})
       .then(function (batch) {{
         if (batch) {{
           after = batch.next;
+          fresh = 0;
           batch.items.forEach(function (item) {{
             if (item.kind === 'reload') {{
               window.location.reload();
@@ -737,16 +788,91 @@ mod tests {
         queue.push(Item::Event(r#"{"type":"view.added"}"#.to_owned()));
         queue.push(Item::Reload);
 
-        let (next, items) = queue.since(0);
+        // The page that is running: it has read one event, so it is at 1, and
+        // the reload is what it has not seen.
+        let (next, items) = queue.since(1, false);
+        assert_eq!(next, 2);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["kind"], "reload");
+
+        // And one that has read nothing yet is handed both.
+        let (next, items) = queue.since(0, false);
         assert_eq!(next, 2);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["kind"], "event");
         assert_eq!(items[0]["data"], r#"{"type":"view.added"}"#);
         assert_eq!(items[1]["kind"], "reload");
+    }
 
-        let (next, items) = queue.since(1);
-        assert_eq!(next, 2);
+    /// The reload loop.
+    ///
+    /// The page reloads itself here, because there is no engine handle to call
+    /// `reload` on — so the instruction travels in the same log as everything
+    /// else, and the page it creates polls from 0. Handed that log back whole,
+    /// it reads the instruction that made it and reloads again, for ever: a
+    /// desktop that never returns while every window on it is untouched,
+    /// because the windows are clients and only the shell is looping.
+    #[test]
+    fn a_new_page_does_not_act_on_the_reload_that_made_it() {
+        let queue = Queue::new();
+        queue.push(Item::Event(r#"{"type":"view.added"}"#.to_owned()));
+        queue.push(Item::Reload);
+
+        let (next, items) = queue.since(0, true);
+        assert_eq!(next, 2, "the mark is still the end of the log");
+        assert!(
+            items.is_empty(),
+            "a new page was handed the reload that created it: {items:?}"
+        );
+
+        // What arrives afterwards is delivered normally — the floor is the
+        // reload, not the whole log, so a page that starts during one still
+        // gets everything the compositor says next.
+        queue.push(Item::Event(r#"{"type":"config"}"#.to_owned()));
+        let (next, items) = queue.since(0, true);
+        assert_eq!(next, 3);
         assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["data"], r#"{"type":"config"}"#);
+
+        // And a page that has settled sees the next reload, which is what
+        // makes a second Mod4+Shift+c work.
+        queue.push(Item::Reload);
+        let (_, items) = queue.since(3, false);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["kind"], "reload");
+    }
+
+    /// A new page with a reload behind it must still *wait* rather than being
+    /// answered instantly with nothing: the floor is applied before the poll's
+    /// wait, or the long poll becomes a spin against this process.
+    #[test]
+    fn a_new_page_still_waits_for_something_to_happen() {
+        let queue = Arc::new(Queue::new());
+        queue.push(Item::Reload);
+
+        let start = std::time::Instant::now();
+        let waiter = queue.clone();
+        let handle = std::thread::spawn(move || waiter.since(0, true));
+        std::thread::sleep(Duration::from_millis(50));
+        queue.push(Item::Event(r#"{"type":"config"}"#.to_owned()));
+
+        let (_, items) = handle.join().expect("the poll returns");
+        assert_eq!(items.len(), 1);
+        assert!(
+            start.elapsed() >= Duration::from_millis(40),
+            "the poll returned without waiting, which is a spin"
+        );
+    }
+
+    /// The page has to ask, or none of the above happens.
+    #[test]
+    fn the_script_says_when_it_is_a_new_page() {
+        let script = bridge_script(1, "t");
+        assert!(script.contains("&fresh=") && script.contains("var fresh = 1"));
+        assert!(
+            script.contains("fresh = 0"),
+            "a page that never stops calling itself new is never reloaded again"
+        );
     }
 
     /// A poll outstanding when the compositor goes away has to come back, or
@@ -756,7 +882,7 @@ mod tests {
     fn closing_the_socket_wakes_a_poll() {
         let queue = Arc::new(Queue::new());
         let waiter = queue.clone();
-        let handle = std::thread::spawn(move || waiter.since(0));
+        let handle = std::thread::spawn(move || waiter.since(0, false));
         std::thread::sleep(Duration::from_millis(50));
         queue.close();
         let (_, items) = handle.join().expect("the poll returns");

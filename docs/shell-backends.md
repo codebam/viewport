@@ -263,7 +263,13 @@ Two consequences worth knowing before choosing this backend:
 - **`shell.reload` reloads the page rather than the engine.** There is no
   engine handle here to call, so the compositor's reload arrives as an item in
   the poll and the page calls `location.reload()`, which injects the script
-  again with it.
+  again with it. Every other backend calls `reload` on its engine and the
+  instruction never enters the event stream at all; this is the only one where
+  it does, and the only one that therefore has to make sure the page a reload
+  creates does not read the instruction that created it. The poll carries
+  `fresh=1` on a new page's first request for exactly that reason — without it
+  the log is replayed whole, the reload is in it, and the shell reloads for as
+  long as anyone watches while every window on screen stays untouched.
 
 ## cef — the engine embedded
 
