@@ -1372,12 +1372,30 @@ impl ViewportState {
             // at twice its distance from the corner, which is a pointer that
             // works in the top-left of a window and misses by more the further
             // across it you go.
-            let pos = self.unscaled(&window, pos);
+            let unscaled = self.unscaled(&window, pos);
             let render_location = location - window.geometry().loc;
             if let Some((surface, at)) =
-                window.surface_under(pos - render_location.to_f64(), WindowSurfaceType::ALL)
+                window.surface_under(unscaled - render_location.to_f64(), WindowSurfaceType::ALL)
             {
-                return Some((surface, (at + render_location).to_f64()));
+                // What comes back is not the surface's origin, it is whatever
+                // makes the *subtraction* right.
+                //
+                // The pointer works the surface-local position out by taking
+                // this away from the real pointer position, and the real
+                // pointer position is in screen coordinates while the point
+                // the client should be told about is in its own. Returning the
+                // surface's actual origin mixes the two: the window is found
+                // correctly and then handed a coordinate off by the whole
+                // scale error, which is zero at the window's corner and grows
+                // across it — a client where the top-left works and nothing
+                // else quite does.
+                //
+                // So the local point is worked out here, in the window's own
+                // coordinates where it means something, and what is returned
+                // is the position that yields it. At 1.0 this is exactly
+                // `at + render_location`, which is what it always was.
+                let local = unscaled - render_location.to_f64() - at.to_f64();
+                return Some((surface, pos - local));
             }
         }
         below.or_else(|| self.shell_under(pos))
@@ -7792,6 +7810,53 @@ mod tests {
         let origin = at(100.0, 50.0);
         for point in [at(0.0, 0.0), at(100.0, 50.0), at(1920.0, 1080.0)] {
             assert_eq!(unscale_about(origin, point, 1.0), point);
+        }
+    }
+
+    /// What `surface_under` hands back is not the surface's origin — it is
+    /// whatever makes the pointer's own subtraction come out right.
+    ///
+    /// The pointer computes `pointer_position - returned` and gives the client
+    /// the result. The pointer position is in screen coordinates and the client
+    /// thinks in its own, so returning the surface's actual origin is a window
+    /// that is *found* correctly and then told a coordinate off by the whole
+    /// scale error — zero at its corner and growing across it. This pins the
+    /// relationship rather than the value, which is the thing that has to hold.
+    #[test]
+    fn the_pointer_is_handed_the_clients_own_coordinate() {
+        let origin = at(200.0, 100.0);
+        // Where the surface starts, and where the found subsurface sits inside
+        // it. Both in the window's own coordinates, as Smithay reports them.
+        let render_location = at(180.0, 80.0);
+        let inner = at(12.0, 8.0);
+
+        for scale in [1.0, 0.5, 0.25] {
+            // A point on the screen, and the same point in the window's own
+            // coordinates.
+            let pos = at(640.0, 400.0);
+            let unscaled = unscale_about(origin, pos, scale);
+
+            // What the compositor returns, and what the pointer then works out.
+            let local = at(
+                unscaled.x - render_location.x - inner.x,
+                unscaled.y - render_location.y - inner.y,
+            );
+            let returned = at(pos.x - local.x, pos.y - local.y);
+            let told = at(pos.x - returned.x, pos.y - returned.y);
+
+            assert!(
+                (told.x - local.x).abs() < 1e-9 && (told.y - local.y).abs() < 1e-9,
+                "at {scale}: the client is told {told:?}, not {local:?}"
+            );
+
+            // And at full size it is the plain sum it has always been, so
+            // nothing changes for the layouts that never scale a window.
+            if scale == 1.0 {
+                assert_eq!(
+                    returned,
+                    at(render_location.x + inner.x, render_location.y + inner.y)
+                );
+            }
         }
     }
 

@@ -44,16 +44,6 @@ then focus follows it into view and drags the destination plane across to find
 it, so the windows already on that plane are the ones that disappear. Sending
 one window away moved everything.
 
-Each plane's coordinates are its own — nothing relates workspace 1's origin to
-workspace 7's — so a window sent to another workspace cannot keep its numbers.
-What crosses is its position on the *screen*: the offset it had from the corner
-of its old view, it has from the corner of the new one. It lands where it
-looked like it was. Carrying the numbers instead fails twice over: the window
-arrives somewhere off the screen, so sending it away looks like losing it, and
-then focus follows it into view and drags the destination plane across to find
-it — so the windows already on that plane are the ones that disappear. Sending
-one window away moved everything.
-
 **Panning moves the view, not the windows.** Zooming out draws them smaller
 *without resizing them*: the client keeps the size it was configured with and
 the compositor scales the buffer. That is the same bargain the overview and
@@ -88,12 +78,23 @@ somewhere that was not under the hand. The error grew with the distance from
 the window's corner, which is why it read as "the left of the window works and
 the right of it does not" rather than as an offset anyone would spot at once.
 
-`ViewportState::unscaled` now takes a screen position back into the window's
-own coordinates, about the same corner `RescaleRenderElement` scales it about
+`ViewportState::unscaled` takes a screen position back into the window's own
+coordinates, about the same corner `RescaleRenderElement` scales it about
 (`element_geometry().loc` — the window's top-left, not the surface's, because a
 client drawing its shadows outside its geometry starts the surface up and left
 of the window). It is identity at 1.0, which is every window in every layout
 that does not shrink one, so nothing else pays for it.
+
+Finding the right window is only half of it, and the half that is easy to
+mistake for the whole. `surface_under` also returns a position, and the pointer
+works out what to tell the client by subtracting that from the *real* pointer
+position — which is in screen coordinates, while the client thinks in its own.
+Returning the surface's actual origin therefore finds the window correctly and
+then hands it a coordinate off by the entire scale error: zero at the window's
+corner and growing across it, so the top-left of a window works and nothing
+else quite does. What is returned is the position that makes the subtraction
+come out in the client's coordinates, which at 1.0 is the plain sum it always
+was.
 
 ## Where the state lives
 
