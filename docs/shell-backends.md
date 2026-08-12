@@ -226,6 +226,22 @@ gets the same two directions with no protocol to drift: `fetch` to `POST /send`
 outbound, a long poll of `GET /events` inbound dispatching the usual
 `CustomEvent`, and `viewport_ipc::js::BRIDGE_SHIM` over the top.
 
+**Servo has no CSS grid, and the shell used to need one.** Both Servo backends
+run the same engine, so this is about the page rather than about either
+backend: `display: grid` is dropped outright — `Unsupported property
+declaration: 'display: grid'` in the log — and the box falls back to `block`.
+The overview became a single column of thumbnails running off the bottom of the
+screen and the empty state a mark in the top-left corner. Both are flexbox now
+(`data/shell/shell.css`), which changes nothing for the other four engines: the
+thumbnails were already sized in pixels by `renderOverview`, so a wrapping flex
+row puts them where the grid tracks did. `tests/shell.test.js` fails if a grid
+comes back.
+
+Three further declarations are dropped and left in the sheet, because they cost
+nothing where they are not understood and are what the other engines want:
+`text-overflow: ellipsis` (a long window title in a thumbnail label is clipped
+rather than ellipsised), `user-select: none` and `color-scheme: dark`.
+
 **The server is 127.0.0.1 on an ephemeral port, and every request carries a
 token** read from `/dev/urandom` at startup and known only to the injected
 script. This is not decoration: what that server can do is drive the desktop,

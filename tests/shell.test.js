@@ -2752,6 +2752,41 @@ if (mode === 'scrolling') {
       fixture.value(el, 'border-top-style') === 'solid');
   }
 
+  /* No `display: grid`, anywhere, and this is a portability assertion rather
+     than a matter of taste.
+   *
+   * The shell is drawn by whichever engine the backend names, and one of them
+   * has no grid: Servo drops the declaration outright — "Unsupported property
+   * declaration: 'display: grid'" — and the box falls back to `block`. That
+   * turned the overview into a single column of thumbnails running off the
+   * bottom of the screen, and the empty state into a mark in the top-left
+   * corner. Both are flexbox now, which every engine here has had for a
+   * decade, and neither needed grid in the first place: the thumbnails are
+   * sized in pixels by `renderOverview` before they are laid out.
+   *
+   * The sweep is over the file rather than over these two elements, because
+   * the next `display: grid` will be written somewhere else. */
+  {
+    const overview = new El('div');
+    overview.className = 'overview';
+    check('the overview lays out with flexbox',
+      sheet.value(overview, 'display') === 'flex');
+
+    const empty = new El('div');
+    empty.className = 'empty';
+    check('and so does the empty state',
+      sheet.value(empty, 'display') === 'flex');
+
+    /* Comments stripped first, or this finds the paragraph above explaining
+       why there is no grid and reports it as a grid. */
+    const grids = fs.readFileSync(`${shellDir}/shell.css`, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((line) => /display\s*:\s*(inline-)?grid/.test(line));
+    check('and nothing in the stylesheet asks for a grid at all,'
+      + ' which is a thing Servo does not have', grids.length === 0);
+  }
+
   /* A shorthand expands to one longhand per side, so this is how a test asks
      what the frame looks like all the way round rather than on one edge. */
   const sides = (el, part) => {

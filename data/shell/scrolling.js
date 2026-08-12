@@ -295,16 +295,27 @@ function renderOverview(output, list) {
   const trackHeight = (area.height - spacing * (rows + 1)) / rows;
   const ratio = area.height > 0 ? area.width / area.height : 16 / 9;
   /* Whichever of the two runs out first, so the box fits its track in both
-     directions and keeps the ratio. */
-  const thumbWidth = Math.max(0, Math.min(trackWidth, trackHeight * ratio));
+     directions and keeps the ratio.
+   *
+   * Floored, and that is load-bearing rather than tidiness. The container is a
+   * wrapping flex row now — `.overview` in shell.css says why it is not a grid
+   * any more — so a row holds as many thumbnails as fit and no more. The track
+   * arithmetic above makes `columns` of them fit *exactly*, and a fraction of a
+   * pixel over is a row that wraps one early: three across becomes two, and the
+   * overview grows a lopsided extra row. A floor leaves under a pixel of slack
+   * per column, which nothing can see and the layout cannot round past. */
+  const thumbWidth = Math.floor(Math.max(0, Math.min(trackWidth, trackHeight * ratio)));
   const thumbHeight = ratio > 0 ? thumbWidth / ratio : 0;
   const scale = area.width > 0 ? thumbWidth / area.width : 0;
 
-  grid.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
-  /* Explicit rows as well, so the tracks are even and the last row is the
-     same height as the others rather than being sized by its content — which
-     is what decides whether the grid reads as centred. */
-  grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  /* Held to the width `columns` thumbnails and their gaps take, so the wrap
+     happens where the arithmetic above says it does rather than wherever the
+     output's width happens to run out. Without it a very wide output fits four
+     thumbnails on the first row of a nine-workspace overview and three on the
+     next, which is not the square grid this is meant to be. */
+  grid.style.maxWidth =
+    `${columns * thumbWidth + (columns - 1) * spacing + spacing * 2}px`;
+  grid.style.marginInline = 'auto';
 
   for (const n of list) {
     const cell = document.createElement('div');

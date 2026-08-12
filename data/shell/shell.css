@@ -513,14 +513,33 @@ html.behind body { background: transparent; }
 .overview {
   position: absolute;
   inset: 0;
-  display: grid;
+  /* Flex and not grid, which this was until it met an engine without one.
+     Servo has no `display: grid` — 0.3.0 drops the declaration and the box
+     falls back to `block`, which stacks every thumbnail in a single column
+     running off the bottom of the screen. Nothing here needed grid: the
+     thumbnails are already sized in px by `renderOverview`, so wrapping a
+     flex row at the same width produces the same rows, and every engine
+     this shell runs on has had flexbox for a decade. See
+     docs/shell-backends.md. */
+  display: flex;
+  flex-wrap: wrap;
   gap: calc(var(--gap) * 2);
   padding: calc(var(--gap) * 2);
   /* The thumbnails are sized in px from the output's aspect ratio rather than
-     stretched to their tracks, so they are smaller than the track in one
+     stretched to fill a row, so they are smaller than their share in one
      direction and want centring in it. Without this they sit top-left and the
-     whole grid reads as pushed into a corner. */
-  place-items: center;
+     whole overview reads as pushed into a corner. `align-content` is the one
+     that centres the block of rows itself; the other two centre within a row
+     and within the cross axis.
+   *
+   * `flex-start` and not `center` for the main axis: the container is already
+   * held to the width of one full row by `renderOverview`, so the block is
+   * centred as a whole and a short last row lines up under the one above it.
+   * Centring each row instead staggers the last one, which is not what the
+   * grid this replaced did. */
+  justify-content: flex-start;
+  align-content: center;
+  align-items: center;
   /* Dim the wallpaper so the thumbnails read as a layer above the desktop
      rather than as more windows on it. */
   background: #0b0d12cc;
@@ -970,9 +989,13 @@ html.behind body { background: transparent; }
 .empty {
   position: absolute;
   inset: var(--bar) 0 0 0;
-  display: grid;
-  place-content: center;
-  justify-items: center;
+  /* Flex for the same reason `.overview` is: an engine without grid lays this
+     out as a block, which puts the mark and its line at the top left of an
+     empty desktop instead of the middle of it. */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
   text-align: center;
   color: var(--muted);
   pointer-events: none;
