@@ -608,3 +608,58 @@ function renderClocks() {
 
 setInterval(renderClocks, 1000);
 
+
+/* ------------------------------------------------------------------------
+ * The keys, on an empty desktop
+ *
+ * The tutorial under the mark, filled in from the keymap the compositor sent.
+ *
+ * From the compositor and not from a table here, because the keymap is not
+ * knowable from this side: a few chords exist only in one layout — the strip's
+ * consume and expel, solar's spin, the canvas's pan — and a config file may
+ * add its own or shadow any of them. A list written here would be describing a
+ * keyboard nobody has, and would be wrong in exactly the case someone is most
+ * likely to be reading it: a layout they have just switched to.
+ * --------------------------------------------------------------------- */
+
+/* Every chord the compositor will act on, as { chord, action, mode }. Replaced
+ * whole on each `config`, which is sent on connect and on reload. */
+let keybinds = [];
+
+/* Fill in every output's tutorial.
+ *
+ * The ordinary keymap only. A binding mode is a second keymap that is not
+ * active — resize mode's `h` is not a key you can press right now — and listing
+ * the two together on an empty desktop says that Mod4+h and h do the same
+ * thing, which they do not.
+ *
+ * Nothing is dropped beyond that. A cheat sheet that decides which of your
+ * bindings are worth mentioning is one you cannot trust when the key you are
+ * looking for is not on it. */
+function renderKeybinds() {
+  if (keybinds.length === 0) return;
+
+  const shown = keybinds.filter((bind) => !bind.mode);
+  if (shown.length === 0) return;
+
+  for (const [, output] of outputs) {
+    const el = output.emptyEl?.querySelector('.keys');
+    if (!el) continue;
+
+    /* Rebuilt rather than diffed: this is drawn on a desktop with no windows
+       on it, and the compositor sends `config` twice a session. */
+    el.replaceChildren();
+    for (const bind of shown) {
+      const row = document.createElement('div');
+      row.className = 'key';
+
+      const chord = document.createElement('kbd');
+      chord.textContent = bind.chord;
+      const what = document.createElement('span');
+      what.textContent = bind.action;
+
+      row.append(chord, what);
+      el.append(row);
+    }
+  }
+}

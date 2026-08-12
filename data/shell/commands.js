@@ -287,6 +287,15 @@ window.addEventListener('viewport', (event) => {
         message.logo === false);
       document.documentElement.classList.toggle('no-tutorial',
         message.tutorial === false);
+      /* The keymap as the compositor will really act on it, for the tutorial
+         on an empty desktop. Absent from an older compositor, which leaves the
+         two lines the markup ships with rather than emptying the box. */
+      if (Array.isArray(message.binds)) {
+        keybinds = message.binds.filter(
+          (bind) => bind && typeof bind.chord === 'string'
+            && typeof bind.action === 'string');
+        renderKeybinds();
+      }
       /* Something is being drawn behind the page — a terminal, as the
          wallpaper — so the gradient in `body` has to go, or it is painted over
          the thing it is meant to reveal. Absent means nothing is back there,
@@ -459,6 +468,26 @@ window.addEventListener('viewport', (event) => {
 });
 
 window.addEventListener('resize', relayoutAll);
+
+/* The desktop is not a web page, whatever it is made of.
+ *
+ * The shell is drawn by a browser engine, and a browser engine offers its own
+ * menu on a right-click — back, reload, view source, save image. On a desktop
+ * background that menu is nonsense: there is no page to go back to and nothing
+ * to save, and it appears over the windows because it is the engine's own
+ * surface rather than anything the compositor placed. Servo's is the one that
+ * was noticed, but every backend has one.
+ *
+ * The right button is the compositor's here — Mod4 and it resize a window —
+ * and where it is not, it belongs to whatever the pointer is over. Neither of
+ * those is served by a menu about the document.
+ *
+ * On the document rather than on any element, so it holds for the whole of the
+ * shell including anything drawn later, and in the capture phase so that a
+ * handler of its own is not required to know about it. */
+document.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+}, true);
 
 send({ type: 'output.query' });
 /* Before view.query: the layout has to be in place as slots before the windows

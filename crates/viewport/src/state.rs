@@ -982,6 +982,10 @@ impl ViewportState {
                 // they are the only things there are to draw.
                 logo: true,
                 tutorial: true,
+                // Filled in on the way out, from the keymap as it stands by
+                // then: this struct is built before a config file has been
+                // read and there is nothing yet to describe.
+                binds: Vec::new(),
                 bar: None,
                 rules: None,
                 theme: None,
@@ -5308,7 +5312,22 @@ impl ViewportState {
         // with no windows those two are the only things there are to draw. It
         // leaves the wallpaper and nothing else, which is what three runs of
         // "the right display is grey" actually were.
-        let event = Event::Config(self.config.clone());
+        // The keymap as it actually stands, rather than as anything is
+        // assumed to be. A few chords exist only in one layout and a config
+        // file may add or shadow any of them, so this is the one place that
+        // knows — and the shell showing a list of its own would be describing
+        // a keyboard nobody has.
+        let mut config = self.config.clone();
+        config.binds = self
+            .bindings
+            .iter()
+            .map(|binding| viewport_ipc::event::Bind {
+                chord: binding.chord(),
+                action: binding.action_text(),
+                mode: binding.mode.clone(),
+            })
+            .collect();
+        let event = Event::Config(config);
         self.notify(&event);
     }
 

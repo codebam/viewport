@@ -65,9 +65,17 @@
         <rect x="4" y="10" width="42" height="32" rx="4"/>
         <rect x="18" y="22" width="42" height="32" rx="4" opacity=".55"/>
       </svg>
+      <!--
+        The keys, filled in by the shell from what the compositor says is
+        really bound — see renderKeybinds(). The two lines here are what an
+        empty desktop showed before the compositor sent its keymap, and are
+        what it still shows if it does not: a shell that cannot say what the
+        keys are should say the two that start a terminal and a launcher
+        rather than nothing at all.
+      -->
       <div class="tutorial">
         <p>Launch a client against <code>$WAYLAND_DISPLAY</code>.</p>
-        <pre>Mod4+Return  terminal
+        <pre class="keys">Mod4+Return  terminal
 Mod4+d       launcher</pre>
       </div>
     </div>

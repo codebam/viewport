@@ -58,7 +58,7 @@ of what was asked.
 
 | Message | Payload |
 | --- | --- |
-| `config` | `layout` (`"tiling"` or `"scrolling"`), `logo`, `tutorial`, optional `bar`, optional `rules[]`, optional `theme{}` |
+| `config` | `layout` (`"tiling"`, `"scrolling"`, `"solar"`, `"matrix"` or `"canvas"`), `logo`, `tutorial`, `binds[]` of `chord`, `action` and optional `mode` — the keymap as the compositor will really act on it, in the order it matches; optional `bar`, optional `rules[]`, optional `theme{}` |
 | `modifiers` | `logo` (whether Mod4 is held; only sent while `bar` is `"auto"`) |
 | `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `replay`, `floating`, `width`, `height`, `min_width`, `min_height`, and `parent` when this window is a dialog of another — the same link `floating` is partly inferred from, named rather than reduced to a boolean, and omitted entirely when there is none |
 | `view.props` | `id`, `title`, `app_id` |

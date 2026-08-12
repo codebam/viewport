@@ -1098,6 +1098,46 @@ html.no-tutorial .empty .tutorial { display: none; }
   text-align: left;
 }
 
+/* The keymap, once the compositor has sent one. Columns rather than a list:
+   this is every chord that will do anything, which on a full config is fifty
+   or more, and a single column of that is a ribbon down the middle of an
+   otherwise empty screen. Bounded and scrollable, because the desktop it is
+   drawn on is the one with nothing else to look at and it must not push the
+   mark off the top of it. */
+.empty pre.keys {
+  display: block;
+  columns: 2;
+  column-gap: 1.5rem;
+  max-width: min(56rem, 82vw);
+  max-height: min(24rem, 46vh);
+  overflow-y: auto;
+}
+
+/* One chord and what it does. `break-inside` so a row is never split down the
+   middle by the column break — half a binding in each column reads as two
+   bindings, both wrong. */
+.empty .key {
+  display: flex;
+  gap: .75rem;
+  align-items: baseline;
+  break-inside: avoid;
+  padding: .1rem 0;
+}
+
+/* The chord itself, fixed-width so the descriptions line up down the column
+   without a table to hold them. */
+.empty .key kbd {
+  flex: 0 0 auto;
+  min-width: 11.5em;
+  font: inherit;
+  color: var(--text);
+}
+
+.empty .key span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 /* ---------------------------------------------------------------------
  * Notifications
  *

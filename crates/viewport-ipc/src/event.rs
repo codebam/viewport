@@ -284,6 +284,19 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bar: Option<String>,
 
+    /// The keymap as it actually stands, so the shell can show it.
+    ///
+    /// The bindings live here and nowhere else — a few chords exist only in one
+    /// layout, a config file may add or shadow any of them — so a shell that
+    /// listed them from a table of its own would be describing a keyboard
+    /// nobody has. This is what the compositor will really act on, in the order
+    /// it matches them.
+    ///
+    /// Empty for a shell that never asked, and omitted from the wire then, so
+    /// nothing changes for one written before this existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binds: Vec<Bind>,
+
     /// Window rules, handed over as parsed JSON rather than a string so the
     /// shell does not parse twice inside a message it already parsed. Omitted
     /// entirely when unset, and also when the stored text fails to parse.
@@ -480,6 +493,23 @@ pub struct NotificationAction {
     pub label: String,
 }
 
+/// One entry of the keymap, as the shell shows it.
+///
+/// Both fields are spelled the way a config file spells them, so a listing can
+/// be read straight back into `binds` — someone looking at a chord they want to
+/// change should not have to translate it first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Bind {
+    /// `"Mod4+Shift+q"`.
+    pub chord: String,
+    /// `"close"`, `"exec foot"`, `"shell canvas.pan left"`.
+    pub action: String,
+    /// The binding mode this belongs to, empty for the ordinary keymap.
+    /// `"resize"` for the chords that only fire inside resize mode.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputInfo {
     pub name: String,
@@ -618,6 +648,7 @@ mod tests {
             layout: "tiling".into(),
             logo: true,
             tutorial: false,
+            binds: Vec::new(),
             bar: None,
             rules: None,
             theme: None,
@@ -643,6 +674,7 @@ mod tests {
             layout: "tiling".into(),
             logo: true,
             tutorial: true,
+            binds: Vec::new(),
             bar: None,
             rules: None,
             theme: None,
@@ -669,6 +701,7 @@ mod tests {
             layout: "tiling".into(),
             logo: true,
             tutorial: true,
+            binds: Vec::new(),
             bar: None,
             rules: None,
             theme: None,
@@ -712,6 +745,7 @@ mod tests {
             layout: "scrolling".into(),
             logo: true,
             tutorial: true,
+            binds: Vec::new(),
             bar: None,
             rules: None,
             theme: None,
@@ -732,6 +766,7 @@ mod tests {
             layout: "scrolling".into(),
             logo: false,
             tutorial: false,
+            binds: Vec::new(),
             bar: Some("top".into()),
             rules: Some(serde_json::json!([{"app_id": "mpv", "floating": true}])),
             theme: None,
@@ -822,6 +857,7 @@ mod tests {
                 layout: "tiling".into(),
                 logo: false,
                 tutorial: false,
+                binds: Vec::new(),
                 bar: None,
                 rules: None,
                 theme: None,

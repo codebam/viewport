@@ -109,6 +109,15 @@ function buildDesktop() {
   for (const c of ['windows', 'empty', 'notifications']) {
     const el = new El('div');
     el.className = `${c} module`;
+    /* The empty desktop's tutorial holds the keymap, which the shell fills in
+       from what the compositor sent. Nested as index.html nests it: the shell
+       finds it with querySelector under `.empty`, so a flat desktop here would
+       leave that code running against nothing. */
+    if (c === 'empty') {
+      const keys = new El('pre');
+      keys.className = 'keys';
+      el.append(keys);
+    }
     main.append(el);
   }
   /* The bar, nested as index.html nests it rather than flattened alongside
@@ -178,6 +187,7 @@ Object.defineProperty(documentElement, 'offsetWidth', {
   },
 });
 
+const documentListeners = {};
 global.document = {
   documentElement,
   getElementById: (id) => ({
@@ -188,6 +198,14 @@ global.document = {
     'window-template': windowTemplate,
   }[id]),
   createElement: (tag) => new El(tag),
+  /* Listeners on the document itself, which the shell uses for the things
+     that hold for the whole desktop rather than for one element — the
+     right-click menu it turns off. Recorded so a test can fire one. */
+  addEventListener: (type, fn) => { (documentListeners[type] ??= []).push(fn); },
+  removeEventListener: (type, fn) => {
+    documentListeners[type] = (documentListeners[type] ?? [])
+      .filter((f) => f !== fn);
+  },
 };
 
 const windowListeners = {};
@@ -355,6 +373,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      that widget reachable without a network: the fetch is stubbed nowhere and
      the line it composes is what the bar shows. */
   + ' weatherLineForTest: weatherLine,'
+  /* The keymap the compositor sent, which is the only thing the tutorial on
+     an empty desktop is drawn from. */
+  + ' keybindsForTest: () => keybinds,'
   /* The grid's row count, which decides the whole shape and is a pure function
      of (count, w, h). The arrangement it feeds is checked through the tree the
      mode builds, like the other dynamic ones; this is here because the aspects
@@ -3010,6 +3031,60 @@ if (mode === 'scrolling') {
     volume: -1, muted: false });
   check('an override widget renders from the status sample',
     wout.barItemsEls[1].textContent.includes('/games'));
+
+  /* The keys on an empty desktop, drawn from what the compositor says is
+     really bound.
+     From the compositor and not from a table here, because the keymap is not
+     knowable from this side: a few chords exist only in one layout and a
+     config file may add or shadow any of them, so a list written in the shell
+     would be describing a keyboard nobody has — and would be wrong in exactly
+     the case someone is most likely to be reading it. */
+  {
+    emit({ type: 'config', layout: mode, binds: [
+      { chord: 'Mod4+Return', action: 'exec foot' },
+      { chord: 'Mod4+Shift+q', action: 'close' },
+      { chord: 'Mod4+bracketleft', action: 'shell canvas.pan left' },
+      { chord: 'h', action: 'shell layout.resize left', mode: 'resize' },
+    ] });
+    check('the shell keeps the keymap it was sent',
+      globalThis.__shell.keybindsForTest().length === 4);
+
+    const keys = globalThis.__shell.outputs.get('DP-1')
+      .emptyEl.querySelector('.keys');
+    const rows = keys.children;
+    check('and draws one row per chord in the ordinary keymap',
+      rows.length === 3);
+    check('with the chord and what it does, both as a config file spells them',
+      rows[0].children[0].textContent === 'Mod4+Return'
+      && rows[0].children[1].textContent === 'exec foot');
+    check('a binding mode is left out: its keys are not live right now',
+      [...rows].every((row) =>
+        row.children[0].textContent !== 'h'));
+
+    /* A compositor that sends no keymap leaves the two lines the markup ships
+       with, rather than emptying the box: a shell that cannot say what the
+       keys are should still say the two that start a terminal and a menu. */
+    const before = keys.children.length;
+    emit({ type: 'config', layout: mode });
+    check('and a config with no keymap changes nothing',
+      keys.children.length === before);
+  }
+
+  /* The engine's own right-click menu, turned off.
+     The shell is drawn by a browser and a browser offers back, reload, view
+     source and save image on a right-click. On a desktop background that menu
+     is nonsense, and it appears over the windows because it is the engine's
+     surface rather than anything the compositor placed. The right button here
+     belongs to the compositor — Mod4 and it resize a window — or to whatever
+     the pointer is over. */
+  {
+    const handlers = documentListeners.contextmenu ?? [];
+    check('the shell listens for the engine\'s context menu',
+      handlers.length > 0);
+    let prevented = false;
+    for (const fn of handlers) fn({ preventDefault: () => { prevented = true; } });
+    check('and refuses it', prevented);
+  }
 
   /* The weather widget's line: the condition first, then the temperature —
      the glyph labels the number rather than trailing it. */

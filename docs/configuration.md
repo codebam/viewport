@@ -104,6 +104,14 @@ broken; `/proc` sampling and the settings portal, because a web page cannot do
 either. Everything else — tiling, workspaces, fullscreen, resizing, the bar —
 is the shell's.
 
+The shell is sent this keymap — the real one, after a config file has had its
+say — and the empty desktop lists it under the mark. That is why the listing
+follows a layout: a few chords only exist in one, and a shell showing a table
+of its own would be describing a keyboard nobody has. Both halves of each row
+are spelled the way a config file spells them, so a chord you want to change
+can be copied straight into `binds`. Turn the listing off with
+`"tutorial": false`, which is the same key that hides the rest of it.
+
 ### Default bindings
 
 | Chord | Action |

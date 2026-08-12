@@ -103,6 +103,61 @@ pub struct Modifiers {
     pub logo: bool,
 }
 
+impl Binding {
+    /// This chord, spelled the way a config file spells it.
+    ///
+    /// Round-trips through `parse_chord`: what comes out here can be typed
+    /// back in. That is the property worth having — the shell shows these to
+    /// someone who may want to rebind one, and a listing written in a notation
+    /// the parser does not accept is a listing that has to be translated by
+    /// hand before it is any use.
+    pub fn chord(&self) -> String {
+        let mut chord = String::new();
+        // The order every default is written in, so a listing and the config
+        // file it came from read the same way round.
+        if self.modifiers.logo {
+            chord.push_str("Mod4+");
+        }
+        if self.modifiers.ctrl {
+            chord.push_str("Ctrl+");
+        }
+        if self.modifiers.alt {
+            chord.push_str("Alt+");
+        }
+        if self.modifiers.shift {
+            chord.push_str("Shift+");
+        }
+
+        match (self.button, self.wheel) {
+            (Some(button), _) => chord.push_str(&button_name(button)),
+            (None, Some(Wheel::Up)) => chord.push_str("WheelUp"),
+            (None, Some(Wheel::Down)) => chord.push_str("WheelDown"),
+            (None, None) => chord.push_str(&smithay::input::keyboard::xkb::keysym_get_name(
+                smithay::input::keyboard::Keysym::new(self.keysym),
+            )),
+        }
+        chord
+    }
+
+    /// What this chord does, spelled the way a config file spells it.
+    pub fn action_text(&self) -> String {
+        match &self.action {
+            Action::Exec(command) => format!("exec {command}"),
+            Action::Close => "close".to_owned(),
+            Action::Exit => "exit".to_owned(),
+            Action::Focus(direction) => format!("focus {direction}"),
+            Action::Reload => "reload".to_owned(),
+            Action::Mode(name) if name.is_empty() => "mode default".to_owned(),
+            Action::Mode(name) => format!("mode {name}"),
+            Action::Appearance => "appearance toggle".to_owned(),
+            Action::Lock => "lock".to_owned(),
+            Action::Blank => "blank".to_owned(),
+            Action::Background => "background".to_owned(),
+            Action::Shell(command) => format!("shell {command}"),
+        }
+    }
+}
+
 impl Modifiers {
     pub fn from_state(state: &ModifiersState) -> Self {
         Self {
@@ -257,6 +312,21 @@ fn keysym_from_name(name: &str) -> Option<u32> {
 /// Asked only for a name the keymap does not know: `left` and `right` are
 /// listed here and are also the arrow keys, and a chord that could be either
 /// is the key — see `parse_chord`.
+/// The name a button is written by, for showing a binding back to someone.
+///
+/// The first spelling `button_from_name` accepts, so what is displayed is
+/// something that can be typed straight back into a config file.
+fn button_name(button: u32) -> String {
+    match button {
+        0x110 => "Mouse1".to_owned(),
+        0x112 => "Mouse2".to_owned(),
+        0x111 => "Mouse3".to_owned(),
+        0x113 => "Mouse4".to_owned(),
+        0x114 => "Mouse5".to_owned(),
+        other => format!("Button{other}"),
+    }
+}
+
 fn button_from_name(name: &str) -> Option<u32> {
     let button = match name.to_ascii_lowercase().as_str() {
         "btn_left" | "mouse1" | "left" | "button1" => 0x110,
@@ -919,6 +989,52 @@ mod tests {
             defaults("foot", "wmenu-run", "orbital").len(),
             bindings.len()
         );
+    }
+
+    /// Every chord the shell is shown can be typed back into a config file.
+    ///
+    /// That is the property worth having: the listing exists for someone who
+    /// wants to change one of them, and a chord written in a notation the
+    /// parser does not accept has to be translated by hand before it is any
+    /// use. Round-tripping the whole default keymap is the cheapest way to
+    /// know it holds for every kind of binding at once.
+    #[test]
+    fn every_chord_reads_back_the_way_it_was_written() {
+        for layout in ["tiling", "scrolling", "solar", "matrix", "canvas"] {
+            for binding in defaults("foot", "wmenu-run", layout) {
+                let text = binding.chord();
+                let parsed = parse_chord(&text)
+                    .unwrap_or_else(|| panic!("{layout}: {text:?} does not parse"));
+                assert_eq!(parsed.keysym, binding.keysym, "{layout}: {text}");
+                assert_eq!(parsed.modifiers, binding.modifiers, "{layout}: {text}");
+                assert_eq!(parsed.button, binding.button, "{layout}: {text}");
+            }
+        }
+    }
+
+    /// And what it does is spelled the way a config file spells that too, so
+    /// the two halves of a listing are both things someone can act on.
+    #[test]
+    fn an_action_reads_back_the_way_it_was_written() {
+        let cases = [
+            ("Mod4+Return=exec foot", "exec foot"),
+            ("Mod4+Shift+q=close", "close"),
+            ("Mod4+h=focus left", "focus left"),
+            ("Mod4+r=mode resize", "mode resize"),
+            ("resize/Escape=mode default", "mode default"),
+            ("Mod4+o=shell layout.overview", "shell layout.overview"),
+            ("Mod4+Shift+x=lock", "lock"),
+        ];
+        for (spec, wanted) in cases {
+            let binding = parse(spec).expect("the test's own spec parses");
+            assert_eq!(binding.action_text(), wanted, "{spec}");
+            // And back through the parser, which is the whole claim.
+            assert_eq!(
+                parse_action(&binding.action_text()),
+                binding.action,
+                "{spec}"
+            );
+        }
     }
 
     #[test]
