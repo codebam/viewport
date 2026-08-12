@@ -513,37 +513,49 @@ html.behind body { background: transparent; }
 .overview {
   position: absolute;
   inset: 0;
-  /* Flex and not grid, which this was until it met an engine without one.
-     Servo has no `display: grid` — 0.3.0 drops the declaration and the box
-     falls back to `block`, which stacks every thumbnail in a single column
-     running off the bottom of the screen. Nothing here needed grid: the
-     thumbnails are already sized in px by `renderOverview`, so wrapping a
-     flex row at the same width produces the same rows, and every engine
-     this shell runs on has had flexbox for a decade. See
-     docs/shell-backends.md. */
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: calc(var(--gap) * 2);
   padding: calc(var(--gap) * 2);
   /* The thumbnails are sized in px from the output's aspect ratio rather than
-     stretched to fill a row, so they are smaller than their share in one
+     stretched to their tracks, so they are smaller than the track in one
      direction and want centring in it. Without this they sit top-left and the
-     whole overview reads as pushed into a corner. `align-content` is the one
-     that centres the block of rows itself; the other two centre within a row
-     and within the cross axis.
-   *
-   * `flex-start` and not `center` for the main axis: the container is already
-   * held to the width of one full row by `renderOverview`, so the block is
-   * centred as a whole and a short last row lines up under the one above it.
-   * Centring each row instead staggers the last one, which is not what the
-   * grid this replaced did. */
-  justify-content: flex-start;
-  align-content: center;
-  align-items: center;
+     whole grid reads as pushed into a corner. */
+  place-items: center;
   /* Dim the wallpaper so the thumbnails read as a layer above the desktop
      rather than as more windows on it. */
   background: #0b0d12cc;
   animation: overview-in var(--anim-slow) var(--ease);
+}
+
+/* The same overview for an engine with no grid.
+ *
+ * Servo has none: `display: grid` is dropped outright — "Unsupported property
+ * declaration: 'display: grid'" — and the box falls back to `block`, which
+ * stacks every thumbnail in one column running off the bottom of the screen.
+ *
+ * A fallback and not a replacement, which is the whole point of writing it
+ * this way round. Flexbox reproduces the picture — the thumbnails are already
+ * sized in pixels by `renderOverview`, so a wrapping row breaks where the
+ * tracks did — but it does not reproduce the *cost*: measured on webkitgtk,
+ * same binary, same load, the flex version doubled the compositor's CPU (2.9%
+ * to 6.3%) and dropped the shell's paint rate from 46 to 35. Whatever that is
+ * — and it is not IPC volume, which was unchanged — it is a bill only the
+ * engine that cannot do better should pay. The four engines with grid keep the
+ * layout they were measured on.
+ *
+ * `renderOverview` matches on `CSS.supports('display', 'grid')` and sets the
+ * width this needs to wrap in the right place. */
+@supports not (display: grid) {
+  .overview {
+    display: flex;
+    flex-wrap: wrap;
+    /* Rows left-aligned inside a box that is exactly one row wide, so a short
+       last row lines up under the one above it rather than being centred
+       under it — which is what the grid did. */
+    justify-content: flex-start;
+    align-content: center;
+    align-items: center;
+  }
 }
 
 /* Opacity and nothing else, deliberately. Every miniature in here contains
@@ -989,9 +1001,11 @@ html.behind body { background: transparent; }
 .empty {
   position: absolute;
   inset: var(--bar) 0 0 0;
-  /* Flex for the same reason `.overview` is: an engine without grid lays this
-     out as a block, which puts the mark and its line at the top left of an
-     empty desktop instead of the middle of it. */
+  /* Flex outright rather than behind `@supports` like the overview above: this
+     is a mark and a line of text on an empty desktop, laid out once and never
+     again, so there is no per-frame cost to protect and no reason to keep two
+     versions of it. Without this an engine with no grid puts the mark in the
+     top-left corner. */
   display: flex;
   flex-direction: column;
   justify-content: center;

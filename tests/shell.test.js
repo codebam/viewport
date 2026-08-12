@@ -2752,39 +2752,51 @@ if (mode === 'scrolling') {
       fixture.value(el, 'border-top-style') === 'solid');
   }
 
-  /* No `display: grid`, anywhere, and this is a portability assertion rather
-     than a matter of taste.
+  /* Every `display: grid` has a fallback, which is a portability assertion
+     rather than a matter of taste.
    *
    * The shell is drawn by whichever engine the backend names, and one of them
    * has no grid: Servo drops the declaration outright — "Unsupported property
    * declaration: 'display: grid'" — and the box falls back to `block`. That
    * turned the overview into a single column of thumbnails running off the
-   * bottom of the screen, and the empty state into a mark in the top-left
-   * corner. Both are flexbox now, which every engine here has had for a
-   * decade, and neither needed grid in the first place: the thumbnails are
-   * sized in pixels by `renderOverview` before they are laid out.
+   * bottom of the screen and the empty state into a mark in the top-left
+   * corner.
    *
-   * The sweep is over the file rather than over these two elements, because
-   * the next `display: grid` will be written somewhere else. */
+   * The overview keeps its grid and gains an `@supports not (display: grid)`
+   * fallback, because measuring said the flex version costs the engines that
+   * *do* have grid about twice the compositor CPU. The empty state is flex
+   * outright: it is laid out once and has no per-frame cost to protect.
+   *
+   * So the sweep is not "no grid anywhere" — it is that every rule declaring
+   * one is answered by a fallback somewhere in the file. */
   {
-    const overview = new El('div');
-    overview.className = 'overview';
-    check('the overview lays out with flexbox',
-      sheet.value(overview, 'display') === 'flex');
+    const text = fs.readFileSync(`${shellDir}/shell.css`, 'utf8')
+      /* Comments stripped, or this finds the paragraphs explaining the
+         fallback and reports them as declarations. */
+      .replace(/\/\*[\s\S]*?\*\//g, '');
 
     const empty = new El('div');
     empty.className = 'empty';
-    check('and so does the empty state',
+    check('the empty state lays out with flexbox',
       sheet.value(empty, 'display') === 'flex');
 
-    /* Comments stripped first, or this finds the paragraph above explaining
-       why there is no grid and reports it as a grid. */
-    const grids = fs.readFileSync(`${shellDir}/shell.css`, 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n')
+    const grids = text.split('\n')
+      /* The `@supports` condition names the property it is testing for and is
+         not a declaration of it. */
+      .filter((line) => !/@supports/.test(line))
       .filter((line) => /display\s*:\s*(inline-)?grid/.test(line));
-    check('and nothing in the stylesheet asks for a grid at all,'
-      + ' which is a thing Servo does not have', grids.length === 0);
+    check('the overview is the only rule left asking for a grid',
+      grids.length === 1);
+    check('and an engine without one is given flexbox instead',
+      /@supports\s+not\s*\(\s*display\s*:\s*grid\s*\)\s*\{[^}]*\.overview\s*\{[^}]*display\s*:\s*flex/
+        .test(text));
+
+    /* The script's half of the same fallback: the flex row needs to be told
+       how wide one row is, or it wraps wherever the output runs out. */
+    const js = fs.readFileSync(`${shellDir}/scrolling.js`, 'utf8');
+    check('and the script asks the engine which of the two it is drawing',
+      js.includes("CSS.supports('display', 'grid')")
+      && js.includes('maxWidth'));
   }
 
   /* A shorthand expands to one longhand per side, so this is how a test asks
