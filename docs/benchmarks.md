@@ -313,18 +313,29 @@ table across itself rather than against the one above.
 
 | backend | idle cpu % | load cpu % | of which the compositor | shell fps | cpu per painted frame | idle pss MB | load pss MB | processes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| webkitgtk | 0.3 | 11.8 | 3.0 | 51 | 0.231 | 434 | 450 | 10 |
-| chromium | 0.9 | 11.3 | 3.1 | 51 | 0.222 | 641 | 651 | 12 |
-| cef | 0.9 | 9.8 | 3.0 | 44 | 0.223 | 597 | 615 | 9 |
-| servoshell | 0.0 | 8.2 | 2.0 | 15 | 0.547 | 365 | 375 | 4 |
+| webkitgtk | 0.0 | 11.5 | 2.9 | 48 | 0.240 | 434 | 449 | 10 |
+| chromium | 1.2 | 11.5 | 3.2 | 44 | 0.261 | 629 | 639 | 12 |
+| cef | 0.9 | 9.9 | 2.9 | 43 | 0.230 | 576 | 594 | 9 |
+| servoshell | 0.0 | 8.5 | 2.0 | 14 | 0.607 | 346 | 357 | 4 |
 
 **`servoshell` is the cheapest desktop here and the most expensive engine.**
-Every absolute column is the lowest of the four — 8.2% of a core under load,
-375 MB, four processes against nine to twelve, and an idle cost that did not
-register at all. The derived column says why: it painted 15 frames a second
-against 44 to 51, so it costs 0.547% of a core per frame the shell actually
+Every absolute column is the lowest of the four — 8.5% of a core under load,
+357 MB, four processes against nine to twelve, and an idle cost that did not
+register at all. The derived column says why: it painted 14 frames a second
+against 43 to 48, so it costs 0.607% of a core per frame the shell actually
 produced, about two and a half times what the other three cost. A desktop that
 repaints a third as often is cheaper the way a slower car uses less fuel.
+
+**This is the second set of numbers for this table, and the first set were
+measured against an overview Servo could not draw.** The shell used CSS grid,
+which Servo does not have, so its thumbnails stacked in one column running off
+the screen — the load was real work on the other three and a broken layout on
+the fourth. Fixing it in the obvious direction, by making the overview flexbox
+for everyone, then cost the three engines that *do* have grid about twice the
+compositor CPU each. So the grid stayed and the flex version became a
+fallback behind `@supports not (display: grid)`; these numbers are that
+arrangement, with every backend drawing the same overview it was designed to
+draw. The per-frame ordering did not move.
 
 **The process count is the architecture, not a fault.** Servo runs
 single-process by default, so the whole desktop is the compositor, the shell
@@ -340,7 +351,7 @@ carried the shell's messages to the compositor on real hardware, from a
 `file://` page, for a minute of scripted load.
 
 **What is not established.** One sitting, three runs, and a rate that varies
-(10/15/17 against webkitgtk's 51/55/40): whether Servo's paint rate here is the
+(19/14/14 against webkitgtk's 80/43/48): whether Servo's paint rate here is the
 engine, the pacing, or this compositor's handling of it is exactly the question
 the Blink pacing bug above should make nobody guess at. The engine is also
 nixpkgs' Servo 0.3.0 — a version this flake pins rather than one this project
