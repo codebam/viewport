@@ -350,6 +350,23 @@ window.addEventListener('viewport', (event) => {
       break;
     }
 
+    /* Whose dialog this is, said after the fact. A dialog an application opens
+       itself arrives with its parent on `view.added`; one that comes from the
+       portal — a file chooser, in another process — is parented over
+       xdg-foreign well after it has mapped, and until this message the shell
+       has a window belonging to nothing. */
+    case 'view.parent': {
+      const view = views.get(message.id);
+      if (view) {
+        view.parent = Number.isFinite(message.parent) ? message.parent : null;
+        /* The canvas placed it in the middle of the view for want of anything
+           better; now there is something better. A no-op in every other
+           layout, and for a window someone has since moved themselves. */
+        if (canvasReparented(message.id)) relayoutAll();
+      }
+      break;
+    }
+
     case 'view.removed':
       selectedIds.delete(message.id);
       removeView(message.id);

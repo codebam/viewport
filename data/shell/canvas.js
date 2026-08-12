@@ -232,6 +232,45 @@ function dropCanvasSlots() {
   canvasSlots = [];
 }
 
+/* This window has been put where it is by a person rather than by the layout.
+ *
+ * The one thing that outranks a placement rule: a window someone has dragged
+ * stays dragged. Kept on the view record rather than in a set of its own, so it
+ * goes when the window does. */
+function markCanvasMoved(id) {
+  const view = views.get(id);
+  if (view) view.canvasMoved = true;
+}
+
+/* This window has just been told whose dialog it is.
+ *
+ * A dialog an application opens itself arrives with its parent named, and is
+ * placed on it. One that comes from somewhere else does not: a file chooser is
+ * the portal's window, in another process, and the parent reaches the
+ * compositor over xdg-foreign long after the window has mapped — by which time
+ * the canvas has already given it a place in the middle of the view, attached
+ * to nothing.
+ *
+ * So the place is thrown away and made again, now that there is something to
+ * make it from. Only a place the *layout* chose: a window that has been dragged
+ * has been put somewhere by a person, and a late message from a client is not a
+ * reason to move it. Nothing else does this, because nothing else places a
+ * window relative to another one.
+ *
+ * The relayout is the caller's — this runs from the message handler, which ends
+ * in one anyway. */
+function canvasReparented(id) {
+  if (layoutMode !== 'canvas' || id == null) return false;
+  const view = views.get(id);
+  if (!view || view.parent == null) return false;
+  if (view.canvasMoved) return false;
+  if (!canvasPlaces.has(id)) return false;
+  if (!canvasPlaces.has(view.parent)) return false;
+
+  canvasPlaces.delete(id);
+  return true;
+}
+
 /* A window sent to another workspace, and where it lands on the plane it
  * arrives at.
  *
@@ -842,6 +881,9 @@ function canvasDragBy(id, dx, dy) {
   const zoom = canvasViewportOf(workspaceOf(id)).zoom;
   rect.x += dx / zoom;
   rect.y += dy / zoom;
+  /* Put here by a person, so a late message from a client does not get to
+     move it again. See canvasReparented. */
+  markCanvasMoved(id);
 
   /* Follow the pointer exactly while the drag lasts; the class comes off once
      the window stops moving. The same treatment, and the same 120ms, a
@@ -887,6 +929,7 @@ function canvasResizeBy(id, dx, dy) {
   const zoom = canvasViewportOf(workspaceOf(id)).zoom;
   rect.width = Math.max(floorWidth, rect.width + dx / zoom);
   rect.height = Math.max(floorHeight, rect.height + dy / zoom);
+  markCanvasMoved(id);
   relayoutAll();
   return true;
 }
@@ -915,6 +958,7 @@ function canvasMoveFocused(direction) {
   const step = CANVAS.moveStep;
   rect.x += direction === 'left' ? -step : direction === 'right' ? step : 0;
   rect.y += direction === 'up' ? -step : direction === 'down' ? step : 0;
+  markCanvasMoved(focusedId);
 
   /* Follow it, or moving a window towards the edge walks it off the screen and
      the next press is moving something you cannot see. */

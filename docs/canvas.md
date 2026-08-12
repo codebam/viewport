@@ -173,6 +173,16 @@ says *whose* rather than discovering anything new. A dialog whose parent the
 compositor cannot name, or whose parent is not on this plane, falls back to the
 rectangle it came with.
 
+Not every dialog knows its parent by then. One an application opens itself does
+— the parent is set before the window ever commits — but a file chooser is the
+*portal's* window, in another process, and its parent reaches the compositor
+over xdg-foreign after an export and an import have gone round. By that point
+the window has mapped, been announced with no parent, and been given a place in
+the middle of the view. So `view.parent` says it afterwards, and the canvas
+throws the place away and makes it again now that there is something to make it
+from. Only a place the layout chose: a window that has been dragged was put
+there by a person, and a late message from a client is not a reason to move it.
+
 **Floating windows are on the plane too**, which is where this parts company
 with solar and the matrix. Both leave them out because a dialog floats exactly
 so that it will not be tiled, and giving one a slot is that decision made

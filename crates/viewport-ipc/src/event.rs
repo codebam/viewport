@@ -39,6 +39,25 @@ pub enum Event {
         icon: Option<String>,
     },
 
+    /// The window this one is a dialog of has changed, or arrived late.
+    ///
+    /// `view.added` carries the parent when it is known by then, and for a
+    /// dialog opened by the application itself it is. It is not for a dialog
+    /// that comes from somewhere else — a file chooser is the portal's window,
+    /// in another process, and the parent reaches the compositor over
+    /// xdg-foreign after an export and an import have gone round. By then the
+    /// window has mapped and been announced with no parent at all, which is a
+    /// dialog the shell cannot place next to anything.
+    ///
+    /// `parent` is absent when the window has been unparented, which is the
+    /// same message with the same meaning: this is who it belongs to now.
+    #[serde(rename = "view.parent")]
+    ViewParent {
+        id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<u32>,
+    },
+
     #[serde(rename = "view.focused")]
     ViewFocused { id: u32 },
 

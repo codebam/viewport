@@ -156,6 +156,22 @@ impl XdgShellHandler for ViewportState {
         self.notify_props(surface.wl_surface());
     }
 
+    /// The window this one is a dialog of has changed, or been named at last.
+    ///
+    /// The second is the case that matters. A dialog an application opens
+    /// itself has its parent set before it ever commits, so `view.added`
+    /// carries it. A dialog that comes from somewhere else does not: a file
+    /// chooser is the portal's window, in another process, and the parent
+    /// arrives over xdg-foreign — an export, an import, and a `set_parent_of`
+    /// — well after the window has mapped and been announced. Smithay routes
+    /// that through here (`xdg_foreign::handlers`), which is why this is the
+    /// only place the shell can learn it, and without it a portal dialog is a
+    /// window belonging to nothing that a layout can only put in the middle of
+    /// the screen and hope.
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        self.notify_parent(surface.wl_surface());
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         tracing::debug!("popup: created");
         self.unconstrain_popup(&surface);
@@ -329,6 +345,24 @@ impl ViewportState {
         } else {
             DecorationMode::ClientSide
         }
+    }
+
+    /// Tell the shell who this window belongs to now.
+    ///
+    /// Nothing before it is mapped: the shell has not been told the window
+    /// exists, so a message about its parent names an id it has never seen.
+    /// `view.added` carries the parent for everything announced after this
+    /// point, which is what makes the two paths cover the whole of it.
+    pub(crate) fn notify_parent(&mut self, surface: &WlSurface) {
+        let Some(view) = self.views.find_by_surface(surface) else {
+            return;
+        };
+        if !view.mapped {
+            return;
+        }
+        let id = view.id;
+        let parent = self.views.parent_id_of(view);
+        self.notify(&Event::ViewParent { id, parent });
     }
 
     pub(crate) fn notify_props(&mut self, surface: &WlSurface) {

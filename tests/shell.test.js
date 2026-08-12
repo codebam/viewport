@@ -1640,8 +1640,40 @@ if (mode === 'tiling') {
       && Math.abs(orphan.x - (opened.x + rule.x - area.x)) <= 1
       && Math.abs(orphan.y - (opened.y + rule.y - area.y)) <= 1);
 
+    /* And a dialog told whose it is *after* it has opened, which is what a
+       portal file chooser is: another process's window, parented over
+       xdg-foreign once an export and an import have gone round, long after it
+       mapped. Until that message it is a window belonging to nothing, and the
+       canvas has already put it in the middle of the view. */
+    emit({ type: 'view.added', id: 38, title: 'open file', app_id: 'portal',
+      output: S_NAME, min_width: 0, min_height: 0, floating: false,
+      width: 300, height: 200 });
+    const stray = { ...canvas.places.get(38) };
+    check('a dialog with no parent yet is placed somewhere of its own',
+      Math.abs((stray.x + stray.width / 2)
+        - (host.x + host.width / 2)) > 1);
+
+    emit({ type: 'view.parent', id: 38, parent: 2 });
+    const settled = canvas.places.get(38);
+    check('and moves onto its parent once it is named',
+      Math.abs((settled.x + settled.width / 2)
+        - (host.x + host.width / 2)) <= 1
+      && Math.abs((settled.y + settled.height / 2)
+        - (host.y + host.height / 2)) <= 1);
+
+    /* But not a window someone has already dragged: a late message from a
+       client does not get to undo a placement a person made. */
+    emit({ type: 'shell.command',
+      command: 'layout.move.delta', args: ['38', '300', '150'] });
+    const dragged = { ...canvas.places.get(38) };
+    emit({ type: 'view.parent', id: 38, parent: 2 });
+    check('a dialog the user has moved stays where they put it',
+      canvas.places.get(38).x === dragged.x
+      && canvas.places.get(38).y === dragged.y);
+
     emit({ type: 'view.removed', id: 36 });
     emit({ type: 'view.removed', id: 37 });
+    emit({ type: 'view.removed', id: 38 });
     host.x = wasAt.x;
     host.y = wasAt.y;
     emit({ type: 'view.focused', id: 4 });

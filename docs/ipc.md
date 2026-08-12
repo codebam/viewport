@@ -62,6 +62,7 @@ of what was asked.
 | `modifiers` | `logo` (whether Mod4 is held; only sent while `bar` is `"auto"`) |
 | `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `replay`, `floating`, `width`, `height`, `min_width`, `min_height`, and `parent` when this window is a dialog of another — the same link `floating` is partly inferred from, named rather than reduced to a boolean, and omitted entirely when there is none |
 | `view.props` | `id`, `title`, `app_id` |
+| `view.parent` | `id`, and `parent` when it has one — whose dialog this is, said after the window was announced. `view.added` carries it when it is known by then; a portal window (a file chooser, in another process) is parented over xdg-foreign long after it maps, and this is the only way the shell hears about it |
 | `view.removed` | `id` |
 | `view.focused` | `id` (`0` means the shell itself holds focus) |
 | `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, `enabled`, `active` (the one the shell last named through `output.active`), `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `hdr`, `hdr_capable`, `scale`, `transform`, `modes[]` |
