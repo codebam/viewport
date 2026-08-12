@@ -1640,6 +1640,35 @@ if (mode === 'tiling') {
       && Math.abs(orphan.x - (opened.x + rule.x - area.x)) <= 1
       && Math.abs(orphan.y - (opened.y + rule.y - area.y)) <= 1);
 
+    /* A parent whose client refused to be as small as it was asked to be.
+     *
+     * The compositor raises a configure to the client's minimum rather than
+     * sending a request it knows will be refused, and said nothing about it —
+     * so the shell held a rectangle for a window that is a different size, and
+     * a dialog centred on that rectangle came out half the difference off.
+     * Which is exactly how this was found. */
+    const asked = { width: host.width, height: host.height };
+    emit({ type: 'view.configured', id: 2,
+      width: asked.width + 400, height: asked.height + 200 });
+    const corrected = canvas.places.get(2);
+    check('the place takes the size the client was actually given',
+      corrected.width === asked.width + 400
+      && corrected.height === asked.height + 200);
+    check('and the client\'s minimum with it, on the axis that was raised',
+      globalThis.__shell.views.get(2).minWidth === corrected.width
+      && globalThis.__shell.views.get(2).minHeight === corrected.height);
+
+    emit({ type: 'view.added', id: 39, title: 'save', app_id: 'dialogy',
+      output: S_NAME, min_width: 0, min_height: 0, floating: false,
+      parent: 2, width: 300, height: 200 });
+    const onCorrected = canvas.places.get(39);
+    check('so a dialog centres on the window that is really there',
+      Math.abs((onCorrected.x + onCorrected.width / 2)
+        - (corrected.x + corrected.width / 2)) <= 1
+      && Math.abs((onCorrected.y + onCorrected.height / 2)
+        - (corrected.y + corrected.height / 2)) <= 1);
+    emit({ type: 'view.removed', id: 39 });
+
     /* And a dialog told whose it is *after* it has opened, which is what a
        portal file chooser is: another process's window, parented over
        xdg-foreign once an export and an import have gone round, long after it

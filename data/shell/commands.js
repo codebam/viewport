@@ -367,6 +367,18 @@ window.addEventListener('viewport', (event) => {
       break;
     }
 
+    /* The client was configured at a different size from the one asked for,
+       because it would not go as small as the layout wanted. The canvas holds
+       a rectangle that *is* the client's size, so it has to take the correction
+       — otherwise everything measured against that rectangle, a dialog centred
+       on it most visibly, is out by the difference. */
+    case 'view.configured':
+      if (canvasConfigured(message.id, Number(message.width),
+        Number(message.height))) {
+        relayoutAll();
+      }
+      break;
+
     case 'view.removed':
       selectedIds.delete(message.id);
       removeView(message.id);

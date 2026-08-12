@@ -249,7 +249,15 @@ clamped, at `CANVAS.minSize`: a rectangle too small to take hold of is one that
 cannot be grown again.
 
 A place is never allowed below the client's own minimum size, because a place
-*is* the size the client is asked to be. Below it the client keeps the size it
+*is* the size the client is asked to be — and asking is not the same as
+getting. A client configured below its minimum may ignore it, so the compositor
+raises the configure to that minimum instead of sending a request it knows will
+be refused. It says so with `view.configured`, and the place takes the
+correction; without it the shell holds a rectangle for a window of a different
+size and every sum built on that rectangle is wrong by the difference, a dialog
+centred on its parent by half of it. The minimum the shell knows is updated at
+the same time, on the axis that was raised — a client may raise its minimum long
+after it mapped, and the number from `view.added` goes stale. Below it the client keeps the size it
 had while the frame does not, and the two then disagree about where everything
 in the window is — a click lands where the page is laid out rather than where
 it is drawn.

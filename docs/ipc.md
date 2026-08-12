@@ -62,6 +62,7 @@ of what was asked.
 | `modifiers` | `logo` (whether Mod4 is held; only sent while `bar` is `"auto"`) |
 | `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `replay`, `floating`, `width`, `height`, `min_width`, `min_height`, and `parent` when this window is a dialog of another — the same link `floating` is partly inferred from, named rather than reduced to a boolean, and omitted entirely when there is none |
 | `view.props` | `id`, `title`, `app_id` |
+| `view.configured` | `id`, `width`, `height` — the size the client was actually configured with, sent only when that is not the size the shell asked for and only when the answer changes. A client configured below its minimum may ignore it, so the compositor raises the configure to that minimum; a shell that is not told goes on holding a rectangle for a window of a different size |
 | `view.parent` | `id`, and `parent` when it has one — whose dialog this is, said after the window was announced. `view.added` carries it when it is known by then; a portal window (a file chooser, in another process) is parented over xdg-foreign long after it maps, and this is the only way the shell hears about it |
 | `view.removed` | `id` |
 | `view.focused` | `id` (`0` means the shell itself holds focus) |

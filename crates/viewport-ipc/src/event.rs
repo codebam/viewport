@@ -58,6 +58,25 @@ pub enum Event {
         parent: Option<u32>,
     },
 
+    /// The size the client was actually configured with, when it is not the
+    /// size the shell asked for.
+    ///
+    /// A client configured below its minimum is entitled to ignore it and
+    /// commit whatever size it likes, so the compositor raises the configure to
+    /// that minimum rather than sending a request it knows will be refused.
+    /// Silently, until now — which left the shell holding a rectangle for a
+    /// window that is a different size, and every sum built on that rectangle
+    /// wrong by the difference. Centring a dialog on its parent is one such
+    /// sum, and is out by half of it.
+    ///
+    /// Sent only when the two disagree, and only when the answer changes, so a
+    /// shell resending the same rectangle sixty times a second is told once.
+    /// A minimum is not fixed for the life of a window: a client may raise it
+    /// long after it mapped, which is why this cannot be answered from
+    /// `view.added` alone.
+    #[serde(rename = "view.configured")]
+    ViewConfigured { id: u32, width: i32, height: i32 },
+
     #[serde(rename = "view.focused")]
     ViewFocused { id: u32 },
 

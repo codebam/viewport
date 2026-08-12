@@ -242,6 +242,53 @@ function markCanvasMoved(id) {
   if (view) view.canvasMoved = true;
 }
 
+/* The client is a different size from the one it was asked to be.
+ *
+ * A place is the size the client is *asked* to be, and asking is not the same
+ * as getting: a client configured below its minimum may ignore it, so the
+ * compositor raises the configure to that minimum instead of sending a request
+ * it knows will be refused. The shell was never told, so it went on holding a
+ * rectangle for a window that is a different size — and every sum built on that
+ * rectangle was wrong by the difference. Centring a dialog on its parent is one
+ * such sum, and came out half the difference off.
+ *
+ * The shell's own idea of the minimum comes from `view.added` and can go stale:
+ * a client may raise its minimum long after it mapped, and Chrome does. So this
+ * takes the size as fact rather than trying to predict it, and updates the
+ * minimum to match — the place has just proved the old one wrong.
+ *
+ * One round trip and it settles: the next relayout asks for the size the client
+ * already has, the compositor's clamp does nothing, and nothing more is sent. */
+function canvasConfigured(id, width, height) {
+  if (layoutMode !== 'canvas') return false;
+  if (!(width > 0) || !(height > 0)) return false;
+  const rect = canvasPlaces.get(id);
+  if (!rect) return false;
+  if (rect.width === width && rect.height === height) return false;
+
+  /* Which axis was raised, worked out before the place is overwritten. The
+     compositor raises an axis to the client's minimum and leaves the other
+     alone, so an axis that came back larger has just named that minimum and an
+     axis that came back unchanged has said nothing at all. Adopting both would
+     take whatever the layout happened to ask for on the quiet axis and write it
+     down as a floor the client never claimed. */
+  const raisedWidth = width > rect.width;
+  const raisedHeight = height > rect.height;
+
+  rect.width = width;
+  rect.height = height;
+
+  /* Without this the next resize drag clamps against the stale number the
+     client sent when it opened, asks for that, gets clamped again, and the two
+     are back out of step. */
+  const view = views.get(id);
+  if (view) {
+    if (raisedWidth) view.minWidth = width;
+    if (raisedHeight) view.minHeight = height;
+  }
+  return true;
+}
+
 /* This window has just been told whose dialog it is.
  *
  * A dialog an application opens itself arrives with its parent named, and is

@@ -592,6 +592,27 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
         view.configured = Some((width, height));
     }
 
+    // And say so when that is not the size the shell asked for.
+    //
+    // The clamp above is right — a client configured below its minimum is
+    // entitled to ignore it, so asking is worse than not — but it was silent,
+    // and a silent clamp leaves the shell holding a rectangle for a window
+    // that is a different size. Every sum built on that rectangle is then
+    // wrong by the difference: centring a dialog on its parent is out by half
+    // of it, which is what this was found by.
+    //
+    // Only on a change, so a shell resending the same rectangle on every frame
+    // of an animation is told once and not sixty times. The shell adopting the
+    // size settles it: the next `view.layout` asks for what the client already
+    // has, the clamp does nothing, and nothing more is sent.
+    let mismatch = (width, height) != (resolved.box_.width, resolved.box_.height);
+    let announce = resize && mismatch;
+    let id = layout.id;
+
+    if announce {
+        state.notify(&viewport_ipc::Event::ViewConfigured { id, width, height });
+    }
+
     // Only when the size actually changed. Every configure is a round trip and
     // the shell resends the rectangle on every frame of an animation, so
     // configuring each time would make a move as expensive as a resize.
