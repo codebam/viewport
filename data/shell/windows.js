@@ -172,6 +172,14 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   views.set(id, {
     el, viewport, title, app_id, box: null,
     naturalWidth: width, naturalHeight: height,
+    /* What the client says it will not go below, kept as numbers as well as on
+       the element. The element carries them so flexbox enforces them, which is
+       right where the layout is CSS — and useless where it is arithmetic: a
+       layout that draws a window *scaled* needs the minimum scaled with it, and
+       one that computes a rectangle needs to clamp before it writes it rather
+       than discover afterwards that the browser refused. See canvas.js. */
+    minWidth: min_width > 0 ? min_width : 0,
+    minHeight: min_height > 0 ? min_height : 0,
     /* Rect while floating, null while tiled; see floatingOf(). */
     floating: null,
     /* The frame last reported to the compositor, so an unchanged one is not

@@ -515,6 +515,12 @@ function moveViewToWorkspace(id, n) {
     fullscreens.set(n, id);
   }
 
+  /* And on the canvas, where the window has a place, that place has to be
+     rewritten for the plane it is arriving on: the two planes share no origin,
+     so the same numbers name a different spot. See canvasCarry — it is a no-op
+     in every other layout. */
+  canvasCarry(id, from, n);
+
   treeGeneration++;
   return true;
 }

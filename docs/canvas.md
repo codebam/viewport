@@ -34,6 +34,26 @@ this is a canvas per workspace per monitor, each panned and zoomed where you
 left it. Switching workspaces switches planes; the view over each is remembered
 separately.
 
+Each plane's coordinates are its own — nothing relates workspace 1's origin to
+workspace 7's — so a window sent to another workspace cannot keep its numbers.
+What crosses is its position on the *screen*: the offset it had from the corner
+of its old view, it has from the corner of the new one, so it lands where it
+looked like it was. Carrying the numbers instead fails twice over. The window
+arrives somewhere off the screen, so sending it away looks like losing it; and
+then focus follows it into view and drags the destination plane across to find
+it, so the windows already on that plane are the ones that disappear. Sending
+one window away moved everything.
+
+Each plane's coordinates are its own — nothing relates workspace 1's origin to
+workspace 7's — so a window sent to another workspace cannot keep its numbers.
+What crosses is its position on the *screen*: the offset it had from the corner
+of its old view, it has from the corner of the new one. It lands where it
+looked like it was. Carrying the numbers instead fails twice over: the window
+arrives somewhere off the screen, so sending it away looks like losing it, and
+then focus follows it into view and drags the destination plane across to find
+it — so the windows already on that plane are the ones that disappear. Sending
+one window away moved everything.
+
 **Panning moves the view, not the windows.** Zooming out draws them smaller
 *without resizing them*: the client keeps the size it was configured with and
 the compositor scales the buffer. That is the same bargain the overview and
@@ -186,6 +206,22 @@ anything against, so dragging a window a long way away is a thing you are
 allowed to do, and `Mod4+Shift+f` is how you find it again. The resize *is*
 clamped, at `CANVAS.minSize`: a rectangle too small to take hold of is one that
 cannot be grown again.
+
+A place is never allowed below the client's own minimum size, because a place
+*is* the size the client is asked to be. Below it the client keeps the size it
+had while the frame does not, and the two then disagree about where everything
+in the window is — a click lands where the page is laid out rather than where
+it is drawn.
+
+The same minimum is scaled with the picture. `addView` puts it on the element
+so flexbox enforces it, which is right in a layout made of flexboxes and wrong
+in one that draws a window smaller than it is: `min-width` is in drawn pixels
+and beats `width`, so an unscaled minimum stops the element shrinking partway
+through a zoom out. `reportGeometry` then divides the measured size by the
+scale and asks the compositor to make the *client* bigger — so zooming out grows
+every client instead of shrinking its picture, which is the resize storm this
+layout exists to avoid arriving through the stylesheet. Chrome shows it first,
+having the largest minimum of anything most people run.
 
 The resize is the one gesture on the canvas that reconfigures a client — the
 place is the client's size. That is what the gesture means, and it is a resize

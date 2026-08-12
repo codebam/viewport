@@ -1493,6 +1493,60 @@ if (mode === 'tiling') {
   }
 
   {
+    /* A client's minimum size scales with the picture.
+     *
+     * addView puts the minimum on the element so flexbox enforces it, which is
+     * right in a layout made of flexboxes and wrong in one that draws a window
+     * smaller than it is: `min-width` is in drawn pixels and beats `width`, so
+     * an unscaled minimum stops the element shrinking partway through a zoom
+     * out. reportGeometry then divides the measured size by the scale and asks
+     * the compositor to make the *client* bigger — so zooming out grows every
+     * client instead of shrinking its picture, and a click lands where the
+     * window is laid out rather than where it is drawn. Chrome shows it first,
+     * having the largest minimum of anything most people run. */
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    emit({ type: 'view.added', id: 35, title: 'chrome', app_id: 'chrome',
+      output: S_NAME, min_width: 500, min_height: 400, floating: false,
+      width: 900, height: 700 });
+    const view = globalThis.__shell.views.get(35);
+    check('the client named a minimum size',
+      view.minWidth === 500 && view.minHeight === 400);
+
+    emit({ type: 'view.focused', id: 35 });
+    emit({ type: 'shell.command', command: 'canvas.zoom', args: ['0.5'] });
+    const zoom = canvas.viewport(workspace).zoom;
+    check('and the drawn minimum comes down with the zoom',
+      zoom === 0.5
+      && view.el.style.minWidth === `${Math.round(500 * zoom)}px`
+      && view.el.style.minHeight === `${Math.round(400 * zoom)}px`);
+
+    /* The place is the size the client is *asked* to be, so it is the one
+       thing that must never go under the client's own minimum — a window drawn
+       at a size it refused has a picture and an idea of itself that disagree. */
+    emit({ type: 'shell.command',
+      command: 'layout.resize.delta', args: ['35', '-9999', '-9999'] });
+    const place = canvas.places.get(35);
+    check('and the place never goes below what the client accepts',
+      place.width === 500 && place.height === 400);
+
+    /* Leaving the layout hands the unscaled minimum back, or a window that had
+       been zoomed out arrives in a tiling column able to shrink to a quarter of
+       what the client accepts. */
+    /* Through `layout.model` rather than a `config` message: a config without
+       a `rules` key clears the window rules, and the block below needs the one
+       that floats its dialog. */
+    emit({ type: 'shell.command', command: 'layout.model', args: ['tiling'] });
+    check('and leaving the canvas restores the client\'s own minimum',
+      view.el.style.minWidth === '500px'
+      && view.el.style.minHeight === '400px');
+    emit({ type: 'shell.command', command: 'layout.model', args: ['canvas'] });
+
+    emit({ type: 'view.removed', id: 35 });
+    emit({ type: 'shell.command', command: 'canvas.home', args: [] });
+    emit({ type: 'view.focused', id: 4 });
+  }
+
+  {
     /* A floating window is on the plane like everything else.
      *
      * Solar and the matrix leave floating windows out, because a dialog floats
@@ -1535,6 +1589,59 @@ if (mode === 'tiling') {
 
     emit({ type: 'view.removed', id: 34 });
     emit({ type: 'shell.command', command: 'canvas.home', args: [] });
+    emit({ type: 'view.focused', id: 4 });
+  }
+
+  {
+    /* A window sent to another workspace lands where it looked like it was.
+     *
+     * Each plane's coordinates are its own — nothing relates workspace 1's
+     * origin to workspace 7's — so carrying the numbers across names a
+     * different place. Both ways that fails are worse than they sound: the
+     * window arrives off the screen and sending it away looks like losing it,
+     * and then focus follows it into view and drags the whole destination
+     * plane across to find it, so the windows already there are the ones that
+     * vanish. Sending one window away moved everything.
+     *
+     * What crosses is the position on the *screen*: the offset it had from the
+     * corner of its old view, it has from the corner of the new one. */
+    const from = globalThis.__shell.workspaceOfForTest(1);
+    const to = 7;
+    const canvasView = canvas.viewport(to);
+    canvasView.x = 4000;
+    canvasView.y = 1500;
+
+    const source = { ...canvas.viewport(from) };
+    const before = { ...canvas.places.get(2) };
+    const offset = {
+      x: (before.x - source.x) * source.zoom,
+      y: (before.y - source.y) * source.zoom,
+    };
+
+    emit({ type: 'view.focused', id: 2 });
+    emit({ type: 'shell.command', command: 'workspace.move',
+      args: [String(to)] });
+    check('the window went to the other workspace',
+      globalThis.__shell.workspaceOfForTest(2) === to);
+
+    const after = canvas.places.get(2);
+    const target = canvas.viewport(to);
+    check('and its place is rewritten for the plane it arrived on',
+      after.x !== before.x);
+    check('keeping the offset it had from the corner of the view',
+      Math.abs((after.x - target.x) * target.zoom - offset.x) <= 1
+      && Math.abs((after.y - target.y) * target.zoom - offset.y) <= 1);
+
+    /* Which is the whole point: it is already in sight, so nothing has to pan
+       to find it and the windows already on that plane stay where they are. */
+    const settled = { ...canvas.viewport(to) };
+    emit({ type: 'view.focused', id: 2 });
+    check('so following it moves the destination plane not at all',
+      canvas.viewport(to).x === settled.x
+      && canvas.viewport(to).y === settled.y);
+
+    emit({ type: 'shell.command', command: 'workspace.move',
+      args: [String(from)] });
     emit({ type: 'view.focused', id: 4 });
   }
 

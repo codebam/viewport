@@ -112,10 +112,11 @@ const CANVAS = {
  *
  * Two pieces of state, both kept outside the window records because both
  * outlive them: where each window sits on its plane, and where each plane is
- * being looked at from. A window carried to another workspace keeps its
- * coordinates, which is what you want — the plane it arrives on is a different
- * plane, and it lands at the same place on it rather than at an origin nobody
- * chose.
+ * being looked at from.
+ *
+ * Each plane's coordinates are its own. Nothing relates workspace 3's origin to
+ * workspace 7's, so a window carried between them cannot keep its numbers —
+ * see canvasCarry, which is what happens instead.
  * --------------------------------------------------------------------- */
 
 /* view id -> { x, y, width, height } in world units. Width and height are the
@@ -229,6 +230,41 @@ function claimCanvasSlot(app, workspace) {
  * the rect of something that closed during the restart. */
 function dropCanvasSlots() {
   canvasSlots = [];
+}
+
+/* A window sent to another workspace, and where it lands on the plane it
+ * arrives at.
+ *
+ * Its coordinates cannot come with it. Each plane's origin is its own and
+ * nothing relates one to another, so the same numbers on a different plane
+ * name a different place — and the two failures that produces are both worse
+ * than they sound. Left where they were, the window arrives wherever that
+ * happens to be on the new plane: with any distance panned on either side,
+ * that is somewhere off the screen, and sending a window to a workspace makes
+ * it vanish. And because focus follows a window into view, going to that
+ * workspace then drags the whole plane across to find it — so the windows that
+ * were already there are the ones that disappear instead. Sending one window
+ * away moved everything.
+ *
+ * What comes across is its position *on the screen*: whatever offset it had
+ * from the corner of the view it had, it has from the corner of the view it
+ * arrives in. It lands where it looked like it was, nothing else on either
+ * plane moves, and following it is a no-op because it is already in sight.
+ *
+ * Through the zooms, because the two planes need not be looked at from the
+ * same distance: the offset that is preserved is the one in screen pixels, not
+ * the one in world units. */
+function canvasCarry(id, from, to) {
+  if (layoutMode !== 'canvas') return;
+  if (from === null || to === null || from === to) return;
+
+  const place = canvasPlaces.get(id);
+  if (!place) return;
+
+  const source = canvasViewportOf(from);
+  const target = canvasViewportOf(to);
+  place.x = target.x + (place.x - source.x) * source.zoom / target.zoom;
+  place.y = target.y + (place.y - source.y) * source.zoom / target.zoom;
 }
 
 /* Drop a closed window's place. Called from removeView beside solarForget and
@@ -527,6 +563,21 @@ function canvasPlaceOf(id, workspace, output, viewport, area) {
   const existing = canvasPlaces.get(id);
   if (existing) return existing;
 
+  /* Every way of arriving at a place goes out through here, so that none of
+     them can hand a client a size it will refuse. A place is the size the
+     client is asked to be: below its own minimum the client keeps the size it
+     had, the frame does not, and the two disagree about where everything in
+     the window is. */
+  const keep = (place) => {
+    const record = views.get(id);
+    place.width = Math.max(
+      CANVAS.minSize, record?.minWidth ?? 0, place.width);
+    place.height = Math.max(
+      CANVAS.minSize, record?.minHeight ?? 0, place.height);
+    canvasPlaces.set(id, place);
+    return place;
+  };
+
   const zoom = viewport.zoom;
   const view = views.get(id);
 
@@ -535,8 +586,7 @@ function canvasPlaceOf(id, workspace, output, viewport, area) {
     const place = {
       x: slot.x, y: slot.y, width: slot.width, height: slot.height,
     };
-    canvasPlaces.set(id, place);
-    return place;
+    return keep(place);
   }
 
   /* A floating window arrives with a rectangle already — from the compositor,
@@ -555,8 +605,7 @@ function canvasPlaceOf(id, workspace, output, viewport, area) {
       width: floating.width,
       height: floating.height,
     };
-    canvasPlaces.set(id, place);
-    return place;
+    return keep(place);
   }
 
   const box = view?.box;
@@ -569,8 +618,7 @@ function canvasPlaceOf(id, workspace, output, viewport, area) {
       width: box.width,
       height: box.height,
     };
-    canvasPlaces.set(id, place);
-    return place;
+    return keep(place);
   }
 
   const width = Math.round(area.width * CANVAS.width / zoom);
@@ -616,9 +664,7 @@ function canvasPlaceOf(id, workspace, output, viewport, area) {
     y += CANVAS.cascade;
   }
 
-  const place = { x, y, width, height };
-  canvasPlaces.set(id, place);
-  return place;
+  return keep({ x, y, width, height });
 }
 
 /* One workspace's windows and where they are, ready to project. */
@@ -801,9 +847,19 @@ function canvasResizeBy(id, dx, dy) {
   const rect = canvasPlaces.get(id);
   if (!rect) return false;
 
+  /* The client's own minimum first, and this layout's floor only where the
+     client did not name one. A place *is* the size the client is asked to be,
+     so a place under the client's minimum is a request it will refuse — and a
+     window drawn at a size it refused is one whose picture and whose idea of
+     itself disagree, which is a click landing somewhere other than where it
+     was aimed. */
+  const view = views.get(id);
+  const floorWidth = Math.max(CANVAS.minSize, view?.minWidth ?? 0);
+  const floorHeight = Math.max(CANVAS.minSize, view?.minHeight ?? 0);
+
   const zoom = canvasViewportOf(workspaceOf(id)).zoom;
-  rect.width = Math.max(CANVAS.minSize, rect.width + dx / zoom);
-  rect.height = Math.max(CANVAS.minSize, rect.height + dy / zoom);
+  rect.width = Math.max(floorWidth, rect.width + dx / zoom);
+  rect.height = Math.max(floorHeight, rect.height + dy / zoom);
   relayoutAll();
   return true;
 }
@@ -876,8 +932,16 @@ function clearCanvasState() {
     if (!view.canvas) continue;
     view.canvas = null;
     view.el.classList.remove('plane', 'front');
-    Object.assign(view.el.style,
-      { left: '', top: '', width: '', height: '' });
+    /* The minimum goes back to the client's own, unscaled: every other layout
+       is flexbox, and that is where the element's own min-width is what
+       enforces it. Left at a scaled value, a window that had been zoomed out
+       would arrive in a tiling column able to shrink to a quarter of what the
+       client accepts. */
+    Object.assign(view.el.style, {
+      left: '', top: '', width: '', height: '',
+      minWidth: view.minWidth > 0 ? `${view.minWidth}px` : '',
+      minHeight: view.minHeight > 0 ? `${view.minHeight}px` : '',
+    });
   }
 }
 
@@ -946,11 +1010,31 @@ function renderCanvas(placements, output) {
        Written for a covering window too, and overridden: `.window.fullscreen`
        carries `inset: 0 !important` precisely so that a layout holding a rect
        in inline style does not have to strip and restore it. */
+    /* The client's minimum, scaled with everything else.
+     *
+     * addView puts the minimum on the element so that flexbox enforces it,
+     * which is right in a layout made of flexboxes and actively wrong in one
+     * that draws a window smaller than it is. `min-width` is in drawn pixels
+     * and beats `width`, so an unscaled minimum stops the element shrinking
+     * partway through a zoom out: the window is then drawn at its minimum
+     * while reportGeometry divides the measured size by the scale and tells
+     * the compositor the *client* should be that much bigger. Zooming out then
+     * grows every client instead of shrinking its picture — the resize storm
+     * this layout is arranged to avoid, arriving through the stylesheet — and
+     * where a click lands stops matching what is on screen, because the client
+     * is laid out for a size nothing is drawn at.
+     *
+     * Chrome is where it shows first, having the largest minimum of anything
+     * most people run. */
+    const minWidth = Math.round((view.minWidth ?? 0) * scale);
+    const minHeight = Math.round((view.minHeight ?? 0) * scale);
     Object.assign(view.el.style, {
       left: `${placement.x}px`,
       top: `${placement.y}px`,
       width: `${Math.round(placement.width * scale)}px`,
       height: `${Math.round(placement.height * scale)}px`,
+      minWidth: minWidth > 0 ? `${minWidth}px` : '',
+      minHeight: minHeight > 0 ? `${minHeight}px` : '',
       flexGrow: '',
     });
 
