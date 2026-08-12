@@ -230,6 +230,12 @@ function resizeColumn(workspace, id, dx) {
 }
 
 function resizeByDelta(id, dx, dy) {
+  /* On the canvas a window's place is its size, and nothing shares space with
+     it, so the drag simply changes that. Before the floating branch below,
+     because on the canvas a floating window is on the plane like every other
+     one and its own rect is not what gets drawn. */
+  if (canvasResizeBy(id, dx, dy)) return;
+
   /* A floating window resizes by simply becoming that much bigger — there are
      no siblings to take the space from. Clamped so a drag cannot shrink it to
      nothing and leave a window that can no longer be grabbed. */

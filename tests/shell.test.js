@@ -1440,6 +1440,59 @@ if (mode === 'tiling') {
   }
 
   {
+    /* The pointer gestures, which is how a canvas is actually used.
+     *
+     * All three arrive as deltas in *screen* pixels from the compositor — it
+     * knows where the pointer went and nothing about the plane — so all three
+     * have to divide by the zoom. Checked at 0.5 for exactly that reason: at
+     * 1.0 a missing division is invisible, which is how it would have shipped.
+     */
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    emit({ type: 'view.focused', id: 3 });
+    emit({ type: 'shell.command', command: 'canvas.zoom', args: ['0.5'] });
+    const zoom = canvas.viewport(workspace).zoom;
+    check('the view is zoomed out for these', zoom === 0.5);
+
+    const before = { ...canvas.places.get(3) };
+    emit({ type: 'shell.command',
+      command: 'layout.move.delta', args: ['3', '100', '60'] });
+    const dragged = canvas.places.get(3);
+    check('Mod4 + left drag moves the window across the plane',
+      dragged.x === before.x + 100 / zoom
+      && dragged.y === before.y + 60 / zoom);
+    check('and it is not floated to do it',
+      globalThis.__shell.floatingForTest(3) === null);
+
+    emit({ type: 'shell.command',
+      command: 'layout.resize.delta', args: ['3', '80', '40'] });
+    const resized = canvas.places.get(3);
+    check('Mod4 + right drag resizes it, in world units',
+      resized.width === before.width + 80 / zoom
+      && resized.height === before.height + 40 / zoom);
+
+    /* A resize cannot go to nothing: a rectangle too small to take hold of is
+       one that cannot be grown again. */
+    emit({ type: 'shell.command',
+      command: 'layout.resize.delta', args: ['3', '-99999', '-99999'] });
+    const tiny = canvas.places.get(3);
+    check('and never below the minimum',
+      tiny.width === canvas.CANVAS.minSize
+      && tiny.height === canvas.CANVAS.minSize);
+
+    /* Dragging the desktop moves the view the other way: the plane follows the
+       hand, rather than sliding out from under it. */
+    const view = { ...canvas.viewport(workspace) };
+    emit({ type: 'shell.command',
+      command: 'canvas.pan.delta', args: ['120', '40'] });
+    const panned = canvas.viewport(workspace);
+    check('dragging the desktop pans the plane with the hand',
+      panned.x === view.x - 120 / zoom && panned.y === view.y - 40 / zoom);
+
+    emit({ type: 'shell.command', command: 'canvas.home', args: [] });
+    emit({ type: 'view.focused', id: 4 });
+  }
+
+  {
     /* A floating window is on the plane like everything else.
      *
      * Solar and the matrix leave floating windows out, because a dialog floats
@@ -2880,30 +2933,39 @@ if (mode === 'scrolling') {
   }
 
   /* Mod4 and the left button on a *tiled* window did nothing at all: the
-     handler returned early unless the window already floated. */
-  open(94, 'tiled-drag');
-  check('the test opened a tiled window',
-    globalThis.__shell.floatingForTest(94) === null);
-  emit({ type: 'shell.command', command: 'layout.move.delta',
-    args: ['94', '30', '20'] });
-  const dragged = globalThis.__shell.floatingForTest(94);
-  check('dragging a tiled window floats it', dragged !== null);
-  /* And it carries on from where it was rather than jumping to the middle of
-     the screen on the first pixel of the drag. */
-  check('and it moves by what was dragged',
-    dragged !== null && dragged.x !== 0 && dragged.y !== 0);
-  emit({ type: 'view.removed', id: 94 });
+     handler returned early unless the window already floated.
 
-  /* Resize mode looks the focused window up in the tree, and a floating window
-     is not in it — so every press was ignored. */
-  emit({ type: 'view.focused', id: 90 });
-  const before = globalThis.__shell.floatingForTest(90).width;
-  emit({ type: 'shell.command', command: 'layout.resize', args: ['right'] });
-  const after = globalThis.__shell.floatingForTest(90).width;
-  check('resize mode grows a floating window', after > before);
-  emit({ type: 'shell.command', command: 'layout.resize', args: ['left'] });
-  check('and shrinks it again',
-    globalThis.__shell.floatingForTest(90).width === before);
+     Not on the canvas, where every window already has a rectangle of its own
+     and a drag edits that: floating one there would write a rect the layout
+     does not read, which is a window that does not move however far it is
+     dragged. The canvas section above checks the drag it does do. */
+  if (mode !== 'canvas') {
+    open(94, 'tiled-drag');
+    check('the test opened a tiled window',
+      globalThis.__shell.floatingForTest(94) === null);
+    emit({ type: 'shell.command', command: 'layout.move.delta',
+      args: ['94', '30', '20'] });
+    const dragged = globalThis.__shell.floatingForTest(94);
+    check('dragging a tiled window floats it', dragged !== null);
+    /* And it carries on from where it was rather than jumping to the middle of
+       the screen on the first pixel of the drag. */
+    check('and it moves by what was dragged',
+      dragged !== null && dragged.x !== 0 && dragged.y !== 0);
+    emit({ type: 'view.removed', id: 94 });
+
+    /* Resize mode looks the focused window up in the tree, and a floating
+       window is not in it — so every press was ignored. On the canvas there is
+       no resize mode at all: nothing shares space with anything, so there is
+       no neighbour to take it from and the gesture is a drag instead. */
+    emit({ type: 'view.focused', id: 90 });
+    const before = globalThis.__shell.floatingForTest(90).width;
+    emit({ type: 'shell.command', command: 'layout.resize', args: ['right'] });
+    const after = globalThis.__shell.floatingForTest(90).width;
+    check('resize mode grows a floating window', after > before);
+    emit({ type: 'shell.command', command: 'layout.resize', args: ['left'] });
+    check('and shrinks it again',
+      globalThis.__shell.floatingForTest(90).width === before);
+  }
 
   emit({ type: 'view.focused', id: 90 });
   const floatFrom = ws(90);

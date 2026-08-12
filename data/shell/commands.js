@@ -155,6 +155,13 @@ function handleShellCommand(command, args) {
     case 'layout.move.delta':
       moveByDelta(Number(args[0]), Number(args[1]), Number(args[2]));
       break;
+    /* Mod4 + left drag on the desktop, where there is no window to take hold
+       of. Only the canvas has a view to move, so it is a no-op everywhere else
+       — the compositor cannot tell which layout is running and should not have
+       to guess. */
+    case 'canvas.pan.delta':
+      canvasPanBy(Number(args[0]), Number(args[1]));
+      break;
     case 'layout.float.toggle':
       toggleFloating(focusedId);
       break;

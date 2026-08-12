@@ -100,6 +100,11 @@ const CANVAS = {
      pixels. Following focus with no margin puts the window flush against the
      edge, where the half of it you are about to scroll to is invisible. */
   margin: 48,
+
+  /* How small a drag may make a window, in world units. A resize that can
+     reach zero leaves a rectangle too small to take hold of and no way to grow
+     it again. */
+  minSize: 120,
 };
 
 /* ------------------------------------------------------------------------
@@ -739,6 +744,81 @@ function canvasHome() {
   canvasViewports.set(target.workspace,
     rect ? canvasFollow(rect, at, target.area) : at);
   relayoutAll();
+}
+
+/* Drag a window across the plane, in response to Mod4 + left drag.
+ *
+ * The compositor forwards the gesture as a delta in *screen* pixels — it knows
+ * where the pointer went and nothing about the plane — so the step is divided
+ * by the zoom on the way in. That is what makes a drag track the pointer at any
+ * zoom rather than running away from it by a factor of four when the view is
+ * out at 0.25.
+ *
+ * Nothing is clamped. A floating window is held against the edge of its screen
+ * so that a window dragged off it can be got back, and a plane has no edge to
+ * hold anything against — dragging a window a long way away is a thing you are
+ * allowed to do here, and `canvas.fit` is how you find it again.
+ *
+ * Returns whether it did anything, so moveByDelta can fall through to the
+ * floating path in every other layout. */
+function canvasDragBy(id, dx, dy) {
+  if (layoutMode !== 'canvas' || id == null) return false;
+  const rect = canvasPlaces.get(id);
+  if (!rect) return false;
+
+  const zoom = canvasViewportOf(workspaceOf(id)).zoom;
+  rect.x += dx / zoom;
+  rect.y += dy / zoom;
+
+  /* Follow the pointer exactly while the drag lasts; the class comes off once
+     the window stops moving. The same treatment, and the same 120ms, a
+     floating window gets in moveByDelta — a window being dragged should not be
+     easing toward the pointer. */
+  const view = views.get(id);
+  if (view) {
+    view.el.classList.add('dragging');
+    clearTimeout(view.dragTimer);
+    view.dragTimer = setTimeout(
+      () => view.el.classList.remove('dragging'), 120);
+  }
+
+  relayoutAll();
+  return true;
+}
+
+/* Resize a window on the plane, in response to Mod4 + right drag.
+ *
+ * A real resize, unlike everything else here: the place *is* the client's size,
+ * so this is the one gesture on the canvas that reconfigures a client. That is
+ * what the gesture means, and it is a resize someone is doing by hand rather
+ * than one the layout is doing sixty times a second, which is the cost the rest
+ * of this file is arranged to avoid.
+ *
+ * Clamped to a minimum, so a drag cannot shrink a window to nothing and leave
+ * a rectangle too small to take hold of again. */
+function canvasResizeBy(id, dx, dy) {
+  if (layoutMode !== 'canvas' || id == null) return false;
+  const rect = canvasPlaces.get(id);
+  if (!rect) return false;
+
+  const zoom = canvasViewportOf(workspaceOf(id)).zoom;
+  rect.width = Math.max(CANVAS.minSize, rect.width + dx / zoom);
+  rect.height = Math.max(CANVAS.minSize, rect.height + dy / zoom);
+  relayoutAll();
+  return true;
+}
+
+/* Pan the plane, in response to Mod4 + left drag on the desktop.
+ *
+ * The delta is where the pointer went, and the view goes the other way: drag
+ * the desktop to the right and what is on it comes with you, which is the
+ * direction every canvas has moved since the first one. Panning the view right
+ * instead would have the plane sliding out from under the hand. */
+function canvasPanBy(dx, dy) {
+  if (layoutMode !== 'canvas') return false;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+  canvasPan(-dx, -dy);
+  return true;
 }
 
 /* Move the focused window across the plane. An edit to the plane, so the step

@@ -63,6 +63,8 @@
     "             without resizing any client. Mod4+[ and Mod4+] pan,",
     "             Mod4+PageUp/PageDown pan vertically, Mod4+- and Mod4+= zoom,",
     "             Mod4+Shift+f fits the plane and Mod4+Home returns to 1:1.",
+    "             Mod4+left-drag moves a window or pans the desktop,",
+    "             Mod4+right-drag resizes one.",
     "             Zoom stops at 1:1 because past it the compositor would be",
     "             enlarging a buffer the client painted smaller. Zooming out",
     "             is unrestricted. See docs/canvas.md.",

@@ -748,13 +748,32 @@ impl ViewportState {
                                 pointer.current_location(),
                             )
                         });
-                    if let Some(id) = hit.and_then(|window| {
+                    let dragging = hit.and_then(|window| {
                         self.views.iter().find(|v| v.window == window).map(|v| v.id)
-                    }) {
+                    });
+                    // Nothing under the pointer is the desktop itself, and a
+                    // drag there moves the *view*: the gesture every canvas
+                    // has, and the one thing a plane with no edges cannot do
+                    // without. The shell decides what that means and a layout
+                    // with no view of its own ignores it, so this stays a
+                    // question about whether a window was hit rather than
+                    // about which layout is running — which the compositor
+                    // would be wrong about anyway the moment `layout.model`
+                    // switched one at runtime.
+                    //
+                    // Left only. The right button on the desktop is not a
+                    // resize of anything.
+                    let kind = match (dragging, event.button_code()) {
+                        (Some(_), BTN_RIGHT) => crate::state::DragKind::Resize,
+                        (Some(_), _) => crate::state::DragKind::Move,
+                        (None, BTN_LEFT) => crate::state::DragKind::Pan,
+                        (None, _) => crate::state::DragKind::Move,
+                    };
+                    if dragging.is_some() || kind == crate::state::DragKind::Pan {
                         self.pointer_drag = Some(crate::state::PointerDrag {
-                            id,
+                            id: dragging.unwrap_or_default(),
                             button: event.button_code(),
-                            resize: event.button_code() == BTN_RIGHT,
+                            kind,
                             last: pointer.current_location(),
                             pending: (0.0, 0.0),
                             sent: None,
@@ -1618,16 +1637,23 @@ impl ViewportState {
         drag.pending.1 -= dy;
         drag.sent = Some(std::time::Instant::now());
 
-        let command = if drag.resize {
-            "layout.resize.delta"
-        } else {
-            "layout.move.delta"
+        let command = match drag.kind {
+            crate::state::DragKind::Resize => "layout.resize.delta",
+            crate::state::DragKind::Move => "layout.move.delta",
+            crate::state::DragKind::Pan => "canvas.pan.delta",
         };
-        let args = vec![
-            drag.id.to_string(),
-            (dx as i32).to_string(),
-            (dy as i32).to_string(),
-        ];
+        // A pan is about the desktop and names no window, so it carries the
+        // delta alone. Sending an id of nothing would be a window the shell
+        // would then go looking for.
+        let args = if drag.kind == crate::state::DragKind::Pan {
+            vec![(dx as i32).to_string(), (dy as i32).to_string()]
+        } else {
+            vec![
+                drag.id.to_string(),
+                (dx as i32).to_string(),
+                (dy as i32).to_string(),
+            ]
+        };
         let event = viewport_ipc::Event::ShellCommand {
             command: command.to_owned(),
             args,

@@ -76,6 +76,12 @@ function toggleFloating(id) {
  * only reading of the gesture that does anything: the alternative was to
  * ignore the drag entirely, which is what happened before. */
 function moveByDelta(id, dx, dy) {
+  /* On the canvas the window already has a rectangle of its own — every window
+     there does — so the drag edits that rather than floating anything. Floating
+     it instead would write a rect the canvas does not read, which is a window
+     that does not move however far it is dragged. */
+  if (canvasDragBy(id, dx, dy)) return;
+
   if (!floatingOf(id)) {
     const view = views.get(id);
     const workspace = workspaceOf(id);

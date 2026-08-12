@@ -166,15 +166,38 @@ the others rather than an error.
 | `Mod4+Home` | back to 1:1 on the focused window |
 | `Mod4+Shift+h/j/k/l` | move the focused window across the plane; the view follows |
 
+And with the pointer:
+
+| Gesture | What it does |
+| --- | --- |
+| `Mod4` + left drag on a window | move it across the plane |
+| `Mod4` + right drag on a window | resize it |
+| `Mod4` + left drag on the desktop | pan the plane |
+
+All three arrive from the compositor as deltas in *screen* pixels — it knows
+where the pointer went and nothing about the plane — so all three divide by the
+zoom on the way in. That is what makes a drag track the pointer at any zoom
+rather than running away from it by a factor of four when the view is out at
+0.25.
+
+The move is not clamped. A floating window is held against the edge of its
+screen so that one dragged off it can be got back; a plane has no edge to hold
+anything against, so dragging a window a long way away is a thing you are
+allowed to do, and `Mod4+Shift+f` is how you find it again. The resize *is*
+clamped, at `CANVAS.minSize`: a rectangle too small to take hold of is one that
+cannot be grown again.
+
+The resize is the one gesture on the canvas that reconfigures a client — the
+place is the client's size. That is what the gesture means, and it is a resize
+done by hand rather than one the layout is doing sixty times a second, which is
+the cost everything else here is arranged to avoid.
+
 `Mod4+h/j/k/l` still moves focus, and panning deliberately does not share those
 chords: reaching the window beside you should not depend on how far the view
 has drifted.
 
 ## What is not done yet
 
-- **Pointer panning and drag-to-move.** The keys are bound; grabbing the
-  background to pan, or a titlebar to drag a window across the plane, is not
-  wired up. `resize.js` already has the drag machinery a floating window uses.
 - **Pinch to zoom.** The compositor already delivers pinch (`input.rs`, the
   `scale:` field) and three-finger swipe; neither is routed here yet.
 - **A window carried to another monitor.** `window.move` slides a window across

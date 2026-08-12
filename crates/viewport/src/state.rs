@@ -7673,7 +7673,27 @@ fn parse_transform(text: &str) -> Option<Transform> {
 /// The compositor follows the pointer and the shell does the arithmetic: where
 /// a window may go, and how big it may be, are questions about the layout —
 /// and the layout is the shell's.
+/// What a pointer drag is doing.
+///
+/// Three gestures on one mechanism, because all three need the same thing: a
+/// button held down, deltas while it is, and a grab that survives the pointer
+/// crossing onto a client — the drag belongs to whoever started it, wherever
+/// the hand goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragKind {
+    /// Left button on a window: move it.
+    Move,
+    /// Right button on a window: resize it.
+    Resize,
+    /// Left button on the desktop, where there is no window at all. Nothing to
+    /// move, so it moves the view instead — which is only meaningful to a
+    /// layout that has one, and is dropped by every layout that does not.
+    Pan,
+}
+
 pub struct PointerDrag {
+    /// The window being dragged. Meaningless for [`DragKind::Pan`], which is
+    /// about the desktop rather than about anything on it.
     pub id: u32,
     /// The button held down, which is the one whose release ends this drag.
     ///
@@ -7682,8 +7702,8 @@ pub struct PointerDrag {
     /// whichever button came up next let go of the window while it was still
     /// being held.
     pub button: u32,
-    /// The right button rather than the left: resizing rather than moving.
-    pub resize: bool,
+    /// Which of the three gestures this is.
+    pub kind: DragKind,
     /// Where the pointer was when the last delta was worked out.
     pub last: smithay::utils::Point<f64, smithay::utils::Logical>,
     /// Motion too small to be worth a whole pixel yet.
