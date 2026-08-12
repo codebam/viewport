@@ -175,10 +175,17 @@ On a TTY it takes the DRM session directly (needs `seatd` or logind).
 
 ### Checks before a commit
 
-There is no CI. `.github/workflows/ci.yml` still describes what it used to
-run and no longer runs on a push — the comment at the top of it says why, and
-how to put it back. The same checks live in a hook instead, which has to be
-turned on once per clone:
+The checks run in two places, and neither is a superset of the other.
+
+`.github/workflows/ci.yml` runs on every push and pull request: `shell` for the
+layout engine under node, `rust` for `cargo fmt`, `cargo clippy`, the unit tests,
+the Wayland integration tests and a packaged build, and `asan` for the same suite
+instrumented. What it cannot run is anything that needs WPE WebKit — four hours
+on a hosted runner, against a build tree larger than the disk — so `--features
+wpe` is checked by the hook below and nowhere else. The comment at the top of
+that file says what used to be there and why it went.
+
+The hook is the other half, and has to be turned on once per clone:
 
 ```sh
 git config core.hooksPath .githooks

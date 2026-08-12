@@ -63,9 +63,11 @@ pub enum ShellBackend {
     WebKitGtk,
     /// Chromium, as a child process driven over the DevTools protocol.
     Chromium,
-    /// Servo, in this process. Not implemented.
+    /// Servo, in this process. Not implemented, and refused rather than
+    /// pending — `docs/shell-backends.md` says on what grounds.
     Servo,
-    /// Chromium through CEF, in this process. Not implemented.
+    /// Chromium through CEF, embedded in a process of its own rather than
+    /// driven over a socket as `Chromium` is. The default.
     Cef,
 }
 
