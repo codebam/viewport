@@ -121,10 +121,20 @@ several steps down and to the right for no reason visible on that screen, and
 comparing origins for equality caught nothing, since two windows a pixel apart
 are one window with another hidden behind it.
 
-Floating windows are left out of the plane entirely, as they are in solar and
-the matrix. A dialog is floating because the compositor judged that tiling it
-is the wrong thing to do; putting one on the plane is that same mistake with
-different arithmetic.
+**Floating windows are on the plane too**, which is where this parts company
+with solar and the matrix. Both leave them out because a dialog floats exactly
+so that it will not be tiled, and giving one a slot is that decision made
+twice. There is no such argument here: a plane is not a division of space, and
+every window on one is placed by hand at a rectangle of its own. Floating is
+what they all are.
+
+Leaving them out is not neutral either — it is a window nailed to the screen,
+sitting still while everything around it pans, which no amount of panning or
+zooming can undo. Which windows the compositor decides to float is not
+something you can see from the outside (`views.rs`, `wants_floating`, plus any
+rule in the config file), so the fault arrives as "this one window ignores
+me". A floating window keeps the rect it was opened with as its first place,
+so a rule that says where an application opens still decides.
 
 ## Tunables
 

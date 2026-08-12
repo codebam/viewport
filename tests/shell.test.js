@@ -1440,6 +1440,52 @@ if (mode === 'tiling') {
   }
 
   {
+    /* A floating window is on the plane like everything else.
+     *
+     * Solar and the matrix leave floating windows out, because a dialog floats
+     * precisely so that it will not be tiled. A plane is not a division of
+     * space and nothing on it is tiled, so there is nothing for that argument
+     * to say here — and leaving them out is not neutral: relayoutAll writes a
+     * floating window's rect straight onto the element in screen coordinates,
+     * so one left off the plane sits still while everything around it pans.
+     * Which windows the compositor floats is not visible to the person at the
+     * screen, so it arrives as "this one window ignores me". */
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    /* The view as it stands *before* the window arrives, because that is the
+       one its place is worked out against — focus follows the new window a
+       moment later, and reading the viewport afterwards would be comparing the
+       rect against a plane that has since moved under it. */
+    const opened = { ...canvas.viewport(workspace) };
+    emit({ type: 'view.added', id: 34, title: 'dialogy', app_id: 'dialogy',
+      output: S_NAME, min_width: 0, min_height: 0, floating: false,
+      width: 300, height: 200 });
+    check('the harness floated it, as its rule says',
+      globalThis.__shell.floatingForTest(34) !== null);
+    const place = canvas.places.get(34);
+    check('and a floating window is given a place on the plane',
+      place !== undefined);
+
+    /* At the rect it was told to open at, rather than wherever a new window
+       would go: a rule that says where an application opens still decides. */
+    const rule = globalThis.__shell.floatingForTest(34);
+    const area = canvas.area(globalThis.__shell.outputs.get(S_NAME));
+    check('at the rect it was opened with, not in the middle of the screen',
+      Math.abs(place.x - (opened.x + rule.x - area.x)) <= 1
+      && Math.abs(place.y - (opened.y + rule.y - area.y)) <= 1
+      && place.width === rule.width && place.height === rule.height);
+
+    const before = globalThis.__shell.views.get(34).el.style.left;
+    emit({ type: 'shell.command', command: 'canvas.pan', args: ['right'] });
+    const after = globalThis.__shell.views.get(34).el.style.left;
+    check('and it pans with the plane rather than staying on the screen',
+      before !== '' && after !== '' && before !== after);
+
+    emit({ type: 'view.removed', id: 34 });
+    emit({ type: 'shell.command', command: 'canvas.home', args: [] });
+    emit({ type: 'view.focused', id: 4 });
+  }
+
+  {
     /* Surviving a reload.
      *
      * A reload is a new page: both maps come back empty and every window is

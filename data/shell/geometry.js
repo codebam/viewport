@@ -551,6 +551,13 @@ function relayoutAll() {
        surfaces to match when it is told their new rects. */
     for (const [id, floating, view] of floatingEntries()) {
       if (overviewActive) break; // thumbnails place their own
+      /* And the canvas places its own, floating included: on a plane every
+         window is placed by hand at a rectangle of its own, so there is nothing
+         for "floating" to mean and nothing here to add. Writing the rect again
+         would nail the window to the screen — the rect is in screen
+         coordinates, so the window would sit still while the plane panned
+         underneath it. */
+      if (canvas) break;
       if (floating.workspace !== output.workspace) continue;
       view.el.classList.add('floating');
       output.windowsEl.append(view.el);

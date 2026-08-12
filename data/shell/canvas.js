@@ -444,20 +444,50 @@ function canvasAreaOf(output) {
 
 /* The windows the canvas places on a workspace, in tree order.
  *
- * Floating windows are left out entirely, as they are in solar and the matrix:
- * a dialog is floating because the compositor judged that tiling it is the
- * wrong thing to do (views.rs, wants_floating), and putting one on the plane
- * is that same mistake with different arithmetic. relayoutAll places them
- * itself, over whatever the canvas drew.
+ * Floating windows included, which is where this parts company with solar and
+ * the matrix. Both of those leave them out because a dialog is floating exactly
+ * so that it will *not* be tiled, and handing one a slot is that decision made
+ * twice. There is no such argument here: a plane is not a division of space,
+ * and every window on one is placed by hand at a rectangle of its own. Floating
+ * is what they all are.
+ *
+ * Leaving them out is not neutral, either — it is a window nailed to the
+ * screen. relayoutAll writes a floating window's own rect straight onto the
+ * element, in screen coordinates, so one left out of the plane sits still while
+ * everything around it pans, and no amount of panning or zooming will move it.
+ * Which windows the compositor decides to float is not something the person
+ * looking at the screen can see (views.rs, wants_floating, plus any rule in the
+ * config file), so the fault arrives as "this one window ignores me".
  *
  * Tree order and not focus order, unlike the matrix: nothing about where a
  * window sits on the plane depends on when it was last used, and an order that
  * changed under focus would make the cascade of newly-opened windows shuffle
  * every time you clicked one. */
+/* Two sources, because a floating window is frequently not in the tree at all:
+ * some paths insert a leaf and then mark it floating, and some never insert one
+ * — `idsOf` reads both for the same reason. Walking only the tree left those
+ * windows with no place, which is not a window in the wrong spot but a window
+ * the layout has never heard of. Deduplicated, since the first kind is in both.
+ */
 function canvasOrderOf(workspace) {
   const root = workspaces.get(workspace);
-  if (!root) return [];
-  return dynamicOrder(root).filter((id) => views.has(id) && !isFloating(id));
+  const ids = [];
+  const seen = new Set();
+
+  if (root) {
+    for (const id of dynamicOrder(root)) {
+      if (!views.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  for (const [id, floating] of floatingEntries()) {
+    if (floating.workspace !== workspace) continue;
+    if (!views.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
 }
 
 /* Where a window is on the plane, placing it if this is the first time anyone
@@ -498,6 +528,26 @@ function canvasPlaceOf(id, workspace, output, viewport, area) {
   if (slot) {
     const place = {
       x: slot.x, y: slot.y, width: slot.width, height: slot.height,
+    };
+    canvasPlaces.set(id, place);
+    return place;
+  }
+
+  /* A floating window arrives with a rectangle already — from the compositor,
+     or from a rule in the config file that says where this application opens.
+     That rectangle is in the same coordinates the plane is drawn in, so it
+     becomes the window's first place directly: a dialog told to open at 10,20
+     opens at 10,20 and then pans with everything else, rather than being put in
+     the middle of the screen because the canvas had an opinion of its own. Read
+     before `view.box`, which for a window that has never been drawn is not
+     there at all. */
+  const floating = floatingOf(id);
+  if (floating) {
+    const place = {
+      x: viewport.x + (floating.x - area.x) / zoom,
+      y: viewport.y + (floating.y - area.y) / zoom,
+      width: floating.width,
+      height: floating.height,
     };
     canvasPlaces.set(id, place);
     return place;
@@ -791,10 +841,21 @@ function renderCanvas(placements, output) {
     };
 
     view.el.classList.add('plane');
+    /* Not `floating` as well. relayoutAll marks the windows it pins to the
+       screen with that class and the canvas pins nothing; leaving it on a
+       window that was floating under the previous layout would have two rules
+       with two opinions about the same rectangle. */
+    view.el.classList.remove('floating');
     /* Drawn over what it overlaps, which on a plane is a real question — see
-       the `.front` rule in shell.css. The same condition as `lift` above,
-       since the frame and the surface have to agree about which is in front. */
-    view.el.classList.toggle('front', view.canvas.lift);
+       the `.front` rule in shell.css.
+       Never on a covering window, though it is lifted on the wire: `.front`
+       and `.window.fullscreen` are equally specific and `.front` is written
+       later in the stylesheet, so a fullscreen window carrying both would take
+       the canvas's layer instead of fullscreen's — the exact trap the comment
+       over that rule describes, which is why solar drops its tier classes for
+       a covering window too. Fullscreen is already in front of everything;
+       saying so twice is what breaks it. */
+    view.el.classList.toggle('front', !covering && view.canvas.lift);
 
     /* Sized at the client's rectangle and drawn at `scale`, so the element is
        the *drawn* size and reportGeometry divides it back out. Written this way
