@@ -1593,6 +1593,61 @@ if (mode === 'tiling') {
   }
 
   {
+    /* A dialog opens on the window it belongs to.
+     *
+     * The rectangle a dialog arrives with is chosen to centre it on the
+     * *screen*, which is right wherever the window it belongs to is also on
+     * the screen. On a plane with no edges the parent can be anywhere, and the
+     * dialog would open in the middle of the view attached to nothing while
+     * the window that raised it sat off to one side. The compositor knows
+     * whose dialog it is — it reads the same parent link to decide the window
+     * floats at all — and now says so. */
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    const host = canvas.places.get(2);
+    /* Put the parent somewhere the view is definitely not centred on, and put
+       it back afterwards — the blocks below read this window's place and a
+       test that moves the furniture should move it back. */
+    const wasAt = { x: host.x, y: host.y };
+    host.x = 6000;
+    host.y = 4000;
+
+    emit({ type: 'view.added', id: 36, title: 'save as', app_id: 'dialogy',
+      output: S_NAME, min_width: 0, min_height: 0, floating: false,
+      parent: 2, width: 300, height: 200 });
+    const dialog = canvas.places.get(36);
+    check('a dialog is placed on its parent, not in the middle of the view',
+      dialog !== undefined
+      && Math.abs((dialog.x + dialog.width / 2)
+        - (host.x + host.width / 2)) <= 1
+      && Math.abs((dialog.y + dialog.height / 2)
+        - (host.y + host.height / 2)) <= 1);
+    check('and keeps the size it was opened at',
+      dialog.width === 300 && dialog.height === 200);
+
+    /* A dialog whose parent the compositor could not name is not a dialog as
+       far as this is concerned, and falls back to the rect it came with.
+       Against the view as it stands *before* it arrives, which is the one its
+       place is worked out from — focus follows it a moment later. */
+    const opened = { ...canvas.viewport(workspace) };
+    emit({ type: 'view.added', id: 37, title: 'orphan', app_id: 'dialogy',
+      output: S_NAME, min_width: 0, min_height: 0, floating: false,
+      width: 300, height: 200 });
+    const orphan = canvas.places.get(37);
+    const rule = globalThis.__shell.floatingForTest(37);
+    const area = canvas.area(globalThis.__shell.outputs.get(S_NAME));
+    check('and one with no parent still opens where it was told to',
+      orphan !== undefined
+      && Math.abs(orphan.x - (opened.x + rule.x - area.x)) <= 1
+      && Math.abs(orphan.y - (opened.y + rule.y - area.y)) <= 1);
+
+    emit({ type: 'view.removed', id: 36 });
+    emit({ type: 'view.removed', id: 37 });
+    host.x = wasAt.x;
+    host.y = wasAt.y;
+    emit({ type: 'view.focused', id: 4 });
+  }
+
+  {
     /* A window sent to another workspace lands where it looked like it was.
      *
      * Each plane's coordinates are its own — nothing relates workspace 1's
@@ -1611,6 +1666,10 @@ if (mode === 'tiling') {
     canvasView.x = 4000;
     canvasView.y = 1500;
 
+    /* Focus first, then read the view: focusing a window pans the plane to
+       bring it in, so a snapshot taken before would be of a view the move no
+       longer happens from. */
+    emit({ type: 'view.focused', id: 2 });
     const source = { ...canvas.viewport(from) };
     const before = { ...canvas.places.get(2) };
     const offset = {
@@ -1618,7 +1677,6 @@ if (mode === 'tiling') {
       y: (before.y - source.y) * source.zoom,
     };
 
-    emit({ type: 'view.focused', id: 2 });
     emit({ type: 'shell.command', command: 'workspace.move',
       args: [String(to)] });
     check('the window went to the other workspace',

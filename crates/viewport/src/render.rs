@@ -596,6 +596,32 @@ where
     }
 }
 
+/// One side of a border, held to the output it is being drawn on.
+///
+/// Returns the rectangle in that output's own coordinates, or `None` when the
+/// side has no thickness or falls outside the output entirely.
+///
+/// The holding is the point. What gets drawn here is the shell's own buffer,
+/// drawn a second time and cropped to this rectangle — and that buffer spans
+/// the whole layout, so a rectangle reaching past this output crops a piece of
+/// the desktop belonging to the monitor next door and paints it on this one,
+/// over whatever that monitor is showing. A window's *surface* is already held
+/// to its output by the clip the shell sends; the frame around it was held to
+/// nothing, so a window dragged toward the edge of one screen drew its border
+/// across the windows on the next.
+pub fn overlay_side(
+    side: viewport_ipc::geometry::Box,
+    output: Rectangle<i32, Logical>,
+) -> Option<Rectangle<i32, Logical>> {
+    if side.width <= 0 || side.height <= 0 {
+        return None;
+    }
+    let side =
+        Rectangle::<i32, Logical>::new((side.x, side.y).into(), (side.width, side.height).into())
+            .intersection(output)?;
+    Some(Rectangle::new(side.loc - output.loc, side.size))
+}
+
 /// The four sides of a border, given the frame the shell drew and the hole
 /// inside it.
 ///
@@ -693,6 +719,41 @@ mod tests {
                 && side.y + side.height > hole.y;
             assert!(!overlaps_middle, "{side:?} covers the client");
         }
+    }
+
+    /// A border belongs to the monitor its window is on, and to no other.
+    ///
+    /// The shell's buffer spans the whole layout, so an overlay rectangle that
+    /// reaches past this output crops a piece of the desktop next door and
+    /// paints it here. What that looks like is a window dragged toward the
+    /// right of one screen drawing its border over the windows on the screen
+    /// to its right.
+    #[test]
+    fn a_border_is_held_to_its_own_output() {
+        let left = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let right = Rectangle::<i32, Logical>::new((1920, 0).into(), (1920, 1080).into());
+
+        // A side wholly on the second monitor is nothing to do with the first.
+        let over_there = Box::new(2000, 100, 2, 400);
+        assert!(overlay_side(over_there, left).is_none());
+        assert_eq!(
+            overlay_side(over_there, right).map(|r| r.loc),
+            Some((80, 100).into()),
+            "and lands in the second monitor's own coordinates"
+        );
+
+        // One straddling the join is trimmed at it, on both sides.
+        let straddling = Box::new(1900, 100, 60, 400);
+        let on_left = overlay_side(straddling, left).expect("part of it is here");
+        assert_eq!(on_left.loc, (1900, 100).into());
+        assert_eq!(on_left.size, (20, 400).into(), "trimmed at the edge");
+        let on_right = overlay_side(straddling, right).expect("and part of it there");
+        assert_eq!(on_right.loc, (0, 100).into());
+        assert_eq!(on_right.size, (40, 400).into());
+
+        // A side of no thickness is a border the shell did not draw.
+        assert!(overlay_side(Box::new(10, 10, 0, 400), left).is_none());
+        assert!(overlay_side(Box::new(10, 10, 4, 0), left).is_none());
     }
 
     /// And all four of them are there, each as thick as the border.

@@ -143,6 +143,36 @@ several steps down and to the right for no reason visible on that screen, and
 comparing origins for equality caught nothing, since two windows a pixel apart
 are one window with another hidden behind it.
 
+**A dialog opens on the window it belongs to**, centred, rather than in the
+middle of the view. The rectangle a dialog arrives with was chosen to centre it
+on the *screen*, which is the right answer in every layout where the window it
+belongs to is also on the screen. Here the parent can be anywhere on a plane
+with no edges, so a dialog placed by that rectangle opens attached to nothing
+while the window that raised it sits off to one side. It is the one placement
+question a canvas has that a screen-sized layout never had to ask.
+
+The compositor names the parent on `view.added` (`parent`, absent when there is
+none). It reads the same link to decide the window floats at all —
+`wants_floating` looks at an xdg parent and an X11 `transient_for` — so this
+only says *whose* rather than discovering anything new. A dialog whose parent
+the compositor cannot name, or whose parent is not on this plane, falls back to
+the rectangle it came with.
+
+**A dialog opens on the window it belongs to**, centred, rather than in the
+middle of the view. The rectangle a dialog arrives with was chosen to centre it
+on the *screen*, which is the right answer in every layout where the window it
+belongs to is also on the screen. Here the parent can be anywhere on a plane
+with no edges, so a dialog placed by that rectangle opens attached to nothing
+while the window that raised it sits off to one side. It is the one placement
+question a canvas has that a screen-sized layout never had to ask.
+
+The compositor names the parent on `view.added` (`parent`, omitted when there
+is none). It already reads the same link to decide the window floats at all —
+`wants_floating` looks at an xdg parent and an X11 `transient_for` — so this
+says *whose* rather than discovering anything new. A dialog whose parent the
+compositor cannot name, or whose parent is not on this plane, falls back to the
+rectangle it came with.
+
 **Floating windows are on the plane too**, which is where this parts company
 with solar and the matrix. Both leave them out because a dialog floats exactly
 so that it will not be tiled, and giving one a slot is that decision made

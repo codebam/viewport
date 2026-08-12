@@ -589,6 +589,33 @@ function canvasPlaceOf(id, workspace, output, viewport, area) {
     return keep(place);
   }
 
+  /* A dialog opens on top of the window it belongs to, centred.
+   *
+   * Before the rectangle it arrived with, which is the point. That rectangle
+   * was chosen to centre the dialog *on the screen*, which is the right answer
+   * in every layout where the window it belongs to is also on the screen. Here
+   * the parent can be anywhere on a plane with no edges, and frequently is:
+   * the dialog then opens in the middle of the view, unattached to anything
+   * visible, while the window that raised it is somewhere off to one side. It
+   * is the one placement question a canvas has that a screen-sized layout
+   * never had to ask.
+   *
+   * Only when the parent has a place of its own — a dialog whose parent the
+   * compositor could not name, or one whose parent is not on this plane, falls
+   * through to the rectangle it came with. */
+  const parent = view?.parent != null ? canvasPlaces.get(view.parent) : null;
+  if (parent) {
+    const size = floatingOf(id) ?? { width: 0, height: 0 };
+    const width = Math.max(1, size.width || Math.round(parent.width / 2));
+    const height = Math.max(1, size.height || Math.round(parent.height / 2));
+    return keep({
+      x: Math.round(parent.x + (parent.width - width) / 2),
+      y: Math.round(parent.y + (parent.height - height) / 2),
+      width,
+      height,
+    });
+  }
+
   /* A floating window arrives with a rectangle already — from the compositor,
      or from a rule in the config file that says where this application opens.
      That rectangle is in the same coordinates the plane is drawn in, so it

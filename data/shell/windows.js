@@ -134,7 +134,7 @@ function moveByDelta(id, dx, dy) {
 }
 
 function addView({ id, title, app_id, output: outputName, min_width, min_height,
-    floating, width, height, replay }) {
+    floating, parent, width, height, replay }) {
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
   if (views.has(id)) return;
@@ -180,6 +180,11 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
        than discover afterwards that the browser refused. See canvas.js. */
     minWidth: min_width > 0 ? min_width : 0,
     minHeight: min_height > 0 ? min_height : 0,
+    /* The window this one is a dialog *of*, when the compositor could name it.
+       Only a layout that places windows by hand has any use for it — a dialog
+       belongs beside the window it came from, and the middle of the screen is
+       the middle of nothing in particular when the parent is elsewhere. */
+    parent: Number.isFinite(parent) ? parent : null,
     /* Rect while floating, null while tiled; see floatingOf(). */
     floating: null,
     /* The frame last reported to the compositor, so an unchanged one is not

@@ -107,7 +107,7 @@ impl View {
     /// `replay` distinguishes a window that just appeared from one being
     /// re-announced in answer to `view.query`, which is how a reloading shell
     /// rebuilds its tree without the windows looking new.
-    pub fn added(&self, output: String, replay: bool) -> ViewAdded {
+    pub fn added(&self, output: String, replay: bool, parent: Option<u32>) -> ViewAdded {
         let (min_width, min_height) = self.min_size();
         let (width, height) = self.natural_size();
         ViewAdded {
@@ -119,6 +119,7 @@ impl View {
             min_height,
             replay,
             floating: self.wants_floating(),
+            parent,
             width,
             height,
         }
@@ -365,6 +366,40 @@ impl Views {
 
     pub fn get_mut(&mut self, id: u32) -> Option<&mut View> {
         self.views.iter_mut().find(|v| v.id == id)
+    }
+
+    /// The view a dialog belongs to, if it belongs to one.
+    ///
+    /// `wants_floating` already reads both spellings of this — an xdg parent
+    /// and an X11 `transient_for` — to decide that a window is a dialog. This
+    /// answers the question that follows: *whose*. The shell cannot work it out
+    /// at all, having no view of surfaces or X11 ids, and a layout that places
+    /// windows by hand needs it — a dialog put in the middle of the screen is
+    /// in the middle of nothing in particular when its parent is somewhere else
+    /// entirely.
+    ///
+    /// None when the parent is a window the shell does not know about, which is
+    /// a real case: a client may parent a dialog to a surface that was never
+    /// announced as a view.
+    pub fn parent_id_of(&self, view: &View) -> Option<u32> {
+        // X11 names its parent by window id rather than by surface, so the
+        // match is on the id and not on `find_by_surface`.
+        if let Some(x11) = view.window.x11_surface() {
+            let parent = x11.is_transient_for()?;
+            return self
+                .views
+                .iter()
+                .find(|other| {
+                    other
+                        .window
+                        .x11_surface()
+                        .is_some_and(|x| x.window_id() == parent)
+                })
+                .map(|other| other.id);
+        }
+
+        let parent = view.window.toplevel()?.parent()?;
+        self.find_by_surface(&parent).map(|other| other.id)
     }
 
     pub fn find_by_surface(&self, surface: &WlSurface) -> Option<&View> {

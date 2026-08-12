@@ -4860,18 +4860,10 @@ impl ViewportState {
                             .into_iter()
                             .zip(overlay_ids.iter().cloned())
                             .filter_map(|(side, id)| {
-                                let local = smithay::utils::Rectangle::<i32, Logical>::new(
-                                    (
-                                        side.x - output_geometry.loc.x,
-                                        side.y - output_geometry.loc.y,
-                                    )
-                                        .into(),
-                                    (side.width, side.height).into(),
-                                );
-                                // A side of no thickness is a border the shell
-                                // did not draw on that edge.
-                                (side.width > 0 && side.height > 0)
-                                    .then(|| (id, local.to_f64().to_physical(scale).to_i32_round()))
+                                // Held to this output: see `overlay_side` for
+                                // what happens to a border that is not.
+                                let local = crate::render::overlay_side(side, output_geometry)?;
+                                Some((id, local.to_f64().to_physical(scale).to_i32_round()))
                             })
                             .collect()
                     })
@@ -5295,7 +5287,10 @@ impl ViewportState {
                     .first()
                     .map(|o| o.name())
                     .unwrap_or_else(|| fallback.clone());
-                Event::ViewAdded(v.added(output, true))
+                // Whose dialog this is, resolved against the same list being
+                // walked — a reloading shell rebuilds its layout from these
+                // and needs the parent links as much as a live one does.
+                Event::ViewAdded(v.added(output, true, self.views.parent_id_of(v)))
             })
             .collect();
         for event in events {

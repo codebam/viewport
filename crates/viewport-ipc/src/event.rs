@@ -216,6 +216,21 @@ pub struct ViewAdded {
     /// and the shell cannot.
     pub floating: bool,
 
+    /// The window this one is a dialog *of*, when it is one.
+    ///
+    /// The same parent link `floating` is partly inferred from, named rather
+    /// than reduced to a boolean. A layout that places windows by hand needs
+    /// it: a dialog belongs next to the window it came from, and putting it in
+    /// the middle of the screen puts it in the middle of nothing in particular
+    /// when its parent is somewhere else entirely.
+    ///
+    /// Absent when the window is not a dialog, and also when its parent is a
+    /// surface that was never announced as a view. Omitted from the wire
+    /// rather than sent as null, so a shell written against the older message
+    /// sees exactly what it saw before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u32>,
+
     /// The window's natural size, which is what a floating window opens at.
     pub width: i32,
     pub height: i32,
@@ -513,6 +528,7 @@ mod tests {
             min_height: 0,
             replay: false,
             floating: false,
+            parent: None,
             width: 800,
             height: 600,
         }));
@@ -531,6 +547,31 @@ mod tests {
         ] {
             assert!(value.get(key).is_some(), "missing {key}");
         }
+        // Not this one: an ordinary window is nobody's dialog, and the field is
+        // left out entirely rather than sent as null, so a shell written
+        // against the older message sees exactly what it always saw.
+        assert!(value.get("parent").is_none());
+    }
+
+    /// And it is there when there is one, by the id the shell knows the parent
+    /// by — a dialog is placed *on* its parent by a layout that places windows
+    /// by hand, and cannot be without knowing which window that is.
+    #[test]
+    fn a_dialog_carries_the_window_it_belongs_to() {
+        let value = json(&Event::ViewAdded(ViewAdded {
+            id: 2,
+            title: "save as".into(),
+            app_id: "chrome".into(),
+            output: "DP-1".into(),
+            min_width: 0,
+            min_height: 0,
+            replay: false,
+            floating: true,
+            parent: Some(1),
+            width: 300,
+            height: 200,
+        }));
+        assert_eq!(value["parent"], 1);
     }
 
     #[test]
@@ -727,6 +768,7 @@ mod tests {
                 min_height: 0,
                 replay: true,
                 floating: false,
+                parent: None,
                 width: 0,
                 height: 0,
             })),

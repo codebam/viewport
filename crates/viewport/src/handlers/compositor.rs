@@ -287,6 +287,12 @@ impl ViewportState {
         }
 
         let output = self.output_for_new_view();
+        // Before the mutable borrow below, because working out whose dialog
+        // this is means looking at the other views.
+        let parent = self
+            .views
+            .find_by_surface(surface)
+            .and_then(|view| self.views.parent_id_of(view));
         let Some(view) = self.views.find_by_surface_mut(surface) else {
             return;
         };
@@ -296,7 +302,7 @@ impl ViewportState {
         // X11 window never made a request at all — it carries the state as a
         // property and nothing calls into the compositor about it.
         let fullscreen = view.wants_fullscreen();
-        let added = view.added(output, false);
+        let added = view.added(output, false, parent);
 
         // What the client actually handed over. Whether a window is opaque is
         // a property of its buffer format, and guessing at that is what the
