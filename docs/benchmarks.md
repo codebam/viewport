@@ -174,9 +174,10 @@ Everything above compares Viewport with other compositors. The shell can be
 drawn by six different engines — see
 [`docs/shell-backends.md`](shell-backends.md) — and comparing those means
 holding the compositor still and changing only the engine. The numbers below
-are for the four that existed when the run was made; the two Servo backends
-have not been measured yet, and only one of them (`servoshell`) is in the
-script's default list, because the other has no package to build.
+are for the four that existed when the run was made; `servoshell` was measured
+later, in a run of its own further down, and the embedded `servo` backend has
+not been measured at all — it is not in the script's default list either,
+because it has no package to build.
 
 ```sh
 scripts/bench-backends.sh --runs 3    # every implemented backend
@@ -302,6 +303,48 @@ real cost of the fix and it is small, but it is not nothing on a laptop.
 10.9/9.5/9.3) and the rate is not (49/46/53, 40/43/39, 44/43/41, 35/38/43). The
 load is scripted but the work it makes is not identical run to run — an
 overview with four windows is not the same repaint every time.
+
+### servoshell, measured against the other three
+
+A later run, on the same machine and the same load, with `servoshell` in it —
+`scripts/bench-shell.sh --runs 3 --seconds 20`, four `foot` windows, from a
+TTY. `wpe` was not run. These four were measured in one sitting, so read this
+table across itself rather than against the one above.
+
+| backend | idle cpu % | load cpu % | of which the compositor | shell fps | cpu per painted frame | idle pss MB | load pss MB | processes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| webkitgtk | 0.3 | 11.8 | 3.0 | 51 | 0.231 | 434 | 450 | 10 |
+| chromium | 0.9 | 11.3 | 3.1 | 51 | 0.222 | 641 | 651 | 12 |
+| cef | 0.9 | 9.8 | 3.0 | 44 | 0.223 | 597 | 615 | 9 |
+| servoshell | 0.0 | 8.2 | 2.0 | 15 | 0.547 | 365 | 375 | 4 |
+
+**`servoshell` is the cheapest desktop here and the most expensive engine.**
+Every absolute column is the lowest of the four — 8.2% of a core under load,
+375 MB, four processes against nine to twelve, and an idle cost that did not
+register at all. The derived column says why: it painted 15 frames a second
+against 44 to 51, so it costs 0.547% of a core per frame the shell actually
+produced, about two and a half times what the other three cost. A desktop that
+repaints a third as often is cheaper the way a slower car uses less fuel.
+
+**The process count is the architecture, not a fault.** Servo runs
+single-process by default, so the whole desktop is the compositor, the shell
+process and the browser. Blink's four-to-five-process model is most of the
+memory difference against `cef` and `chromium`, and it is what PSS exists to
+report honestly.
+
+**The bridge works, which is the other thing this run establishes.** The
+harness refuses to measure a desktop whose shell never spoke — it waits for
+`shell is talking to us` and exits if it does not come — and `servoshell`
+produced three runs. So the loopback HTTP bridge and the injected user script
+carried the shell's messages to the compositor on real hardware, from a
+`file://` page, for a minute of scripted load.
+
+**What is not established.** One sitting, three runs, and a rate that varies
+(10/15/17 against webkitgtk's 51/55/40): whether Servo's paint rate here is the
+engine, the pacing, or this compositor's handling of it is exactly the question
+the Blink pacing bug above should make nobody guess at. The engine is also
+nixpkgs' Servo 0.3.0 — a version this flake pins rather than one this project
+chose.
 
 ### Reading the caveats
 
