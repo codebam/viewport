@@ -37,6 +37,7 @@ import os
 import pathlib
 import signal
 import socket
+import statistics
 import subprocess
 import sys
 import time
@@ -248,6 +249,23 @@ def run(binary: str, out: pathlib.Path, seconds: float, clients: int, client_bin
         # ticks before it are the idle baseline and would drag the median down.
         loaded = rates[-int(elapsed) :] if rates else []
 
+        # How *evenly* it painted, which is a different question from how much.
+        #
+        # The load alternates between an overview that repaints hard and a
+        # desktop that repaints twice a second, so a median over the whole
+        # window measures the mixture rather than either state. What a person
+        # calls smooth is the animating state holding a steady cadence — a
+        # backend that swings between 10 and 89 frames a second reads as stutter
+        # even though it painted more frames than one that holds 26. That is not
+        # hypothetical: it is `cef` against `servoshell` on this machine, and it
+        # is why these two columns exist. Ticks under five frames a second are
+        # the idle half of the cycle and are left out.
+        animating = [rate for rate in loaded if rate >= 5]
+        mean_rate = (sum(animating) / len(animating)) if animating else 0.0
+        spread = (
+            statistics.pstdev(animating) if len(animating) > 1 else 0.0
+        )
+
         # The compositor's own share of it, for the one comparison that is not
         # about the engine: how much of the desktop is inside the compositor.
         # A delta over the same window, not the process's total since it
@@ -269,6 +287,13 @@ def run(binary: str, out: pathlib.Path, seconds: float, clients: int, client_bin
             "compositor_cpu_pct": 100 * compositor_only / elapsed,
             "shell_fps": (sorted(loaded)[len(loaded) // 2] if loaded else 0.0),
             "shell_fps_peak": (max(loaded) if loaded else 0.0),
+            # While animating: the rate, how far it wanders, and the two as a
+            # ratio. `shell_fps_cov` is the one to read — a rate is only smooth
+            # relative to itself.
+            "shell_fps_animating": mean_rate,
+            "shell_fps_spread": spread,
+            "shell_fps_cov": (spread / mean_rate) if mean_rate else 0.0,
+            "shell_fps_floor": (min(animating) if animating else 0.0),
             "processes": max(n for _, n in samples),
             "commands": tick,
             "seconds": elapsed,

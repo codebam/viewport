@@ -357,6 +357,43 @@ the Blink pacing bug above should make nobody guess at. The engine is also
 nixpkgs' Servo 0.3.0 — a version this flake pins rather than one this project
 chose.
 
+### Smooth is not the same as fast
+
+The table above says `servoshell` paints a third as often as the others, and
+the desktop it draws is reported as feeling *smoother* than `cef`'s. Both are
+true, and the second one is the more useful fact about what a person sees.
+
+`shell fps` is a median over a load that alternates between an overview
+repainting hard and a desktop repainting twice a second, so it measures the
+mixture. What smoothness depends on is the cadence *while something is moving*.
+Taking only the seconds where the shell painted at least five frames — two
+runs, from a TTY, same machine and load as above:
+
+| backend | animating fps | steadiness (spread ÷ mean) | range across the run |
+| --- | --- | --- | --- |
+| webkitgtk | 80 | 0.48 | 7–164 |
+| chromium | 64 | 0.43 | 37–115 |
+| cef | 54 | 0.47 | 10–89 |
+| servoshell | 21 | **0.31** | 6–26 |
+
+**`cef` swings by a factor of eight while it animates and `servoshell` holds a
+flat 26.** More frames delivered unevenly reads as stutter; fewer frames at a
+steady cadence reads as smooth. That is the whole of the discrepancy between
+the throughput column and what the desktop looks like, and it reproduced across
+two separate sittings — an earlier three-run set gives 0.49 for `cef` against
+0.29 for `servoshell` from the same arithmetic.
+
+`scripts/bench-shell.py` records `shell_fps_animating`, `shell_fps_spread`,
+`shell_fps_cov` and `shell_fps_floor` for this reason, and the summary prints
+the middle two.
+
+**What this still cannot see.** The compositor emits a rate once a second, so
+these are per-second buckets: a steady 26 frames a second and a 26 that stalls
+for 200 ms once a second are the same number here. Distinguishing them needs
+per-frame timestamps rather than a per-second count, which is a change to the
+compositor's `VIEWPORT_SHELL_RATE` path and is not written. Until it is, this
+column is evidence about pacing and not a measurement of hitching.
+
 ### Reading the caveats
 
 `wpe` runs the engine inside the compositor process, so its cost lands in the

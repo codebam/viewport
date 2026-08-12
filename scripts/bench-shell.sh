@@ -95,8 +95,9 @@ import json, pathlib, statistics, sys
 root, backends = pathlib.Path(sys.argv[1]), sys.argv[2:]
 print("# The shell under load, whole desktop counted\n")
 print("| backend | idle cpu % | load cpu % | of which compositor % | shell fps "
-      "| idle pss MB | load pss MB | peak pss MB | processes |")
-print("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+      "| animating fps | steadiness | idle pss MB | load pss MB | peak pss MB "
+      "| processes |")
+print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 for backend in backends:
     path = root / f"{backend}.jsonl"
     if not path.exists():
@@ -111,6 +112,8 @@ for backend in backends:
     print(
         f"| {backend} | {r['idle_cpu_pct']:.1f} | {r['load_cpu_pct']:.1f} "
         f"| {r['compositor_cpu_pct']:.1f} | {r.get('shell_fps', 0):.1f} "
+        f"| {r.get('shell_fps_animating', 0):.0f} "
+        f"| {r.get('shell_fps_cov', 0):.2f} "
         f"| {r['idle_pss_mb']:.0f} | {r['load_pss_mb']:.0f} "
         f"| {r['peak_pss_mb']:.0f} | {r['processes']} |"
     )
@@ -118,9 +121,16 @@ print("\nMedian of every run. CPU is the compositor and every process it started
 print("over the run. Memory is PSS across the same tree: RSS would count a shared")
 print("engine once per process that maps it, which for CEF and Chromium is four or")
 print("five times.\n")
+print("`shell fps` is the median second of the whole load, which alternates between")
+print("an overview that repaints hard and a desktop that repaints twice a second, so")
+print("it measures the mixture. `animating fps` is the mean of the seconds the shell")
+print("was actually painting, and `steadiness` is that column's coefficient of")
+print("variation — spread over mean, so lower is steadier. Read it: a backend that")
+print("swings between 10 and 89 frames a second looks like stutter to a person even")
+print("though it painted more frames than one holding a flat 26.\n")
 print("## Every run\n")
-print("| backend | load cpu % | load pss MB | shell fps |")
-print("| --- | --- | --- | --- |")
+print("| backend | load cpu % | load pss MB | shell fps | animating fps | steadiness |")
+print("| --- | --- | --- | --- | --- | --- |")
 for backend in backends:
     path = root / f"{backend}.jsonl"
     if not path.exists():
@@ -129,5 +139,7 @@ for backend in backends:
     cpu = ", ".join(f"{run['load_cpu_pct']:.1f}" for run in runs)
     pss = ", ".join(f"{run['load_pss_mb']:.0f}" for run in runs)
     fps = ", ".join(f"{run.get('shell_fps', 0):.0f}" for run in runs)
-    print(f"| {backend} | {cpu} | {pss} | {fps} |")
+    anim = ", ".join(f"{run.get('shell_fps_animating', 0):.0f}" for run in runs)
+    cov = ", ".join(f"{run.get('shell_fps_cov', 0):.2f}" for run in runs)
+    print(f"| {backend} | {cpu} | {pss} | {fps} | {anim} | {cov} |")
 PY
