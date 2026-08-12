@@ -101,9 +101,25 @@ plane**: switching into the canvas leaves the desktop looking identical and
 merely makes it draggable. Seeding at an origin instead would collapse a
 working tiling layout into a pile in the corner.
 
-Failing that — a restored session, a window opened while the canvas is already
-running — the window is put at the middle of the visible area at the default
-size, cascaded past anything already at that exact spot.
+Before either, the place the application left behind last time, if the session
+had one. That is what makes a reload survivable: `location.reload()` is a new
+page, so both maps come back empty and every window is replayed — and because
+the plane *is* the layout here, losing it costs more than a reload costs any
+other model. The places go into the session file keyed by application, exactly
+as saved floating rects are, and are claimed as the windows return. The
+viewports are saved too, so a reload does not scroll every plane back to where
+it started.
+
+Failing all of that — a window opened while the canvas is already running — the
+window is put at the middle of the visible area at the default size, cascaded
+past anything already sitting there.
+
+The cascade compares against places **on that plane only**, and treats anything
+within one cascade step as occupied. Both matter on a second monitor: comparing
+against every place in the map made the first window on an empty screen arrive
+several steps down and to the right for no reason visible on that screen, and
+comparing origins for equality caught nothing, since two windows a pixel apart
+are one window with another hidden behind it.
 
 Floating windows are left out of the plane entirely, as they are in solar and
 the matrix. A dialog is floating because the compositor judged that tiling it
@@ -152,6 +168,8 @@ has drifted.
   wired up. `resize.js` already has the drag machinery a floating window uses.
 - **Pinch to zoom.** The compositor already delivers pinch (`input.rs`, the
   `scale:` field) and three-finger swipe; neither is routed here yet.
-- **Session persistence.** Places live for the session. A restart re-seeds
-  them, which lands every window in a cascade at the middle of the view rather
-  than where it was. The session format would need a per-window world rect.
+- **A window carried to another monitor.** `window.move` slides a window across
+  the plane and the view follows, so it never falls through to
+  `moveViewToOutput` the way the tiling layouts do. Changing workspace is the
+  only way across at the moment, which is how the other layouts got there
+  before directional move existed.

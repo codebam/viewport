@@ -41,7 +41,19 @@ function serialiseNode(node) {
 function serialiseSession() {
   const saved = {
     version: 1, layout: layoutMode, workspaces: {}, outputs: {}, floating: [],
+    /* Where everything sits on the canvas's planes, and where each plane is
+       being looked at from. Written whatever the layout is, so that switching
+       away from the canvas and restarting does not lose the arrangement — the
+       tree survives a layout switch for the same reason, and the plane is as
+       much a layout as the tree is. Empty until something has run the canvas,
+       and skipped entirely when it is, so the file gains nothing for a desktop
+       that never uses it. */
+    canvas: serialiseCanvas(),
   };
+  if (saved.canvas.places.length === 0
+    && Object.keys(saved.canvas.viewports).length === 0) {
+    delete saved.canvas;
+  }
 
   for (const [n, root] of workspaces) {
     const tree = serialiseNode(root);
@@ -137,6 +149,11 @@ function restoreSession(text) {
     if (revived) workspaces.set(Number(n), revived);
   }
   floatSlots = (saved.floating ?? []).filter((slot) => slot && slot.app);
+  /* And the canvas's planes, whose places wait to be claimed by the windows as
+     they are replayed exactly as the floating rects above do. A file written
+     before this existed has no `canvas` key and restores nothing, which is the
+     same as never having run the layout. */
+  restoreCanvas(saved.canvas);
 
   for (const [name, state] of Object.entries(saved.outputs ?? {})) {
     const output = outputs.get(name);
@@ -148,7 +165,7 @@ function restoreSession(text) {
 
   /* Nothing is showing yet — every leaf is a slot — but the workspace
      assignment and the shape are in place for the windows to arrive into. */
-  if (slotsPending > 0 || floatSlots.length > 0) {
+  if (slotsPending > 0 || floatSlots.length > 0 || canvasSlots.length > 0) {
     setTimeout(dropUnclaimedSlots, SLOT_TIMEOUT_MS);
   }
   relayoutAll();
@@ -157,6 +174,10 @@ function restoreSession(text) {
 /* Give up on slots nothing came back for. */
 function dropUnclaimedSlots() {
   floatSlots = [];
+  /* And the places on the canvas's planes, for the same reason: a window
+     opened an hour after the restart should be put where a new window goes,
+     not handed the rect of something that closed during it. */
+  dropCanvasSlots();
   if (slotsPending === 0) return;
   slotsPending = 0;
 

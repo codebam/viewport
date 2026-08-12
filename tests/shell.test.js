@@ -331,7 +331,16 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + '   clamp: canvasClampZoom, places: canvasPlaces,'
   + '   viewport: canvasViewportOf, area: canvasAreaOf,'
   + '   recalculate: recalculateCanvasLayout,'
+  /* The reload path: what goes into the session file and what comes back out
+     of it. A reload is a new page with both maps empty, so this is the whole
+     of what stands between it and a desktop swept into a pile. */
+  + '   serialise: serialiseCanvas, restore: restoreCanvas,'
+  + '   drop: dropCanvasSlots, get slots() { return canvasSlots; },'
   + '   get CANVAS() { return CANVAS; } },'
+  /* The session file as it would be written. The save itself is debounced by
+     a real timer, so nothing synchronous can observe the message — and what
+     is worth checking is what goes *into* the file rather than when. */
+  + ' sessionForTest: { serialise: serialiseSession },'
   /* What smart gaps decide, which is a question about the tree and the layout
      mode rather than about any pixel: whether this workspace holds a lone
      window that fills the tiling area. */
@@ -1213,6 +1222,10 @@ if (mode === 'tiling') {
    * this layout's answer to that until it does. See the header of canvas.js.
    */
   const canvas = globalThis.__shell.canvasForTest;
+  /* The one output this harness has. Named once: the live checks below move
+     its workspace about, and a name repeated eight times is a name that gets
+     changed in seven places. */
+  const S_NAME = 'DP-1';
   const AREA = { x: 8, y: 8, width: 1904, height: 1034 };
   const near = (a, b, slack = 0.5) => Math.abs(a - b) <= slack;
   const at = (x, y, zoom = 1) => ({ x, y, zoom });
@@ -1379,6 +1392,111 @@ if (mode === 'tiling') {
       canvas.places.get(4).x === place.x + canvas.CANVAS.moveStep);
     check('and leaves the tree alone',
       JSON.stringify(globalThis.__shell.workspaces.get(workspace)) === tree);
+  }
+
+  {
+    /* Two planes do not crowd each other.
+     *
+     * A workspace nothing has drawn yet starts empty, and the first window on
+     * it belongs in the middle of it — not cascaded past windows on another
+     * workspace it will never share a screen with. That is what an empty
+     * second monitor looks like, and comparing against every place in the map
+     * rather than the ones on this plane got it visibly wrong. */
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    const other = workspace === 9 ? 8 : 9;
+    const outs = globalThis.__shell.outputs;
+    const host = outs.get(S_NAME);
+    const wasWorkspace = host.workspace;
+
+    host.workspace = other;
+    emit({ type: 'view.added', id: 30, title: 'alone', app_id: 'alone',
+      output: S_NAME, min_width: 0, min_height: 0, floating: false,
+      width: 800, height: 600 });
+
+    const area = canvas.area(host);
+    const view = canvas.viewport(other);
+    const alone = canvas.places.get(30);
+    check('the first window on an empty plane is in the middle of it',
+      alone !== undefined
+      && Math.abs((alone.x + alone.width / 2)
+        - (view.x + area.width / 2)) <= 1
+      && Math.abs((alone.y + alone.height / 2)
+        - (view.y + area.height / 2)) <= 1);
+
+    /* And a second one steps off it — by enough to see, not merely by not
+       being identical. */
+    emit({ type: 'view.added', id: 31, title: 'beside', app_id: 'beside',
+      output: S_NAME, min_width: 0, min_height: 0, floating: false,
+      width: 800, height: 600 });
+    const beside = canvas.places.get(31);
+    check('and the next one is offset far enough to see',
+      Math.abs(beside.x - alone.x) >= canvas.CANVAS.cascade
+      && Math.abs(beside.y - alone.y) >= canvas.CANVAS.cascade);
+
+    emit({ type: 'view.removed', id: 30 });
+    emit({ type: 'view.removed', id: 31 });
+    host.workspace = wasWorkspace;
+    emit({ type: 'view.focused', id: 4 });
+  }
+
+  {
+    /* Surviving a reload.
+     *
+     * A reload is a new page: both maps come back empty and every window is
+     * replayed. The plane *is* the layout here, so losing it loses more than a
+     * reload costs any other model — hence a place in the session file, keyed
+     * by application as the floating rects are, claimed as the windows return.
+     */
+    const saved = globalThis.__shell.sessionForTest.serialise();
+    check('the session file carries the plane',
+      Array.isArray(saved.canvas?.places) && saved.canvas.places.length >= 4);
+    check('with an application on each place, which is what claims it',
+      saved.canvas.places.every((p) => typeof p.app === 'string' && p.app
+        && Number.isFinite(p.x) && Number.isFinite(p.y)
+        && p.width > 0 && p.height > 0));
+    check('and where each plane was being looked at from',
+      saved.canvas.viewports !== undefined
+      && Object.keys(saved.canvas.viewports).length > 0);
+
+    /* And back the other way: a replayed window takes the place its
+       application left rather than being seeded in the middle. */
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    canvas.restore({ places: [{ app: 'returning', workspace,
+      x: 4321, y: 1234, width: 640, height: 480 }], viewports: {} });
+    check('a saved place waits to be claimed', canvas.slots.length === 1);
+
+    emit({ type: 'view.added', id: 32, title: 'returning',
+      app_id: 'returning', output: S_NAME, min_width: 0, min_height: 0,
+      floating: false, width: 800, height: 600, replay: true });
+    const back = canvas.places.get(32);
+    check('and a window coming back lands on it',
+      back?.x === 4321 && back?.y === 1234
+      && back?.width === 640 && back?.height === 480);
+    check('which takes the place out of the list', canvas.slots.length === 0);
+
+    /* A place nothing came back for is dropped rather than handed to whatever
+       opens next. */
+    canvas.restore({ places: [{ app: 'never', workspace,
+      x: 10, y: 10, width: 100, height: 100 }], viewports: {} });
+    canvas.drop();
+    emit({ type: 'view.added', id: 33, title: 'later', app_id: 'later',
+      output: S_NAME, min_width: 0, min_height: 0, floating: false,
+      width: 800, height: 600 });
+    const later = canvas.places.get(33);
+    check('an unclaimed place is not given to a later window',
+      later !== undefined && !(later.x === 10 && later.y === 10));
+
+    /* The viewport comes back too, so a reload does not scroll the plane back
+       to where it started. */
+    canvas.restore({ places: [], viewports: { [workspace]: {
+      x: 250, y: 125, zoom: 0.5 } } });
+    const view = canvas.viewport(workspace);
+    check('and the view is where it was left',
+      view.x === 250 && view.y === 125 && view.zoom === 0.5);
+
+    emit({ type: 'view.removed', id: 32 });
+    emit({ type: 'view.removed', id: 33 });
+    emit({ type: 'shell.command', command: 'canvas.home', args: [] });
   }
 
   {

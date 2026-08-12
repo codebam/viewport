@@ -135,6 +135,96 @@ function canvasViewportOf(workspace) {
   return viewport;
 }
 
+/* ------------------------------------------------------------------------
+ * Surviving a reload
+ *
+ * Both maps above are page state, and a reload is a new page: `location.reload`
+ * throws away every place and every viewport, and the compositor then replays
+ * `view.added` for every window that was open. Without something to put back,
+ * that is a desktop swept into a cascade in the middle of the screen — the
+ * plane is *where the windows are*, so losing it loses the layout entirely,
+ * which is a worse outcome than any other layout suffers from a reload. The
+ * tiling tree comes back because the session saves it; this is the same
+ * mechanism for the same reason.
+ *
+ * Keyed by application rather than by view id, exactly as the saved floating
+ * rects are. A reload keeps the ids and a restart does not, and one of these
+ * has to work across both.
+ * --------------------------------------------------------------------- */
+
+/* Places from the saved session, waiting for their windows to come back. */
+let canvasSlots = [];
+
+/* The plane, as the session file holds it. Places carry the workspace they
+ * were on so that a window returning to a different one is not given a rect
+ * from a plane it is no longer part of; viewports are per workspace already. */
+function serialiseCanvas() {
+  const places = [];
+  for (const [id, rect] of canvasPlaces) {
+    const view = views.get(id);
+    const app = view?.app_id || view?.title;
+    const workspace = workspaceOf(id);
+    if (!app || workspace === null) continue;
+    places.push({ app, workspace,
+      x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+  }
+
+  const viewports = {};
+  for (const [workspace, viewport] of canvasViewports) {
+    viewports[workspace] = { x: viewport.x, y: viewport.y, zoom: viewport.zoom };
+  }
+  return { places, viewports };
+}
+
+/* Put a saved plane back. The viewports go straight in — nothing has to claim
+ * them, since a workspace exists whether or not anything is on it — and the
+ * places wait to be claimed by the windows as they are replayed. */
+function restoreCanvas(saved) {
+  canvasSlots = Array.isArray(saved?.places)
+    ? saved.places.filter((slot) => slot && slot.app
+      && Number.isFinite(slot.x) && Number.isFinite(slot.y)
+      && slot.width > 0 && slot.height > 0)
+    : [];
+
+  for (const [workspace, viewport] of Object.entries(saved?.viewports ?? {})) {
+    if (!Number.isFinite(viewport?.x) || !Number.isFinite(viewport?.y)) continue;
+    canvasViewports.set(Number(workspace), {
+      x: viewport.x, y: viewport.y, zoom: canvasClampZoom(viewport.zoom),
+    });
+  }
+}
+
+/* The place this application left behind, if it left one.
+ *
+ * The plane it was on first: a place is a coordinate on one particular plane,
+ * and handing a window arriving on workspace 3 the rect it had on workspace 1
+ * is putting it somewhere nobody chose. Failing that, the application's place
+ * on any plane, which is the case where a window came back somewhere else —
+ * the rect is still the size and the corner it had, which beats the middle of
+ * the screen.
+ *
+ * Removed as it is taken, so two windows of the same application claim two
+ * different places rather than both landing on the first. The same splice
+ * `claimFloatSlot` does, for the same reason. */
+function claimCanvasSlot(app, workspace) {
+  if (canvasSlots.length === 0 || !app) return null;
+
+  let at = canvasSlots.findIndex(
+    (slot) => slot.app === app && slot.workspace === workspace);
+  if (at < 0) at = canvasSlots.findIndex((slot) => slot.app === app);
+  if (at < 0) return null;
+
+  const [slot] = canvasSlots.splice(at, 1);
+  return slot;
+}
+
+/* Give up on places nothing came back for, on the same timeout as the tree's
+ * unclaimed slots. Without this a window opened an hour later would be handed
+ * the rect of something that closed during the restart. */
+function dropCanvasSlots() {
+  canvasSlots = [];
+}
+
 /* Drop a closed window's place. Called from removeView beside solarForget and
  * matrixClosed, for the same reason both of those are: this is state about a
  * window kept outside the window's own record, so it has to be forgotten by
@@ -387,16 +477,33 @@ function canvasOrderOf(workspace) {
  * output's own origin to get field coordinates, then the area's inset and the
  * viewport's, dividing out the zoom.
  *
- * Failing that — a restored session, a window opened while the canvas was
- * already running, a workspace nothing has drawn yet — the window is put at
- * the middle of the visible area at the default size, cascaded past whatever
- * is already sitting there. */
-function canvasPlaceOf(id, output, viewport, area) {
+ * Before either, the place this application left behind on the plane last
+ * time, if the session had one. That is what makes a reload survivable: the
+ * page comes back with both maps empty and every window replayed, so without
+ * it a reload is a desktop swept into a pile in the middle of the screen. See
+ * claimCanvasSlot.
+ *
+ * Failing all of that — a window opened while the canvas was already running,
+ * a workspace nothing has drawn yet — the window is put at the middle of the
+ * visible area at the default size, cascaded past whatever is already sitting
+ * there. */
+function canvasPlaceOf(id, workspace, output, viewport, area) {
   const existing = canvasPlaces.get(id);
   if (existing) return existing;
 
   const zoom = viewport.zoom;
-  const box = views.get(id)?.box;
+  const view = views.get(id);
+
+  const slot = claimCanvasSlot(view?.app_id || view?.title, workspace);
+  if (slot) {
+    const place = {
+      x: slot.x, y: slot.y, width: slot.width, height: slot.height,
+    };
+    canvasPlaces.set(id, place);
+    return place;
+  }
+
+  const box = view?.box;
   const host = output?.windowsEl?.getBoundingClientRect();
 
   if (box && host && box.width > 0 && box.height > 0) {
@@ -421,15 +528,34 @@ function canvasPlaceOf(id, output, viewport, area) {
 
   let x = Math.round(centre.x - width / 2);
   let y = Math.round(centre.y - height / 2);
-  /* Step off anything already at this exact spot. Bounded by the number of
-     windows on the plane, since each pass can only collide with one of them
-     and the offset is the same every time — so the loop cannot revisit a
-     coordinate it has already left. */
-  const taken = new Set();
+
+  /* Step off anything already sitting here, on *this* plane.
+   *
+   * Two things this gets wrong if written the obvious way. Comparing against
+   * every place in the map rather than the ones on this workspace makes an
+   * empty second monitor cascade its first window past windows it will never
+   * share a screen with: open four on the left-hand screen and the first one
+   * on the right arrives four steps down and to the right of the middle, for
+   * no reason anyone looking at that screen can see. Planes are independent,
+   * so the comparison is too.
+   *
+   * And comparing origins for equality catches almost nothing: two windows a
+   * single pixel apart are, to look at, one window with another hidden behind
+   * it, and any arithmetic that lands near but not on an existing origin
+   * defeats an exact test. The test is therefore whether the new origin is
+   * within one cascade step of an existing one, which is the distance at which
+   * the stagger stops being visible.
+   *
+   * Bounded by the number of windows on the plane: each step moves a fixed
+   * distance in a fixed direction, so it cannot revisit a spot it has left. */
+  const here = [];
   for (const [other, rect] of canvasPlaces) {
-    if (other !== id) taken.add(`${rect.x},${rect.y}`);
+    if (other !== id && workspaceOf(other) === workspace) here.push(rect);
   }
-  for (let step = 0; step < taken.size + 1 && taken.has(`${x},${y}`); step++) {
+  const crowded = () => here.some((rect) =>
+    Math.abs(rect.x - x) < CANVAS.cascade
+    && Math.abs(rect.y - y) < CANVAS.cascade);
+  for (let step = 0; step < here.length + 1 && crowded(); step++) {
     x += CANVAS.cascade;
     y += CANVAS.cascade;
   }
@@ -442,7 +568,7 @@ function canvasPlaceOf(id, output, viewport, area) {
 /* One workspace's windows and where they are, ready to project. */
 function canvasItemsOf(workspace, output, viewport, area) {
   return canvasOrderOf(workspace).map((id) => ({
-    id, rect: canvasPlaceOf(id, output, viewport, area),
+    id, rect: canvasPlaceOf(id, workspace, output, viewport, area),
   }));
 }
 
