@@ -20,7 +20,8 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-backends=(wpe webkitgtk chromium cef)
+# See the note in bench-backends.sh: `servo` has no package to build here.
+backends=(wpe webkitgtk chromium cef servoshell)
 seconds=20
 clients=4
 runs=3

@@ -386,8 +386,8 @@ Precedence is flags > config file > defaults.
 
 ```
 -u, --url URL          shell endpoint (default http://localhost:3000)
-    --shell-backend NAME which engine draws the shell: wpe, webkitgtk, servo
-                       or cef. The last two are recognised and refused; see
+    --shell-backend NAME which engine draws the shell: wpe, webkitgtk,
+                       chromium, cef, servo or servoshell; see
                        docs/shell-backends.md
 -f, --fallback URL     used when the shell fails (default: bundled fallback.html)
 -t, --timeout MS       first-paint deadline before falling back (default 5000)

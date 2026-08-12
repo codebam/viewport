@@ -110,6 +110,16 @@ Subsurface and popup trees, which `wlr_scene` handled for free, come from
 
 Two gaps between WPE WebKit and Servo have to be bridged. Neither is fatal.
 
+**What shipped instead, and what this section is still for.** Servo is a shell
+backend now, twice — `servo` embeds the engine in the shell process and
+`servoshell` drives nixpkgs' browser; `docs/shell-backends.md` has both. Both
+put the page in a *window*, so the second gap below is the one they close and
+the first is not on their path: a Wayland client's buffer is a DMA-BUF without
+anybody implementing `RenderingContext`. The analysis below is still the plan
+for running Servo the way `wpe` runs WebKit — inside the compositor, painting
+into a buffer this process owns — and `crates/viewport-web/src/dmabuf.rs` is
+still the working spike of its hard half.
+
 **1. There is no `WPEBufferDMABuf` equivalent.** Servo's built-in
 `RenderingContext` implementations (`WindowRenderingContext`,
 `OffscreenRenderingContext`, `SoftwareRenderingContext`) are all surfman-backed
@@ -166,9 +176,13 @@ crate changes.
 
 ```
 viewport-ipc   the JSON protocol, serde types, no compositor deps
-viewport-web   WebEngine trait; servo backend behind the `servo` feature
+viewport-web   WebEngine trait; the WPE backend behind the `wpe` feature
 viewport       the binary: Smithay compositor, Space, input, outputs
 ```
+
+The shells that run in a process of their own are crates beside these —
+`viewport-shell-gtk`, `-chromium`, `-servoshell` in the workspace, `-cef` and
+`-servo` outside it, because building either of those builds an engine.
 
 `viewport-ipc` has no dependency on Smithay or Servo on purpose: it is the
 piece with an existing test oracle (`tests/shell.test.js`) and it should stay

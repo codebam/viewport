@@ -1,0 +1,59 @@
+# Its own workspace root, which is what `exclude` in the tree's root manifest
+# leaves this crate as. Without this, cargo walks up, finds the root that
+# excludes it, and refuses to build anything at all.
+#
+# The exclusion is the point of the crate's layout rather than an accident of
+# it: `servo` is a source dependency — the engine, as an rlib, because Rust has
+# no stable ABI and there is nothing else to link — so building this builds
+# Servo. Once, here, on purpose. A member would put that build behind every
+# `cargo test --workspace`, which is what the pre-commit hook and CI run.
+[workspace]
+
+[package]
+name = "viewport-shell-servo"
+version = "0.1.3"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/codebam/viewport-smithay"
+description = "The Viewport shell, rendered out of process by an embedded Servo"
+
+[dependencies]
+viewport-ipc = { path = "../viewport-ipc" }
+viewport-shell-bridge = { path = "../viewport-shell-bridge" }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The same versions Servo's own workspace pins, because these types cross the
+# boundary: `winit`'s window and display handles are what `WindowRenderingContext`
+# takes, and `url::Url` is what `WebView::load` and `WebResourceRequest` carry.
+# A second copy of either crate in the graph is a type mismatch, not a warning.
+winit = "0.30.13"
+url = "2.5"
+# `Scale`, which is what a hidpi factor is spelled as on Servo's API. The same
+# version Servo pins, for the same reason as the two above.
+euclid = "0.22"
+
+# Servo's TLS needs a crypto provider installed before the first fetch, and
+# picking one is the embedder's job — `ServoBuilder::build` does not choose.
+# Nothing else here uses rustls.
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+
+# The engine.
+#
+# Pinned to a revision rather than a branch: this is a source dependency of an
+# engine that changes its embedding API between weeks, and an unpinned one
+# would mean a build that works today and a four-hour failure tomorrow. Bump it
+# deliberately, with the API sources open.
+#
+# `default-features = false` drops two of the three defaults. `clipboard` pulls
+# in arboard and an X11 stack for a desktop that has no clipboard UI of its own;
+# what is kept is `bundled`, without which the engine looks for its resources on
+# disk at runtime, and `js_jit`, without which the shell's JavaScript is
+# interpreted. `webgpu`, `webxr` and `media-gstreamer` are off — every one of
+# them is engine build time for something a shell does not do.
+[dependencies.servo]
+git = "https://github.com/servo/servo.git"
+rev = "0a5c50e52a65a13017290bc843afafe3758fd0ac"
+default-features = false
+features = ["bundled", "js_jit"]

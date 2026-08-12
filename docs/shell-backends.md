@@ -8,13 +8,21 @@ the choices are.
 --shell-backend=webkitgtk   WebKitGTK, in a process of its own     implemented
 --shell-backend=chromium    Chromium, driven as a child process    implemented
 --shell-backend=wpe         WPE WebKit, inside the compositor      implemented
---shell-backend=servo       Servo, inside the compositor           refused
+--shell-backend=servo       Servo, embedded in the shell process   implemented, built by hand
+--shell-backend=servoshell  Servo, driven as a child process       implemented
 ```
 
 `cef` is what the NixOS module installs and what `nix run` on this flake gives:
-it builds no engine, and of the three that do not it is the cheapest per frame
-the shell paints. `webkitgtk` is 156 MB lighter, which on a machine short of
-memory is the better trade — see [`benchmarks.md`](benchmarks.md).
+it builds no engine, and of the measured backends that build none it is the
+cheapest per frame the shell paints. `webkitgtk` is 156 MB lighter, which on a
+machine short of memory is the better trade — see
+[`benchmarks.md`](benchmarks.md), which has no numbers for either Servo backend
+yet.
+
+Two of these are the same engine twice, and that is the pattern rather than an
+accident: `cef` links Blink where `chromium` drives it, and `servo` links Servo
+where `servoshell` drives it. Linking costs a build and buys an engine API;
+driving costs a process and buys a build that takes seconds.
 
 Two defaults that are not that one. A build with `--features wpe` uses `wpe` at
 run time, because a binary that paid for the in-process engine should use it.
@@ -61,14 +69,14 @@ The compositor makes a socket pair, inserts one end as a Wayland client marked
 as the shell, and starts `viewport-shell-gtk` on the other. Everything after
 that is ordinary:
 
-| | wpe | webkitgtk | chromium | cef |
-| --- | --- | --- | --- | --- |
-| pixels | `WPEBufferDMABuf` per frame | a client attaches a buffer | a client attaches a buffer | a client attaches a buffer |
-| input | translated into engine calls | `wl_pointer` / `wl_keyboard` | `wl_pointer` / `wl_keyboard` | `wl_pointer` / `wl_keyboard` |
-| pacing | acknowledge a frame to release the next | `wl_surface::frame` | `wl_surface::frame` | `wl_surface::frame` |
-| bridge | `messageHandlers` in-process | `messageHandlers`, engine API | DevTools over a pipe | DevTools through the library |
-| engine | built here, hours | prebuilt, linked | prebuilt, not linked | prebuilt, linked |
-| a crash | takes the session | takes the shell | takes the shell | takes the shell |
+| | wpe | webkitgtk | chromium | cef | servo | servoshell |
+| --- | --- | --- | --- | --- | --- | --- |
+| pixels | `WPEBufferDMABuf` per frame | a client attaches a buffer | a client attaches a buffer | a client attaches a buffer | a client attaches a buffer | a client attaches a buffer |
+| input | translated into engine calls | `wl_pointer` / `wl_keyboard` | `wl_pointer` / `wl_keyboard` | `wl_pointer` / `wl_keyboard` | `wl_pointer` / `wl_keyboard`, translated into engine calls | `wl_pointer` / `wl_keyboard` |
+| pacing | acknowledge a frame to release the next | `wl_surface::frame` | `wl_surface::frame` | `wl_surface::frame` | `wl_surface::frame` | `wl_surface::frame` |
+| bridge | `messageHandlers` in-process | `messageHandlers`, engine API | DevTools over a pipe | DevTools through the library | intercepted `fetch`, engine API | `fetch` at a loopback server |
+| engine | built here, hours | prebuilt, linked | prebuilt, not linked | prebuilt, linked | built there, hours | prebuilt, not linked |
+| a crash | takes the session | takes the shell | takes the shell | takes the shell | takes the shell | takes the shell |
 
 The page needs no edit for either: WebKitGTK has the same user-content API WPE
 does, so `window.webkit.messageHandlers.viewport` is real rather than shimmed,
@@ -137,17 +145,102 @@ comparing this backend's numbers against the other two.
 
 `VIEWPORT_CHROMIUM_ARGS` adds arguments to the browser's command line.
 
-## servo — refused
+## servo — the engine embedded, and compiled
 
-The original plan for the rewrite, and the buffer handoff is already spiked:
-`crates/viewport-web/src/dmabuf.rs` allocates with GBM, imports as an
-`EGLImage`, hangs it off an FBO and exports a fence, verified on hardware
-across two EGL displays. What is missing is a `RenderingContext` and a
-`WebEngine` over it. `docs/RUST-REWRITE.md` has the analysis.
+`crates/viewport/src/shell_client.rs`, `crates/viewport-shell-servo/`. A
+Wayland client like the other out-of-process backends — winit window,
+`WindowRenderingContext` over its raw handles, `WebView::paint` into it — so
+placement, input, pacing and the buffer are the same code they are for
+WebKitGTK.
 
-nixpkgs has a `servo` package, but it builds servoshell — an embedding is a
-cargo dependency on the `servo` crate either way, so this buys a second engine
-rather than a shorter build.
+**What is different is the build, and it is confined on purpose.** Servo is not
+a package: it is an rlib in a language with no stable ABI, so an embedding is a
+cargo dependency on the engine's source and building it builds Servo. That
+crate is therefore *outside this workspace*, with a lock file and a
+`[workspace]` table of its own, exactly as `viewport-shell-cef` is. Nothing a
+compositor rebuild, `cargo test --workspace`, the pre-commit hook or CI does
+can reach it. It compiles when somebody cd's into it and asks:
+
+```
+nix develop            # the workstation shell; it carries Servo's recipe
+cd crates/viewport-shell-servo
+cargo build --release  # once. hours.
+```
+
+and the resulting binary goes beside `viewport` in `bin/`, or is named with
+`VIEWPORT_SHELL_BIN`.
+
+There is no `nix build .#servo` for the same reason: a package would put that
+build inside every evaluation that touched it. `servoshell` below is the same
+engine with none of this.
+
+**The bridge is built out of the web platform**, because Servo has no
+`window.webkit.messageHandlers`. Outbound is a `fetch` at
+`http://viewport-ipc.invalid/send?m=…` with `mode: 'no-cors'`, intercepted by
+`WebViewDelegate::load_web_resource` before it reaches the network and answered
+with an empty 200 — a real embedder API rather than the usual trick of reading
+`window.prompt` or console output, and no preflight, no origin and no blocking
+of the page's script thread. Inbound is `WebView::evaluate_javascript`
+delivering the same `CustomEvent('viewport')` every other backend delivers.
+`viewport_ipc::js::BRIDGE_SHIM`, injected as a user script before the page's
+own scripts, hangs the familiar name on the sender. `data/shell/*.js` needs no
+edit.
+
+**The keyboard conversion is deliberately small.** `Code` — the physical key —
+is left `Unidentified`: the compositor owns every shortcut and the shell's
+pages read `event.key`. Servo's own port has the full table in
+`ports/servoshell/desktop/keyutils.rs` if that stops being true.
+
+`crates/viewport-web/src/dmabuf.rs` is still the older spike at the *other*
+shape of this — Servo painting into a buffer the compositor owns, through a
+`RenderingContext` of ours, in the compositor's own process the way `wpe` runs
+WebKit. It works, on hardware, across two EGL displays; what this backend
+chooses instead is the surface every other out-of-process shell already uses,
+which is a window. `docs/RUST-REWRITE.md` has that analysis.
+
+## servoshell — the engine driven
+
+`crates/viewport/src/shell_client.rs`, `crates/viewport-shell-servoshell/`. The
+same engine as `servo`, and the same relationship to it that `chromium` has to
+`cef`: nixpkgs' `servo` package installs a browser called `servoshell`, and a
+browser can be started as a child process. This crate compiles in seconds on a
+machine that has never built an engine, and it is a workspace member because it
+links nothing. `VIEWPORT_SERVOSHELL_BIN` names the browser;
+`VIEWPORT_SERVOSHELL_ARGS` adds to its command line.
+
+**The bridge is a loopback HTTP server in the shell process**, reached by a
+script `servoshell --userscripts` injects into the page. Servo's two drivable
+surfaces were both rejected for this, and the reasons are worth keeping:
+
+- Its **devtools server** speaks the Firefox remote debugging protocol, whose
+  actor layout is Servo's own partial implementation and moves between
+  releases. A backend written against it breaks when the installed browser
+  changes.
+- Its **WebDriver server** is the best-tested surface it has — it is what runs
+  WPT — but a WebDriver session executes one command at a time, so a long poll
+  for outbound messages is a session that cannot deliver inbound ones.
+
+Both are TCP ports anyway, so neither buys the isolation that made
+`--remote-debugging-pipe` worth insisting on for Chromium. The injected script
+gets the same two directions with no protocol to drift: `fetch` to `POST /send`
+outbound, a long poll of `GET /events` inbound dispatching the usual
+`CustomEvent`, and `viewport_ipc::js::BRIDGE_SHIM` over the top.
+
+**The server is 127.0.0.1 on an ephemeral port, and every request carries a
+token** read from `/dev/urandom` at startup and known only to the injected
+script. This is not decoration: what that server can do is drive the desktop,
+and loopback alone is not an access control on a multi-user machine.
+
+Two consequences worth knowing before choosing this backend:
+
+- **A shell page served over `https` cannot reach it.** The bridge is `http`
+  on loopback, and a secure page's fetch to it is mixed content. `file://` and
+  `http://localhost` — which is what the bundled shell and a development server
+  are — are fine.
+- **`shell.reload` reloads the page rather than the engine.** There is no
+  engine handle here to call, so the compositor's reload arrives as an item in
+  the poll and the page calls `location.reload()`, which injects the script
+  again with it.
 
 ## cef — the engine embedded
 
@@ -219,7 +312,15 @@ nix build .#chromium
 
 # the same engine, embedded; builds a C++ wrapper and no engine
 nix build .#cef
+
+# Servo, in nixpkgs' servoshell; builds no engine either
+nix build .#servoshell
 ```
+
+There is no `.#servo`. The embedded Servo shell is a cargo dependency on the
+engine's source, so a package would be a Servo build inside every evaluation
+that touched this flake; it is built by hand instead, once, and the section
+above says how. That is the whole reason there are two Servo backends.
 
 `.#viewport-smithay` is still an alias for `.#wpe`, because that is what any
 existing pin says.
@@ -229,12 +330,21 @@ On NixOS:
 ```nix
 programs.viewport = {
   enable = true;
-  shellBackend = "cef";   # the default; also "webkitgtk", "chromium" or "wpe"
+  shellBackend = "cef";   # the default; also "webkitgtk", "chromium",
+                          # "servoshell" or "wpe"
 };
 ```
 
-The compositor finds `viewport-shell-gtk` beside itself in `bin/`, then on
-`PATH`; `VIEWPORT_SHELL_BIN` overrides both.
+`servo` is not in that enum, because it has no package to point the module at.
+A system that wants it sets `programs.viewport.package` to a build carrying
+`viewport-shell-servo`, and `shell_backend = "servo"` through `settings`.
+
+The compositor finds the shell program — `viewport-shell-gtk`,
+`viewport-shell-servoshell`, whichever the backend names — beside itself in
+`bin/`, then on `PATH`; `VIEWPORT_SHELL_BIN` overrides both. A backend whose
+program is not installed says so by name rather than falling back to another
+engine: "not installed" and "no such backend" are different answers and only
+one of them is worth quietly drawing the desktop with something else.
 
 ## Running the shell by hand
 
@@ -249,3 +359,9 @@ VIEWPORT_IPC_SOCKET=$XDG_RUNTIME_DIR/viewport-$WAYLAND_DISPLAY.sock \
 It will be an ordinary window rather than the desktop — it did not get the
 compositor's connection, so it is not the shell — but the bridge is the same
 one, so the page runs, talks, and can be opened in the web inspector.
+
+Every shell program takes the same two arguments, so `viewport-shell-servo` and
+`viewport-shell-servoshell` are started the same way. `--inspector` differs:
+for `servoshell` it opens Servo's devtools server on port 6080, and for the
+embedded `servo` there is nothing to open — the log says so rather than
+pretending otherwise.

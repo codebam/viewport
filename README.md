@@ -218,7 +218,7 @@ The reference material lives in `docs/`:
 | [`docs/ipc.md`](docs/ipc.md) | both transports and every message in each direction, what a shell has to do to place a window, and how the layout is remembered across a restart — plus the overview, logging and the shell tests |
 | [`docs/protocols.md`](docs/protocols.md) | HDR, notifications, tablets, idle and locking, what clients may ask for and what they are told, and what is verified on real hardware |
 | [`docs/debugging.md`](docs/debugging.md) | screenshotting the session from inside it, pointer capture, XWayland, and what happens when the shell stops answering |
-| [`docs/shell-backends.md`](docs/shell-backends.md) | the engines the shell can be drawn by, which four are implemented, what changes between them and what does not, and how to run the shell process by hand against a live session |
+| [`docs/shell-backends.md`](docs/shell-backends.md) | the six engines the shell can be drawn by — WPE, WebKitGTK, Chromium driven, Chromium embedded, Servo driven, Servo embedded — what changes between them and what does not, and how to run the shell process by hand against a live session |
 | [`docs/benchmarks.md`](docs/benchmarks.md) | Viewport measured against sway and niri on real scanout — frame rate, CPU per frame, memory, and the second monitor while the first is saturated |
 
 Two shells ship with it, at opposite ends of the same protocol:

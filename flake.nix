@@ -331,8 +331,8 @@
 
         # The compositor, as a function of which engine draws its shell.
         #
-        # There are three, and the difference between them is almost entirely a
-        # packaging one — see `crates/viewport/src/shell_backend.rs`:
+        # The difference between them is almost entirely a packaging one — see
+        # `crates/viewport/src/shell_backend.rs`:
         #
         #   wpe        the engine in-process. `wpewebkit` above, which is a
         #              four-hour build no binary cache has.
@@ -342,16 +342,30 @@
         #              process starts one and drives it over the DevTools
         #              protocol, so the engine is a runtime dependency rather
         #              than a build one.
+        #   cef        the same Blink, embedded from nixpkgs' prebuilt libcef.
+        #   servoshell Servo, in nixpkgs' `servo` package — which is a browser,
+        #              `servoshell`, started as a child and spoken to through a
+        #              user script. Compiles no Servo, exactly as `chromium`
+        #              compiles no Blink.
         #
-        # The last two add a second binary to bin/, which the compositor finds
-        # beside itself and starts. All three install a binary called
-        # `viewport`, so a system installs one of them.
+        # There is no `servo` package here, and that is the point of the
+        # `servo` backend rather than an omission from it: Servo is a cargo
+        # source dependency, so packaging the embedded shell would mean
+        # building the engine inside every evaluation of this flake that
+        # touched it. `crates/viewport-shell-servo` is built by hand, once, in
+        # `nix develop` — which already carries Servo's own recipe. See
+        # docs/shell-backends.md.
+        #
+        # Every backend but `wpe` adds a second binary to bin/, which the
+        # compositor finds beside itself and starts. All of them install a
+        # binary called `viewport`, so a system installs one of them.
         mkViewport = { shellBackend }:
           let
             # The crate that provides the shell process, where there is one.
             shellCrate = {
               webkitgtk = "viewport-shell-gtk";
               chromium = "viewport-shell-chromium";
+              servoshell = "viewport-shell-servoshell";
             }.${shellBackend} or null;
           in
           pkgs.rustPlatform.buildRustPackage {
@@ -500,6 +514,12 @@
             # should not change engine because a user installed a browser.
             wrapProgram $out/bin/viewport-shell-chromium \
               --set-default VIEWPORT_CHROMIUM_BIN ${pkgs.chromium}/bin/chromium
+          '' + pkgs.lib.optionalString (shellBackend == "servoshell") ''
+            # The engine, named rather than looked for, for the reason above:
+            # a desktop should not change engine because a user installed a
+            # browser. nixpkgs' `servo` attribute installs `servoshell`.
+            wrapProgram $out/bin/viewport-shell-servoshell \
+              --set-default VIEWPORT_SERVOSHELL_BIN ${pkgs.servo}/bin/servoshell
           '';
 
           # The suite needs a GPU for the renderer tests and a socket for the
@@ -532,6 +552,14 @@
         # DevTools pipe over a socket — the protocol goes straight into the
         # library — and the engine is nixpkgs' prebuilt libcef.
         cef = mkViewport { shellBackend = "cef"; };
+
+        # Servo, without compiling Servo. nixpkgs builds `servoshell` and this
+        # drives it: the shell process starts the browser with a user script
+        # that carries the bridge, so the closure has an engine in it and the
+        # build has none. The other half of the trade —
+        # `crates/viewport-shell-servo`, which embeds the engine — is not
+        # packaged here, because packaging it would be packaging a Servo build.
+        servoshell = mkViewport { shellBackend = "servoshell"; };
 
         # Shared by the two Rust shells below, which differ only in toolchain.
         rustDeps = with pkgs; [
@@ -784,10 +812,12 @@
       {
         packages = {
           # Named for the engine that draws the shell, because that is the only
-          # thing that differs between them: `.#wpe`, `.#webkitgtk`, and two
-          # more names to come. `wpewebkit` is the engine itself rather than a
-          # compositor, which is why it does not follow the pattern.
-          inherit wpe webkitgtk chromium cef wpewebkit;
+          # thing that differs between them: `.#wpe`, `.#webkitgtk`, `.#cef`,
+          # `.#chromium`, `.#servoshell`. `wpewebkit` is the engine itself
+          # rather than a compositor, which is why it does not follow the
+          # pattern — and `servo`, the embedded one, is absent because it is
+          # built by hand rather than packaged. See `mkViewport` above.
+          inherit wpe webkitgtk chromium cef servoshell wpewebkit;
           inherit viewport-shell-cef;
 
           # The old name, from before these were named for the engine. It
@@ -1088,7 +1118,13 @@
             enable = mkEnableOption "the Viewport compositor";
 
             shellBackend = mkOption {
-              type = types.enum [ "cef" "webkitgtk" "chromium" "wpe" ];
+              # `servo` is absent on purpose, and it is the one name whose
+              # absence is a decision rather than a gap: the embedded Servo
+              # shell is not packaged, because packaging it would build the
+              # engine inside this flake. A system that wants it sets
+              # `programs.viewport.package` to a build of its own, which is
+              # also what says where `viewport-shell-servo` came from.
+              type = types.enum [ "cef" "webkitgtk" "chromium" "wpe" "servoshell" ];
               # The cheapest per painted frame of the three that build no
               # engine, and the one that installs from a cache.
               #
@@ -1129,9 +1165,17 @@
                 all, so it is the fastest of the three to build and the only
                 one whose engine can change without a recompile.
 
-                Two further names — `servo` and `cef` — are recognised by the
-                compositor and refused: neither is implemented. See
-                crates/viewport/src/shell_backend.rs.
+                `servoshell` is Servo, in the browser nixpkgs' `servo`
+                package installs, started as a child process the way
+                `chromium` is. It links no engine and compiles none, and the
+                bridge to the page is a user script rather than a debugging
+                protocol. The lightest build here and the least proven engine.
+
+                One further name — `servo`, the same engine embedded rather
+                than driven — is recognised by the compositor and has no
+                package: it is a cargo dependency on Servo's source, so
+                building it builds the engine. See docs/shell-backends.md for
+                how, and set `programs.viewport.package` to the result.
               '';
             };
 

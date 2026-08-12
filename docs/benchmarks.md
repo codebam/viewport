@@ -171,9 +171,12 @@ Read these before quoting anything above.
 ## The shell backends against each other
 
 Everything above compares Viewport with other compositors. The shell can be
-drawn by four different engines — see
+drawn by six different engines — see
 [`docs/shell-backends.md`](shell-backends.md) — and comparing those means
-holding the compositor still and changing only the engine:
+holding the compositor still and changing only the engine. The numbers below
+are for the four that existed when the run was made; the two Servo backends
+have not been measured yet, and only one of them (`servoshell`) is in the
+script's default list, because the other has no package to build.
 
 ```sh
 scripts/bench-backends.sh --runs 3    # every implemented backend

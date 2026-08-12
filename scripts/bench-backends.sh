@@ -50,7 +50,10 @@ if [ -z "${XDG_VTNR:-}" ] || [ -z "${XDG_SESSION_ID:-}" ]; then
     fi
 fi
 
-backends=(wpe webkitgtk chromium cef)
+# Every backend with a package. `servo` — the embedded Servo shell — has none
+# on purpose, because packaging it would package a Servo build; measure it by
+# building it by hand and pointing bench-drm.sh at the result.
+backends=(wpe webkitgtk chromium cef servoshell)
 passthrough=()
 stamp=$(date +%Y%m%d-%H%M%S)
 outroot="$here/bench-results/backends-$stamp"

@@ -227,7 +227,8 @@ pub struct File {
     /// `crate::background`, which explains why that is deliberate and not a
     /// missing feature.
     pub background_terminal: Option<BackgroundTerminal>,
-    /// Which engine draws the shell: `wpe`, `webkitgtk`, `servo` or `cef`.
+    /// Which engine draws the shell: `wpe`, `webkitgtk`, `chromium`, `cef`,
+    /// `servo` or `servoshell`.
     /// See `crate::shell_backend`.
     pub shell_backend: Option<String>,
     pub fallback: Option<String>,

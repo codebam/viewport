@@ -10,7 +10,7 @@
 //
 // So this is a choice now, and the point of naming all of them is that the
 // choice is visible at install time rather than being whichever one somebody
-// compiled. Three are implemented:
+// compiled. All of them are implemented:
 //
 // * `wpe` — the engine in-process, `crate::shell`. Fewest moving parts at run
 //   time and the most at build time. Needs `--features wpe`.
@@ -25,32 +25,31 @@
 //   to build and the only one that can change engine version without a
 //   recompile.
 //
-// And two are named, refused, and documented, because "not implemented" and
-// "not compiled in" and "no such thing" are three different answers and a
-// config file that names one deserves to be told which:
+// Two more are Servo, which is a cargo dependency rather than a package, and
+// so is split the same way Blink is split between `cef` and `chromium` — the
+// engine linked, and the engine driven:
 //
-// * `servo` — the original plan for the rewrite, spiked as far as the buffer
-//   handoff. `crates/viewport-web/src/dmabuf.rs` is that spike and it works;
-//   what is missing is the `RenderingContext` and `WebEngine` implementation
-//   over it. nixpkgs has a `servo` package, but it builds servoshell — an
-//   embedding is a cargo dependency on the `servo` crate either way, so this
-//   one buys a supported engine rather than a shorter build.
+// * `servo` — the `servo` crate, embedded in `viewport-shell-servo`. The
+//   engine is compiled from source, once: that crate is outside this
+//   workspace, with a lock file of its own, so `cargo test --workspace`, CI
+//   and every compositor rebuild leave it alone. Nothing here links it.
 //
-// * `cef` — the same Blink as `chromium`, but embedded as a library rather
-//   than driven as a browser, whose offscreen rendering hands over dmabuf
-//   planes in very nearly the shape `viewport_web::Frame` already has. That is
-//   the version worth having in-process, and it is the one piece of real work
-//   left here. What it costs, measured rather than guessed:
+// * `servoshell` — the same engine as a browser this compositor starts, which
+//   is what nixpkgs' `servo` package installs. It compiles no Servo at all:
+//   the bridge is a loopback HTTP server in the shell process and a user
+//   script `servoshell --userscripts` injects into the page.
 //
-//     - crates.io `cef` is 149.3.0+149.0.6 and nixpkgs' `cef-binary` is
-//       149.0.5, so one of the two has to move.
-//     - `cef-dll-sys`'s build script builds `libcef_dll_wrapper` from the
-//       distribution with cmake and ninja, and *downloads* a CEF archive
-//       unless `CEF_PATH` holds one with an `archive.json` it recognises —
-//       which a nix sandbox forbids, so that file has to be produced.
-//     - CEF re-executes the host binary for its zygote, GPU and render
-//       processes, so the entry point has to hand off before anything else
-//       runs.
+// * `cef` — the same Blink as `chromium`, embedded as a library rather than
+//   driven as a browser. The default. `crates/viewport-shell-cef` is outside
+//   this workspace for the same reason `viewport-shell-servo` is: it does not
+//   build without `CEF_PATH`, and `cargo test --workspace` has to run on a
+//   machine that has never heard of it.
+//
+// A name is refused only when this binary cannot honour it — `wpe` in a build
+// that did not compile the engine in. Everything else is a program that either
+// exists beside this one or does not, which `crate::shell_client` reports when
+// it goes looking, because "not installed" is a different answer from "no such
+// backend" and only one of them is worth falling back over.
 
 use std::fmt;
 
@@ -63,9 +62,11 @@ pub enum ShellBackend {
     WebKitGtk,
     /// Chromium, as a child process driven over the DevTools protocol.
     Chromium,
-    /// Servo, in this process. Not implemented, and refused rather than
-    /// pending — `docs/shell-backends.md` says on what grounds.
+    /// Servo, embedded in a process of its own by `viewport-shell-servo`.
     Servo,
+    /// Servo as a browser — nixpkgs' `servoshell` — started as a child process
+    /// and spoken to through a user script. Links no engine.
+    ServoShell,
     /// Chromium through CEF, embedded in a process of its own rather than
     /// driven over a socket as `Chromium` is. The default.
     Cef,
@@ -79,12 +80,14 @@ impl ShellBackend {
             Self::WebKitGtk => "webkitgtk",
             Self::Chromium => "chromium",
             Self::Servo => "servo",
+            Self::ServoShell => "servoshell",
             Self::Cef => "cef",
         }
     }
 
     /// Every name that can be asked for, whether or not it works here.
-    pub const NAMES: &'static [&'static str] = &["wpe", "webkitgtk", "chromium", "servo", "cef"];
+    pub const NAMES: &'static [&'static str] =
+        &["wpe", "webkitgtk", "chromium", "servo", "servoshell", "cef"];
 
     pub fn parse(name: &str) -> Result<Self, String> {
         match name {
@@ -92,6 +95,7 @@ impl ShellBackend {
             "webkitgtk" | "gtk" => Ok(Self::WebKitGtk),
             "chromium" | "blink" => Ok(Self::Chromium),
             "servo" => Ok(Self::Servo),
+            "servoshell" => Ok(Self::ServoShell),
             "cef" => Ok(Self::Cef),
             other => Err(format!(
                 "no shell backend called '{other}'; it is one of {}",
@@ -124,12 +128,19 @@ impl ShellBackend {
                  --shell-backend=webkitgtk, which needs no engine compiled in"
                     .to_owned())
             }
-            Self::Wpe | Self::WebKitGtk | Self::Chromium | Self::Cef => Ok(()),
-            Self::Servo => Err("the servo backend is not implemented yet: \
-                                the buffer handoff is spiked in \
-                                crates/viewport-web/src/dmabuf.rs and the engine over it is not \
-                                written. Use --shell-backend=webkitgtk"
-                .to_owned()),
+            // Everything else is a program beside this one. Whether it is
+            // installed is not a question this binary can answer at compile
+            // time — `viewport-shell-servo` in particular is built by hand,
+            // because building it builds Servo — and `crate::shell_client`
+            // says so by name when it cannot find one. Refusing here instead
+            // would fall back to another engine on a machine where the asked
+            // for one is present, which is the wrong answer twice over.
+            Self::Wpe
+            | Self::WebKitGtk
+            | Self::Chromium
+            | Self::Servo
+            | Self::ServoShell
+            | Self::Cef => Ok(()),
         }
     }
 
@@ -179,13 +190,22 @@ impl ShellBackend {
     /// — see the header of `crates/viewport-shell-cef/src/main.rs`. That is a
     /// different rendering backend and worth having for its own sake; the
     /// wallpaper would follow from it rather than motivate it.
+    ///
+    /// Neither Servo backend is here either, and for a plainer reason than
+    /// Chromium's: `WindowRenderingContext` asks surfman for a window surface
+    /// with the display's own configuration and no alpha, and `servoshell`
+    /// offers no flag that changes it. The page composites over Servo's white,
+    /// so a terminal under it would be a process nobody can see.
     pub fn shows_what_is_behind(self) -> bool {
         matches!(self, Self::Wpe | Self::WebKitGtk)
     }
 
     /// Whether the shell runs in a process of its own.
     pub fn is_out_of_process(self) -> bool {
-        matches!(self, Self::WebKitGtk | Self::Chromium | Self::Cef)
+        matches!(
+            self,
+            Self::WebKitGtk | Self::Chromium | Self::Servo | Self::ServoShell | Self::Cef
+        )
     }
 
     /// The program the compositor starts for an out-of-process backend.
@@ -198,7 +218,9 @@ impl ShellBackend {
             Self::WebKitGtk => Some("viewport-shell-gtk"),
             Self::Chromium => Some("viewport-shell-chromium"),
             Self::Cef => Some("viewport-shell-cef"),
-            Self::Wpe | Self::Servo => None,
+            Self::Servo => Some("viewport-shell-servo"),
+            Self::ServoShell => Some("viewport-shell-servoshell"),
+            Self::Wpe => None,
         }
     }
 }
@@ -265,15 +287,23 @@ mod tests {
         }
     }
 
-    /// What is not written must not be silently treatable as available:
-    /// `choose` falls back on that answer, and a fallback that did not happen
-    /// is a session with no desktop.
+    /// Only what this binary cannot do may be refused.
+    ///
+    /// `choose` falls back on that answer, so a backend refused here is a
+    /// backend nobody can select — and every one of these is a program beside
+    /// the compositor, whose absence is a message from `shell_client` rather
+    /// than grounds for quietly drawing the desktop with another engine.
     #[test]
-    fn the_unimplemented_backend_is_refused() {
-        assert!(ShellBackend::Servo.available().is_err());
+    fn only_an_engine_this_build_lacks_is_refused() {
         assert!(ShellBackend::WebKitGtk.available().is_ok());
         assert!(ShellBackend::Chromium.available().is_ok());
+        assert!(ShellBackend::Servo.available().is_ok());
+        assert!(ShellBackend::ServoShell.available().is_ok());
         assert!(ShellBackend::Cef.available().is_ok());
+        assert_eq!(
+            ShellBackend::Wpe.available().is_err(),
+            !cfg!(feature = "wpe")
+        );
     }
 
     /// Every backend that runs in its own process must name the program that
@@ -293,7 +323,7 @@ mod tests {
 
     #[test]
     fn a_backend_that_cannot_run_falls_back_to_one_that_can() {
-        let chosen = choose(Some("servo"), None);
+        let chosen = choose(Some("lynx"), None);
         assert_eq!(chosen, ShellBackend::default_for_build());
         assert!(chosen.available().is_ok());
     }

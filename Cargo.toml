@@ -6,17 +6,29 @@ members = [
     "crates/viewport-shell-bridge",
     "crates/viewport-shell-chromium",
     "crates/viewport-shell-gtk",
+    "crates/viewport-shell-servoshell",
     "crates/viewport-web",
 ]
 
-# Not a member, deliberately.
+# Not members, deliberately.
 #
-# `cargo test --workspace` is what .githooks/pre-commit and CI run, and this
-# crate does not build without `CEF_PATH` pointing at a CEF distribution — so a
-# member would mean neither of them could run on a machine without one. It is
-# built by its own package, with its own lock file, when the cef backend is
-# being worked on. See docs/shell-backends.md.
-exclude = ["crates/viewport-shell-cef"]
+# `cargo test --workspace` is what .githooks/pre-commit and CI run, and neither
+# of these can be built by it:
+#
+# * `viewport-shell-cef` does not build without `CEF_PATH` pointing at a CEF
+#   distribution, so a member would mean neither the hook nor CI could run on a
+#   machine without one.
+#
+# * `viewport-shell-servo` depends on the `servo` crate, which is the engine's
+#   source: building it builds Servo, once, for hours. Excluded, it is compiled
+#   only when somebody asks for it by cd'ing into it — never by a compositor
+#   rebuild, never by the hook, never by CI. `viewport-shell-servoshell` is the
+#   same engine without that bill, and it *is* a member, because it links
+#   nothing.
+#
+# Both carry their own lock file and their own `[workspace]` table for the same
+# reason. See docs/shell-backends.md.
+exclude = ["crates/viewport-shell-cef", "crates/viewport-shell-servo"]
 
 [workspace.package]
 version = "0.1.3"

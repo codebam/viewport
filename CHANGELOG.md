@@ -76,6 +76,13 @@ deleted C compositor and the tree stopped carrying two implementations.
   drivable from a terminal without anything else installed.
 - The WPE, WebKitGTK and Chromium shell backends, selectable at build time
   with `--features wpe` or at runtime with `--shell-backend`.
+- Two Servo shell backends, `servo` and `servoshell` — the engine embedded and
+  the engine driven, as `cef` and `chromium` are for Blink. `servoshell` runs
+  nixpkgs' prebuilt browser and compiles no engine (`nix build .#servoshell`);
+  `servo` embeds the `servo` crate from a workspace of its own, so the engine
+  build it costs cannot be reached by `cargo test --workspace`, by CI or by a
+  compositor rebuild. Neither needs an edit to `data/shell/*.js`: the bridge is
+  a user script both ends. See `docs/shell-backends.md`.
 
 ### Fixed
 - A `--exit-after` deadline that silently did nothing on an idle compositor,
