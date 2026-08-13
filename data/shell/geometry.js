@@ -9,12 +9,50 @@
  * One of the ordered scripts that make up the shell; see index.html for the
  * load order and shell.md for what the whole is meant to do.
  */
+
+/* One layout query per element per frame, rather than one per call.
+ *
+ * A pump frame measures every window: its hole, the area it is clipped to and,
+ * when it is lifted, its frame. The area is the same element for every window
+ * on an output, so a desk of eight windows asked for the same rectangle eight
+ * times. In a browser where layout is a thread — Servo — each of those is a
+ * cross-thread query and not a field read, and the shell was making 421 of
+ * them a second while painting 26 frames.
+ *
+ * Only a pass that does not write is allowed to use this. reportGeometry
+ * measures and sends IPC, and IPC touches no DOM, so a whole pump frame is one
+ * such pass; flipFrom is not, and reads live. Outside a pass measureOf is a
+ * plain getBoundingClientRect, which is what every other caller gets.
+ */
+let measurePass = null;
+
+function measureOf(el) {
+  if (!measurePass) return el.getBoundingClientRect();
+  let rect = measurePass.get(el);
+  if (!rect) {
+    rect = el.getBoundingClientRect();
+    measurePass.set(el, rect);
+  }
+  return rect;
+}
+
+/* Everything measured between these two answers from one layout. Nothing
+   between them may write to the DOM: a pass that outlives a style change hands
+   back where things used to be. */
+function beginMeasurePass() {
+  measurePass = new Map();
+}
+
+function endMeasurePass() {
+  measurePass = null;
+}
+
 function windowsAreaOf(workspace) {
   const name = hostOfWorkspace(workspace);
   const output = name !== null ? outputs.get(name) : null;
   if (!output) return null;
 
-  const rect = output.windowsEl.getBoundingClientRect();
+  const rect = measureOf(output.windowsEl);
   return {
     left: rect.left, top: rect.top,
     right: rect.left + rect.width, bottom: rect.top + rect.height,
@@ -29,7 +67,7 @@ function reportGeometry(id) {
   const view = views.get(id);
   if (!view) return false;
 
-  const rect = view.viewport.getBoundingClientRect();
+  const rect = measureOf(view.viewport);
   /* In the overview the element is inside a scaled container, so the measured
      rect is where it appears but not the size the client should be. The
      compositor is told the real size and the factor to draw it at.
@@ -87,7 +125,7 @@ function reportGeometry(id) {
   const cell = view.overview?.cell ?? view.solar?.cell ?? null;
   const area = cell
     ? (() => {
-      const r = cell.getBoundingClientRect();
+      const r = measureOf(cell);
       return { left: r.left, top: r.top,
         right: r.left + r.width, bottom: r.top + r.height };
     })()
@@ -135,7 +173,7 @@ function reportGeometry(id) {
   const lifted = isFloating(id) || view.solar?.lift === true
     || view.canvas?.lift === true;
 
-  const frameEl = lifted ? view.el?.getBoundingClientRect() : null;
+  const frameEl = lifted && view.el ? measureOf(view.el) : null;
   const frame = frameEl
     ? {
       x: Math.round(frameEl.left),
@@ -237,7 +275,17 @@ function flipFrom(before) {
   }
 
   const strips = pendingStrips();
-  const moved = [];
+
+  /* Measure every window, then move every window — rather than measuring and
+     moving one at a time.
+   *
+   * Interleaved, each `style.transform` invalidates the layout the next
+   * `getBoundingClientRect` needs, so a relayout of eight windows is eight
+   * layouts instead of one. That is a wasted millisecond in a browser whose
+   * layout is a function call and a great deal more in one where it is a
+   * thread: this is the same read-then-write split that the forced reflow
+   * below is careful about, applied to the loop that precedes it. */
+  const offsets = [];
   for (const [id, view] of views) {
     if (view.el.hidden) continue;
     const from = before.get(id);
@@ -248,9 +296,14 @@ function flipFrom(before) {
     const dy = from.top - to.top;
     if (dx === 0 && dy === 0) continue;
 
-    view.el.classList.add('flipping');
-    view.el.style.transform = `translate(${dx}px, ${dy}px)`;
-    moved.push(view.el);
+    offsets.push([view.el, dx, dy]);
+  }
+
+  const moved = [];
+  for (const [el, dx, dy] of offsets) {
+    el.classList.add('flipping');
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    moved.push(el);
   }
   if (moved.length === 0 && strips.length === 0) return;
 
@@ -295,8 +348,17 @@ function pumpGeometry() {
 
   const step = () => {
     let changed = false;
-    for (const [id, view] of views) {
-      if (!view.el.hidden && reportGeometry(id)) changed = true;
+    /* One layout for the whole frame. Nothing in here writes to the DOM — a
+       report is a measurement and a message — so every window measured after
+       the first is answered from the same layout rather than asking for one of
+       its own. */
+    beginMeasurePass();
+    try {
+      for (const [id, view] of views) {
+        if (!view.el.hidden && reportGeometry(id)) changed = true;
+      }
+    } finally {
+      endMeasurePass();
     }
 
     pumpRemaining = changed ? PUMP_IDLE_FRAMES : pumpRemaining - 1;
