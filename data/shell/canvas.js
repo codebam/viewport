@@ -96,10 +96,16 @@ const CANVAS = {
      manager has used since 1985, for the same reason. */
   cascade: 48,
 
-  /* Space kept between a followed window and the edge of the screen, in screen
-     pixels. Following focus with no margin puts the window flush against the
-     edge, where the half of it you are about to scroll to is invisible. */
+  /* Space kept around the plane when fitting all of it on screen, in screen
+     pixels. A fit with no margin puts the outermost windows flush against the
+     edge, with nothing to show that the plane ends there. */
   margin: 48,
+
+  /* The same gap when following focus, which is none: a followed window sits
+     flush against the edge it came in from. Padding here costs screen to a
+     strip of empty plane on every focus change, and the window is what the
+     user asked to see. */
+  followMargin: 0,
 
   /* How small a drag may make a window, in world units. A resize that can
      reach zero leaves a rectangle too small to take hold of and no way to grow
@@ -497,7 +503,7 @@ function canvasFitViewport(items, area, margin = CANVAS.margin) {
  * Zoom is returned unchanged. Following focus is not a reason to change how
  * far out the view is — that is a decision the user made and this has no
  * business undoing it. */
-function canvasFollow(rect, viewport, area, margin = CANVAS.margin) {
+function canvasFollow(rect, viewport, area, margin = CANVAS.followMargin) {
   if (!rect || !area || !(area.width > 0) || !(area.height > 0)) return viewport;
 
   const zoom = viewport.zoom;

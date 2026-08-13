@@ -1338,9 +1338,9 @@ if (mode === 'tiling') {
     const moved = canvas.follow(away, viewport, AREA);
     check('following one off to the right pans right',
       moved.x > viewport.x);
-    check('by just enough to fit it, and the margin',
+    check('by just enough to fit it, flush against the edge',
       near(moved.x,
-        away.x + away.width + canvas.CANVAS.margin - AREA.width));
+        away.x + away.width + canvas.CANVAS.followMargin - AREA.width));
     check('and following never changes the zoom',
       moved.zoom === viewport.zoom);
 
@@ -1349,7 +1349,8 @@ if (mode === 'tiling') {
     const huge = canvas.follow({ x: 0, y: 0, width: 9000, height: 9000 },
       at(500, 500), AREA);
     check('an oversized window is followed to its top left',
-      huge.x < 0 && huge.y < 0);
+      near(huge.x, -canvas.CANVAS.followMargin)
+      && near(huge.y, -canvas.CANVAS.followMargin));
   }
 
   {
