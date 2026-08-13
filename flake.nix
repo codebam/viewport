@@ -639,11 +639,10 @@
           #   Missing extensions: ["EGL_MESA_platform_surfaceless"]
           #   Unable to find suitable EGL platform
           #
-          # Naming our own mesa fixes it and makes it reproducible: the shell
-          # renders through the driver this flake pins rather than whatever
-          # the host happens to have installed.
-          __EGL_VENDOR_LIBRARY_DIRS = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
-
+          # Naming our own mesa fixes it and makes it reproducible where there
+          # is nothing else to name — but only there. See the guard in the
+          # shellHook: on a machine that has a driver of its own, naming ours
+          # loads two Mesas into one process.
           shellHook = ''
             # ash dlopens libvulkan.so.1 and winit dlopens libwayland-client;
             # the tests that ask for a device skip themselves without one, but
@@ -665,6 +664,29 @@
               pkgs.libglvnd
               pkgs.mesa
             ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+            # The EGL driver, and only when the host has none of its own.
+            #
+            # Setting this unconditionally puts two Mesas in one process on any
+            # machine that already has a driver. The vendor JSON names an
+            # `libEGL_mesa.so` from the mesa this flake pins, its state tracker
+            # then loads the *host's* gallium for the card that is actually
+            # there, and the two are different builds:
+            #
+            #   #3 si_finalize_nir ()          from .../libgallium-26.3.0-devel.so
+            #   #4 st_prog_to_nir_postprocess () from .../libgallium-26.2.0.so
+            #
+            # which segfaults in nir_opt_dce the first time anything compiles a
+            # shader — `cargo test -p viewport-web` dies on `read_pixels`, and
+            # it dies inside the pre-commit hook rather than when the same
+            # binary is run by hand, because the hook is what has this shell's
+            # environment. A host driver is coherent with itself, so where
+            # there is one it is the one to use; a hosted runner has neither
+            # directory and gets ours, which is what this was for.
+            if [ ! -d /run/opengl-driver/share/glvnd/egl_vendor.d ] \
+               && [ ! -d /usr/share/glvnd/egl_vendor.d ]; then
+              export __EGL_VENDOR_LIBRARY_DIRS=${pkgs.mesa}/share/glvnd/egl_vendor.d
+            fi
           '';
         };
 
