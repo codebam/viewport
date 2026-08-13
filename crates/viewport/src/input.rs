@@ -744,7 +744,7 @@ impl ViewportState {
                         // for dragging that window about.
                         .filter(|_| {
                             !crate::pointer::over_overlay(
-                                &self.shell_overlays,
+                                &self.shell_overlay_hits,
                                 pointer.current_location(),
                             )
                         });
@@ -790,7 +790,7 @@ impl ViewportState {
                     // Clicking a notification must not raise and focus the
                     // window behind it — the click never reached that window.
                     let on_overlay = crate::pointer::over_overlay(
-                        &self.shell_overlays,
+                        &self.shell_overlay_hits,
                         pointer.current_location(),
                     );
 

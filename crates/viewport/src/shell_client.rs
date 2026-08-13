@@ -871,7 +871,7 @@ impl ViewportState {
             // page only sends a list when one of *its* rectangles changes. In
             // between, this compositor draws pieces of a page that is not
             // there over the windows, and nothing on screen can dismiss them.
-            self.set_shell_overlays(Vec::new());
+            self.set_shell_overlays(Vec::new(), Vec::new());
         }
         true
     }

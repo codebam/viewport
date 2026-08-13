@@ -218,14 +218,18 @@ mod tests {
     #[test]
     fn several_overlays_are_all_live() {
         // A notification and the screen-share chooser can be up together, and
-        // the bar floats as a third. Only checking the first would make the
-        // others click-through again.
+        // a second notification on another screen makes a third. Only checking
+        // the first would make the others click-through again.
+        //
+        // Not every rectangle the shell floats is in this list: the bar under
+        // 'auto' is drawn in front and declines the pointer, and never reaches
+        // here. See `OverlayRect::passthrough`.
         let overlays = [
             rect(0, 0, 100, 40),
             rect(4800, 60, 300, 120),
             rect(900, 400, 400, 300),
         ];
-        assert!(over_overlay(&overlays, (50.0, 20.0).into()), "bar");
+        assert!(over_overlay(&overlays, (50.0, 20.0).into()), "first");
         assert!(
             over_overlay(&overlays, (4900.0, 100.0).into()),
             "notification"

@@ -454,6 +454,19 @@ pub struct OverlayRect {
     pub y: i32,
     pub width: i32,
     pub height: i32,
+    /// Drawn above the windows, but not in the way of the pointer.
+    ///
+    /// An overlay normally takes the click: a notification over a window is
+    /// visible, so a click on it is a click on the notification and not on
+    /// whatever it covers. The bar under `auto` is the exception. It is only
+    /// on screen while Mod4 is held, and Mod4 is also the modifier every
+    /// window gesture is on — so a bar that took the pointer took every
+    /// Mod4+click and Mod4+drag in the strip it floats over, and a window
+    /// dragged up there could no longer be focused, moved or resized. The bar
+    /// loses nothing by declining them: a click there is a Mod4+click, which
+    /// the compositor keeps for the gesture and never forwards to the shell.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub passthrough: bool,
 }
 
 /// One of the shell's workspaces, as an outside client sees it.
@@ -585,6 +598,39 @@ mod tests {
             Request::ViewVisible {
                 id: 7,
                 visible: true
+            }
+        );
+    }
+
+    #[test]
+    fn an_overlay_takes_the_pointer_unless_it_says_otherwise() {
+        // Taking it is the default, and has to be: a notification drawn over a
+        // window is visible, so a click on it belongs to the notification. The
+        // shell asks for the other behaviour by name, and only for the bar
+        // under 'auto' — see `passthrough`.
+        assert_eq!(
+            parse(
+                r#"{"type":"shell.overlay","rects":[
+                    {"x":0,"y":0,"width":300,"height":120},
+                    {"x":0,"y":0,"width":1920,"height":30,"passthrough":true}]}"#
+            ),
+            Request::ShellOverlay {
+                rects: vec![
+                    OverlayRect {
+                        x: 0,
+                        y: 0,
+                        width: 300,
+                        height: 120,
+                        passthrough: false,
+                    },
+                    OverlayRect {
+                        x: 0,
+                        y: 0,
+                        width: 1920,
+                        height: 30,
+                        passthrough: true,
+                    },
+                ],
             }
         );
     }

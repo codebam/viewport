@@ -213,7 +213,21 @@ const outputsEl = document.getElementById('outputs');
  * can both float without either forgetting the other. */
 const overlays = new Map();
 
-function setOverlay(name, el) {
+/* `passthrough` names a rectangle that is drawn in front but does not take the
+   pointer. The default is the other way round, and has to be: a notification
+   over a window is visible, so a click on it belongs to the notification and
+   not to whatever it covers.
+
+   The bar under 'auto' is the exception, and the reason this option exists. It
+   is on screen only while Mod4 is held — and Mod4 is the modifier every window
+   gesture is on, so a bar that took the pointer took every Mod4+click and
+   Mod4+drag in the strip it floats over. A window dragged up under it could
+   not be focused, moved or resized again, and the click panned the canvas
+   instead, because the compositor read it as a click on the desktop. Nothing
+   is lost by declining: while the bar is visible Mod4 is down, and the
+   compositor keeps those clicks for the gesture rather than forwarding them
+   here. */
+function setOverlay(name, el, { passthrough = false } = {}) {
   const rect = el?.getBoundingClientRect();
   if (!rect || rect.width < 1 || rect.height < 1) {
     if (!overlays.delete(name)) return;
@@ -223,11 +237,13 @@ function setOverlay(name, el) {
       y: Math.round(rect.top),
       width: Math.round(rect.width),
       height: Math.round(rect.height),
+      passthrough,
     };
     const previous = overlays.get(name);
     if (previous
       && previous.x === next.x && previous.y === next.y
-      && previous.width === next.width && previous.height === next.height) {
+      && previous.width === next.width && previous.height === next.height
+      && previous.passthrough === next.passthrough) {
       return;
     }
     overlays.set(name, next);

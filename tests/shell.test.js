@@ -2864,8 +2864,21 @@ if (mode === 'scrolling') {
   emit({ type: 'modifiers', logo: true });
   check('holding Mod4 reveals it', !barHidden());
 
+  /* And it is drawn above the windows, since 'auto' reserves no room for it —
+     but not in front of the pointer. The bar is revealed by Mod4, and Mod4 is
+     the modifier a window is dragged, resized and focused with: a bar that
+     took the pointer took every one of those in the strip it floats over, so
+     a window moved up under it could not be touched again and the click
+     panned the canvas instead. */
+  const floating = () => (sent.filter((m) => m.type === 'shell.overlay')
+    .at(-1)?.rects ?? []).filter((r) => r.height > 0);
+  check('the revealed bar is drawn over the windows', floating().length > 0);
+  check('and lets the pointer through to them',
+    floating().every((r) => r.passthrough === true));
+
   emit({ type: 'modifiers', logo: false });
   check('letting go hides it again', barHidden());
+  check('and stops it being drawn at all', floating().length === 0);
 
   /* A theme from the config file lands as custom properties. */
   emit({ type: 'config', layout: mode, bar: 'auto',

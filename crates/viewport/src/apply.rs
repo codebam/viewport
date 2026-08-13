@@ -128,7 +128,8 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             } else {
                 Default::default()
             };
-            state.set_shell_overlays(rects);
+            // The chooser is a dialog: it is there to be clicked.
+            state.set_shell_overlays(rects.clone(), rects);
         }
 
         Request::ShellOverlay { rects } => {
@@ -137,17 +138,28 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // them in the layout's coordinates because it hit-tests the pointer
             // against them.
             let origin = state.dispatch_origin;
-            let rects = rects
+            let placed: Vec<_> = rects
                 .into_iter()
                 .filter(|rect| rect.width > 0 && rect.height > 0)
                 .map(|rect| {
-                    smithay::utils::Rectangle::new(
-                        (rect.x + origin.x, rect.y + origin.y).into(),
-                        (rect.width, rect.height).into(),
+                    (
+                        smithay::utils::Rectangle::new(
+                            (rect.x + origin.x, rect.y + origin.y).into(),
+                            (rect.width, rect.height).into(),
+                        ),
+                        rect.passthrough,
                     )
                 })
                 .collect();
-            state.set_shell_overlays(rects);
+            // Everything the shell floats is drawn above the windows; only the
+            // ones that did not ask to be seen through take the pointer.
+            let hits = placed
+                .iter()
+                .filter(|(_, passthrough)| !passthrough)
+                .map(|(rect, _)| *rect)
+                .collect();
+            let all = placed.into_iter().map(|(rect, _)| rect).collect();
+            state.set_shell_overlays(all, hits);
         }
 
         Request::ShellOverview { active } => {

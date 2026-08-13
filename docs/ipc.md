@@ -118,7 +118,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `shell.focus` | — |
 | `background.focus` | — (toggles the keyboard onto the wallpaper terminal and back) |
 | `shell.overview` | `active` |
-| `shell.overlay` | `rects[]` of `x`, `y`, `width`, `height` — everywhere the shell has drawn something that belongs above the windows. Sent whole; an empty list means nothing does. See [Drawing in front of the windows](#drawing-in-front-of-the-windows) |
+| `shell.overlay` | `rects[]` of `x`, `y`, `width`, `height`, optional `passthrough` — everywhere the shell has drawn something that belongs above the windows. Sent whole; an empty list means nothing does. See [Drawing in front of the windows](#drawing-in-front-of-the-windows) |
 | `screencast.rect` | `x`, `y`, `width`, `height` — the older single-rectangle form of `shell.overlay`, still accepted; a zero size means nothing is above the windows |
 | `session.save` | `state` (opaque string) |
 | `session.query` | — |
@@ -228,6 +228,17 @@ for the window beneath it. The shipped shell measures each element with
 `getBoundingClientRect` and drops the entry when the element is gone or has
 collapsed to nothing; anything else risks a region that is invisible and still
 eating input.
+
+`passthrough: true` on a rectangle asks for the drawing without the pointer:
+it is composited in front, and a click inside it is still tested against the
+windows underneath. The shipped shell uses it for one thing, the bar under
+`bar: "auto"`. That bar is revealed by holding Mod4 — and Mod4 is the modifier
+every window gesture is on, so while it is visible it is guaranteed to be
+under a Mod4+click. Taking the pointer there meant a window dragged up beneath
+the bar could no longer be focused, moved or resized, and the click panned the
+canvas instead. It gives up nothing: the compositor keeps a Mod4+click for the
+gesture and never forwards it to the shell, so a bar in this mode could not
+have used those clicks anyway.
 
 A rectangle belonging to a monitor is the case to watch. The shipped shell
 keys them per output — `notifications:DP-1`, `bar:DP-1` — and reports them by

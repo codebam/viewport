@@ -619,9 +619,16 @@ function relayoutAll() {
        edge of the client's own surface. Naming the rectangle gets this buffer
        drawn again, cropped to the bar, in front.
        Only under 'auto': the other modes reserve space, so nothing is over
-       anything and there is nothing to lift. */
+       anything and there is nothing to lift.
+
+       Drawn in front, but not in the way: the strip the bar floats over has to
+       go on answering clicks. See setOverlay — the bar is revealed by Mod4 and
+       Mod4 is what a window is dragged, resized and focused with, so a bar
+       that took the pointer would take those too, and a window moved up under
+       it could not be touched again. */
     const barFloats = barMode === 'auto' && onScreen;
-    setOverlay(`bar:${name}`, barFloats ? output.barEl : null);
+    setOverlay(`bar:${name}`, barFloats ? output.barEl : null,
+      { passthrough: true });
     renderBar(name);
   }
 

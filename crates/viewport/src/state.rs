@@ -308,6 +308,11 @@ pub struct ViewportState {
     /// anything it draws is behind them by construction, which for a dialog
     /// asking a question is the one place that will not do.
     pub shell_overlays: Vec<smithay::utils::Rectangle<i32, Logical>>,
+    /// The ones of those that also take the pointer, which is all of them
+    /// except the bar under `auto`. See `OverlayRect::passthrough`: that bar is
+    /// revealed by the same modifier every window gesture is on, so a strip of
+    /// screen it floats over would otherwise stop answering clicks.
+    pub shell_overlay_hits: Vec<smithay::utils::Rectangle<i32, Logical>>,
 
     /// The pointer image: the client's own surface where one is set, the
     /// theme's otherwise. Nothing draws a cursor unless this says what.
@@ -1069,6 +1074,7 @@ impl ViewportState {
             shell_rate_verbose: std::env::var_os("VIEWPORT_SHELL_RATE").is_some(),
             shell_overlay_ids: Vec::new(),
             shell_overlays: Vec::new(),
+            shell_overlay_hits: Vec::new(),
 
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             tablet_cursor_status: None,
@@ -1294,7 +1300,7 @@ impl ViewportState {
             // Every click belongs to the shell while it is drawing miniatures.
             return self.shell_under(pos);
         }
-        if crate::pointer::over_overlay(&self.shell_overlays, pos) {
+        if crate::pointer::over_overlay(&self.shell_overlay_hits, pos) {
             // The shell drew something here in front of the windows — a
             // notification, a floating bar, the screen-share chooser. It is on
             // top, so it takes the pointer; reporting the window underneath
@@ -6170,10 +6176,18 @@ impl ViewportState {
     /// Ids are kept by position and only minted when the list grows, because a
     /// render element with a new id every frame tells the damage tracker that
     /// everything changed.
-    pub fn set_shell_overlays(&mut self, rects: Vec<smithay::utils::Rectangle<i32, Logical>>) {
-        if self.shell_overlays == rects {
+    ///
+    /// `hits` is the subset of them that takes the pointer. Everything the
+    /// shell floats does, bar one: see `shell_overlay_hits`.
+    pub fn set_shell_overlays(
+        &mut self,
+        rects: Vec<smithay::utils::Rectangle<i32, Logical>>,
+        hits: Vec<smithay::utils::Rectangle<i32, Logical>>,
+    ) {
+        if self.shell_overlays == rects && self.shell_overlay_hits == hits {
             return;
         }
+        self.shell_overlay_hits = hits;
         // What is under the pointer just changed without the pointer moving,
         // and the pointer's focus is only worked out when it moves.
         //
