@@ -363,19 +363,51 @@ fn serve(listener: TcpListener, bridge: Arc<Bridge>) -> Result<()> {
     Ok(())
 }
 
+/// What to do with the connection after a request has been answered.
+#[derive(PartialEq, Eq, Debug)]
+enum Flow {
+    /// Read another request from the same socket.
+    Keep,
+    /// Answered, and the socket is finished with.
+    Close,
+}
+
+/// One connection, for as many requests as the page sends down it.
+///
+/// Keep-alive rather than a connection per request, for the same reason the
+/// page batches its sends: a request that costs a TCP handshake, an accept and
+/// a thread is a request the script thread waits on. HTTP/1.1 defaults to a
+/// persistent connection, so this is what a client already expects — the old
+/// `Connection: close` on every answer was the server going out of its way to
+/// make each message cost a new one.
 fn handle(stream: TcpStream, bridge: &Bridge) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone().context("duplicating the socket")?);
+    while serve_one(&mut reader, &stream, bridge)? == Flow::Keep {}
+    Ok(())
+}
+
+fn serve_one(
+    reader: &mut BufReader<TcpStream>,
+    stream: &TcpStream,
+    bridge: &Bridge,
+) -> Result<Flow> {
     let mut request_line = String::new();
     if reader
         .read_line(&mut request_line)
         .context("reading a request")?
         == 0
     {
-        return Ok(());
+        // The page went away between requests, which is the ordinary end of a
+        // kept connection rather than a failure.
+        return Ok(Flow::Close);
     }
     let (method, target) = parse_request_line(&request_line)
         .ok_or_else(|| anyhow!("unparseable request line: {request_line:?}"))?;
 
+    // HTTP/1.0 has the opposite default, and a client of either version may ask
+    // for the connection back. Both are honoured: a socket held open against a
+    // client that has stopped listening on it is a thread that never returns.
+    let mut keep = !request_line.contains("HTTP/1.0");
     let mut length = 0usize;
     loop {
         let mut header = String::new();
@@ -387,6 +419,14 @@ fn handle(stream: TcpStream, bridge: &Bridge) -> Result<()> {
         }
         if let Some(value) = header_value(&header, "content-length") {
             length = value.trim().parse().unwrap_or(0);
+        }
+        if let Some(value) = header_value(&header, "connection") {
+            let value = value.trim().to_ascii_lowercase();
+            if value.contains("close") {
+                keep = false;
+            } else if value.contains("keep-alive") {
+                keep = true;
+            }
         }
     }
 
@@ -402,12 +442,16 @@ fn handle(stream: TcpStream, bridge: &Bridge) -> Result<()> {
     // so that a mistyped one fails as a 404 rather than as a CORS error, which
     // is the difference between a debuggable shell and a silent one.
     if method == "OPTIONS" {
-        return respond(&stream, 204, "", "");
+        respond(stream, 204, "", "", keep)?;
+        return Ok(if keep { Flow::Keep } else { Flow::Close });
     }
 
     if query_value(&target, "t").as_deref() != Some(bridge.token.as_str()) {
         tracing::warn!("a request to {path} arrived without this session's token");
-        return respond(&stream, 403, "text/plain", "no");
+        // Not kept: whatever is on the other end is not the page, and it does
+        // not get a socket to try the next guess down.
+        respond(stream, 403, "text/plain", "no", false)?;
+        return Ok(Flow::Close);
     }
 
     match (method.as_str(), path.as_str()) {
@@ -424,7 +468,8 @@ fn handle(stream: TcpStream, bridge: &Bridge) -> Result<()> {
             } else {
                 bridge.out.send(message);
             }
-            respond(&stream, 204, "", "")
+            respond(stream, 204, "", "", keep)?;
+            Ok(if keep { Flow::Keep } else { Flow::Close })
         }
         ("GET", "/events") => {
             let after = query_value(&target, "after")
@@ -438,16 +483,27 @@ fn handle(stream: TcpStream, bridge: &Bridge) -> Result<()> {
             let fresh = query_value(&target, "fresh").as_deref() == Some("1");
             let (next, items) = bridge.queue.since(after, fresh);
             if items.is_empty() {
-                return respond(&stream, 204, "", "");
+                respond(stream, 204, "", "", keep)?;
+                return Ok(if keep { Flow::Keep } else { Flow::Close });
             }
             let batch = serde_json::json!({"next": next, "items": items});
-            respond(&stream, 200, "application/json", &batch.to_string())
+            respond(stream, 200, "application/json", &batch.to_string(), keep)?;
+            Ok(if keep { Flow::Keep } else { Flow::Close })
         }
-        _ => respond(&stream, 404, "text/plain", "no such thing"),
+        _ => {
+            respond(stream, 404, "text/plain", "no such thing", false)?;
+            Ok(Flow::Close)
+        }
     }
 }
 
-fn respond(mut stream: &TcpStream, status: u16, content_type: &str, body: &str) -> Result<()> {
+fn respond(
+    mut stream: &TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &str,
+    keep: bool,
+) -> Result<()> {
     let reason = match status {
         200 => "OK",
         204 => "No Content",
@@ -466,7 +522,14 @@ fn respond(mut stream: &TcpStream, status: u16, content_type: &str, body: &str) 
     if !content_type.is_empty() {
         head.push_str(&format!("Content-Type: {content_type}\r\n"));
     }
-    head.push_str("Connection: close\r\n\r\n");
+    /* Every answer carries a Content-Length, including the empty ones, so a
+    client reading a kept connection knows where this response ends without
+    waiting for a close. */
+    head.push_str(if keep {
+        "Connection: keep-alive\r\n\r\n"
+    } else {
+        "Connection: close\r\n\r\n"
+    });
     stream
         .write_all(head.as_bytes())
         .and_then(|()| stream.write_all(body.as_bytes()))
@@ -689,11 +752,17 @@ mod tests {
     }
 
     /// One HTTP request, and everything that came back.
+    /// One request on a connection of its own, read to the close that ends it.
+    ///
+    /// `Connection: close` is what makes reading to EOF the right way to read
+    /// the answer: the server keeps a connection otherwise, and a read to EOF
+    /// on a kept one waits for a close that is not coming. The page does the
+    /// keeping — see `several_requests_share_one_connection`.
     fn request(port: u16, head: &str, body: &str) -> String {
         use std::net::TcpStream;
         let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("the bridge");
         let request = format!(
-            "{head} HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+            "{head} HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         );
         stream
@@ -832,6 +901,79 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("a message");
         assert_eq!(got.trim(), "{\"type\":\"d\"}");
+
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    /// Three sends down one socket, and the socket is still open after them.
+    ///
+    /// The point of keep-alive here: a message that costs a connection costs a
+    /// handshake, an accept and a thread, on the script thread that should be
+    /// painting. Read by Content-Length rather than to EOF, which is the whole
+    /// difference — a kept connection has no EOF to read to.
+    #[test]
+    fn several_requests_share_one_connection() {
+        use std::net::TcpStream;
+
+        let (socket, from_page) = fake_compositor();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port");
+        let port = listener.local_addr().expect("the port").port();
+
+        let queue = Arc::new(Queue::new());
+        let out = viewport_shell_bridge::connect(&socket, |_| {}).expect("connecting");
+        serve(
+            listener,
+            Arc::new(Bridge {
+                queue,
+                token: "secret".to_owned(),
+                out,
+            }),
+        )
+        .expect("the bridge starts");
+
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("the bridge");
+        let mut writer = stream.try_clone().expect("duplicating the socket");
+        let mut reader = BufReader::new(stream);
+
+        for n in 0..3 {
+            let body = format!("{{\"type\":\"m{n}\"}}");
+            write!(
+                writer,
+                "POST /send?t=secret HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .expect("writing a request");
+
+            // The head, then exactly the body it declares. Nothing here waits
+            // for a close, because the server is not going to close.
+            let mut length = 0usize;
+            let mut kept = false;
+            loop {
+                let mut line = String::new();
+                assert_ne!(
+                    reader.read_line(&mut line).expect("a header"),
+                    0,
+                    "the connection was closed after request {n}"
+                );
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = header_value(&line, "content-length") {
+                    length = value.trim().parse().expect("a length");
+                }
+                if let Some(value) = header_value(&line, "connection") {
+                    kept = value.trim().eq_ignore_ascii_case("keep-alive");
+                }
+            }
+            assert!(kept, "request {n} was not answered on a kept connection");
+            let mut answered = vec![0u8; length];
+            reader.read_exact(&mut answered).expect("a body");
+
+            let got = from_page
+                .recv_timeout(Duration::from_secs(2))
+                .expect("a message");
+            assert_eq!(got.trim(), body);
+        }
 
         let _ = std::fs::remove_file(&socket);
     }
