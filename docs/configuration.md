@@ -20,6 +20,7 @@ a TTY.
   "timeout_ms": 5000,
   "layout": "tiling",       // or "scrolling", "solar", "matrix", "canvas"
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
+  "pixel_format": "auto",   // or "10" / "8" bits per channel; see below
   "idle": { "lock_after": 600, "lock_command": "swaylock -f",
             "blank_after": 900 },
   "cursor": { "theme": "Bibata-Modern-Classic", "size": 24,
@@ -897,6 +898,42 @@ What it does not touch is asking for a monitor by name. A binding on
 `shell output.focus right` still moves there: the setting is about falling off
 the end of one screen, not about ever leaving it.
 
+
+## Pixel format
+
+How many bits per colour channel the buffers that reach the screen carry.
+
+```json
+"pixel_format": "10"
+```
+
+`--pixel-format 10` and `VIEWPORT_PIXEL_FORMAT=10` say the same thing; the flag
+wins over the variable, and the variable over the file. `8`, `10` and `auto`
+are the values, and `8bit` / `10-bit` are accepted for whoever types them.
+
+| Value | What it asks for |
+| --- | --- |
+| `auto` | Ten bits where the display takes it, eight where it does not. The default, and what every release before this one did |
+| `10` | Ten bits and nothing else — an output whose plane will not take a ten-bit format **does not come up** |
+| `8` | Eight bits, whatever the display can do |
+
+**`10` is deliberately unforgiving.** It exists to answer "am I actually
+getting ten bits", which `auto` cannot: `auto` falls back silently, so a
+display quietly serving eight bits looks exactly like one serving ten. A dark
+screen is the answer, and so is the line each output logs as it comes up:
+
+```
+DP-1: 2560x1440 at x=0, Abgr2101010
+```
+
+That format is what the display agreed to, not what was asked for, so it is
+worth reading even under `auto`.
+
+Eight bits is worth choosing for the opposite reason: a ten-bit buffer is
+wider, so it costs more bandwidth to scan out and more memory to composite, and
+on a display that only shows eight of the bits that cost buys nothing. HDR
+needs more than eight bits per channel, though, so `"pixel_format": "8"` and an
+output's `hdr` are working against each other.
 
 ## Outputs
 

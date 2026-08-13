@@ -140,6 +140,46 @@ const SCANOUT_FORMATS: &[Fourcc] = &[
     Fourcc::Xrgb8888,
 ];
 
+/// The same list with the ten-bit half removed.
+const SCANOUT_FORMATS_8: &[Fourcc] = &[Fourcc::Argb8888, Fourcc::Xrgb8888];
+
+/// And with the eight-bit fallback removed, so a display that cannot do ten
+/// bits fails to come up rather than quietly giving eight.
+const SCANOUT_FORMATS_10: &[Fourcc] = &[Fourcc::Abgr2101010, Fourcc::Argb2101010];
+
+/// Which of those lists this session asked for.
+///
+/// `$VIEWPORT_PIXEL_FORMAT`, which `--pixel-format` and the config file's
+/// `pixel_format` both write before a device is opened — the list is needed
+/// while the DRM device is being built, before there is any state to read a
+/// setting out of, and one variable is what `--renderer` already does.
+///
+/// An unparseable value is a warning and the default rather than a failure to
+/// start: a compositor that refuses to bring the screens up over a typo in an
+/// environment variable leaves a TTY as the only way to fix it.
+fn scanout_formats() -> &'static [Fourcc] {
+    let asked = std::env::var("VIEWPORT_PIXEL_FORMAT").unwrap_or_default();
+    match crate::config::parse_pixel_format(&asked) {
+        Ok(crate::config::PixelFormat::Auto) => SCANOUT_FORMATS,
+        Ok(crate::config::PixelFormat::Eight) => {
+            tracing::info!("VIEWPORT_PIXEL_FORMAT={asked}: eight bits per channel");
+            SCANOUT_FORMATS_8
+        }
+        Ok(crate::config::PixelFormat::Ten) => {
+            tracing::info!(
+                "VIEWPORT_PIXEL_FORMAT={asked}: ten bits per channel, with no \
+                 eight-bit fallback — an output whose plane will not take it \
+                 stays dark"
+            );
+            SCANOUT_FORMATS_10
+        }
+        Err(e) => {
+            tracing::warn!("{e}; using the default order");
+            SCANOUT_FORMATS
+        }
+    }
+}
+
 // The element list is `crate::render::OutputElement`, generic over the
 // renderer so the DRM path can use either.
 
@@ -1416,7 +1456,7 @@ pub fn open_device(
         allocator,
         exporter,
         Some(gbm),
-        SCANOUT_FORMATS.iter().copied(),
+        scanout_formats().iter().copied(),
         render_formats,
     );
 
@@ -1957,7 +1997,17 @@ impl ViewportState {
                         .max()
                         .unwrap_or(0);
 
-                    tracing::info!("{name}: {}x{} at x={x}", mode.size().0, mode.size().1);
+                    // The format is logged because it is chosen by
+                    // negotiation: the preference order says what was asked
+                    // for and only the surface says what the display agreed
+                    // to, and "did the ten-bit request take" has no other
+                    // answer short of dumping the planes.
+                    let format = drm_output.with_compositor(|c| c.format());
+                    tracing::info!(
+                        "{name}: {}x{} at x={x}, {format:?}",
+                        mode.size().0,
+                        mode.size().1
+                    );
                     // `map_output_at` inlined: `udev` is borrowed for the whole
                     // arm, so taking `&mut self` again here does not compile.
                     // Both halves still have to happen, or the second monitor

@@ -195,6 +195,30 @@ fn run() -> Result<()> {
         config.layout = Some(layout.to_owned());
     }
 
+    // The scanout bit depth, resolved here and carried in the environment
+    // because the DRM device picks its formats while it is being opened —
+    // before there is a state to read a setting out of. `--renderer` takes the
+    // same route for the same reason.
+    //
+    // Command line over environment over file: the more deliberate of the
+    // three wins, and the file is the standing preference. Validated here
+    // rather than where it is read, because a typo should be a message at
+    // startup and not a warning buried in the log of a session that is already
+    // running on the wrong depth.
+    {
+        let asked = flag(&args, "--pixel-format")
+            .map(str::to_owned)
+            .or_else(|| std::env::var("VIEWPORT_PIXEL_FORMAT").ok())
+            .or_else(|| config.pixel_format.clone());
+        if let Some(asked) = asked {
+            config::parse_pixel_format(&asked)
+                .map_err(|e| anyhow::anyhow!("{e}; --pixel-format, $VIEWPORT_PIXEL_FORMAT or the config file's \"pixel_format\""))?;
+            // SAFETY: single-threaded still — no backend is up and nothing has
+            // been spawned, which is the same window `--renderer` uses.
+            unsafe { std::env::set_var("VIEWPORT_PIXEL_FORMAT", &asked) };
+        }
+    }
+
     let mut event_loop: EventLoop<ViewportState> = EventLoop::try_new()?;
     let display: Display<ViewportState> = Display::new()?;
 
@@ -767,6 +791,11 @@ const OPTIONS: &[Opt] = &[
         flag: "--renderer",
         value: "NAME",
         what: "vulkan or gles, over $VIEWPORT_RENDERER",
+    },
+    Opt {
+        flag: "--pixel-format",
+        value: "N",
+        what: "scanout bits per channel: 8, 10 or auto, over $VIEWPORT_PIXEL_FORMAT",
     },
     Opt {
         flag: "--shell-backend",

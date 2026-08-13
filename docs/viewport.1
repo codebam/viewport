@@ -44,6 +44,15 @@ Tiling or scrolling, over whatever the config says.
 .BI \-\-renderer " NAME"
 Vulkan or gles, over $VIEWPORT_RENDERER.
 .TP
+.BI \-\-pixel-format " N"
+Scanout bits per channel:
+.BR 8 ,
+.B 10
+or
+.BR auto ,
+over $VIEWPORT_PIXEL_FORMAT and the config file's
+.BR pixel_format .
+.TP
 .BI \-\-shell-backend " NAME"
 Which engine draws the desktop; see
 .IR docs/shell-backends.md .
@@ -86,6 +95,11 @@ for everything the shell says.
 .B VIEWPORT_RENDERER
 The renderer to use (vulkan or gles); overridden by
 .BR \-\-renderer .
+.TP
+.B VIEWPORT_PIXEL_FORMAT
+Scanout bits per channel (8, 10 or auto); overridden by
+.BR \-\-pixel-format ,
+and itself overriding the config file.
 .TP
 .B VIEWPORT_SHELL_BACKEND
 Which engine draws the shell; overridden by

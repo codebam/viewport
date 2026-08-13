@@ -259,6 +259,13 @@ pub struct File {
     pub tiling_mode: Option<String>,
 
     pub dark_mode: Option<bool>,
+
+    /// How many bits per colour channel a scanout buffer carries: `"8"`,
+    /// `"10"`, or `"auto"`. Absent is `"auto"`.
+    ///
+    /// See [`parse_pixel_format`] for what each one does.
+    pub pixel_format: Option<String>,
+
     pub adaptive_sync: Option<bool>,
     pub vt_switching: Option<bool>,
 
@@ -508,6 +515,51 @@ pub fn shell_url(value: &str) -> anyhow::Result<String> {
     ))
 }
 
+/// How many bits per colour channel a scanout buffer carries.
+///
+/// Depth rather than a fourcc, because the byte order is not the interesting
+/// part: a display takes several orderings of the same depth and the driver
+/// picks between them, while the choice between eight and ten bits is the one
+/// that shows on screen — banding in a gradient on one side, and on the other
+/// a wider buffer that some displays will not scan out at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// Ten bits first, eight if the display will not take it. The default.
+    Auto,
+    /// Eight bits, whatever the display can do.
+    Eight,
+    /// Ten bits and nothing else. An output whose plane will not take a
+    /// ten-bit format does not come up at all, which is the point — it is how
+    /// "did I get ten bits" is answered without reading a plane dump.
+    Ten,
+}
+
+/// What `pixel_format`, `--pixel-format` and `$VIEWPORT_PIXEL_FORMAT` accept.
+///
+/// The bit depth is what is named, in every form somebody types it: `10`,
+/// `10bit`, `10-bit`. `auto` and an empty value are the default, so unsetting
+/// the variable and setting it to nothing agree.
+pub fn parse_pixel_format(value: &str) -> anyhow::Result<PixelFormat> {
+    let trimmed = value.trim().to_ascii_lowercase();
+    // Only where a depth is left in front of it, or a bare "bit" would strip
+    // down to the empty string and be read as the default.
+    let depth = match trimmed
+        .strip_suffix("bit")
+        .map(|d| d.trim_end_matches(['-', '_', ' ']))
+    {
+        Some(depth) if !depth.is_empty() => depth,
+        _ => trimmed.as_str(),
+    };
+    match depth {
+        "" | "auto" | "default" => Ok(PixelFormat::Auto),
+        "8" => Ok(PixelFormat::Eight),
+        "10" => Ok(PixelFormat::Ten),
+        _ => Err(anyhow::anyhow!(
+            "pixel format {value:?} is not one of 8, 10 or auto"
+        )),
+    }
+}
+
 /// Percent-encode everything a path may contain that a URI may not.
 ///
 /// `/` is kept, because it is the path separator rather than data. Everything
@@ -553,6 +605,35 @@ pub(crate) fn percent_decode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pixel_format_names_its_bit_depth_in_any_form_somebody_types_it() {
+        assert_eq!(parse_pixel_format("8").unwrap(), PixelFormat::Eight);
+        assert_eq!(parse_pixel_format("10").unwrap(), PixelFormat::Ten);
+        assert_eq!(parse_pixel_format(" 10bit ").unwrap(), PixelFormat::Ten);
+        assert_eq!(parse_pixel_format("10-BIT").unwrap(), PixelFormat::Ten);
+        assert_eq!(parse_pixel_format("8_bit").unwrap(), PixelFormat::Eight);
+    }
+
+    #[test]
+    fn an_unset_pixel_format_and_an_empty_one_agree() {
+        // The environment variable is read with unwrap_or_default, so "" is
+        // what "not set at all" looks like by the time it is parsed. If that
+        // were an error, every session without the variable would log a
+        // warning about a value nobody wrote.
+        assert_eq!(parse_pixel_format("").unwrap(), PixelFormat::Auto);
+        assert_eq!(parse_pixel_format("  ").unwrap(), PixelFormat::Auto);
+        assert_eq!(parse_pixel_format("auto").unwrap(), PixelFormat::Auto);
+    }
+
+    #[test]
+    fn a_pixel_format_that_is_not_a_depth_is_reported_not_ignored() {
+        // Silently defaulting would leave someone chasing banding with the
+        // setting meant to fix it sitting in their config doing nothing.
+        assert!(parse_pixel_format("16").is_err());
+        assert!(parse_pixel_format("argb8888").is_err());
+        assert!(parse_pixel_format("bit").is_err());
+    }
 
     #[test]
     fn a_mode_string_parses_the_way_the_c_build_wrote_them() {
