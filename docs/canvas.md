@@ -57,7 +57,7 @@ cropped, by the same clip a scrolled column gets.
 
 **Focus follows minimally.** Focusing a window already on screen moves the view
 not at all; focusing one off the edge pans the smallest distance that brings it
-in, with a margin, and never changes the zoom.
+in, leaving the configured gap behind it, and never changes the zoom.
 
 ## Why the zoom stops at 1.0
 
@@ -211,7 +211,12 @@ In `CANVAS`, at the top of `data/shell/canvas.js`:
 | `moveStep` | `120` | how far one move key carries a window, in *world* units — moving a window is an edit to the plane, so the same key makes the same edit whatever the view is doing |
 | `width` / `height` | `0.45` / `0.55` | a new window's size, as a fraction of the visible area |
 | `cascade` | `48` | how far each successive new window is offset from the last |
-| `margin` | `48` | space kept between a followed window and the edge of the screen |
+| `margin` | `48` | space kept around the plane when fitting all of it on screen |
+
+The gap left when *following* focus is not among these: it is the configured
+gap (`gaps` plus `gaps.outer`), read at the time of the pan, because the desktop
+already has an answer to how much space belongs between a window and the edge of
+the screen. Turning gaps off leaves a followed window flush against the edge.
 
 ## Keys
 
@@ -225,7 +230,17 @@ the others rather than an error.
 | `Mod4+-` / `Mod4+=` | zoom out / in (stops at 1:1) |
 | `Mod4+Shift+f` | fit the whole plane on screen |
 | `Mod4+Home` | back to 1:1 on the focused window |
+| `Mod4+r` | size the focused window to the screen, without fullscreen |
 | `Mod4+Shift+h/j/k/l` | move the focused window across the plane; the view follows |
+
+`Mod4+r` is the resize chord every other layout spends on a resize mode, which
+the canvas has no use for: a window here takes space from nothing, so there is
+nothing to enter a mode about. What it does instead is the one resize that is
+tedious by hand — give the focused window the rectangle the view is currently
+showing. It is not fullscreen (`Mod4+f`): the frame stays on, the windows behind
+it stay where they are, and panning away leaves it the size it was. The size is
+in world units, so at 0.5 the window is given twice the screen's width and
+covers the screen at that zoom too.
 
 And with the pointer:
 

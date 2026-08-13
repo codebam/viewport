@@ -461,6 +461,13 @@ pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
         // not four presses of zoom-in.
         specs.push("Mod4+Shift+f=shell canvas.fit".to_owned());
         specs.push("Mod4+Home=shell canvas.home".to_owned());
+        // The resize chord every other layout spends on a mode. There is no
+        // mode to enter here — a window on a plane takes space from nothing —
+        // so the one resize worth a key is the one that is tedious by hand:
+        // fill the screen. Not fullscreen, which is Mod4+f and takes the
+        // output; this leaves an ordinary window that happens to be screen
+        // sized, with the plane still behind it.
+        specs.push("Mod4+r=shell canvas.fill".to_owned());
     } else {
         // Resize mode, as in sway: Mod4+r enters it, hjkl and the arrows
         // resize a step at a time, Escape or Return leaves. Scoped to the mode
@@ -954,12 +961,13 @@ mod tests {
 
         // The canvas has no resize mode either — a window on a plane is sized
         // by dragging it, not by taking space from a neighbour it does not
-        // share any with — and eight of its own in place of it.
+        // share any with — and nine of its own in place of it, one of which
+        // takes over `Mod4+r` from the mode.
         let canvas = defaults("foot", "wmenu-run", "canvas");
-        assert_eq!(canvas.len(), bindings.len() - 1 + 8);
+        assert_eq!(canvas.len(), bindings.len() - 1 + 9);
 
-        // And every one of those eight is really there, by name. The count
-        // above would be satisfied by eight of anything, and the failure this
+        // And every one of those nine is really there, by name. The count
+        // above would be satisfied by nine of anything, and the failure this
         // is written against is a keysym the parser does not know: `filter_map`
         // drops the whole binding, so a chord that does nothing looks exactly
         // like a layout that does not respond to the keyboard.
@@ -972,6 +980,7 @@ mod tests {
             "Mod4+equal",
             "Mod4+Shift+f",
             "Mod4+Home",
+            "Mod4+r",
         ] {
             let wanted = parse_chord(chord).expect("the test's own chord parses");
             assert!(

@@ -124,7 +124,7 @@ can be copied straight into `binds`. Turn the listing off with
 | `Mod4+b` / `Mod4+v` | next window splits horizontally / vertically |
 | `Mod4+e` | flip the focused container's layout |
 | `Mod4+f` | fullscreen |
-| `Mod4+r` | resize mode; then `hjkl`, `Escape` to leave |
+| `Mod4+r` | resize mode; then `hjkl`, `Escape` to leave (scrolling and canvas bind it to something of their own; solar leaves it unbound) |
 | `Mod4` + right-drag | resize; dragging the gap between windows also works |
 | `Mod4+n` | toggle the bar |
 | `Mod4+Shift+d` | toggle dark mode |
@@ -799,6 +799,7 @@ is asked to relayout itself for any view change.
 | `Mod4+minus` / `Mod4+equal` | zoom out / in |
 | `Mod4+Shift+f` | fit the whole plane on screen |
 | `Mod4+Home` | back to 1:1 on the focused window |
+| `Mod4+r` | size the focused window to the screen, without fullscreen |
 | `Mod4+Shift+h/j/k/l` | move the focused window across the plane |
 | `Mod4` + left drag | move a window, or pan the plane when the drag starts on the desktop |
 | `Mod4` + right drag | resize a window |

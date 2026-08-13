@@ -101,11 +101,8 @@ const CANVAS = {
      edge, with nothing to show that the plane ends there. */
   margin: 48,
 
-  /* The same gap when following focus, which is none: a followed window sits
-     flush against the edge it came in from. Padding here costs screen to a
-     strip of empty plane on every focus change, and the window is what the
-     user asked to see. */
-  followMargin: 0,
+  /* The gap when following focus is not here: it is the configured gap, read
+     at the time of the pan by canvasFollowMargin(). */
 
   /* How small a drag may make a window, in world units. A resize that can
      reach zero leaves a rectangle too small to take hold of and no way to grow
@@ -493,6 +490,19 @@ function canvasFitViewport(items, area, margin = CANVAS.margin) {
   };
 }
 
+/* The gap left between a followed window and the edge it came in from.
+ *
+ * The configured gap, and not a number of this file's own: the desktop already
+ * has an answer to "how much space belongs between a window and the edge of
+ * the screen", and a canvas that made up its own would be the only layout
+ * where turning gaps off left a border anyway. Inner plus outer, which is what
+ * a tiled window gets at a screen edge — see edgeGapPx, minus the smart-gaps
+ * case, which is about a workspace holding one window and has nothing to say
+ * about a plane. */
+function canvasFollowMargin() {
+  return gapPx() + gapOuterPx();
+}
+
 /* The smallest pan that brings a world rectangle fully on screen.
  *
  * Minimal on purpose: following focus by centring the focused window would
@@ -503,7 +513,7 @@ function canvasFitViewport(items, area, margin = CANVAS.margin) {
  * Zoom is returned unchanged. Following focus is not a reason to change how
  * far out the view is — that is a decision the user made and this has no
  * business undoing it. */
-function canvasFollow(rect, viewport, area, margin = CANVAS.followMargin) {
+function canvasFollow(rect, viewport, area, margin = canvasFollowMargin()) {
   if (!rect || !area || !(area.width > 0) || !(area.height > 0)) return viewport;
 
   const zoom = viewport.zoom;
@@ -909,6 +919,42 @@ function canvasHome() {
   canvasViewports.set(target.workspace,
     rect ? canvasFollow(rect, at, target.area) : at);
   relayoutAll();
+}
+
+/* Size the focused window to the screen, without making it fullscreen.
+ *
+ * The plane has no maximised state and no edge to maximise against, so this is
+ * a resize like any other: the window is given the rectangle the view is
+ * currently showing. It stays an ordinary window on the plane — the frame is
+ * still on it, the ones behind it are still there, and panning away from it
+ * leaves it the size it was. Fullscreen proper (`window.fullscreen`) takes the
+ * output and hides the rest, which is a different thing to want.
+ *
+ * Divided by the zoom because a place is in world units: at 0.5 the window has
+ * to be twice the screen's width on the plane to cover the screen. That also
+ * makes this the reliable way to fill the screen at any zoom, rather than
+ * something that only lands at 1.0.
+ *
+ * The client's own minimum is not consulted, unlike canvasResizeBy: this only
+ * ever grows a window to the screen, and a client whose minimum is larger than
+ * the screen is already refusing every size the canvas can offer it. */
+function canvasFillFocused() {
+  const target = canvasTarget();
+  if (!target || focusedId == null) return false;
+  if (workspaceOf(focusedId) !== target.workspace) return false;
+  const rect = canvasPlaces.get(focusedId);
+  if (!rect) return false;
+
+  const viewport = canvasViewportOf(target.workspace);
+  rect.x = viewport.x;
+  rect.y = viewport.y;
+  rect.width = target.area.width / viewport.zoom;
+  rect.height = target.area.height / viewport.zoom;
+  /* Put here by a person, so a late configure from the client does not get to
+     place it again. See canvasReparented. */
+  markCanvasMoved(focusedId);
+  relayoutAll();
+  return true;
 }
 
 /* Drag a window across the plane, in response to Mod4 + left drag.

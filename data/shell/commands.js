@@ -241,6 +241,9 @@ function handleShellCommand(command, args) {
     case 'canvas.home':
       canvasHome();
       break;
+    case 'canvas.fill':
+      canvasFillFocused();
+      break;
     case 'output.hdr':
       /* No state of its own: the compositor owns whether an output is in HDR,
          and toggling is asking it to flip whatever it currently has. */

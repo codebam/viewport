@@ -354,6 +354,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      of what stands between it and a desktop swept into a pile. */
   + '   serialise: serialiseCanvas, restore: restoreCanvas,'
   + '   drop: dropCanvasSlots, get slots() { return canvasSlots; },'
+  + '   fill: canvasFillFocused, followMargin: canvasFollowMargin,'
   + '   get CANVAS() { return CANVAS; } },'
   /* The session file as it would be written. The save itself is debounced by
      a real timer, so nothing synchronous can observe the message — and what
@@ -1338,9 +1339,9 @@ if (mode === 'tiling') {
     const moved = canvas.follow(away, viewport, AREA);
     check('following one off to the right pans right',
       moved.x > viewport.x);
-    check('by just enough to fit it, flush against the edge',
+    check('by just enough to fit it, and the configured gap',
       near(moved.x,
-        away.x + away.width + canvas.CANVAS.followMargin - AREA.width));
+        away.x + away.width + canvas.followMargin() - AREA.width));
     check('and following never changes the zoom',
       moved.zoom === viewport.zoom);
 
@@ -1349,8 +1350,8 @@ if (mode === 'tiling') {
     const huge = canvas.follow({ x: 0, y: 0, width: 9000, height: 9000 },
       at(500, 500), AREA);
     check('an oversized window is followed to its top left',
-      near(huge.x, -canvas.CANVAS.followMargin)
-      && near(huge.y, -canvas.CANVAS.followMargin));
+      near(huge.x, -canvas.followMargin())
+      && near(huge.y, -canvas.followMargin()));
   }
 
   {
@@ -1500,6 +1501,26 @@ if (mode === 'tiling') {
     check('and never below the minimum',
       tiny.width === canvas.CANVAS.minSize
       && tiny.height === canvas.CANVAS.minSize);
+
+    /* Mod4+r fills the screen without going fullscreen. Checked at 0.5 like
+       everything else in this block: the size is in world units, so at half
+       zoom a screen-filling window is twice the screen wide on the plane, and
+       a missing division would be invisible at 1.0. */
+    const filling = { ...canvas.viewport(workspace) };
+    const screen = canvas.area(globalThis.__shell.outputs.get(S_NAME));
+    emit({ type: 'shell.command', command: 'canvas.fill', args: [] });
+    const filled = canvas.places.get(3);
+    check('canvas.fill sizes the focused window to the screen',
+      near(filled.width, screen.width / filling.zoom)
+      && near(filled.height, screen.height / filling.zoom));
+    check('and puts it where the view starts, so it covers it exactly',
+      near(filled.x, filling.x) && near(filled.y, filling.y));
+    check('and moves the view not at all: it is a resize, not a pan',
+      near(canvas.viewport(workspace).x, filling.x)
+      && near(canvas.viewport(workspace).y, filling.y)
+      && canvas.viewport(workspace).zoom === filling.zoom);
+    check('and the window is not fullscreen',
+      globalThis.__shell.fullscreenOnForTest(workspace) !== 3);
 
     /* Dragging the desktop moves the view the other way: the plane follows the
        hand, rather than sliding out from under it. */
