@@ -230,14 +230,19 @@ the others rather than an error.
 | `Mod4+-` / `Mod4+=` | zoom out / in (stops at 1:1) |
 | `Mod4+Shift+f` | fit the whole plane on screen |
 | `Mod4+Home` | back to 1:1 on the focused window |
-| `Mod4+r` | size the focused window to the screen, without fullscreen |
+| `Mod4+r` | size the focused window to the screen, less the gaps, without fullscreen |
 | `Mod4+Shift+h/j/k/l` | move the focused window across the plane; the view follows |
 
 `Mod4+r` is the resize chord every other layout spends on a resize mode, which
 the canvas has no use for: a window here takes space from nothing, so there is
 nothing to enter a mode about. What it does instead is the one resize that is
-tedious by hand — give the focused window the rectangle the view is currently
-showing. It is not fullscreen (`Mod4+f`): the frame stays on, the windows behind
+tedious by hand — give the focused window the screen, inset by the configured
+gap, so it stops where the gaps begin and gets the edge a tiled window would
+have had. Smart gaps do not apply: they are about a tiled workspace with nothing
+to divide, which says nothing about a plane, and a lone window on one would
+otherwise fill to the bare edge of the monitor.
+
+It is not fullscreen (`Mod4+f`): the frame stays on, the windows behind
 it stay where they are, and panning away leaves it the size it was. The size is
 in world units, so at 0.5 the window is given twice the screen's width and
 covers the screen at that zoom too.

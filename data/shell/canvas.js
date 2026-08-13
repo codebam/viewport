@@ -930,6 +930,14 @@ function canvasHome() {
  * leaves it the size it was. Fullscreen proper (`window.fullscreen`) takes the
  * output and hides the rest, which is a different thing to want.
  *
+ * The rectangle is the screen inset by the configured gap, so the window stops
+ * where the gaps begin — the edge a tiled window would have had. Measured
+ * against the output rather than taken from `area`, because the two disagree
+ * under smart gaps: `edgeGapPx` drops the inner gap for a workspace holding one
+ * window, and a plane holding one window would then fill to the bare edge of
+ * the monitor. Smart gaps are about a tiled workspace with nothing to divide,
+ * which is not a statement about a plane.
+ *
  * Divided by the zoom because a place is in world units: at 0.5 the window has
  * to be twice the screen's width on the plane to cover the screen. That also
  * makes this the reliable way to fill the screen at any zoom, rather than
@@ -946,10 +954,23 @@ function canvasFillFocused() {
   if (!rect) return false;
 
   const viewport = canvasViewportOf(target.workspace);
-  rect.x = viewport.x;
-  rect.y = viewport.y;
-  rect.width = target.area.width / viewport.zoom;
-  rect.height = target.area.height / viewport.zoom;
+  const box = target.output?.windowsEl?.getBoundingClientRect();
+  /* Screen pixels inside the windows element: where the gap ends, and how much
+     is left between the two of them. Falling back to `area` keeps this working
+     where there is nothing to measure — the same fallback canvasAreaOf's
+     callers get, and it is what the test harness runs on. */
+  const gap = box ? canvasFollowMargin() : target.area.x;
+  const width = box ? box.width - gap * 2 : target.area.width;
+  const height = box ? box.height - gap * 2 : target.area.height;
+  if (!(width > 0) || !(height > 0)) return false;
+
+  /* The place is in world units and the projection puts `area.x` in front of
+     it, so the offset between the two edges is what goes on the plane: a
+     window whose place is `viewport.x` is drawn at `area.x`, not at the gap. */
+  rect.x = viewport.x + (gap - target.area.x) / viewport.zoom;
+  rect.y = viewport.y + (gap - target.area.y) / viewport.zoom;
+  rect.width = width / viewport.zoom;
+  rect.height = height / viewport.zoom;
   /* Put here by a person, so a late configure from the client does not get to
      place it again. See canvasReparented. */
   markCanvasMoved(focusedId);

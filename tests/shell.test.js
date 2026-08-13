@@ -441,10 +441,14 @@ const mode = process.argv[3] ?? 'tiling';
  * check they land where they were rather than in the order they started. */
 const sessionTest = process.argv[4] === 'session';
 
-emit({ type: 'config', layout: mode, rules: [
+/* Named because a config message replaces the rules wholesale, so any later
+   one — a test changing the gaps, say — has to send these again or it takes
+   the window rules out from under everything after it. */
+const HARNESS_RULES = [
   { app_id: 'pinned', workspace: 6 },
   { app_id: 'dialogy', floating: true, x: 10, y: 20, width: 300, height: 200 },
-] });
+];
+emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 emit({ type: 'output.layout', outputs: [{
   name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
   usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
@@ -1456,8 +1460,35 @@ if (mode === 'tiling') {
       Math.abs(beside.x - alone.x) >= canvas.CANVAS.cascade
       && Math.abs(beside.y - alone.y) >= canvas.CANVAS.cascade);
 
-    emit({ type: 'view.removed', id: 30 });
     emit({ type: 'view.removed', id: 31 });
+
+    /* Filling leaves the gaps even under smart gaps, which is the case that
+       made this measure the output instead of trusting the area: edgeGapPx
+       drops the inner gap for a workspace holding one window, and a plane
+       holding one window would otherwise fill to the bare edge of the
+       monitor. Smart gaps are about a tiled workspace with nothing to divide
+       and have nothing to say about a plane. */
+    /* Carrying the harness's rules, because a config message replaces them
+       and the window rules are what a dozen checks below this one stand on. */
+    emit({ type: 'config', layout: 'canvas', rules: HARNESS_RULES,
+      gaps: { inner: 8, outer: 0, smart: true } });
+    emit({ type: 'view.focused', id: 30 });
+    const bare = canvas.area(host);
+    const gap = canvas.followMargin();
+    check('the test set smart gaps up: the area itself lost the inner gap',
+      bare.x < gap);
+
+    const zoom = canvas.viewport(other).zoom;
+    emit({ type: 'shell.command', command: 'canvas.fill', args: [] });
+    const lone = canvas.places.get(30);
+    const screen = host.windowsEl.getBoundingClientRect();
+    check('filling a lone window still stops where the gaps begin',
+      near(lone.width, (screen.width - gap * 2) / zoom)
+      && near(lone.height, (screen.height - gap * 2) / zoom));
+
+    emit({ type: 'config', layout: 'canvas', rules: HARNESS_RULES,
+      gaps: { inner: 8, outer: 0, smart: false } });
+    emit({ type: 'view.removed', id: 30 });
     host.workspace = wasWorkspace;
     emit({ type: 'view.focused', id: 4 });
   }
@@ -1507,14 +1538,20 @@ if (mode === 'tiling') {
        zoom a screen-filling window is twice the screen wide on the plane, and
        a missing division would be invisible at 1.0. */
     const filling = { ...canvas.viewport(workspace) };
-    const screen = canvas.area(globalThis.__shell.outputs.get(S_NAME));
+    const host = globalThis.__shell.outputs.get(S_NAME);
+    const screen = host.windowsEl.getBoundingClientRect();
+    const area = canvas.area(host);
+    const gap = canvas.followMargin();
     emit({ type: 'shell.command', command: 'canvas.fill', args: [] });
     const filled = canvas.places.get(3);
-    check('canvas.fill sizes the focused window to the screen',
-      near(filled.width, screen.width / filling.zoom)
-      && near(filled.height, screen.height / filling.zoom));
-    check('and puts it where the view starts, so it covers it exactly',
-      near(filled.x, filling.x) && near(filled.y, filling.y));
+    check('canvas.fill sizes the focused window to the screen, less the gaps',
+      near(filled.width, (screen.width - gap * 2) / filling.zoom)
+      && near(filled.height, (screen.height - gap * 2) / filling.zoom));
+    /* Drawn where the gap ends: the projection puts area.x in front of the
+       place, so the place carries the difference between the two. */
+    check('and starts where the gaps do',
+      near(filled.x * filling.zoom + area.x - filling.x * filling.zoom, gap)
+      && near(filled.y * filling.zoom + area.y - filling.y * filling.zoom, gap));
     check('and moves the view not at all: it is a resize, not a pan',
       near(canvas.viewport(workspace).x, filling.x)
       && near(canvas.viewport(workspace).y, filling.y)
