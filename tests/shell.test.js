@@ -1343,19 +1343,31 @@ if (mode === 'tiling') {
     const moved = canvas.follow(away, viewport, AREA);
     check('following one off to the right pans right',
       moved.x > viewport.x);
-    check('by just enough to fit it, and the configured gap',
-      near(moved.x,
-        away.x + away.width + canvas.followMargin() - AREA.width));
+    /* Flush with the area, which is where the gaps already are: the area is
+       the output inset by the edge gap, and the projection puts that inset in
+       front of every place. A margin on top of it would be a second gap. */
+    check('by just enough to fit it, and no gap on top of the area',
+      canvas.followMargin(AREA) === 0
+      && near(moved.x, away.x + away.width - AREA.width));
     check('and following never changes the zoom',
       moved.zoom === viewport.zoom);
+
+    /* An area that lost the gap — what smart gaps do to a plane holding one
+       window — gets it back here, so following leaves the configured gap
+       whatever the area is doing. */
+    const bare = { x: 0, y: 0, width: 1920, height: 1050 };
+    const off = canvas.follow(away, viewport, bare);
+    check('an area with no gap of its own is followed with one',
+      canvas.followMargin(bare) > 0
+      && near(off.x,
+        away.x + away.width + canvas.followMargin(bare) - bare.width));
 
     /* An oversized window shows its start rather than its end: both branches
        fire and the top-left one wins. */
     const huge = canvas.follow({ x: 0, y: 0, width: 9000, height: 9000 },
       at(500, 500), AREA);
     check('an oversized window is followed to its top left',
-      near(huge.x, -canvas.followMargin())
-      && near(huge.y, -canvas.followMargin()));
+      near(huge.x, 0) && near(huge.y, 0));
   }
 
   {
@@ -1474,14 +1486,18 @@ if (mode === 'tiling') {
       gaps: { inner: 8, outer: 0, smart: true } });
     emit({ type: 'view.focused', id: 30 });
     const bare = canvas.area(host);
-    const gap = canvas.followMargin();
+    /* The area lost the inner gap, and the follow margin is where it comes
+       back: zero when the area already carries the gap, the whole of it when
+       smart gaps have taken it off. */
+    const margin = canvas.followMargin(bare);
     check('the test set smart gaps up: the area itself lost the inner gap',
-      bare.x < gap);
+      bare.x === 0 && margin > 0);
 
     const zoom = canvas.viewport(other).zoom;
     emit({ type: 'shell.command', command: 'canvas.fill', args: [] });
     const lone = canvas.places.get(30);
     const screen = host.windowsEl.getBoundingClientRect();
+    const gap = bare.x + margin;
     check('filling a lone window still stops where the gaps begin',
       near(lone.width, (screen.width - gap * 2) / zoom)
       && near(lone.height, (screen.height - gap * 2) / zoom));
@@ -1541,7 +1557,12 @@ if (mode === 'tiling') {
     const host = globalThis.__shell.outputs.get(S_NAME);
     const screen = host.windowsEl.getBoundingClientRect();
     const area = canvas.area(host);
-    const gap = canvas.followMargin();
+    /* Where the gaps begin, which is the area's own edge here: without smart
+       gaps in play the area already carries the whole of it, so the follow
+       margin on top is zero. */
+    const gap = area.x + canvas.followMargin(area);
+    check('and the follow margin adds nothing to an area that has the gap',
+      canvas.followMargin(area) === 0 && gap > 0);
     emit({ type: 'shell.command', command: 'canvas.fill', args: [] });
     const filled = canvas.places.get(3);
     check('canvas.fill sizes the focused window to the screen, less the gaps',

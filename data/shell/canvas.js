@@ -490,17 +490,25 @@ function canvasFitViewport(items, area, margin = CANVAS.margin) {
   };
 }
 
-/* The gap left between a followed window and the edge it came in from.
+/* The gap left between a followed window and the edge it came in from, in
+ * screen pixels and measured from the edge of the *area* rather than the edge
+ * of the screen.
  *
- * The configured gap, and not a number of this file's own: the desktop already
- * has an answer to "how much space belongs between a window and the edge of
- * the screen", and a canvas that made up its own would be the only layout
- * where turning gaps off left a border anyway. Inner plus outer, which is what
- * a tiled window gets at a screen edge — see edgeGapPx, minus the smart-gaps
- * case, which is about a workspace holding one window and has nothing to say
- * about a plane. */
-function canvasFollowMargin() {
-  return gapPx() + gapOuterPx();
+ * Which is why it is usually zero. The area is already the output inset by
+ * edgeGapPx, and the projection puts that inset in front of every place, so a
+ * window panned flush against the area is drawn exactly where the gaps begin —
+ * the same edge canvasFillFocused sizes to. A margin on top of that is a second
+ * gap: 15 configured showed up as 30 on screen, which is close enough to the
+ * bar's own height to read as the view ducking a bar that was not there.
+ *
+ * It is nonzero in the one case where the two disagree. Smart gaps drop the
+ * inner gap for a workspace holding one window, so the area of a plane holding
+ * one window runs to the bare edge of the monitor; the difference is made up
+ * here, and following focus leaves the configured gap on a plane whatever
+ * smart gaps have done to the area. */
+function canvasFollowMargin(area) {
+  const gap = gapPx() + gapOuterPx();
+  return Math.max(0, gap - (area?.x ?? gap));
 }
 
 /* The smallest pan that brings a world rectangle fully on screen.
@@ -513,15 +521,16 @@ function canvasFollowMargin() {
  * Zoom is returned unchanged. Following focus is not a reason to change how
  * far out the view is — that is a decision the user made and this has no
  * business undoing it. */
-function canvasFollow(rect, viewport, area, margin = canvasFollowMargin()) {
+function canvasFollow(rect, viewport, area, margin = null) {
   if (!rect || !area || !(area.width > 0) || !(area.height > 0)) return viewport;
 
   const zoom = viewport.zoom;
   const span = { x: area.width / zoom, y: area.height / zoom };
   /* The margin is screen pixels, so it is worth more world units the further
      out the view is — which is right: it is a gap you can see, not a gap on
-     the plane. */
-  const edge = margin / zoom;
+     the plane. Defaulted here rather than in the signature because it is a
+     question about the area, which the signature cannot ask. */
+  const edge = (margin ?? canvasFollowMargin(area)) / zoom;
 
   let { x, y } = viewport;
 
@@ -955,20 +964,25 @@ function canvasFillFocused() {
 
   const viewport = canvasViewportOf(target.workspace);
   const box = target.output?.windowsEl?.getBoundingClientRect();
-  /* Screen pixels inside the windows element: where the gap ends, and how much
-     is left between the two of them. Falling back to `area` keeps this working
-     where there is nothing to measure — the same fallback canvasAreaOf's
-     callers get, and it is what the test harness runs on. */
-  const gap = box ? canvasFollowMargin() : target.area.x;
-  const width = box ? box.width - gap * 2 : target.area.width;
-  const height = box ? box.height - gap * 2 : target.area.height;
+  /* The inset from the area, which is what canvasFollow leaves too: zero
+     normally, because the area is already inset by the gap, and the difference
+     under smart gaps. Naming it the same way in both places is the point — a
+     followed window and a filled one stop at the same edge, and a fill that
+     worked out its own answer is how the two came to disagree.
+
+     Falling back to `area` where there is nothing to measure, which is the
+     fallback canvasAreaOf's callers get and what the test harness runs on. */
+  const margin = canvasFollowMargin(target.area);
+  const inset = target.area.x + margin;
+  const width = box ? box.width - inset * 2 : target.area.width;
+  const height = box ? box.height - inset * 2 : target.area.height;
   if (!(width > 0) || !(height > 0)) return false;
 
   /* The place is in world units and the projection puts `area.x` in front of
-     it, so the offset between the two edges is what goes on the plane: a
-     window whose place is `viewport.x` is drawn at `area.x`, not at the gap. */
-  rect.x = viewport.x + (gap - target.area.x) / viewport.zoom;
-  rect.y = viewport.y + (gap - target.area.y) / viewport.zoom;
+     it, so only what is left over goes on the plane: a window whose place is
+     `viewport.x` is already drawn at `area.x`. */
+  rect.x = viewport.x + margin / viewport.zoom;
+  rect.y = viewport.y + margin / viewport.zoom;
   rect.width = width / viewport.zoom;
   rect.height = height / viewport.zoom;
   /* Put here by a person, so a late configure from the client does not get to

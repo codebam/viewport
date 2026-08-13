@@ -57,7 +57,7 @@ cropped, by the same clip a scrolled column gets.
 
 **Focus follows minimally.** Focusing a window already on screen moves the view
 not at all; focusing one off the edge pans the smallest distance that brings it
-in, leaving the configured gap behind it, and never changes the zoom.
+in, stopping where the gaps begin, and never changes the zoom.
 
 ## Why the zoom stops at 1.0
 
@@ -213,10 +213,12 @@ In `CANVAS`, at the top of `data/shell/canvas.js`:
 | `cascade` | `48` | how far each successive new window is offset from the last |
 | `margin` | `48` | space kept around the plane when fitting all of it on screen |
 
-The gap left when *following* focus is not among these: it is the configured
-gap (`gaps` plus `gaps.outer`), read at the time of the pan, because the desktop
-already has an answer to how much space belongs between a window and the edge of
-the screen. Turning gaps off leaves a followed window flush against the edge.
+The gap left when *following* focus is not among these. A followed window is
+panned flush against the area, which is already the output inset by the edge
+gap, so it lands exactly where the gaps begin — the same edge `Mod4+r` fills to.
+The one exception is smart gaps, which take the inner gap off the area of a
+plane holding one window: the difference is added back, so following leaves the
+configured gap whatever the area is doing.
 
 ## Keys
 
