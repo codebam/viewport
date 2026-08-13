@@ -80,7 +80,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # dozen — and Cargo unions them.
 [workspace.dependencies.smithay]
 # A fork: codebam/smithay, branch explicit-sync-scanout, which is upstream
-# master with five patches on top. Rebased onto master rather than left to
+# master with four patches on top. Rebased onto master rather than left to
 # drift, so the delta stays reviewable and the day one of these lands upstream
 # it drops out of the rebase instead of having to be untangled.
 #
@@ -90,16 +90,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 #   and nothing upstream reaches it.
 # - virtual_keyboard, twice: let the compositor see the keys, and hand over the
 #   symbol on the key as well. Upstream swallows both.
-# - drm_lease: treat EACCES from DROP_MASTER like EINVAL. Measured on 7.1 with
-#   amdgpu, where every open of the card node answers EACCES and the lease
-#   global was therefore never created.
 # - drm/renderer: carry a client's acquire point instead of assuming it waited.
 #
-# The previous tip is tagged pre-rebase-a8f1c00 over there, because a revision
+# It was five. The drm_lease patch — treat EACCES from DROP_MASTER like EINVAL,
+# without which the lease global was never created on 7.1 with amdgpu — is gone
+# because upstream's 7609ab82 accepts `PermissionDenied` in the same match, and
+# that is the kind Rust gives EACCES. It dropped out of the rebase, which is the
+# arrangement above working rather than a patch being lost.
+#
+# The previous tip is tagged pre-rebase-b6e5bf02 over there, because a revision
 # no ref reaches is one GitHub may collect, and older checkouts of this
-# compositor pin it.
+# compositor pin it. (pre-rebase-a8f1c00 is the one before that.)
 git = "https://github.com/codebam/smithay.git"
-rev = "b6e5bf02b43a429f225772cd03a449b568cca594"
+rev = "09de0d996560ead4f306290c21b3436601462190"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -124,7 +127,7 @@ default-features = false
 # is what makes this a redirect and not a downgrade — rebase the fork before
 # bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "b6e5bf02b43a429f225772cd03a449b568cca594" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "09de0d996560ead4f306290c21b3436601462190" }
 
 [profile.release]
 debug = 1

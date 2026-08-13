@@ -695,6 +695,12 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
         &mut self,
         surface: &WlSurface,
         pointer: &smithay::input::pointer::PointerHandle<Self>,
+        // The constraint that was removed, handed over because it is already
+        // out of the surface's data by the time this is called and
+        // `with_pointer_constraint` would find nothing. Unused here: what the
+        // hint needs is the surface it came from and where the window is, and
+        // whether the capture was a lock or a confinement changes neither.
+        _constraint: Option<&smithay::wayland::pointer_constraints::PointerConstraint>,
     ) {
         // The lock is over, so now the hint applies: put the cursor back
         // under the crosshair the client was drawing rather than wherever it

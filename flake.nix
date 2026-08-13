@@ -387,7 +387,7 @@
             # Both have to be updated whenever the revision in Cargo.toml is.
             # The build fails loudly on a stale one, quoting the hash it got.
             outputHashes = {
-              "smithay-0.7.0" = "sha256-Z3RJ2QGllCGi5BEzuguSvCuuqC1UJ1XmbqqcVIT+igU=";
+              "smithay-0.7.0" = "sha256-fdueTJm6o1Grg3jzU8WGdy9AGSDgKCLFplsymaLpfv0=";
               "viewport-vulkan-0.1.3" = "sha256-3fl1dPVtyhOvOPL+YksC+bLYCI6FcnyyRGOKUB/cMdA=";
             };
           };
