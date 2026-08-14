@@ -1,18 +1,19 @@
 # Maintainer: Sean Behan <codebam@riseup.net>
 #
-# The shell drawn by Chromium, started as a child process and driven over the
-# DevTools protocol. This links no engine at all: the browser is a runtime
-# dependency, and which Chromium it runs can change without a rebuild.
+# The shell drawn by WebKitGTK, in a process of its own as an ordinary Wayland
+# client of this compositor. Nothing here builds an engine: `webkitgtk-6.0` is
+# a package.
 #
-# One of three recipes beside each other in packaging/arch, one per engine the
-# shell can be drawn by — see docs/shell-backends.md. Every one of them installs
-# a binary called `viewport` and provides that name, so they conflict with each
-# other: a system takes one.
+# One of nine recipes under packaging/aur: three engines — see
+# docs/shell-backends.md — each as this, a `-git` form following `main`, and a
+# `-bin` form unpacking the release. Every one of them installs a binary called
+# `viewport` and provides that name, so they conflict with each other: a machine
+# takes one engine in one form.
 
-pkgname=viewport-chromium
+pkgname=viewport-webkitgtk
 pkgver=0.1.4
 pkgrel=1
-pkgdesc='Wayland compositor whose shell is a web page — Chromium, driven as a child process'
+pkgdesc='Wayland compositor whose shell is a web page — WebKitGTK, out of process'
 arch=('x86_64' 'aarch64')
 url='https://github.com/codebam/viewport'
 license=('GPL-3.0-or-later')
@@ -42,7 +43,11 @@ depends=(
   'pipewire'
   'libxcb'
   'xcb-util-wm'
-  'chromium'
+  'webkitgtk-6.0'
+  'gtk4'
+  # WebKit guesses the type of a file:// page from the shared MIME database.
+  # Without it the bundled shell loads "successfully" and draws nothing.
+  'shared-mime-info'
 )
 
 optdepends=(
@@ -86,7 +91,7 @@ makedepends=(
 provides=("viewport=$pkgver")
 conflicts=('viewport'
            'viewport-wpe'
-           'viewport-webkitgtk')
+           'viewport-chromium')
 options=('!lto')
 
 source=("git+https://github.com/codebam/viewport.git#tag=$_tag")
@@ -105,7 +110,7 @@ build() {
   cd "$srcdir/viewport"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  cargo build --frozen --release -p viewport -p viewport-shell-chromium
+  cargo build --frozen --release -p viewport -p viewport-shell-gtk
 }
 
 package() {
@@ -118,8 +123,7 @@ package() {
   install -Dm755 target/release/viewport "$pkgdir/usr/lib/viewport/viewport"
   install -Dm755 /dev/stdin "$pkgdir/usr/bin/viewport" <<'EOF'
 #!/bin/sh
-export VIEWPORT_SHELL_BACKEND="${VIEWPORT_SHELL_BACKEND:-chromium}"
-export VIEWPORT_CHROMIUM_BIN="${VIEWPORT_CHROMIUM_BIN:-/usr/bin/chromium}"
+export VIEWPORT_SHELL_BACKEND="${VIEWPORT_SHELL_BACKEND:-webkitgtk}"
 # And where the shell is. The compositor finds its own assets at
 # `<prefix>/share/viewport`, taken from the directory two above the binary —
 # which works for /usr/bin/viewport and does not for the wrapped layout here:
@@ -133,8 +137,8 @@ export VIEWPORT_CHROMIUM_BIN="${VIEWPORT_CHROMIUM_BIN:-/usr/bin/chromium}"
 export VIEWPORT_SHELL_URL="${VIEWPORT_SHELL_URL:-file:///usr/share/viewport/shell/index.html}"
 exec /usr/lib/viewport/viewport "$@"
 EOF
-  install -Dm755 target/release/viewport-shell-chromium \
-    "$pkgdir/usr/lib/viewport/viewport-shell-chromium"
+  install -Dm755 target/release/viewport-shell-gtk \
+    "$pkgdir/usr/lib/viewport/viewport-shell-gtk"
 
   # The shell itself, and the page it falls back to. Without them an installed
   # compositor has nothing to load: the default URL resolves beside the binary,
@@ -165,7 +169,7 @@ EOF
   install -Dm644 /dev/stdin "$pkgdir/usr/share/wayland-sessions/viewport.desktop" <<'EOF'
 [Desktop Entry]
 Name=Viewport
-Comment=Wayland compositor with a Chromium shell
+Comment=Wayland compositor with a WebKitGTK shell
 Exec=viewport
 Type=Application
 EOF

@@ -6,7 +6,7 @@
 # of the four; this one unpacks the binaries the release was cut with instead.
 #
 # The upstream artifact is itself an Arch package, built from the recipe in
-# packaging/arch/wpe of the tagged tree, so what lands in $pkgdir here is
+# packaging/aur/viewport-wpe of the tagged tree, so what lands in $pkgdir here is
 # byte for byte what the source package would have produced.
 #
 # The shell is drawn by WPE WebKit inside the compositor, not in a process of

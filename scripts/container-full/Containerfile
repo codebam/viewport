@@ -3,7 +3,7 @@
 # The whole workspace, checked in a container, for a machine that does not want
 # to build the web engines.
 #
-# packaging/arch/Containerfile carries what the wpe recipe declares and nothing
+# packaging/Containerfile carries what the wpe recipe declares and nothing
 # else, which is enough to build the package and not enough to check the tree:
 # `cargo check --workspace` reaches viewport-shell-gtk and stops at
 #
@@ -35,7 +35,7 @@
 FROM docker.io/library/archlinux:latest
 
 # The wpe recipe's own dependencies, the same list as
-# packaging/arch/Containerfile, because this image is built from the base
+# packaging/Containerfile, because this image is built from the base
 # rather than from that one — it is a check image and does not want makepkg.
 RUN pacman -Syu --noconfirm --disable-sandbox --needed \
       base-devel git rust cargo pkgconf clang \

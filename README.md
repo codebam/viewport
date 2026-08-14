@@ -239,18 +239,19 @@ Two shells ship with it, at opposite ends of the same protocol:
 
 ## Installing
 
-On Arch or CachyOS, `packaging/arch/` has one PKGBUILD per engine — `wpe`,
-`webkitgtk` and `chromium`. Every dependency is already packaged there,
+On Arch or CachyOS, `packaging/aur/` has a PKGBUILD per package — one per
+engine (`viewport-wpe`, `viewport-webkitgtk`, `viewport-chromium`), each with
+a `-git` form following `main` and a `-bin` form unpacking the release. Every dependency is already packaged there,
 including `wpewebkit` built with the WPE platform API, which is the one that
 would otherwise mean compiling a browser engine, so each builds in about a
 minute:
 
 ```sh
-cd packaging/arch/wpe && makepkg -si
+cd packaging/aur/viewport-wpe && makepkg -si
 ```
 
 They all install a binary called `viewport` and conflict with each other: a
-system takes one. `./packaging/arch/build-in-container.sh wpe` builds any of
+system takes one. `./packaging/build-in-container.sh wpe` builds any of
 them on a machine that is not Arch, which is how they are tested here, and
 `./scripts/arch-vm.sh --variant wpe` installs the result into a throwaway Arch
 guest and boots the desktop in it.

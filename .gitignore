@@ -7,7 +7,7 @@ compile_commands.json
 *.so
 __pycache__/
 /target
-packaging/arch/out/
+packaging/out/
 *.pkg.tar.*
 bench-results/
 

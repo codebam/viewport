@@ -10,7 +10,7 @@
 # as portable as the source build and which Chromium runs can change under it.
 #
 # The upstream artifact is itself an Arch package, built from the recipe in
-# packaging/arch/chromium of the tagged tree, so what lands in $pkgdir here is
+# packaging/aur/viewport-chromium of the tagged tree, so what lands in $pkgdir here is
 # byte for byte what the source package would have produced.
 
 pkgname=viewport-chromium-bin

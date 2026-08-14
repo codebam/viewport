@@ -12,6 +12,13 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Shipping
+- One directory per AUR package, all nine under `packaging/aur`, named exactly
+  after the repository each one is pushed to — the three source recipes moved
+  there from `packaging/arch`, which is gone. A push is a copy of a directory
+  now rather than a rule about which file lives where. `build-in-container.sh`
+  and `Containerfile` moved up to `packaging/`, and the build script takes a
+  package name (`viewport-wpe-git`) as well as an engine (`wpe`), so a `-git`
+  or `-bin` recipe can be built before it is pushed anywhere.
 - Nine AUR recipes rather than five: every engine now has a `-git` form that
   follows `main` and reports `0.1.4.rN.gSHORT`, and Chromium has the `-bin`
   form the other two already had. The `-git` recipes are their source recipe

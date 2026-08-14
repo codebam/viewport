@@ -6,7 +6,7 @@
 # release was cut with instead.
 #
 # The upstream artifact is itself an Arch package, built from the recipe in
-# packaging/arch/webkitgtk of the tagged tree, so what lands in $pkgdir here is
+# packaging/aur/viewport-webkitgtk of the tagged tree, so what lands in $pkgdir here is
 # byte for byte what the source package would have produced.
 
 pkgname=viewport-webkitgtk-bin

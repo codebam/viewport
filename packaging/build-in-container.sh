@@ -4,12 +4,16 @@
 # Build the Arch package in a container, because makepkg needs pacman and an
 # Arch userland and this is developed on NixOS.
 #
-#   ./packaging/arch/build-in-container.sh wpe             # into ./out/wpe
-#   ./packaging/arch/build-in-container.sh chromium ~/     # into ~/
+#   ./packaging/build-in-container.sh wpe                  # into ./out/wpe
+#   ./packaging/build-in-container.sh chromium ~/          # into ~/
+#   ./packaging/build-in-container.sh viewport-wpe-git     # by package name
 #
-# The variant is a directory beside this script, one per engine the shell can
-# be drawn by. The finished .pkg.tar.zst is copied to the directory given
-# (default ./out/<variant>) and installs anywhere with `pacman -U`.
+# The argument names a recipe under `packaging/aur`, either by its package name
+# or by the engine alone — `wpe` is `viewport-wpe`, the source recipe for that
+# engine. The `-git` and `-bin` forms build here too, which is how a recipe is
+# checked before it is pushed anywhere. The finished .pkg.tar.zst is copied to
+# the directory given (default ./out/<package>) and installs anywhere with
+# `pacman -U`.
 #
 # Three of the four backends are packaged here. `cef` is not, and cannot be
 # from the repositories: CEF is a prebuilt binary bundle, the only Arch package
@@ -22,13 +26,19 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-variant=${1:-wpe}
-[ -f "$here/$variant/PKGBUILD" ] || {
-    echo "no such variant: $variant" >&2
-    echo "one of: $(cd "$here" && ls -d */ | tr -d / | tr '\n' ' ')" >&2
+# A package name, or an engine that stands for its source recipe.
+asked=${1:-wpe}
+case $asked in
+    viewport-*) package=$asked ;;
+    *)          package=viewport-$asked ;;
+esac
+recipe=$here/aur/$package/PKGBUILD
+[ -f "$recipe" ] || {
+    echo "no such recipe: $asked" >&2
+    echo "one of: $(cd "$here/aur" && ls -d viewport-*/ | tr -d / | tr '\n' ' ')" >&2
     exit 2
 }
-out=${2:-$here/out/$variant}
+out=${2:-$here/out/$package}
 mkdir -p "$out"
 dest=$(cd "$out" && pwd)
 
@@ -48,7 +58,7 @@ echo "building the image with $engine..." >&2
 # The PKGBUILD fetches its own source from git, so only the recipe goes in.
 echo "running makepkg..." >&2
 "$engine" run --rm \
-    -v "$here/$variant/PKGBUILD:/build/PKGBUILD:ro" \
+    -v "$recipe:/build/PKGBUILD:ro" \
     -v "$dest:/out:z" \
     "$image" \
     bash -lc '

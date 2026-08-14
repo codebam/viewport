@@ -190,7 +190,7 @@ script builds all four before measuring any, so a build failure in the last one
 does not arrive after three runs have already had the machine.
 
 All four come from this flake. Three of them are packaged for Arch as well —
-`packaging/arch/{wpe,webkitgtk,chromium}` — and `cef` is not: CEF ships as a
+`packaging/aur/viewport-{wpe,webkitgtk,chromium}` — and `cef` is not: CEF ships as a
 prebuilt binary bundle, the only Arch package of it is `cef-minimal` in the AUR,
 and that is CEF 121 against the 149 this tree is built against. So a comparison
 run on Arch is three engines wide and one on nix is four.
@@ -285,7 +285,7 @@ the compositor buys — no second process, no buffer handed across one. Under
 this flake it is also the only backend that compiles WebKit, so a machine
 switching to it waits hours for a desktop. On Arch it is the opposite: the
 repositories carry `wpewebkit` built with the WPE platform API, nothing
-compiles an engine, and `packaging/arch/wpe` builds in about a minute.
+compiles an engine, and `packaging/aur/viewport-wpe` builds in about a minute.
 
 **Of the three that build no engine, `cef` is cheapest per frame and
 `webkitgtk` is lightest.** 0.250% against 0.273%, and 551 MB against 395 — a

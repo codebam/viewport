@@ -3,8 +3,8 @@
 #
 # The Arch package, on Arch, in a window.
 #
-#   ./scripts/arch-vm.sh                     # newest package under packaging/arch/out
-#   ./scripts/arch-vm.sh --variant cef
+#   ./scripts/arch-vm.sh                     # newest package under packaging/out
+#   ./scripts/arch-vm.sh --variant chromium   # or --variant viewport-wpe-git
 #   ./scripts/arch-vm.sh --package ~/viewport-wpe-0.1.4-1-x86_64.pkg.tar.zst
 #   ./scripts/arch-vm.sh --shell                 # a login shell, no compositor
 #   ./scripts/arch-vm.sh --url https://example.com   # a page rather than the shell
@@ -85,15 +85,17 @@ done
 # package, which is the larger of the two files makepkg leaves behind and
 # installs no compositor at all.
 if [ -z "$package" ]; then
-    search=$here/packaging/arch/out
-    [ -n "$variant" ] && search=$search/$variant
+    search=$here/packaging/out
+    # The build script writes to a directory named after the package, so an
+    # engine given on its own is the source recipe for it.
+    [ -n "$variant" ] && search=$search/viewport-${variant#viewport-}
     package=$(find "$search" -name '*.pkg.tar.zst' ! -name '*-debug-*' \
         -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)
 fi
 if [ -z "$package" ] || [ ! -f "$package" ]; then
     echo "no package to install." >&2
     echo "build one first:" >&2
-    echo "    ./packaging/arch/build-in-container.sh ${variant:-wpe}" >&2
+    echo "    ./packaging/build-in-container.sh ${variant:-wpe}" >&2
     exit 1
 fi
 package=$(cd "$(dirname "$package")" && pwd)/$(basename "$package")

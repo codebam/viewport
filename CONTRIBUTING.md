@@ -111,8 +111,8 @@ Changelog style).
 ## Releasing / packaging
 
 See `packaging/aur/README.md` for the AUR release procedure. The short form:
-tag the tree, point the recipes in `packaging/arch/` at the tag, build them
-with `./packaging/arch/build-in-container.sh <variant>` (which also works on a
+tag the tree, point the source recipes in `packaging/aur/` at the tag, build
+them with `./packaging/build-in-container.sh <package>` (which also works on a
 machine that is not Arch), upload the artifacts to the GitHub release, and
 regenerate each AUR package's `.SRCINFO` with `makepkg --printsrcinfo`.
 
