@@ -726,15 +726,29 @@ type WindowElements<R> = (
     smithay::utils::Size<i32, smithay::utils::Physical>,
 );
 
-/// One output's elements, moved to where that output sits on the desk and
-/// resized to the scale the whole desk is being captured at.
+/// One output's elements, held to that output's own rectangle, resized to the
+/// scale the whole desk is being captured at, and moved to where that output
+/// sits on it.
 ///
-/// The same pair smithay's own thumbnail helper composes, in the same order:
-/// the rescale is about the element's own origin, so the move has to happen
-/// after it or the offset would be scaled too.
+/// The rescale and the move are the pair smithay's own thumbnail helper
+/// composes, in the same order: the rescale is about the element's own origin,
+/// so the move has to happen after it or the offset would be scaled too.
+///
+/// The crop between them is what a real output gets from its framebuffer for
+/// nothing. An output's element list is not bounded by that output — the shell
+/// is one buffer spanning the whole layout, and every monitor's frame carries
+/// the whole of it, offset so that its own part lands on screen. Drawing that
+/// list into a framebuffer the size of one monitor throws the rest away; the
+/// desk's framebuffer is the size of *all* of them, so nothing was thrown away
+/// and the first monitor's copy of the shell covered every monitor after it.
+/// What that looked like was a capture of two screens where the second showed
+/// the desktop and its window frames with no windows in them: the frames are
+/// the shell's, and the clients were behind a picture of the desktop.
 type DeskElement<R> = smithay::backend::renderer::element::utils::RelocateRenderElement<
-    smithay::backend::renderer::element::utils::RescaleRenderElement<
-        crate::render::OutputElement<R>,
+    smithay::backend::renderer::element::utils::CropRenderElement<
+        smithay::backend::renderer::element::utils::RescaleRenderElement<
+            crate::render::OutputElement<R>,
+        >,
     >,
 >;
 
@@ -1867,7 +1881,7 @@ impl ViewportState {
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
     {
         use smithay::backend::renderer::element::utils::{
-            Relocate, RelocateRenderElement, RescaleRenderElement,
+            CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
         };
 
         let (union, scale) = self
@@ -1890,23 +1904,28 @@ impl ViewportState {
             // From the frame rather than from the output, because that is the
             // scale its elements were laid out at.
             let magnify = scale / frame.scale.max(f64::MIN_POSITIVE);
-            let at = (geometry.loc - union.loc)
-                .to_f64()
-                .to_physical(scale)
-                .to_i32_round();
+            // Where this monitor's picture goes, and the rectangle it is held
+            // to — its own, with the monitor at the origin, because the crop
+            // happens before the move. See `render::desk_placement`.
+            let (bounds, at) = crate::render::desk_placement(geometry, union, scale);
             elements.extend(
                 crate::render::build(&frame, renderer)
                     .into_iter()
-                    .map(|element| {
-                        RelocateRenderElement::from_element(
-                            RescaleRenderElement::from_element(
-                                element,
-                                smithay::utils::Point::from((0, 0)),
-                                magnify,
-                            ),
+                    .filter_map(|element| {
+                        let scaled = RescaleRenderElement::from_element(
+                            element,
+                            smithay::utils::Point::from((0, 0)),
+                            magnify,
+                        );
+                        // Cropped away entirely: an element of this monitor's
+                        // frame that belongs to another one, which is most of
+                        // the shell every time.
+                        let cropped = CropRenderElement::from_element(scaled, scale, bounds)?;
+                        Some(RelocateRenderElement::from_element(
+                            cropped,
                             at,
                             Relocate::Relative,
-                        )
+                        ))
                     }),
             );
         }

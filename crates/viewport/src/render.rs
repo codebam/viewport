@@ -692,6 +692,36 @@ pub fn border_sides(
     ]
 }
 
+/// Where one monitor's picture goes when every monitor is captured at once,
+/// and what it is held to.
+///
+/// The rectangle comes first and is in the monitor's own space, with the
+/// monitor at the origin: the crop happens before the move, because a rescale
+/// is about the element's origin and moving first would scale the offset. The
+/// point is where that rectangle lands on the desk.
+///
+/// The crop is the whole reason this exists. A monitor drawing itself gets it
+/// from its framebuffer for nothing — anything outside the screen is simply
+/// not written — and a capture of the whole desk has a framebuffer the size of
+/// every monitor together, so nothing falls off. An output's element list is
+/// not bounded by that output: the shell is one buffer spanning the layout and
+/// every frame carries the whole of it. Uncropped, the first monitor's copy is
+/// drawn across all of them, over the clients of every monitor after it, and
+/// the capture shows the desktop and its window frames with no windows inside
+/// them.
+pub fn desk_placement(
+    geometry: Rectangle<i32, Logical>,
+    union: Rectangle<i32, Logical>,
+    scale: f64,
+) -> (Rectangle<i32, Physical>, Point<i32, Physical>) {
+    let bounds = Rectangle::from_size(geometry.size.to_f64().to_physical(scale).to_i32_round());
+    let at = (geometry.loc - union.loc)
+        .to_f64()
+        .to_physical(scale)
+        .to_i32_round();
+    (bounds, at)
+}
+
 /// Where a window sits relative to an output, and what it is cropped to.
 ///
 /// Kept here so both backends agree: the geometry origin has to be subtracted,
@@ -824,6 +854,63 @@ mod tests {
         // missing is worse than one drawn twice.
         assert!(frame_on_output(None, left));
         assert!(frame_on_output(None, right));
+    }
+
+    /// Two monitors side by side are captured as two pictures, each held to
+    /// its own half.
+    ///
+    /// The crop is what a monitor drawing itself gets from its framebuffer for
+    /// nothing, and what a capture of the whole desk has to be given: every
+    /// monitor's frame carries the whole shell buffer, so uncropped, the first
+    /// monitor's copy covers the second monitor's clients and the capture
+    /// shows window frames with no windows in them.
+    #[test]
+    fn each_monitor_is_captured_inside_its_own_rectangle() {
+        // The layout this went wrong on: 2560x1440 at 0, and another at 2560.
+        let left = Rectangle::<i32, Logical>::new((0, 0).into(), (2560, 1440).into());
+        let right = Rectangle::<i32, Logical>::new((2560, 0).into(), (2560, 1440).into());
+        let union = left.merge(right);
+
+        let (bounds, at) = desk_placement(left, union, 1.0);
+        assert_eq!(at, (0, 0).into());
+        assert_eq!(bounds.size, (2560, 1440).into());
+        assert_eq!(
+            bounds.loc,
+            (0, 0).into(),
+            "the crop is in the monitor's own space: it happens before the move"
+        );
+
+        let (bounds, at) = desk_placement(right, union, 1.0);
+        assert_eq!(
+            at,
+            (2560, 0).into(),
+            "the second monitor's half of the desk"
+        );
+        assert_eq!(bounds.loc, (0, 0).into());
+        assert_eq!(bounds.size, (2560, 1440).into());
+
+        // A layout that does not start at the origin — a monitor above or to
+        // the left of the one at (0, 0) — is measured from the union, not from
+        // nothing.
+        let above = Rectangle::<i32, Logical>::new((0, -1440).into(), (2560, 1440).into());
+        let union = above.merge(left);
+        assert_eq!(desk_placement(above, union, 1.0).1, (0, 0).into());
+        assert_eq!(desk_placement(left, union, 1.0).1, (0, 1440).into());
+    }
+
+    /// And the desk's scale is what both are expressed in, not each monitor's.
+    #[test]
+    fn a_scaled_desk_is_captured_in_the_desks_pixels() {
+        // The desk is captured at the largest scale any monitor runs at, so a
+        // 2x monitor beside a 1x one gives a picture with twice the pixels of
+        // the logical layout — and both halves have to be measured in those.
+        let left = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let right = Rectangle::<i32, Logical>::new((1920, 0).into(), (1280, 1080).into());
+        let union = left.merge(right);
+
+        let (bounds, at) = desk_placement(right, union, 2.0);
+        assert_eq!(at, (3840, 0).into());
+        assert_eq!(bounds.size, (2560, 2160).into());
     }
 
     /// And all four of them are there, each as thick as the border.

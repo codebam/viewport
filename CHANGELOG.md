@@ -31,6 +31,13 @@ to summarise rather than to duplicate.
   door is that screen's own desktop. The frame is now reported clipped to the
   output it was drawn on, and the compositor draws a window's frame only on the
   output the shell drew the window on.
+- A capture of every monitor at once showing the second monitor as its desktop
+  and window frames with no windows in them. Each monitor's element list
+  carries the whole shell buffer — it spans the layout — and a monitor drawing
+  itself is bounded by its own framebuffer, which a capture of the whole desk
+  is not: the first monitor's copy of the shell was drawn over every monitor
+  after it, with the clients behind it. Each monitor's picture is now held to
+  its own rectangle.
 - The play/pause media key doing nothing. It was bound as `XF86AudioPause`,
   which xkb puts on the *shifted* level of that key — chords match the
   unshifted keysym, so the binding named a level the key cannot produce, while
