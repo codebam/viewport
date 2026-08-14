@@ -1055,6 +1055,7 @@ if (mode === 'tiling') {
   const laidOut = new Set(sent.filter((m) => m.type === 'view.layout')
     .map((m) => m.id).filter((id) => id <= 4));
   check('every window still reachable', laidOut.size === 4);
+
 } else if (mode === 'matrix') {
   /* The matrix.
    *
@@ -2925,6 +2926,63 @@ if (mode === 'scrolling') {
     .find((m) => m.type === 'view.layout' && m.id === target);
   check('on-screen window clips to its whole self',
     full?.clip?.width === 800 && full?.clip?.height === 600);
+
+  /* The frame is bounded the same way, and for a sharper reason than the
+   * clip.
+   *
+   * `.desktop` is `overflow: hidden`, so the page never paints a border past
+   * the edge of the monitor it is on — but getBoundingClientRect measures the
+   * element rather than what was painted of it. The compositor takes that
+   * rectangle and draws the shell's own pixels there above the windows, and on
+   * the monitor next door those pixels are *its* desktop: dragging a window
+   * off the right of DP-1 laid a strip of DP-3's window borders over DP-3's
+   * windows. */
+  {
+    const view = views.get(target);
+    /* Floating, because only a lifted window reports a frame at all — a tiled
+       border falls in the gap between two windows, where no surface hides it
+       and none has to be drawn again. */
+    emit({ type: 'view.focused', id: target });
+    emit({ type: 'shell.command', command: 'layout.float.toggle', args: [] });
+
+    const area = measureOf(
+      globalThis.__shell.outputs.get('DP-1').windowsEl ??
+      globalThis.__shell.outputs.get('DP-1').el);
+    const edge = area.left + area.width;
+
+    view.el.__rect = { left: edge - 120, top: 0, width: 400, height: 300 };
+    view.viewport.__rect = { left: edge - 118, top: 2, width: 396, height: 296 };
+    view.box = null;
+    const at = sent.length;
+    emit({ type: 'view.focused', id: target });
+    const over = sent.slice(at).reverse()
+      .find((m) => m.type === 'view.layout' && m.id === target);
+
+    check('a window overhanging the edge reports a frame', !!over?.frame);
+    check('and the frame stops at the edge of its own output',
+      over.frame.x + over.frame.width <= edge);
+    check('while keeping the part that is on this monitor',
+      over.frame.x === edge - 120 && over.frame.width === 120);
+
+    /* Wholly past the edge: the shell paints none of it, so there is no frame
+       to draw rather than one of zero width. */
+    view.el.__rect = { left: edge + 200, top: 0, width: 400, height: 300 };
+    view.box = null;
+    const off = sent.length;
+    emit({ type: 'view.focused', id: target });
+    const gone = sent.slice(off).reverse()
+      .find((m) => m.type === 'view.layout' && m.id === target);
+    check('and a frame entirely on the next monitor is not reported',
+      gone !== undefined && gone.frame === undefined);
+
+    /* Put it back, floating and all: everything after this reads the same
+       windows. */
+    view.el.__rect = undefined;
+    view.viewport.__rect = { left: 100, top: 100, width: 800, height: 600 };
+    view.box = null;
+    emit({ type: 'shell.command', command: 'layout.float.toggle', args: [] });
+    emit({ type: 'view.focused', id: target });
+  }
 }
 
 /* --- the bar that hides ------------------------------------------------

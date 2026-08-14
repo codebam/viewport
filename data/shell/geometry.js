@@ -173,8 +173,22 @@ function reportGeometry(id) {
   const lifted = isFloating(id) || view.solar?.lift === true
     || view.canvas?.lift === true;
 
+  /* Bounded by the output, exactly as the clip above is, and for a sharper
+     reason than tidiness.
+
+     `.desktop` is `overflow: hidden`, so the page never paints a window's
+     frame past the edge of the monitor it is on — but getBoundingClientRect
+     measures the element, not what was painted of it, so a window dragged
+     towards the next screen measures a frame that reaches onto it. The
+     compositor takes that rectangle and draws *the shell's pixels there* above
+     the windows. On the neighbouring monitor those pixels are that monitor's
+     own desktop, borders and all, which is how dragging a window off the right
+     of DP-1 put a strip of DP-2's window frames over DP-2's windows.
+
+     So the frame reported is the frame drawn: intersected with the area, and
+     dropped when nothing of it is left. */
   const frameEl = lifted && view.el ? measureOf(view.el) : null;
-  const frame = frameEl
+  let frame = frameEl
     ? {
       x: Math.round(frameEl.left),
       y: Math.round(frameEl.top),
@@ -182,6 +196,15 @@ function reportGeometry(id) {
       height: Math.round(frameEl.height),
     }
     : null;
+  if (frame && area) {
+    const left = Math.max(frame.x, Math.round(area.left));
+    const top = Math.max(frame.y, Math.round(area.top));
+    const right = Math.min(frame.x + frame.width, Math.round(area.right));
+    const bottom = Math.min(frame.y + frame.height, Math.round(area.bottom));
+    frame = right > left && bottom > top
+      ? { x: left, y: top, width: right - left, height: bottom - top }
+      : null;
+  }
 
   /* Stacking is the compositor's — the space it keeps is what it draws from
      and what it tests a click against — and floating is the one thing about a

@@ -23,6 +23,16 @@ to summarise rather than to duplicate.
   themed NixOS session hands its settings straight across; see
   `docs/configuration.md`.
 
+### Fixed
+- A window dragged towards the edge of one monitor drawing a strip of the
+  *next* monitor's window borders over that monitor's windows. The shell
+  measures a frame rather than what it painted of one, and the compositor drew
+  the shell's pixels wherever that rectangle reached — which on the screen next
+  door is that screen's own desktop. The frame is now reported clipped to the
+  output it was drawn on, and the compositor draws a window's frame only on the
+  output the shell drew the window on.
+
+
 ### Protocols
 - `zwlr_foreign_toplevel_management_v1`: activate, close and fullscreen for
   taskbars (`crates/viewport/src/foreign_toplevel.rs` — see also

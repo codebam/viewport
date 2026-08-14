@@ -622,6 +622,34 @@ pub fn overlay_side(
     Some(Rectangle::new(side.loc - output.loc, side.size))
 }
 
+/// Whether this output is one the shell drew this window's frame on.
+///
+/// `overlay_side` holds each side of a border to the output being drawn, which
+/// stops a frame *overhanging* an output from being painted past its edge. It
+/// does not stop the monitor next door from drawing the part that landed on
+/// *it*, and that is the same bug from the other side: the shell paints each
+/// window inside its own `.desktop`, which is `overflow: hidden`, so the pixels
+/// of the frame that fell on the neighbour were never drawn there. Painting
+/// them anyway crops the neighbour's own desktop — its wallpaper, its window
+/// borders — and lays it over that monitor's clients. What it looks like is a
+/// window dragged to the right of one screen putting a strip of the next
+/// screen's window frames above its windows.
+///
+/// The clip the shell sends is the answer to "which output is this window
+/// on": it is the part of the window inside the output the shell drew it in.
+/// Absent — an unclipped window, from a shell that sends none — nothing is
+/// known and the frame is drawn as before, because a border that is missing is
+/// worse than one drawn twice.
+pub fn frame_on_output(
+    clip: Option<Rectangle<i32, Logical>>,
+    output: Rectangle<i32, Logical>,
+) -> bool {
+    match clip {
+        Some(clip) => output.overlaps(clip),
+        None => true,
+    }
+}
+
 /// The four sides of a border, given the frame the shell drew and the hole
 /// inside it.
 ///
@@ -754,6 +782,48 @@ mod tests {
         // A side of no thickness is a border the shell did not draw.
         assert!(overlay_side(Box::new(10, 10, 0, 400), left).is_none());
         assert!(overlay_side(Box::new(10, 10, 4, 0), left).is_none());
+    }
+
+    /// The other half of the same rule: the monitor next door does not draw
+    /// the part that landed on it either.
+    ///
+    /// `overlay_side` trims a straddling border at the join, which is right
+    /// for the monitor the window is on and wrong for the other one — the
+    /// shell paints each window inside its own `.desktop`, so the pixels there
+    /// were never drawn. Cropping them anyway lifts that monitor's own
+    /// wallpaper and window borders over its clients, which is the bug: a
+    /// window dragged off the right of DP-1 put a strip of DP-3's frames above
+    /// DP-3's windows.
+    #[test]
+    fn a_border_is_drawn_only_where_the_shell_drew_the_window() {
+        let left = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1080).into());
+        let right = Rectangle::<i32, Logical>::new((1920, 0).into(), (1920, 1080).into());
+
+        // The shell clipped this window to the first monitor, which is where
+        // it drew it. The frame straddles the join; only the first monitor
+        // may draw any of it.
+        let clip = Rectangle::<i32, Logical>::new((1500, 100).into(), (420, 400).into());
+        assert!(frame_on_output(Some(clip), left));
+        assert!(!frame_on_output(Some(clip), right));
+
+        // A window the shell drew on the second monitor is the mirror image.
+        let over_there = Rectangle::<i32, Logical>::new((2000, 100).into(), (400, 400).into());
+        assert!(!frame_on_output(Some(over_there), left));
+        assert!(frame_on_output(Some(over_there), right));
+
+        // A window that touches the join without crossing it is on one screen.
+        let touching = Rectangle::<i32, Logical>::new((1420, 0).into(), (500, 1080).into());
+        assert!(frame_on_output(Some(touching), left));
+        assert!(
+            !frame_on_output(Some(touching), right),
+            "sharing an edge is not being on it"
+        );
+
+        // No clip at all: an older shell, or one that sends none. Nothing is
+        // known, so the frame is drawn as it always was — a border that is
+        // missing is worse than one drawn twice.
+        assert!(frame_on_output(None, left));
+        assert!(frame_on_output(None, right));
     }
 
     /// And all four of them are there, each as thick as the border.

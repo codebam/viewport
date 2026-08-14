@@ -4861,6 +4861,10 @@ impl ViewportState {
                         (clip.width, clip.height).into(),
                     )
                 });
+                // Which output the shell drew this window on, kept before the
+                // placement shadows it: the frame below is only drawn on that
+                // one. See `render::frame_on_output`.
+                let drawn_on_this_output = crate::render::frame_on_output(clip, output_geometry);
                 let (location, clip) =
                     crate::render::window_placement(window, layout, output_geometry, clip, scale);
 
@@ -4868,6 +4872,7 @@ impl ViewportState {
                 // has to be drawn above whatever is underneath — as four
                 // sides around the hole rather than one rectangle over it.
                 let overlay: Vec<_> = view
+                    .filter(|_| drawn_on_this_output)
                     .and_then(|view| view.frame.map(|frame| (frame, view.box_)))
                     .map(|(frame, hole)| {
                         crate::render::border_sides(frame, hole)
