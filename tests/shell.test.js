@@ -4189,6 +4189,39 @@ if (mode === 'scrolling') {
     probe.className = `window ${c}`;
     return snapshot(probe) !== plain;
   }));
+  /* And that none of those layers is above the bar.
+   *
+   * The shell is one buffer under the clients, so what the compositor draws
+   * over the windows is a crop of this same page — the bar under `auto` is
+   * exactly that. A window layer that outranks the bar here is therefore a
+   * window border drawn across the clock on screen, in every backend, and the
+   * only place the question can be asked is the stylesheet: `.windows` makes
+   * no stacking context of its own, so a window's z-index competes with the
+   * bar's directly.
+   *
+   * It went wrong with two of these already at 4 and 5 against a bar at 3.
+   * Written as a sweep over the states rather than as a list, so a layer added
+   * later is held to the same rule without anyone remembering this. */
+  const layer = new El('div');
+  layer.className = 'bar';
+  const barZ = Number(sheet.value(layer, 'z-index'));
+  check('the bar is drawn on a layer of its own', Number.isFinite(barZ));
+
+  const above = [...states].filter((c) => {
+    probe.className = `window ${c}`;
+    const z = Number(sheet.value(probe, 'z-index'));
+    /* Fullscreen is the one exception, and not really one: it does cover the
+       bar, by taking it off the desktop with `display: none` rather than by
+       being drawn over it. */
+    return c !== 'fullscreen' && Number.isFinite(z) && z >= barZ;
+  });
+  check('and every window layer is under it', above.length === 0);
+  check('including the ones a lifted window carries',
+    ['floating', 'front', 'sun'].every((c) => {
+      probe.className = `window ${c}`;
+      return Number(sheet.value(probe, 'z-index')) < barZ;
+    }));
+
   probe.remove();
 
   emit({ type: 'view.removed', id: 80 });

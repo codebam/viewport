@@ -260,8 +260,23 @@ html.behind body { background: transparent; }
   border-bottom: 1px solid var(--bar-border);
   user-select: none;
   /* Above the windows, because under 'auto' it is drawn over them rather than
-     given room of its own. */
-  z-index: 3;
+     given room of its own.
+   *
+   * Above *every* window, which 3 was not: a floating window is 5, and the
+   * canvas's focused window and solar's sun are 4, so those three drew their
+   * frames over the bar. What that looks like is the active window's border
+   * running across the clock — the compositor's copy of the bar is a crop of
+   * this same page, so a border painted over the bar here is a border over the
+   * bar on screen, in every backend.
+   *
+   * Below the notifications (100) and the screen-share chooser (200), which
+   * are meant to be over it, and unrelated to fullscreen (10): a fullscreen
+   * window takes the bar away with `display: none` rather than covering it.
+   *
+   * The number has room under it on purpose. Anything new that a window may
+   * carry belongs below this, and the sweep in tests/shell.test.js holds the
+   * rule: every `.window` layer is under the bar. */
+  z-index: 20;
 }
 
 .desktop.bar-hidden .bar,

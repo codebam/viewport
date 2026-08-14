@@ -31,6 +31,12 @@ to summarise rather than to duplicate.
   door is that screen's own desktop. The frame is now reported clipped to the
   output it was drawn on, and the compositor draws a window's frame only on the
   output the shell drew the window on.
+- The active window's border drawn across the bar. The bar sat on z-index 3
+  and three window layers sat above it — floating at 5, the canvas's focused
+  window and solar's sun at 4 — and the compositor's copy of the bar is a crop
+  of the same page, so the border was over the clock on screen as well. The bar
+  is above every window layer now, and a sweep in the shell tests holds it
+  there.
 - `Mod4+Tab` skipping the windows a layout keeps out of view — a column
   scrolled off the strip, a window panned off the canvas. Those are reported to
   the compositor as not on screen, and its cycle walks what is on screen, so the
