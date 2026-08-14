@@ -86,12 +86,19 @@ impl Notifications {
         };
 
         let connection = zbus::blocking::connection::Builder::session()?
-            .name("org.freedesktop.Notifications")?
             .serve_at("/org/freedesktop/Notifications", server)?
             .build()?;
 
+        // The name, asked for with flags of our own rather than the
+        // builder's `.name()`, which uses zbus's defaults. See
+        // `crate::dbus::name_flags`: the compositor queues for this name and
+        // never takes it, so a notification daemon somebody starts wins and
+        // the compositor gets it back when that daemon exits.
+        let reply = connection
+            .request_name_with_flags("org.freedesktop.Notifications", crate::dbus::name_flags());
+        crate::dbus::log_name_reply("org.freedesktop.Notifications", reply);
+
         self.outbound = Some(connection);
-        tracing::info!("claimed org.freedesktop.Notifications");
         Ok(())
     }
 

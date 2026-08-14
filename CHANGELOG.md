@@ -11,6 +11,19 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Fixed
+- The compositor losing `org.freedesktop.Notifications` for the rest of the
+  session once anything else took it. zbus asks for a name with `DoNotQueue`
+  by default, which also decides what happens *after* being replaced — a
+  replaced owner is dropped rather than queued — so when the program that took
+  it exited, the name was owned by nobody and every notification failed with
+  `ServiceUnknown` while the compositor sat there serving the interface. Both
+  names it claims are queued for now, and neither is taken from whoever holds
+  it: `ReplaceExisting` was in zbus's default too, and it is what let a nested
+  compositor take the notification daemon and the portal backend from the
+  session it was started inside — the opposite of what `appearance.rs` has
+  always said it did.
+
 ## [0.1.5] - 2026-08-14
 
 Packaging, and nothing else: the compiled compositor is what 0.1.4 shipped.

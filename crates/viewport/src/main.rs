@@ -16,6 +16,7 @@ mod capture;
 mod color_management;
 mod config;
 mod cursor;
+mod dbus;
 mod dump;
 mod focus;
 mod foreign_toplevel;

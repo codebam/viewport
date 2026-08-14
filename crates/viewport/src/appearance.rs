@@ -184,10 +184,17 @@ impl Appearance {
         let closer = screencast.closer();
 
         let connection = zbus::blocking::connection::Builder::session()?
-            .name(BUS_NAME)?
             .serve_at(OBJECT_PATH, portal)?
             .serve_at(OBJECT_PATH, screencast)?
             .build()?;
+
+        // Asked for with `crate::dbus::name_flags` rather than the builder's
+        // `.name()`, which is what made the paragraph above false: zbus's
+        // default carries `ReplaceExisting`, so this did take the name from
+        // whoever held it — including from the session a nested compositor was
+        // started inside.
+        let reply = connection.request_name_with_flags(BUS_NAME, crate::dbus::name_flags());
+        crate::dbus::log_name_reply(BUS_NAME, reply);
 
         crate::screencast::portal::watch_frontend(connection.clone(), sessions, closer);
 
