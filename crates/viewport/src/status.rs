@@ -277,6 +277,32 @@ fn disk_usage(path: &str) -> (f64, f64) {
     (stat.f_bavail as f64 * frsize, stat.f_blocks as f64 * frsize)
 }
 
+/// Run `wpctl` and wait for it, for a change the bar reports.
+///
+/// Waiting is the reason this exists rather than `input::spawn`. A volume
+/// scrolled through a spawned process and sampled in the next message samples
+/// the sink before the process has run, so the bar redraws the number that was
+/// already there — a change that worked, looking like one that did not. See
+/// `Request::StatusVolume`.
+///
+/// Returns whether it ran and said it succeeded. A machine with no `wpctl`,
+/// no session bus or no sink says so by failing here, and nothing about that
+/// should take the bar or the compositor down: the caller skips the re-sample
+/// and the next tick reports whatever is true.
+pub fn wpctl(args: &[&str]) -> bool {
+    match std::process::Command::new("wpctl").args(args).status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            tracing::warn!("wpctl {}: {status}", args.join(" "));
+            false
+        }
+        Err(e) => {
+            tracing::warn!("wpctl {}: {e}", args.join(" "));
+            false
+        }
+    }
+}
+
 /// The default audio node's volume and mute state, from the session's
 /// PipeWire.
 ///

@@ -238,10 +238,17 @@ function moduleTitle(name) {
  * widget sits where. */
 function wireWidget(el) {
   const cmd = (line) => send({ type: 'shell.exec', command: line });
-  /* Ask the compositor to re-sample the bar's numbers, so an audio change
-     shows up at once instead of on the next two-second tick. Without it a
-     mute that worked, or a volume that moved, would look like it had not. */
-  const refreshStatus = () => send({ type: 'status.refresh' });
+  /* Audio goes through the compositor rather than through `shell.exec`, and
+     the reason is ordering rather than tidiness: a spawned `wpctl` and a
+     `status.refresh` in the next message are a race the refresh usually wins,
+     so the bar redraws the volume that was already there and the new one waits
+     for the next two-second tick. `status.volume` changes and samples in that
+     order, so it cannot. */
+  const audio = (widget, body) => send({
+    type: 'status.volume',
+    target: widget.type === 'mic' ? 'source' : 'sink',
+    ...body,
+  });
 
   /* The element carries its own widget (`el._widget`), set by the sync pass;
      the handlers below are bound once and read it, so they always act on the
@@ -268,10 +275,7 @@ function wireWidget(el) {
     /* Scrolling is the natural volume gesture: up to raise, down to lower,
        in 5% steps. `deltaY < 0` is wheel-up on a normal wheel. A mic widget
        drives the microphone rather than the speakers. */
-    const node = w.type === 'mic' ? '@DEFAULT_AUDIO_SOURCE@' : '@DEFAULT_AUDIO_SINK@';
-    const dir = e.deltaY < 0 ? '+' : '-';
-    cmd(`wpctl set-volume ${node} 5%${dir}`);
-    refreshStatus();
+    audio(w, { delta: e.deltaY < 0 ? 5 : -5 });
   });
   el.addEventListener('contextmenu', (e) => {
     const w = el._widget;
@@ -279,9 +283,7 @@ function wireWidget(el) {
     e.preventDefault();
     /* Right click toggles mute, matching the audio convention — the speakers
        for a volume widget, the microphone for a mic widget. */
-    const node = w.type === 'mic' ? '@DEFAULT_AUDIO_SOURCE@' : '@DEFAULT_AUDIO_SINK@';
-    cmd(`wpctl set-mute ${node} toggle`);
-    refreshStatus();
+    audio(w, { mute: true });
   });
 }
 

@@ -134,6 +134,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `output.test_add` | — headless only; plugs in a virtual monitor for tests |
 | `output.test_remove` | optional `name` (default: the first output); headless only |
 | `bind.add` | `chord`, `action` |
+| `status.volume` | `target` (`sink` or `source`), optional `delta` (percentage points, negative to lower), optional `mute` (toggles) — changes the volume and re-samples the bar in that order. `shell.exec`-ing `wpctl` and following it with `status.refresh` is a race the refresh wins, so the bar redraws the old number |
 | `config.wallpaper` | optional `path` (a file or a URL; the empty string removes the wallpaper), optional `mode` — set the desktop background at runtime, as `wallpaper` and `wallpaper_mode` in the config file. Only the fields given change; a path that is not there, or an unknown mode, comes back as an `error` and nothing is applied |
 | `shell.command` | `command`, optional `args[]` — re-emitted as the `shell.command` *event*; see below |
 | `quit` | — |

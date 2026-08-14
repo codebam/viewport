@@ -728,12 +728,15 @@ it, and each widget turns that into a command the compositor runs on the host
 through `shell.exec`, the same spawn path a keybinding's `exec` uses.
 
 - **`volume`** — scrolling raises or lowers the default sink's volume in 5%
-  steps (`wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+` / `5%-`); right-click
-  toggles mute (`wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle`).
+  steps; right-click toggles mute.
 - **`mic`** — the same controls on the microphone: scrolling adjusts the
-  default source's volume (`wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 5%+` /
-  `5%-`), right-click toggles its mute (`wpctl set-mute @DEFAULT_AUDIO_SOURCE@
-  toggle`).
+  default source's volume, right-click toggles its mute.
+
+Those two go through `status.volume` rather than `shell.exec`: the compositor
+runs the same `wpctl` it samples with, waits for it, and re-samples — so the
+number on the bar is the new one immediately. Sending the command and asking
+for a refresh separately is a race the refresh wins, which showed as a volume
+that moved and a bar that did not until the next two-second tick.
 - **`disk`** — clicking opens the mount in the default file manager
   (`xdg-open <path>`), so for a terminal-first setup it drops you at the
   directory.

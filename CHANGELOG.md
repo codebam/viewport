@@ -12,6 +12,11 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- The bar showing the old volume after a scroll. The widget spawned `wpctl`
+  through `shell.exec` and asked for a re-sample in the next message, which
+  samples the sink before the spawned process has run — so the bar redrew the
+  number that was already there and the new one waited for the next two-second
+  tick. `status.volume` changes and samples in that order.
 - The compositor losing `org.freedesktop.Notifications` for the rest of the
   session once anything else took it. zbus asks for a name with `DoNotQueue`
   by default, which also decides what happens *after* being replaced — a

@@ -148,11 +148,45 @@ fn is_known_type(name: &str) -> bool {
             | "shell.command"
             | "shell.exec"
             | "status.refresh"
+            | "status.volume"
             | "input.pointer"
             | "input.button"
             | "input.key"
             | "config.gaps"
+            | "config.border"
+            | "config.wallpaper"
     )
+}
+
+/// Every type `Request` accepts, read off the enum itself.
+///
+/// Only the tests use it: `is_known_type` is a `matches!` because it is on the
+/// path every message takes, and a list written twice is a list that drifts —
+/// `config.border` and `config.wallpaper` were both missing from it, which
+/// costs nothing until a malformed one of those arrives and is reported as a
+/// type nobody has heard of rather than as the bad body it is.
+#[cfg(test)]
+fn declared_types() -> Vec<String> {
+    let source = include_str!("request.rs");
+    let mut names = Vec::new();
+    let mut lines = source.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(rest) = line.trim().strip_prefix("#[serde(rename = \"") else {
+            continue;
+        };
+        let Some(name) = rest.split('"').next() else {
+            continue;
+        };
+        // A variant follows its rename, and a variant is capitalised where a
+        // field is not — which is the whole difference between a message type
+        // and a renamed field inside one.
+        let follows = lines.peek().map(|l| l.trim()).unwrap_or_default();
+        let is_variant = follows.starts_with(|c: char| c.is_ascii_uppercase());
+        if is_variant {
+            names.push(name.to_owned());
+        }
+    }
+    names
 }
 
 /// Serialise one message to the shell.
@@ -193,6 +227,24 @@ mod tests {
                 ParseError::MissingType,
                 "{raw}"
             );
+        }
+    }
+
+    /// The two lists say the same thing, or a malformed message is reported as
+    /// an unknown one.
+    ///
+    /// `is_known_type` exists to tell "no such variant" from "that variant,
+    /// malformed", which serde cannot — so a type missing from it turns a
+    /// useful error into a wrong one. Two were missing when this was written.
+    #[test]
+    fn every_request_type_is_known() {
+        let declared = declared_types();
+        assert!(
+            declared.len() >= 35,
+            "the enum was not read properly: {declared:?}"
+        );
+        for name in declared {
+            assert!(is_known_type(&name), "{name} is not in is_known_type");
         }
     }
 

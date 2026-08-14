@@ -3238,19 +3238,24 @@ if (mode === 'scrolling') {
   const micBefore = micExec().length;
   const micSentBefore = sent.length;
   micEl.listeners.wheel.forEach((fn) => fn({ preventDefault() {}, deltaY: 100 }));
+  /* The microphone is the source rather than the sink, and goes the same way
+     the speakers do: one `status.volume`, which changes it and re-samples in
+     that order. */
+  const micVolume = (from) => sent.slice(from)
+    .filter((m) => m.type === 'status.volume');
   check('scrolling a mic widget down lowers the source volume by 5%',
-    micExec().slice(micBefore).some((m) =>
-      m.command === 'wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 5%-'));
-  check('scrolling a mic widget refreshes the bar at once',
-    sent.slice(micSentBefore).some((m) => m.type === 'status.refresh'));
+    micVolume(micSentBefore).some((m) =>
+      m.target === 'source' && m.delta === -5 && !m.mute));
+  check('and runs no program to do it',
+    micExec().length === micBefore);
   const micBeforeMute = micExec().length;
   const micSentBeforeMute = sent.length;
   micEl.listeners.contextmenu.forEach((fn) => fn({ preventDefault() {} }));
   check('right-clicking a mic widget toggles the source mute',
-    micExec().slice(micBeforeMute).some((m) =>
-      m.command === 'wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle'));
-  check('muting a mic widget refreshes the bar at once',
-    sent.slice(micSentBeforeMute).some((m) => m.type === 'status.refresh'));
+    micVolume(micSentBeforeMute).some((m) =>
+      m.target === 'source' && m.mute === true));
+  check('and the microphone is never confused with the speakers',
+    !micVolume(micSentBefore).some((m) => m.target === 'sink'));
   emit({ type: 'config', layout: mode });
 
   /* A full bar override, `bar_items`: modules and widgets listed together in
@@ -3366,19 +3371,25 @@ if (mode === 'scrolling') {
   const sentBeforeScroll = sent.length;
   volEl.listeners.wheel.forEach((fn) =>
     fn({ preventDefault() {}, deltaY: -100 }));
+  /* One message, not two. The pair this replaced — `shell.exec wpctl …`
+     followed by `status.refresh` — is a race the refresh wins: the compositor
+     spawns the command and samples the sink before it has run, so the bar
+     redraws the volume that was already there. */
+  const volumeAfter = (from) => sent.slice(from)
+    .filter((m) => m.type === 'status.volume');
   check('scrolling a volume widget up raises volume by 5%',
-    execAfter().slice(before).some((m) =>
-      m.command === 'wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+'));
-  check('scrolling asks the compositor to refresh the bar at once',
-    sent.slice(sentBeforeScroll).some((m) => m.type === 'status.refresh'));
+    volumeAfter(sentBeforeScroll).some((m) =>
+      m.target === 'sink' && m.delta === 5 && !m.mute));
+  check('and asks for it in one message, so the sample cannot come first',
+    execAfter().length === before
+    && !sent.slice(sentBeforeScroll).some((m) => m.type === 'status.refresh'));
   const beforeMute = execAfter().length;
   const sentBeforeMute = sent.length;
   volEl.listeners.contextmenu.forEach((fn) => fn({ preventDefault() {} }));
   check('right-clicking a volume widget toggles mute',
-    execAfter().slice(beforeMute).some((m) =>
-      m.command === 'wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle'));
-  check('muting asks the compositor to refresh the bar at once',
-    sent.slice(sentBeforeMute).some((m) => m.type === 'status.refresh'));
+    volumeAfter(sentBeforeMute).some((m) => m.target === 'sink' && m.mute === true));
+  check('and does not run a program to do it',
+    execAfter().length === beforeMute);
   const beforeDisk = execAfter().length;
   diskEl.listeners.click.forEach((fn) => fn());
   check('clicking a disk widget opens its mount',

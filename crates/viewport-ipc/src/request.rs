@@ -248,6 +248,35 @@ pub enum Request {
     #[serde(rename = "status.refresh")]
     StatusRefresh,
 
+    /// Change the volume of the default sink or source, and re-sample the bar
+    /// once it has actually changed.
+    ///
+    /// The shell used to do this itself: `shell.exec wpctl set-volume …`
+    /// followed by `status.refresh`. Both are true and the pair is a race —
+    /// `shell.exec` spawns and returns, so the refresh samples the sink before
+    /// the child that changes it has run. What that looks like is a volume
+    /// that scrolls and a bar that shows the old number for up to two seconds,
+    /// which reads as the scroll having missed.
+    ///
+    /// Here the compositor runs the change to completion and samples after, so
+    /// the ordering is not a matter of timing. It is also the compositor's own
+    /// business: the same `wpctl` it already samples with, for a widget it
+    /// draws itself — the shell needs no way to run programs for this.
+    #[serde(rename = "status.volume")]
+    StatusVolume {
+        /// Which node: `"sink"` for the speakers, `"source"` for the
+        /// microphone. Anything else is refused.
+        target: String,
+        /// Percentage points to add, negative to subtract. Absent, or zero,
+        /// changes no volume — which is what a mute-only message is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delta: Option<i32>,
+        /// Toggle the mute state of that node. Applied after `delta`, so one
+        /// message can do both.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mute: bool,
+    },
+
     /// Move the pointer, in the layout's own coordinates.
     ///
     /// For driving the desktop from a script: a test that wants to know
@@ -866,6 +895,38 @@ mod tests {
         for json in table {
             serde_json::from_str::<Request>(json).unwrap_or_else(|e| panic!("{json}: {e}"));
         }
+    }
+
+    #[test]
+    fn status_volume_names_a_node_and_what_to_do_to_it() {
+        let Request::StatusVolume {
+            target,
+            delta,
+            mute,
+        } = parse(r#"{"type":"status.volume","target":"sink","delta":5}"#)
+        else {
+            panic!("not a status.volume message");
+        };
+        assert_eq!(target, "sink");
+        assert_eq!(delta, Some(5));
+        assert!(!mute, "a volume change is not a mute");
+
+        // Down, and the microphone rather than the speakers.
+        let Request::StatusVolume { target, delta, .. } =
+            parse(r#"{"type":"status.volume","target":"source","delta":-5}"#)
+        else {
+            panic!("not a status.volume message");
+        };
+        assert_eq!((target.as_str(), delta), ("source", Some(-5)));
+
+        // Mute alone, which names no delta at all.
+        let Request::StatusVolume { delta, mute, .. } =
+            parse(r#"{"type":"status.volume","target":"sink","mute":true}"#)
+        else {
+            panic!("not a status.volume message");
+        };
+        assert_eq!(delta, None);
+        assert!(mute);
     }
 
     #[test]

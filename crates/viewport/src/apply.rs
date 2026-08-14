@@ -251,10 +251,52 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             crate::input::spawn(&command);
         }
 
-        // Re-sample the status bar now. An audio widget drives the sink through
-        // wpctl (above) and then asks for this, so the change shows up at once
-        // instead of on the next two-second tick.
+        // Re-sample the status bar now, for anything that changed something it
+        // reports and does not want to wait for the next two-second tick.
         Request::StatusRefresh => state.status_tick(),
+
+        Request::StatusVolume {
+            target,
+            delta,
+            mute,
+        } => {
+            // The node names wpctl knows. Refused rather than passed through:
+            // this is a string from a page, and `wpctl` takes an id where it
+            // does not recognise a name.
+            let node = match target.as_str() {
+                "sink" => "@DEFAULT_AUDIO_SINK@",
+                "source" => "@DEFAULT_AUDIO_SOURCE@",
+                other => {
+                    reject(state, "status.volume", &format!("no such target {other:?}"));
+                    return;
+                }
+            };
+
+            // Run to completion, then sample. That ordering is the whole
+            // point: the shell used to spawn `wpctl` through `shell.exec` and
+            // ask for a refresh in the next message, which samples the sink
+            // before the child that changes it has run — a scroll that worked
+            // and a bar that shows the old number until the next tick.
+            //
+            // Blocking, and deliberately: it is one short-lived process, of
+            // the same kind and cost as the `wpctl get-volume` the sampler
+            // already waits for twice a second.
+            let mut ran = false;
+            if let Some(delta) = delta.filter(|delta| *delta != 0) {
+                let step = if delta > 0 {
+                    format!("{delta}%+")
+                } else {
+                    format!("{}%-", -delta)
+                };
+                ran |= crate::status::wpctl(&["set-volume", node, &step]);
+            }
+            if mute {
+                ran |= crate::status::wpctl(&["set-mute", node, "toggle"]);
+            }
+            if ran {
+                state.status_tick();
+            }
+        }
 
         Request::OutputQuery => state.notify_output_layout(),
 

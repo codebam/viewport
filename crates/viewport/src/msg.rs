@@ -73,6 +73,8 @@ const STRING_FIELDS: &[&str] = &[
     // reach that.
     "path",
     "mode",
+    // `sink` and `source`, which are words.
+    "target",
 ];
 
 struct Type {
@@ -260,6 +262,11 @@ const TYPES: &[Type] = &[
         name: "status.refresh",
         fields: &[],
         hint: "(re-sample the status bar now, not on the next tick)",
+    },
+    Type {
+        name: "status.volume",
+        fields: &["target", "delta", "mute"],
+        hint: "--target sink|source [--delta 5] [--mute]   (changes it, then re-samples)",
     },
     Type {
         name: "input.pointer",
@@ -1157,10 +1164,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 36 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 37 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 36);
+        assert_eq!(TYPES.len(), 37);
     }
 
     #[test]
