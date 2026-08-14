@@ -11,6 +11,15 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-14
+
+Packaging, and nothing else: the compiled compositor is what 0.1.4 shipped.
+The packages are named after the compositor rather than the toolkit it was
+rewritten on, every engine has a `-git` and a `-bin` form beside its source
+recipe, and all nine sit in one directory each under `packaging/aur`. This is
+the release whose artifacts were built from the recipes in its own tree, which
+0.1.4's — cut before the rename — could not be.
+
 ### Shipping
 - One directory per AUR package, all nine under `packaging/aur`, named exactly
   after the repository each one is pushed to — the three source recipes moved
@@ -187,6 +196,7 @@ deleted C compositor and the tree stopped carrying two implementations.
   missing — WebKit treated such pages as empty documents (see the `wpe`
   PKGBUILD's notes on `shared-mime-info`).
 
-[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/codebam/viewport/releases/tag/v0.1.5
 [0.1.4]: https://github.com/codebam/viewport/releases/tag/v0.1.4
 [0.1.3]: https://github.com/codebam/viewport/releases/tag/v0.1.3

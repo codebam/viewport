@@ -1,6 +1,6 @@
 {
   "name": "viewport-shell",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Build-time dependencies of the reference shell in data/shell.",
   "license": "MIT",

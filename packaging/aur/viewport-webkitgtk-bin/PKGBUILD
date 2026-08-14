@@ -10,7 +10,7 @@
 # byte for byte what the source package would have produced.
 
 pkgname=viewport-webkitgtk-bin
-pkgver=0.1.4
+pkgver=0.1.5
 pkgrel=1
 pkgdesc='Wayland compositor whose shell is a web page — WebKitGTK, out of process (binary release)'
 arch=('x86_64')

@@ -5,7 +5,7 @@
 #
 #   ./scripts/arch-vm.sh                     # newest package under packaging/out
 #   ./scripts/arch-vm.sh --variant chromium   # or --variant viewport-wpe-git
-#   ./scripts/arch-vm.sh --package ~/viewport-wpe-0.1.4-1-x86_64.pkg.tar.zst
+#   ./scripts/arch-vm.sh --package ~/viewport-wpe-0.1.5-1-x86_64.pkg.tar.zst
 #   ./scripts/arch-vm.sh --shell                 # a login shell, no compositor
 #   ./scripts/arch-vm.sh --url https://example.com   # a page rather than the shell
 #   ./scripts/arch-vm.sh --screens 2                 # two virtual monitors

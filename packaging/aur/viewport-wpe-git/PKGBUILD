@@ -8,7 +8,7 @@
 # built — a system takes one of the three, and one engine.
 #
 # `pkgver()` reports the last tag, how many commits past it the checkout is,
-# and which commit — `0.1.4.r12.gdeadbee` — so an installed snapshot sorts
+# and which commit — `0.1.5.r12.gdeadbee` — so an installed snapshot sorts
 # above the release it came after and says on sight what it is.
 #
 # This is the only variant that has an engine inside the compositor, and the
@@ -17,7 +17,7 @@
 # there and no WebKit is compiled here.
 
 pkgname=viewport-wpe-git
-pkgver=0.1.4.r0.g0000000
+pkgver=0.1.5.r0.g0000000
 pkgrel=1
 pkgdesc='Wayland compositor whose entire shell is a web page — the Smithay rewrite (git)'
 arch=('x86_64' 'aarch64')
