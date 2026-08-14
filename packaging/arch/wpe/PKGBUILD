@@ -13,23 +13,23 @@
 # there and no WebKit is compiled here.
 
 pkgname=viewport-smithay-wpe
-pkgver=0.1.3.r69.g1345051
+pkgver=0.1.4
 pkgrel=1
 pkgdesc='Wayland compositor whose entire shell is a web page — the Smithay rewrite'
 arch=('x86_64' 'aarch64')
 url='https://github.com/codebam/viewport-smithay'
 license=('GPL-3.0-or-later')
 
-# The commit this package was cut from, and the whole of what makes it
+# The tag this package was cut from, and the whole of what makes it
 # reproducible: a branch would move under it, and a PKGBUILD that follows a
-# moving branch does not describe any particular package. A tag says the same
-# thing when there is one; between releases there is not, and a commit is the
-# honest way to name what was built rather than pretending a stale tag is it.
+# moving branch does not describe any particular package.
 #
-# `pkgver` says the same thing in pacman's own terms — the last release, how
-# many commits past it, and which one — so an installed snapshot sorts above
-# 0.1.3 and says on sight what it is.
-_commit=1345051ff10d759a45b492d0871bd9c0ecb7d6ee
+# A tag while there is one, a commit while there is not. Between releases this
+# carries `_commit` and a `pkgver` of the git-describe form — the last release,
+# how many commits past it, and which one — because naming a stale tag would be
+# a lie about what was built. At a release the two say the same thing and the
+# tag is the one anybody can check.
+_tag=v0.1.4
 
 depends=(
   'wayland'
@@ -104,7 +104,7 @@ provides=("viewport=$pkgver" "viewport-smithay=$pkgver")
 conflicts=('viewport' 'viewport-smithay-webkitgtk' 'viewport-smithay-chromium')
 options=('!lto')
 
-source=("git+https://github.com/codebam/viewport-smithay.git#commit=$_commit")
+source=("git+https://github.com/codebam/viewport-smithay.git#tag=$_tag")
 sha256sums=('SKIP')
 
 prepare() {

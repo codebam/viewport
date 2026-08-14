@@ -22,12 +22,14 @@ pushing, or leave the branch unpushed until that artifact exists.
 
 ## Cutting a release
 
-1. Tag the tree: `git tag -a vX.Y.Z && git push rewrite vX.Y.Z`.
-2. Point the three recipes in `packaging/arch` at it: `_commit=` the tag's
-   commit, and `pkgver=X.Y.Z`. Between releases those recipes sit on a plain
-   commit instead, with `pkgver=X.Y.Z.rN.gSHORT` — the last release, how many
-   commits past it, and which one — which is what a snapshot built for someone
-   to try should say on sight.
+1. Tag the tree: `git tag -a vX.Y.Z && git push origin vX.Y.Z`.
+2. Point the three recipes in `packaging/arch` at it: `_tag=vX.Y.Z` in the
+   source line, and `pkgver=X.Y.Z`. Between releases those recipes sit on a
+   plain commit instead — `_commit=` the commit, `#commit=` in the source line,
+   and `pkgver=X.Y.Z.rN.gSHORT`, the last release, how many commits past it,
+   and which one — which is what a snapshot built for someone to try should say
+   on sight. The version bump itself goes in the same commit the tag names, so
+   the recipes in the tagged tree already point at their own tag.
 3. Build all three: `./packaging/arch/build-in-container.sh <variant>`.
 4. Upload the three `.pkg.tar.zst` to the GitHub release.
 5. Update the AUR packages — `pkgver`, and for the `-bin` packages the

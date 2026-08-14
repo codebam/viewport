@@ -11,6 +11,14 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-14
+
+A desktop that can be given a picture, and a run of fixes to the things that
+touch two monitors — a border drawn onto the screen next door, a capture of
+both screens showing the second one empty — plus the keys and clicks that
+reached nothing: the play/pause key, `Mod4+Tab` on a layout that keeps windows
+out of view, and the bar's own workspace pills and window titles.
+
 ### Added
 - A colour or a gradient as the wallpaper: `wallpaper` takes a CSS value —
   `#1a1b26`, `rgb(...)`, `linear-gradient(...)`, `url(...)` — as well as a
@@ -102,6 +110,11 @@ to summarise rather than to duplicate.
 - Run the same Rust suite under AddressSanitizer (`.#asan`).
 
 ### Shipping
+- Cut `0.1.4`: every place the version is written moves together, and the three
+  source recipes in `packaging/arch` go back to naming the tag (`_tag=v0.1.4`)
+  rather than the commit they sat on between releases. The `-bin` recipes carry
+  the new `pkgver` and their `sha256sums_x86_64` stay stale until the artifacts
+  are built and uploaded.
 - Move the renderer out to its own repository.
 - Point the AUR `-bin` package at the `0.1.3` artifact.
 - Ship `viewport-smithay-wpe-bin` alongside `viewport-smithay-webkitgtk-bin`;
@@ -152,5 +165,6 @@ deleted C compositor and the tree stopped carrying two implementations.
   missing — WebKit treated such pages as empty documents (see the `wpe`
   PKGBUILD's notes on `shared-mime-info`).
 
-[Unreleased]: https://github.com/codebam/viewport-smithay/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/codebam/viewport-smithay/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/codebam/viewport-smithay/releases/tag/v0.1.4
 [0.1.3]: https://github.com/codebam/viewport-smithay/releases/tag/v0.1.3
