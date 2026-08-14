@@ -31,6 +31,14 @@ to summarise rather than to duplicate.
   door is that screen's own desktop. The frame is now reported clipped to the
   output it was drawn on, and the compositor draws a window's frame only on the
   output the shell drew the window on.
+- The play/pause media key doing nothing. It was bound as `XF86AudioPause`,
+  which xkb puts on the *shifted* level of that key — chords match the
+  unshifted keysym, so the binding named a level the key cannot produce, while
+  skip and previous worked and made it look like playerctl failing. It is
+  `XF86AudioPlay` now, running `playerctl play-pause` rather than `pause`.
+- The volume, mute, mic-mute and brightness keys, documented as bound by
+  default and bound only in `data/config.example.json`. They are defaults now,
+  5% a press.
 - The active window's border drawn across the bar. The bar sat on z-index 3
   and three window layers sat above it — floating at 5, the canvas's focused
   window and solar's sun at 4 — and the compositor's copy of the bar is a crop

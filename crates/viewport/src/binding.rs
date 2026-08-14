@@ -398,10 +398,50 @@ pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
         "Mod4+Shift+p=shell output.hdr".to_owned(),
         // Media keys, which have no modifier and belong to whatever is
         // playing.
+        //
+        // The play key is `XF86AudioPlay`, and it is the one key on the row
+        // that has to be named exactly right. A keyboard's play/pause key is
+        // `KEY_PLAYPAUSE`, which xkb maps to `[XF86AudioPlay,
+        // XF86AudioPause]` — the pause name is the *shifted* level of that
+        // key, and chords are matched on the unshifted keysym, so binding
+        // `XF86AudioPause` alone bound a level nothing can reach. Skip and
+        // previous worked, because their keysyms are the ones their keys
+        // actually send, and the odd one out looked like playerctl failing
+        // rather than a chord that was never matched.
+        //
+        // `play-pause` rather than `pause` for the same reason: one key, one
+        // toggle. A player already paused is started again by the key that
+        // paused it, which is what the key is labelled.
+        "XF86AudioPlay=exec playerctl play-pause".to_owned(),
+        // The dedicated pause key, which is `KEY_PAUSECD` and a different key
+        // — rare on a keyboard, present on some remotes and media decks. It
+        // pauses rather than toggling: a key that says pause has said what it
+        // means.
         "XF86AudioPause=exec playerctl pause".to_owned(),
         "XF86AudioNext=exec playerctl next".to_owned(),
         "XF86AudioPrev=exec playerctl previous".to_owned(),
         "XF86AudioStop=exec playerctl stop".to_owned(),
+        // The rest of the row, which docs/configuration.md has described as
+        // bound by default since it was written and which nothing bound: they
+        // were in `data/config.example.json` only, so a desktop that had not
+        // copied that file had a volume key that did nothing.
+        //
+        // The sink rather than the player, deliberately — turning the volume
+        // down means the machine, not whatever happens to be playing — which
+        // is why these go through `wpctl` and the four above through MPRIS.
+        //
+        // Five percent a press, because a binding fires on press and does not
+        // repeat while the key is held: the one percent the example file
+        // suggests is a fine adjustment, and a hundred presses from silence to
+        // full is not a volume key.
+        "XF86AudioRaiseVolume=exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+".to_owned(),
+        "XF86AudioLowerVolume=exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-".to_owned(),
+        "XF86AudioMute=exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".to_owned(),
+        // The microphone's own key, which is the source and not the sink. On
+        // the keyboards that have it, it is the key a video call is muted with.
+        "XF86AudioMicMute=exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle".to_owned(),
+        "XF86MonBrightnessUp=exec brightnessctl set 5%+".to_owned(),
+        "XF86MonBrightnessDown=exec brightnessctl set 5%-".to_owned(),
     ];
 
     // Step through the windows, and *which* windows depends on who can see
@@ -701,6 +741,70 @@ mod tests {
         );
     }
 
+    /// The play/pause key is bound to the keysym that key actually sends.
+    ///
+    /// `KEY_PLAYPAUSE` is `[XF86AudioPlay, XF86AudioPause]` in xkb's evdev
+    /// map, and chords are matched on the unshifted keysym — so a keymap
+    /// carrying only `XF86AudioPause` binds a level the key cannot produce.
+    /// Skip and previous went on working, which made the one dead key look
+    /// like a player that would not answer.
+    #[test]
+    fn the_play_key_is_bound_to_the_keysym_it_sends() {
+        let bindings = defaults("foot", "wmenu-run", "tiling");
+        let action = |keysym| {
+            bindings
+                .iter()
+                .find(|b| b.mode.is_empty() && b.keysym == keysym)
+                .map(|b| b.action.clone())
+        };
+
+        assert_eq!(
+            action(keysyms::KEY_XF86AudioPlay),
+            Some(Action::Exec("playerctl play-pause".to_owned())),
+            "the key labelled play/pause is XF86AudioPlay, and it toggles"
+        );
+        // The rest of the row, so a rename that fixes one and breaks another
+        // is caught here rather than by pressing them.
+        assert_eq!(
+            action(keysyms::KEY_XF86AudioNext),
+            Some(Action::Exec("playerctl next".to_owned()))
+        );
+        assert_eq!(
+            action(keysyms::KEY_XF86AudioPrev),
+            Some(Action::Exec("playerctl previous".to_owned()))
+        );
+        assert_eq!(
+            action(keysyms::KEY_XF86AudioStop),
+            Some(Action::Exec("playerctl stop".to_owned()))
+        );
+        // And the dedicated pause key, which is a different key: it pauses.
+        assert_eq!(
+            action(keysyms::KEY_XF86AudioPause),
+            Some(Action::Exec("playerctl pause".to_owned()))
+        );
+
+        // The volume and brightness keys, which docs/configuration.md has
+        // described as bound by default since it was written and which lived
+        // in the example config alone — so a desktop that had not copied that
+        // file had a volume key that did nothing.
+        for keysym in [
+            keysyms::KEY_XF86AudioRaiseVolume,
+            keysyms::KEY_XF86AudioLowerVolume,
+            keysyms::KEY_XF86AudioMute,
+            keysyms::KEY_XF86AudioMicMute,
+            keysyms::KEY_XF86MonBrightnessUp,
+            keysyms::KEY_XF86MonBrightnessDown,
+        ] {
+            assert!(
+                matches!(action(keysym), Some(Action::Exec(_))),
+                "{} runs nothing",
+                smithay::input::keyboard::xkb::keysym_get_name(
+                    smithay::input::keyboard::Keysym::new(keysym)
+                )
+            );
+        }
+    }
+
     #[test]
     fn a_chord_parses_into_modifiers_and_a_key() {
         let binding = parse("Mod4+Shift+q=close").expect("should parse");
@@ -962,12 +1066,12 @@ mod tests {
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
-        // 27 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // 34 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", "wmenu-run", "tiling");
         assert_eq!(
             bindings.len(),
-            27 + 16 + 18 + 11 + 1,
+            34 + 16 + 18 + 11 + 1,
             "a default failed to parse"
         );
 

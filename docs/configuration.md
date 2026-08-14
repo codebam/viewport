@@ -805,9 +805,21 @@ mute go to the sink through `wpctl`, since turning the volume down means the
 machine and not whatever happens to be playing, and the brightness keys go to
 `brightnessctl`.
 
+The volume keys move the sink 5% a press and the brightness keys the backlight
+by the same, because a binding fires on press and does not repeat while the key
+is held — `data/config.example.json` shows the same five at 1% for anyone who
+wants a finer adjustment, and a `binds_override` entry replaces one of these
+without touching the rest.
+
 Missing tools fail quietly per keypress rather than at startup, which is the
 right trade for a binding nobody may ever press. As with every default, naming
 any `binds` in the config replaces the whole set.
+
+The key names are the ones xkb gives the keys themselves. The play/pause key is
+`XF86AudioPlay`: xkb maps it to `[XF86AudioPlay, XF86AudioPause]` and chords
+are matched on the unshifted keysym, so `XF86AudioPause` names the *dedicated*
+pause key (`KEY_PAUSECD`, rare on a keyboard) and not the one on the media row.
+`wev` prints what any key really sends.
 
 ## Window rules
 
