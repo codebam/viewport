@@ -85,7 +85,7 @@ options=('!strip' '!debug')
 # Downloaded under a name that is not *.pkg.tar.*, so the artifact sitting in
 # the build directory is not mistaken for the package this recipe produced.
 source_x86_64=("$pkgname-$pkgver.tar.zst::$url/releases/download/v$pkgver/viewport-chromium-$pkgver-$_pkgrel-x86_64.pkg.tar.zst")
-sha256sums_x86_64=('PLACEHOLDER_SHA256_OF_THE_CHROMIUM_ARTIFACT')
+sha256sums_x86_64=('451670f228439affa06a9543445ca2236c1672131bfe873e20363954640f4995')
 
 package() {
   # The source is an Arch package, so makepkg has already unpacked a $pkgdir

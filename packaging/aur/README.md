@@ -31,15 +31,10 @@ either — nixpkgs' `servo` has no Arch counterpart.
 ## What is not pushed yet
 
 Nothing is: none of the nine repositories exist on the AUR, and all nine names
-are free. Two things have to be true before any `-bin` recipe can go up, and
-neither is yet:
-
-* The artifacts have to exist on the GitHub release. `viewport-wpe-bin` and
-  `viewport-chromium-bin` still carry `PLACEHOLDER_SHA256_OF_THE_*_ARTIFACT`
-  and `viewport-webkitgtk-bin` carries the 0.1.3 checksum, so `makepkg` fails
-  on all three as committed.
-* Each package needs a `.SRCINFO`, which is generated rather than written —
-  see below.
+are free. The artifacts they need do exist now — the v0.1.5 release carries one
+per engine and the three `-bin` recipes carry those artifacts' real checksums —
+so what is left before a push is a `.SRCINFO` per package, which is generated
+rather than written; see below.
 
 ## Cutting a release
 
