@@ -31,10 +31,32 @@ either — nixpkgs' `servo` has no Arch counterpart.
 ## What is not pushed yet
 
 Nothing is: none of the nine repositories exist on the AUR, and all nine names
-are free. The artifacts they need do exist now — the v0.1.5 release carries one
-per engine and the three `-bin` recipes carry those artifacts' real checksums —
-so what is left before a push is a `.SRCINFO` per package, which is generated
-rather than written; see below.
+are free. Everything a push needs is here — the v0.1.5 release carries one
+artifact per engine, the three `-bin` recipes carry those artifacts' real
+checksums, and every package has a `.SRCINFO` beside its PKGBUILD. Pushing is
+copying a directory into its AUR repository and committing it.
+
+`.SRCINFO` is generated, never edited, and goes stale the moment a PKGBUILD
+changes — regenerate it in the same commit:
+
+```sh
+podman run --rm -v "$PWD/packaging/aur:/aur:z" localhost/viewport-builder \
+  bash -lc 'for d in /aur/viewport-*/; do (cd "$d" && makepkg --printsrcinfo > .SRCINFO); done'
+```
+
+### What has been built, and what has not
+
+| recipe | built | how |
+| --- | --- | --- |
+| `viewport-{webkitgtk,wpe,chromium}` | yes | they built the v0.1.5 artifacts |
+| `viewport-{webkitgtk,wpe,chromium}-bin` | yes | fetched the published artifact and checked its sum |
+| `viewport-chromium-git` | yes | `0.1.5.r1.gf5fe7d2`, so `pkgver()` and the branch fetch work |
+| `viewport-{webkitgtk,wpe}-git` | no | identical to `viewport-chromium-git` apart from the engine, which their source twins prove |
+
+`namcap` is clean on the three chromium recipes and on the packages they
+produce, apart from warnings it cannot avoid: the wrapper is a `/bin/sh`
+script, and the libraries this compositor opens at runtime rather than linking
+(Vulkan, EGL, pipewire) read to it as dependencies that "may not be needed".
 
 ## Cutting a release
 

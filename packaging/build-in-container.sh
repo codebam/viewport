@@ -83,6 +83,13 @@ echo "running makepkg..." >&2
         # (`webkit2gtk-6.0` for `webkitgtk-6.0`, `at-spi2-atk` for
         # `at-spi2-core`, and a `cargo` that Arch ships inside `rust`).
         #
+        # makepkg.conf first, because a recipe may read what makepkg would have
+        # set for it: `$CARCH` in a `source_x86_64` URL is unbound in a plain
+        # shell, and under `set -u` that is the whole build failing on line 87
+        # of a PKGBUILD that is perfectly correct.
+        #
+        # shellcheck disable=SC1091
+        . /etc/makepkg.conf
         # shellcheck disable=SC1091
         . ./PKGBUILD
         want=("${depends[@]:-}" "${makedepends[@]:-}")

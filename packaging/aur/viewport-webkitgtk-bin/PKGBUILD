@@ -84,7 +84,7 @@ options=('!strip' '!debug')
 
 # Downloaded under a name that is not *.pkg.tar.*, so the artifact sitting in
 # the build directory is not mistaken for the package this recipe produced.
-source_x86_64=("$pkgname-$pkgver.tar.zst::$url/releases/download/v$pkgver/viewport-webkitgtk-$pkgver-$_pkgrel-x86_64.pkg.tar.zst")
+source_x86_64=("$pkgname-$pkgver.tar.zst::$url/releases/download/v$pkgver/viewport-webkitgtk-$pkgver-$_pkgrel-$CARCH.pkg.tar.zst")
 sha256sums_x86_64=('8619fb8183241a85628fb0a66046ffeb2ca3ce945c6bccbc116755df9f5a6f49')
 
 package() {
