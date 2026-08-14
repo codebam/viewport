@@ -31,7 +31,12 @@ to summarise rather than to duplicate.
   door is that screen's own desktop. The frame is now reported clipped to the
   output it was drawn on, and the compositor draws a window's frame only on the
   output the shell drew the window on.
-
+- `Mod4+Tab` skipping the windows a layout keeps out of view — a column
+  scrolled off the strip, a window panned off the canvas. Those are reported to
+  the compositor as not on screen, and its cycle walks what is on screen, so the
+  one key whose job is reaching them could not. In those two layouts the chord
+  now goes to the shell, which walks the whole workspace and brings the window
+  it lands on into view.
 
 ### Protocols
 - `zwlr_foreign_toplevel_management_v1`: activate, close and fullscreen for

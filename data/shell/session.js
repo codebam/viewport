@@ -678,6 +678,11 @@ function focusedWorkspace() {
  * falling off the end of this one, and only the second is a surprise. */
 function crossToOutput(direction) {
   if (!focusCrossesOutputs) return;
+  /* Only the four that name an edge. `next` and `prev` step through the strip
+     and wrap at its ends, so falling off one is not a direction to carry onto
+     another monitor — and `adjacentOutput('next')` would be a search for a
+     screen in a direction that does not exist. */
+  if (!['left', 'right', 'up', 'down'].includes(direction)) return;
   focusOutputDirection(direction);
 }
 
@@ -705,6 +710,25 @@ function scrollFocus(direction) {
 
   const firstOf = (column) =>
     column.type === 'leaf' ? column.id : [...walk(column)][0][0].id;
+
+  /* Step through every window on the strip, in strip order, wrapping at the
+     ends. Mod4+Tab, which the compositor answers itself where every window is
+     drawn — and cannot here, for the reason this function exists: a column
+     scrolled off the screen is reported as not on it, and the compositor's own
+     cycle walks what is on screen. Tabbing could therefore reach the columns
+     either side of the view and nothing beyond them. */
+  if (direction === 'next' || direction === 'prev') {
+    const leaves = columns.flatMap((column) => column.type === 'leaf'
+      ? [column.id] : [...walk(column)].map(([leaf]) => leaf.id));
+    if (leaves.length === 0) return;
+    const at = focusedId != null ? leaves.indexOf(focusedId) : -1;
+    const step = direction === 'next' ? 1 : -1;
+    const to = at < 0
+      ? (direction === 'next' ? 0 : leaves.length - 1)
+      : (at + step + leaves.length) % leaves.length;
+    send({ type: 'view.focus', id: leaves[to] });
+    return;
+  }
 
   if (direction === 'first' || direction === 'last') {
     send({ type: 'view.focus',

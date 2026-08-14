@@ -1102,6 +1102,42 @@ function canvasMoveFocused(direction) {
   return true;
 }
 
+/* Step focus through the windows on the plane, including the ones off screen.
+ *
+ * Mod4+Tab is the compositor's own `focus next` in every layout that draws all
+ * of its windows. A plane does not: a window panned out of view is left out of
+ * the render, which tells the compositor its surface is not on screen — and the
+ * compositor's cycle walks what is on screen, so those windows could not be
+ * reached by the key whose whole job is reaching them. Panning back to a window
+ * to Tab to it is the manoeuvre this layout exists to avoid.
+ *
+ * So the cycle is answered here, from `canvasOrderOf`, which is every window on
+ * the workspace whether it is drawn or not — the same list the layout projects
+ * from, in the same order, so Tab follows the plane rather than the order the
+ * windows happened to open in. Focusing one is enough to see it: the
+ * `view.focused` handler calls `canvasFocused`, which pans the view onto it.
+ *
+ * The same shape as scrollFocus, and for the reason its header gives: where
+ * the window you want is off screen, the layout has to answer the question. */
+function canvasFocusStep(forward) {
+  const target = canvasTarget();
+  if (!target) return false;
+
+  const ids = canvasOrderOf(target.workspace);
+  if (ids.length === 0) return false;
+
+  /* Nothing focused, or focus is on another workspace: start at the end the
+     key is coming from rather than doing nothing, which is what Tab on a
+     freshly switched workspace has to mean. */
+  const at = focusedId != null ? ids.indexOf(focusedId) : -1;
+  const next = at < 0
+    ? (forward ? 0 : ids.length - 1)
+    : (at + (forward ? 1 : -1) + ids.length) % ids.length;
+
+  send({ type: 'view.focus', id: ids[next] });
+  return true;
+}
+
 /* Bring the newly focused window into view.
  *
  * Called from the view.focused handler beside matrixFocused, and a no-op in

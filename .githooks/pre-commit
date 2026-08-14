@@ -118,6 +118,8 @@ if $shell; then
         node tests/shell.test.js data/shell scrolling session
         node tests/shell.test.js data/shell solar session
         node tests/shell.test.js data/shell matrix session
+        node tests/shell.test.js data/shell canvas
+        node tests/shell.test.js data/shell canvas session
         node tests/kiosk.test.js examples/kiosk
     '
 fi

@@ -374,8 +374,8 @@ pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
         "Mod4+Shift+e=exit".to_owned(),
         "Mod4+Shift+c=reload".to_owned(),
         "Mod4+Shift+d=appearance toggle".to_owned(),
-        "Mod4+Tab=focus next".to_owned(),
-        "Mod4+Shift+Tab=focus prev".to_owned(),
+        // Tab is filled in below: two layouts have windows the compositor
+        // cannot cycle through, so the chord goes to the shell there.
         "Mod4+f=shell window.fullscreen".to_owned(),
         "Mod4+a=shell window.focus_parent".to_owned(),
         "Mod4+Shift+space=shell layout.float.toggle".to_owned(),
@@ -403,6 +403,29 @@ pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
         "XF86AudioPrev=exec playerctl previous".to_owned(),
         "XF86AudioStop=exec playerctl stop".to_owned(),
     ];
+
+    // Step through the windows, and *which* windows depends on who can see
+    // them all.
+    //
+    // The compositor's own cycle walks the windows that are on screen, which
+    // is every window the tiling, solar and matrix layouts have. The scrolling
+    // strip and the canvas both keep windows outside the view — a column
+    // scrolled past the edge, a window panned off the plane — and report them
+    // to the compositor as not on screen, because that is what stops their
+    // surfaces being painted into holes that are not there. Cycling from here
+    // could then reach the neighbours of the view and nothing beyond them,
+    // which is the one key whose job is reaching them.
+    //
+    // So in those two the chord goes to the shell, exactly as directional
+    // focus does in the strip and for the same reason. See `focus_direction`
+    // and `scrollFocus`.
+    if scrolling || canvas {
+        specs.push("Mod4+Tab=shell layout.focus next".to_owned());
+        specs.push("Mod4+Shift+Tab=shell layout.focus prev".to_owned());
+    } else {
+        specs.push("Mod4+Tab=focus next".to_owned());
+        specs.push("Mod4+Shift+Tab=focus prev".to_owned());
+    }
 
     if scrolling {
         // niri's column keys. A column is the unit: windows stack inside one
@@ -1076,6 +1099,52 @@ mod tests {
             find(&solar),
             Some(Action::Shell("solar.ray left".to_owned()))
         );
+    }
+
+    /// And Tab follows the same rule, for the same reason.
+    ///
+    /// A layout that keeps windows outside the view reports them as not on
+    /// screen, and the compositor's cycle walks what is on screen — so in the
+    /// strip and on the plane the chord that exists to reach the window you
+    /// cannot see could not reach it.
+    #[test]
+    fn tab_cycles_through_the_windows_the_layout_can_see() {
+        let tab = |layout: &str, shift: bool| {
+            defaults("foot", "wmenu-run", layout)
+                .iter()
+                .find(|b| {
+                    b.mode.is_empty() && b.keysym == keysyms::KEY_Tab && b.modifiers.shift == shift
+                })
+                .map(|b| b.action.clone())
+        };
+
+        // Every window is drawn, so the compositor knows where they all are.
+        for layout in ["tiling", "solar", "matrix"] {
+            assert_eq!(
+                tab(layout, false),
+                Some(Action::Focus("next".to_owned())),
+                "{layout}"
+            );
+            assert_eq!(
+                tab(layout, true),
+                Some(Action::Focus("prev".to_owned())),
+                "{layout}"
+            );
+        }
+
+        // These two do not, so the shell answers it.
+        for layout in ["scrolling", "canvas"] {
+            assert_eq!(
+                tab(layout, false),
+                Some(Action::Shell("layout.focus next".to_owned())),
+                "{layout}"
+            );
+            assert_eq!(
+                tab(layout, true),
+                Some(Action::Shell("layout.focus prev".to_owned())),
+                "{layout}"
+            );
+        }
     }
 }
 

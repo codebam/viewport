@@ -122,6 +122,7 @@ can be copied straight into `binds`. Turn the listing off with
 | `Mod4+Return` / `Mod4+d` | terminal / launcher |
 | `Mod4+h j k l`, arrows | focus, crossing monitors at the edge |
 | `Mod4+Shift+h j k l` | move window, carrying it to the next monitor at the edge |
+| `Mod4+Tab` / `Mod4+Shift+Tab` | step through the windows on this workspace |
 | `Mod4+1‑9` / `+Shift` | switch / move to workspace |
 | `Mod4+b` / `Mod4+v` | next window splits horizontally / vertically |
 | `Mod4+e` | flip the focused container's layout |
@@ -852,6 +853,7 @@ The view scrolls the minimum needed to keep the focused column on screen.
 | `Mod4`+right-drag, or dragging a column edge | set the column width freely |
 | `Mod4+Shift+r` | cycle the window's share of the column height |
 | `Mod4+Home` / `Mod4+End` | jump to either end of the strip |
+| `Mod4+Tab` / `Mod4+Shift+Tab` | step through every window on the strip, wrapping at its ends — including the columns scrolled out of view |
 | three-finger swipe ←→ | scroll the strip under your fingers |
 | three-finger swipe ↑↓ | previous / next workspace |
 
@@ -925,6 +927,7 @@ is asked to relayout itself for any view change.
 | `Mod4+Home` | back to 1:1 on the focused window |
 | `Mod4+r` | size the focused window to the screen, less the gaps, without fullscreen |
 | `Mod4+Shift+h/j/k/l` | move the focused window across the plane |
+| `Mod4+Tab` / `Mod4+Shift+Tab` | step through every window on the plane, panning the view onto each — including the ones parked out of sight |
 | `Mod4` + left drag | move a window, or pan the plane when the drag starts on the desktop |
 | `Mod4` + right drag | resize a window |
 

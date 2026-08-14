@@ -172,11 +172,22 @@ function handleShellCommand(command, args) {
       setContainerLayout('stacked');
       break;
 
-    /* Scrolling layout. Bound only when the compositor is configured for it,
-       but harmless to receive otherwise. */
+    /* Scrolling layout, and the canvas for `next`/`prev`. Bound only when the
+       compositor is configured for one of them, but harmless to receive
+       otherwise.
+
+       Two layouts answer this because two layouts have windows the compositor
+       cannot see: a column scrolled off the strip and a window panned off the
+       plane are both reported as not on screen, and the compositor's own
+       cycle walks what is on screen. Everywhere else Mod4+Tab stays where it
+       has always been. */
     case 'layout.focus':
       clearSelection();
-      scrollFocus(arg);
+      if (layoutMode === 'canvas') {
+        canvasFocusStep(arg !== 'prev');
+      } else {
+        scrollFocus(arg);
+      }
       break;
     case 'layout.consume':
       consumeWindow();

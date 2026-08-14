@@ -1056,6 +1056,34 @@ if (mode === 'tiling') {
     .map((m) => m.id).filter((id) => id <= 4));
   check('every window still reachable', laidOut.size === 4);
 
+  /* Tab walks the whole strip and wraps, including the columns scrolled off
+     the screen. The compositor's own cycle cannot: a column past the edge is
+     reported as not on screen, which is exactly what stops its surface being
+     drawn onto the monitor beside it, and the compositor steps through what is
+     on screen. */
+  {
+    emit({ type: 'view.focused', id: 1 });
+    const walked = [];
+    for (let i = 0; i < 5; i++) {
+      const mark = sent.length;
+      emit({ type: 'shell.command', command: 'layout.focus', args: ['next'] });
+      const focus = sent.slice(mark).find((m) => m.type === 'view.focus');
+      if (!focus) break;
+      walked.push(focus.id);
+      emit({ type: 'view.focused', id: focus.id });
+    }
+    check('tab reaches every window on the strip',
+      new Set(walked).size === 4);
+    check('and wraps at the end rather than stopping',
+      walked.length === 5 && walked[4] === walked[0]);
+
+    emit({ type: 'view.focused', id: 1 });
+    const mark = sent.length;
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['prev'] });
+    const back = sent.slice(mark).find((m) => m.type === 'view.focus');
+    check('and shift+tab wraps the other way, off the front of the strip',
+      back !== undefined && back.id !== 1);
+  }
 } else if (mode === 'matrix') {
   /* The matrix.
    *
@@ -1420,6 +1448,77 @@ if (mode === 'tiling') {
     emit({ type: 'shell.command', command: 'canvas.home', args: [] });
     check('and home comes back to 1:1',
       canvas.viewport(workspace).zoom === 1);
+
+    /* Tab reaches a window that has been panned off the plane.
+     *
+     * A window outside the view is left out of the render and reported to the
+     * compositor as not on screen, which is what stops its surface being
+     * painted into a hole that is not there — and the compositor's own cycle
+     * walks what is on screen. So Mod4+Tab could reach the windows around the
+     * view and nothing beyond them, and getting to the one you had parked
+     * meant panning to it first: the manoeuvre this layout exists to avoid. */
+    const far = canvas.places.get(4);
+    canvas.places.set(4, { ...far, x: far.x + 100000 });
+    /* A focus event ends in a relayout, which is what re-renders the plane. */
+    emit({ type: 'view.focused', id: 1 });
+
+    const parked = globalThis.__shell.views.get(4);
+    check('the parked window is off the plane and not drawn',
+      parked.el.hidden === true);
+
+    const reached = new Set();
+    for (let i = 0; i < 8; i++) {
+      const mark = sent.length;
+      emit({ type: 'shell.command', command: 'layout.focus', args: ['next'] });
+      const focus = sent.slice(mark).find((m) => m.type === 'view.focus');
+      if (!focus) break;
+      reached.add(focus.id);
+      /* The compositor answers a view.focus with view.focused, and the shell
+         only steps on from where focus actually is. */
+      emit({ type: 'view.focused', id: focus.id });
+    }
+    check('tab reaches the window nobody can see', reached.has(4));
+    check('and every other window on the plane as well',
+      [1, 2, 3, 4].every((id) => reached.has(id)));
+
+    /* Focusing it panned the view onto it, which is what makes "reached"
+       worth anything: a focused window nobody can see is the same bug wearing
+       a different hat. */
+    emit({ type: 'view.focused', id: 4 });
+    check('and following it brought it back on screen',
+      globalThis.__shell.views.get(4).el.hidden === false);
+
+    /* And a floating window, which on a plane is a window like any other: the
+       canvas gives it a place and pans with it. It is out of the tree, so a
+       cycle built from the tree alone walks straight past it — the plane's own
+       order is the one that has everything on it. */
+    emit({ type: 'view.focused', id: 3 });
+    emit({ type: 'shell.command', command: 'layout.float.toggle', args: [] });
+    emit({ type: 'view.focused', id: 1 });
+
+    const afloat = new Set();
+    for (let i = 0; i < 8; i++) {
+      const mark = sent.length;
+      emit({ type: 'shell.command', command: 'layout.focus', args: ['next'] });
+      const focus = sent.slice(mark).find((m) => m.type === 'view.focus');
+      if (!focus) break;
+      afloat.add(focus.id);
+      emit({ type: 'view.focused', id: focus.id });
+    }
+    check('tab reaches a floating window on the plane', afloat.has(3));
+
+    emit({ type: 'view.focused', id: 3 });
+    emit({ type: 'shell.command', command: 'layout.float.toggle', args: [] });
+
+    /* Back the other way, which is the same cycle read backwards. */
+    emit({ type: 'view.focused', id: 1 });
+    const mark = sent.length;
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['prev'] });
+    const back = sent.slice(mark).find((m) => m.type === 'view.focus');
+    check('shift+tab steps the other way', back !== undefined && back.id !== 1);
+
+    canvas.places.set(4, far);
+    emit({ type: 'view.focused', id: 1 });
 
     /* Moving a window edits the plane rather than the tree — the tree is what
        every other layout reads, and the canvas leaves it exactly as it found
