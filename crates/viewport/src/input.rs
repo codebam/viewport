@@ -179,6 +179,25 @@ fn drag_effect(held: Option<u32>, button: u32, pressed: bool) -> DragEffect {
     }
 }
 
+/// Whether a press starts one of the compositor's own pointer gestures —
+/// Mod4 and a button to move, resize or pan.
+///
+/// `on_overlay` is the part worth naming. Everything the shell draws in front
+/// of the windows and asks to be clicked — the bar it floats under `auto`, a
+/// notification, the screen-share chooser — is a thing to click and not a
+/// handle for a gesture, and the gesture has to be declined *before* the
+/// question of what is underneath. The old guard only declined the drag of a
+/// window found under the pointer, so a press over the bar with no window
+/// beneath fell through to the pan, was swallowed by it, and never reached the
+/// page. Under `auto` that is every click the bar can ever get, because the
+/// bar is on screen only while Mod4 is held.
+///
+/// Split out from the handler for the same reason `drag_effect` is: the rule
+/// is small and the handler around it needs a compositor to run.
+fn starts_gesture(pressed: bool, grabbed: bool, on_overlay: bool, logo: bool, button: u32) -> bool {
+    pressed && !grabbed && !on_overlay && logo && matches!(button, BTN_LEFT | BTN_RIGHT)
+}
+
 /// Whether a button event is the shell's.
 ///
 /// `grabbed` is the implicit grab a press over the shell takes: it holds until
@@ -732,22 +751,33 @@ impl ViewportState {
                     }
                 }
 
-                if state == ButtonState::Pressed
-                    && !pointer.is_grabbed()
-                    && keyboard.modifier_state().logo
-                    && matches!(event.button_code(), BTN_LEFT | BTN_RIGHT)
-                {
-                    let hit = self
-                        .window_under(pointer.current_location())
-                        // Not through something the shell drew in front. A
-                        // notification sitting over a window is not a handle
-                        // for dragging that window about.
-                        .filter(|_| {
-                            !crate::pointer::over_overlay(
-                                &self.shell_overlay_hits,
-                                pointer.current_location(),
-                            )
-                        });
+                // Something the shell drew in front and asked to be clicked:
+                // the bar it floats over the windows, a notification, the
+                // screen-share chooser.
+                //
+                // Nothing here is a handle for a gesture — not for dragging
+                // the window underneath, which is what the old guard said, and
+                // not for panning the desktop either, which is what it missed.
+                // With no window under the pointer a Mod4 press on the bar
+                // started a *pan*, was swallowed by it, and never reached the
+                // page: in `bar: auto` the bar is on screen only while Mod4 is
+                // held, so every click it could ever receive arrived with that
+                // modifier down and was taken for a gesture. What that looks
+                // like is a bar whose workspace pills and window titles do
+                // nothing at all.
+                let on_overlay = crate::pointer::over_overlay(
+                    &self.shell_overlay_hits,
+                    pointer.current_location(),
+                );
+
+                if starts_gesture(
+                    state == ButtonState::Pressed,
+                    pointer.is_grabbed(),
+                    on_overlay,
+                    keyboard.modifier_state().logo,
+                    event.button_code(),
+                ) {
+                    let hit = self.window_under(pointer.current_location());
                     let dragging = hit.and_then(|window| {
                         self.views.iter().find(|v| v.window == window).map(|v| v.id)
                     });
@@ -789,11 +819,8 @@ impl ViewportState {
                     let hit = self.window_under(pointer.current_location());
                     // Clicking a notification must not raise and focus the
                     // window behind it — the click never reached that window.
-                    let on_overlay = crate::pointer::over_overlay(
-                        &self.shell_overlay_hits,
-                        pointer.current_location(),
-                    );
-
+                    // `on_overlay` is worked out above, where the gesture is
+                    // declined for the same reason.
                     match hit.filter(|_| !self.overview && !on_overlay) {
                         Some(window) => {
                             let id = self
@@ -1974,6 +2001,36 @@ mod tests {
             shortcut(&modifiers(true, true), backspace),
             Some(Action::Quit)
         );
+    }
+
+    /// A press on what the shell drew in front is a click on it, not a gesture
+    /// through it.
+    ///
+    /// The bar under `auto` is on screen only while Mod4 is held, so every
+    /// click it can ever receive arrives with the gesture modifier down. Taken
+    /// for a gesture, the workspace pills and the window titles in the taskbar
+    /// do nothing at all — and with no window under the pointer it was not
+    /// even a window drag that ate them, it was the pan.
+    #[test]
+    fn a_press_on_the_shells_own_furniture_is_not_a_gesture() {
+        // Mod4 and a button, over the desktop: the gesture, as before.
+        assert!(starts_gesture(true, false, false, true, BTN_LEFT));
+        assert!(starts_gesture(true, false, false, true, BTN_RIGHT));
+
+        // The same press over the bar, a notification or the chooser.
+        assert!(!starts_gesture(true, false, true, true, BTN_LEFT));
+        assert!(
+            !starts_gesture(true, false, true, true, BTN_RIGHT),
+            "the right button is a resize, and resizing the bar is nothing"
+        );
+
+        // And the rest of the rule, unchanged: a release starts nothing, a
+        // grab already running owns the button, the modifier is required, and
+        // only the two buttons a gesture is drawn on count.
+        assert!(!starts_gesture(false, false, false, true, BTN_LEFT));
+        assert!(!starts_gesture(true, true, false, true, BTN_LEFT));
+        assert!(!starts_gesture(true, false, false, false, BTN_LEFT));
+        assert!(!starts_gesture(true, false, false, true, 0x112));
     }
 
     /// Mod4 and the left button moves a window; the right one resizes it. What

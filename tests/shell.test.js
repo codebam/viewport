@@ -3102,16 +3102,21 @@ if (mode === 'scrolling') {
   check('holding Mod4 reveals it', !barHidden());
 
   /* And it is drawn above the windows, since 'auto' reserves no room for it —
-     but not in front of the pointer. The bar is revealed by Mod4, and Mod4 is
-     the modifier a window is dragged, resized and focused with: a bar that
-     took the pointer took every one of those in the strip it floats over, so
-     a window moved up under it could not be touched again and the click
-     panned the canvas instead. */
+     and it takes the pointer, which it used to decline.
+   *
+   * Declining was for the windows underneath: Mod4 reveals the bar and Mod4 is
+   * what a window is dragged and resized with, so a bar that took those left a
+   * window moved up under it unable to be grabbed there. What it cost was
+   * every click the bar exists to receive — a workspace pill, a window's title
+   * — because under 'auto' the bar is on screen only while Mod4 is held, so a
+   * click on it always arrives with that modifier down. The compositor
+   * declines the gesture over anything the shell drew in front instead; see
+   * `starts_gesture` in input.rs. */
   const floating = () => (sent.filter((m) => m.type === 'shell.overlay')
     .at(-1)?.rects ?? []).filter((r) => r.height > 0);
   check('the revealed bar is drawn over the windows', floating().length > 0);
-  check('and lets the pointer through to them',
-    floating().every((r) => r.passthrough === true));
+  check('and takes the pointer, so its buttons can be clicked',
+    floating().every((r) => r.passthrough !== true));
 
   emit({ type: 'modifiers', logo: false });
   check('letting go hides it again', barHidden());

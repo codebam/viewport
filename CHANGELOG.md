@@ -31,6 +31,12 @@ to summarise rather than to duplicate.
   door is that screen's own desktop. The frame is now reported clipped to the
   output it was drawn on, and the compositor draws a window's frame only on the
   output the shell drew the window on.
+- Clicking a workspace number or a window's title in the bar doing nothing
+  under `bar: auto`. The bar is on screen only while Mod4 is held, so every
+  click on it carries the gesture modifier — and with no window under the
+  pointer the press started a *pan*, which swallowed it. The compositor now
+  declines its Mod4 gestures over anything the shell drew in front of the
+  windows, and the floating bar takes the pointer instead of waving it through.
 - A capture of every monitor at once showing the second monitor as its desktop
   and window frames with no windows in them. Each monitor's element list
   carries the whole shell buffer — it spans the layout — and a monitor drawing

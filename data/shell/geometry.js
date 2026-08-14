@@ -706,14 +706,24 @@ function relayoutAll() {
        Only under 'auto': the other modes reserve space, so nothing is over
        anything and there is nothing to lift.
 
-       Drawn in front, but not in the way: the strip the bar floats over has to
-       go on answering clicks. See setOverlay — the bar is revealed by Mod4 and
-       Mod4 is what a window is dragged, resized and focused with, so a bar
-       that took the pointer would take those too, and a window moved up under
-       it could not be touched again. */
+       And it takes the pointer, which it used to decline.
+     *
+     * Declining was for the windows underneath: the bar is revealed by Mod4,
+     * Mod4 is what a window is dragged and resized with, and a bar that took
+     * those left a window moved up under it unable to be grabbed there. What
+     * it cost was every click the bar itself exists to receive — a workspace
+     * pill, a window's title in the taskbar, a widget — because under 'auto'
+     * the bar is on screen *only* while Mod4 is held, so a click on it always
+     * arrives with that modifier down. A bar that cannot be clicked is not a
+     * trade, it is a strip of decoration.
+     *
+     * So the bar takes the pointer and the compositor declines the gesture
+     * over it instead: a Mod4 press on anything the shell drew in front is a
+     * click on that thing rather than a drag of what is behind it. The cost is
+     * the top few pixels of a window that has been moved under the bar, which
+     * can still be grabbed anywhere else in it. */
     const barFloats = barMode === 'auto' && onScreen;
-    setOverlay(`bar:${name}`, barFloats ? output.barEl : null,
-      { passthrough: true });
+    setOverlay(`bar:${name}`, barFloats ? output.barEl : null);
     renderBar(name);
   }
 

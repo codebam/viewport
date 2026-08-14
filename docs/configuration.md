@@ -740,7 +740,15 @@ through `shell.exec`, the same spawn path a keybinding's `exec` uses.
 - **`weather`** — clicking opens the place in a browser.
 
 The built-in modules (a bare string in `bar_items`) carry none of this — they
-are read-only.
+are read-only. The workspace pills and the taskbar are: clicking a number
+switches to that workspace, clicking a title focuses that window.
+
+Under `bar: auto` the bar is on screen only while Mod4 is held, so every click
+it receives arrives with that modifier down. The compositor declines its own
+Mod4 gestures — move, resize, pan — over anything the shell has drawn in front
+of the windows, so those clicks reach the bar rather than dragging what is
+behind it. The cost is the few pixels of a window that has been moved under the
+floating bar: grab it anywhere else.
 
 ## Reloading the shell while it runs
 
