@@ -44,6 +44,20 @@ podman run --rm -v "$PWD/packaging/aur:/aur:z" localhost/viewport-builder \
   bash -lc 'for d in /aur/viewport-*/; do (cd "$d" && makepkg --printsrcinfo > .SRCINFO); done'
 ```
 
+### The `-git` recipes' version
+
+`pkgver=` in a `-git` recipe is a marker, not a claim. makepkg runs `pkgver()`
+after fetching and rewrites that line with what it returns, so what installs is
+always what `main` says at build time — the number in the file is whatever the
+last person to build it saw, and is one commit behind by construction. Every
+VCS package in the AUR carries the same. Bring it forward when you touch one:
+
+```sh
+git describe --long --tags --abbrev=7 | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+```
+
+then regenerate the `.SRCINFO`, since that is what the AUR displays.
+
 ### What has been built, and what has not
 
 | recipe | built | how |
