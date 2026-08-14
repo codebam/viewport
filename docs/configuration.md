@@ -154,8 +154,8 @@ left it.
 
 ## A picture as the wallpaper
 
-`wallpaper` names an image to draw as the desktop background, and
-`wallpaper_mode` says how it is fitted to the screen.
+`wallpaper` names what to draw as the desktop background, and `wallpaper_mode`
+says how a picture is fitted to the screen.
 
 ```jsonc
 {
@@ -163,6 +163,24 @@ left it.
   "wallpaper_mode": "fill",            // fill, fit, stretch, center or tile
 }
 ```
+
+It does not have to be a picture. A CSS value is passed through to the page
+untouched, so a colour scheme with no photograph in it is one line:
+
+```jsonc
+{
+  "wallpaper": "#1a1b26",                              // a flat colour
+  "wallpaper": "linear-gradient(#1a1b26, #24283b)",    // or a gradient of yours
+  "wallpaper": "url(/pic/wall.png)",                   // the CSS spelling works too
+}
+```
+
+A value is read as CSS when it is `#rrggbb`, `transparent`, or anything of the
+form `name(...)` — `rgb()`, `hsl()`, every `gradient()`, `url()`. Everything
+else is a path, which is why a colour has to be written as `#000000` or
+`rgb(0,0,0)` rather than `black`: a bare word is a relative path as far as this
+can tell, and there is no way to have both. `wallpaper_mode` applies to
+pictures and gradients; a flat colour has nothing to fit.
 
 or on the command line, which wins over the file:
 
@@ -195,7 +213,8 @@ that is what sway's `output bg` calls them.
 **The shell paints it, and the compositor resolves it.** The page is the bottom
 layer of the desktop, so an image there is one the page loads: what the
 compositor does is turn the path into a URL, check the file is actually there,
-and send it with the rest of the config. A path that is missing is a line in
+and send it with the rest of the config. A CSS value has no file to find and is
+handed over as written. A path that is missing is a line in
 the log for the config file, an error on the socket, and a refusal to start for
 the flag — never a background that silently does not change, which is the one
 failure worth engineering against here.

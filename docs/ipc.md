@@ -58,7 +58,7 @@ of what was asked.
 
 | Message | Payload |
 | --- | --- |
-| `config` | `layout` (`"tiling"`, `"scrolling"`, `"solar"`, `"matrix"` or `"canvas"`), `logo`, `tutorial`, `binds[]` of `chord`, `action` and optional `mode` — the keymap as the compositor will really act on it, in the order it matches; optional `bar`, optional `rules[]`, optional `theme{}`, optional `wallpaper` (a URL for the desktop background, already resolved and encoded) and `wallpaper_mode` (`fill`, `fit`, `stretch`, `center` or `tile`; absent is `fill`) |
+| `config` | `layout` (`"tiling"`, `"scrolling"`, `"solar"`, `"matrix"` or `"canvas"`), `logo`, `tutorial`, `binds[]` of `chord`, `action` and optional `mode` — the keymap as the compositor will really act on it, in the order it matches; optional `bar`, optional `rules[]`, optional `theme{}`, optional `wallpaper` (the desktop background: a URL, already resolved and encoded, or a CSS value such as `#1a1b26` or a gradient) and `wallpaper_mode` (`fill`, `fit`, `stretch`, `center` or `tile`; absent is `fill`) |
 | `modifiers` | `logo` (whether Mod4 is held; only sent while `bar` is `"auto"`) |
 | `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `replay`, `floating`, `width`, `height`, `min_width`, `min_height`, and `parent` when this window is a dialog of another — the same link `floating` is partly inferred from, named rather than reduced to a boolean, and omitted entirely when there is none |
 | `view.props` | `id`, `title`, `app_id` |

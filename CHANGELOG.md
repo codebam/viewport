@@ -11,6 +11,18 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- A colour or a gradient as the wallpaper: `wallpaper` takes a CSS value —
+  `#1a1b26`, `rgb(...)`, `linear-gradient(...)`, `url(...)` — as well as a
+  path, so a colour scheme with no photograph in it does not need one.
+- A picture for the desktop background, set three ways: `wallpaper` and
+  `wallpaper_mode` in the config file, `--wallpaper` and `--wallpaper-mode` on
+  the command line, and `config.wallpaper` on the control socket for changing
+  it without a reload. The five fittings — `fill`, `fit`, `stretch`, `center`
+  and `tile` — are stylix's `imageScalingMode` spelled the same way, so a
+  themed NixOS session hands its settings straight across; see
+  `docs/configuration.md`.
+
 ### Protocols
 - `zwlr_foreign_toplevel_management_v1`: activate, close and fullscreen for
   taskbars (`crates/viewport/src/foreign_toplevel.rs` — see also
@@ -69,13 +81,6 @@ The first release cut from the Rust rewrite after it reached parity with the
 deleted C compositor and the tree stopped carrying two implementations.
 
 ### Added
-- A picture for the desktop background, set three ways: `wallpaper` and
-  `wallpaper_mode` in the config file, `--wallpaper` and `--wallpaper-mode` on
-  the command line, and `config.wallpaper` on the control socket for changing
-  it without a reload. The five fittings — `fill`, `fit`, `stretch`, `center`
-  and `tile` — are stylix's `imageScalingMode` spelled the same way, so a
-  themed NixOS session hands its settings straight across; see
-  `docs/configuration.md`.
 - A `viewport` binary that nests inside the session it was started from, or
   takes the DRM session from a TTY, and a packaged compositor for Arch
   (`packaging/arch/`) and NixOS (`flake.nix`).

@@ -5414,7 +5414,7 @@ impl ViewportState {
             if wallpaper.trim().is_empty() {
                 self.config.wallpaper = None;
             } else {
-                match crate::config::wallpaper_url(wallpaper, "wallpaper") {
+                match crate::config::wallpaper_value(wallpaper, "wallpaper") {
                     Ok(url) => self.config.wallpaper = Some(url),
                     Err(e) => tracing::warn!("{e}; keeping the current wallpaper"),
                 }

@@ -508,7 +508,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 // The empty string is "take it away", which is the only way
                 // back to the shell's own background.
                 Some(path) if path.trim().is_empty() => Some(None),
-                Some(path) => match crate::config::wallpaper_url(path, "config.wallpaper") {
+                Some(path) => match crate::config::wallpaper_value(path, "config.wallpaper") {
                     Ok(url) => Some(Some(url)),
                     Err(e) => {
                         reject(state, "config.wallpaper", &e.to_string());

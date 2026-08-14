@@ -298,7 +298,7 @@ fn run() -> Result<()> {
     // ignores the flag. The file gets the gentler treatment because it is read
     // again on every reload of a session already running.
     if let Some(wallpaper) = flag(&args, "--wallpaper") {
-        let resolved = config::wallpaper_url(wallpaper, "--wallpaper")?;
+        let resolved = config::wallpaper_value(wallpaper, "--wallpaper")?;
         tracing::info!("wallpaper from the command line: {resolved}");
         state.config.wallpaper = Some(resolved);
     }

@@ -3671,6 +3671,22 @@ if (mode === 'scrolling') {
       sheet.value(body, 'background-repeat') === 'repeat'
       && sheet.value(body, 'background-size') === 'auto');
 
+    /* A colour is a wallpaper too, and lands on the colour rather than the
+       image: `background-image: #1a1b26` is nothing at all, and a desktop that
+       came up black would look exactly like the setting being ignored. */
+    emit({ type: 'config', layout: mode, wallpaper: '#1a1b26' });
+    check('a colour paints the desktop rather than an image',
+      sheet.value(body, 'background-color') === '#1a1b26'
+      && wallpaperOf() === 'none');
+    check('and a colour has no fitting to leave behind',
+      !documentElement.classList.contains('wallpaper-tile'));
+
+    /* A gradient is an image, because that is the property it belongs to. */
+    emit({ type: 'config', layout: mode,
+      wallpaper: 'linear-gradient(#1a1b26, #24283b)' });
+    check('a gradient is drawn as the image, not the colour',
+      wallpaperOf() === 'linear-gradient(#1a1b26, #24283b)');
+
     /* Absent is the gradient back, and not a black screen: this is what the
        empty `wallpaper` in a config file and `--path ''` over the socket both
        arrive as, so it is the only way back. */

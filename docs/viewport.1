@@ -69,6 +69,20 @@ Reload the shell when its files change.
 .BI \-\-background-terminal " [CMD]"
 A terminal for a wallpaper, running CMD if one is given.
 .TP
+.BI \-\-wallpaper " PATH"
+The desktop background, over the config file's
+.BR wallpaper .
+A path or a URL for a picture, or a CSS value for a colour or a gradient
+.RB ( #1a1b26 ", " "rgb(...)" ", " "linear-gradient(...)" ).
+.TP
+.BI \-\-wallpaper-mode " NAME"
+How a picture is fitted to the screen:
+.BR fill ", " fit ", " stretch ", " center " or " tile
+.RB ( fill
+by default). The names stylix's
+.B imageScalingMode
+uses.
+.TP
 .BI \-\-socket " PATH"
 The control socket, instead of the one named after the display.
 .TP

@@ -496,20 +496,69 @@ pub fn shell_url(value: &str) -> anyhow::Result<String> {
     resolve_url(value, "--url")
 }
 
-/// The same for an image: `wallpaper`, `--wallpaper` and `config.wallpaper`.
+/// What `wallpaper`, `--wallpaper` and `config.wallpaper` were given: a
+/// picture, or a colour to paint the desktop instead.
 ///
-/// A wallpaper is named the way `--url` is — a path, usually, because that is
+/// A picture is named the way `--url` is — a path, usually, because that is
 /// what a file manager and a theme generator both hand you — and reaches the
 /// shell as a URL in a CSS `background-image`. So the resolution is identical,
 /// down to the encoding: a wallpaper under `~/Pictures/Wall Papers` is not a
 /// URI until its space is `%20`, and unencoded the page silently draws its own
 /// gradient instead.
 ///
+/// A CSS value is passed through untouched. Not every wallpaper is a
+/// photograph: `#1a1b26` is what somebody with a colour scheme wants, and a
+/// `linear-gradient(...)` is what somebody replacing the shipped one wants —
+/// neither is a file, and turning them into one is the difference between the
+/// setting doing what it says and refusing what was asked. See
+/// [`looks_like_css`] for how the two are told apart.
+///
 /// The name in the error is the thing the caller was given, so a bad path in
 /// the config file says `wallpaper` and one on the command line says
 /// `--wallpaper`.
-pub fn wallpaper_url(value: &str, named: &str) -> anyhow::Result<String> {
-    resolve_url(value, named)
+pub fn wallpaper_value(value: &str, named: &str) -> anyhow::Result<String> {
+    let trimmed = value.trim();
+    if looks_like_css(trimmed) {
+        return Ok(trimmed.to_owned());
+    }
+    resolve_url(trimmed, named).map_err(|e| {
+        // A bare word is almost always a colour somebody wrote by name, and
+        // "black does not exist" is a message about the wrong thing. Named
+        // colours are not accepted, because a relative path is a real way to
+        // name a picture and there is no telling the two apart.
+        if !trimmed.contains('/') && !trimmed.contains('.') {
+            return anyhow::anyhow!(
+                "{e}. A colour has to be written as #rrggbb or rgb(...), not by name"
+            );
+        }
+        e
+    })
+}
+
+/// Whether a wallpaper is a CSS value rather than a picture to go and find.
+///
+/// Three shapes, and deliberately no more: `#rrggbb`, anything of the form
+/// `name(...)` — which covers `rgb()`, `hsl()`, every `gradient()` and `url()`
+/// itself — and the keyword `transparent`. Everything else is a path, because
+/// a path is what the setting is mostly given and a guess that goes the wrong
+/// way is a picture that never appears.
+///
+/// A file whose name ends in `)` stays a path: the part before the `(` has to
+/// look like a CSS identifier, and `/home/me/holiday (1)` does not.
+fn looks_like_css(text: &str) -> bool {
+    if text.starts_with('#') || text.eq_ignore_ascii_case("transparent") {
+        return true;
+    }
+    let Some(rest) = text.strip_suffix(')') else {
+        return false;
+    };
+    let Some((name, _)) = rest.split_once('(') else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// A path or a URL, as something a web engine will load.
@@ -1013,7 +1062,7 @@ mod tests {
         let file = dir.join("wall paper.png");
         std::fs::write(&file, "not really a png").expect("write");
 
-        let url = wallpaper_url(&file.to_string_lossy(), "--wallpaper").expect("exists");
+        let url = wallpaper_value(&file.to_string_lossy(), "--wallpaper").expect("exists");
         assert!(url.starts_with("file:///"), "{url}");
         // The same encoding `--url` needs, and for the same reason: a picture
         // in a directory with a space in it is not a URI until the space is.
@@ -1025,7 +1074,7 @@ mod tests {
 
         // A missing one is named, and named as whatever asked for it — the
         // point of the message is that somebody can find what they typed.
-        let error = wallpaper_url("/nowhere/wall.png", "wallpaper").expect_err("missing");
+        let error = wallpaper_value("/nowhere/wall.png", "wallpaper").expect_err("missing");
         assert!(error.to_string().starts_with("wallpaper:"), "{error}");
 
         // And `~`, which a config file is entitled to write because it is not
@@ -1033,7 +1082,7 @@ mod tests {
         let home = std::env::var("HOME").expect("a home directory");
         let in_home = std::path::Path::new(&home).join("viewport-wallpaper-test.png");
         std::fs::write(&in_home, "not really a png").expect("write");
-        let url = wallpaper_url("~/viewport-wallpaper-test.png", "wallpaper").expect("exists");
+        let url = wallpaper_value("~/viewport-wallpaper-test.png", "wallpaper").expect("exists");
         assert_eq!(
             url,
             format!("file://{}", in_home.display()),
@@ -1042,6 +1091,55 @@ mod tests {
         let _ = std::fs::remove_file(&in_home);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_colour_or_a_gradient_is_a_wallpaper_too() {
+        // Not every wallpaper is a photograph. These are passed through
+        // untouched — resolving them as paths would refuse what was asked.
+        for css in [
+            "#1a1b26",
+            "rgb(26, 27, 38)",
+            "transparent",
+            "linear-gradient(#1a1b26, #24283b)",
+            "radial-gradient(circle at 20% 0, #24283b, #1a1b26)",
+            // The spelling somebody arriving from a CSS background writes.
+            "url(/pic/wall.png)",
+        ] {
+            assert_eq!(
+                wallpaper_value(css, "wallpaper").expect("a css value"),
+                css,
+                "{css} was not passed through"
+            );
+        }
+        // And whitespace around one, which is what a config file has.
+        assert_eq!(
+            wallpaper_value("  #1a1b26  ", "wallpaper").unwrap(),
+            "#1a1b26"
+        );
+    }
+
+    #[test]
+    fn a_path_that_ends_in_a_bracket_is_still_a_path() {
+        // The rule is `name(...)` with a CSS identifier in front, so a holiday
+        // picture with a number after it is not mistaken for a function.
+        assert!(!looks_like_css("/home/me/holiday (1)"));
+        assert!(!looks_like_css("wall.png"));
+        assert!(!looks_like_css("~/Pictures/wall.png"));
+        assert!(looks_like_css("rgb(0,0,0)"));
+        assert!(looks_like_css("#fff"));
+    }
+
+    #[test]
+    fn a_colour_written_by_name_says_how_to_write_it() {
+        // `"wallpaper": "black"` is a relative path as far as this can tell,
+        // and "black does not exist" is a message about the wrong thing.
+        // Named colours are not accepted, because a relative path is a real
+        // way to name a picture and there is no telling the two apart.
+        let error = wallpaper_value("black", "wallpaper")
+            .expect_err("not a file")
+            .to_string();
+        assert!(error.contains("#rrggbb"), "{error}");
     }
 
     #[test]

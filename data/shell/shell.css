@@ -185,8 +185,13 @@ body {
  * other properties silently, and one of them is the colour the letterbox of
  * `fit` is made of. */
 html.wallpaper body {
-  background-image: var(--wallpaper);
-  background-color: var(--bg);
+  /* One of the two custom properties is set and the other is not: a picture
+     is an image, a colour is a colour, and each falls back to what the desktop
+     would have drawn without it — `none` for the image, so a colour is not
+     laid over a stale picture, and `--bg` for the colour, which is what shows
+     in the letterbox of `fit`. */
+  background-image: var(--wallpaper, none);
+  background-color: var(--wallpaper-color, var(--bg));
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;

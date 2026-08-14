@@ -230,6 +230,27 @@ fn the_socket_sets_and_clears_the_wallpaper() {
     let _ = std::fs::remove_file(&picture);
 }
 
+/// A colour or a gradient is a wallpaper too, and reaches the shell as written.
+///
+/// Nothing on the compositor's side resolves these — there is no file to find
+/// — so the assertion is that they are passed through rather than run through
+/// the path resolution and refused.
+#[test]
+fn a_colour_reaches_the_shell_as_written() {
+    let compositor = Compositor::start("wallpaper-colour", &["--wallpaper", "#1a1b26"]);
+    let mut client = compositor.connect();
+    let config = client.config();
+    assert_eq!(config["wallpaper"].as_str(), Some("#1a1b26"), "{config}");
+
+    client.send(r#"{"type":"config.wallpaper","path":"linear-gradient(#1a1b26, #24283b)"}"#);
+    let config = client.config();
+    assert_eq!(
+        config["wallpaper"].as_str(),
+        Some("linear-gradient(#1a1b26, #24283b)"),
+        "{config}"
+    );
+}
+
 /// A picture that is not there is refused, and nothing else is applied with
 /// it.
 ///
