@@ -11,6 +11,15 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Shipping
+- The packages are named after the compositor rather than after the toolkit it
+  was rewritten on: `viewport-webkitgtk`, `viewport-wpe`, `viewport-chromium`
+  and the two `-bin` recipes beside them, each providing `viewport` and
+  conflicting with the others, since a system takes one. Nothing had been
+  published under the old names, so there is nothing to migrate. The recipes,
+  the container image and every URL follow the repository, which is
+  `codebam/viewport`.
+
 ## [0.1.4] - 2026-08-14
 
 A desktop that can be given a picture, and a run of fixes to the things that
@@ -165,6 +174,6 @@ deleted C compositor and the tree stopped carrying two implementations.
   missing — WebKit treated such pages as empty documents (see the `wpe`
   PKGBUILD's notes on `shared-mime-info`).
 
-[Unreleased]: https://github.com/codebam/viewport-smithay/compare/v0.1.4...HEAD
-[0.1.4]: https://github.com/codebam/viewport-smithay/releases/tag/v0.1.4
-[0.1.3]: https://github.com/codebam/viewport-smithay/releases/tag/v0.1.3
+[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/codebam/viewport/releases/tag/v0.1.4
+[0.1.3]: https://github.com/codebam/viewport/releases/tag/v0.1.3

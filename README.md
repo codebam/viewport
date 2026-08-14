@@ -88,7 +88,7 @@ hundred lines of glue to arrive at the same dma-buf.
 ## Run it
 
 ```sh
-nix run github:codebam/viewport-smithay
+nix run github:codebam/viewport
 ```
 
 That is the whole thing: a compositor and a desktop, from a flake, with no
@@ -124,11 +124,11 @@ for any of them by name.
 ## Build
 
 ```sh
-nix build github:codebam/viewport-smithay        # the default, above — servoshell
-nix build github:codebam/viewport-smithay#wpe    # in-process; builds WebKit
-nix build github:codebam/viewport-smithay#chromium
-nix build github:codebam/viewport-smithay#cef
-nix build github:codebam/viewport-smithay#webkitgtk
+nix build github:codebam/viewport        # the default, above — servoshell
+nix build github:codebam/viewport#wpe    # in-process; builds WebKit
+nix build github:codebam/viewport#chromium
+nix build github:codebam/viewport#cef
+nix build github:codebam/viewport#webkitgtk
 ```
 
 The package attributes are named for the engine that draws the shell — `.#wpe`,

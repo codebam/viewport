@@ -14,7 +14,7 @@ name = "viewport-shell-servo"
 version = "0.1.4"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/codebam/viewport-smithay"
+repository = "https://github.com/codebam/viewport"
 description = "The Viewport shell, rendered out of process by an embedded Servo"
 
 [dependencies]

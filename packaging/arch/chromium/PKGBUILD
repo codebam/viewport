@@ -6,15 +6,15 @@
 #
 # One of three recipes beside each other in packaging/arch, one per engine the
 # shell can be drawn by — see docs/shell-backends.md. Every one of them installs
-# a binary called `viewport`, so they conflict with each other and with the C
-# compositor's `viewport` package: a system takes one.
+# a binary called `viewport` and provides that name, so they conflict with each
+# other: a system takes one.
 
-pkgname=viewport-smithay-chromium
+pkgname=viewport-chromium
 pkgver=0.1.4
 pkgrel=1
 pkgdesc='Wayland compositor whose shell is a web page — Chromium, driven as a child process'
 arch=('x86_64' 'aarch64')
-url='https://github.com/codebam/viewport-smithay'
+url='https://github.com/codebam/viewport'
 license=('GPL-3.0-or-later')
 
 # The tag this package was cut from, and the whole of what makes it
@@ -83,17 +83,17 @@ makedepends=(
 
 )
 
-provides=("viewport=$pkgver" "viewport-smithay=$pkgver")
+provides=("viewport=$pkgver")
 conflicts=('viewport'
-           'viewport-smithay-wpe'
-           'viewport-smithay-webkitgtk')
+           'viewport-wpe'
+           'viewport-webkitgtk')
 options=('!lto')
 
-source=("git+https://github.com/codebam/viewport-smithay.git#tag=$_tag")
+source=("git+https://github.com/codebam/viewport.git#tag=$_tag")
 sha256sums=('SKIP')
 
 prepare() {
-  cd "$srcdir/viewport-smithay"
+  cd "$srcdir/viewport"
   # A git dependency (the smithay fork, for the tearing-control patch) has to
   # be fetched here rather than during build(), so build() is the only step
   # that has to work offline.
@@ -102,14 +102,14 @@ prepare() {
 }
 
 build() {
-  cd "$srcdir/viewport-smithay"
+  cd "$srcdir/viewport"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
   cargo build --frozen --release -p viewport -p viewport-shell-chromium
 }
 
 package() {
-  cd "$srcdir/viewport-smithay"
+  cd "$srcdir/viewport"
 
   # Which engine this package installed, said outright. The binary picks a
   # default of its own and cannot know which shell program is beside it, so a

@@ -40,7 +40,7 @@ if [ -z "$engine" ]; then
 fi
 [ -n "$engine" ] || { echo "no podman or docker on PATH" >&2; exit 1; }
 
-image=localhost/viewport-smithay-builder
+image=localhost/viewport-builder
 
 echo "building the image with $engine..." >&2
 "$engine" build -t "$image" -f "$here/Containerfile" "$here"

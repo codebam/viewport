@@ -1,7 +1,7 @@
 # Rust rewrite (branch `smithay`)
 
 This branch is a ground-up reimplementation of the Viewport compositor in Rust,
-tracking `git@github.com:codebam/viewport-smithay.git`. The C compositor on
+tracking `git@github.com:codebam/viewport.git`. The C compositor on
 `main` (`git@github.com:codebam/viewport.git`) remains the daily driver and
 keeps receiving fixes; this branch optimises for correctness over speed to
 parity.

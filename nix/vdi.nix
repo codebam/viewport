@@ -127,7 +127,7 @@
         sleep 1
       done
       {
-        nix run --refresh github:codebam/viewport-smithay \
+        nix run --refresh github:codebam/viewport \
           || ${config.programs.viewport.package}/bin/viewport
       } 2>&1 | tee $targets
     fi

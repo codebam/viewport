@@ -1,6 +1,6 @@
 # Maintainer: Sean Behan <codebam@riseup.net>
 #
-# The same compositor as `viewport-smithay-webkitgtk`, already built. The
+# The same compositor as `viewport-webkitgtk`, already built. The
 # source package compiles the whole tree — Smithay, wgpu and a WebKitGTK shell
 # process — which is an hour on a laptop; this one unpacks the binaries the
 # release was cut with instead.
@@ -9,12 +9,12 @@
 # packaging/arch/webkitgtk of the tagged tree, so what lands in $pkgdir here is
 # byte for byte what the source package would have produced.
 
-pkgname=viewport-smithay-webkitgtk-bin
+pkgname=viewport-webkitgtk-bin
 pkgver=0.1.4
 pkgrel=1
 pkgdesc='Wayland compositor whose shell is a web page — WebKitGTK, out of process (binary release)'
 arch=('x86_64')
-url='https://github.com/codebam/viewport-smithay'
+url='https://github.com/codebam/viewport'
 license=('GPL-3.0-or-later')
 
 # The pkgrel of the upstream artifact, which moves independently of this
@@ -69,13 +69,14 @@ optdepends=(
   'ttf-nerd-fonts-symbols: the icons in the bar, without the patched monospace family'
 )
 
-provides=("viewport=$pkgver" "viewport-smithay=$pkgver" "viewport-smithay-webkitgtk=$pkgver")
-# Every engine's package installs a binary called `viewport`, so a system takes
-# one of them — including the C compositor's own `viewport`.
+provides=("viewport=$pkgver" "viewport-webkitgtk=$pkgver")
+# Every engine's package installs a binary called `viewport` and provides that
+# name, so a system takes one of them — this one, the source recipe it was
+# built from, or another engine's.
 conflicts=('viewport'
-           'viewport-smithay-webkitgtk'
-           'viewport-smithay-wpe'
-           'viewport-smithay-chromium')
+           'viewport-webkitgtk'
+           'viewport-wpe'
+           'viewport-chromium')
 
 # Nothing to strip and nothing to index: these binaries were stripped where
 # they were built, and a -debug package cut from them would hold no symbols.
@@ -83,7 +84,7 @@ options=('!strip' '!debug')
 
 # Downloaded under a name that is not *.pkg.tar.*, so the artifact sitting in
 # the build directory is not mistaken for the package this recipe produced.
-source_x86_64=("$pkgname-$pkgver.tar.zst::$url/releases/download/v$pkgver/viewport-smithay-webkitgtk-$pkgver-$_pkgrel-x86_64.pkg.tar.zst")
+source_x86_64=("$pkgname-$pkgver.tar.zst::$url/releases/download/v$pkgver/viewport-webkitgtk-$pkgver-$_pkgrel-x86_64.pkg.tar.zst")
 sha256sums_x86_64=('96a26fd638712579214b67e64eadac6b9083e9e17a28230d86f4559d8f05ac12')
 
 package() {
@@ -99,6 +100,6 @@ package() {
 
   # The licence directory is named for the package that installed it, and that
   # is a different name here.
-  mv "$pkgdir/usr/share/licenses/viewport-smithay-webkitgtk" \
+  mv "$pkgdir/usr/share/licenses/viewport-webkitgtk" \
      "$pkgdir/usr/share/licenses/$pkgname"
 }

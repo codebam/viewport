@@ -33,7 +33,7 @@ exclude = ["crates/viewport-shell-cef", "crates/viewport-shell-servo"]
 [workspace.package]
 version = "0.1.4"
 edition = "2021"
-repository = "https://github.com/codebam/viewport-smithay"
+repository = "https://github.com/codebam/viewport"
 
 # License is deliberately per-crate rather than inherited.
 #

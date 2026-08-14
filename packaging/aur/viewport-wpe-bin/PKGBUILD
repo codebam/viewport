@@ -1,6 +1,6 @@
 # Maintainer: Sean Behan <codebam@riseup.net>
 #
-# The same compositor as `viewport-smithay-wpe`, already built. The source
+# The same compositor as `viewport-wpe`, already built. The source
 # package compiles the whole tree and the WPE engine with it — Smithay, wgpu,
 # Vulkan and WebKit inside the compositor process — which is the tallest build
 # of the four; this one unpacks the binaries the release was cut with instead.
@@ -14,12 +14,12 @@
 # `--features wpe` is the engine in this process, and the one binary this
 # package carries is /usr/bin/viewport itself.
 
-pkgname=viewport-smithay-wpe-bin
+pkgname=viewport-wpe-bin
 pkgver=0.1.4
 pkgrel=1
 pkgdesc='Wayland compositor whose entire shell is a web page — WPE WebKit, in-process (binary release)'
 arch=('x86_64')
-url='https://github.com/codebam/viewport-smithay'
+url='https://github.com/codebam/viewport'
 license=('GPL-3.0-or-later')
 
 # The pkgrel of the upstream artifact, which moves independently of this
@@ -85,13 +85,14 @@ optdepends=(
   'ttf-nerd-fonts-symbols: the icons in the bar, without the patched monospace family'
 )
 
-provides=("viewport=$pkgver" "viewport-smithay=$pkgver" "viewport-smithay-wpe=$pkgver")
-# Every engine's package installs a binary called `viewport`, so a system takes
-# one of them — including the C compositor's own `viewport`.
+provides=("viewport=$pkgver" "viewport-wpe=$pkgver")
+# Every engine's package installs a binary called `viewport` and provides that
+# name, so a system takes one of them — this one, the source recipe it was
+# built from, or another engine's.
 conflicts=('viewport'
-           'viewport-smithay-webkitgtk'
-           'viewport-smithay-wpe'
-           'viewport-smithay-chromium')
+           'viewport-webkitgtk'
+           'viewport-wpe'
+           'viewport-chromium')
 
 # Nothing to strip and nothing to index: these binaries were stripped where
 # they were built, and a -debug package cut from them would hold no symbols.
@@ -99,7 +100,7 @@ options=('!strip' '!debug')
 
 # Downloaded under a name that is not *.pkg.tar.*, so the artifact sitting in
 # the build directory is not mistaken for the package this recipe produced.
-source_x86_64=("$pkgname-$pkgver.tar.zst::$url/releases/download/v$pkgver/viewport-smithay-wpe-$pkgver-$_pkgrel-x86_64.pkg.tar.zst")
+source_x86_64=("$pkgname-$pkgver.tar.zst::$url/releases/download/v$pkgver/viewport-wpe-$pkgver-$_pkgrel-x86_64.pkg.tar.zst")
 sha256sums_x86_64=('PLACEHOLDER_SHA256_OF_THE_WPE_ARTIFACT')
 
 package() {
@@ -115,6 +116,6 @@ package() {
 
   # The licence directory is named for the package that installed it, and that
   # is a different name here.
-  mv "$pkgdir/usr/share/licenses/viewport-smithay-wpe" \
+  mv "$pkgdir/usr/share/licenses/viewport-wpe" \
      "$pkgdir/usr/share/licenses/$pkgname"
 }

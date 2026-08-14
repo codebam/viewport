@@ -4,9 +4,9 @@ Three of them — one source recipe in `packaging/arch` and two binaries here:
 
 | AUR package | what it is | recipe |
 | --- | --- | --- |
-| `viewport-smithay-webkitgtk` | builds the tagged tree from source | `packaging/arch/webkitgtk/PKGBUILD`, pushed verbatim |
-| `viewport-smithay-webkitgtk-bin` | unpacks the release artifact | `packaging/aur/viewport-smithay-webkitgtk-bin/PKGBUILD` |
-| `viewport-smithay-wpe-bin` | unpacks the WPE release artifact (not yet pushed — see below) | `packaging/aur/viewport-smithay-wpe-bin/PKGBUILD` |
+| `viewport-webkitgtk` | builds the tagged tree from source | `packaging/arch/webkitgtk/PKGBUILD`, pushed verbatim |
+| `viewport-webkitgtk-bin` | unpacks the release artifact | `packaging/aur/viewport-webkitgtk-bin/PKGBUILD` |
+| `viewport-wpe-bin` | unpacks the WPE release artifact (not yet pushed — see below) | `packaging/aur/viewport-wpe-bin/PKGBUILD` |
 
 The source package has no copy of its own here on purpose: the recipe in
 `packaging/arch/webkitgtk` is the one that is pushed, so there is one file to
@@ -15,7 +15,7 @@ change rather than two that drift apart. The other two engines (`wpe`,
 form is staged here, because the `-bin` form is the one that saves a machine
 a four-hour WebKit build.
 
-`viewport-smithay-wpe-bin` is not yet pushed: its `sha256sums_x86_64` is
+`viewport-wpe-bin` is not yet pushed: its `sha256sums_x86_64` is
 still `PLACEHOLDER_SHA256_OF_THE_WPE_ARTIFACT` and `makepkg` would fail as
 committed. Fill it from the published WPE artifact's real sha256 before
 pushing, or leave the branch unpushed until that artifact exists.
@@ -43,5 +43,5 @@ and rejects a push whose `pkgname` does not match the repository:
 
 ```sh
 makepkg --printsrcinfo > .SRCINFO   # on Arch, or in the container image
-git clone ssh://aur@aur.archlinux.org/viewport-smithay-webkitgtk.git
+git clone ssh://aur@aur.archlinux.org/viewport-webkitgtk.git
 ```
