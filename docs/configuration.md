@@ -25,6 +25,8 @@ a TTY.
             "blank_after": 900 },
   "cursor": { "theme": "Bibata-Modern-Classic", "size": 24,
               "hide_after_ms": 3000 },   // see below; absent is never
+  "wallpaper": "~/Pictures/wall.png",  // the desktop background; see below
+  "wallpaper_mode": "fill",            // or "fit" / "stretch" / "center" / "tile"
   "terminal": "rio",
   "menu": "wmenu-run -i",
   "binds": {
@@ -149,6 +151,109 @@ for this, and a cursor that came back on every keystroke would never leave.
 Only the drawn image goes. The pointer has not moved, keeps its focus, and
 clients are told nothing, so a hidden cursor cannot make a page think the mouse
 left it.
+
+## A picture as the wallpaper
+
+`wallpaper` names an image to draw as the desktop background, and
+`wallpaper_mode` says how it is fitted to the screen.
+
+```jsonc
+{
+  "wallpaper": "~/Pictures/wall.png",  // a path, or a URL of its own
+  "wallpaper_mode": "fill",            // fill, fit, stretch, center or tile
+}
+```
+
+or on the command line, which wins over the file:
+
+```console
+$ viewport --wallpaper ~/Pictures/wall.png --wallpaper-mode fit
+```
+
+or at runtime, over the control socket, which is what a wallpaper cycler or a
+settings panel uses — no config reload, nothing written to disk:
+
+```console
+$ viewport msg -t config.wallpaper --path ~/Pictures/other.png
+$ viewport msg -t config.wallpaper --mode tile      # the picture stays
+$ viewport msg -t config.wallpaper --path ''        # and this removes it
+```
+
+The five fittings, which are `background-size` under the skin:
+
+| mode | what it does |
+| --- | --- |
+| `fill` | covers the screen, cropping whatever overflows. The default |
+| `fit` | the whole picture, letterboxed against the desktop colour |
+| `stretch` | covers the screen, distorting the picture to do it |
+| `center` | at its own size, in the middle |
+| `tile` | at its own size, repeated |
+
+`cover` and `contain` are accepted as other names for `fill` and `fit`, because
+that is what sway's `output bg` calls them.
+
+**The shell paints it, and the compositor resolves it.** The page is the bottom
+layer of the desktop, so an image there is one the page loads: what the
+compositor does is turn the path into a URL, check the file is actually there,
+and send it with the rest of the config. A path that is missing is a line in
+the log for the config file, an error on the socket, and a refusal to start for
+the flag — never a background that silently does not change, which is the one
+failure worth engineering against here.
+
+A consequence: the picture is loaded by whichever engine draws the shell, so it
+can be any format that engine reads — PNG, JPEG, WebP, SVG, an animated GIF —
+and a `https://` URL works as well as a path. A custom shell has to honour
+`wallpaper` in the `config` event; the shipped one does.
+
+**A terminal wins over a picture.** With `background_terminal` on, the page
+goes transparent so the terminal behind it can be seen, and a picture in the
+page would be painted straight over it. Nothing is refused — the setting is
+simply not in force while a terminal is behind — so turning the terminal off
+brings the picture back.
+
+**A wallpaper program still wins over both**, per screen, in the way described
+below: swaybg and the rest draw on the background layer, which is over the
+whole desktop including this.
+
+### stylix
+
+[stylix](https://github.com/danth/stylix) themes a NixOS or home-manager
+session from one image, and this reads its two settings unchanged — the mode
+names here *are* `stylix.imageScalingMode`, which is why they are spelled that
+way. Point the compositor at them:
+
+```nix
+# NixOS, wherever the compositor is launched from
+programs.viewport.extraArgs = [
+  "--wallpaper" "${config.stylix.image}"
+  "--wallpaper-mode" config.stylix.imageScalingMode
+];
+```
+
+or, if the config file is generated rather than the command line:
+
+```nix
+xdg.configFile."viewport/config.json".text = builtins.toJSON {
+  wallpaper = "${config.stylix.image}";
+  wallpaper_mode = config.stylix.imageScalingMode;
+  # And the colours, which are the other half of a themed desktop.
+  theme = with config.lib.stylix.colors.withHashtag; {
+    background = base00;
+    foreground = base05;
+    accent = base0D;
+  };
+};
+```
+
+`config.stylix.image` is a store path, so the file is there for as long as the
+generation is — which is the case the existence check was written for, since a
+garbage-collected picture would otherwise be a desktop that came up grey.
+
+Stylix's own targets do not know about this compositor, so nothing sets it
+behind your back; if `stylix.targets.swaybg` (or another wallpaper program) is
+enabled in the same session, that program takes the background layer and wins
+per screen, as above. Turn it off, or leave `wallpaper` unset and let it do the
+job.
 
 ## A terminal as the wallpaper
 

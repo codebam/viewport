@@ -1010,6 +1010,10 @@ impl ViewportState {
                 // No wallpaper but the shell's own, until a config file or a
                 // flag says otherwise.
                 background_terminal: false,
+                // And no picture behind it either: the shell's gradient until
+                // a config file, a flag or `config.wallpaper` names one.
+                wallpaper: None,
+                wallpaper_mode: None,
             },
             shell_url: None,
             output_config: std::collections::HashMap::new(),
@@ -5393,6 +5397,34 @@ impl ViewportState {
         }
         if file.theme.is_some() {
             self.config.theme = file.theme;
+        }
+        // The wallpaper, resolved here and not in the shell: the page is handed
+        // a URL it can put straight in a `url()`, and a path that is not there
+        // is said out loud at load rather than becoming a background-image that
+        // quietly fails to fetch inside a web view nobody can open a console
+        // on.
+        //
+        // A bad path is a warning and not a refusal to start. Every other key
+        // in this file is a preference and this one is decoration; a session
+        // that will not come up because a picture was moved is worse than a
+        // session that comes up with the gradient it always had.
+        if let Some(wallpaper) = file.wallpaper.as_deref() {
+            // The empty string is how a file takes one away again, rather than
+            // a null that a reload could not tell from an absent key.
+            if wallpaper.trim().is_empty() {
+                self.config.wallpaper = None;
+            } else {
+                match crate::config::wallpaper_url(wallpaper, "wallpaper") {
+                    Ok(url) => self.config.wallpaper = Some(url),
+                    Err(e) => tracing::warn!("{e}; keeping the current wallpaper"),
+                }
+            }
+        }
+        if let Some(mode) = file.wallpaper_mode.as_deref() {
+            match crate::config::parse_wallpaper_mode(mode) {
+                Ok(mode) => self.config.wallpaper_mode = Some(mode),
+                Err(e) => tracing::warn!("{e}"),
+            }
         }
         if file.gaps != crate::config::GapsConfig::default() {
             // Only fields the file actually names are forwarded; an absent one

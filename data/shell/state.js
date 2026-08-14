@@ -155,6 +155,11 @@ let layoutMode = 'tiling';
  * windows are open. Only meaningful while layoutMode is 'tiling' — the
  * scrolling strip is its own model. See dynamic.js. */
 let tilingMode = 'manual';
+/* How a wallpaper picture is fitted to the screen. `fill` is the default and
+ * is the absence of all four classes, so it is not in the list — what this is
+ * for is taking the last one off when the mode changes. The names are stylix's
+ * `imageScalingMode`, and the compositor holds the same list in config.rs. */
+const WALLPAPER_MODES = ['fit', 'stretch', 'center', 'tile'];
 /* Rules from the config file, applied to a window when it opens. Matched on
  * app_id, or on title where an application gives everything the same app_id. */
 let windowRules = [];

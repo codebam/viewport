@@ -168,6 +168,41 @@ body {
     var(--bg);
 }
 
+/* A picture, from `wallpaper` in the config file, `--wallpaper` or
+ * `config.wallpaper` on the control socket.
+ *
+ * The URL arrives on `--wallpaper` as a full `url(...)` — the compositor
+ * resolves the path, checks it is there and encodes it — and the class says
+ * there is one, so the gradient above can be replaced rather than drawn under
+ * a picture that may not cover the screen.
+ *
+ * `--bg` stays behind the image on purpose: it is what shows in the letterbox
+ * of `fit`, around a `center` picture smaller than the screen, and for the
+ * moment between the page being sized and the file being decoded. */
+/* Longhands rather than the `background` shorthand, so that this rule replaces
+ * exactly the image and leaves the rest of the box alone. The shorthand would
+ * also be correct in a browser and is unreadable in a cascade: it resets four
+ * other properties silently, and one of them is the colour the letterbox of
+ * `fit` is made of. */
+html.wallpaper body {
+  background-image: var(--wallpaper);
+  background-color: var(--bg);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+/* The five fittings, spelled as stylix's `imageScalingMode` spells them.
+ *
+ * `fill` is the default above and needs no rule of its own. The rest differ
+ * only in the size and the repeat, so each is one line rather than a repeat of
+ * the whole shorthand — a second copy of the layer list is a second place for
+ * `--bg` to be forgotten. */
+html.wallpaper-fit body { background-size: contain; }
+html.wallpaper-stretch body { background-size: 100% 100%; }
+html.wallpaper-center body { background-size: auto; }
+html.wallpaper-tile body { background-size: auto; background-repeat: repeat; }
+
 /* Something is behind the page: `background_terminal` is on and the compositor
    is drawing a terminal underneath this document.
  *

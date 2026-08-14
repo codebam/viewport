@@ -289,6 +289,26 @@ fn run() -> Result<()> {
         state.config.background_terminal = true;
     }
 
+    // A picture for a wallpaper, from the command line.
+    //
+    // After the config, so the flag wins — the rule every other flag here
+    // follows. Fatal rather than a warning, unlike the same key in the config
+    // file: a path typed on the command line was typed just now, and starting
+    // anyway would answer it with a desktop that looks exactly like one that
+    // ignores the flag. The file gets the gentler treatment because it is read
+    // again on every reload of a session already running.
+    if let Some(wallpaper) = flag(&args, "--wallpaper") {
+        let resolved = config::wallpaper_url(wallpaper, "--wallpaper")?;
+        tracing::info!("wallpaper from the command line: {resolved}");
+        state.config.wallpaper = Some(resolved);
+    }
+    if let Some(mode) = flag(&args, "--wallpaper-mode") {
+        let mode = config::parse_wallpaper_mode(mode).map_err(|e| {
+            anyhow::anyhow!("{e}; --wallpaper-mode or the config file's \"wallpaper_mode\"")
+        })?;
+        state.config.wallpaper_mode = Some(mode);
+    }
+
     // Which backend, when nobody said.
     //
     // A compositor started from a TTY has no display to nest in, and one
@@ -821,6 +841,16 @@ const OPTIONS: &[Opt] = &[
         flag: "--background-terminal",
         value: "[CMD]",
         what: "a terminal for a wallpaper, running CMD if one is given",
+    },
+    Opt {
+        flag: "--wallpaper",
+        value: "PATH",
+        what: "a picture for the desktop background, over the config file",
+    },
+    Opt {
+        flag: "--wallpaper-mode",
+        value: "NAME",
+        what: "how it is fitted: fill, fit, stretch, center or tile",
     },
     Opt {
         flag: "--socket",

@@ -67,6 +67,12 @@ const STRING_FIELDS: &[&str] = &[
     "chord",
     "action",
     "transform",
+    // The wallpaper's own two. A picture called `2.png` is a name and not a
+    // number, and `--mode fill` is a word — while `--mode.width 2560` on an
+    // output is matched on its leaf, `width`, so naming this one here does not
+    // reach that.
+    "path",
+    "mode",
 ];
 
 struct Type {
@@ -234,6 +240,11 @@ const TYPES: &[Type] = &[
         name: "config.border",
         fields: &["radius", "width", "smart"],
         hint: "[--radius N --width N --smart BOOL]   (set the window border; each is optional)",
+    },
+    Type {
+        name: "config.wallpaper",
+        fields: &["path", "mode"],
+        hint: "[--path FILE] [--mode fill|fit|stretch|center|tile]   (--path '' removes it)",
     },
     Type {
         name: "shell.command",
@@ -1146,10 +1157,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 35 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 36 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 35);
+        assert_eq!(TYPES.len(), 36);
     }
 
     #[test]

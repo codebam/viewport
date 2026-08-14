@@ -343,6 +343,36 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         smart: Option<bool>,
     },
+
+    /// Set the wallpaper at runtime, as the `wallpaper` and `wallpaper_mode`
+    /// keys in the config file.
+    ///
+    /// The same path as `config.gaps`: the compositor resolves what it is
+    /// given, updates its `Config` and re-sends it, and the shell paints the
+    /// picture as the desktop background. Nothing is written to disk, so this
+    /// is what a wallpaper cycler, a settings panel or a keybinding uses — a
+    /// new picture every hour costs one message and no config reload.
+    ///
+    /// Both fields are optional and only the ones given change, so the mode
+    /// can be switched without naming the picture again and the other way
+    /// round.
+    #[serde(rename = "config.wallpaper")]
+    ConfigWallpaper {
+        /// A path or a URL for the image, as `wallpaper` in the config file.
+        /// A local path is checked and rejected if it is not there — a
+        /// wallpaper that silently does not appear is the failure this exists
+        /// to avoid.
+        ///
+        /// The empty string takes the wallpaper away and leaves the shell's
+        /// own background, which is the only way back to it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// How it is fitted: `fill`, `fit`, `stretch`, `center` or `tile`, as
+        /// `wallpaper_mode`. An unknown mode is rejected rather than
+        /// defaulting.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -956,6 +986,35 @@ mod tests {
             panic!("not a config.border message");
         };
         assert_eq!((radius, width, smart), (None, None, None));
+    }
+
+    #[test]
+    fn config_wallpaper_carries_the_picture_and_the_fitting() {
+        let Request::ConfigWallpaper { path, mode } =
+            parse(r#"{"type":"config.wallpaper","path":"/pic/wall.png","mode":"tile"}"#)
+        else {
+            panic!("not a config.wallpaper message");
+        };
+        assert_eq!(path.as_deref(), Some("/pic/wall.png"));
+        assert_eq!(mode.as_deref(), Some("tile"));
+
+        // Either half alone: the mode is switched while trying a picture out,
+        // and swapping the picture keeps the mode.
+        let Request::ConfigWallpaper { path, mode } =
+            parse(r#"{"type":"config.wallpaper","mode":"center"}"#)
+        else {
+            panic!("not a config.wallpaper message");
+        };
+        assert_eq!((path, mode.as_deref()), (None, Some("center")));
+
+        // And the empty string, which is the only way back to the shell's own
+        // background — distinct from an absent `path`, which changes nothing.
+        let Request::ConfigWallpaper { path, .. } =
+            parse(r#"{"type":"config.wallpaper","path":""}"#)
+        else {
+            panic!("not a config.wallpaper message");
+        };
+        assert_eq!(path.as_deref(), Some(""));
     }
 
     #[test]

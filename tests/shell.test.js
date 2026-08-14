@@ -3639,6 +3639,59 @@ if (mode === 'scrolling') {
       && js.includes('maxWidth'));
   }
 
+  /* The wallpaper: a picture the compositor resolved, painted by the page.
+   *
+   * Both halves are checked here because neither is worth much alone — the
+   * config handler setting a class nothing styles, or a rule keyed on a class
+   * nothing sets, both look exactly like a wallpaper that does not appear.
+   * `body` is built for this rather than taken from the harness, which has no
+   * document to speak of: what the cascade needs is the tag and the parent. */
+  {
+    const body = new El('body');
+    body.parentElement = documentElement;
+    const wallpaperOf = () => sheet.value(body, 'background-image');
+    /* The shell's own background is a layered shorthand, which the resolver
+       keeps whole under `background` — so "the gradient is what is showing" is
+       asked as "there is no background-image over it". */
+    check('the shell paints a gradient of its own',
+      sheet.value(body, 'background').includes('gradient'));
+
+    emit({ type: 'config', layout: mode,
+      wallpaper: 'file:///pic/wall%20paper.png', wallpaper_mode: 'fit' });
+    check('a wallpaper is drawn as the desktop background',
+      wallpaperOf().includes('url("file:///pic/wall%20paper.png")'));
+    check('and the fitting it was given is the one in force',
+      sheet.value(body, 'background-size') === 'contain');
+
+    /* The mode changes without the picture being named again, which is what
+       `config.wallpaper --mode` alone sends. */
+    emit({ type: 'config', layout: mode,
+      wallpaper: 'file:///pic/wall%20paper.png', wallpaper_mode: 'tile' });
+    check('a tiled wallpaper repeats at its own size',
+      sheet.value(body, 'background-repeat') === 'repeat'
+      && sheet.value(body, 'background-size') === 'auto');
+
+    /* Absent is the gradient back, and not a black screen: this is what the
+       empty `wallpaper` in a config file and `--path ''` over the socket both
+       arrive as, so it is the only way back. */
+    emit({ type: 'config', layout: mode });
+    check('no wallpaper leaves the shell its own background',
+      wallpaperOf() === '' && sheet.value(body, 'background').includes('gradient'));
+
+    /* A terminal behind the page wins over a picture in it. Both cannot be
+       seen — the page is what would cover the terminal — and the terminal is
+       the one that was asked for by running a program. */
+    emit({ type: 'config', layout: mode, background_terminal: true,
+      wallpaper: 'file:///pic/wall.png' });
+    check('a background terminal is not painted over by a wallpaper',
+      !wallpaperOf().includes('url('));
+
+    /* And back to where this section found the desktop: a config event is the
+       whole configuration, so leaving one of these in force would hand the
+       rest of the file a different shell. */
+    emit({ type: 'config', layout: mode });
+  }
+
   /* A shorthand expands to one longhand per side, so this is how a test asks
      what the frame looks like all the way round rather than on one edge. */
   const sides = (el, part) => {

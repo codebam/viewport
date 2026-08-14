@@ -499,6 +499,54 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ConfigWallpaper { path, mode } => {
+            // Resolved before anything is changed, so a message naming a
+            // picture that is not there and a mode that is leaves neither
+            // half applied — a wallpaper cycler pointed at a directory that
+            // has been moved should not also lose the mode it was using.
+            let url = match path.as_deref() {
+                // The empty string is "take it away", which is the only way
+                // back to the shell's own background.
+                Some(path) if path.trim().is_empty() => Some(None),
+                Some(path) => match crate::config::wallpaper_url(path, "config.wallpaper") {
+                    Ok(url) => Some(Some(url)),
+                    Err(e) => {
+                        reject(state, "config.wallpaper", &e.to_string());
+                        return;
+                    }
+                },
+                None => None,
+            };
+            let mode = match mode.as_deref() {
+                Some(mode) => match crate::config::parse_wallpaper_mode(mode) {
+                    Ok(mode) => Some(mode),
+                    Err(e) => {
+                        reject(state, "config.wallpaper", &e.to_string());
+                        return;
+                    }
+                },
+                None => None,
+            };
+
+            let mut changed = false;
+            if let Some(url) = url {
+                state.config.wallpaper = url;
+                changed = true;
+            }
+            if let Some(mode) = mode {
+                state.config.wallpaper_mode = Some(mode);
+                changed = true;
+            }
+            if changed {
+                // The shell paints the desktop background, so the picture
+                // arrives the same way the gaps do: the compositor's copy of
+                // the config, re-announced. Nothing here draws it, which is
+                // why there is no `needs_render` — the page repaints itself
+                // and the frame that follows is the shell's.
+                state.notify_config();
+            }
+        }
+
         Request::Quit => state.shutdown(),
     }
 }

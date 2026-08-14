@@ -376,6 +376,29 @@ pub struct Config {
     /// to set twice.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background_terminal: bool,
+
+    /// An image to draw as the desktop background, as a URL the page can load
+    /// — `file://` for the ordinary case of a picture on disk.
+    ///
+    /// The same reasoning as `background_terminal`, one step further: the
+    /// shell's `body` *is* the wallpaper, so the only thing that can put an
+    /// image there is the page itself. The compositor resolves the path,
+    /// checks it exists and encodes it; what arrives here is ready to go
+    /// inside a CSS `url()`.
+    ///
+    /// Absent is the shell's own gradient, which is what a desktop that has
+    /// never been given a picture shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallpaper: Option<String>,
+
+    /// How that image is fitted to the screen: `"fill"`, `"fit"`,
+    /// `"stretch"`, `"center"` or `"tile"`. Absent means `"fill"`.
+    ///
+    /// Carried separately from the URL rather than folded into it because the
+    /// two change independently — a mode is switched while trying a picture
+    /// out, and swapping the picture keeps the mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallpaper_mode: Option<String>,
 }
 
 fn yes() -> bool {
@@ -659,6 +682,8 @@ mod tests {
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
+            wallpaper: None,
+            wallpaper_mode: None,
         }));
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
@@ -689,6 +714,8 @@ mod tests {
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
+            wallpaper: None,
+            wallpaper_mode: None,
         }));
         assert_eq!(value["border"]["radius"], 12);
         assert_eq!(value["border"]["width"], 3);
@@ -716,6 +743,8 @@ mod tests {
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
+            wallpaper: None,
+            wallpaper_mode: None,
         }));
         assert_eq!(value["gaps"]["inner"], 15);
         assert_eq!(value["gaps"]["outer"], 4);
@@ -756,6 +785,8 @@ mod tests {
             focus_crosses_outputs: false,
             tiling_mode: None,
             background_terminal: false,
+            wallpaper: None,
+            wallpaper_mode: None,
         }));
         assert_eq!(value["focus_crosses_outputs"], false);
     }
@@ -777,6 +808,8 @@ mod tests {
             focus_crosses_outputs: true,
             tiling_mode: None,
             background_terminal: false,
+            wallpaper: None,
+            wallpaper_mode: None,
         }));
         assert!(value["rules"].is_array(), "rules must not be a string");
         assert_eq!(value["rules"][0]["app_id"], "mpv");
@@ -868,6 +901,8 @@ mod tests {
                 focus_crosses_outputs: true,
                 tiling_mode: None,
                 background_terminal: false,
+                wallpaper: None,
+                wallpaper_mode: None,
             })),
             json(&Event::Modifiers { logo: true }),
             json(&Event::SessionRestore {

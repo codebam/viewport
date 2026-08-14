@@ -227,6 +227,20 @@ pub struct File {
     /// `crate::background`, which explains why that is deliberate and not a
     /// missing feature.
     pub background_terminal: Option<BackgroundTerminal>,
+    /// An image to draw as the wallpaper: a path, or a URL of its own.
+    ///
+    /// The shell paints the desktop background, so this is carried across to
+    /// it rather than drawn here — see `crate::state::apply_config`. An empty
+    /// string is "no wallpaper", which is how a file takes one away again
+    /// without the key having to be a nullable string that also means absent.
+    pub wallpaper: Option<String>,
+    /// How that image is fitted to the screen: `fill`, `fit`, `stretch`,
+    /// `center` or `tile`. Absent is `fill`, which is what a wallpaper is
+    /// almost always meant to do.
+    ///
+    /// The names are stylix's `imageScalingMode`, so a themed NixOS session
+    /// can hand its setting over unchanged. See [`parse_wallpaper_mode`].
+    pub wallpaper_mode: Option<String>,
     /// Which engine draws the shell: `wpe`, `webkitgtk`, `chromium`, `cef`,
     /// `servo` or `servoshell`.
     /// See `crate::shell_backend`.
@@ -479,8 +493,33 @@ pub fn pick_mode(
 /// may be deliberately encoded already and re-encoding would turn `%20` into
 /// `%2520`.
 pub fn shell_url(value: &str) -> anyhow::Result<String> {
+    resolve_url(value, "--url")
+}
+
+/// The same for an image: `wallpaper`, `--wallpaper` and `config.wallpaper`.
+///
+/// A wallpaper is named the way `--url` is — a path, usually, because that is
+/// what a file manager and a theme generator both hand you — and reaches the
+/// shell as a URL in a CSS `background-image`. So the resolution is identical,
+/// down to the encoding: a wallpaper under `~/Pictures/Wall Papers` is not a
+/// URI until its space is `%20`, and unencoded the page silently draws its own
+/// gradient instead.
+///
+/// The name in the error is the thing the caller was given, so a bad path in
+/// the config file says `wallpaper` and one on the command line says
+/// `--wallpaper`.
+pub fn wallpaper_url(value: &str, named: &str) -> anyhow::Result<String> {
+    resolve_url(value, named)
+}
+
+/// A path or a URL, as something a web engine will load.
+///
+/// `named` is what the value was called where it came from, and is what an
+/// error names — the whole point of the message is that somebody can find the
+/// thing they typed.
+fn resolve_url(value: &str, named: &str) -> anyhow::Result<String> {
     let trimmed = value.trim();
-    anyhow::ensure!(!trimmed.is_empty(), "--url was given nothing to load");
+    anyhow::ensure!(!trimmed.is_empty(), "{named} was given nothing to load");
 
     if let Some((scheme, rest)) = trimmed.split_once("://") {
         let encoded = format!("{scheme}://{}", rest.replace(' ', "%20"));
@@ -489,14 +528,27 @@ pub fn shell_url(value: &str) -> anyhow::Result<String> {
         // a mistake.
         if scheme == "file" {
             let path = std::path::PathBuf::from(percent_decode(rest));
-            anyhow::ensure!(path.exists(), "--url: {} does not exist", path.display());
+            anyhow::ensure!(path.exists(), "{named}: {} does not exist", path.display());
         }
         return Ok(encoded);
     }
 
     // No scheme, so it is a path — which is what someone types when they have
     // just unpacked a package and is pointing at the file they can see.
-    let path = std::path::Path::new(trimmed);
+    //
+    // A leading `~` is expanded here because a config file is not a shell:
+    // `"wallpaper": "~/Pictures/wall.png"` is the obvious thing to write, and
+    // nothing else in the process would ever turn it into a directory. On the
+    // command line the shell has usually done it already, and doing it twice
+    // costs nothing.
+    let expanded = match trimmed.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => std::path::PathBuf::from(home).join(rest),
+            None => std::path::PathBuf::from(trimmed),
+        },
+        None => std::path::PathBuf::from(trimmed),
+    };
+    let path = expanded.as_path();
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -506,12 +558,45 @@ pub fn shell_url(value: &str) -> anyhow::Result<String> {
     };
     anyhow::ensure!(
         absolute.exists(),
-        "--url: {} does not exist",
+        "{named}: {} does not exist",
         absolute.display()
     );
     Ok(format!(
         "file://{}",
         encode_path(&absolute.to_string_lossy())
+    ))
+}
+
+/// How a wallpaper image is fitted to the screen.
+///
+/// The five names are stylix's `imageScalingMode`, spelled exactly as it
+/// spells them, because a NixOS desktop themed by stylix hands this setting
+/// straight across and a second vocabulary for the same five behaviours is a
+/// translation table somebody has to write. sway's `output bg` uses four of
+/// the five under other names; those are accepted as aliases.
+pub const WALLPAPER_MODES: [&str; 5] = ["fill", "fit", "stretch", "center", "tile"];
+
+/// What `wallpaper_mode`, `--wallpaper-mode` and `config.wallpaper` accept.
+///
+/// The stylix names, plus sway's for the same thing: `cover` is `fill`,
+/// `contain` is `fit`, `stretch` is already shared. Unknown is an error rather
+/// than a silent `fill`, because the mode is the difference between a photo
+/// and a stretched photo and a typo would look like the setting doing nothing.
+pub fn parse_wallpaper_mode(value: &str) -> anyhow::Result<String> {
+    let name = value.trim().to_ascii_lowercase();
+    let name = match name.as_str() {
+        // sway spells these two differently, and swaybg is what most people
+        // set a wallpaper with before they set one here.
+        "cover" => "fill",
+        "contain" => "fit",
+        other => other,
+    };
+    if WALLPAPER_MODES.contains(&name) {
+        return Ok(name.to_owned());
+    }
+    Err(anyhow::anyhow!(
+        "wallpaper mode {value:?} is not one of {}",
+        WALLPAPER_MODES.join(", ")
     ))
 }
 
@@ -877,6 +962,86 @@ mod tests {
         assert_ne!(square.border, BorderConfig::default());
         let absent: File = serde_json::from_str("{}").expect("should parse");
         assert_eq!(absent.border, BorderConfig::default());
+    }
+
+    #[test]
+    fn the_wallpaper_keys_parse() {
+        let file: File =
+            serde_json::from_str(r#"{"wallpaper":"~/wall.png","wallpaper_mode":"fit"}"#)
+                .expect("should parse");
+        assert_eq!(file.wallpaper.as_deref(), Some("~/wall.png"));
+        assert_eq!(file.wallpaper_mode.as_deref(), Some("fit"));
+        // Absent is the shell's own background, and an empty string is how a
+        // file asks for it back — the two have to stay distinguishable, or a
+        // reload could not remove a wallpaper it had set.
+        let absent: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(absent.wallpaper, None);
+        let cleared: File = serde_json::from_str(r#"{"wallpaper":""}"#).expect("should parse");
+        assert_eq!(cleared.wallpaper.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn the_wallpaper_modes_are_the_ones_stylix_writes() {
+        // stylix's `imageScalingMode` is handed across unchanged by a themed
+        // NixOS session, so these five names are a compatibility promise and
+        // not a vocabulary of ours.
+        for mode in ["stretch", "fill", "fit", "center", "tile"] {
+            assert_eq!(parse_wallpaper_mode(mode).unwrap(), mode);
+        }
+        // Case and spacing are what a config file has, not a mistake.
+        assert_eq!(parse_wallpaper_mode(" Fill ").unwrap(), "fill");
+        // And sway's two names for the same fittings, because swaybg is what
+        // most people set a wallpaper with before they set one here.
+        assert_eq!(parse_wallpaper_mode("cover").unwrap(), "fill");
+        assert_eq!(parse_wallpaper_mode("contain").unwrap(), "fit");
+    }
+
+    #[test]
+    fn an_unknown_wallpaper_mode_is_refused_rather_than_filled() {
+        // The mode is the difference between a photo and a stretched photo, so
+        // a typo silently becoming `fill` is a setting that looks ignored.
+        let error = parse_wallpaper_mode("zoom")
+            .expect_err("not a mode")
+            .to_string();
+        assert!(error.contains("fill"), "{error}");
+    }
+
+    #[test]
+    fn a_wallpaper_path_becomes_a_url_the_page_can_load() {
+        let dir = std::env::temp_dir().join("viewport wallpaper test");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("wall paper.png");
+        std::fs::write(&file, "not really a png").expect("write");
+
+        let url = wallpaper_url(&file.to_string_lossy(), "--wallpaper").expect("exists");
+        assert!(url.starts_with("file:///"), "{url}");
+        // The same encoding `--url` needs, and for the same reason: a picture
+        // in a directory with a space in it is not a URI until the space is.
+        assert!(!url.contains(' '), "a space survived: {url}");
+        // Both spaces in the file's own name, and however many the temporary
+        // directory above it happens to carry.
+        assert!(url.ends_with("/wall%20paper.png"), "{url}");
+        assert!(url.contains("wallpaper%20test"), "{url}");
+
+        // A missing one is named, and named as whatever asked for it — the
+        // point of the message is that somebody can find what they typed.
+        let error = wallpaper_url("/nowhere/wall.png", "wallpaper").expect_err("missing");
+        assert!(error.to_string().starts_with("wallpaper:"), "{error}");
+
+        // And `~`, which a config file is entitled to write because it is not
+        // a shell and nothing else in the process would expand it.
+        let home = std::env::var("HOME").expect("a home directory");
+        let in_home = std::path::Path::new(&home).join("viewport-wallpaper-test.png");
+        std::fs::write(&in_home, "not really a png").expect("write");
+        let url = wallpaper_url("~/viewport-wallpaper-test.png", "wallpaper").expect("exists");
+        assert_eq!(
+            url,
+            format!("file://{}", in_home.display()),
+            "a leading ~ was not expanded"
+        );
+        let _ = std::fs::remove_file(&in_home);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

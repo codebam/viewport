@@ -305,6 +305,40 @@ window.addEventListener('viewport', (event) => {
          which is every desktop that has not asked for one. */
       document.documentElement.classList.toggle('behind',
         message.background_terminal === true);
+      /* A picture for the desktop background. The compositor has already
+         resolved it to a URL a page can load, so all that is left is to say
+         which one and how it is fitted.
+
+         Quoted, because a resolved path is percent-encoded but may still hold
+         a bracket or a comma that an unquoted url() would end at. Absent takes
+         the class off and the gradient comes back — that is what an empty
+         `wallpaper` in the config file and `--path ''` over the socket both
+         arrive as. */
+      {
+        const root = document.documentElement;
+        /* A terminal behind the page wins over a picture in it: the two
+           cannot both be seen, since the page is what would cover the
+           terminal, and the terminal is the one somebody asked for by running
+           a program. Decided here rather than left to the order of two CSS
+           rules, so that there is one place to read the answer off. */
+        const url = typeof message.wallpaper === 'string' && message.wallpaper
+          && message.background_terminal !== true
+          ? message.wallpaper : null;
+        root.classList.toggle('wallpaper', url !== null);
+        if (url !== null) {
+          root.style.setProperty('--wallpaper', `url("${url.replace(/"/g, '%22')}")`);
+        } else {
+          root.style.removeProperty('--wallpaper');
+        }
+        /* One class per fitting rather than a data attribute, to match the
+           rest of the shell's styling, and all four removed first so switching
+           mode does not leave the last one on. `fill` is the default and has
+           no class of its own. */
+        for (const mode of WALLPAPER_MODES) {
+          root.classList.toggle(`wallpaper-${mode}`,
+            url !== null && message.wallpaper_mode === mode);
+        }
+      }
       /* Absent means on, matching the compositor's own default: only an
          explicit false keeps focus on the monitor it is on. */
       focusCrossesOutputs = message.focus_crosses_outputs !== false;
