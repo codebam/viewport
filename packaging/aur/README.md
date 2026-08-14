@@ -1,24 +1,46 @@
 # The AUR packages
 
-Three of them — one source recipe in `packaging/arch` and two binaries here:
+Nine of them: three engines, each in three forms.
 
 | AUR package | what it is | recipe |
 | --- | --- | --- |
 | `viewport-webkitgtk` | builds the tagged tree from source | `packaging/arch/webkitgtk/PKGBUILD`, pushed verbatim |
+| `viewport-wpe` | the same, with the engine inside the compositor | `packaging/arch/wpe/PKGBUILD`, pushed verbatim |
+| `viewport-chromium` | the same, driving a browser it does not link | `packaging/arch/chromium/PKGBUILD`, pushed verbatim |
 | `viewport-webkitgtk-bin` | unpacks the release artifact | `packaging/aur/viewport-webkitgtk-bin/PKGBUILD` |
-| `viewport-wpe-bin` | unpacks the WPE release artifact (not yet pushed — see below) | `packaging/aur/viewport-wpe-bin/PKGBUILD` |
+| `viewport-wpe-bin` | the same for WPE | `packaging/aur/viewport-wpe-bin/PKGBUILD` |
+| `viewport-chromium-bin` | the same for Chromium | `packaging/aur/viewport-chromium-bin/PKGBUILD` |
+| `viewport-webkitgtk-git` | follows `main` | `packaging/aur/viewport-webkitgtk-git/PKGBUILD` |
+| `viewport-wpe-git` | the same for WPE | `packaging/aur/viewport-wpe-git/PKGBUILD` |
+| `viewport-chromium-git` | the same for Chromium | `packaging/aur/viewport-chromium-git/PKGBUILD` |
 
-The source package has no copy of its own here on purpose: the recipe in
-`packaging/arch/webkitgtk` is the one that is pushed, so there is one file to
-change rather than two that drift apart. The other two engines (`wpe`,
-`chromium`) are built and published on the GitHub release; only WPE's binary
-form is staged here, because the `-bin` form is the one that saves a machine
-a four-hour WebKit build.
+Every one of them installs a binary called `viewport` and provides that name,
+and every one conflicts with the rest: a machine takes one engine in one form.
 
-`viewport-wpe-bin` is not yet pushed: its `sha256sums_x86_64` is
-still `PLACEHOLDER_SHA256_OF_THE_WPE_ARTIFACT` and `makepkg` would fail as
-committed. Fill it from the published WPE artifact's real sha256 before
-pushing, or leave the branch unpushed until that artifact exists.
+The source packages have no copy of their own here on purpose: the recipes in
+`packaging/arch` are what get pushed, so there is one file to change rather
+than two that drift apart. The `-git` recipes are generated from those same
+three by hand and kept beside them — they differ only in the name, the version
+function, and following a branch instead of a tag, so a change to a build step
+belongs in `packaging/arch` and then in its `-git` twin.
+
+`cef` has no recipe at all: CEF is a prebuilt bundle, Arch's only package of it
+is `cef-minimal` at CEF 121 against the 149 this tree needs, and `chromium`
+gives Arch the same engine out of the repositories. `servoshell` has none
+either — nixpkgs' `servo` has no Arch counterpart.
+
+## What is not pushed yet
+
+Nothing is: none of the nine repositories exist on the AUR, and all nine names
+are free. Two things have to be true before any `-bin` recipe can go up, and
+neither is yet:
+
+* The artifacts have to exist on the GitHub release. `viewport-wpe-bin` and
+  `viewport-chromium-bin` still carry `PLACEHOLDER_SHA256_OF_THE_*_ARTIFACT`
+  and `viewport-webkitgtk-bin` carries the 0.1.3 checksum, so `makepkg` fails
+  on all three as committed.
+* Each package needs a `.SRCINFO`, which is generated rather than written —
+  see below.
 
 ## Cutting a release
 

@@ -12,6 +12,12 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Shipping
+- Nine AUR recipes rather than five: every engine now has a `-git` form that
+  follows `main` and reports `0.1.4.rN.gSHORT`, and Chromium has the `-bin`
+  form the other two already had. The `-git` recipes are their source recipe
+  with three differences — the name, a `pkgver()`, and a branch instead of a
+  tag — so a change to a build step belongs in `packaging/arch` and then in its
+  twin.
 - The packages are named after the compositor rather than after the toolkit it
   was rewritten on: `viewport-webkitgtk`, `viewport-wpe`, `viewport-chromium`
   and the two `-bin` recipes beside them, each providing `viewport` and
