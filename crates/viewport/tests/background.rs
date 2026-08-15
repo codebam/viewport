@@ -13,163 +13,12 @@
 // emulator, and skips itself when there is none — the dev shell has `foot`,
 // and a machine without one has nothing this could honestly assert.
 
-use std::io::{BufRead, BufReader, Write};
+mod common;
+
+use common::Compositor;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-struct Compositor {
-    child: Child,
-    socket: PathBuf,
-    log: PathBuf,
-}
-
-impl Drop for Compositor {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-        let _ = std::fs::remove_file(&self.log);
-    }
-}
-
-impl Compositor {
-    /// Headless, with whatever extra arguments the test is about.
-    ///
-    /// /tmp with the pid rather than CARGO_TARGET_TMPDIR, which is longer than
-    /// `sockaddr_un.sun_path` allows.
-    fn start(tag: &str, args: &[&str]) -> Self {
-        let socket = PathBuf::from(format!(
-            "/tmp/viewport-test-{}-{tag}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
-
-        let log = PathBuf::from(format!(
-            "/tmp/viewport-test-{}-{tag}.log",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&log);
-        let stderr = std::fs::File::create(&log).expect("could not create the log");
-
-        let mut command = Command::new(env!("CARGO_BIN_EXE_viewport"));
-        command
-            .args(["--headless", "--socket"])
-            .arg(&socket)
-            .args(args)
-            // Or a config file in the developer's own home decides what this
-            // test sees.
-            .env("XDG_CONFIG_HOME", "/nonexistent")
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(stderr));
-
-        let child = command.spawn().expect("could not start the compositor");
-        let compositor = Self { child, socket, log };
-        compositor.wait_for_socket();
-        compositor
-    }
-
-    fn wait_for_socket(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if self.socket.exists() && UnixStream::connect(&self.socket).is_ok() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("the compositor never created {}", self.socket.display());
-    }
-
-    /// Wait for a line in the log, and say whether it turned up.
-    fn saw(&self, needle: &str, within: Duration) -> bool {
-        let deadline = Instant::now() + within;
-        while Instant::now() < deadline {
-            if let Ok(log) = std::fs::read_to_string(&self.log) {
-                if log.contains(needle) {
-                    return true;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        false
-    }
-
-    fn log(&self) -> String {
-        std::fs::read_to_string(&self.log).unwrap_or_default()
-    }
-
-    /// The Wayland display it created, from its own log.
-    ///
-    /// `WAYLAND_DISPLAY=<name>`, which is what the shell scripts in tests/
-    /// grep for as well — one contract for both suites. Matching a bare word
-    /// starting with `wayland-` would also hit Smithay's own `Created new
-    /// socket name=Some("wayland-2")`.
-    fn wayland_display(&self) -> Option<String> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if let Ok(log) = std::fs::read_to_string(&self.log) {
-                if let Some(name) = log
-                    .split_whitespace()
-                    .find_map(|word| word.strip_prefix("WAYLAND_DISPLAY="))
-                {
-                    return Some(
-                        name.trim_end_matches(|c: char| !c.is_alphanumeric())
-                            .to_owned(),
-                    );
-                }
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        None
-    }
-
-    fn connect(&self) -> Client {
-        let stream = UnixStream::connect(&self.socket).expect("connect");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        Client {
-            writer: stream.try_clone().unwrap(),
-            reader: BufReader::new(stream),
-        }
-    }
-}
-
-struct Client {
-    writer: UnixStream,
-    reader: BufReader<UnixStream>,
-}
-
-impl Client {
-    fn send(&mut self, message: &str) {
-        self.writer.write_all(message.as_bytes()).unwrap();
-        self.writer.write_all(b"\n").unwrap();
-        self.writer.flush().unwrap();
-    }
-
-    /// Everything readable within a moment, as lines.
-    ///
-    /// Time-bounded rather than counted: the point of most of these
-    /// assertions is that a particular message never arrives, and there is no
-    /// count that says "and nothing else".
-    fn drain(&mut self, within: Duration) -> Vec<String> {
-        let deadline = Instant::now() + within;
-        let mut lines = Vec::new();
-        self.writer
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
-        while Instant::now() < deadline {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => lines.push(line.trim_end().to_owned()),
-                Err(_) => continue,
-            }
-        }
-        lines
-    }
-}
 
 /// The direct children of a process that have exited and not been reaped.
 ///
@@ -234,7 +83,7 @@ fn the_wallpaper_terminal_is_not_a_window() {
     };
 
     let flag = format!("--background-terminal={terminal}");
-    let compositor = Compositor::start("background", &[&flag]);
+    let compositor = Compositor::start_with_args("background", &[&flag]);
 
     assert!(
         compositor.saw("background: started", Duration::from_secs(10)),
@@ -254,7 +103,7 @@ fn the_wallpaper_terminal_is_not_a_window() {
 
     let mut client = compositor.connect();
     client.send(r#"{"type":"view.query"}"#);
-    let lines = client.drain(Duration::from_secs(2));
+    let lines = client.drain_lines(Duration::from_secs(2));
 
     assert!(
         !lines.iter().any(|line| line.contains("view.added")),
@@ -288,7 +137,7 @@ fn a_wallpaper_program_takes_the_position() {
     };
 
     let flag = format!("--background-terminal={terminal}");
-    let compositor = Compositor::start("wallpaper", &[&flag]);
+    let compositor = Compositor::start_with_args("wallpaper", &[&flag]);
     if !compositor.saw("background: its toplevel arrived", Duration::from_secs(20)) {
         eprintln!("skipped: {terminal} never mapped under a headless compositor");
         return;
@@ -360,7 +209,7 @@ fn every_monitor_gets_a_terminal() {
     };
 
     let flag = format!("--background-terminal={terminal}");
-    let compositor = Compositor::start("per-output", &[&flag]);
+    let compositor = Compositor::start_with_args("per-output", &[&flag]);
     assert!(
         compositor.saw("background: started", Duration::from_secs(10)),
         "nothing was started for the first monitor:\n{}",
@@ -370,7 +219,7 @@ fn every_monitor_gets_a_terminal() {
     // A second screen, which the headless backend can plug in on request.
     let mut client = compositor.connect();
     client.send(r#"{"type":"output.test_add"}"#);
-    let _ = client.drain(Duration::from_millis(500));
+    let _ = client.drain_lines(Duration::from_millis(500));
 
     let started: Vec<String> = {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -448,7 +297,7 @@ fn the_keyboard_can_be_handed_over_and_taken_back() {
     };
 
     let flag = format!("--background-terminal={terminal}");
-    let compositor = Compositor::start("focus", &[&flag]);
+    let compositor = Compositor::start_with_args("focus", &[&flag]);
     if !compositor.saw("background: its toplevel arrived", Duration::from_secs(20)) {
         eprintln!("skipped: {terminal} never mapped under a headless compositor");
         return;
@@ -479,7 +328,7 @@ fn the_keyboard_can_be_handed_over_and_taken_back() {
 /// for one must not spawn a process behind it.
 #[test]
 fn no_flag_starts_no_terminal() {
-    let compositor = Compositor::start("no-background", &[]);
+    let compositor = Compositor::start_with_args("no-background", &[]);
     // Long enough for startup to have got there: the shell process is started
     // from the same place, so if that line is in the log the background one
     // would have been too.

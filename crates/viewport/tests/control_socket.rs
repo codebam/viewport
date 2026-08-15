@@ -8,153 +8,12 @@
 // and parsing are wired to the handlers, and that a refusal goes back to the
 // client that caused it rather than to everyone.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+mod common;
+
+use common::{Client, Compositor};
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-struct Compositor {
-    child: Child,
-    socket: PathBuf,
-    /// Kept because the Wayland display name is only ever announced there.
-    log: PathBuf,
-}
-
-impl Drop for Compositor {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-        let _ = std::fs::remove_file(&self.log);
-    }
-}
-
-impl Compositor {
-    /// The socket path has to stay under `sockaddr_un.sun_path`, so this uses
-    /// /tmp with the pid rather than CARGO_TARGET_TMPDIR, which is long.
-    fn start(tag: &str) -> Self {
-        Self::start_with(tag, &[])
-    }
-
-    /// With extra environment, for the settings that only arrive that way.
-    fn start_with(tag: &str, env: &[(&str, &std::path::Path)]) -> Self {
-        let socket = PathBuf::from(format!(
-            "/tmp/viewport-test-{}-{tag}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
-
-        let log = PathBuf::from(format!(
-            "/tmp/viewport-test-{}-{tag}.log",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&log);
-        let stderr = std::fs::File::create(&log).expect("could not create the log");
-
-        let mut command = Command::new(env!("CARGO_BIN_EXE_viewport"));
-        command
-            .args(["--headless", "--socket"])
-            .arg(&socket)
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(stderr));
-        for (key, value) in env {
-            command.env(key, value);
-        }
-        // Otherwise a config file in the developer's own home decides what
-        // these tests see.
-        if !env.iter().any(|(key, _)| *key == "XDG_CONFIG_HOME") {
-            command.env("XDG_CONFIG_HOME", "/nonexistent");
-        }
-
-        let child = command.spawn().expect("could not start the compositor");
-
-        let compositor = Self { child, socket, log };
-        compositor.wait_for_socket();
-        compositor
-    }
-
-    fn wait_for_socket(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if self.socket.exists() && UnixStream::connect(&self.socket).is_ok() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("the compositor never created {}", self.socket.display());
-    }
-
-    /// The Wayland display this compositor created, from its own log.
-    ///
-    /// Waits for it: the line is written during startup and a client pointed
-    /// at a display that does not exist yet fails for a reason that has
-    /// nothing to do with what is being tested.
-    ///
-    /// `WAYLAND_DISPLAY=<name>`, which is the same thing the shell scripts in
-    /// tests/ grep for and the same shape the C build prints — one contract
-    /// for both suites rather than two. Matching a bare word starting with
-    /// `wayland-` would also hit Smithay's own `Created new socket
-    /// name=Some("wayland-2")`, which is a different line that happens to
-    /// agree.
-    fn wayland_display(&self) -> Option<String> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if let Ok(log) = std::fs::read_to_string(&self.log) {
-                if let Some(name) = log
-                    .split_whitespace()
-                    .find_map(|word| word.strip_prefix("WAYLAND_DISPLAY="))
-                {
-                    return Some(
-                        name.trim_end_matches(|c: char| !c.is_alphanumeric())
-                            .to_owned(),
-                    );
-                }
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        None
-    }
-
-    fn connect(&self) -> Client {
-        let stream = UnixStream::connect(&self.socket).expect("connect");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        Client {
-            writer: stream.try_clone().unwrap(),
-            reader: BufReader::new(stream),
-        }
-    }
-}
-
-struct Client {
-    writer: UnixStream,
-    reader: BufReader<UnixStream>,
-}
-
-impl Client {
-    fn send(&mut self, message: &str) {
-        self.writer.write_all(message.as_bytes()).unwrap();
-        self.writer.write_all(b"\n").unwrap();
-        self.writer.flush().unwrap();
-    }
-
-    /// Read messages until one has this `type`.
-    fn wait_for(&mut self, kind: &str) -> serde_json::Value {
-        for _ in 0..64 {
-            let mut line = String::new();
-            let n = self.reader.read_line(&mut line).expect("read");
-            assert_ne!(n, 0, "the compositor closed the connection");
-            let value: serde_json::Value =
-                serde_json::from_str(line.trim()).expect("compositor sent invalid JSON");
-            if value["type"] == kind {
-                return value;
-            }
-        }
-        panic!("never saw a {kind} message");
-    }
-}
 
 #[test]
 fn the_socket_is_private_to_its_owner() {
@@ -224,7 +83,9 @@ fn a_config_file_reaches_the_shell() {
     let path = dir.join("viewport/config.json");
     std::fs::write(&path, r#"{"layout":"scrolling","logo":false,"bar":"auto"}"#).expect("write");
 
-    let compositor = Compositor::start_with("config-file", &[("XDG_CONFIG_HOME", &dir)]);
+    let compositor = Compositor::builder("config-file")
+        .env("XDG_CONFIG_HOME", &dir)
+        .start();
     let mut client = compositor.connect();
     client.send(r#"{"type":"view.query"}"#);
     let config = client.wait_for("config");

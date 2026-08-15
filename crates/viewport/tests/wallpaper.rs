@@ -12,133 +12,11 @@
 //
 // Headless, so this needs no GPU, no display and no seat.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+mod common;
+
+use common::Compositor;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
-
-struct Compositor {
-    child: Child,
-    socket: PathBuf,
-    log: PathBuf,
-}
-
-impl Drop for Compositor {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-        let _ = std::fs::remove_file(&self.log);
-    }
-}
-
-impl Compositor {
-    /// Headless, with whatever extra arguments the test is about.
-    ///
-    /// /tmp with the pid rather than CARGO_TARGET_TMPDIR, which is longer than
-    /// `sockaddr_un.sun_path` allows.
-    fn start(tag: &str, args: &[&str]) -> Self {
-        let socket = PathBuf::from(format!(
-            "/tmp/viewport-test-{}-{tag}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
-
-        let log = PathBuf::from(format!(
-            "/tmp/viewport-test-{}-{tag}.log",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&log);
-        let stderr = std::fs::File::create(&log).expect("could not create the log");
-
-        let mut command = Command::new(env!("CARGO_BIN_EXE_viewport"));
-        command
-            .args(["--headless", "--socket"])
-            .arg(&socket)
-            .args(args)
-            // Or a config file in the developer's own home decides what this
-            // test sees.
-            .env("XDG_CONFIG_HOME", "/nonexistent")
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(stderr));
-
-        let child = command.spawn().expect("could not start the compositor");
-        let compositor = Self { child, socket, log };
-        compositor.wait_for_socket();
-        compositor
-    }
-
-    fn wait_for_socket(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if self.socket.exists() && UnixStream::connect(&self.socket).is_ok() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("the compositor never created {}", self.socket.display());
-    }
-
-    fn connect(&self) -> Client {
-        let stream = UnixStream::connect(&self.socket).expect("connect");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        Client {
-            writer: stream.try_clone().unwrap(),
-            reader: BufReader::new(stream),
-        }
-    }
-}
-
-struct Client {
-    writer: UnixStream,
-    reader: BufReader<UnixStream>,
-}
-
-impl Client {
-    fn send(&mut self, message: &str) {
-        self.writer.write_all(message.as_bytes()).unwrap();
-        self.writer.write_all(b"\n").unwrap();
-        self.writer.flush().unwrap();
-    }
-
-    /// Everything readable within a moment, as parsed JSON.
-    fn drain(&mut self, within: Duration) -> Vec<serde_json::Value> {
-        let deadline = Instant::now() + within;
-        let mut messages = Vec::new();
-        self.writer
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
-        while Instant::now() < deadline {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if let Ok(value) = serde_json::from_str(line.trim_end()) {
-                        messages.push(value);
-                    }
-                }
-                Err(_) => continue,
-            }
-        }
-        messages
-    }
-
-    /// Ask for the config and hand back the one that comes past.
-    ///
-    /// `view.query` is the request a shell makes when it loads, and its reply
-    /// starts with the config — so this is the same answer the desktop itself
-    /// would be given.
-    fn config(&mut self) -> serde_json::Value {
-        self.send(r#"{"type":"view.query"}"#);
-        self.drain(Duration::from_millis(600))
-            .into_iter()
-            .find(|message| message["type"] == "config")
-            .expect("no config event in the reply to view.query")
-    }
-}
+use std::time::Duration;
 
 /// A file to point a wallpaper at. The contents are never decoded here —
 /// nothing in this process draws — so what matters is only that it exists.
@@ -152,7 +30,7 @@ fn a_picture(name: &str) -> PathBuf {
 #[test]
 fn a_wallpaper_from_the_command_line_reaches_the_shell() {
     let picture = a_picture("wall.png");
-    let compositor = Compositor::start(
+    let compositor = Compositor::start_with_args(
         "wallpaper-flag",
         &[
             "--wallpaper",
@@ -183,7 +61,7 @@ fn a_wallpaper_from_the_command_line_reaches_the_shell() {
 /// leave the desktop black.
 #[test]
 fn no_wallpaper_is_no_key() {
-    let compositor = Compositor::start("wallpaper-none", &[]);
+    let compositor = Compositor::start_with_args("wallpaper-none", &[]);
     let mut client = compositor.connect();
     let config = client.config();
     assert!(config.get("wallpaper").is_none(), "{config}");
@@ -195,7 +73,7 @@ fn no_wallpaper_is_no_key() {
 #[test]
 fn the_socket_sets_and_clears_the_wallpaper() {
     let picture = a_picture("socket-wall.png");
-    let compositor = Compositor::start("wallpaper-socket", &[]);
+    let compositor = Compositor::start_with_args("wallpaper-socket", &[]);
     let mut client = compositor.connect();
 
     client.send(&format!(
@@ -237,7 +115,7 @@ fn the_socket_sets_and_clears_the_wallpaper() {
 /// the path resolution and refused.
 #[test]
 fn a_colour_reaches_the_shell_as_written() {
-    let compositor = Compositor::start("wallpaper-colour", &["--wallpaper", "#1a1b26"]);
+    let compositor = Compositor::start_with_args("wallpaper-colour", &["--wallpaper", "#1a1b26"]);
     let mut client = compositor.connect();
     let config = client.config();
     assert_eq!(config["wallpaper"].as_str(), Some("#1a1b26"), "{config}");
@@ -260,7 +138,7 @@ fn a_colour_reaches_the_shell_as_written() {
 /// rather than in the page.
 #[test]
 fn a_wallpaper_that_is_not_there_is_refused() {
-    let compositor = Compositor::start("wallpaper-missing", &[]);
+    let compositor = Compositor::start_with_args("wallpaper-missing", &[]);
     let mut client = compositor.connect();
 
     client.send(r#"{"type":"config.wallpaper","mode":"tile"}"#);
@@ -283,7 +161,7 @@ fn a_wallpaper_that_is_not_there_is_refused() {
 /// An unknown fitting is refused rather than becoming `fill`.
 #[test]
 fn an_unknown_wallpaper_mode_is_refused() {
-    let compositor = Compositor::start("wallpaper-mode", &[]);
+    let compositor = Compositor::start_with_args("wallpaper-mode", &[]);
     let mut client = compositor.connect();
 
     client.send(r#"{"type":"config.wallpaper","mode":"zoom"}"#);
@@ -323,7 +201,7 @@ fn the_config_file_sets_a_wallpaper_and_the_flag_wins() {
     .expect("write");
 
     {
-        let compositor = Compositor::start(
+        let compositor = Compositor::start_with_args(
             "wallpaper-config",
             &["--config", &config_path.to_string_lossy()],
         );
@@ -344,7 +222,7 @@ fn the_config_file_sets_a_wallpaper_and_the_flag_wins() {
     // The flag is the more deliberate of the two and is applied after the
     // file, which is the rule every other setting here follows.
     {
-        let compositor = Compositor::start(
+        let compositor = Compositor::start_with_args(
             "wallpaper-config-flag",
             &[
                 "--config",

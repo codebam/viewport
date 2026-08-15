@@ -13,106 +13,54 @@
 // process — and that is fine: what is being tested is everything up to and
 // including the decision, which is the part that was missing.
 
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+mod common;
+
+use common::Compositor;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The line the compositor writes when the watch has been set up.
 const WATCHING: &str = "for shell changes";
 /// The line it writes when a change has settled and the page is being reloaded.
 const RELOADING: &str = "the shell's files changed";
 
-struct Compositor {
-    child: Child,
-    log: PathBuf,
-    socket: PathBuf,
-    shell: PathBuf,
-}
-
-impl Drop for Compositor {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-        let _ = std::fs::remove_file(&self.log);
-        let _ = std::fs::remove_dir_all(&self.shell);
-    }
-}
-
 impl Compositor {
     /// Start one watching a shell directory of this test's own making.
     ///
     /// Its own directory rather than `data/shell`, because the test writes to
     /// what it watches and the repository's copy is not the test's to touch.
-    fn start(tag: &str) -> Self {
+    /// The harness takes it away again when the compositor goes.
+    ///
+    /// Started ready rather than merely running: the socket appearing says
+    /// nothing about the watch, and a test that saves a file before the inotify
+    /// descriptor is in the event loop is testing the race instead.
+    fn watching(tag: &str) -> Self {
         let shell = PathBuf::from(format!("/tmp/viewport-watch-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&shell);
         std::fs::create_dir_all(shell.join("vendor")).expect("a shell directory to watch");
         std::fs::write(shell.join("index.html"), "<!doctype html><title>t</title>")
             .expect("a page to load");
 
-        let socket = PathBuf::from(format!(
-            "/tmp/viewport-watch-{}-{tag}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
-
-        let log = PathBuf::from(format!(
-            "/tmp/viewport-watch-{}-{tag}.log",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&log);
-        let stderr = std::fs::File::create(&log).expect("could not create the log");
-
-        let child = Command::new(env!("CARGO_BIN_EXE_viewport"))
-            .args(["--headless", "--watch-shell", "--socket"])
-            .arg(&socket)
-            .arg("--url")
+        Self::builder(tag)
+            .prefix("viewport-watch")
+            .args(["--watch-shell", "--url"])
             .arg(shell.join("index.html"))
-            // Otherwise a config file in the developer's own home decides what
-            // this test sees.
-            .env("XDG_CONFIG_HOME", "/nonexistent")
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .expect("could not start the compositor");
-
-        let compositor = Self {
-            child,
-            log,
-            socket,
-            shell,
-        };
-        compositor
-            .wait_for(WATCHING, Duration::from_secs(10))
-            .expect("the compositor never said it was watching anything");
-        compositor
+            .owning(shell)
+            .awaiting(WATCHING, Duration::from_secs(10))
+            .start()
     }
 
-    /// Wait for a line in the log, and say how long it took.
-    fn wait_for(&self, needle: &str, patience: Duration) -> Option<Duration> {
-        let started = Instant::now();
-        while started.elapsed() < patience {
-            if let Ok(log) = std::fs::read_to_string(&self.log) {
-                if log.contains(needle) {
-                    return Some(started.elapsed());
-                }
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        None
-    }
-
-    fn log(&self) -> String {
-        std::fs::read_to_string(&self.log).unwrap_or_default()
+    /// The shell directory this compositor is watching.
+    fn shell(&self) -> &Path {
+        self.directory()
     }
 
     /// Write a file the way an editor does: a temporary beside it, renamed
     /// over the top. `index.html` is never written to, so a watch looking for
     /// `IN_MODIFY` on it would see nothing at all.
     fn save(&self, name: &str, contents: &str) {
-        let target = self.shell.join(name);
-        let temporary = self.shell.join(format!(".{name}.tmp"));
+        let target = self.shell().join(name);
+        let temporary = self.shell().join(format!(".{name}.tmp"));
         std::fs::write(&temporary, contents).expect("write");
         std::fs::rename(&temporary, &target).expect("rename");
     }
@@ -121,7 +69,7 @@ impl Compositor {
 /// The whole point: edit a file, and the desktop reloads without being asked.
 #[test]
 fn saving_a_script_reloads_the_running_desktop() {
-    let compositor = Compositor::start("save");
+    let compositor = Compositor::watching("save");
 
     compositor.save("state.js", "let focusedId = 0;\n");
 
@@ -142,10 +90,10 @@ fn saving_a_script_reloads_the_running_desktop() {
 /// `npm run vendor` rewriting it is exactly a change worth reloading for.
 #[test]
 fn a_subdirectory_is_watched_too() {
-    let compositor = Compositor::start("subdirectory");
+    let compositor = Compositor::watching("subdirectory");
 
     std::fs::write(
-        compositor.shell.join("vendor/gsap.min.js"),
+        compositor.shell().join("vendor/gsap.min.js"),
         "window.gsap = {};\n",
     )
     .expect("write");
@@ -168,9 +116,9 @@ fn a_subdirectory_is_watched_too() {
 /// command exists to rewrite.
 #[test]
 fn a_subdirectory_that_was_recreated_is_watched_again() {
-    let compositor = Compositor::start("recreated");
+    let compositor = Compositor::watching("recreated");
 
-    let vendor = compositor.shell.join("vendor");
+    let vendor = compositor.shell().join("vendor");
     std::fs::remove_dir_all(&vendor).expect("remove");
     std::fs::create_dir(&vendor).expect("create");
     // The watch on the new directory is taken when the event announcing it is
@@ -204,11 +152,11 @@ fn a_subdirectory_that_was_recreated_is_watched_again() {
 /// somebody starts reading their own shell.
 #[test]
 fn an_editor_opening_a_file_does_not_reload_anything() {
-    let compositor = Compositor::start("editor");
+    let compositor = Compositor::watching("editor");
 
-    std::fs::write(compositor.shell.join("4913"), "").expect("write");
-    std::fs::write(compositor.shell.join(".state.js.swp"), "b0VIM").expect("write");
-    std::fs::write(compositor.shell.join("index.html~"), "old").expect("write");
+    std::fs::write(compositor.shell().join("4913"), "").expect("write");
+    std::fs::write(compositor.shell().join(".state.js.swp"), "b0VIM").expect("write");
+    std::fs::write(compositor.shell().join("index.html~"), "old").expect("write");
 
     // Long enough to be past the debounce several times over.
     assert!(
@@ -235,7 +183,7 @@ fn an_editor_opening_a_file_does_not_reload_anything() {
 /// them of a directory that is half one revision and half another.
 #[test]
 fn a_burst_of_changes_reloads_once() {
-    let compositor = Compositor::start("burst");
+    let compositor = Compositor::watching("burst");
 
     for name in [
         "state.js",

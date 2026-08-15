@@ -8,69 +8,21 @@
 // back as a failure rather than as silence, and that discovery finds the
 // session it was told about.
 
+mod common;
+
+use common::Compositor;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-struct Compositor {
-    child: Child,
-    socket: PathBuf,
-    log: PathBuf,
-}
-
-impl Drop for Compositor {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-        let _ = std::fs::remove_file(&self.log);
-    }
-}
-
 impl Compositor {
-    /// Headless, so this needs no GPU, no display and no seat. In /tmp with the
-    /// pid rather than CARGO_TARGET_TMPDIR, which is long enough to overrun
-    /// `sockaddr_un.sun_path`.
-    fn start(tag: &str) -> Self {
-        let socket = PathBuf::from(format!(
-            "/tmp/viewport-msg-{}-{tag}.sock",
-            std::process::id()
-        ));
-        let log = PathBuf::from(format!(
-            "/tmp/viewport-msg-{}-{tag}.log",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
-        let _ = std::fs::remove_file(&log);
-
-        let stderr = std::fs::File::create(&log).expect("could not create the log");
-        let child = Command::new(env!("CARGO_BIN_EXE_viewport"))
-            .args(["--headless", "--socket"])
-            .arg(&socket)
-            // Otherwise a config file in the developer's own home decides what
-            // these tests see.
-            .env("XDG_CONFIG_HOME", "/nonexistent")
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .expect("could not start the compositor");
-
-        let compositor = Self { child, socket, log };
-
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if compositor.socket.exists()
-                && std::os::unix::net::UnixStream::connect(&compositor.socket).is_ok()
-            {
-                return compositor;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!(
-            "the compositor never opened {}",
-            compositor.socket.display()
-        );
+    /// One for this suite, whose sockets live under their own prefix.
+    ///
+    /// `viewport-msg-` rather than the shared `viewport-test-`: the suites run
+    /// at the same time and a tag like `quit` is used by more than one of them,
+    /// so the prefix is what keeps two compositors off one socket path.
+    fn for_msg(tag: &str) -> Self {
+        Self::builder(tag).prefix("viewport-msg").start()
     }
 
     /// `viewport msg --socket <this one> ...`, run to completion.
@@ -115,7 +67,7 @@ fn stderr(output: &Output) -> String {
 
 #[test]
 fn a_query_prints_its_answer_and_stops() {
-    let compositor = Compositor::start("output-query");
+    let compositor = Compositor::for_msg("output-query");
 
     let started = Instant::now();
     let output = compositor.msg(&["-t", "output.query"]);
@@ -141,7 +93,7 @@ fn a_query_prints_its_answer_and_stops() {
 /// on one rather than on a message.
 #[test]
 fn an_answer_of_several_messages_is_printed_whole() {
-    let compositor = Compositor::start("view-query");
+    let compositor = Compositor::for_msg("view-query");
 
     let output = compositor.msg(&["-t", "view.query"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -158,7 +110,7 @@ fn an_answer_of_several_messages_is_printed_whole() {
 
 #[test]
 fn pretty_indents_and_plain_does_not() {
-    let compositor = Compositor::start("pretty");
+    let compositor = Compositor::for_msg("pretty");
 
     let plain = compositor.msg(&["-t", "output.query"]);
     let pretty = compositor.msg(&["-t", "output.query", "--pretty"]);
@@ -175,7 +127,7 @@ fn pretty_indents_and_plain_does_not() {
 /// would report success for a message the compositor threw away.
 #[test]
 fn a_refusal_from_the_handler_comes_back_as_a_failure() {
-    let compositor = Compositor::start("refused");
+    let compositor = Compositor::for_msg("refused");
 
     // Well-formed, dispatched, and turned down: there is no such monitor.
     let output = compositor.msg(&["-t", "output.hdr", "--name", "NOPE-1", "--enabled", "true"]);
@@ -197,7 +149,7 @@ fn a_refusal_from_the_handler_comes_back_as_a_failure() {
 /// complaint lands on the terminal that typed it.
 #[test]
 fn raw_is_checked_before_it_is_sent() {
-    let compositor = Compositor::start("raw");
+    let compositor = Compositor::for_msg("raw");
 
     let output = compositor.msg(&["--raw", r#"{"type":"view.focus","id":"seven"}"#]);
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
@@ -218,7 +170,7 @@ fn raw_is_checked_before_it_is_sent() {
 
 #[test]
 fn a_command_reaches_the_shell_as_a_keybinding_would() {
-    let compositor = Compositor::start("shell-command");
+    let compositor = Compositor::for_msg("shell-command");
 
     // Watching first, so nothing is missed between the two.
     let mut watcher = compositor.spawn_msg(&["-t", "subscribe", "shell.command"]);
@@ -274,7 +226,7 @@ fn a_command_reaches_the_shell_as_a_keybinding_would() {
 
 #[test]
 fn subscribe_prints_only_what_it_was_asked_for() {
-    let compositor = Compositor::start("subscribe");
+    let compositor = Compositor::for_msg("subscribe");
 
     let mut watcher = compositor.spawn_msg(&["-t", "subscribe", "status.update"]);
     let mut reader = BufReader::new(watcher.stdout.take().expect("piped"));
@@ -292,7 +244,7 @@ fn subscribe_prints_only_what_it_was_asked_for() {
 
 #[test]
 fn quit_stops_the_compositor() {
-    let mut compositor = Compositor::start("quit");
+    let mut compositor = Compositor::for_msg("quit");
 
     let output = compositor.msg(&["-t", "quit"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -416,7 +368,7 @@ fn a_query_with_no_compositor_behind_the_socket_times_out_rather_than_hanging() 
 /// a session is already pointed at that session and needs no flag.
 #[test]
 fn the_socket_is_found_from_the_environment() {
-    let compositor = Compositor::start("discovery");
+    let compositor = Compositor::for_msg("discovery");
 
     let output = Command::new(env!("CARGO_BIN_EXE_viewport"))
         .args(["msg", "-t", "output.query"])
