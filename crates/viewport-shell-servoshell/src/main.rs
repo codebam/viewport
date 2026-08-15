@@ -58,6 +58,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::{Arc, Condvar, Mutex};
@@ -207,11 +208,22 @@ impl Item {
 
 /// Everything the page has been told, and whether there is any more coming.
 ///
-/// Kept as a growing log rather than a drained channel because the page asks
-/// for "everything after N": a reload starts a new poll at 0 and a request
-/// that died in flight is retried without losing what it had claimed. The log
-/// is trimmed by nothing, which is right for a session's worth of layout
-/// events and would not be for a stream.
+/// Kept as a log rather than a drained channel because the page asks for
+/// "everything after N": a reload starts a new poll at 0 and a request that
+/// died in flight is retried without losing what it had claimed.
+///
+/// It is a log with a floor rather than one that only grows. This is a stream,
+/// not a session's worth of layout events: a window being dragged notifies a
+/// `ShellCommand` per frame, so an afternoon of dragging windows is hundreds of
+/// thousands of JSON strings held for a page that read them in the first
+/// second. What holds them is `after`, and what releases them is the same
+/// number coming back — a poll asking for everything after N is a page saying
+/// it has N, so nothing below N is anyone's any more. `base` is how many have
+/// gone, and every mark in and out of here stays absolute across the trim.
+///
+/// The floor never rises past the mark of the last reload: a page created by
+/// that reload starts from it. The mark is kept; the item at it is not, once
+/// the page that had to read it has said so.
 ///
 /// **A reload is in that log, and a reloaded page must not act on it.** This
 /// backend is the only one that reloads by telling the page to reload itself —
@@ -235,10 +247,42 @@ struct Queue {
 #[derive(Default)]
 struct QueueState {
     items: Vec<Item>,
+    /// The absolute mark of `items[0]`: how many have been trimmed away.
+    base: usize,
     closed: bool,
-    /// Where the most recent [`Item::Reload`] sits in `items`, if there has
+    /// Where the most recent [`Item::Reload`] sits, absolutely, if there has
     /// been one. The floor for a page that has just started.
     reloaded_at: Option<usize>,
+    /// The highest `after` any page has asked with — everything below it has
+    /// been delivered and acknowledged by the asking for what came next.
+    delivered: usize,
+}
+
+impl QueueState {
+    /// One past the last item, absolutely.
+    fn end(&self) -> usize {
+        self.base + self.items.len()
+    }
+
+    /// Forget what has been delivered and nobody can be handed again.
+    ///
+    /// `reloaded_at + 1` rather than `reloaded_at`: what a new page needs from
+    /// the last reload is where it sits, which is this number, and the number
+    /// outlives the item. Nothing is ever handed the item at that mark except
+    /// a page that has not acknowledged it, and `delivered` is what says one
+    /// has.
+    fn trim(&mut self) {
+        let floor = match self.reloaded_at {
+            Some(at) => self.delivered.min(at + 1),
+            None => self.delivered,
+        };
+        if floor <= self.base {
+            return;
+        }
+        let gone = (floor - self.base).min(self.items.len());
+        self.items.drain(..gone);
+        self.base += gone;
+    }
 }
 
 impl Queue {
@@ -252,7 +296,7 @@ impl Queue {
     fn push(&self, item: Item) {
         let mut state = self.state.lock().expect("the queue lock is never poisoned");
         if matches!(item, Item::Reload) {
-            state.reloaded_at = Some(state.items.len());
+            state.reloaded_at = Some(state.end());
         }
         state.items.push(item);
         drop(state);
@@ -285,7 +329,12 @@ impl Queue {
     /// `after`, returns nothing without waiting, and asks again immediately —
     /// a long poll that has become a spin.
     fn since(&self, after: usize, fresh: bool) -> (usize, Vec<serde_json::Value>) {
-        let state = self.state.lock().expect("the queue lock is never poisoned");
+        let mut state = self.state.lock().expect("the queue lock is never poisoned");
+        // Asking for what comes after N is the acknowledgement of N. A fresh
+        // page asks from 0 and acknowledges nothing, which is why this is a
+        // maximum rather than an assignment.
+        state.delivered = state.delivered.max(after);
+        state.trim();
         let floor = if fresh {
             state.reloaded_at.map_or(0, |at| at + 1)
         } else {
@@ -295,12 +344,15 @@ impl Queue {
         let (state, _) = self
             .changed
             .wait_timeout_while(state, POLL_TIMEOUT, |state| {
-                state.items.len() <= start && !state.closed
+                state.end() <= start && !state.closed
             })
             .expect("the queue lock is never poisoned");
-        let from = start.min(state.items.len());
+        // Clamped to `base` as well as to the end: another page's poll can
+        // have trimmed past `start` while this one waited, and what is left is
+        // the oldest anyone can still be given.
+        let from = start.clamp(state.base, state.end()) - state.base;
         (
-            state.items.len(),
+            state.end(),
             state.items[from..].iter().map(Item::to_json).collect(),
         )
     }
@@ -594,16 +646,50 @@ fn query_value(target: &str, name: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// The directory `--userscripts` is pointed at, and its removal.
+///
+/// The script has the token in it, so this is a secret on disk in a directory
+/// every other user on the machine can read: whoever reads it can drive the
+/// desktop through `/send`, which is the one thing the token exists to stop.
+/// So the directory is made the way `mkdtemp` makes one — a random name, mode
+/// 0700, `create_new` so an attacker-owned directory or symlink already sitting
+/// at the path is an error rather than a place to write — and the script inside
+/// it is 0600 and equally new.
 struct ScriptDir(PathBuf);
 
 impl ScriptDir {
     fn write(script: &str) -> Result<Self> {
-        let dir =
-            std::env::temp_dir().join(format!("viewport-shell-servoshell-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        std::fs::write(dir.join("viewport-bridge.js"), script)
+        let dir = Self::create()?;
+        let path = dir.join("viewport-bridge.js");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("creating {}", path.display()))?;
+        file.write_all(script.as_bytes())
             .with_context(|| format!("writing the bridge script into {}", dir.display()))?;
         Ok(Self(dir))
+    }
+
+    /// A directory nobody else can look into, at a name nobody else can guess.
+    ///
+    /// Retried because a name can collide — with a directory this process
+    /// cannot see into, made by whoever is trying to read the token.
+    fn create() -> Result<PathBuf> {
+        let mut last = None;
+        for _ in 0..8 {
+            let dir = std::env::temp_dir().join(format!(
+                "viewport-shell-servoshell-{}-{}",
+                std::process::id(),
+                token()?
+            ));
+            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Ok(()) => return Ok(dir),
+                Err(e) => last = Some((dir, e)),
+            }
+        }
+        let (dir, e) = last.expect("the loop ran at least once");
+        Err(e).with_context(|| format!("creating {}", dir.display()))
     }
 
     fn path(&self) -> &Path {
@@ -1079,13 +1165,21 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["kind"], "reload");
 
-        // And one that has read nothing yet is handed both.
+        // Asking again with the same mark is answered the same way: a poll
+        // that died in flight is retried, and only a *later* mark says the
+        // page has the earlier one.
+        let (next, items) = queue.since(1, false);
+        assert_eq!(next, 2);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["kind"], "reload");
+
+        // What that first mark acknowledged is gone, so asking from 0 is
+        // answered with what is left rather than with the log from the top.
+        // There is one page on this bridge and it only ever goes forwards.
         let (next, items) = queue.since(0, false);
         assert_eq!(next, 2);
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0]["kind"], "event");
-        assert_eq!(items[0]["data"], r#"{"type":"view.added"}"#);
-        assert_eq!(items[1]["kind"], "reload");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["kind"], "reload");
     }
 
     /// The reload loop.
@@ -1124,6 +1218,75 @@ mod tests {
         let (_, items) = queue.since(3, false);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["kind"], "reload");
+    }
+
+    /// The log is a stream, not a session: a drag notifies a command a frame,
+    /// so what has been read has to go. What it must not lose is the mark — a
+    /// page asks with an absolute number, and the number cannot mean something
+    /// else once the front of the log is gone.
+    #[test]
+    fn what_the_page_has_read_is_dropped_without_moving_the_mark() {
+        let queue = Queue::new();
+        for _ in 0..1000 {
+            queue.push(Item::Event(r#"{"type":"view.moved"}"#.to_owned()));
+        }
+
+        // The page polls from 900, which says it has the first 900.
+        let (next, items) = queue.since(900, false);
+        assert_eq!(next, 1000);
+        assert_eq!(items.len(), 100);
+        assert_eq!(
+            queue
+                .state
+                .lock()
+                .expect("the queue lock is never poisoned")
+                .items
+                .len(),
+            100,
+            "the delivered items are still held"
+        );
+
+        // And the next poll, from 1000, is what releases them.
+        queue.push(Item::Event(r#"{"type":"config"}"#.to_owned()));
+        let (next, items) = queue.since(1000, false);
+        assert_eq!(next, 1001, "the mark is still absolute");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["data"], r#"{"type":"config"}"#);
+        assert_eq!(
+            queue
+                .state
+                .lock()
+                .expect("the queue lock is never poisoned")
+                .items
+                .len(),
+            1,
+            "a session's worth of drag events was kept"
+        );
+    }
+
+    /// Trimming past a reload does not resurrect it. The mark is what a new
+    /// page starts from, and the mark outlives the item that set it.
+    #[test]
+    fn a_trimmed_reload_is_still_the_floor_for_a_new_page() {
+        let queue = Queue::new();
+        queue.push(Item::Event(r#"{"type":"view.added"}"#.to_owned()));
+        queue.push(Item::Reload);
+
+        // Everything read and acknowledged, so both are dropped.
+        let (next, _) = queue.since(0, false);
+        assert_eq!(next, 2);
+        let (next, items) = queue.since(2, false);
+        assert_eq!(next, 2);
+        assert!(items.is_empty());
+
+        queue.push(Item::Event(r#"{"type":"config"}"#.to_owned()));
+        let (next, items) = queue.since(0, true);
+        assert_eq!(next, 3, "the mark is still absolute");
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(
+            items[0]["data"], r#"{"type":"config"}"#,
+            "a new page was handed the reload that created it"
+        );
     }
 
     /// A new page with a reload behind it must still *wait* rather than being

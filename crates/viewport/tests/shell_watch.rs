@@ -159,6 +159,43 @@ fn a_subdirectory_is_watched_too() {
     );
 }
 
+/// And a subdirectory that was replaced, rather than written to, still counts.
+///
+/// `npm run vendor` removes `vendor/` and makes it again. A watch is on an
+/// inode, so the one taken at startup is left pointing at a directory nothing
+/// will ever write to again — and everything under `vendor/` stops reloading
+/// for the rest of the session, silently, which is the one directory that
+/// command exists to rewrite.
+#[test]
+fn a_subdirectory_that_was_recreated_is_watched_again() {
+    let compositor = Compositor::start("recreated");
+
+    let vendor = compositor.shell.join("vendor");
+    std::fs::remove_dir_all(&vendor).expect("remove");
+    std::fs::create_dir(&vendor).expect("create");
+    // The watch on the new directory is taken when the event announcing it is
+    // read, which is after this call returns and before anything is written
+    // inside it. A directory arriving empty is not itself worth a reload, and
+    // this is also what keeps the assertion below honest.
+    assert!(
+        compositor
+            .wait_for(RELOADING, Duration::from_millis(500))
+            .is_none(),
+        "an empty directory appearing reloaded the desktop:\n{}",
+        compositor.log()
+    );
+
+    std::fs::write(vendor.join("gsap.min.js"), "window.gsap = {};\n").expect("write");
+
+    assert!(
+        compositor
+            .wait_for(RELOADING, Duration::from_secs(5))
+            .is_some(),
+        "no reload after a change under a recreated vendor/:\n{}",
+        compositor.log()
+    );
+}
+
 /// And opening a file in vim does not.
 ///
 /// vim creates a numeric probe file to test whether the directory is writable
