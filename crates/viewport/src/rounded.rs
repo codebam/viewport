@@ -136,11 +136,108 @@ pub struct RoundedRenderElement<E> {
     /// takes away is expressed in the bands and nowhere else.
     geometry: Rectangle<i32, Physical>,
     /// Absolute, in the same space as `geometry`, and already clipped to it.
-    bands: Vec<Rectangle<i32, Physical>>,
+    ///
+    /// Shared rather than owned: see [`shape`]. Every surface of every window
+    /// is wrapped again on every output on every frame, and for a window that
+    /// is not moving the answer is the same every time.
+    bands: Shape,
     /// The largest rectangles wholly inside the rounded shape, for the opaque
     /// region. Three of them: the middle full-width band and the two
     /// corner bands inset by the radius.
-    solid: Vec<Rectangle<i32, Physical>>,
+    solid: Shape,
+}
+
+/// One of the two rectangle lists a rounded element is built from, shared
+/// between every element built from the same inputs.
+type Shape = std::rc::Rc<Vec<Rectangle<i32, Physical>>>;
+
+thread_local! {
+    /// The bands and the solid parts, by what they were computed from.
+    ///
+    /// Both lists depend on nothing but the rectangle, the radius and the
+    /// element's geometry, and all three are constant for a window nobody is
+    /// dragging — but `from_element` runs inside the render loop's `filter_map`
+    /// once per surface per output per frame, so a still desktop was allocating
+    /// two vectors per surface at the refresh rate for two answers it already
+    /// had.
+    ///
+    /// Per thread and unsynchronised because rendering is: the compositor draws
+    /// from one thread and the map never leaves it.
+    static SHAPES: std::cell::RefCell<std::collections::HashMap<ShapeKey, (Shape, Shape)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Everything the two lists are a function of, flattened into something
+/// hashable — `Rectangle` is neither `Hash` nor `Ord`.
+///
+/// The rectangle, the radius, and the geometry the bands were clipped to.
+type ShapeKey = [i32; 9];
+
+/// How many shapes to keep. A desk with a window per column on four screens is
+/// a few dozen live keys; past this the map is holding rectangles for windows
+/// that have moved on, so it is dropped whole rather than aged entry by entry.
+const SHAPE_LIMIT: usize = 256;
+
+/// The bands and the solid parts for these inputs, computed once.
+fn shape(
+    rect: Rectangle<i32, Physical>,
+    radius: i32,
+    geometry: Rectangle<i32, Physical>,
+) -> (Shape, Shape) {
+    let key: ShapeKey = [
+        rect.loc.x,
+        rect.loc.y,
+        rect.size.w,
+        rect.size.h,
+        radius,
+        geometry.loc.x,
+        geometry.loc.y,
+        geometry.size.w,
+        geometry.size.h,
+    ];
+    SHAPES.with(|shapes| {
+        let mut shapes = shapes.borrow_mut();
+        if let Some(found) = shapes.get(&key) {
+            return found.clone();
+        }
+
+        // Cut from the rectangle and then clipped to the element, rather than
+        // rounding whatever the two happen to share: a window scrolled half
+        // off its output has a geometry that is not the box the shell drew,
+        // and the corner belongs to the box.
+        let cut: Vec<_> = bands(rect, radius)
+            .into_iter()
+            .filter_map(|band| band.intersection(geometry))
+            .filter(|band| !band.is_empty())
+            .collect();
+
+        let radius = radius.min(rect.size.w / 2).min(rect.size.h / 2).max(0);
+        let solid: Vec<_> = [
+            Rectangle::new(
+                (rect.loc.x, rect.loc.y + radius).into(),
+                (rect.size.w, rect.size.h - radius * 2).into(),
+            ),
+            Rectangle::new(
+                (rect.loc.x + radius, rect.loc.y).into(),
+                (rect.size.w - radius * 2, radius).into(),
+            ),
+            Rectangle::new(
+                (rect.loc.x + radius, rect.loc.y + rect.size.h - radius).into(),
+                (rect.size.w - radius * 2, radius).into(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|part| part.intersection(geometry))
+        .filter(|part| !part.is_empty())
+        .collect();
+
+        if shapes.len() >= SHAPE_LIMIT {
+            shapes.clear();
+        }
+        let shape = (std::rc::Rc::new(cut), std::rc::Rc::new(solid));
+        shapes.insert(key, shape.clone());
+        shape
+    })
 }
 
 impl<E: Element> RoundedRenderElement<E> {
@@ -161,38 +258,10 @@ impl<E: Element> RoundedRenderElement<E> {
             return None;
         }
 
-        // Cut from the rectangle and then clipped to the element, rather than
-        // rounding whatever the two happen to share: a window scrolled half
-        // off its output has a geometry that is not the box the shell drew,
-        // and the corner belongs to the box.
-        let bands = bands(rect, radius)
-            .into_iter()
-            .filter_map(|band| band.intersection(geometry))
-            .filter(|band| !band.is_empty())
-            .collect::<Vec<_>>();
+        let (bands, solid) = shape(rect, radius, geometry);
         if bands.is_empty() {
             return None;
         }
-
-        let radius = radius.min(rect.size.w / 2).min(rect.size.h / 2).max(0);
-        let solid = [
-            Rectangle::new(
-                (rect.loc.x, rect.loc.y + radius).into(),
-                (rect.size.w, rect.size.h - radius * 2).into(),
-            ),
-            Rectangle::new(
-                (rect.loc.x + radius, rect.loc.y).into(),
-                (rect.size.w - radius * 2, radius).into(),
-            ),
-            Rectangle::new(
-                (rect.loc.x + radius, rect.loc.y + rect.size.h - radius).into(),
-                (rect.size.w - radius * 2, radius).into(),
-            ),
-        ]
-        .into_iter()
-        .filter_map(|part| part.intersection(geometry))
-        .filter(|part| !part.is_empty())
-        .collect();
 
         Some(RoundedRenderElement {
             element,
@@ -393,7 +462,7 @@ impl<E: Element> RoundedRenderElement<E> {
         };
 
         let mut pieces = Vec::with_capacity(self.bands.len());
-        for band in &self.bands {
+        for band in self.bands.iter() {
             let Some(band) = self.to_dst(*band, dst).intersection(dst) else {
                 continue;
             };
@@ -599,6 +668,21 @@ mod tests {
     fn a_radius_that_cuts_nothing_is_one_band() {
         assert_eq!(inset(1, 0), 0);
         assert_eq!(bands(rect(0, 0, 100, 50), 1), vec![rect(0, 0, 100, 50)]);
+    }
+
+    /// The same inputs give the same lists, and the lists are shared rather
+    /// than built again — which is the whole point of the cache, since this
+    /// runs per surface per output per frame.
+    #[test]
+    fn the_same_shape_is_computed_once() {
+        let geometry = rect(11, 22, 130, 70);
+        let first = rounded(geometry, 8);
+        let second = rounded(geometry, 8);
+        assert!(std::rc::Rc::ptr_eq(&first.bands, &second.bands));
+        assert!(std::rc::Rc::ptr_eq(&first.solid, &second.solid));
+        // A different radius is a different shape, not a stale hit.
+        let third = rounded(geometry, 12);
+        assert_ne!(*third.bands, *first.bands);
     }
 
     /// Every row of the rectangle is covered exactly once, whatever the
