@@ -72,10 +72,11 @@ function beginDividerDrag(event, node, before, after) {
     const delta = now - last;
     if (delta === 0) return;
     last = now;
-    if (shiftWeightBetween(before, after, delta / extent)) relayoutAll();
+    if (shiftWeightBetween(before, after, delta / extent)) gestureRelayout();
   };
 
   const onUp = () => {
+    endGesture();
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
   };
@@ -115,10 +116,11 @@ function beginColumnDrag(event, workspace, column) {
 
     const next = (column.width ?? COLUMN_WIDTHS[1]) + delta / extent;
     column.width = Math.max(0.1, Math.min(next, 1));
-    relayoutAll();
+    gestureRelayout();
   };
 
   const onUp = () => {
+    endGesture();
     strip?.classList.remove('dragging');
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
