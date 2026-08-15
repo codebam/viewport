@@ -36,8 +36,8 @@ viewport=$(realpath "$viewport")
 frontend=$(realpath "$frontend")
 
 if ! command -v dbus-run-session >/dev/null; then
-	echo "dbus-run-session is not installed" >&2
-	exit 2
+	echo "SKIP: no dbus-run-session to hold the private bus"
+	exit 77
 fi
 
 # Everything below runs inside the private bus, because the compositor claims
