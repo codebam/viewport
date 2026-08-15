@@ -213,13 +213,19 @@ impl ViewportState {
         for root in &roots {
             tree(root, DEPTH, &mut directories);
         }
-        let mut watched = 0;
+        // Kept by descriptor rather than counted, because a directory that
+        // appears later has to be watched too and the event that says so names
+        // it relative to the directory it appeared in. See the closure.
+        let mut watches: std::collections::HashMap<i32, PathBuf> = std::collections::HashMap::new();
         for directory in &directories {
             match inotify::add_watch(&fd, directory, watching) {
-                Ok(_) => watched += 1,
+                Ok(wd) => {
+                    watches.insert(wd, directory.clone());
+                }
                 Err(e) => tracing::warn!("--watch-shell: {}: {e}", directory.display()),
             }
         }
+        let watched = watches.len();
         if watched == 0 {
             tracing::warn!("--watch-shell: nothing could be watched, so the shell is not watched");
             return;
@@ -234,12 +240,18 @@ impl ViewportState {
 
         if let Err(e) = self.loop_handle.insert_source(
             Generic::new(fd, Interest::READ, Mode::Level),
-            |_, fd, state: &mut Self| {
+            move |_, fd, state: &mut Self| {
                 // Drained to the end, or a level-triggered source reports the
                 // same events for ever and the loop never sleeps again.
                 let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
                 let mut reader = inotify::Reader::new(&*fd, &mut buffer);
                 let mut interesting = false;
+                // Directories that have just appeared, and descriptors that
+                // have just stopped meaning anything. Collected here and acted
+                // on below rather than in the middle of a drain that has to
+                // finish.
+                let mut appeared: Vec<PathBuf> = Vec::new();
+                let mut gone: Vec<i32> = Vec::new();
                 loop {
                     match reader.next() {
                         Ok(event) => {
@@ -247,6 +259,29 @@ impl ViewportState {
                                 .file_name()
                                 .map(|name| name.to_string_lossy().into_owned())
                                 .unwrap_or_default();
+                            let flags = event.events();
+                            // A watch is one directory, and the set was walked
+                            // once at startup. `npm run vendor` removes
+                            // `vendor/` and makes it again, which leaves the
+                            // watch on an inode nothing writes to ever again —
+                            // so nothing under `vendor/` reloads for the rest
+                            // of the session, which is the one directory the
+                            // command exists to rewrite.
+                            if flags.contains(inotify::ReadFlags::ISDIR)
+                                && flags.intersects(
+                                    inotify::ReadFlags::CREATE | inotify::ReadFlags::MOVED_TO,
+                                )
+                            {
+                                if let Some(parent) = watches.get(&event.wd()) {
+                                    appeared.push(parent.join(&name));
+                                }
+                            }
+                            // The kernel says a watch is spent when what it
+                            // watched went away. Dropping it keeps the map the
+                            // size of the tree rather than of the session.
+                            if flags.contains(inotify::ReadFlags::IGNORED) {
+                                gone.push(event.wd());
+                            }
                             if is_asset(&name) {
                                 interesting = true;
                             }
@@ -256,6 +291,43 @@ impl ViewportState {
                         Err(e) => {
                             tracing::warn!("shell watch: {e}");
                             break;
+                        }
+                    }
+                }
+                for wd in gone {
+                    watches.remove(&wd);
+                }
+                // Walked rather than added on its own: a directory that arrived
+                // as a whole tree — a rename over the top, which is how a
+                // vendor step lands — has everything under it appear without a
+                // further event, and nothing beneath the top level would be
+                // watched.
+                for directory in appeared {
+                    let mut fresh = Vec::new();
+                    tree(&directory, DEPTH, &mut fresh);
+                    for directory in fresh {
+                        // Anything the page loads that is already inside it
+                        // arrived before there was a watch to see it arrive.
+                        if !interesting {
+                            interesting = std::fs::read_dir(&directory)
+                                .map(|entries| {
+                                    entries
+                                        .flatten()
+                                        .any(|entry| is_asset(&entry.file_name().to_string_lossy()))
+                                })
+                                .unwrap_or(false);
+                        }
+                        match inotify::add_watch(&*fd, &directory, watching) {
+                            // Re-adding an existing watch returns the
+                            // descriptor it already had, so a directory that
+                            // was somehow watched twice is one entry either
+                            // way.
+                            Ok(wd) => {
+                                watches.insert(wd, directory);
+                            }
+                            Err(e) => {
+                                tracing::warn!("shell watch: {}: {e}", directory.display())
+                            }
                         }
                     }
                 }
