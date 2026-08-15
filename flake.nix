@@ -614,6 +614,12 @@
             # up the real Xwayland binary off PATH, and without it in this
             # shell tests/xwayland-focus.test.sh has no X server to ask.
             xwayland
+
+            # Likewise for the bus: the compositor claims its portal name at
+            # startup, so tests/screencast-restore.test.sh puts the whole run
+            # inside a `dbus-run-session` of its own. Without it that test can
+            # only skip, and the portal half of the suite goes untested.
+            dbus
         ];
 
         # The environment both need, extracted for the same reason: an ASan
@@ -922,11 +928,11 @@
         # --------------------------------------------------------------------
         # The Rust rewrite, and nothing else.
         #
-        # `devShells.default` carries wlroots, WPE WebKit and a Servo build
-        # recipe, which is right for a workstation and wrong for CI: the WebKit
-        # derivation is a four-hour build that no binary cache has, and it is
-        # the reason the compositor jobs in .github/workflows/ci.yml are gated
-        # behind a repository variable.
+        # `devShells.default` carries every prebuilt engine and the tools to
+        # drive a session, which is right for a workstation and more than CI
+        # needs. `.#wpe` carries the WebKit build on top of it — four hours
+        # that no binary cache has, which is why no job in
+        # .github/workflows/ci.yml enters that shell.
         #
         # `cargo test --workspace` needs none of it. The web engine is behind
         # the `wpe` feature, off by default, and crates/viewport-web/build.rs
@@ -1382,6 +1388,10 @@
             # a portal frontend running.
             programs.viewport.portals.enable = lib.mkDefault true;
 
+            # The line the display manager shows under the session's name, so
+            # it has to say which desktop this is: the backend is chosen per
+            # machine and one comment for all five named the engine four of
+            # them do not use. Worded as the PKGBUILDs word it.
             services.displayManager.sessionPackages = [
               (pkgs.writeTextFile {
                 name = "viewport-session";
@@ -1389,7 +1399,15 @@
                 text = ''
                   [Desktop Entry]
                   Name=Viewport
-                  Comment=wlroots compositor with a WPE WebKit shell
+                  Comment=Wayland compositor with a ${
+                    {
+                      cef = "CEF";
+                      webkitgtk = "WebKitGTK";
+                      chromium = "Chromium";
+                      wpe = "WPE WebKit";
+                      servoshell = "Servo";
+                    }.${cfg.shellBackend}
+                  } shell
                   Exec=${cfg.package}/bin/viewport --config ${configFile}
                   Type=Application
                 '';
