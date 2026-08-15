@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/img/logo.svg" width="120" alt="Viewport" />
+</p>
+
 # Viewport
 
 A Wayland compositor whose entire shell — wallpaper, dock, window frames,
