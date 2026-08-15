@@ -1,6 +1,6 @@
 pkgbase = viewport-webkitgtk-bin
 	pkgdesc = Wayland compositor whose shell is a web page — WebKitGTK, out of process (binary release)
-	pkgver = 0.1.5
+	pkgver = 0.1.6
 	pkgrel = 1
 	url = https://github.com/codebam/viewport
 	arch = x86_64
@@ -31,15 +31,15 @@ pkgbase = viewport-webkitgtk-bin
 	optdepends = libva-mesa-driver: hardware video decode, for zero-copy video
 	optdepends = ttf-firacode-nerd: the icons in the bar, and the font the shell names first
 	optdepends = ttf-nerd-fonts-symbols: the icons in the bar, without the patched monospace family
-	provides = viewport=0.1.5
-	provides = viewport-webkitgtk=0.1.5
+	provides = viewport=0.1.6
+	provides = viewport-webkitgtk=0.1.6
 	conflicts = viewport
 	conflicts = viewport-webkitgtk
 	conflicts = viewport-wpe
 	conflicts = viewport-chromium
 	options = !strip
 	options = !debug
-	source_x86_64 = viewport-webkitgtk-bin-0.1.5.tar.zst::https://github.com/codebam/viewport/releases/download/v0.1.5/viewport-webkitgtk-0.1.5-1-x86_64.pkg.tar.zst
+	source_x86_64 = viewport-webkitgtk-bin-0.1.6.tar.zst::https://github.com/codebam/viewport/releases/download/v0.1.6/viewport-webkitgtk-0.1.6-1-x86_64.pkg.tar.zst
 	sha256sums_x86_64 = 8619fb8183241a85628fb0a66046ffeb2ca3ce945c6bccbc116755df9f5a6f49
 
 pkgname = viewport-webkitgtk-bin

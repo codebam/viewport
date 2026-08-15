@@ -11,6 +11,8 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-15
+
 ### Changed
 - `Mod4` + right-drag resizes from the corner nearest where the drag started,
   rather than always pulling the bottom right one. The whole window is the
@@ -227,7 +229,8 @@ deleted C compositor and the tree stopped carrying two implementations.
   missing — WebKit treated such pages as empty documents (see the `wpe`
   PKGBUILD's notes on `shared-mime-info`).
 
-[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/codebam/viewport/releases/tag/v0.1.6
 [0.1.5]: https://github.com/codebam/viewport/releases/tag/v0.1.5
 [0.1.4]: https://github.com/codebam/viewport/releases/tag/v0.1.4
 [0.1.3]: https://github.com/codebam/viewport/releases/tag/v0.1.3
