@@ -11,6 +11,19 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Changed
+- `Mod4` + right-drag resizes from the corner nearest where the drag started,
+  rather than always pulling the bottom right one. The whole window is the
+  handle — there is no border to aim at — so the quarter the press lands in
+  names the corner, which is how sway reads the same gesture. Taking hold of a
+  window on its left and pulling left made it *smaller* before this, because
+  the only edges that ever moved were the far ones. The compositor sends the
+  corner along with the delta; the shell decides what it means, which differs
+  per layout: a tiled window trades with the sibling that edge faces, a
+  floating one and a window on the canvas pin the opposite corner and move as
+  they size. An edge with no neighbour to trade with — the leftmost window's
+  left edge — still takes from the other side rather than doing nothing.
+
 ### Fixed
 - The bar showing the old volume after a scroll. The widget spawned `wpctl`
   through `shell.exec` and asked for a re-sample in the next message, which

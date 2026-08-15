@@ -188,9 +188,34 @@ function resizeFocused(direction) {
   if (shiftWeight(parent, pairIndex, fraction)) relayoutAll();
 }
 
-/* Mod4 + right drag, forwarded by the compositor as a pixel delta. */
-/* Shift one axis of a tiled window's share of its container. */
-function resizeAxis(id, axis, delta) {
+/* Mod4 + right drag, forwarded by the compositor as a pixel delta and the
+ * corner the hand took hold of.
+ *
+ * The corner is the compositor's answer to a question only it can see: which
+ * half of the window the press landed in. Without it every drag was a pull on
+ * the bottom right corner, so the two edges nearest the pointer in half the
+ * grabs were the two that never moved. */
+const RESIZE_EDGES = {
+  'top-left': { west: true, north: true },
+  'top-right': { west: false, north: true },
+  'bottom-left': { west: true, north: false },
+  'bottom-right': { west: false, north: false },
+};
+
+/* Anything unnamed is the bottom right, which is what a resize was before the
+   corner was sent and what the keyboard paths still mean: `resize grow right`
+   moves the right edge whichever half the pointer happens to be sitting in. */
+function edgesOf(name) {
+  return RESIZE_EDGES[name] ?? RESIZE_EDGES['bottom-right'];
+}
+
+/* Shift one axis of a tiled window's share of its container.
+ *
+ * `fromStart` is a pull on the left or top edge. Which sibling gives up the
+ * space changes with it: the right edge trades with the window after this one
+ * and the left edge with the one before, so that in both cases the edge under
+ * the hand is the one that moves and the far edge stays where it was. */
+function resizeAxis(id, axis, delta, fromStart) {
   const target = ancestorOnAxis(id, axis);
   if (!target) return false;
 
@@ -203,9 +228,21 @@ function resizeAxis(id, axis, delta) {
   if (extent <= 0) return false;
 
   const { parent, index } = target;
-  const usePrevious = index === parent.children.length - 1;
-  return shiftWeight(parent, usePrevious ? index - 1 : index,
-    (usePrevious ? -1 : 1) * (delta / extent));
+  /* Growth in pixels: dragging the left edge left is a bigger window. */
+  const growth = fromStart ? -delta : delta;
+
+  /* The neighbour the edge under the hand faces, where there is one. At the
+     ends of a container there is not — the last window has nothing to its
+     right, the first nothing to its left — so it trades with the other side
+     instead, which is what keeps a drag on the outermost edge from doing
+     nothing at all. */
+  const towardsNeighbour = fromStart ? index > 0 : index < parent.children.length - 1;
+  const pairIndex = (fromStart === towardsNeighbour) ? index - 1 : index;
+  /* shiftWeight grows `children[pairIndex]` and shrinks the one after it, so
+     the sign is whether this window is the first of the pair. */
+  const fraction = (pairIndex === index ? growth : -growth) / extent;
+
+  return shiftWeight(parent, pairIndex, fraction);
 }
 
 /* Widen or narrow the column a window is in, as a fraction of the output.
@@ -215,7 +252,7 @@ function resizeAxis(id, axis, delta) {
  * That is the model — a column keeps the width it was given no matter what
  * happens elsewhere — so there is nothing here that resizes an adjacent
  * window, unlike a tiling split. */
-function resizeColumn(workspace, id, dx) {
+function resizeColumn(workspace, id, dx, west) {
   const root = workspaceRoot(workspace);
   const column = root.children[columnIndexOf(workspace, id)];
   if (!column) return false;
@@ -224,28 +261,45 @@ function resizeColumn(workspace, id, dx) {
   const extent = area ? area.right - area.left : 0;
   if (extent <= 0) return false;
 
-  const next = (column.width ?? COLUMN_WIDTHS[1]) + dx / extent;
+  /* Dragging the left edge left widens the column: the strip has no fixed
+     origin to pin the far edge against, so what the corner changes here is
+     only which way the pointer has to go. */
+  const growth = west ? -dx : dx;
+  const next = (column.width ?? COLUMN_WIDTHS[1]) + growth / extent;
   column.width = Math.max(0.1, Math.min(next, 1));
   return true;
 }
 
-function resizeByDelta(id, dx, dy) {
+function resizeByDelta(id, dx, dy, edge) {
+  const { west, north } = edgesOf(edge);
+
   /* On the canvas a window's place is its size, and nothing shares space with
      it, so the drag simply changes that. Before the floating branch below,
      because on the canvas a floating window is on the plane like every other
      one and its own rect is not what gets drawn. */
-  if (canvasResizeBy(id, dx, dy)) return;
+  if (canvasResizeBy(id, dx, dy, west, north)) return;
 
   /* A floating window resizes by simply becoming that much bigger — there are
      no siblings to take the space from. Clamped so a drag cannot shrink it to
-     nothing and leave a window that can no longer be grabbed. */
+     nothing and leave a window that can no longer be grabbed.
+
+     A pull on the left or top edge moves the window as well as sizing it: the
+     opposite edge is the one that has to stay put, and it only does if the
+     corner behind the hand travels with the pointer. The clamp is applied to
+     the size first and the move worked out from what the size actually became,
+     so a drag that runs into the minimum stops rather than sliding the window
+     across the desktop from an edge that can no longer move. */
   const floating = floatingOf(id);
   if (floating) {
     const view = views.get(id);
     const minWidth = parseInt(view?.el?.style?.minWidth, 10) || 80;
     const minHeight = parseInt(view?.el?.style?.minHeight, 10) || 60;
-    floating.width = Math.max(minWidth, floating.width + dx);
-    floating.height = Math.max(minHeight, floating.height + dy);
+    const width = Math.max(minWidth, floating.width + (west ? -dx : dx));
+    const height = Math.max(minHeight, floating.height + (north ? -dy : dy));
+    if (west) floating.x += floating.width - width;
+    if (north) floating.y += floating.height - height;
+    floating.width = width;
+    floating.height = height;
     relayoutAll();
     return;
   }
@@ -258,17 +312,18 @@ function resizeByDelta(id, dx, dy) {
     const workspace = workspaceOf(id);
     if (workspace === null) return;
     let changed = false;
-    if (dx !== 0) changed = resizeColumn(workspace, id, dx) || changed;
-    if (dy !== 0) changed = resizeAxis(id, 'vertical', dy) || changed;
+    if (dx !== 0) changed = resizeColumn(workspace, id, dx, west) || changed;
+    if (dy !== 0) changed = resizeAxis(id, 'vertical', dy, north) || changed;
     if (changed) gestureRelayout();
     return;
   }
 
   if (!findLeaf(id)) return;
 
-  for (const [axis, delta] of [['horizontal', dx], ['vertical', dy]]) {
+  for (const [axis, delta, fromStart] of
+    [['horizontal', dx, west], ['vertical', dy, north]]) {
     if (delta === 0) continue;
-    resizeAxis(id, axis, delta);
+    resizeAxis(id, axis, delta, fromStart);
   }
   gestureRelayout();
 }

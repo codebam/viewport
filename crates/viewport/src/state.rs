@@ -1520,7 +1520,7 @@ impl ViewportState {
     /// its surface some pixels up and left of the window, and scaling about
     /// *that* is what leaves a strip of window hanging outside the box the
     /// shell drew. The renderer picks the same corner for the same reason.
-    fn unscaled(
+    pub fn unscaled(
         &self,
         window: &smithay::desktop::Window,
         pos: Point<f64, Logical>,
@@ -7806,6 +7806,15 @@ pub struct PointerDrag {
     pub button: u32,
     /// Which of the three gestures this is.
     pub kind: DragKind,
+    /// For a resize, which corner it took hold of, as `(west, north)`: whether
+    /// the left edge moves and whether the top one does. `(false, false)` — the
+    /// bottom right, which is what every resize used to be — for the other two
+    /// gestures, which move no edges at all.
+    ///
+    /// Settled at the press and kept for the whole drag: the pointer crossing
+    /// the middle of the window mid-drag is not a change of mind about which
+    /// corner is in the hand.
+    pub edges: (bool, bool),
     /// Where the pointer was when the last delta was worked out.
     pub last: smithay::utils::Point<f64, smithay::utils::Logical>,
     /// Motion too small to be worth a whole pixel yet.

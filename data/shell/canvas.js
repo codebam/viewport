@@ -1048,7 +1048,7 @@ function canvasDragBy(id, dx, dy) {
  *
  * Clamped to a minimum, so a drag cannot shrink a window to nothing and leave
  * a rectangle too small to take hold of again. */
-function canvasResizeBy(id, dx, dy) {
+function canvasResizeBy(id, dx, dy, west, north) {
   if (layoutMode !== 'canvas' || id == null) return false;
   const rect = canvasPlaces.get(id);
   if (!rect) return false;
@@ -1063,9 +1063,19 @@ function canvasResizeBy(id, dx, dy) {
   const floorWidth = Math.max(CANVAS.minSize, view?.minWidth ?? 0);
   const floorHeight = Math.max(CANVAS.minSize, view?.minHeight ?? 0);
 
+  /* A pull on the left or top edge pins the opposite one, which on a plane
+     means moving the place by however much the size actually changed — after
+     the clamp, so a window that has stopped shrinking has also stopped
+     sliding. In world units on both counts: the place is on the plane and the
+     delta came off the screen, so the zoom divides the delta and nothing
+     else. */
   const zoom = canvasViewportOf(workspaceOf(id)).zoom;
-  rect.width = Math.max(floorWidth, rect.width + dx / zoom);
-  rect.height = Math.max(floorHeight, rect.height + dy / zoom);
+  const width = Math.max(floorWidth, rect.width + (west ? -dx : dx) / zoom);
+  const height = Math.max(floorHeight, rect.height + (north ? -dy : dy) / zoom);
+  if (west) rect.x += rect.width - width;
+  if (north) rect.y += rect.height - height;
+  rect.width = width;
+  rect.height = height;
   markCanvasMoved(id);
   gestureRelayout();
   return true;

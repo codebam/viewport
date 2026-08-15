@@ -150,7 +150,7 @@ function handleShellCommand(command, args) {
       break;
     }
     case 'layout.resize.delta':
-      resizeByDelta(Number(args[0]), Number(args[1]), Number(args[2]));
+      resizeByDelta(Number(args[0]), Number(args[1]), Number(args[2]), args[3]);
       break;
     case 'layout.move.delta':
       moveByDelta(Number(args[0]), Number(args[1]), Number(args[2]));

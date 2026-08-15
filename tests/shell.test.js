@@ -1028,6 +1028,70 @@ if (mode === 'tiling') {
     Object.assign(home, JSON.parse(shape));
     emit({ type: 'view.focused', id: firstWindow });
   }
+
+  {
+    /* Mod4 + right drag, from an edge other than the one the layout used to
+       assume. The compositor names the corner the press landed nearest; which
+       sibling gives up the space follows from it, so that in every case the
+       edge under the hand is the one that moves.
+     *
+       Before this, every drag pulled the bottom right corner: taking hold of
+       a window on its left and pulling left made it *smaller*, because the
+       only edge that ever moved was the far one. */
+    const home = root();
+    const shape = JSON.stringify(home);
+    const [firstWindow, secondWindow] = ids();
+    home.children = [
+      { type: 'leaf', id: firstWindow, weight: 1 },
+      { type: 'leaf', id: secondWindow, weight: 1 },
+    ];
+    home.dir = 'horizontal';
+    emit({ type: 'view.focused', id: firstWindow });
+
+    const weights = () => home.children.map((child) => child.weight);
+
+    /* The right-hand window, dragged by its left edge: it grows, and the one
+       it takes the space from is the neighbour that edge faces. */
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: [String(secondWindow), '-100', '0', 'top-left'] });
+    let [left, right] = weights();
+    check('dragging a left edge left grows that window', right > 1);
+    check('and the neighbour it faces gives up the space', left < 1);
+
+    Object.assign(home, JSON.parse(shape));
+    home.children = [
+      { type: 'leaf', id: firstWindow, weight: 1 },
+      { type: 'leaf', id: secondWindow, weight: 1 },
+    ];
+    home.dir = 'horizontal';
+
+    /* The same window by its right edge, which is where a resize used to
+       start whatever the hand was on: the other direction grows it. */
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: [String(secondWindow), '100', '0', 'bottom-right'] });
+    [left, right] = weights();
+    check('and dragging its right edge right grows it too', right > 1);
+
+    Object.assign(home, JSON.parse(shape));
+    home.children = [
+      { type: 'leaf', id: firstWindow, weight: 1 },
+      { type: 'leaf', id: secondWindow, weight: 1 },
+    ];
+    home.dir = 'horizontal';
+
+    /* The leftmost window has nothing to its left to trade with, so its left
+       edge trades with the other side instead — which still grows it, and is
+       the only thing that keeps a drag on an outermost edge from doing
+       nothing at all. */
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: [String(firstWindow), '-100', '0', 'top-left'] });
+    [left, right] = weights();
+    check('the outermost edge has no neighbour and takes from the other side',
+      left > 1 && right < 1);
+
+    Object.assign(home, JSON.parse(shape));
+    emit({ type: 'view.focused', id: firstWindow });
+  }
 } else if (mode === 'scrolling') {
   const before = sent.length;
   emit({ type: 'shell.command', command: 'layout.focus', args: ['left'] });
@@ -1639,6 +1703,40 @@ if (mode === 'tiling') {
     check('Mod4 + right drag resizes it, in world units',
       resized.width === before.width + 80 / zoom
       && resized.height === before.height + 40 / zoom);
+
+    /* The corner the hand took hold of, which the compositor works out from
+       which quarter of the window the press landed in and sends along with
+       the delta. Dragging the top left corner up and left grows the window
+       and leaves the bottom right one where it was — the whole point of
+       resizing from an edge other than the one the layout used to assume. */
+    {
+      const start = { ...canvas.places.get(3) };
+      emit({ type: 'shell.command', command: 'layout.resize.delta',
+        args: ['3', '-60', '-20', 'top-left'] });
+      const pulled = canvas.places.get(3);
+      check('a drag on the top left corner grows the window',
+        pulled.width === start.width + 60 / zoom
+        && pulled.height === start.height + 20 / zoom);
+      check('and the bottom right corner stays where it was',
+        pulled.x + pulled.width === start.x + start.width
+        && pulled.y + pulled.height === start.y + start.height);
+    }
+
+    /* A corner that runs into the minimum stops moving with the pointer: a
+       window that has stopped shrinking must not keep sliding across the
+       plane from an edge that can no longer move. */
+    {
+      const start = { ...canvas.places.get(3) };
+      emit({ type: 'shell.command', command: 'layout.resize.delta',
+        args: ['3', '99999', '99999', 'top-left'] });
+      const floored = canvas.places.get(3);
+      check('a top left drag stops at the minimum',
+        floored.width === canvas.CANVAS.minSize
+        && floored.height === canvas.CANVAS.minSize);
+      check('and stops sliding there too',
+        floored.x + floored.width === start.x + start.width
+        && floored.y + floored.height === start.y + start.height);
+    }
 
     /* A resize cannot go to nothing: a rectangle too small to take hold of is
        one that cannot be grown again. */

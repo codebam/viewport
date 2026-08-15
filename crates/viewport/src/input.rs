@@ -24,7 +24,7 @@ use smithay::input::pointer::{
 };
 use smithay::input::tablet::{TabletDescriptor, TabletSeatTrait as _};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 
 /// The two buttons a drag can start with, as libinput numbers them.
 const BTN_LEFT: u32 = 0x110;
@@ -196,6 +196,41 @@ fn drag_effect(held: Option<u32>, button: u32, pressed: bool) -> DragEffect {
 /// is small and the handler around it needs a compositor to run.
 fn starts_gesture(pressed: bool, grabbed: bool, on_overlay: bool, logo: bool, button: u32) -> bool {
     pressed && !grabbed && !on_overlay && logo && matches!(button, BTN_LEFT | BTN_RIGHT)
+}
+
+/// Which edges of a window a resize drag takes hold of, from where the press
+/// landed inside it.
+///
+/// By half rather than by a border strip: the whole window is the handle —
+/// Mod4 and the right button, with no edge to aim at — so every point in it
+/// has to name a corner, and the nearest one is the only answer that does not
+/// leave a dead zone in the middle. Grabbing in the bottom right quarter is
+/// what the drag has always done, and still does; the other three quarters are
+/// what this adds.
+///
+/// The returned pair is `(west, north)`: whether the drag moves the left edge
+/// and whether it moves the top one. The shell turns that into which sibling
+/// gives up the space, or which way a floating window's corner is pinned.
+fn resize_edges(pos: Point<f64, Logical>, geometry: Rectangle<i32, Logical>) -> (bool, bool) {
+    let centre = (
+        geometry.loc.x as f64 + geometry.size.w as f64 / 2.0,
+        geometry.loc.y as f64 + geometry.size.h as f64 / 2.0,
+    );
+    (pos.x < centre.0, pos.y < centre.1)
+}
+
+/// How `(west, north)` is spelled on the wire.
+///
+/// A word rather than a pair of signs: the shell reads it, and a command line
+/// that says `top-left` is one somebody can also type by hand while working
+/// out why a drag went the wrong way.
+fn edge_name(edges: (bool, bool)) -> &'static str {
+    match edges {
+        (true, true) => "top-left",
+        (false, true) => "top-right",
+        (true, false) => "bottom-left",
+        (false, false) => "bottom-right",
+    }
 }
 
 /// Whether a button event is the shell's.
@@ -791,8 +826,11 @@ impl ViewportState {
                     event.button_code(),
                 ) {
                     let hit = self.window_under(pointer.current_location());
-                    let dragging = hit.and_then(|window| {
-                        self.views.iter().find(|v| v.window == window).map(|v| v.id)
+                    let dragging = hit.as_ref().and_then(|window| {
+                        self.views
+                            .iter()
+                            .find(|v| &v.window == window)
+                            .map(|v| v.id)
                     });
                     // Nothing under the pointer is the desktop itself, and a
                     // drag there moves the *view*: the gesture every canvas
@@ -813,10 +851,30 @@ impl ViewportState {
                         (None, _) => crate::state::DragKind::Move,
                     };
                     if dragging.is_some() || kind == crate::state::DragKind::Pan {
+                        // Which corner the resize took hold of, worked out once
+                        // at the press: a drag that asked again every frame
+                        // would change edges under the hand the moment the
+                        // pointer crossed the middle of the window it is
+                        // resizing.
+                        //
+                        // In the window's own coordinates, as `window_under`
+                        // tests: a window drawn scaled — a canvas at any zoom
+                        // but 1 — is at a different place on screen than the
+                        // `Space` holds it.
+                        let edges = hit
+                            .as_ref()
+                            .filter(|_| kind == crate::state::DragKind::Resize)
+                            .and_then(|window| {
+                                let geometry = self.space.element_geometry(window)?;
+                                let pos = self.unscaled(window, pointer.current_location());
+                                Some(resize_edges(pos, geometry))
+                            })
+                            .unwrap_or((false, false));
                         self.pointer_drag = Some(crate::state::PointerDrag {
                             id: dragging.unwrap_or_default(),
                             button: event.button_code(),
                             kind,
+                            edges,
                             last: pointer.current_location(),
                             pending: (0.0, 0.0),
                             sent: None,
@@ -1699,14 +1757,26 @@ impl ViewportState {
         // A pan is about the desktop and names no window, so it carries the
         // delta alone. Sending an id of nothing would be a window the shell
         // would then go looking for.
-        let args = if drag.kind == crate::state::DragKind::Pan {
-            vec![(dx as i32).to_string(), (dy as i32).to_string()]
-        } else {
-            vec![
+        let args = match drag.kind {
+            crate::state::DragKind::Pan => {
+                vec![(dx as i32).to_string(), (dy as i32).to_string()]
+            }
+            // A resize also carries the corner it is pulling, because a delta
+            // alone cannot say it: dragging left is a window growing when the
+            // hand is on its left edge and shrinking when it is on the right.
+            // Named rather than signed, so the shell can also say which
+            // neighbour gives up the space.
+            crate::state::DragKind::Resize => vec![
                 drag.id.to_string(),
                 (dx as i32).to_string(),
                 (dy as i32).to_string(),
-            ]
+                edge_name(drag.edges).to_owned(),
+            ],
+            crate::state::DragKind::Move => vec![
+                drag.id.to_string(),
+                (dx as i32).to_string(),
+                (dy as i32).to_string(),
+            ],
         };
         let event = viewport_ipc::Event::ShellCommand {
             command: command.to_owned(),
@@ -2058,6 +2128,30 @@ mod tests {
         assert!(!starts_gesture(true, true, false, true, BTN_LEFT));
         assert!(!starts_gesture(true, false, false, false, BTN_LEFT));
         assert!(!starts_gesture(true, false, false, true, 0x112));
+    }
+
+    /// A resize takes hold of the corner nearest the press, rather than the
+    /// bottom right one whatever the hand is on.
+    ///
+    /// The whole window is the handle here — there is no border to aim at —
+    /// so every point in it has to name a corner, and the halves of the window
+    /// are how it does. What that fixes is a drag on the left edge of a window
+    /// moving its right edge instead.
+    #[test]
+    fn a_resize_takes_the_corner_nearest_the_press() {
+        let window = Rectangle::new((100, 200).into(), (400, 300).into());
+        let at = |x: f64, y: f64| resize_edges((x, y).into(), window);
+
+        assert_eq!(at(120.0, 220.0), (true, true), "top left");
+        assert_eq!(at(480.0, 220.0), (false, true), "top right");
+        assert_eq!(at(120.0, 480.0), (true, false), "bottom left");
+        assert_eq!(at(480.0, 480.0), (false, false), "bottom right");
+
+        // The middle belongs to the bottom right, which is where a resize has
+        // always pulled from and what the wire spells with no corner at all.
+        assert_eq!(at(300.0, 350.0), (false, false), "dead centre");
+        assert_eq!(edge_name(at(300.0, 350.0)), "bottom-right");
+        assert_eq!(edge_name(at(120.0, 220.0)), "top-left");
     }
 
     /// Mod4 and the left button moves a window; the right one resizes it. What

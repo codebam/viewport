@@ -254,7 +254,7 @@ And with the pointer:
 | Gesture | What it does |
 | --- | --- |
 | `Mod4` + left drag on a window | move it across the plane |
-| `Mod4` + right drag on a window | resize it |
+| `Mod4` + right drag on a window | resize it, from the corner nearest where the drag started |
 | `Mod4` + left drag on the desktop | pan the plane |
 
 All three arrive from the compositor as deltas in *screen* pixels — it knows

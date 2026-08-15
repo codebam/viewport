@@ -128,7 +128,7 @@ can be copied straight into `binds`. Turn the listing off with
 | `Mod4+e` | flip the focused container's layout |
 | `Mod4+f` | fullscreen |
 | `Mod4+r` | resize mode; then `hjkl`, `Escape` to leave (scrolling and canvas bind it to something of their own; solar leaves it unbound) |
-| `Mod4` + right-drag | resize; dragging the gap between windows also works |
+| `Mod4` + right-drag | resize, from the corner nearest where the drag started; dragging the gap between windows also works |
 | `Mod4+n` | toggle the bar |
 | `Mod4+Shift+d` | toggle dark mode |
 | `Mod4+Shift+q` / `+e` / `+c` | close / exit / reload the shell |
@@ -952,7 +952,7 @@ is asked to relayout itself for any view change.
 | `Mod4+Shift+h/j/k/l` | move the focused window across the plane |
 | `Mod4+Tab` / `Mod4+Shift+Tab` | step through every window on the plane, panning the view onto each — including the ones parked out of sight |
 | `Mod4` + left drag | move a window, or pan the plane when the drag starts on the desktop |
-| `Mod4` + right drag | resize a window |
+| `Mod4` + right drag | resize a window, from the corner nearest where the drag started |
 
 Zoom stops at 1:1 because past it the compositor would be enlarging a buffer
 the client painted smaller, and the way round that is to reconfigure every
