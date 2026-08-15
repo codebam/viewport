@@ -292,6 +292,28 @@ fn shell_gets_button(grabbed: bool, over_shell: bool, pressed: bool) -> bool {
     grabbed || (pressed && over_shell)
 }
 
+/// Whether this event is a key or button coming back up.
+///
+/// The one thing a blank has to tell apart: `blank` is bound to a chord, and
+/// the hand that pressed it has to come off it. Everything else — a press, a
+/// moved mouse, a finger — is somebody asking for the screens back, and is
+/// answered on the spot rather than after a clock the C build ran
+/// (`crate::idle::Idle::activity`).
+fn activity_kind<I: InputBackend>(event: &InputEvent<I>) -> crate::idle::Activity {
+    let up = match event {
+        InputEvent::Keyboard { event, .. } => {
+            event.state() == smithay::backend::input::KeyState::Released
+        }
+        InputEvent::PointerButton { event, .. } => event.state() == ButtonState::Released,
+        _ => false,
+    };
+    if up {
+        crate::idle::Activity::Release
+    } else {
+        crate::idle::Activity::Deliberate
+    }
+}
+
 /// Whether this event is someone using the pointer.
 ///
 /// What `cursor.hide_after_ms` measures, and the reason it is not simply every
@@ -374,7 +396,7 @@ impl ViewportState {
         // Anything at all counts. Device added and removed do not — they
         // arrive when a dock is plugged in with nobody at the machine — but
         // they are filtered out before this.
-        if self.idle.activity() {
+        if self.idle.activity(activity_kind(&event)) {
             // The screens were off. Bring them back through the same path the
             // deadline turned them off by.
             self.set_outputs_enabled(true);
