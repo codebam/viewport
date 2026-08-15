@@ -610,7 +610,14 @@ fn insert(body: &mut Map<String, Value>, field: &str, value: Value) -> Result<()
                 .entry(segment.to_owned())
                 .or_insert_with(|| Value::Array(Vec::new()))
             {
-                Value::Array(items) => items.push(value),
+                // A value that is already a list is the list, not one item of
+                // one: `--rects '[{...}]'` is the documented spelling, and
+                // wrapping it again sent `[[{...}]]` — a message the compositor
+                // refuses, from the line its own help tells the user to type.
+                Value::Array(items) => match value {
+                    Value::Array(given) => items.extend(given),
+                    value => items.push(value),
+                },
                 _ => return Err(format!("--{field} was already given as something else")),
             }
             return Ok(());
@@ -1063,6 +1070,49 @@ mod tests {
                 // Text, not the number 2: `args` is a list of strings, and a
                 // number there is a message the compositor refuses.
                 "args": ["left", "2"],
+            })
+        );
+    }
+
+    #[test]
+    fn a_list_given_as_a_list_is_not_wrapped_in_another_one() {
+        // The documented spelling, and the one the help text asks for:
+        // `--rects '[{...}]'` is the whole list. Pushed whole it became
+        // `[[{...}]]`, which the compositor refuses — so the line printed in
+        // the hint exited 2.
+        assert_eq!(
+            value(&[
+                "-t",
+                "shell.overlay",
+                "--rects",
+                r#"[{"x":0,"y":0,"width":10,"height":10}]"#,
+            ]),
+            serde_json::json!({
+                "type": "shell.overlay",
+                "rects": [{"x": 0, "y": 0, "width": 10, "height": 10}],
+            })
+        );
+    }
+
+    #[test]
+    fn a_list_given_as_a_list_still_collects() {
+        // Two of them concatenate rather than nest, which is the same rule the
+        // repeated `--args` follows.
+        assert_eq!(
+            value(&[
+                "-t",
+                "shell.overlay",
+                "--rects",
+                r#"[{"x":0,"y":0,"width":10,"height":10}]"#,
+                "--rects",
+                r#"{"x":1,"y":1,"width":2,"height":2}"#,
+            ]),
+            serde_json::json!({
+                "type": "shell.overlay",
+                "rects": [
+                    {"x": 0, "y": 0, "width": 10, "height": 10},
+                    {"x": 1, "y": 1, "width": 2, "height": 2},
+                ],
             })
         );
     }
