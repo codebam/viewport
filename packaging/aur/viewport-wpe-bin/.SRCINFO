@@ -41,6 +41,6 @@ pkgbase = viewport-wpe-bin
 	options = !strip
 	options = !debug
 	source_x86_64 = viewport-wpe-bin-0.1.6.tar.zst::https://github.com/codebam/viewport/releases/download/v0.1.6/viewport-wpe-0.1.6-1-x86_64.pkg.tar.zst
-	sha256sums_x86_64 = 12e0e543f3a760117978e39c0f6f1f904c530a1807ef662fec82c2bfcc69ac45
+	sha256sums_x86_64 = 4cd5d46c6b22bd1999b41298ce493812e6b24eb7444cb881fc0afb5e3fcc3d97
 
 pkgname = viewport-wpe-bin
