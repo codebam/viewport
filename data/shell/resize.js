@@ -300,7 +300,7 @@ function resizeByDelta(id, dx, dy, edge) {
     if (north) floating.y += floating.height - height;
     floating.width = width;
     floating.height = height;
-    relayoutAll();
+    gestureRelayout();
     return;
   }
 
