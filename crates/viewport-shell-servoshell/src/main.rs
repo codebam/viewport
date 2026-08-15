@@ -343,6 +343,25 @@ fn serve(listener: TcpListener, bridge: Arc<Bridge>) -> Result<()> {
                         continue;
                     }
                 };
+                // Nagle off, and this is the whole desktop's frame rate.
+                //
+                // Every answer here is one small message that the page is
+                // waiting on before it can do anything else, which is the case
+                // Nagle is wrong for: the head goes out at once, the body is
+                // held back for an ack, and Linux delays that ack by 40ms. So
+                // `response.json()` in the page took 40.5ms while the fetch
+                // around it took 0.4ms — measured — and the shell could
+                // therefore be told things at 24Hz no matter what it or the
+                // compositor did. A drag moved 24 times a second on this
+                // machine and about ten on the user's, because it moves once
+                // per message and that was the ceiling on messages.
+                //
+                // `respond` writes head and body as one buffer for the same
+                // reason; either fix alone would do, and the pair of them
+                // leaves nothing to rediscover.
+                if let Err(e) = stream.set_nodelay(true) {
+                    tracing::warn!("could not turn Nagle off for a bridge connection: {e}");
+                }
                 let bridge = bridge.clone();
                 // One thread per connection, and there are two connections:
                 // the poll that is always outstanding and whatever `send` is
@@ -530,9 +549,13 @@ fn respond(
     } else {
         "Connection: close\r\n\r\n"
     });
+    /* One write, not two. Two puts the head in one segment and the body in the
+    next, which is the shape that waits on a delayed ack when Nagle is on —
+    see the note where the connection is accepted. Nagle is off there now;
+    this is the other half, and it is also one syscall instead of two. */
+    head.push_str(body);
     stream
         .write_all(head.as_bytes())
-        .and_then(|()| stream.write_all(body.as_bytes()))
         .context("answering a bridge request")
 }
 
