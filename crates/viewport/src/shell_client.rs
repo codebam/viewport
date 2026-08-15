@@ -48,6 +48,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context as _, Result};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::utils::DamageBag;
+use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::shell::xdg::ToplevelSurface;
@@ -110,6 +111,11 @@ pub struct ClientShell {
     pub damage: DamageBag<i32, smithay::utils::Buffer>,
     /// This page's render element id, stable for as long as the process is.
     pub element_id: smithay::backend::renderer::element::Id,
+    /// The outputs its surface has been told it is on.
+    ///
+    /// `wl_surface.enter` and `leave` are a transition, not a statement, and
+    /// toolkits count them: see [`ViewportState::announce_shell_outputs`].
+    entered: Vec<Output>,
 }
 
 impl ClientShell {
@@ -272,6 +278,7 @@ impl ViewportState {
             owned: None,
             damage: Default::default(),
             element_id: smithay::backend::renderer::element::Id::new(),
+            entered: Vec::new(),
         });
         Ok(())
     }
@@ -356,6 +363,8 @@ impl ViewportState {
         tracing::info!("shell {at}: its toplevel arrived");
         self.shell_clients[at].toplevel = Some(toplevel);
         self.shell_clients[at].configured = None;
+        // A new surface has entered nothing, whatever the one before it had.
+        self.shell_clients[at].entered.clear();
         self.configure_client_shell();
         self.announce_shell_outputs();
     }
@@ -377,23 +386,46 @@ impl ViewportState {
     /// The whole layout for a desktop on its own — it is on every one of them
     /// by construction — and the screens its rectangle touches for a page that
     /// was given one monitor.
+    ///
+    /// Sent on the transition and not otherwise. `enter` and `leave` are a
+    /// change of state rather than a statement of it, and a toolkit counts
+    /// them: an output entered twice and left once is still entered, and one
+    /// left without having been entered — the ordinary case for a `--url` page
+    /// covering screen 0 while screen 1 exists — takes the count below zero.
+    /// What that costs is the scale and the refresh rate the page was drawing
+    /// at, which is the whole reason any of this is sent.
     pub fn announce_shell_outputs(&mut self) {
         let outputs: Vec<_> = self
             .space
             .outputs()
             .filter_map(|output| Some((output.clone(), self.space.output_geometry(output)?)))
             .collect();
-        for shell in &self.shell_clients {
-            let Some(surface) = shell.surface() else {
+        for shell in &mut self.shell_clients {
+            let Some(surface) = shell
+                .toplevel
+                .as_ref()
+                .map(|toplevel| toplevel.wl_surface())
+            else {
                 continue;
             };
             for (output, geometry) in &outputs {
-                if geometry.overlaps_or_touches(shell.region) {
+                let on = geometry.overlaps_or_touches(shell.region);
+                let told = shell.entered.contains(output);
+                if on && !told {
                     output.enter(surface);
-                } else {
+                    shell.entered.push(output.clone());
+                } else if !on && told {
                     output.leave(surface);
+                    shell.entered.retain(|entered| entered != output);
                 }
             }
+            // An output that has gone away is not in the list above, so the
+            // shell is never told it left one — and nothing else would clear
+            // it, which would leave a page that reconnects to a screen of the
+            // same name believing it is already on it.
+            shell
+                .entered
+                .retain(|entered| outputs.iter().any(|(output, _)| output == entered));
         }
     }
 
