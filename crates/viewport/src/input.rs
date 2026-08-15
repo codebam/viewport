@@ -179,6 +179,50 @@ fn drag_effect(held: Option<u32>, button: u32, pressed: bool) -> DragEffect {
     }
 }
 
+// Buttons whose press a binding took, so the matching release can be taken
+// too — `suppressed_keys` for the mouse.
+//
+// A press that fires a binding is not forwarded, and a release that is
+// forwarded on its own is a client told a button came up that it never saw go
+// down: a browser that starts a text selection on the release, a canvas that
+// ends a stroke it never began. Matching the release against the bindings
+// again would not do, because the modifier is usually released before the
+// button and the chord no longer matches by then.
+//
+// A thread local rather than a field on the state: input is dispatched on the
+// compositor's own thread and nowhere else, and this is the button handler's
+// private bookkeeping.
+thread_local! {
+    static SUPPRESSED_BUTTONS: std::cell::RefCell<Vec<u32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Remember that this button's press was consumed by a binding.
+fn suppress_button(button: u32) {
+    SUPPRESSED_BUTTONS.with(|buttons| {
+        let mut buttons = buttons.borrow_mut();
+        if !buttons.contains(&button) {
+            buttons.push(button);
+        }
+    });
+}
+
+/// Whether this release belongs to a press a binding consumed, forgetting it if
+/// so — one release per press, as a second one is a button that went down again
+/// somewhere this did not see.
+fn release_suppressed(button: u32) -> bool {
+    SUPPRESSED_BUTTONS.with(|buttons| {
+        let mut buttons = buttons.borrow_mut();
+        match buttons.iter().position(|b| *b == button) {
+            Some(at) => {
+                buttons.remove(at);
+                true
+            }
+            None => false,
+        }
+    })
+}
+
 /// Whether a press starts one of the compositor's own pointer gestures —
 /// Mod4 and a button to move, resize or pan.
 ///
@@ -795,8 +839,17 @@ impl ViewportState {
                         // Not forwarded: the button was bound, and handing a
                         // press it did not ask for to a client would leave it
                         // thinking the button is still down.
+                        suppress_button(event.button_code());
                         return;
                     }
+                } else if release_suppressed(event.button_code()) {
+                    // The other half of the same chord. Matching again would
+                    // answer the wrong question — the modifier is usually let
+                    // go of before the button is — so the press records what it
+                    // took and the release goes by that, exactly as
+                    // `suppressed_keys` does for a key. Without it the client
+                    // was handed a release for a press it never saw.
+                    return;
                 }
 
                 // Something the shell drew in front and asked to be clicked:
