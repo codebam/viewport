@@ -666,6 +666,35 @@ fn run() -> Result<()> {
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(period)
             })
             .map_err(|e| anyhow::anyhow!("inserting the status timer: {e}"))?;
+
+        // The half of a sample that has to be waited for — `statvfs` on every
+        // configured mount, and `wpctl` for the volume and the microphone —
+        // happens on a thread of its own and arrives here, exactly as a
+        // notification does. Waiting for it on this thread stalled the
+        // compositor twice a second on any bar with a volume widget, and for
+        // good on any machine with a mount whose server had gone.
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(slow) = event else {
+                    return;
+                };
+                // A volume that changed is told to the shell now rather than on
+                // the next tick: a scroll on the bar is answered while the
+                // finger is still moving. Everything else waits for the tick.
+                if state.status.absorb(slow) {
+                    state.status_tick();
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the status source: {e}"))?;
+
+        // Not fatal: a compositor that cannot spawn the thread samples the slow
+        // half in line, which is what it did before there was a thread.
+        if let Err(e) = state.status.start(sender) {
+            tracing::warn!("the status worker could not start: {e}");
+        }
     }
 
     // Whatever the config file asked to be run, once everything it needs is
