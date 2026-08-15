@@ -260,7 +260,7 @@ function resizeByDelta(id, dx, dy) {
     let changed = false;
     if (dx !== 0) changed = resizeColumn(workspace, id, dx) || changed;
     if (dy !== 0) changed = resizeAxis(id, 'vertical', dy) || changed;
-    if (changed) relayoutAll();
+    if (changed) gestureRelayout();
     return;
   }
 
@@ -270,7 +270,7 @@ function resizeByDelta(id, dx, dy) {
     if (delta === 0) continue;
     resizeAxis(id, axis, delta);
   }
-  relayoutAll();
+  gestureRelayout();
 }
 
 function toggleLayout() {

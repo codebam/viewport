@@ -130,7 +130,7 @@ function moveByDelta(id, dx, dy) {
     floating.y = Math.max(0, Math.min(floating.y, area.height - margin));
   }
 
-  relayoutAll();
+  gestureRelayout();
 }
 
 function addView({ id, title, app_id, output: outputName, min_width, min_height,

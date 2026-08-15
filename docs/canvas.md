@@ -263,6 +263,19 @@ zoom on the way in. That is what makes a drag track the pointer at any zoom
 rather than running away from it by a factor of four when the view is out at
 0.25.
 
+A gesture is paced by the screen rather than by the mouse. The deltas arrive
+far faster than the desktop is drawn — a mouse reports several times per frame —
+and each one used to lay the whole desktop out again: the tree rebuilt, every
+window measured twice, a layout forced, two or three times over for one frame
+that shows only the last of them. What they buy instead is accumulated in the
+plane's own coordinates and drawn once per frame (`gestureRelayout` in
+`geometry.js`), and while the gesture runs nothing on the plane animates —
+a pan moves every window on it, and a window easing toward the pointer over an
+animation's duration is the whole plane sliding along behind the hand. The
+compositor says when the button comes up (`layout.drag.end`), which is what puts
+the ordinary rules back; a timeout covers the gesture that ends without a
+release, as one does when a VT switch takes the pointer away.
+
 The move is not clamped. A floating window is held against the edge of its
 screen so that one dragged off it can be got back; a plane has no edge to hold
 anything against, so dragging a window a long way away is a thing you are

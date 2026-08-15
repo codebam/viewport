@@ -362,6 +362,27 @@ function releaseStrips() {
   }
 }
 
+/* Measure every window on screen and tell the compositor where it is.
+ *
+ * One layout for the whole pass. Nothing in here writes to the DOM — a report
+ * is a measurement and a message — so every window measured after the first is
+ * answered from the same layout rather than asking for one of its own.
+ *
+ * Returns whether anything had moved since the last pass, which is what
+ * pumpGeometry reads to decide the layout is still going. */
+function reportAllGeometry() {
+  let changed = false;
+  beginMeasurePass();
+  try {
+    for (const [id, view] of views) {
+      if (!view.el.hidden && reportGeometry(id)) changed = true;
+    }
+  } finally {
+    endMeasurePass();
+  }
+  return changed;
+}
+
 function pumpGeometry() {
   pumpRemaining = PUMP_IDLE_FRAMES;
   if (pumping) return;
@@ -370,19 +391,7 @@ function pumpGeometry() {
   let budget = PUMP_MAX_FRAMES;
 
   const step = () => {
-    let changed = false;
-    /* One layout for the whole frame. Nothing in here writes to the DOM — a
-       report is a measurement and a message — so every window measured after
-       the first is answered from the same layout rather than asking for one of
-       its own. */
-    beginMeasurePass();
-    try {
-      for (const [id, view] of views) {
-        if (!view.el.hidden && reportGeometry(id)) changed = true;
-      }
-    } finally {
-      endMeasurePass();
-    }
+    const changed = reportAllGeometry();
 
     pumpRemaining = changed ? PUMP_IDLE_FRAMES : pumpRemaining - 1;
     if (pumpRemaining > 0 && --budget > 0) {
@@ -393,6 +402,68 @@ function pumpGeometry() {
   };
 
   requestAnimationFrame(step);
+}
+
+/* A gesture in progress: a window being dragged or resized by hand, or the
+ * canvas being panned. All three arrive from the compositor as a stream of
+ * deltas rather than as one event, and all three want the same thing.
+ *
+ * One relayout per frame. A mouse reporting every few milliseconds asks the
+ * shell to lay the desktop out more often than the screen is drawn, and a
+ * relayout is not cheap: the tree is rebuilt, every window is measured twice
+ * and a layout is forced. Doing that two or three times between frames does
+ * not move the window any further — only the last pass before the paint is
+ * ever seen — but it does spend the time that frame needed, which is what a
+ * drag that stutters is made of. The deltas accumulate in the layout's own
+ * state (a rect on the plane, a floating window's x and y), so coalescing
+ * loses nothing: the frame draws wherever the pointer has got to.
+ *
+ * Ends on the button release, which the compositor sends as `layout.drag.end`
+ * — the gesture is swallowed there, so the release is not something the shell
+ * could see for itself. The timer is the fallback for the gesture that ends
+ * without one: a VT switch takes the pointer away and no button is ever
+ * reported up. The same 120ms the dragged window's own class uses. */
+const GESTURE_IDLE_MS = 120;
+let gesturing = false;
+let gestureTimer = null;
+let relayoutFrame = false;
+
+/* Whether a drag, a resize or a pan is under way. Read by relayoutAll, which
+ * neither animates nor waits a frame to report geometry while one is. */
+function isGesturing() {
+  return gesturing;
+}
+
+/* The button came up: the compositor says so on the release that ends the
+ * gesture it has been swallowing. The timer above is the fallback for a
+ * gesture that ends without one — a VT switch takes the pointer away and no
+ * release is ever reported. */
+function endGesture() {
+  if (!gesturing) return;
+  gesturing = false;
+  clearTimeout(gestureTimer);
+  gestureTimer = null;
+  relayoutAll();
+}
+
+/* One relayout for this frame, however many deltas arrive before it. */
+function gestureRelayout() {
+  gesturing = true;
+  clearTimeout(gestureTimer);
+  gestureTimer = setTimeout(() => {
+    gesturing = false;
+    /* Once more with the ordinary rules, now that the hand has stopped. The
+       layout is already where it belongs, so nothing moves — what this
+       restores is the animation and the FLIP for whatever happens next. */
+    relayoutAll();
+  }, GESTURE_IDLE_MS);
+
+  if (relayoutFrame) return;
+  relayoutFrame = true;
+  requestAnimationFrame(() => {
+    relayoutFrame = false;
+    relayoutAll();
+  });
 }
 
 /* Whether the user has asked for less motion. Checked at the point of use so
@@ -568,10 +639,16 @@ function relayoutAll() {
   const canvas = (layoutMode === 'canvas' && !overviewActive)
     ? planCanvas() : null;
 
-  /* Where everything was, before the tree is thrown away and rebuilt. */
+  /* Where everything was, before the tree is thrown away and rebuilt.
+     Not while a gesture is running: a window under the hand is not animated
+     from where it was a delta ago — see flipFrom's call site below — so the
+     measurement would be a forced layout per window per frame for a slide
+     nothing is going to play. */
   const before = new Map();
-  for (const [id, view] of views) {
-    if (!view.el.hidden) before.set(id, view.el.getBoundingClientRect());
+  if (!isGesturing()) {
+    for (const [id, view] of views) {
+      if (!view.el.hidden) before.set(id, view.el.getBoundingClientRect());
+    }
   }
 
   /* workspace -> output showing it. A workspace appears at most once. */
@@ -617,6 +694,14 @@ function relayoutAll() {
     output.windowsEl.classList.toggle('solar', layoutMode === 'solar');
     output.windowsEl.classList.toggle('matrix', layoutMode === 'matrix');
     output.windowsEl.classList.toggle('canvas', layoutMode === 'canvas');
+    /* Everything this output draws follows the hand directly while a gesture
+       is running. The dragged window has a class of its own and has had one
+       for as long as dragging has worked; this is for the windows it is not.
+       Panning the canvas moves every window on the plane, and a resize drag
+       moves the neighbour the divider is being taken from — both of those
+       were easing toward the pointer over the animation duration, which is
+       the whole plane sliding along behind the cursor. */
+    output.windowsEl.classList.toggle('gesture', isGesturing());
     /* Smart gaps: a lone window on the workspace drops the inner gap, and the
        CSS padding has to match what edgeGapPx() (used by the layout math)
        computes, or the drawn edge and the measured one drift apart. */
@@ -783,8 +868,16 @@ function relayoutAll() {
      flashes at its final brightness on the frame it opens. */
   if (solar) settleSolarOpacity(faded);
 
-  /* Offset every window back to where it was and let it slide into place. */
-  flipFrom(before);
+  /* Offset every window back to where it was and let it slide into place.
+     Except under the hand: a drag is already a window following a pointer at
+     the pointer's own speed, and a slide toward each frame's destination is
+     the ice `.window.dragging` exists to prevent — applied to everything else
+     the gesture moved, which on the canvas is the whole plane when it pans.
+     `releaseStrips` still has to run, exactly as on the reduced-motion path:
+     it is what puts a scrolled strip at its new offset rather than animating
+     it there. */
+  if (isGesturing()) releaseStrips();
+  else flipFrom(before);
 
   /* The workspace set as it now stands, for anything outside the shell that
      asked to be told through `ext-workspace-v1` — an external bar's workspace
@@ -796,6 +889,13 @@ function relayoutAll() {
 
   /* Measure after the browser has laid the new tree out, and keep measuring
      for as long as it is still moving. */
+  /* Under the hand, measure now rather than next frame. The pump samples on
+     an animation frame, so a relayout that already runs on one reports the
+     drag a whole frame after the frame that drew it — the shell's border
+     under the pointer and the client's picture one step behind it, which is
+     the drag lagging its own window. The forced layout this costs is the one
+     the FLIP above would have forced anyway and no longer does. */
+  if (isGesturing()) reportAllGeometry();
   pumpGeometry();
 }
 

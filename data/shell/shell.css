@@ -828,6 +828,14 @@ html.behind body { background: transparent; }
    the cursor lags it by the whole duration and feels like ice. */
 .window.dragging { transition: none; }
 
+/* And so must everything else the same gesture moves. A pan across the canvas
+   moves every window on the plane and a resize drag moves the neighbour the
+   space is being taken from; neither is the window under the hand, so neither
+   carries `dragging`, and both were sliding toward the pointer a whole
+   animation behind it. Set on the container for the duration of the gesture —
+   see isGesturing() in geometry.js. */
+.windows.gesture .window { transition: none; }
+
 .window.focused {
   border-color: var(--border-focus);
   outline-color: var(--focus-tint);

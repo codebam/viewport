@@ -725,6 +725,19 @@ impl ViewportState {
                 ) {
                     DragEffect::End => {
                         self.pointer_drag = None;
+                        // The hand has let go, and the shell has been drawing
+                        // without its animations for as long as the deltas
+                        // were arriving — a window under the pointer must not
+                        // ease toward it. Saying so is what puts the desktop
+                        // back under the ordinary rules on the next frame
+                        // rather than a timeout later. The shell has that
+                        // timeout as well, for the gesture that ends without a
+                        // release: a VT switch takes the pointer away and no
+                        // button is ever reported up.
+                        self.notify(&viewport_ipc::Event::ShellCommand {
+                            command: "layout.drag.end".to_owned(),
+                            args: Vec::new(),
+                        });
                         return;
                     }
                     DragEffect::Swallow => return,
@@ -1639,9 +1652,23 @@ impl ViewportState {
     /// on the other side.
     fn drag_to(&mut self, pos: Point<f64, Logical>) {
         /// Fast enough to track the pointer, slow enough that a mouse
-        /// reporting a thousand times a second does not ask the shell to lay
-        /// the desktop out a thousand times.
-        const EVERY: std::time::Duration = std::time::Duration::from_millis(8);
+        /// reporting a thousand times a second does not ask the shell for a
+        /// thousand messages.
+        ///
+        /// A quarter of a frame rather than half of one. This throttle used to
+        /// be what stopped the shell laying the desktop out faster than it is
+        /// drawn — the shell now does that itself, coalescing every delta that
+        /// arrives between two frames into one relayout (`gestureRelayout` in
+        /// geometry.js), so what is left here is only the cost of the message.
+        ///
+        /// What the interval costs is accuracy, not work: whatever has arrived
+        /// since the last send is still sitting in `pending` when the frame is
+        /// drawn, so the window is behind the pointer by up to one interval's
+        /// worth of travel, and by a *different* amount each frame as the two
+        /// clocks slide past each other. That is a drag that moves unevenly
+        /// while keeping up on average, which is what this is being narrowed
+        /// for.
+        const EVERY: std::time::Duration = std::time::Duration::from_millis(4);
 
         let Some(drag) = self.pointer_drag.as_mut() else {
             return;

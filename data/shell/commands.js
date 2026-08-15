@@ -162,6 +162,12 @@ function handleShellCommand(command, args) {
     case 'canvas.pan.delta':
       canvasPanBy(Number(args[0]), Number(args[1]));
       break;
+    /* The button that was driving any of the three above came up. Nothing
+       moves; what ends is the gesture, and with it the coalescing and the
+       suppressed animations. */
+    case 'layout.drag.end':
+      endGesture();
+      break;
     case 'layout.float.toggle':
       toggleFloating(focusedId);
       break;

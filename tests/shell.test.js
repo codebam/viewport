@@ -1689,6 +1689,16 @@ if (mode === 'tiling') {
     check('dragging the desktop pans the plane with the hand',
       panned.x === view.x - 120 / zoom && panned.y === view.y - 40 / zoom);
 
+    /* And every window on the plane moves with it rather than easing after it.
+       A pan moves all of them, so none carries the dragged window's own class
+       — the container says it for the lot, and only while the hand is down. */
+    const out = globalThis.__shell.outputs.get(globalThis.__shell.activeOutput);
+    check('a pan drag draws the plane without its animations',
+      out.windowsEl.classList.contains('gesture'));
+    emit({ type: 'shell.command', command: 'layout.drag.end', args: [] });
+    check('and the release puts the animations back',
+      !out.windowsEl.classList.contains('gesture'));
+
     emit({ type: 'shell.command', command: 'canvas.home', args: [] });
     emit({ type: 'view.focused', id: 4 });
   }
@@ -2524,6 +2534,12 @@ if (mode === 'scrolling') {
  * so they slide into place. */
 {
   const views = globalThis.__shell.views;
+  /* And only once the hand has let go. A window is not animated toward a
+     pointer that is still dragging it, so a drag left running by an earlier
+     test — the delta cases above, in the layouts that have them — is a shell
+     correctly declining to slide anything. The compositor ends a gesture on
+     the button release; nothing else here does, so this stands in for it. */
+  emit({ type: 'shell.command', command: 'layout.drag.end', args: [] });
   /* Must be a window that is actually on screen: earlier tests may have left a
      tabbed container showing only one of them, and a hidden window is skipped. */
   const entry = [...views].find(([, v]) => !v.el.hidden);

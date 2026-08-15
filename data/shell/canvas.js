@@ -866,13 +866,16 @@ function canvasTarget() {
 
 /* Pan by a screen distance. The step is divided by the zoom so that a key
  * moves the view the same visible amount however far out it is. */
-function canvasPan(dx, dy) {
+function canvasPan(dx, dy, byHand = false) {
   const target = canvasTarget();
   if (!target) return;
   const viewport = canvasViewportOf(target.workspace);
   viewport.x += dx / viewport.zoom;
   viewport.y += dy / viewport.zoom;
-  relayoutAll();
+  /* A pan key is one step and animates; a pan drag is a stream of deltas and
+     must not. See gestureRelayout in geometry.js. */
+  if (byHand) gestureRelayout();
+  else relayoutAll();
 }
 
 /* One pan key, as a direction. Panning right means looking further right,
@@ -1031,7 +1034,7 @@ function canvasDragBy(id, dx, dy) {
       () => view.el.classList.remove('dragging'), 120);
   }
 
-  relayoutAll();
+  gestureRelayout();
   return true;
 }
 
@@ -1064,7 +1067,7 @@ function canvasResizeBy(id, dx, dy) {
   rect.width = Math.max(floorWidth, rect.width + dx / zoom);
   rect.height = Math.max(floorHeight, rect.height + dy / zoom);
   markCanvasMoved(id);
-  relayoutAll();
+  gestureRelayout();
   return true;
 }
 
@@ -1077,7 +1080,7 @@ function canvasResizeBy(id, dx, dy) {
 function canvasPanBy(dx, dy) {
   if (layoutMode !== 'canvas') return false;
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
-  canvasPan(-dx, -dy);
+  canvasPan(-dx, -dy, true);
   return true;
 }
 
