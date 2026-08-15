@@ -11,6 +11,8 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-15
+
 ### Added
 - Notifications can make a sound. The compositor claims
   `org.freedesktop.Notifications` itself, which took playback away along with
@@ -250,7 +252,8 @@ deleted C compositor and the tree stopped carrying two implementations.
   missing — WebKit treated such pages as empty documents (see the `wpe`
   PKGBUILD's notes on `shared-mime-info`).
 
-[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/codebam/viewport/releases/tag/v0.1.7
 [0.1.6]: https://github.com/codebam/viewport/releases/tag/v0.1.6
 [0.1.5]: https://github.com/codebam/viewport/releases/tag/v0.1.5
 [0.1.4]: https://github.com/codebam/viewport/releases/tag/v0.1.4
