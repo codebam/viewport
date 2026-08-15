@@ -1272,7 +1272,22 @@ impl ViewportState {
                             .map(|pointer| pointer.current_location());
                         if let (Some(at), Some(keyboard)) = (at, self.seat.get_keyboard()) {
                             if let Some((surface, _)) = self.surface_under(at) {
-                                keyboard.set_focus(self, Some(surface.into()), serial);
+                                // Through the view rather than the surface, as
+                                // the click path does: an X11 window focused as
+                                // a bare surface gets `wl_keyboard.enter` and no
+                                // `SetInputFocus`, so the X server stays at
+                                // `PointerRoot` and the window is never told it
+                                // has the keyboard.
+                                let focus = self
+                                    .views
+                                    .find_by_surface(&surface)
+                                    .and_then(|view| {
+                                        crate::keyboard_focus::KeyboardFocus::for_window(
+                                            &view.window,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| surface.into());
+                                keyboard.set_focus(self, Some(focus), serial);
                             }
                         }
                     }
@@ -1427,7 +1442,18 @@ impl ViewportState {
                 // pointer to click with and no way to reach a chord.
                 if let Some((surface, _)) = under.as_ref() {
                     if let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(self, Some(surface.clone().into()), serial);
+                        // By window where there is one, for the reason the click
+                        // path gives: an X11 window focused as a bare surface
+                        // leaves the X server at `PointerRoot`, so nothing under
+                        // Xwayland is ever told a finger gave it the keyboard.
+                        let focus = self
+                            .views
+                            .find_by_surface(surface)
+                            .and_then(|view| {
+                                crate::keyboard_focus::KeyboardFocus::for_window(&view.window)
+                            })
+                            .unwrap_or_else(|| surface.clone().into());
+                        keyboard.set_focus(self, Some(focus), serial);
                     }
                 }
 
