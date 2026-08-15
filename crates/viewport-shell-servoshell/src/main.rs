@@ -58,6 +58,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::{Arc, Condvar, Mutex};
@@ -594,16 +595,50 @@ fn query_value(target: &str, name: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// The directory `--userscripts` is pointed at, and its removal.
+///
+/// The script has the token in it, so this is a secret on disk in a directory
+/// every other user on the machine can read: whoever reads it can drive the
+/// desktop through `/send`, which is the one thing the token exists to stop.
+/// So the directory is made the way `mkdtemp` makes one — a random name, mode
+/// 0700, `create_new` so an attacker-owned directory or symlink already sitting
+/// at the path is an error rather than a place to write — and the script inside
+/// it is 0600 and equally new.
 struct ScriptDir(PathBuf);
 
 impl ScriptDir {
     fn write(script: &str) -> Result<Self> {
-        let dir =
-            std::env::temp_dir().join(format!("viewport-shell-servoshell-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        std::fs::write(dir.join("viewport-bridge.js"), script)
+        let dir = Self::create()?;
+        let path = dir.join("viewport-bridge.js");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("creating {}", path.display()))?;
+        file.write_all(script.as_bytes())
             .with_context(|| format!("writing the bridge script into {}", dir.display()))?;
         Ok(Self(dir))
+    }
+
+    /// A directory nobody else can look into, at a name nobody else can guess.
+    ///
+    /// Retried because a name can collide — with a directory this process
+    /// cannot see into, made by whoever is trying to read the token.
+    fn create() -> Result<PathBuf> {
+        let mut last = None;
+        for _ in 0..8 {
+            let dir = std::env::temp_dir().join(format!(
+                "viewport-shell-servoshell-{}-{}",
+                std::process::id(),
+                token()?
+            ));
+            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Ok(()) => return Ok(dir),
+                Err(e) => last = Some((dir, e)),
+            }
+        }
+        let (dir, e) = last.expect("the loop ran at least once");
+        Err(e).with_context(|| format!("creating {}", dir.display()))
     }
 
     fn path(&self) -> &Path {
