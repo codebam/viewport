@@ -749,8 +749,11 @@ impl ViewportState {
                 // standing still, and hand a game absolute positions it reads
                 // as an enormous jump.
                 let from = pointer.current_location();
-                let (locked, confine_to) =
-                    self.pointer_constraint(&pointer, self.surface_under(from).as_ref());
+                // Once, and reused: a hit test walks every window in the
+                // `Space` and clones each one it walks past, and asking the
+                // same question of the same point twice costs that twice.
+                let under = self.surface_under(from);
+                let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
 
                 // The delta this absolute position implies. It is what a
                 // captured client is driven by, and the only thing it gets:
@@ -758,7 +761,7 @@ impl ViewportState {
                 let delta = pos - from;
                 pointer.relative_motion(
                     self,
-                    self.surface_under(from),
+                    under,
                     &smithay::input::pointer::RelativeMotionEvent {
                         delta,
                         // Nothing accelerated it, so the raw delta is the
