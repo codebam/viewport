@@ -72,10 +72,11 @@ function beginDividerDrag(event, node, before, after) {
     const delta = now - last;
     if (delta === 0) return;
     last = now;
-    if (shiftWeightBetween(before, after, delta / extent)) relayoutAll();
+    if (shiftWeightBetween(before, after, delta / extent)) gestureRelayout();
   };
 
   const onUp = () => {
+    endGesture();
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
   };
@@ -101,8 +102,12 @@ function beginColumnDrag(event, workspace, column) {
 
   let last = event.clientX;
   const generation = treeGeneration;
+  /* The element only for the frames before the first relayout: renderStrip
+     builds a new strip every render, so what keeps the transitions off for the
+     rest of the drag is the workspace it reads back out of state. */
   const strip = event.currentTarget.parentElement;
   strip?.classList.add('dragging');
+  columnDragWorkspace = workspace;
 
   const onMove = (move) => {
     if (generation !== treeGeneration) {
@@ -115,13 +120,20 @@ function beginColumnDrag(event, workspace, column) {
 
     const next = (column.width ?? COLUMN_WIDTHS[1]) + delta / extent;
     column.width = Math.max(0.1, Math.min(next, 1));
-    relayoutAll();
+    gestureRelayout();
   };
 
   const onUp = () => {
+    columnDragWorkspace = null;
     strip?.classList.remove('dragging');
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
+    /* A relayout either way: the class is drawn from the state cleared just
+       above, so a drag whose idle timer has already fired — a hand that
+       stopped moving before it let go — still needs one render to put the
+       transitions back. */
+    if (isGesturing()) endGesture();
+    else relayoutAll();
   };
 
   window.addEventListener('mousemove', onMove);
@@ -156,6 +168,20 @@ const FLOAT_RESIZE_STEP = 40;
 
 function resizeFocused(direction) {
   if (focusedId == null) return;
+
+  /* On the canvas a window's place is its size and nothing shares space with
+     it, so resize mode changes that rather than a weight no renderer there
+     reads — the same branch `window.move` has, and for the same reason.
+     Before the floating check, because on the plane a floating window is on
+     the plane like every other one. */
+  if (layoutMode === 'canvas') {
+    const step = (direction === 'left' || direction === 'up')
+      ? -FLOAT_RESIZE_STEP : FLOAT_RESIZE_STEP;
+    const horizontal = direction === 'left' || direction === 'right';
+    canvasResizeBy(focusedId, horizontal ? step : 0, horizontal ? 0 : step,
+      false, false);
+    return;
+  }
 
   /* A floating window is not in the tree, so the lookup below finds nothing
      and resize mode did nothing at all for one — every press ignored, with no
@@ -300,7 +326,7 @@ function resizeByDelta(id, dx, dy, edge) {
     if (north) floating.y += floating.height - height;
     floating.width = width;
     floating.height = height;
-    relayoutAll();
+    gestureRelayout();
     return;
   }
 

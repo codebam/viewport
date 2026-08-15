@@ -4358,6 +4358,181 @@ if (mode === 'scrolling') {
   emit({ type: 'view.removed', id: 81 });
 }
 
+/* Resizing a floating window by a corner, pacing a gesture, and the one-layout
+ * measure pass. Three things the shell grew after v0.1.0 and none of them
+ * reachable from the layout tests above: what they change is which edge moves,
+ * how often the desk is rebuilt, and how many times the browser is asked where
+ * something is. */
+{
+  /* A pull on the top or left edge pins the opposite one.
+   *
+   * The window has to move as well as change size for that to hold, and the
+   * move is worked out from the size the clamp actually allowed — so a drag
+   * that has run into the minimum stops, rather than sliding the window across
+   * the desktop from an edge that can no longer move.
+   *
+   * Not on the canvas, where a floating window is on the plane like every
+   * other one and canvasResizeBy answers first. */
+  if (mode !== 'canvas') {
+    emit({ type: 'view.added', id: 95, title: 'dialog', app_id: 'corner-dialog',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: true,
+      width: 400, height: 300 });
+    const rect = () => globalThis.__shell.floatingForTest(95);
+    const start = { ...rect() };
+    check('a floating window has a rect to resize', start.width > 200);
+    const right = start.x + start.width;
+    const bottom = start.y + start.height;
+
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: ['95', '-60', '-40', 'top-left'] });
+    check('dragging the top left corner out grows the window',
+      rect().width === start.width + 60 && rect().height === start.height + 40);
+    check('and the corner the hand is not on stays where it was',
+      rect().x + rect().width === right && rect().y + rect().height === bottom);
+    check('so the window moved as well as grew',
+      rect().x === start.x - 60 && rect().y === start.y - 40);
+
+    /* The other corner of the same axis: west without north moves the left
+       edge and leaves the top alone. */
+    const before = { ...rect() };
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: ['95', '-30', '30', 'bottom-left'] });
+    check('a pull on the bottom left moves the left edge only',
+      rect().x === before.x - 30 && rect().y === before.y);
+    check('and grows both axes all the same',
+      rect().width === before.width + 30 && rect().height === before.height + 30);
+
+    /* Into the clamp. 80x60 is what resizeByDelta falls back to for a client
+       that named no minimum of its own. */
+    const grown = { ...rect() };
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: ['95', '4000', '4000', 'top-left'] });
+    check('a drag that shrinks it to nothing stops at the minimum',
+      rect().width === 80 && rect().height === 60);
+    check('and the far corner is still pinned there',
+      rect().x + rect().width === right
+      && rect().y + rect().height === grown.y + grown.height);
+
+    const stuck = { ...rect() };
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: ['95', '4000', '4000', 'top-left'] });
+    check('and dragging further does not slide the window away from it',
+      rect().x === stuck.x && rect().y === stuck.y
+      && rect().width === 80 && rect().height === 60);
+
+    emit({ type: 'view.removed', id: 95 });
+    emit({ type: 'view.focused', id: 4 });
+  }
+
+  /* One relayout per frame while a hand is down, and the two ways that ends.
+   *
+   * Driven through gestureRelayout directly rather than through a drag: which
+   * command reaches it differs by layout, and what is being checked here is
+   * the pacing rather than any one gesture. */
+  {
+    const out = globalThis.__shell.outputs.get(globalThis.__shell.activeOutput);
+    /* From rest, whatever an earlier delta test left running. Before the
+       stubs below, so its relayout runs on the real ones. */
+    endGesture();
+
+    let relayouts = 0;
+    const realReplace = out.windowsEl.replaceChildren.bind(out.windowsEl);
+    out.windowsEl.replaceChildren = (...nodes) => {
+      relayouts++;
+      return realReplace(...nodes);
+    };
+
+    /* Frames and timers are inline in this harness, which is what makes
+       coalescing invisible: held here so the gap between asking for a frame
+       and getting one is a thing the test can stand in. */
+    const frames = [];
+    const timers = [];
+    const realFrame = global.requestAnimationFrame;
+    const realTimeout = global.setTimeout;
+    global.requestAnimationFrame = (fn) => { frames.push(fn); };
+    global.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return 0; };
+
+    gestureRelayout();
+    gestureRelayout();
+    gestureRelayout();
+    check('a delta starts a gesture', isGesturing());
+    check('three deltas ask for one frame, not three', frames.length === 1);
+    check('and nothing is laid out until that frame comes', relayouts === 0);
+
+    frames.splice(0).forEach((fn) => fn(fakeClock));
+    check('the frame lays the desk out once', relayouts === 1);
+    check('and draws it without its animations while the hand is down',
+      out.windowsEl.classList.contains('gesture'));
+
+    /* The fallback for a gesture that ends without a release: a VT switch
+       takes the pointer away and no button is ever reported up. */
+    /* The last of them: each delta re-arms the timer, and the stub above has
+       no clearTimeout to take the ones it replaced back out again. */
+    const idle = timers.filter((t) => t.ms === 120);
+    check('a gesture arms a timer to end itself', idle.length > 0);
+    relayouts = 0;
+    idle[idle.length - 1].fn();
+    check('and the timer firing ends it', !isGesturing());
+    check('with one more relayout, to put the animations back',
+      relayouts === 1 && !out.windowsEl.classList.contains('gesture'));
+
+    /* And the ordinary ending: the compositor reports the button up. */
+    gestureRelayout();
+    frames.splice(0).forEach((fn) => fn(fakeClock));
+    check('a second gesture suppresses them again',
+      isGesturing() && out.windowsEl.classList.contains('gesture'));
+
+    relayouts = 0;
+    endGesture();
+    check('the release ends the gesture at once',
+      !isGesturing() && relayouts === 1
+      && !out.windowsEl.classList.contains('gesture'));
+
+    relayouts = 0;
+    endGesture();
+    check('and a release with no gesture under way does nothing',
+      relayouts === 0);
+
+    global.requestAnimationFrame = realFrame;
+    global.setTimeout = realTimeout;
+    delete out.windowsEl.replaceChildren;
+  }
+
+  /* One layout query per element per frame.
+   *
+   * The saving is invisible from outside — the same rectangles are reported
+   * either way — so nothing else here would notice the cache going stale. A
+   * DOM write between beginMeasurePass and endMeasurePass is what would do it,
+   * and this is the assertion that says so. */
+  {
+    let queries = 0;
+    const el = new El('div');
+    el.__rect = { left: 0, top: 0, width: 100, height: 50 };
+    const measure = el.getBoundingClientRect.bind(el);
+    el.getBoundingClientRect = () => { queries++; return measure(); };
+
+    measureOf(el);
+    measureOf(el);
+    check('outside a pass every measurement asks the browser again',
+      queries === 2);
+
+    beginMeasurePass();
+    const first = measureOf(el);
+    const second = measureOf(el);
+    check('inside one, an element is measured once however often it is asked',
+      queries === 3);
+    check('and every caller is handed that one rectangle', first === second);
+
+    el.__rect = { left: 400, top: 0, width: 100, height: 50 };
+    check('so a write during a pass is not seen by it: nothing may write',
+      measureOf(el).left === 0 && queries === 3);
+
+    endMeasurePass();
+    check('and the pass ending goes back to measuring live',
+      measureOf(el).left === 400 && queries === 4);
+  }
+}
+
 emit({ type: 'view.removed', id: 1 });
 emit({ type: 'view.removed', id: 2 });
 emit({ type: 'view.removed', id: 3 });

@@ -924,7 +924,11 @@ function canvasHome() {
   const target = canvasTarget();
   if (!target) return;
   const viewport = canvasViewportOf(target.workspace);
-  const at = { x: viewport.x, y: viewport.y, zoom: 1 };
+  /* About the middle of the screen, like every other zoom here: anchoring at
+     the viewport origin instead shrinks the span towards the top left, so
+     coming home from 0.25 with nothing focused throws what was in the middle
+     of the view off the screen. */
+  const at = canvasZoomed(viewport, 1 / viewport.zoom, target.area);
 
   const rect = focusedId != null && workspaceOf(focusedId) === target.workspace
     ? canvasPlaces.get(focusedId) : null;
@@ -1012,6 +1016,10 @@ function canvasFillFocused() {
  * floating path in every other layout. */
 function canvasDragBy(id, dx, dy) {
   if (layoutMode !== 'canvas' || id == null) return false;
+  /* A place is kept for the session, so one malformed delta is not a bad
+     frame — it is a NaN written into the plane, and everything read off it
+     afterwards, bounds and fit included, is NaN too. */
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
   const rect = canvasPlaces.get(id);
   if (!rect) return false;
 
@@ -1050,6 +1058,8 @@ function canvasDragBy(id, dx, dy) {
  * a rectangle too small to take hold of again. */
 function canvasResizeBy(id, dx, dy, west, north) {
   if (layoutMode !== 'canvas' || id == null) return false;
+  /* As in canvasDragBy: a place outlives the gesture that wrote it. */
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
   const rect = canvasPlaces.get(id);
   if (!rect) return false;
 

@@ -181,6 +181,11 @@ const scrollOffsets = new Map();
  * exactly. Cleared on settle, when focus is moved to whichever column the
  * gesture landed on and the ordinary follow logic takes over again. */
 let gestureWorkspace = null;
+/* The workspace whose column edge is being dragged with the mouse, for the
+ * same reason: renderStrip builds a new strip element every render, so the
+ * class that turns the columns' transitions off has to be re-applied from
+ * state rather than left on the element the mousedown happened to be on. */
+let columnDragWorkspace = null;
 /* The overview: every workspace at once, scaled down. Windows are drawn shrunk
  * by the compositor rather than resized, so no client is asked to relayout
  * itself into a thumbnail — which many would refuse anyway, having a minimum
