@@ -2192,7 +2192,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/codebam/smithay.git?rev=09de0d996560ead4f306290c21b3436601462190#09de0d996560ead4f306290c21b3436601462190"
+source = "git+https://github.com/codebam/smithay.git?rev=b98f667e74571e45e63943bb06d1f410a422f8a2#b98f667e74571e45e63943bb06d1f410a422f8a2"
 dependencies = [
  "appendlist",
  "ash",
@@ -2686,7 +2686,7 @@ dependencies = [
 [[package]]
 name = "viewport-vulkan"
 version = "0.1.3"
-source = "git+https://github.com/codebam/viewport-vulkan.git?rev=cb16b2abd9a9d00271ae6436c37de593ed548b12#cb16b2abd9a9d00271ae6436c37de593ed548b12"
+source = "git+https://github.com/codebam/viewport-vulkan.git?rev=8b19b76754a3fd78d43c5312136a2edc4be540ca#8b19b76754a3fd78d43c5312136a2edc4be540ca"
 dependencies = [
  "anyhow",
  "ash",
