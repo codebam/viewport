@@ -169,11 +169,21 @@ pub struct Slow {
     pub muted: Option<bool>,
     pub mic_volume: Option<f64>,
     pub mic_muted: Option<bool>,
+    /// Whether this answers a sampling job rather than a change asked for by
+    /// [`Status::set_audio`]. Only a sampling job's answer frees the slot the
+    /// next tick asks in; a volume scroll must not be mistaken for one, or a
+    /// tick queues a second sample while the first is still being taken.
+    pub sampled: bool,
 }
 
 /// What the worker is asked for, which is whatever the bar's widgets want.
 #[derive(Debug, Clone, Default)]
 struct Job {
+    /// `wpctl` invocations to run before measuring, for a job that changes
+    /// something rather than only reading it. Run first and waited for, so the
+    /// measurement that follows describes the sink as the change left it —
+    /// see [`Status::set_audio`].
+    set: Vec<Vec<String>>,
     mounts: Vec<String>,
     want_volume: bool,
     want_mic: bool,
@@ -267,7 +277,9 @@ impl Status {
     /// on any busy machine and are not worth a message of their own — they go
     /// out with the next tick.
     pub fn absorb(&mut self, slow: Slow) -> bool {
-        self.asked = false;
+        if slow.sampled {
+            self.asked = false;
+        }
         let audio_changed = (slow.volume, slow.muted, slow.mic_volume, slow.mic_muted)
             != (
                 self.slow.volume,
@@ -277,6 +289,55 @@ impl Status {
             );
         self.slow = slow;
         audio_changed
+    }
+
+    /// Change an audio node's volume or mute state, and sample it afterwards.
+    ///
+    /// The ordering is the whole point, and it is why this cannot be
+    /// `input::spawn`: the shell used to spawn `wpctl` and ask for a refresh in
+    /// the next message, which samples the sink before the child that changes
+    /// it has run — a scroll that worked, drawing the number that was already
+    /// there. So the change is waited for and the measurement follows it.
+    ///
+    /// The waiting is the worker's, not the compositor's. Two `wpctl` runs on
+    /// the event loop are two forks and two execs a scroll wheel can ask for
+    /// faster than they finish; the jobs are serial, so the sink ends where the
+    /// last scroll put it either way.
+    ///
+    /// Returns whether the caller must sample on the spot, which is true only
+    /// where there is no worker to answer: a test, or a message handled before
+    /// the loop exists.
+    pub fn set_audio(&mut self, node: &str, delta: Option<i32>, mute: bool) -> bool {
+        let set = audio_args(node, delta, mute);
+        if set.is_empty() {
+            return false;
+        }
+
+        // The node that was just changed is read back whether or not a widget
+        // asked for it standingly: something asked about it by changing it, and
+        // the answer is what tells the shell the scroll landed.
+        let sink = node == SINK;
+        let job = Job {
+            set,
+            mounts: self.mounts.clone(),
+            want_volume: self.want_volume || sink,
+            want_mic: self.want_mic || !sink,
+        };
+        // Queued whatever else is in flight, unlike a sampling job: a scroll
+        // that is dropped is a volume that does not move.
+        let job = match &self.jobs {
+            Some(jobs) => match jobs.send(job) {
+                Ok(()) => return false,
+                // A worker that has gone hands the job back.
+                Err(std::sync::mpsc::SendError(job)) => job,
+            },
+            None => job,
+        };
+
+        // No worker: do it here as it was always done, and let the caller
+        // report the result.
+        self.slow = measure(&job);
+        true
     }
 
     /// Read everything once.
@@ -320,6 +381,7 @@ impl Status {
         // job asked for. Read in line only where there is no worker — a test,
         // or a sample taken before the loop exists.
         let job = Job {
+            set: Vec::new(),
             mounts: self.mounts.clone(),
             want_volume: self.want_volume,
             want_mic: self.want_mic,
@@ -355,10 +417,18 @@ impl Status {
 /// Everything that has to be waited for, in one pass. On the worker thread,
 /// except where there is no worker.
 fn measure(job: &Job) -> Slow {
+    // Before anything is read: a job that changes the sink is measured as the
+    // change left it, which is the reason it waits for `wpctl` at all.
+    for args in &job.set {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        wpctl(&args);
+    }
+
     let (disk_free, disk_total) = disk_usage("/");
     let mut slow = Slow {
         disk_free,
         disk_total,
+        sampled: job.set.is_empty(),
         ..Slow::default()
     };
 
@@ -372,13 +442,13 @@ fn measure(job: &Job) -> Slow {
     }
 
     if job.want_volume {
-        let (volume, muted) = audio_state("@DEFAULT_AUDIO_SINK@");
+        let (volume, muted) = audio_state(SINK);
         slow.volume = volume;
         slow.muted = muted;
     }
 
     if job.want_mic {
-        let (volume, muted) = audio_state("@DEFAULT_AUDIO_SOURCE@");
+        let (volume, muted) = audio_state(SOURCE);
         slow.mic_volume = volume;
         slow.mic_muted = muted;
     }
@@ -412,19 +482,48 @@ fn disk_usage(path: &str) -> (f64, f64) {
     (stat.f_bavail as f64 * frsize, stat.f_blocks as f64 * frsize)
 }
 
-/// Run `wpctl` and wait for it, for a change the bar reports.
+/// The `wpctl` invocations one `status.volume` asks for: a relative step, a
+/// mute toggle, or both, in that order.
 ///
-/// Waiting is the reason this exists rather than `input::spawn`. A volume
-/// scrolled through a spawned process and sampled in the next message samples
-/// the sink before the process has run, so the bar redraws the number that was
-/// already there — a change that worked, looking like one that did not. See
-/// `Request::StatusVolume`.
+/// A delta of zero and no mute is a message that asks for nothing, and asking
+/// `wpctl` for a zero step is still two processes; it comes back empty and
+/// nothing is queued.
+fn audio_args(node: &str, delta: Option<i32>, mute: bool) -> Vec<Vec<String>> {
+    let mut set = Vec::new();
+    if let Some(delta) = delta.filter(|delta| *delta != 0) {
+        // `wpctl` spells a relative change with the sign after the unit, and
+        // takes no negative number: 5%+ up, 5%- down.
+        let step = if delta > 0 {
+            format!("{delta}%+")
+        } else {
+            format!("{}%-", -delta)
+        };
+        set.push(vec!["set-volume".to_owned(), node.to_owned(), step]);
+    }
+    if mute {
+        set.push(vec![
+            "set-mute".to_owned(),
+            node.to_owned(),
+            "toggle".to_owned(),
+        ]);
+    }
+    set
+}
+
+/// The names `wpctl` knows the default sink and source by. A page names a
+/// target as `sink` or `source` and gets one of these; it cannot name a node
+/// itself, `wpctl` taking an id wherever it does not recognise a name.
+pub const SINK: &str = "@DEFAULT_AUDIO_SINK@";
+pub const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
+
+/// Run `wpctl` and wait for it, on the worker thread, for a change the bar
+/// reports. See [`Status::set_audio`], which is the only thing that asks.
 ///
 /// Returns whether it ran and said it succeeded. A machine with no `wpctl`,
 /// no session bus or no sink says so by failing here, and nothing about that
-/// should take the bar or the compositor down: the caller skips the re-sample
-/// and the next tick reports whatever is true.
-pub fn wpctl(args: &[&str]) -> bool {
+/// should take the bar or the compositor down: the measurement that follows
+/// reports whatever is true.
+fn wpctl(args: &[&str]) -> bool {
     match std::process::Command::new("wpctl").args(args).status() {
         Ok(status) if status.success() => true,
         Ok(status) => {
@@ -658,6 +757,77 @@ Inter-|   Receive                                                |  Transmit
         // Mounts that exist have a size; the default disk numbers still
         // describe the root mount regardless.
         assert!(sample.disk_total > 0.0);
+    }
+
+    #[test]
+    fn a_volume_change_is_a_step_then_a_toggle() {
+        // What `status.volume` turns into, without running any of it: the sign
+        // goes after the unit, a fall is spelled as a positive number down, and
+        // a message that asks for both gets the change before the toggle so the
+        // measurement that follows describes the end state.
+        assert_eq!(
+            audio_args(SINK, Some(5), false),
+            [["set-volume", SINK, "5%+"]]
+        );
+        assert_eq!(
+            audio_args(SINK, Some(-5), false),
+            [["set-volume", SINK, "5%-"]]
+        );
+        assert_eq!(
+            audio_args(SOURCE, Some(3), true),
+            [
+                vec!["set-volume", SOURCE, "3%+"],
+                vec!["set-mute", SOURCE, "toggle"],
+            ]
+        );
+        assert_eq!(audio_args(SINK, None, true), [["set-mute", SINK, "toggle"]]);
+    }
+
+    #[test]
+    fn a_volume_message_that_asks_for_nothing_runs_nothing() {
+        // A zero step with no toggle is still two forks if it is passed on.
+        // Nothing is queued, and the caller is told it need not sample.
+        assert!(audio_args(SINK, Some(0), false).is_empty());
+        assert!(audio_args(SINK, None, false).is_empty());
+        let mut status = Status::default();
+        assert!(
+            !status.set_audio(SINK, Some(0), false),
+            "nothing to do, so nothing to report"
+        );
+    }
+
+    #[test]
+    fn only_a_sample_frees_the_slot_the_next_sample_asks_in() {
+        // A change's answer arrives through the same channel as a sample's, and
+        // must not be mistaken for one: the tick that queued a sample is still
+        // waiting for it, and a second queued behind it would have the
+        // compositor asking faster than the worker answers.
+        let mut status = Status {
+            asked: true,
+            ..Status::default()
+        };
+
+        let changed = Slow {
+            volume: Some(0.4),
+            sampled: false,
+            ..Slow::default()
+        };
+        assert!(status.absorb(changed), "the volume moved, so the bar hears");
+        assert!(
+            status.asked,
+            "the sample that was asked for is still coming"
+        );
+
+        let sampled = Slow {
+            volume: Some(0.4),
+            sampled: true,
+            ..Slow::default()
+        };
+        assert!(
+            !status.absorb(sampled),
+            "nothing moved since the last answer"
+        );
+        assert!(!status.asked, "and now the next tick may ask again");
     }
 
     #[test]
