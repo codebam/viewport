@@ -37,6 +37,16 @@ impl AsFd for Shared {
     }
 }
 
+/// How much unsent event text one client may be owed before it is dropped.
+///
+/// The mirror of `framing::MAX_PENDING`, which bounds what a client may send
+/// us: a connection that reads nothing while `subscribe` pours events at it
+/// otherwise grows the compositor's heap without limit, because a write that
+/// comes back `WouldBlock` leaves everything behind and nothing ever takes it.
+/// A megabyte is hundreds of events — far more than a reader that is merely
+/// slow falls behind by, and nothing a reader that has stopped will ever take.
+const MAX_BACKLOG: usize = 1 << 20;
+
 struct Client {
     stream: Rc<UnixStream>,
     /// The process on the other end, when the kernel will say.
@@ -49,6 +59,9 @@ struct Client {
     framer: Framer,
     /// What a short write left behind. Nothing else will send it, so the
     /// writable half of the source has to.
+    ///
+    /// Bounded by [`MAX_BACKLOG`]: a subscriber that stops reading is not a
+    /// reason for the compositor to grow.
     pending: Vec<u8>,
     token: RegistrationToken,
     /// The write-readiness source, which exists only while `pending` does.
@@ -318,6 +331,17 @@ impl Client {
         }
         self.pending.extend_from_slice(bytes);
         self.flush();
+        // Same rule as `Framed::Overrun` on the read side: a client that has
+        // stopped taking what it asked for is gone, whatever its socket still
+        // says.
+        if self.pending.len() > MAX_BACKLOG {
+            tracing::warn!(
+                "control client is {} bytes behind; dropping it",
+                self.pending.len()
+            );
+            self.dead = true;
+            self.pending.clear();
+        }
     }
 
     fn flush(&mut self) {
