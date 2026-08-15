@@ -1062,11 +1062,27 @@ pub fn init(
         .map_err(|e| anyhow!("inserting the drm source: {e}"))?;
 
     // Session: the VT was switched away from or back to.
+    //
+    // libinput has to be told, and not only DRM. logind revokes the evdev fds
+    // along with the card's on a VT switch, and a context that was never
+    // suspended does not reopen them when the session comes back: every device
+    // stays dead, which is a desktop that draws but takes no key or click —
+    // including the keybinds that would switch away again or quit.
     event_loop
         .handle()
         .insert_source(notifier, move |event, _, state| match event {
-            SessionEvent::PauseSession => state.on_session_paused(),
-            SessionEvent::ActivateSession => state.on_session_resumed(),
+            SessionEvent::PauseSession => {
+                libinput.suspend();
+                state.on_session_paused();
+            }
+            SessionEvent::ActivateSession => {
+                // A resume that fails is a session with no input at all, so it
+                // is worth a line naming it; there is nothing to fall back to.
+                if let Err(e) = libinput.resume() {
+                    tracing::error!("resuming libinput: {e:?}");
+                }
+                state.on_session_resumed();
+            }
         })
         .map_err(|e| anyhow!("inserting the session source: {e}"))?;
 
