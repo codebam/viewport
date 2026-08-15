@@ -45,9 +45,21 @@ const IDLE: Duration = Duration::from_millis(250);
 /// A rejected message comes back as an `error` event to the client that sent
 /// it and an accepted one comes back as nothing at all, so the only way to
 /// tell the two apart without a clock is to ask a question afterwards and see
-/// which arrives first. `output.query` is that question: every build answers
-/// it, it answers at once, and it changes nothing.
-const BARRIER: &str = "{\"type\":\"output.query\"}\n";
+/// which arrives first.
+///
+/// A type the compositor does not know is that question. It is answered at
+/// once, on this connection alone, and — being refused before dispatch — it is
+/// the only round trip that genuinely runs nothing. `output.query` used to be
+/// it and was not inert: it re-announces the whole layout, resizes the shell,
+/// re-syncs the shell processes and the wallpaper, and broadcasts an
+/// `output.layout` to every subscriber. A script sending a hundred no-reply
+/// messages made the compositor do all of that a hundred times.
+const BARRIER: &str = "{\"type\":\"viewport.msg.barrier\"}\n";
+
+/// The `context` of the error the barrier comes back as, which is the type
+/// name it was sent with (`ParseError::context`). What tells the barrier's own
+/// refusal apart from the refusal of the message in front of it.
+const BARRIER_CONTEXT: &str = "viewport.msg.barrier";
 
 /// The fields whose values are always a list, so that one `--args right`
 /// builds `["right"]` rather than `"right"`.
@@ -610,7 +622,14 @@ fn insert(body: &mut Map<String, Value>, field: &str, value: Value) -> Result<()
                 .entry(segment.to_owned())
                 .or_insert_with(|| Value::Array(Vec::new()))
             {
-                Value::Array(items) => items.push(value),
+                // A value that is already a list is the list, not one item of
+                // one: `--rects '[{...}]'` is the documented spelling, and
+                // wrapping it again sent `[[{...}]]` — a message the compositor
+                // refuses, from the line its own help tells the user to type.
+                Value::Array(items) => match value {
+                    Value::Array(given) => items.extend(given),
+                    value => items.push(value),
+                },
                 _ => return Err(format!("--{field} was already given as something else")),
             }
             return Ok(());
@@ -662,6 +681,9 @@ fn run(invocation: Invocation) -> Result<(), String> {
 
     let deadline = invocation.timeout.map(|timeout| Instant::now() + timeout);
     let pretty = invocation.pretty;
+    // The line being read, which outlives any one read: a timeout can land in
+    // the middle of one. See `read_event`.
+    let mut partial = String::new();
 
     match invocation.reply {
         Reply::Stream => {
@@ -669,7 +691,7 @@ fn run(invocation: Invocation) -> Result<(), String> {
             // compositor does or the terminal is closed.
             stream.set_read_timeout(None).ok();
             loop {
-                match read_event(&mut reader)? {
+                match read_event(&mut reader, &mut partial)? {
                     Incoming::Event(event) => {
                         let kind = kind_of(&event);
                         if invocation.watching.is_empty()
@@ -693,18 +715,18 @@ fn run(invocation: Invocation) -> Result<(), String> {
             //
             // The compositor reads and dispatches a connection's messages in
             // the order they arrive, and answers them on the same buffer, so
-            // an `output.layout` here is proof that the message before it has
-            // already been handled — and an `error` read on the way to it is
-            // that message's own.
+            // the barrier's own refusal here is proof that the message before
+            // it has already been handled — and an `error` read on the way to
+            // it is that message's own.
             let _ = (&stream).write_all(BARRIER.as_bytes());
             loop {
                 if !arm(&stream, deadline.unwrap_or_else(forever))? {
                     return Ok(());
                 }
-                match read_event(&mut reader) {
+                match read_event(&mut reader, &mut partial) {
                     Ok(Incoming::Event(event)) => match kind_of(&event) {
+                        "error" if context_of(&event) == BARRIER_CONTEXT => return Ok(()),
                         "error" => return Err(complaint(&event)),
-                        "output.layout" => return Ok(()),
                         _ => continue,
                     },
                     // The compositor going away is what `quit` asked for, and
@@ -719,7 +741,7 @@ fn run(invocation: Invocation) -> Result<(), String> {
             if !arm(&stream, deadline.unwrap_or_else(forever))? {
                 return Err(format!("nothing answered with {wanted} in time"));
             }
-            match read_event(&mut reader)? {
+            match read_event(&mut reader, &mut partial)? {
                 Incoming::Event(event) => match kind_of(&event) {
                     kind if kind == wanted => {
                         print_event(&event, pretty);
@@ -748,7 +770,7 @@ fn run(invocation: Invocation) -> Result<(), String> {
                 if !arm(&stream, until)? {
                     return if seen { Ok(()) } else { Err(ran_out()) };
                 }
-                match read_event(&mut reader)? {
+                match read_event(&mut reader, &mut partial)? {
                     Incoming::Event(event) => match kind_of(&event) {
                         "error" => return Err(complaint(&event)),
                         kind if wanted.contains(&kind) => {
@@ -789,6 +811,7 @@ fn arm(stream: &UnixStream, until: Instant) -> Result<bool, String> {
     Ok(true)
 }
 
+#[derive(Debug)]
 enum Incoming {
     Event(Value),
     /// The read timeout arrived first. What that means is the caller's: for a
@@ -798,12 +821,23 @@ enum Incoming {
     Eof,
 }
 
-fn read_event(reader: &mut BufReader<UnixStream>) -> Result<Incoming, String> {
+/// Read one event, keeping whatever a timeout interrupted.
+///
+/// `partial` is the caller's, and is why: `read_line` consumes as it reads, so
+/// a read timeout that lands mid-line has already taken those bytes out of the
+/// socket. Dropping the string here threw them away, and the next read then
+/// began in the middle of a message — an `output.layout` split across two
+/// reads came back truncated, or made the read after it unparseable. So the
+/// half line stays in the caller's buffer and the next read finishes it.
+fn read_event(
+    reader: &mut BufReader<UnixStream>,
+    partial: &mut String,
+) -> Result<Incoming, String> {
     loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
+        match reader.read_line(partial) {
             Ok(0) => return Ok(Incoming::Eof),
             Ok(_) => {
+                let line = std::mem::take(partial);
                 let line = line.trim();
                 // The compositor writes one message per line, but a blank line
                 // is ignored rather than refused everywhere else in this
@@ -828,12 +862,18 @@ fn kind_of(event: &Value) -> &str {
     event.get("type").and_then(Value::as_str).unwrap_or("")
 }
 
-/// An `error` event, as the line to print.
-fn complaint(event: &Value) -> String {
-    let context = event
+/// What an `error` event was refused against: the message's own type, or
+/// `ipc` for anything that failed before there was a type to name.
+fn context_of(event: &Value) -> &str {
+    event
         .get("context")
         .and_then(Value::as_str)
-        .unwrap_or("ipc");
+        .unwrap_or("ipc")
+}
+
+/// An `error` event, as the line to print.
+fn complaint(event: &Value) -> String {
+    let context = context_of(event);
     let message = event
         .get("message")
         .and_then(Value::as_str)
@@ -1068,6 +1108,49 @@ mod tests {
     }
 
     #[test]
+    fn a_list_given_as_a_list_is_not_wrapped_in_another_one() {
+        // The documented spelling, and the one the help text asks for:
+        // `--rects '[{...}]'` is the whole list. Pushed whole it became
+        // `[[{...}]]`, which the compositor refuses — so the line printed in
+        // the hint exited 2.
+        assert_eq!(
+            value(&[
+                "-t",
+                "shell.overlay",
+                "--rects",
+                r#"[{"x":0,"y":0,"width":10,"height":10}]"#,
+            ]),
+            serde_json::json!({
+                "type": "shell.overlay",
+                "rects": [{"x": 0, "y": 0, "width": 10, "height": 10}],
+            })
+        );
+    }
+
+    #[test]
+    fn a_list_given_as_a_list_still_collects() {
+        // Two of them concatenate rather than nest, which is the same rule the
+        // repeated `--args` follows.
+        assert_eq!(
+            value(&[
+                "-t",
+                "shell.overlay",
+                "--rects",
+                r#"[{"x":0,"y":0,"width":10,"height":10}]"#,
+                "--rects",
+                r#"{"x":1,"y":1,"width":2,"height":2}"#,
+            ]),
+            serde_json::json!({
+                "type": "shell.overlay",
+                "rects": [
+                    {"x": 0, "y": 0, "width": 10, "height": 10},
+                    {"x": 1, "y": 1, "width": 2, "height": 2},
+                ],
+            })
+        );
+    }
+
+    #[test]
     fn a_verb_that_takes_no_arguments_needs_no_args() {
         assert_eq!(
             value(&["-t", "shell.command", "--command", "layout.overview"]),
@@ -1168,6 +1251,48 @@ mod tests {
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
         assert_eq!(TYPES.len(), 37);
+    }
+
+    #[test]
+    fn a_read_timeout_does_not_eat_the_line_it_landed_in() {
+        // `read_line` consumes as it goes, so the bytes of a half-arrived
+        // message are already out of the socket when the timeout fires.
+        // Dropping them truncated a long `output.layout` and left the read
+        // after it looking at the tail of a message it never saw the head of.
+        let (mine, theirs) = UnixStream::pair().expect("a socket pair");
+        mine.set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("a read timeout");
+        let mut reader = BufReader::new(mine);
+        let mut partial = String::new();
+
+        (&theirs)
+            .write_all(br#"{"type":"output.la"#)
+            .expect("the first half");
+        assert!(matches!(
+            read_event(&mut reader, &mut partial),
+            Ok(Incoming::Timeout)
+        ));
+
+        (&theirs).write_all(b"yout\"}\n").expect("the second half");
+        let event = match read_event(&mut reader, &mut partial) {
+            Ok(Incoming::Event(event)) => event,
+            other => panic!("the rest of the line should have completed it: {other:?}"),
+        };
+        assert_eq!(kind_of(&event), "output.layout");
+    }
+
+    #[test]
+    fn the_barrier_is_a_message_the_compositor_runs_nothing_for() {
+        // It has to be refused — that refusal is the round trip — and the
+        // refusal has to name it, because that is what tells the barrier's own
+        // error apart from the error of the message in front of it. A build
+        // that grew a request by this name would break both.
+        match viewport_ipc::parse(BARRIER.trim().as_bytes()) {
+            Err(viewport_ipc::ParseError::UnknownType { name }) => {
+                assert_eq!(name, BARRIER_CONTEXT);
+            }
+            other => panic!("the barrier must be refused before dispatch: {other:?}"),
+        }
     }
 
     #[test]

@@ -153,6 +153,32 @@ pub fn rate(previous: u64, current: u64, seconds: f64) -> f64 {
     (current - previous) as f64 / seconds
 }
 
+/// The half of a sample that is not a `/proc` read: filesystems, which a dead
+/// NFS mount answers for never, and `wpctl`, which is two processes to fork,
+/// exec and wait for.
+///
+/// Split out because the compositor must not be the thread that waits for any
+/// of it. See [`Status::start`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Slow {
+    /// Free and total bytes on the root filesystem.
+    pub disk_free: f64,
+    pub disk_total: f64,
+    pub mounts: Vec<MountUsage>,
+    pub volume: Option<f64>,
+    pub muted: Option<bool>,
+    pub mic_volume: Option<f64>,
+    pub mic_muted: Option<bool>,
+}
+
+/// What the worker is asked for, which is whatever the bar's widgets want.
+#[derive(Debug, Clone, Default)]
+struct Job {
+    mounts: Vec<String>,
+    want_volume: bool,
+    want_mic: bool,
+}
+
 /// Samples the machine, keeping what it needs to turn counters into rates.
 #[derive(Default)]
 pub struct Status {
@@ -166,6 +192,17 @@ pub struct Status {
     want_volume: bool,
     /// Whether a mic widget asked for the default source's volume.
     want_mic: bool,
+    /// The worker's mailbox, once there is a worker. Absent in a test and in
+    /// anything that samples before the loop exists, where the slow half is
+    /// simply read on the spot as it always was.
+    jobs: Option<std::sync::mpsc::Sender<Job>>,
+    /// Whether the worker is already busy with a job. One at a time: a sampler
+    /// that queues faster than `wpctl` runs would never catch up.
+    asked: bool,
+    /// The last answer the worker gave, which is what a sample reports. At most
+    /// one tick old, and a bar showing a two-second-old volume is a bar; a
+    /// compositor waiting two seconds for one is a freeze.
+    slow: Slow,
 }
 
 impl Status {
@@ -179,6 +216,67 @@ impl Status {
         self.mounts = mounts;
         self.want_volume = want_volume;
         self.want_mic = want_mic;
+    }
+
+    /// Start the thread that does the waiting, and deliver its answers through
+    /// `sink`.
+    ///
+    /// Everything here used to be sampled on the compositor's own loop, on a
+    /// two-second timer: two `wpctl get-volume` processes forked, exec'd and
+    /// waited for, and a `statvfs` per configured mount. A bar with a volume
+    /// and a mic widget therefore stalled the compositor on a fixed cadence,
+    /// and one dead NFS mount stalled it for good — `statvfs` on an
+    /// unresponsive server does not return.
+    ///
+    /// So it happens on a thread, and the answer arrives through a calloop
+    /// channel like the notification service's does. The compositor never
+    /// waits: a tick reports the last answer and asks for the next.
+    ///
+    /// A failure to spawn is not fatal — the sampler falls back to reading the
+    /// slow half in line, which is what it did before there was a thread.
+    pub fn start(
+        &mut self,
+        sink: smithay::reexports::calloop::channel::Sender<Slow>,
+    ) -> std::io::Result<()> {
+        // So the first tick has a disk figure rather than a zero. Nothing is
+        // configured yet at startup, so this is one `statvfs` on the root
+        // filesystem and no subprocess at all.
+        self.slow = measure(&Job::default());
+
+        let (sender, jobs) = std::sync::mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("viewport-status".to_owned())
+            .spawn(move || {
+                for job in jobs {
+                    // A closed channel is the compositor going away.
+                    if sink.send(measure(&job)).is_err() {
+                        return;
+                    }
+                }
+            })?;
+        self.jobs = Some(sender);
+        Ok(())
+    }
+
+    /// Take the worker's answer, and say whether the shell should hear about it
+    /// before the next tick.
+    ///
+    /// Only for the audio state: a volume scrolled through `status.volume` is
+    /// acted on at once and the bar has to show it at once, which is the whole
+    /// reason that path waits for `wpctl` at all. Disk figures drift by a block
+    /// on any busy machine and are not worth a message of their own — they go
+    /// out with the next tick.
+    pub fn absorb(&mut self, slow: Slow) -> bool {
+        self.asked = false;
+        let audio_changed = (slow.volume, slow.muted, slow.mic_volume, slow.mic_muted)
+            != (
+                self.slow.volume,
+                self.slow.muted,
+                self.slow.mic_volume,
+                self.slow.mic_muted,
+            );
+        self.slow = slow;
+        audio_changed
     }
 
     /// Read everything once.
@@ -217,38 +315,75 @@ impl Status {
         }
 
         sample.load = load_average();
-        let (free, total) = disk_usage("/");
-        sample.disk_free = free;
-        sample.disk_total = total;
 
+        // The half that can wait: the last answer the worker gave, and a fresh
+        // job asked for. Read in line only where there is no worker — a test,
+        // or a sample taken before the loop exists.
+        let job = Job {
+            mounts: self.mounts.clone(),
+            want_volume: self.want_volume,
+            want_mic: self.want_mic,
+        };
+        match &self.jobs {
+            Some(jobs) => {
+                if !self.asked {
+                    // One in flight at a time; a send that fails is a worker
+                    // that has gone, and the last answer stands.
+                    self.asked = jobs.send(job).is_ok();
+                }
+            }
+            None => self.slow = measure(&job),
+        }
+
+        sample.disk_free = self.slow.disk_free;
+        sample.disk_total = self.slow.disk_total;
         // The extra mounts a bar widget asked about, one entry per configured
         // path. A widget that names `/` reports the root mount as its own
         // entry, which is that widget's business — the default disk module
         // next to it is a separate element.
-        for path in &self.mounts {
-            let (free, total) = disk_usage(path);
-            sample.mounts.push(MountUsage {
-                path: path.clone(),
-                free,
-                total,
-            });
-        }
-
-        if self.want_volume {
-            let (volume, muted) = audio_state("@DEFAULT_AUDIO_SINK@");
-            sample.volume = volume;
-            sample.muted = muted;
-        }
-
-        if self.want_mic {
-            let (volume, muted) = audio_state("@DEFAULT_AUDIO_SOURCE@");
-            sample.mic_volume = volume;
-            sample.mic_muted = muted;
-        }
+        sample.mounts = self.slow.mounts.clone();
+        sample.volume = self.slow.volume;
+        sample.muted = self.slow.muted;
+        sample.mic_volume = self.slow.mic_volume;
+        sample.mic_muted = self.slow.mic_muted;
 
         self.at = Some(now);
         sample
     }
+}
+
+/// Everything that has to be waited for, in one pass. On the worker thread,
+/// except where there is no worker.
+fn measure(job: &Job) -> Slow {
+    let (disk_free, disk_total) = disk_usage("/");
+    let mut slow = Slow {
+        disk_free,
+        disk_total,
+        ..Slow::default()
+    };
+
+    for path in &job.mounts {
+        let (free, total) = disk_usage(path);
+        slow.mounts.push(MountUsage {
+            path: path.clone(),
+            free,
+            total,
+        });
+    }
+
+    if job.want_volume {
+        let (volume, muted) = audio_state("@DEFAULT_AUDIO_SINK@");
+        slow.volume = volume;
+        slow.muted = muted;
+    }
+
+    if job.want_mic {
+        let (volume, muted) = audio_state("@DEFAULT_AUDIO_SOURCE@");
+        slow.mic_volume = volume;
+        slow.mic_muted = muted;
+    }
+
+    slow
 }
 
 /// The one, five and fifteen minute load averages.
@@ -523,6 +658,71 @@ Inter-|   Receive                                                |  Transmit
         // Mounts that exist have a size; the default disk numbers still
         // describe the root mount regardless.
         assert!(sample.disk_total > 0.0);
+    }
+
+    #[test]
+    fn a_worker_answers_without_the_sampler_waiting() {
+        // With a worker the slow half is asked for and not waited for: the
+        // sample that asks reports the previous answer, and the one after the
+        // answer arrives reports it. What the compositor must never do is block
+        // on a `statvfs` or a `wpctl` on its own thread.
+        let mut loop_ = smithay::reexports::calloop::EventLoop::<Option<Slow>>::try_new()
+            .expect("an event loop");
+        let (sender, source) = smithay::reexports::calloop::channel::channel::<Slow>();
+        loop_
+            .handle()
+            .insert_source(source, |event, _, taken: &mut Option<Slow>| {
+                if let smithay::reexports::calloop::channel::Event::Msg(slow) = event {
+                    *taken = Some(slow);
+                }
+            })
+            .expect("the channel source");
+
+        let mut status = Status::default();
+        status.start(sender).expect("the worker should start");
+        status.configure(vec!["/".to_owned()], false, false);
+
+        // Nothing has come back yet, so this reports the seed — the root
+        // filesystem, and no mounts.
+        let first = status.sample();
+        assert!(first.disk_total > 0.0, "the seed has the root filesystem");
+        assert!(first.mounts.is_empty(), "the worker has not answered yet");
+
+        let mut taken = None;
+        while taken.is_none() {
+            loop_
+                .dispatch(std::time::Duration::from_secs(2), &mut taken)
+                .expect("the loop should run");
+        }
+        status.absorb(taken.expect("the worker should answer"));
+
+        let second = status.sample();
+        let paths: Vec<&str> = second.mounts.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, ["/"]);
+    }
+
+    #[test]
+    fn only_a_changed_volume_is_worth_a_message_of_its_own() {
+        // A disk figure that drifted by a block is not; it goes out with the
+        // next tick. A volume that changed is, because a scroll on the bar is
+        // answered by re-sampling and has to show at once.
+        let mut status = Status::default();
+        assert!(!status.absorb(Slow::default()), "nothing changed");
+        assert!(
+            !status.absorb(Slow {
+                disk_free: 1.0,
+                ..Slow::default()
+            }),
+            "a disk figure waits for the tick"
+        );
+        assert!(
+            status.absorb(Slow {
+                disk_free: 1.0,
+                volume: Some(0.5),
+                ..Slow::default()
+            }),
+            "a volume does not"
+        );
     }
 
     #[test]

@@ -37,6 +37,16 @@ impl AsFd for Shared {
     }
 }
 
+/// How much unsent event text one client may be owed before it is dropped.
+///
+/// The mirror of `framing::MAX_PENDING`, which bounds what a client may send
+/// us: a connection that reads nothing while `subscribe` pours events at it
+/// otherwise grows the compositor's heap without limit, because a write that
+/// comes back `WouldBlock` leaves everything behind and nothing ever takes it.
+/// A megabyte is hundreds of events — far more than a reader that is merely
+/// slow falls behind by, and nothing a reader that has stopped will ever take.
+const MAX_BACKLOG: usize = 1 << 20;
+
 struct Client {
     stream: Rc<UnixStream>,
     /// The process on the other end, when the kernel will say.
@@ -49,6 +59,9 @@ struct Client {
     framer: Framer,
     /// What a short write left behind. Nothing else will send it, so the
     /// writable half of the source has to.
+    ///
+    /// Bounded by [`MAX_BACKLOG`]: a subscriber that stops reading is not a
+    /// reason for the compositor to grow.
     pending: Vec<u8>,
     token: RegistrationToken,
     /// The write-readiness source, which exists only while `pending` does.
@@ -318,6 +331,17 @@ impl Client {
         }
         self.pending.extend_from_slice(bytes);
         self.flush();
+        // Same rule as `Framed::Overrun` on the read side: a client that has
+        // stopped taking what it asked for is gone, whatever its socket still
+        // says.
+        if self.pending.len() > MAX_BACKLOG {
+            tracing::warn!(
+                "control client is {} bytes behind; dropping it",
+                self.pending.len()
+            );
+            self.dead = true;
+            self.pending.clear();
+        }
     }
 
     fn flush(&mut self) {
@@ -467,12 +491,22 @@ impl ViewportState {
                 None => Vec::new(),
             };
 
+            // Whose coordinates the page speaks in, said outright: an
+            // in-process page has no connection and so no pid to find it by,
+            // and deriving the origin from client id 0 found nothing at all —
+            // every page's rectangles were taken as layout coordinates, which
+            // is the very fault `dispatch_origin` exists to fix.
+            let origin = match self.shells.get(page) {
+                Some(shell) => shell.region.loc,
+                None => continue,
+            };
+
             for message in messages {
                 tracing::debug!("from shell {page}: {message}");
                 // Client id 0: the shell is not one of the socket clients, and
                 // an error it caused goes to the broadcast channel it already
                 // listens to rather than to a connection that does not exist.
-                self.ipc_dispatch(0, message.as_bytes());
+                self.ipc_dispatch_at(0, origin, message.as_bytes());
             }
         }
 
@@ -497,6 +531,27 @@ impl ViewportState {
     }
 
     pub fn ipc_dispatch(&mut self, client_id: u64, bytes: &[u8]) {
+        // Whose coordinates these are, for a connection: the shell that holds
+        // it, if it is one. Left at zero for everything else — a script driving
+        // the socket speaks layout coordinates, because it has no page to speak
+        // in.
+        let origin = self
+            .shell_for_client(client_id)
+            .and_then(|at| self.shell_clients.get(at))
+            .map(|shell| shell.region.loc)
+            .unwrap_or_default();
+        self.ipc_dispatch_at(client_id, origin, bytes);
+    }
+
+    /// The same, for a sender whose origin is known outright rather than
+    /// through its connection — which is every in-process page, none of which
+    /// has one.
+    fn ipc_dispatch_at(
+        &mut self,
+        client_id: u64,
+        origin: smithay::utils::Point<i32, smithay::utils::Logical>,
+        bytes: &[u8],
+    ) {
         // Everything that arrives, at debug. The out-of-process shell talks
         // over this socket like any other client, so without this there is no
         // way to see what the desktop asked for — which is the first question
@@ -533,11 +588,7 @@ impl ViewportState {
         //
         // Left at zero for everything else: a script driving the socket speaks
         // layout coordinates, because it has no page to speak in.
-        self.dispatch_origin = self
-            .shell_for_client(client_id)
-            .and_then(|at| self.shell_clients.get(at))
-            .map(|shell| shell.region.loc)
-            .unwrap_or_default();
+        self.dispatch_origin = origin;
 
         match viewport_ipc::parse(bytes) {
             Ok(request) => self.handle_request(request),
@@ -546,6 +597,13 @@ impl ViewportState {
                 self.ipc_reject(client_id, &error);
             }
         }
+
+        // And back to zero, because it describes this dispatch and nothing
+        // else. Left set, it was added a second time by anything that applies a
+        // layout of its own afterwards: the recovery watchdog's rescue columns
+        // are already in layout coordinates, and on a multi-monitor `--url`
+        // session they landed a screen's width off the desk.
+        self.dispatch_origin = (0, 0).into();
     }
 
     fn ipc_reject(&mut self, client_id: u64, error: &ParseError) {
