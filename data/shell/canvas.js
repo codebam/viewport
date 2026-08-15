@@ -924,7 +924,11 @@ function canvasHome() {
   const target = canvasTarget();
   if (!target) return;
   const viewport = canvasViewportOf(target.workspace);
-  const at = { x: viewport.x, y: viewport.y, zoom: 1 };
+  /* About the middle of the screen, like every other zoom here: anchoring at
+     the viewport origin instead shrinks the span towards the top left, so
+     coming home from 0.25 with nothing focused throws what was in the middle
+     of the view off the screen. */
+  const at = canvasZoomed(viewport, 1 / viewport.zoom, target.area);
 
   const rect = focusedId != null && workspaceOf(focusedId) === target.workspace
     ? canvasPlaces.get(focusedId) : null;
