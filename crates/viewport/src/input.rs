@@ -650,27 +650,40 @@ impl ViewportState {
                     // commentary only when asked, because a gaming mouse sends
                     // thousands of these a second.
                     self.pointer_motions += 1;
-                    let state = if locked {
-                        "locked".to_owned()
-                    } else if let Some((region, _)) = confine_to.as_ref() {
-                        format!("confined to {} rect(s)", region.len())
+                    // The state as a constant, so the comparison costs nothing:
+                    // this runs for every motion event a gaming mouse sends and
+                    // a string built to be thrown away is a string built
+                    // thousands of times a second. How many rectangles the
+                    // confinement has is worth having in the line and is
+                    // therefore formatted where the line is, not here.
+                    let state: &'static str = if locked {
+                        "locked"
+                    } else if confine_to.is_some() {
+                        "confined"
                     } else {
-                        "free".to_owned()
+                        "free"
                     };
-                    let changed = self.pointer_capture.as_deref() != Some(state.as_str());
+                    let changed = self.pointer_capture.as_deref() != Some(state);
                     if changed {
-                        self.pointer_capture = Some(state.clone());
+                        self.pointer_capture = Some(state.to_owned());
                     }
                     if changed || (crate::pointer::debug() && self.pointer_motions % 100 == 1) {
-                        tracing::info!(
-                            "pointer: delta {:?} at {from:?}, {state}, over {}",
-                            event.delta(),
-                            if under.is_some() {
-                                "a surface"
-                            } else {
-                                "the shell"
-                            }
-                        );
+                        let over = if under.is_some() {
+                            "a surface"
+                        } else {
+                            "the shell"
+                        };
+                        match confine_to.as_ref().filter(|_| !locked) {
+                            Some((region, _)) => tracing::info!(
+                                "pointer: delta {:?} at {from:?}, confined to {} rect(s), over {over}",
+                                event.delta(),
+                                region.len()
+                            ),
+                            None => tracing::info!(
+                                "pointer: delta {:?} at {from:?}, {state}, over {over}",
+                                event.delta()
+                            ),
+                        }
                     }
                 }
 
