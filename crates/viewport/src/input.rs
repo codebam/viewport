@@ -818,13 +818,19 @@ impl ViewportState {
                     pointer.current_location(),
                 );
 
-                if starts_gesture(
-                    state == ButtonState::Pressed,
-                    pointer.is_grabbed(),
-                    on_overlay,
-                    keyboard.modifier_state().logo,
-                    event.button_code(),
-                ) {
+                // Nothing is dragged, moved, resized or panned behind a lock
+                // screen. `window_under` answers by geometry alone — unlike
+                // `surface_under`, which refuses while locked — so the guard
+                // has to be here, in front of every path that hit-tests.
+                if !self.locked
+                    && starts_gesture(
+                        state == ButtonState::Pressed,
+                        pointer.is_grabbed(),
+                        on_overlay,
+                        keyboard.modifier_state().logo,
+                        event.button_code(),
+                    )
+                {
                     let hit = self.window_under(pointer.current_location());
                     let dragging = hit.as_ref().and_then(|window| {
                         self.views
@@ -886,7 +892,11 @@ impl ViewportState {
                     }
                 }
 
-                if state == ButtonState::Pressed && !pointer.is_grabbed() {
+                // And nothing takes the keyboard behind a lock screen either.
+                // The locker's surface is the only thing that may hold it, and
+                // a click where a window happens to be mapped raised that
+                // window and handed it every keystroke that followed.
+                if state == ButtonState::Pressed && !pointer.is_grabbed() && !self.locked {
                     let hit = self.window_under(pointer.current_location());
                     // Clicking a notification must not raise and focus the
                     // window behind it — the click never reached that window.
