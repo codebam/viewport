@@ -69,6 +69,30 @@ pub struct IdleConfig {
     pub lock_command: Option<String>,
 }
 
+/// The `notifications` block.
+///
+/// What a notification that names no sound of its own sounds like. The keys
+/// are the specification's two sound hints, spelled the way every other key
+/// here is, and a sender that sets either hint overrides them for its own
+/// notification — see `crate::notification::sound`.
+///
+/// Absent is silence, which is what this compositor did before it could play
+/// anything at all. There is deliberately no built-in default sound: the
+/// freedesktop sound theme has no notification event, so a name picked here
+/// would be one distribution's choice imposed on everyone else's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    /// A path to a sound file, played as given.
+    pub sound_file: Option<String>,
+    /// A name from the sound naming specification, resolved against the
+    /// installed sound theme — `"message-new-instant"`, `"bell"`.
+    ///
+    /// Ignored when `sound_file` is set, for the reason `Sound::from_config`
+    /// gives: a path always resolves and a name may resolve to nothing.
+    pub sound_name: Option<String>,
+}
+
 /// The `gaps` block.
 ///
 /// The shell spaces windows with a pair of CSS custom properties: the inner
@@ -298,6 +322,7 @@ pub struct File {
     pub idle: IdleConfig,
     pub gaps: GapsConfig,
     pub border: BorderConfig,
+    pub notifications: NotificationsConfig,
 
     /// Extra widgets to add to the bar, beyond the modules it draws by default.
     ///

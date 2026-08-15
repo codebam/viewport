@@ -176,6 +176,22 @@
   ],
   "border": {},
 
+  "_notifications": [
+    "What a notification sounds like. The compositor holds",
+    "org.freedesktop.Notifications itself, so this is the setting mako or",
+    "dunst would carry — there is no notification daemon to configure.",
+    "`sound_file` is a path, played as given. `sound_name` is a name from",
+    "the sound naming specification, resolved against the installed sound",
+    "theme (bell, message, complete, dialog-warning); it is ignored when",
+    "sound_file is set, because a path always resolves and a name may",
+    "resolve to nothing. Absent is silence, deliberately: the freedesktop",
+    "theme every distribution installs has no notification event of its",
+    "own, so a default here would be one desktop's taste imposed on the",
+    "rest. A sender's own sound-file / sound-name hints override these for",
+    "its notification, and its suppress-sound hint silences them."
+  ],
+  "notifications": {},
+
   "_bar_widgets": [
     "Extra widgets to add to the bar, beyond the modules it ships with.",
     "Leave the key out (or empty) and the bar is exactly as it shipped —",

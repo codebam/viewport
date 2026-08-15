@@ -5635,6 +5635,18 @@ impl ViewportState {
                     KdeDefaultMode::Client
                 });
         }
+        // What a notification with no sound hints of its own plays. Set on
+        // every load rather than only when it changed, and unconditionally
+        // rather than behind a `!= default()` guard: absence here means
+        // silence, so a reload that removed the key has to reach the server
+        // thread as `None` or the old sound outlives the configuration that
+        // asked for it.
+        self.notifications
+            .set_default_sound(crate::sound::Sound::from_config(
+                file.notifications.sound_file.as_deref(),
+                file.notifications.sound_name.as_deref(),
+            ));
+
         if file.idle != crate::config::IdleConfig::default() {
             self.idle_settings = crate::idle::Settings {
                 lock_after: file.idle.lock_after,

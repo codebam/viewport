@@ -11,6 +11,27 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- Notifications can make a sound. The compositor claims
+  `org.freedesktop.Notifications` itself, which took playback away along with
+  the window when it replaced mako and dunst — a notification has been silent
+  here since. `notifications.sound_file` and `notifications.sound_name` in the
+  config file say what one sounds like by default, and all three of the
+  specification's sound hints are honoured: a sender's own `sound-file` or
+  `sound-name` overrides the default for its notification, and
+  `suppress-sound` silences it, because that hint means the sender is playing
+  its own and two sounds for one event is worse than none. Playback is
+  PipeWire, which this program already links for the screencast portal, with
+  symphonia decoding — no libcanberra, and so no new library in the closure or
+  in nine AUR packages. Each sound decodes and plays on a thread of its own, so
+  no sender blocks for the length of one, and decoded files are kept because
+  the same short sound plays all session. `sound_name` is resolved by the
+  sound-theme search written out: data directories, `stereo/` before the flat
+  layout, `.oga`/`.ogg`/`.wav`, and `Inherits` followed with `freedesktop` as
+  every theme's implicit parent. A session with no sound server plays nothing,
+  says so once, and drops `sound` from its reported capabilities so a sender
+  knows to play its own.
+
 ## [0.1.6] - 2026-08-15
 
 ### Changed

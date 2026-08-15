@@ -45,6 +45,7 @@ mod shell;
 mod shell_backend;
 mod shell_client;
 mod shell_watch;
+mod sound;
 mod state;
 mod status;
 mod tearing;

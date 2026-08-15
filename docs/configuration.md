@@ -892,6 +892,65 @@ are matched on the unshifted keysym, so `XF86AudioPause` names the *dedicated*
 pause key (`KEY_PAUSECD`, rare on a keyboard) and not the one on the media row.
 `wev` prints what any key really sends.
 
+## Notification sounds
+
+The compositor claims `org.freedesktop.Notifications` itself, so the sound a
+notification makes is configured here rather than in mako or dunst. There is
+no notification daemon left to configure.
+
+```jsonc
+{
+  "notifications": {
+    "sound_file": "/run/current-system/sw/share/sounds/…/message.oga",
+    "sound_name": "message-new-instant"   // ignored when sound_file is set
+  }
+}
+```
+
+`sound_file` is a path, played as given. `sound_name` is a name from the
+[sound naming specification][sound-naming], resolved against the installed
+sound theme — `bell`, `message`, `complete`, `dialog-warning`. A path always
+resolves and a name may resolve to nothing on a machine with a thin theme, so
+`sound_file` wins when both are set. Blanking a value is the same as leaving
+the key out.
+
+Absent is silence, and there is deliberately no built-in default: the
+freedesktop sound theme every distribution installs has no notification event
+of its own, so a name chosen here would be one desktop's taste imposed on
+every other.
+
+**What a sender asks for wins.** The specification gives programs three hints
+and all three are honoured. `sound-file` and `sound-name` mean the same as the
+config keys above and override them for that one notification, and
+`suppress-sound` silences it entirely — that hint means "I am playing my own",
+and a server that played anyway would make two sounds for one event. So the
+config setting is what a notification sounds like when the program sending it
+expressed no opinion, which is nearly all of them: `notify-send` sets none of
+these hints.
+
+Playback is PipeWire directly — the same library the screencast portal streams
+through, so this costs the compositor no new dependency — with [symphonia][]
+decoding the `.oga` and `.wav` a sound theme ships. The stream is described in
+the file's own rate and channel count and PipeWire converts, and it carries
+`media.role = Notification` so a session manager that ducks other audio for an
+alert can see what it is.
+
+Each sound decodes and plays on a thread of its own, so a sender is never
+blocked for the length of one; decoded files are kept, because the same short
+sound plays for the life of the session. A session with no sound server plays
+nothing, says so once at startup, and drops `sound` from the capabilities it
+reports so a program that would have suppressed our sound in favour of its own
+knows to go ahead.
+
+The `sound_name` lookup is the sound-theme search written out: `$XDG_DATA_HOME`
+and each `$XDG_DATA_DIRS` entry's `sounds/`, the theme in `$XDG_SOUND_THEME`
+(default `freedesktop`), its `stereo/` profile before its flat directory, `.oga`
+before `.ogg` before `.wav`, and `Inherits` in each `index.theme` followed
+breadth-first with `freedesktop` as every theme's implicit parent.
+
+[sound-naming]: https://specifications.freedesktop.org/sound-naming-spec/latest/
+[symphonia]: https://github.com/pdeljanov/Symphonia
+
 ## Window rules
 
 ```jsonc
