@@ -350,8 +350,10 @@ function syncBarRight(output) {
       for (const el of output.barItemsEls) el.remove();
       output.barItemsEls = undefined;
       /* The widget elements the override built went out with it, so the
-         default path builds its own rather than reusing detached ones. */
+         default path builds its own rather than reusing detached ones — and
+         its widget defs go with them. */
       output.widgetsEls = undefined;
+      output.barItemsWidgets = undefined;
       /* The shipped markup was detached rather than dropped when the first
          override was built (below), so put it back — a querySelector cannot
          find an element that is no longer in the document, and a bar that had
@@ -446,8 +448,12 @@ function syncBarRight(output) {
   output.modeEl = els[barItems.findIndex((it) => it === 'mode')] ?? null;
 
   /* Widgets render through the shared widget path regardless of which shape
-     built them. */
-  barWidgets = widgetDefs;
+     built them, but the override's list is kept on the output rather than
+     written to the global: `bar_widgets` is a config of its own, applied
+     before this one (commands.js), and overwriting it here left a config that
+     dropped `bar_items` and added `bar_widgets` drawing the old override's
+     widgets instead of the ones it asked for. */
+  output.barItemsWidgets = widgetDefs;
   output.widgetsEls = els.filter((_, i) => barItems[i] !== undefined &&
     typeof barItems[i] !== 'string');
 }
@@ -458,8 +464,12 @@ function syncBarRight(output) {
  * new, and a dirty element is a repaint. */
 function renderBarWidgets(output) {
   const s = lastStatus;
+  /* An overridden bar draws the widgets its own `bar_items` named; a default
+     one draws the shared `bar_widgets`. Either way the list is in the same
+     order the elements were built in. */
+  const defs = output.barItemsWidgets || barWidgets;
   (output.widgetsEls || []).forEach((el, i) => {
-    const w = barWidgets[i];
+    const w = defs[i];
     if (!w) return;
     let text = '';
     if (w.type === 'disk') {
@@ -516,11 +526,23 @@ function weatherText(location) {
   return hit ? hit.text : '';
 }
 
+/* Every widget definition standing on a bar right now: the shared
+ * `bar_widgets` plus whatever each output's `bar_items` override placed. The
+ * fetch below owes nothing to any one output, but a weather widget only named
+ * by an override is still a widget somebody has to fetch for. */
+function widgetDefsOnAnyBar() {
+  const defs = [...barWidgets];
+  for (const output of outputs.values()) {
+    for (const w of output.barItemsWidgets || []) defs.push(w);
+  }
+  return defs;
+}
+
 /* Start a fetch for every weather widget whose slot is ready. Called on
  * config and on the refresh interval. */
 function refreshWeather() {
   const now = Date.now();
-  for (const w of barWidgets) {
+  for (const w of widgetDefsOnAnyBar()) {
     if (w.type !== 'weather') continue;
     const location = (w.location || '').trim();
     if (!location) continue;
