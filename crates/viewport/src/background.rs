@@ -610,11 +610,25 @@ impl ViewportState {
     /// that sits under the windows is not claiming the wallpaper, and killing
     /// the terminal for one would be a surprise. What lives on `Background` is
     /// wallpaper programs, and that is the whole of it.
+    ///
+    /// And one that has painted. A layer surface exists from the moment it is
+    /// created, which is before it has been configured and long before it has a
+    /// buffer — so a wallpaper program that crashed on startup counted as one
+    /// drawing the background, and the terminal stood down for a picture that
+    /// never arrived. Nothing covers the desktop until something has drawn on
+    /// it.
     pub fn wallpaper_layer_on(&self, output: &Output) -> bool {
+        use smithay::backend::renderer::utils::with_renderer_surface_state;
         use smithay::wayland::shell::wlr_layer::Layer;
         smithay::desktop::layer_map_for_output(output)
             .layers()
-            .any(|layer| layer.layer() == Layer::Background)
+            .any(|layer| {
+                layer.layer() == Layer::Background
+                    && with_renderer_surface_state(layer.wl_surface(), |state| {
+                        state.buffer().is_some()
+                    })
+                    .unwrap_or(false)
+            })
     }
 
     /// Give the keyboard to the wallpaper terminal on the active monitor, or

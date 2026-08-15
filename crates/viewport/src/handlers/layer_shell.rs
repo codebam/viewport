@@ -32,7 +32,7 @@ impl WlrLayerShellHandler for ViewportState {
         &mut self,
         surface: WlrLayerSurface,
         wl_output: Option<WlOutput>,
-        layer: Layer,
+        _layer: Layer,
         namespace: String,
     ) {
         // The output the client named, the active one, or the first there is.
@@ -62,14 +62,6 @@ impl WlrLayerShellHandler for ViewportState {
             return;
         }
         drop(map);
-
-        // A wallpaper program — swaybg, hyprpaper — asks for the background
-        // layer, which is drawn over the terminal this compositor can draw as
-        // the wallpaper. Two things claiming the same position is one of them
-        // painting for nothing, so the terminal stands down.
-        if layer == Layer::Background {
-            self.background_yield_to_wallpaper(&output);
-        }
 
         // An exclusive zone changes where windows may go, and the shell is
         // what puts them there.
@@ -159,6 +151,21 @@ impl ViewportState {
             }
         }
         drop(map);
+
+        // A wallpaper program — swaybg, hyprpaper — asks for the background
+        // layer, which is drawn over the terminal this compositor can draw as
+        // the wallpaper. Two things claiming the same position is one of them
+        // painting for nothing, so the terminal stands down.
+        //
+        // Here rather than where the layer surface was created, because a
+        // surface exists before it has painted and may never paint at all: a
+        // wallpaper client that died between asking for the layer and drawing
+        // on it took the terminal with it and left the desktop blank for the
+        // rest of the session, since the position is only offered back when a
+        // layer is destroyed. `wallpaper_layer_on` is what counts a mapped one.
+        if self.wallpaper_layer_on(&output) {
+            self.background_yield_to_wallpaper(&output);
+        }
 
         if changed {
             self.notify_output_layout();
