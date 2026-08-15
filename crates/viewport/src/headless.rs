@@ -162,6 +162,9 @@ pub fn init(
             // The out-of-process shell is not in the space — it is drawn under
             // it — so it has to be invited by name or it paints once and stops.
             let shell = state.shell_client_surfaces();
+            // And the wallpaper, for the same reason: not in the space, drawn
+            // under it, and otherwise painting one frame and stopping.
+            let background = state.background_surfaces();
             for output in &outputs {
                 for window in state.space.elements() {
                     window.send_frame(output, now, Some(Duration::ZERO), |_, _| {
@@ -169,6 +172,15 @@ pub fn init(
                     });
                 }
                 for surface in &shell {
+                    smithay::desktop::utils::send_frames_surface_tree(
+                        surface,
+                        output,
+                        now,
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                }
+                for surface in &background {
                     smithay::desktop::utils::send_frames_surface_tree(
                         surface,
                         output,

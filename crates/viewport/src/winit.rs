@@ -423,6 +423,21 @@ pub fn init(
                             },
                         );
                     }
+                    // The wallpaper, which is sent frame callbacks below and had
+                    // been told about no presentation at all — a background
+                    // terminal pacing on `wp_presentation` freezes on that.
+                    if let Some(surface) = state.background_surface_for(&output).cloned() {
+                        take_presentation_feedback_surface_tree(
+                            &surface,
+                            &mut feedback,
+                            |_, _| Some(output.clone()),
+                            |surface, _| {
+                                surface_presentation_feedback_flags_from_states(
+                                    surface, None, states,
+                                )
+                            },
+                        );
+                    }
                     // A software clock: there is no vblank of our own here, and
                     // the host's is not something this backend is told about.
                     // `Vsync` alone, without `HwClock` — claiming a provenance
