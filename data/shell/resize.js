@@ -159,6 +159,20 @@ const FLOAT_RESIZE_STEP = 40;
 function resizeFocused(direction) {
   if (focusedId == null) return;
 
+  /* On the canvas a window's place is its size and nothing shares space with
+     it, so resize mode changes that rather than a weight no renderer there
+     reads — the same branch `window.move` has, and for the same reason.
+     Before the floating check, because on the plane a floating window is on
+     the plane like every other one. */
+  if (layoutMode === 'canvas') {
+    const step = (direction === 'left' || direction === 'up')
+      ? -FLOAT_RESIZE_STEP : FLOAT_RESIZE_STEP;
+    const horizontal = direction === 'left' || direction === 'right';
+    canvasResizeBy(focusedId, horizontal ? step : 0, horizontal ? 0 : step,
+      false, false);
+    return;
+  }
+
   /* A floating window is not in the tree, so the lookup below finds nothing
      and resize mode did nothing at all for one — every press ignored, with no
      way to tell that from a binding that never fired. It simply grows: there
