@@ -115,6 +115,22 @@
   ],
   "bar": "visible",
 
+  "_dark_mode": [
+    "Which way the session starts. Absent is dark, which is what the shell is",
+    "drawn for; false starts light. Mod4+Shift+d flips it at runtime, and",
+    "either way the settings portal tells running applications, so GTK, Qt",
+    "and Firefox follow rather than staying on whatever they started with."
+  ],
+  "dark_mode": true,
+
+  "_decorations": [
+    "\"client\" hands the window frame back to the application, which then",
+    "draws its own titlebar. Anything else, and leaving the key out, keeps",
+    "the frame here — the border the shell draws. xdg-decoration and the KDE",
+    "server-decoration manager are answered with the same setting."
+  ],
+  "decorations": "server",
+
   "_empty": [
     "What the shell draws when a workspace has no windows: the mark, and the",
     "note naming the keys that open something. Worth having the first time",
@@ -186,7 +202,8 @@
     "exactly what is listed, in order, and nothing else. That is how a widget",
     "ends up sitting in the middle of the modules rather than after them.",
     "",
-    "  [ \"net\", {\"type\":\"disk\",\"path\":\"/games\"}, \"weather\", \"clock\"]",
+    "  [ \"net\", {\"type\":\"disk\",\"path\":\"/games\"},",
+    "    {\"type\":\"weather\",\"location\":\"New York\"}, \"clock\" ]",
     "",
     "Leave the key out for the default bar."
   ],
@@ -228,6 +245,24 @@
     "lock_command": "swaylock -f",
     "blank_after": 900
   },
+
+  "_keyboard": [
+    "The keymap, in xkb's own names — the ones setxkbmap takes. Leave the",
+    "block out for the built-in default, which is a US layout.",
+    "",
+    "  \"layout\": \"de\", \"variant\": \"nodeadkeys\"",
+    "  \"options\": \"ctrl:nocaps,compose:ralt\"",
+    "",
+    "repeat_rate is repeats a second and repeat_delay is how long a key is",
+    "held before they start, in milliseconds; absent is 25 and 200.",
+    "",
+    "Read once, at startup: a keymap is set by handing the seat a new",
+    "keyboard, and there is no way to change the layout of one that already",
+    "exists. A layout xkb refuses is logged by name and the current keymap",
+    "kept. Keybindings are matched by keysym, so a chord written here",
+    "follows the layout rather than a key's position."
+  ],
+  "keyboard": {},
 
   "_cursor": [
     "The pointer. 'theme' and 'size' are set for the compositor and for",

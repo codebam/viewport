@@ -174,16 +174,19 @@ jobs:
       # data files, the portal declaration, and the second binary the
       # out-of-process shell needs beside it.
       #
-      # `.#webkitgtk` rather than `.#wpe`: this is the
-      # default package, it is what `nix run` on this flake gives, and its
-      # engine substitutes from cache.nixos.org. The `wpe` build is a WebKit
-      # compile and belongs on a machine that has one.
+      # `.#servoshell` because it is the default package — what `nix run` on
+      # this flake gives — and `.#webkitgtk` because it is the other engine a
+      # hosted runner can afford: both substitute from cache.nixos.org, and
+      # they package differently enough (a second binary beside the compositor
+      # for one, a browser on PATH for the other) that building one says
+      # nothing about the other. The `wpe` build is a WebKit compile and
+      # belongs on a machine that has one.
       #
       # Its own tests stay off — buildRustPackage would run them inside the nix
       # sandbox, which has neither a GPU nor a socket, and the steps above have
       # already run the suite outside it.
       - name: Build the packaged compositor
-        run: nix build --print-build-logs .#webkitgtk
+        run: nix build --print-build-logs .#servoshell .#webkitgtk
 
   # The same suite under AddressSanitizer.
   #

@@ -113,7 +113,9 @@ follows a layout: a few chords only exist in one, and a shell showing a table
 of its own would be describing a keyboard nobody has. Both halves of each row
 are spelled the way a config file spells them, so a chord you want to change
 can be copied straight into `binds`. Turn the listing off with
-`"tutorial": false`, which is the same key that hides the rest of it.
+`"tutorial": false`, which is the same key that hides the rest of it, and the
+mark it sits under with `"logo": false`. With both off an empty workspace is
+empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 
 ### Default bindings
 
@@ -152,6 +154,40 @@ for this, and a cursor that came back on every keystroke would never leave.
 Only the drawn image goes. The pointer has not moved, keeps its focus, and
 clients are told nothing, so a hidden cursor cannot make a page think the mouse
 left it.
+
+## The keyboard
+
+`keyboard.layout`, `keyboard.variant` and `keyboard.options` are xkb's, spelled
+as `setxkbmap` spells them, and they are the first thing anyone outside a US
+layout needs:
+
+```jsonc
+{
+  "keyboard": {
+    "layout": "de",
+    "variant": "nodeadkeys",
+    "options": "ctrl:nocaps,compose:ralt",
+    "repeat_rate": 25,
+    "repeat_delay": 200
+  }
+}
+```
+
+`repeat_rate` is repeats a second and `repeat_delay` is how long a key is held
+before they start, in milliseconds. Absent is 25 and 200, which is sway's pair
+and the compositor's.
+
+The block is read once, at startup. A keymap is set by handing the seat a new
+keyboard and there is no way to change the layout of one that already exists,
+so this happens before any client has seen the seat — changing it means
+restarting the compositor. An entire block left out changes nothing, and a
+layout xkb refuses is logged by name and the current keymap kept, because an
+unknown layout that silently left the built-in one in place looks exactly like
+a config file that was never read.
+
+Chords are separate: `binds` names them by keysym, so the same binding follows
+the layout rather than the key's position. See [Changing some of the keymap, or
+all of it](#changing-some-of-the-keymap-or-all-of-it).
 
 ## A picture as the wallpaper
 
@@ -373,6 +409,10 @@ each ask the same question — `color-scheme` in the `org.freedesktop.appearance
 namespace, over D-Bus through xdg-desktop-portal — and with nothing answering
 they all default to light.
 
+`"dark_mode": false` is what the session starts on; absent is dark, which is
+what the shell is drawn for. `Mod4+Shift+d` flips it at runtime, and either way
+the portal signals the change, so applications already running follow it.
+
 That answer normally comes from a desktop environment. There isn't one here, so
 the compositor implements `org.freedesktop.impl.portal.Settings` itself. The
 GSettings route is deliberately avoided: it needs dconf and GNOME's schemas
@@ -519,23 +559,36 @@ machine down, and a README about what that does and does not achieve.
 Precedence is flags > config file > defaults.
 
 ```
--u, --url URL          shell endpoint (default http://localhost:3000)
-    --shell-backend NAME which engine draws the shell: wpe, webkitgtk,
-                       chromium, cef, servo or servoshell; see
-                       docs/shell-backends.md
--f, --fallback URL     used when the shell fails (default: bundled fallback.html)
--t, --timeout MS       first-paint deadline before falling back (default 5000)
--s, --socket PATH      control socket
--c, --config PATH      config file (default ~/.config/viewport/config.json)
-    --layout NAME      tiling, scrolling, solar, matrix or canvas; overrides "layout"
--T, --terminal CMD     command bound to Mod4+Return
--M, --menu CMD         command bound to Mod4+d
--b, --bind CHORD=ACT   add a keybinding; repeatable
--e, --startup CMD      command to run once up
--H, --headless         headless backend instead of DRM
-    --watch-shell      reload the shell when its files change
--d, --debug            verbose logging, and mirror the shell's console
+--drm                        take the screens and the seat: a session of its own, from a TTY
+--headless                   no renderer and no window: everything but drawing, for tests
+--width N                    the headless output's width (default 1920)
+--height N                   and its height (default 1080)
+--config PATH                the config file, instead of the default one
+--layout NAME                tiling, scrolling, solar, matrix or canvas, over the config
+--renderer NAME              vulkan or gles, over $VIEWPORT_RENDERER
+--pixel-format N             scanout bits per channel: 8, 10 or auto, over $VIEWPORT_PIXEL_FORMAT
+--shell-backend NAME         which engine draws the desktop; see docs/shell-backends.md
+--url URL                    a page to run instead of the bundled desktop
+--url-span                   give that page every monitor, not just the first
+--watch-shell                reload the shell when its files change
+--background-terminal [CMD]  a terminal for a wallpaper, running CMD if one is given
+--wallpaper PATH             a picture for the desktop background, over the config file
+--wallpaper-mode NAME        how it is fitted: fill, fit, stretch, center or tile
+--socket PATH                the control socket, instead of the one named after the display
+--exit-after SECS            stop after this long, in case stopping is what is broken
+-h, --help                   this
 ```
+
+That is the whole list — `OPTIONS` in `crates/viewport/src/main.rs` is both what
+`--help` prints and what an argument is checked against, so there is nowhere
+else for a flag to hide. There are no short forms other than `-h`, and an
+option that is not on this list is not an error: it is logged as `unknown
+option …; it has been ignored` and the compositor carries on. `--url` has no
+default of its own — with nothing given, the shell is the bundled desktop,
+loaded from a `file://` URL beside the binary.
+
+`viewport msg` takes its own options; `viewport msg --help` lists every message
+and its fields, and [IPC](ipc.md) is what they do.
 
 ## Gaps
 
@@ -640,6 +693,13 @@ viewport msg -t config.border --radius 12 --width 3 --smart true
 
 Each field is optional; only the ones given change. Zero is accepted for
 either; a negative value is refused.
+
+`"decorations": "client"` hands the frame back to the client instead: the
+compositor tells xdg-decoration and the KDE server-decoration manager alike
+that the application should draw its own titlebar. Any other value, and
+absence, keeps the frame here — which is what the shell's border is. Both
+protocols are answered with the same setting, since a client that probes the
+manager and one that asks per surface must not be told different things.
 
 ## Bar widgets
 

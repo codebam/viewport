@@ -240,10 +240,15 @@ runcmd:
   # dependency, because a desktop with boxes where the icons go is still a
   # desktop — but a screenshot of one proves nothing, so the VM installs them.
   - [ pacman, -S, --noconfirm, --needed, ttf-firacode-nerd, ttf-nerd-fonts-symbols ]
-  # The compositor, and not the 79 MB of detached debug symbols makepkg leaves
-  # beside it — which installs a package with no compositor in it and takes
+  # The compositor: the one file resolved above, by name.
+  #
+  # Not a glob over the share. The whole directory is exported over 9p, so a
+  # tree that has built two engines — or the same engine twice — offers pacman
+  # several packages that all provide viewport, and it refuses the lot on the
+  # conflict. Naming the file is also what keeps the 79 MB of detached debug
+  # symbols out, which installs a package with no compositor in it and takes
   # longer to do it than everything above put together.
-  - [ sh, -c, "pacman -U --noconfirm \$(ls /mnt/pkgs/*.pkg.tar.zst | grep -v -- -debug-)" ]
+  - [ pacman, -U, --noconfirm, "/mnt/pkgs/$(basename "$package")" ]
   - [ systemctl, enable, --now, seatd ]
   - [ systemctl, restart, getty@tty1 ]
 
