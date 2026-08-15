@@ -179,6 +179,50 @@ fn drag_effect(held: Option<u32>, button: u32, pressed: bool) -> DragEffect {
     }
 }
 
+// Buttons whose press a binding took, so the matching release can be taken
+// too — `suppressed_keys` for the mouse.
+//
+// A press that fires a binding is not forwarded, and a release that is
+// forwarded on its own is a client told a button came up that it never saw go
+// down: a browser that starts a text selection on the release, a canvas that
+// ends a stroke it never began. Matching the release against the bindings
+// again would not do, because the modifier is usually released before the
+// button and the chord no longer matches by then.
+//
+// A thread local rather than a field on the state: input is dispatched on the
+// compositor's own thread and nowhere else, and this is the button handler's
+// private bookkeeping.
+thread_local! {
+    static SUPPRESSED_BUTTONS: std::cell::RefCell<Vec<u32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Remember that this button's press was consumed by a binding.
+fn suppress_button(button: u32) {
+    SUPPRESSED_BUTTONS.with(|buttons| {
+        let mut buttons = buttons.borrow_mut();
+        if !buttons.contains(&button) {
+            buttons.push(button);
+        }
+    });
+}
+
+/// Whether this release belongs to a press a binding consumed, forgetting it if
+/// so — one release per press, as a second one is a button that went down again
+/// somewhere this did not see.
+fn release_suppressed(button: u32) -> bool {
+    SUPPRESSED_BUTTONS.with(|buttons| {
+        let mut buttons = buttons.borrow_mut();
+        match buttons.iter().position(|b| *b == button) {
+            Some(at) => {
+                buttons.remove(at);
+                true
+            }
+            None => false,
+        }
+    })
+}
+
 /// Whether a press starts one of the compositor's own pointer gestures —
 /// Mod4 and a button to move, resize or pan.
 ///
@@ -246,6 +290,28 @@ fn edge_name(edges: (bool, bool)) -> &'static str {
 /// up with no button down before it.
 fn shell_gets_button(grabbed: bool, over_shell: bool, pressed: bool) -> bool {
     grabbed || (pressed && over_shell)
+}
+
+/// Whether this event is a key or button coming back up.
+///
+/// The one thing a blank has to tell apart: `blank` is bound to a chord, and
+/// the hand that pressed it has to come off it. Everything else — a press, a
+/// moved mouse, a finger — is somebody asking for the screens back, and is
+/// answered on the spot rather than after a clock the C build ran
+/// (`crate::idle::Idle::activity`).
+fn activity_kind<I: InputBackend>(event: &InputEvent<I>) -> crate::idle::Activity {
+    let up = match event {
+        InputEvent::Keyboard { event, .. } => {
+            event.state() == smithay::backend::input::KeyState::Released
+        }
+        InputEvent::PointerButton { event, .. } => event.state() == ButtonState::Released,
+        _ => false,
+    };
+    if up {
+        crate::idle::Activity::Release
+    } else {
+        crate::idle::Activity::Deliberate
+    }
 }
 
 /// Whether this event is someone using the pointer.
@@ -330,7 +396,7 @@ impl ViewportState {
         // Anything at all counts. Device added and removed do not — they
         // arrive when a dock is plugged in with nobody at the machine — but
         // they are filtered out before this.
-        if self.idle.activity() {
+        if self.idle.activity(activity_kind(&event)) {
             // The screens were off. Bring them back through the same path the
             // deadline turned them off by.
             self.set_outputs_enabled(true);
@@ -584,27 +650,40 @@ impl ViewportState {
                     // commentary only when asked, because a gaming mouse sends
                     // thousands of these a second.
                     self.pointer_motions += 1;
-                    let state = if locked {
-                        "locked".to_owned()
-                    } else if let Some((region, _)) = confine_to.as_ref() {
-                        format!("confined to {} rect(s)", region.len())
+                    // The state as a constant, so the comparison costs nothing:
+                    // this runs for every motion event a gaming mouse sends and
+                    // a string built to be thrown away is a string built
+                    // thousands of times a second. How many rectangles the
+                    // confinement has is worth having in the line and is
+                    // therefore formatted where the line is, not here.
+                    let state: &'static str = if locked {
+                        "locked"
+                    } else if confine_to.is_some() {
+                        "confined"
                     } else {
-                        "free".to_owned()
+                        "free"
                     };
-                    let changed = self.pointer_capture.as_deref() != Some(state.as_str());
+                    let changed = self.pointer_capture.as_deref() != Some(state);
                     if changed {
-                        self.pointer_capture = Some(state.clone());
+                        self.pointer_capture = Some(state.to_owned());
                     }
                     if changed || (crate::pointer::debug() && self.pointer_motions % 100 == 1) {
-                        tracing::info!(
-                            "pointer: delta {:?} at {from:?}, {state}, over {}",
-                            event.delta(),
-                            if under.is_some() {
-                                "a surface"
-                            } else {
-                                "the shell"
-                            }
-                        );
+                        let over = if under.is_some() {
+                            "a surface"
+                        } else {
+                            "the shell"
+                        };
+                        match confine_to.as_ref().filter(|_| !locked) {
+                            Some((region, _)) => tracing::info!(
+                                "pointer: delta {:?} at {from:?}, confined to {} rect(s), over {over}",
+                                event.delta(),
+                                region.len()
+                            ),
+                            None => tracing::info!(
+                                "pointer: delta {:?} at {from:?}, {state}, over {over}",
+                                event.delta()
+                            ),
+                        }
                     }
                 }
 
@@ -683,8 +762,11 @@ impl ViewportState {
                 // standing still, and hand a game absolute positions it reads
                 // as an enormous jump.
                 let from = pointer.current_location();
-                let (locked, confine_to) =
-                    self.pointer_constraint(&pointer, self.surface_under(from).as_ref());
+                // Once, and reused: a hit test walks every window in the
+                // `Space` and clones each one it walks past, and asking the
+                // same question of the same point twice costs that twice.
+                let under = self.surface_under(from);
+                let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
 
                 // The delta this absolute position implies. It is what a
                 // captured client is driven by, and the only thing it gets:
@@ -692,7 +774,7 @@ impl ViewportState {
                 let delta = pos - from;
                 pointer.relative_motion(
                     self,
-                    self.surface_under(from),
+                    under,
                     &smithay::input::pointer::RelativeMotionEvent {
                         delta,
                         // Nothing accelerated it, so the raw delta is the
@@ -795,8 +877,17 @@ impl ViewportState {
                         // Not forwarded: the button was bound, and handing a
                         // press it did not ask for to a client would leave it
                         // thinking the button is still down.
+                        suppress_button(event.button_code());
                         return;
                     }
+                } else if release_suppressed(event.button_code()) {
+                    // The other half of the same chord. Matching again would
+                    // answer the wrong question — the modifier is usually let
+                    // go of before the button is — so the press records what it
+                    // took and the release goes by that, exactly as
+                    // `suppressed_keys` does for a key. Without it the client
+                    // was handed a release for a press it never saw.
+                    return;
                 }
 
                 // Something the shell drew in front and asked to be clicked:
@@ -818,13 +909,19 @@ impl ViewportState {
                     pointer.current_location(),
                 );
 
-                if starts_gesture(
-                    state == ButtonState::Pressed,
-                    pointer.is_grabbed(),
-                    on_overlay,
-                    keyboard.modifier_state().logo,
-                    event.button_code(),
-                ) {
+                // Nothing is dragged, moved, resized or panned behind a lock
+                // screen. `window_under` answers by geometry alone — unlike
+                // `surface_under`, which refuses while locked — so the guard
+                // has to be here, in front of every path that hit-tests.
+                if !self.locked
+                    && starts_gesture(
+                        state == ButtonState::Pressed,
+                        pointer.is_grabbed(),
+                        on_overlay,
+                        keyboard.modifier_state().logo,
+                        event.button_code(),
+                    )
+                {
                     let hit = self.window_under(pointer.current_location());
                     let dragging = hit.as_ref().and_then(|window| {
                         self.views
@@ -886,7 +983,11 @@ impl ViewportState {
                     }
                 }
 
-                if state == ButtonState::Pressed && !pointer.is_grabbed() {
+                // And nothing takes the keyboard behind a lock screen either.
+                // The locker's surface is the only thing that may hold it, and
+                // a click where a window happens to be mapped raised that
+                // window and handed it every keystroke that followed.
+                if state == ButtonState::Pressed && !pointer.is_grabbed() && !self.locked {
                     let hit = self.window_under(pointer.current_location());
                     // Clicking a notification must not raise and focus the
                     // window behind it — the click never reached that window.
@@ -1209,7 +1310,22 @@ impl ViewportState {
                             .map(|pointer| pointer.current_location());
                         if let (Some(at), Some(keyboard)) = (at, self.seat.get_keyboard()) {
                             if let Some((surface, _)) = self.surface_under(at) {
-                                keyboard.set_focus(self, Some(surface.into()), serial);
+                                // Through the view rather than the surface, as
+                                // the click path does: an X11 window focused as
+                                // a bare surface gets `wl_keyboard.enter` and no
+                                // `SetInputFocus`, so the X server stays at
+                                // `PointerRoot` and the window is never told it
+                                // has the keyboard.
+                                let focus = self
+                                    .views
+                                    .find_by_surface(&surface)
+                                    .and_then(|view| {
+                                        crate::keyboard_focus::KeyboardFocus::for_window(
+                                            &view.window,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| surface.into());
+                                keyboard.set_focus(self, Some(focus), serial);
                             }
                         }
                     }
@@ -1364,7 +1480,18 @@ impl ViewportState {
                 // pointer to click with and no way to reach a chord.
                 if let Some((surface, _)) = under.as_ref() {
                     if let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(self, Some(surface.clone().into()), serial);
+                        // By window where there is one, for the reason the click
+                        // path gives: an X11 window focused as a bare surface
+                        // leaves the X server at `PointerRoot`, so nothing under
+                        // Xwayland is ever told a finger gave it the keyboard.
+                        let focus = self
+                            .views
+                            .find_by_surface(surface)
+                            .and_then(|view| {
+                                crate::keyboard_focus::KeyboardFocus::for_window(&view.window)
+                            })
+                            .unwrap_or_else(|| surface.clone().into());
+                        keyboard.set_focus(self, Some(focus), serial);
                     }
                 }
 

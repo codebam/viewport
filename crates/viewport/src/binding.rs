@@ -618,7 +618,15 @@ pub fn match_binding<'a>(
             // an addition to the first: `h` resizes in resize mode and moves
             // focus outside it, and matching both would do whichever came
             // first in the table.
-            binding.mode == mode && binding.modifiers == wanted && binding.keysym == keysym
+            // A key binding and not a mouse one. A button or wheel binding
+            // carries `keysym: 0`, and an unmapped keycode produces exactly
+            // that — so without this every NoSymbol press fired whatever
+            // `Mod4+Mouse4` was bound to.
+            binding.mode == mode
+                && binding.modifiers == wanted
+                && binding.keysym == keysym
+                && binding.button.is_none()
+                && binding.wheel.is_none()
         })
         .map(|binding| &binding.action)
 }
@@ -681,10 +689,32 @@ pub fn match_wheel<'a>(
 /// is a floor, not an override. `Ctrl+Alt+Backspace` is still there underneath
 /// as the chord no config file can touch (`crate::input::shortcut`); this is
 /// the one people are told about.
+/// Whether `earlier` would match everything `binding` matches, and so — being
+/// earlier in the list — leave it unreachable. The same test `match_binding`
+/// makes, written once.
+fn shadows(earlier: &Binding, binding: &Binding) -> bool {
+    earlier.mode == binding.mode
+        && earlier.modifiers == binding.modifiers
+        && earlier.keysym == binding.keysym
+        && earlier.button.is_none()
+        && earlier.wheel.is_none()
+}
+
 pub fn guarantee_an_exit(bindings: &mut Vec<Binding>) {
-    let leaves = bindings
-        .iter()
-        .any(|binding| binding.mode.is_empty() && binding.action == Action::Exit);
+    // Reachable, not merely present. Bindings are matched first-wins and
+    // `binds_override` is pushed in *front* of the defaults, so
+    // `{"binds_override": {"Mod4+Shift+e": null}}` leaves the default exit in
+    // the list with an unbind standing in front of it — a way out that no key
+    // reaches, which is the exact case this function exists for.
+    let leaves = bindings.iter().enumerate().any(|(at, binding)| {
+        binding.mode.is_empty()
+            && binding.action == Action::Exit
+            && binding.button.is_none()
+            && binding.wheel.is_none()
+            && !bindings[..at]
+                .iter()
+                .any(|earlier| shadows(earlier, binding))
+    });
     if leaves {
         return;
     }
@@ -696,12 +726,9 @@ pub fn guarantee_an_exit(bindings: &mut Vec<Binding>) {
     };
     // Only if the chord itself is free. A file that bound Mod4+Shift+E to
     // something else meant it, and quietly doing something different from what
-    // it says is worse than the risk this exists to cover.
-    if bindings.iter().any(|binding| {
-        binding.mode == exit.mode
-            && binding.modifiers == exit.modifiers
-            && binding.keysym == exit.keysym
-    }) {
+    // it says is worse than the risk this exists to cover. Appended, so
+    // anything already on that chord would match first anyway.
+    if bindings.iter().any(|binding| shadows(binding, &exit)) {
         tracing::warn!(
             "no binding leaves this session and Mod4+Shift+E is taken; \
              Ctrl+Alt+Backspace is the way out"
@@ -900,6 +927,24 @@ mod tests {
         assert!(match_button(std::slice::from_ref(&key), &held, 0x113, "").is_none());
         // And the button binding has keysym 0, not q.
         assert!(match_binding(&[button], &held, keysyms::KEY_q, "").is_none());
+    }
+
+    #[test]
+    fn an_unmapped_key_does_not_fire_a_mouse_binding() {
+        // An unmapped keycode comes through as NoSymbol, which is keysym 0 —
+        // and 0 is exactly what a button or wheel binding carries, because it
+        // is drawn on no key at all. Matched on the keysym alone, every press
+        // of a key xkb has no symbol for fired whatever `Mod4+Mouse4` was
+        // bound to.
+        let bindings = vec![
+            parse("Mod4+Mouse4=close").unwrap(),
+            parse("Mod4+WheelUp=exit").unwrap(),
+        ];
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert!(match_binding(&bindings, &held, 0, "").is_none());
     }
 
     #[test]
@@ -1262,6 +1307,30 @@ mod exit_tests {
             .any(|b| b.action == Action::Exit && b.mode.is_empty())
     }
 
+    /// An exit a key actually reaches, which is what `guarantee_an_exit` is
+    /// for: asked of the matcher rather than of the list, so the test agrees
+    /// with what a keypress does.
+    fn reachable_exit(bindings: &[Binding]) -> bool {
+        bindings.iter().any(|b| {
+            b.action == Action::Exit
+                && b.mode.is_empty()
+                && b.button.is_none()
+                && b.wheel.is_none()
+                && match_binding(
+                    bindings,
+                    &ModifiersState {
+                        shift: b.modifiers.shift,
+                        ctrl: b.modifiers.ctrl,
+                        alt: b.modifiers.alt,
+                        logo: b.modifiers.logo,
+                        ..Default::default()
+                    },
+                    b.keysym,
+                    "",
+                ) == Some(&Action::Exit)
+        })
+    }
+
     #[test]
     fn the_defaults_already_leave() {
         let mut bindings = defaults("foot", "wmenu-run", "tiling");
@@ -1316,5 +1385,37 @@ mod exit_tests {
             .collect();
         guarantee_an_exit(&mut bindings);
         assert!(exits(&bindings), "a moded exit left the session with none");
+    }
+
+    #[test]
+    fn a_shadowed_exit_is_not_a_way_out() {
+        // What `{"binds_override": {"Mod4+q": null}}` produces over a default
+        // that put the exit there: the override goes in front, matching is
+        // first-wins, and the exit behind it is a binding no key reaches.
+        // Counting it left the session with nothing that quits.
+        let mut bindings: Vec<Binding> = ["Mod4+q=none", "Mod4+q=exit"]
+            .iter()
+            .filter_map(|spec| parse(spec))
+            .collect();
+        guarantee_an_exit(&mut bindings);
+        assert!(
+            reachable_exit(&bindings),
+            "the only exit was behind an unbind"
+        );
+    }
+
+    #[test]
+    fn an_exit_shadowed_on_the_fallback_chord_is_left_alone() {
+        // The same shadowing, on Mod4+Shift+E itself. Nothing can be added:
+        // the chord is claimed, and binding it anyway would do something the
+        // file did not ask for. Ctrl+Alt+Backspace is the way out, and the
+        // warning says so.
+        let mut bindings: Vec<Binding> = ["Mod4+Shift+e=none", "Mod4+Shift+e=exit"]
+            .iter()
+            .filter_map(|spec| parse(spec))
+            .collect();
+        guarantee_an_exit(&mut bindings);
+        assert_eq!(bindings.len(), 2, "a chord the file claimed was taken back");
+        assert!(!reachable_exit(&bindings));
     }
 }
