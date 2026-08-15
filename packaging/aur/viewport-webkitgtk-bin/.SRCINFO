@@ -40,6 +40,6 @@ pkgbase = viewport-webkitgtk-bin
 	options = !strip
 	options = !debug
 	source_x86_64 = viewport-webkitgtk-bin-0.1.7.tar.zst::https://github.com/codebam/viewport/releases/download/v0.1.7/viewport-webkitgtk-0.1.7-1-x86_64.pkg.tar.zst
-	sha256sums_x86_64 = ae0af3b5a565b7edcb927180d441444e6c7c8e9cba8b7b6f193b212b40c22e39
+	sha256sums_x86_64 = 8c69164ea0a51a9b1f788874482a30853796f486a778bda74e644f73cc150874
 
 pkgname = viewport-webkitgtk-bin
