@@ -45,9 +45,21 @@ const IDLE: Duration = Duration::from_millis(250);
 /// A rejected message comes back as an `error` event to the client that sent
 /// it and an accepted one comes back as nothing at all, so the only way to
 /// tell the two apart without a clock is to ask a question afterwards and see
-/// which arrives first. `output.query` is that question: every build answers
-/// it, it answers at once, and it changes nothing.
-const BARRIER: &str = "{\"type\":\"output.query\"}\n";
+/// which arrives first.
+///
+/// A type the compositor does not know is that question. It is answered at
+/// once, on this connection alone, and — being refused before dispatch — it is
+/// the only round trip that genuinely runs nothing. `output.query` used to be
+/// it and was not inert: it re-announces the whole layout, resizes the shell,
+/// re-syncs the shell processes and the wallpaper, and broadcasts an
+/// `output.layout` to every subscriber. A script sending a hundred no-reply
+/// messages made the compositor do all of that a hundred times.
+const BARRIER: &str = "{\"type\":\"viewport.msg.barrier\"}\n";
+
+/// The `context` of the error the barrier comes back as, which is the type
+/// name it was sent with (`ParseError::context`). What tells the barrier's own
+/// refusal apart from the refusal of the message in front of it.
+const BARRIER_CONTEXT: &str = "viewport.msg.barrier";
 
 /// The fields whose values are always a list, so that one `--args right`
 /// builds `["right"]` rather than `"right"`.
@@ -703,9 +715,9 @@ fn run(invocation: Invocation) -> Result<(), String> {
             //
             // The compositor reads and dispatches a connection's messages in
             // the order they arrive, and answers them on the same buffer, so
-            // an `output.layout` here is proof that the message before it has
-            // already been handled — and an `error` read on the way to it is
-            // that message's own.
+            // the barrier's own refusal here is proof that the message before
+            // it has already been handled — and an `error` read on the way to
+            // it is that message's own.
             let _ = (&stream).write_all(BARRIER.as_bytes());
             loop {
                 if !arm(&stream, deadline.unwrap_or_else(forever))? {
@@ -713,8 +725,8 @@ fn run(invocation: Invocation) -> Result<(), String> {
                 }
                 match read_event(&mut reader, &mut partial) {
                     Ok(Incoming::Event(event)) => match kind_of(&event) {
+                        "error" if context_of(&event) == BARRIER_CONTEXT => return Ok(()),
                         "error" => return Err(complaint(&event)),
-                        "output.layout" => return Ok(()),
                         _ => continue,
                     },
                     // The compositor going away is what `quit` asked for, and
@@ -850,12 +862,18 @@ fn kind_of(event: &Value) -> &str {
     event.get("type").and_then(Value::as_str).unwrap_or("")
 }
 
-/// An `error` event, as the line to print.
-fn complaint(event: &Value) -> String {
-    let context = event
+/// What an `error` event was refused against: the message's own type, or
+/// `ipc` for anything that failed before there was a type to name.
+fn context_of(event: &Value) -> &str {
+    event
         .get("context")
         .and_then(Value::as_str)
-        .unwrap_or("ipc");
+        .unwrap_or("ipc")
+}
+
+/// An `error` event, as the line to print.
+fn complaint(event: &Value) -> String {
+    let context = context_of(event);
     let message = event
         .get("message")
         .and_then(Value::as_str)
@@ -1261,6 +1279,20 @@ mod tests {
             other => panic!("the rest of the line should have completed it: {other:?}"),
         };
         assert_eq!(kind_of(&event), "output.layout");
+    }
+
+    #[test]
+    fn the_barrier_is_a_message_the_compositor_runs_nothing_for() {
+        // It has to be refused — that refusal is the round trip — and the
+        // refusal has to name it, because that is what tells the barrier's own
+        // error apart from the error of the message in front of it. A build
+        // that grew a request by this name would break both.
+        match viewport_ipc::parse(BARRIER.trim().as_bytes()) {
+            Err(viewport_ipc::ParseError::UnknownType { name }) => {
+                assert_eq!(name, BARRIER_CONTEXT);
+            }
+            other => panic!("the barrier must be refused before dispatch: {other:?}"),
+        }
     }
 
     #[test]
