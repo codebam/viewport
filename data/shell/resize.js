@@ -102,8 +102,12 @@ function beginColumnDrag(event, workspace, column) {
 
   let last = event.clientX;
   const generation = treeGeneration;
+  /* The element only for the frames before the first relayout: renderStrip
+     builds a new strip every render, so what keeps the transitions off for the
+     rest of the drag is the workspace it reads back out of state. */
   const strip = event.currentTarget.parentElement;
   strip?.classList.add('dragging');
+  columnDragWorkspace = workspace;
 
   const onMove = (move) => {
     if (generation !== treeGeneration) {
@@ -120,10 +124,16 @@ function beginColumnDrag(event, workspace, column) {
   };
 
   const onUp = () => {
-    endGesture();
+    columnDragWorkspace = null;
     strip?.classList.remove('dragging');
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
+    /* A relayout either way: the class is drawn from the state cleared just
+       above, so a drag whose idle timer has already fired — a hand that
+       stopped moving before it let go — still needs one render to put the
+       transitions back. */
+    if (isGesturing()) endGesture();
+    else relayoutAll();
   };
 
   window.addEventListener('mousemove', onMove);

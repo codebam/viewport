@@ -168,7 +168,8 @@ function renderStrip(root, output, area = null) {
      column wider than the screen is aligned to the left edge instead, since it
      cannot be fully shown either way. Suppressed mid-gesture: the fingers are
      driving, and snapping back to the focused column would fight them. */
-  const dragging = gestureWorkspace === output.workspace;
+  const dragging = gestureWorkspace === output.workspace
+    || columnDragWorkspace === output.workspace;
   const workspace = output.workspace;
   const lastScroll = scrollOffsets.get(workspace) ?? 0;
   let scroll = lastScroll;
