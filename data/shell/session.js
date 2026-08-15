@@ -646,8 +646,13 @@ function gestureSettle() {
 }
 
 /* Step to the next or previous workspace on the active output, for a vertical
- * three-finger swipe. */
-function stepWorkspace(delta) {
+ * three-finger swipe.
+ *
+ * Named apart from outputs.js's stepWorkspace(name, delta): the shell is a set
+ * of classic scripts sharing one scope, so two functions of the same name are
+ * one function — whichever loaded last — and the caller of the other one is
+ * then passing arguments nobody reads. */
+function stepWorkspaceOnActive(delta) {
   const name = activeOutputName();
   const output = outputs.get(name);
   if (!output) return;

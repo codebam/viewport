@@ -349,6 +349,20 @@ function syncBarRight(output) {
     if (output.barItemsEls) {
       for (const el of output.barItemsEls) el.remove();
       output.barItemsEls = undefined;
+      /* The widget elements the override built went out with it, so the
+         default path builds its own rather than reusing detached ones — and
+         its widget defs go with them. */
+      output.widgetsEls = undefined;
+      output.barItemsWidgets = undefined;
+      /* The shipped markup was detached rather than dropped when the first
+         override was built (below), so put it back — a querySelector cannot
+         find an element that is no longer in the document, and a bar that had
+         once been overridden would have kept an empty right side and null
+         module refs for the rest of the session. */
+      if (output.barDefaultEls) {
+        for (const el of output.barDefaultEls) container.append(el);
+        output.barDefaultEls = undefined;
+      }
       /* The default module refs come back from the markup; see outputs.js. */
       output.modules = {
         clock: container.querySelector('.clock'),
@@ -374,7 +388,18 @@ function syncBarRight(output) {
   const widgetDefs = [];
 
   if (firstBuild) {
-    for (const child of [...container.children]) child.remove();
+    /* Detached, not dropped: the shipped modules are the only copy of the
+       default bar this output has, and a config that later drops `bar_items`
+       has to be able to put them back. The widgets the default path appended
+       are not part of that markup, so they go for good and the override
+       builds its own. */
+    const widgets = new Set(output.widgetsEls || []);
+    const children = [...container.children];
+    if (output.barDefaultEls === undefined) {
+      output.barDefaultEls = children.filter((el) => !widgets.has(el));
+    }
+    for (const child of children) child.remove();
+    output.widgetsEls = undefined;
   }
 
   for (let i = 0; i < barItems.length; i++) {
@@ -423,8 +448,12 @@ function syncBarRight(output) {
   output.modeEl = els[barItems.findIndex((it) => it === 'mode')] ?? null;
 
   /* Widgets render through the shared widget path regardless of which shape
-     built them. */
-  barWidgets = widgetDefs;
+     built them, but the override's list is kept on the output rather than
+     written to the global: `bar_widgets` is a config of its own, applied
+     before this one (commands.js), and overwriting it here left a config that
+     dropped `bar_items` and added `bar_widgets` drawing the old override's
+     widgets instead of the ones it asked for. */
+  output.barItemsWidgets = widgetDefs;
   output.widgetsEls = els.filter((_, i) => barItems[i] !== undefined &&
     typeof barItems[i] !== 'string');
 }
@@ -435,8 +464,12 @@ function syncBarRight(output) {
  * new, and a dirty element is a repaint. */
 function renderBarWidgets(output) {
   const s = lastStatus;
+  /* An overridden bar draws the widgets its own `bar_items` named; a default
+     one draws the shared `bar_widgets`. Either way the list is in the same
+     order the elements were built in. */
+  const defs = output.barItemsWidgets || barWidgets;
   (output.widgetsEls || []).forEach((el, i) => {
-    const w = barWidgets[i];
+    const w = defs[i];
     if (!w) return;
     let text = '';
     if (w.type === 'disk') {
@@ -493,11 +526,23 @@ function weatherText(location) {
   return hit ? hit.text : '';
 }
 
+/* Every widget definition standing on a bar right now: the shared
+ * `bar_widgets` plus whatever each output's `bar_items` override placed. The
+ * fetch below owes nothing to any one output, but a weather widget only named
+ * by an override is still a widget somebody has to fetch for. */
+function widgetDefsOnAnyBar() {
+  const defs = [...barWidgets];
+  for (const output of outputs.values()) {
+    for (const w of output.barItemsWidgets || []) defs.push(w);
+  }
+  return defs;
+}
+
 /* Start a fetch for every weather widget whose slot is ready. Called on
  * config and on the refresh interval. */
 function refreshWeather() {
   const now = Date.now();
-  for (const w of barWidgets) {
+  for (const w of widgetDefsOnAnyBar()) {
     if (w.type !== 'weather') continue;
     const location = (w.location || '').trim();
     if (!location) continue;
@@ -602,9 +647,11 @@ function renderClocks() {
   const text = clockText();
   for (const output of outputs.values()) {
     if (output.el.classList.contains('bar-hidden')) continue;
-    if (output.modules.clock.textContent !== text) {
-      output.modules.clock.textContent = text;
-    }
+    /* A `bar_items` override draws exactly the modules it names, so there may
+       be no clock standing there at all. Unguarded this threw once a second,
+       forever, and took every output after the first with it. */
+    const el = output.modules.clock;
+    if (el && el.textContent !== text) el.textContent = text;
   }
 }
 
