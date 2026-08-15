@@ -3013,6 +3013,14 @@ impl ViewportState {
                             );
                         }
                         self.dirty_outputs.insert(id);
+                        // And not a GPU error. The refusal has been answered
+                        // here — tearing is off and the frame is queued again
+                        // as a whole one — but `stalled()` reads any error at
+                        // all as a device worth resuming, so leaving the count
+                        // up means the next watchdog tick takes `Step::Resume`:
+                        // reset_buffers and a full repaint on a display that is
+                        // working and has already stopped being asked to tear.
+                        failed = false;
                     }
                 } else {
                     submitted = true;
