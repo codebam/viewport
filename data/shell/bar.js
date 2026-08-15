@@ -349,6 +349,18 @@ function syncBarRight(output) {
     if (output.barItemsEls) {
       for (const el of output.barItemsEls) el.remove();
       output.barItemsEls = undefined;
+      /* The widget elements the override built went out with it, so the
+         default path builds its own rather than reusing detached ones. */
+      output.widgetsEls = undefined;
+      /* The shipped markup was detached rather than dropped when the first
+         override was built (below), so put it back — a querySelector cannot
+         find an element that is no longer in the document, and a bar that had
+         once been overridden would have kept an empty right side and null
+         module refs for the rest of the session. */
+      if (output.barDefaultEls) {
+        for (const el of output.barDefaultEls) container.append(el);
+        output.barDefaultEls = undefined;
+      }
       /* The default module refs come back from the markup; see outputs.js. */
       output.modules = {
         clock: container.querySelector('.clock'),
@@ -374,7 +386,18 @@ function syncBarRight(output) {
   const widgetDefs = [];
 
   if (firstBuild) {
-    for (const child of [...container.children]) child.remove();
+    /* Detached, not dropped: the shipped modules are the only copy of the
+       default bar this output has, and a config that later drops `bar_items`
+       has to be able to put them back. The widgets the default path appended
+       are not part of that markup, so they go for good and the override
+       builds its own. */
+    const widgets = new Set(output.widgetsEls || []);
+    const children = [...container.children];
+    if (output.barDefaultEls === undefined) {
+      output.barDefaultEls = children.filter((el) => !widgets.has(el));
+    }
+    for (const child of children) child.remove();
+    output.widgetsEls = undefined;
   }
 
   for (let i = 0; i < barItems.length; i++) {
