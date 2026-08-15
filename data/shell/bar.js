@@ -602,9 +602,11 @@ function renderClocks() {
   const text = clockText();
   for (const output of outputs.values()) {
     if (output.el.classList.contains('bar-hidden')) continue;
-    if (output.modules.clock.textContent !== text) {
-      output.modules.clock.textContent = text;
-    }
+    /* A `bar_items` override draws exactly the modules it names, so there may
+       be no clock standing there at all. Unguarded this threw once a second,
+       forever, and took every output after the first with it. */
+    const el = output.modules.clock;
+    if (el && el.textContent !== text) el.textContent = text;
   }
 }
 
