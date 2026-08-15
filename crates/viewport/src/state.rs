@@ -3581,6 +3581,14 @@ impl ViewportState {
     /// a window did not ask to share whatever is covering it. Drawn at the
     /// window's origin so the shadow a client draws outside its geometry falls
     /// off the edge rather than shifting the picture.
+    ///
+    /// Nothing at all while the session is locked, which every caller composites
+    /// as a black frame of the right size. A screen is blanked for a lock by
+    /// `frame_for` — see `Frame::locked_blank` — and a window is not drawn
+    /// through that at all: it is its own surface tree, composited here, so a
+    /// share of a window went on streaming what was in it across the lock
+    /// screen. A share that stops rather than freezes: the last frame before
+    /// the lock is as much of the desktop as the next one would be.
     fn window_elements<R>(&mut self, id: u32, renderer: &mut R) -> Result<WindowElements<R>, String>
     where
         R: Renderer + smithay::backend::renderer::ImportAll,
@@ -3603,6 +3611,9 @@ impl ViewportState {
             .wl_surface()
             .ok_or_else(|| "that window has no surface".to_owned())?
             .into_owned();
+        if self.locked {
+            return Ok((Vec::new(), size));
+        }
 
         let elements = render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
             renderer,
