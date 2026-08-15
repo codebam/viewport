@@ -354,8 +354,8 @@ function solarSunOf(workspace, ids = solarIdsOf(workspace)) {
  * element they have already been subtracted from. A theme that moves any of
  * them moves this, which is the point.
  *
- * The origin is zero and not the element's page position, because what comes
- * out of the layout is written straight back as `left` and `top` on a window
+ * The origin is the edge gap and not the element's page position, because what
+ * comes out of the layout is written straight back as `left` and `top` on a window
  * absolutely positioned *inside* that element. Floating windows keep their
  * rects the same way and for the same reason: in page coordinates every window
  * on the second monitor would be offset by the width of the first
@@ -364,11 +364,18 @@ function solarSunOf(workspace, ids = solarIdsOf(workspace)) {
  * — nothing here depends on the origin being zero. */
 function solarAreaOf(output) {
   const rect = output?.windowsEl?.getBoundingClientRect();
-  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  if (!rect) return null;
   // The border box includes `.windows`'s padding, so the edge gap (inner +
   // outer) has to come off by hand, exactly as matrix and scrolling do.
+  // The origin moves in with it: the field is inset:0 inside `.windows`, whose
+  // padding is that gap, so an orbit placed from 0,0 sits `edge` px up and left
+  // of centre with twice the margin at the bottom right. matrixAreaOf and
+  // canvasAreaOf return the same corner for the same reason.
   const edge = edgeGapPx(output?.workspace);
-  return { x: 0, y: 0, width: rect.width - edge * 2, height: rect.height - edge * 2 };
+  const width = rect.width - edge * 2;
+  const height = rect.height - edge * 2;
+  if (width <= 0 || height <= 0) return null;
+  return { x: edge, y: edge, width, height };
 }
 
 /* The layout for one workspace on one output.
