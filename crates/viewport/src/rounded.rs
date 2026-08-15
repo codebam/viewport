@@ -45,6 +45,14 @@ pub fn bands(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32, 
         return vec![rect];
     }
 
+    // A corner that insets nothing is not a corner. `inset` rounds to whole
+    // pixels, and for a radius of 1 the deepest it ever gets is 0.134 — so the
+    // three bands below would be three full-width rectangles drawing exactly
+    // what one does, at three times the draw calls.
+    if (0..radius).all(|row| inset(radius, row) == 0) {
+        return vec![rect];
+    }
+
     let mut bands: Vec<Rectangle<i32, Physical>> = Vec::new();
     let mut push = |y: i32, height: i32, inset: i32| {
         let width = rect.size.w - inset * 2;
@@ -581,6 +589,16 @@ mod tests {
     #[test]
     fn no_radius_is_one_band() {
         assert_eq!(bands(rect(0, 0, 100, 50), 0), vec![rect(0, 0, 100, 50)]);
+    }
+
+    /// A radius too small to inset anything is no radius at all. `inset` works
+    /// in whole pixels and never reaches one for a radius of 1, so the three
+    /// bands it used to produce were three full-width rectangles drawing what
+    /// one draws.
+    #[test]
+    fn a_radius_that_cuts_nothing_is_one_band() {
+        assert_eq!(inset(1, 0), 0);
+        assert_eq!(bands(rect(0, 0, 100, 50), 1), vec![rect(0, 0, 100, 50)]);
     }
 
     /// Every row of the rectangle is covered exactly once, whatever the
