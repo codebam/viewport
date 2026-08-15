@@ -669,6 +669,9 @@ fn run(invocation: Invocation) -> Result<(), String> {
 
     let deadline = invocation.timeout.map(|timeout| Instant::now() + timeout);
     let pretty = invocation.pretty;
+    // The line being read, which outlives any one read: a timeout can land in
+    // the middle of one. See `read_event`.
+    let mut partial = String::new();
 
     match invocation.reply {
         Reply::Stream => {
@@ -676,7 +679,7 @@ fn run(invocation: Invocation) -> Result<(), String> {
             // compositor does or the terminal is closed.
             stream.set_read_timeout(None).ok();
             loop {
-                match read_event(&mut reader)? {
+                match read_event(&mut reader, &mut partial)? {
                     Incoming::Event(event) => {
                         let kind = kind_of(&event);
                         if invocation.watching.is_empty()
@@ -708,7 +711,7 @@ fn run(invocation: Invocation) -> Result<(), String> {
                 if !arm(&stream, deadline.unwrap_or_else(forever))? {
                     return Ok(());
                 }
-                match read_event(&mut reader) {
+                match read_event(&mut reader, &mut partial) {
                     Ok(Incoming::Event(event)) => match kind_of(&event) {
                         "error" => return Err(complaint(&event)),
                         "output.layout" => return Ok(()),
@@ -726,7 +729,7 @@ fn run(invocation: Invocation) -> Result<(), String> {
             if !arm(&stream, deadline.unwrap_or_else(forever))? {
                 return Err(format!("nothing answered with {wanted} in time"));
             }
-            match read_event(&mut reader)? {
+            match read_event(&mut reader, &mut partial)? {
                 Incoming::Event(event) => match kind_of(&event) {
                     kind if kind == wanted => {
                         print_event(&event, pretty);
@@ -755,7 +758,7 @@ fn run(invocation: Invocation) -> Result<(), String> {
                 if !arm(&stream, until)? {
                     return if seen { Ok(()) } else { Err(ran_out()) };
                 }
-                match read_event(&mut reader)? {
+                match read_event(&mut reader, &mut partial)? {
                     Incoming::Event(event) => match kind_of(&event) {
                         "error" => return Err(complaint(&event)),
                         kind if wanted.contains(&kind) => {
@@ -796,6 +799,7 @@ fn arm(stream: &UnixStream, until: Instant) -> Result<bool, String> {
     Ok(true)
 }
 
+#[derive(Debug)]
 enum Incoming {
     Event(Value),
     /// The read timeout arrived first. What that means is the caller's: for a
@@ -805,12 +809,23 @@ enum Incoming {
     Eof,
 }
 
-fn read_event(reader: &mut BufReader<UnixStream>) -> Result<Incoming, String> {
+/// Read one event, keeping whatever a timeout interrupted.
+///
+/// `partial` is the caller's, and is why: `read_line` consumes as it reads, so
+/// a read timeout that lands mid-line has already taken those bytes out of the
+/// socket. Dropping the string here threw them away, and the next read then
+/// began in the middle of a message — an `output.layout` split across two
+/// reads came back truncated, or made the read after it unparseable. So the
+/// half line stays in the caller's buffer and the next read finishes it.
+fn read_event(
+    reader: &mut BufReader<UnixStream>,
+    partial: &mut String,
+) -> Result<Incoming, String> {
     loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
+        match reader.read_line(partial) {
             Ok(0) => return Ok(Incoming::Eof),
             Ok(_) => {
+                let line = std::mem::take(partial);
                 let line = line.trim();
                 // The compositor writes one message per line, but a blank line
                 // is ignored rather than refused everywhere else in this
@@ -1218,6 +1233,34 @@ mod tests {
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
         assert_eq!(TYPES.len(), 37);
+    }
+
+    #[test]
+    fn a_read_timeout_does_not_eat_the_line_it_landed_in() {
+        // `read_line` consumes as it goes, so the bytes of a half-arrived
+        // message are already out of the socket when the timeout fires.
+        // Dropping them truncated a long `output.layout` and left the read
+        // after it looking at the tail of a message it never saw the head of.
+        let (mine, theirs) = UnixStream::pair().expect("a socket pair");
+        mine.set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("a read timeout");
+        let mut reader = BufReader::new(mine);
+        let mut partial = String::new();
+
+        (&theirs)
+            .write_all(br#"{"type":"output.la"#)
+            .expect("the first half");
+        assert!(matches!(
+            read_event(&mut reader, &mut partial),
+            Ok(Incoming::Timeout)
+        ));
+
+        (&theirs).write_all(b"yout\"}\n").expect("the second half");
+        let event = match read_event(&mut reader, &mut partial) {
+            Ok(Incoming::Event(event)) => event,
+            other => panic!("the rest of the line should have completed it: {other:?}"),
+        };
+        assert_eq!(kind_of(&event), "output.layout");
     }
 
     #[test]
