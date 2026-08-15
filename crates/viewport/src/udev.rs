@@ -2295,6 +2295,16 @@ impl ViewportState {
                 |surface, _| surface_presentation_feedback_flags_from_states(surface, None, states),
             );
         }
+        // And the wallpaper. It is drawn as a surface tree, so unlike the shell
+        // it has a real scan-out output recorded above and can be asked for it.
+        for surface in self.background_surfaces() {
+            smithay::desktop::utils::take_presentation_feedback_surface_tree(
+                &surface,
+                &mut feedback,
+                surface_primary_scanout_output,
+                |surface, _| surface_presentation_feedback_flags_from_states(surface, None, states),
+            );
+        }
         feedback
     }
 
@@ -2350,6 +2360,16 @@ impl ViewportState {
         }
         for layer in smithay::desktop::layer_map_for_output(output).layers() {
             layer.send_dmabuf_feedback(output, surface_primary_scanout_output, |_, _| feedback);
+        }
+        // And the wallpaper, which allocates against a GPU like any other
+        // client and was being told nothing about which one.
+        for surface in self.background_surfaces() {
+            smithay::desktop::utils::send_dmabuf_feedback_surface_tree(
+                &surface,
+                output,
+                surface_primary_scanout_output,
+                |_, _| feedback,
+            );
         }
     }
 
@@ -2415,6 +2435,25 @@ impl ViewportState {
                     );
                 },
                 |_, _, _| true,
+            );
+        }
+        // And the wallpaper, which is drawn under all of it as a surface tree
+        // of its own — in the space, in no layer map, so neither walk above
+        // reaches it. A background terminal pacing on presentation was told
+        // about no frame at all and stopped after the first.
+        for surface in self.background_surfaces() {
+            smithay::desktop::utils::with_surfaces_surface_tree(
+                &surface,
+                |surface, surface_states| {
+                    update_surface_primary_scanout_output(
+                        surface,
+                        output,
+                        surface_states,
+                        None,
+                        states,
+                        default_primary_scanout_output_compare,
+                    );
+                },
             );
         }
         for lock in self.lock_surfaces.values() {
