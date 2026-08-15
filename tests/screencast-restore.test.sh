@@ -40,6 +40,15 @@ if ! command -v dbus-run-session >/dev/null; then
 	exit 77
 fi
 
+# The binary alone is not a bus. A hosted runner can have dbus-run-session on
+# PATH and no session.conf for the daemon it starts to read, and that failure
+# arrives as exit 1 from the exec below — a real failure as far as the runner
+# is concerned, for a machine this test simply cannot run on.
+if [ ! -f /etc/dbus-1/session.conf ]; then
+	echo "SKIP: no /etc/dbus-1/session.conf for the private bus to start from"
+	exit 77
+fi
+
 # Everything below runs inside the private bus, because the compositor claims
 # its name at startup and there is no way to hand it one afterwards.
 if [ "${VIEWPORT_RESTORE_TEST_BUS:-}" != yes ]; then
