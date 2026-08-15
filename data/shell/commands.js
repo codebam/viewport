@@ -268,7 +268,7 @@ function handleShellCommand(command, args) {
       break;
     case 'workspace.step':
       clearSelection();
-      stepWorkspace(Number(arg));
+      stepWorkspaceOnActive(Number(arg));
       break;
     case 'mode.changed':
       currentMode = arg || 'default';
