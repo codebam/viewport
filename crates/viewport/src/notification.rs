@@ -153,6 +153,12 @@ impl Server {
         // A sender replacing its own notification keeps the id, so it updates
         // in place rather than stacking a duplicate.
         let id = if replaces_id != 0 {
+            // And the counter is moved past it. Both ends allocate ids, and a
+            // replacement id honoured but not accounted for was handed out
+            // again later as if it were fresh: two live notifications with one
+            // id, and dismissing either one closed the other.
+            self.next
+                .fetch_max(replaces_id.saturating_add(1), Ordering::Relaxed);
             replaces_id
         } else {
             self.next.fetch_add(1, Ordering::Relaxed)
@@ -263,6 +269,58 @@ mod tests {
     #[test]
     fn no_actions_is_not_an_error() {
         assert!(parse_actions(&[]).is_empty());
+    }
+
+    /// A server with nowhere to send, for the id allocation alone.
+    fn server() -> (
+        Server,
+        smithay::reexports::calloop::channel::Channel<Message>,
+    ) {
+        let (sender, channel) = smithay::reexports::calloop::channel::channel();
+        let server = Server {
+            sender,
+            next: Arc::new(AtomicU32::new(1)),
+        };
+        (server, channel)
+    }
+
+    fn notify(server: &Server, replaces_id: u32) -> u32 {
+        server.notify(
+            "test".to_owned(),
+            replaces_id,
+            String::new(),
+            "summary".to_owned(),
+            String::new(),
+            Vec::new(),
+            HashMap::new(),
+            -1,
+        )
+    }
+
+    #[test]
+    fn a_replaced_notification_keeps_its_id() {
+        let (server, _channel) = server();
+        assert_eq!(notify(&server, 0), 1);
+        assert_eq!(notify(&server, 1), 1, "a replacement updates in place");
+    }
+
+    #[test]
+    fn an_id_a_sender_chose_is_never_handed_out_again() {
+        // Both ends allocate ids. A `replaces_id` honoured without moving the
+        // counter past it came back later as a fresh id, and then two live
+        // notifications had one id — dismissing either closed the other.
+        let (server, _channel) = server();
+        assert_eq!(notify(&server, 7), 7);
+        let fresh = notify(&server, 0);
+        assert!(fresh > 7, "the counter should be past 7, not at {fresh}");
+    }
+
+    #[test]
+    fn a_replacement_of_an_older_id_does_not_rewind_the_counter() {
+        let (server, _channel) = server();
+        assert_eq!(notify(&server, 7), 7);
+        assert_eq!(notify(&server, 2), 2);
+        assert!(notify(&server, 0) > 7, "fetch_max, not a store");
     }
 
     #[test]
