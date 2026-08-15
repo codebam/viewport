@@ -1012,6 +1012,10 @@ function canvasFillFocused() {
  * floating path in every other layout. */
 function canvasDragBy(id, dx, dy) {
   if (layoutMode !== 'canvas' || id == null) return false;
+  /* A place is kept for the session, so one malformed delta is not a bad
+     frame — it is a NaN written into the plane, and everything read off it
+     afterwards, bounds and fit included, is NaN too. */
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
   const rect = canvasPlaces.get(id);
   if (!rect) return false;
 
@@ -1050,6 +1054,8 @@ function canvasDragBy(id, dx, dy) {
  * a rectangle too small to take hold of again. */
 function canvasResizeBy(id, dx, dy, west, north) {
   if (layoutMode !== 'canvas' || id == null) return false;
+  /* As in canvasDragBy: a place outlives the gesture that wrote it. */
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
   const rect = canvasPlaces.get(id);
   if (!rect) return false;
 
