@@ -573,6 +573,13 @@ impl ViewportState {
                 self.ipc_reject(client_id, &error);
             }
         }
+
+        // And back to zero, because it describes this dispatch and nothing
+        // else. Left set, it was added a second time by anything that applies a
+        // layout of its own afterwards: the recovery watchdog's rescue columns
+        // are already in layout coordinates, and on a multi-monitor `--url`
+        // session they landed a screen's width off the desk.
+        self.dispatch_origin = (0, 0).into();
     }
 
     fn ipc_reject(&mut self, client_id: u64, error: &ParseError) {
