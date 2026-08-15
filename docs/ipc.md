@@ -135,6 +135,11 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `output.test_remove` | optional `name` (default: the first output); headless only |
 | `bind.add` | `chord`, `action` |
 | `status.volume` | `target` (`sink` or `source`), optional `delta` (percentage points, negative to lower), optional `mute` (toggles) — changes the volume and re-samples the bar in that order. `shell.exec`-ing `wpctl` and following it with `status.refresh` is a race the refresh wins, so the bar redraws the old number |
+| `input.pointer` | `x`, `y` — move the pointer, in the layout's own coordinates. Everything a real pointer does goes through the same path: the hit test, the focus and the shell's overlays. See below |
+| `input.button` | `button` (an evdev code — 272 left, 273 right, 274 middle), optional `pressed` (default true) — press or release a pointer button wherever the pointer is. See below |
+| `input.key` | `keycode` (an evdev code — 29 left control, 56 left alt, 34 `g`), optional `pressed` (default true) — press or release a key, through the same filter that decides what a chord means. See below |
+| `config.gaps` | optional `inner`, optional `outer`, optional `smart` — set the window gaps at runtime, as the `gaps` block in the config file. Only the fields given change; the file is not touched. Zero is accepted, a negative value is refused |
+| `config.border` | optional `radius`, optional `width`, optional `smart` — the same for the `border` block. Read by the compositor as well as the shell, since the client is cropped to the corner the shell draws. Zero is accepted, a negative value is refused |
 | `config.wallpaper` | optional `path` (a file or a URL; the empty string removes the wallpaper), optional `mode` — set the desktop background at runtime, as `wallpaper` and `wallpaper_mode` in the config file. Only the fields given change; a path that is not there, or an unknown mode, comes back as an `error` and nothing is applied |
 | `shell.command` | `command`, optional `args[]` — re-emitted as the `shell.command` *event*; see below |
 | `quit` | — |
@@ -157,6 +162,19 @@ understands — `handleShellCommand` warns about a name it does not recognise an
 carries on — so a list here would be a second copy of
 `data/shell/commands.js` to keep in step, kept by something with no way to
 check it.
+
+`input.pointer`, `input.button` and `input.key` are synthetic input, and they
+exist for the same reason `shell.command` does: a test that wants to know
+whether a notification can be clicked has to be able to click it, and there is
+no other way in. They enter the compositor where libinput's own events do, so
+what they exercise is what a hand exercises — the hit test, the focus, the
+keybinding filter and the shell's overlays, in that order.
+
+This is not a privilege escalation. The socket is 0600 and owned by the user
+running the session, and anything that can open it can already run
+`shell.command`, which the shell turns into `exec`. Anything that can reach the
+socket can already run programs as that user; being able to move the pointer as
+well changes nothing about who is trusted.
 
 The socket is a stream, not a datagram, and the compositor answers on it — so a
 one-shot redirect will not do. `scripts/bench-vkcube.sh` opens it from Python
