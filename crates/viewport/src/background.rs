@@ -188,6 +188,12 @@ impl ViewportState {
             // closing frame on, and the process holds a surface for an output
             // that no longer exists.
             let _ = background.child.kill();
+            // And reaped, as `check_background_terminal` reaps the ones that
+            // exited on their own. Nothing in this compositor handles SIGCHLD,
+            // so a `Child` dropped without being waited for is a zombie for the
+            // rest of the session — one per monitor unplugged, which on a
+            // laptop is one per time it is docked.
+            let _ = background.child.wait();
             false
         });
         for output in gone {
