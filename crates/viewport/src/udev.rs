@@ -512,6 +512,26 @@ pub struct Udev {
     /// newest: a client that commits twice before either is drawn has waited
     /// since the first.
     pub first_commit_at: Option<std::time::Instant>,
+    /// Cards that have never opened, waiting to be tried again.
+    ///
+    /// A GPU this session has not seen has no slot in `devices` to hang the
+    /// retry state on, so a first open that fails would otherwise leave nothing
+    /// behind at all — and `UdevEvent::Added` fires once per devnum, so nothing
+    /// asks again. An eGPU, or a card whose driver was still binding when udev
+    /// announced it, was dropped for the rest of the session. The watchdog
+    /// drains this on the same backoff it retries an offline card with.
+    pub pending_adds: Vec<PendingAdd>,
+}
+
+/// A card that announced itself and would not open.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingAdd {
+    /// The primary node to open, as udev named it.
+    pub card: DrmNode,
+    /// How many times it has been tried, which is what the backoff counts in.
+    pub attempts: u32,
+    /// When it was last tried, for the backoff to measure from.
+    pub tried_at: std::time::Instant,
 }
 
 /// Why a client on a 240Hz screen gets 204 frames a second.
@@ -1211,6 +1231,7 @@ pub fn init(
         last_vblank_by_output: HashMap::new(),
         committed_since_flip: false,
         first_commit_at: None,
+        pending_adds: Vec::new(),
     });
     if state
         .udev

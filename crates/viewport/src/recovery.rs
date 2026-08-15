@@ -200,6 +200,14 @@ pub fn may_escalate(since: Option<Duration>, wait: Duration) -> bool {
     since.is_none_or(|elapsed| elapsed >= wait)
 }
 
+/// Whether a card that has never opened is due another attempt.
+///
+/// The same backoff an offline slot is retried on, counted from the last try
+/// rather than from when the card went — there is no slot and nothing went.
+pub fn add_due(attempts: u32, since: Duration) -> bool {
+    since >= backoff(attempts)
+}
+
 /// How long to leave a step in place before acting again.
 ///
 /// [`DWELL`] for the rungs that are tried once and move on. The bottom rung is
@@ -353,6 +361,29 @@ impl ViewportState {
             } else if outstanding {
                 // Still within its budget: look again.
                 again = true;
+            }
+        }
+
+        // And the cards that have never opened at all, which are in no slot for
+        // the loop above to have looked at. See `Udev::pending_adds`.
+        let pending: Vec<(DrmNode, bool)> = self
+            .udev
+            .as_ref()
+            .map(|udev| {
+                udev.pending_adds
+                    .iter()
+                    .map(|add| (add.card, add_due(add.attempts, add.tried_at.elapsed())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !pending.is_empty() {
+            again = true;
+            if !switched_away {
+                for (card, due) in pending {
+                    if due {
+                        self.install_device(None, card);
+                    }
+                }
             }
         }
 
@@ -545,10 +576,17 @@ impl ViewportState {
             return false;
         };
         let index = slot.unwrap_or(udev.devices.len());
-        let attempts = slot
-            .and_then(|slot| udev.devices.get(slot))
-            .map(|device| device.attempts)
-            .unwrap_or(0);
+        let attempts = match slot {
+            Some(slot) => udev.devices.get(slot).map(|device| device.attempts),
+            // A card with no slot keeps its count in `pending_adds` — see
+            // there, and the error arm below.
+            None => udev
+                .pending_adds
+                .iter()
+                .find(|pending| pending.card.dev_id() == card.dev_id())
+                .map(|pending| pending.attempts),
+        }
+        .unwrap_or(0);
 
         // Opened before anything is torn down, and this order is the point.
         //
@@ -578,19 +616,49 @@ impl ViewportState {
                 } else {
                     tracing::debug!("gpu {index}: {card:?} will not open ({e:#})");
                 }
-                if let Some(device) = slot.and_then(|slot| udev.devices.get_mut(slot)) {
-                    device.attempts = device.attempts.saturating_add(1);
-                    // Only a slot that was already empty starts the clock. One
-                    // that still holds a live card keeps it, along with its
-                    // outputs and its vblank source.
-                    if !device.online {
-                        device.offline_since = Some(std::time::Instant::now());
+                match slot {
+                    Some(slot) => {
+                        if let Some(device) = udev.devices.get_mut(slot) {
+                            device.attempts = device.attempts.saturating_add(1);
+                            // Only a slot that was already empty starts the
+                            // clock. One that still holds a live card keeps it,
+                            // along with its outputs and its vblank source.
+                            if !device.online {
+                                device.offline_since = Some(std::time::Instant::now());
+                            }
+                        }
+                    }
+                    // Nothing in `devices` to record this against — the card
+                    // was never opened — so the retry is remembered on its own.
+                    // Without it the watchdog finds nothing offline and stands
+                    // down, and udev announces a card once: a GPU whose driver
+                    // was still binding is lost for the session.
+                    None => {
+                        let now = std::time::Instant::now();
+                        match udev
+                            .pending_adds
+                            .iter_mut()
+                            .find(|pending| pending.card.dev_id() == card.dev_id())
+                        {
+                            Some(pending) => {
+                                pending.attempts = pending.attempts.saturating_add(1);
+                                pending.tried_at = now;
+                            }
+                            None => udev.pending_adds.push(crate::udev::PendingAdd {
+                                card,
+                                attempts: 1,
+                                tried_at: now,
+                            }),
+                        }
                     }
                 }
                 self.watch_gpus();
                 return false;
             }
         };
+        // It opened, so it has stopped being a card waiting to be retried.
+        udev.pending_adds
+            .retain(|pending| pending.card.dev_id() != card.dev_id());
 
         // Now that there is a replacement: the outputs, then the event source,
         // then the device itself. Each holds a piece of the old fd, and the old
@@ -926,6 +994,18 @@ mod tests {
         assert!(backoff(0) < Duration::from_secs(1));
         assert!(backoff(1) > backoff(0));
         assert_eq!(backoff(100), BACKOFF_MAX);
+    }
+
+    #[test]
+    fn a_card_that_never_opened_is_tried_again() {
+        // udev announces a card once per devnum, so an eGPU whose driver was
+        // still binding when it arrived is only ever retried from the
+        // watchdog — and only if the first failure left something behind to
+        // retry. Same backoff as an offline slot: quick at first, bounded.
+        assert!(!add_due(0, Duration::ZERO));
+        assert!(add_due(0, backoff(0)));
+        assert!(!add_due(3, backoff(2)));
+        assert!(add_due(3, BACKOFF_MAX));
     }
 
     #[test]
