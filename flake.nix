@@ -388,7 +388,7 @@
             # The build fails loudly on a stale one, quoting the hash it got.
             outputHashes = {
               "smithay-0.7.0" = "sha256-/N1300Sbk9HQL1ZjELlxbP/HXUmBe54wBtNg8R159Oo=";
-              "viewport-vulkan-0.1.3" = "sha256-6iNlqErvJjeWZt9qXaSeQMiXDN7OPYqtgjm2jNSqYq4=";
+              "viewport-vulkan-0.1.3" = "sha256-AbdFEPxGECqTmeC5ZjLHCB/vqp22wvke9dd2p05ps4U=";
             };
           };
 
