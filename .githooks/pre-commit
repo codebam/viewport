@@ -3,10 +3,11 @@
 #
 # What GitHub used to run, run here instead, before the commit is made.
 #
-# The CI workflow is disabled — see the comment at the top of
-# .github/workflows/ci.yml for why — so this is the only thing standing
-# between a mistake and `main`. It runs the same checks the `shell` and `rust`
-# jobs did, in the same order.
+# The CI workflow runs on every push and pull request again, so this is no
+# longer the only thing standing between a mistake and `main`: it runs the same
+# checks the `shell` and `rust` jobs do, in the same order, before the commit
+# exists rather than after it is pushed. The one thing it adds is the `wpe`
+# check, which CI cannot afford — see wpe_check below.
 #
 # Enable it once per clone:
 #
@@ -42,7 +43,7 @@ fi
 
 # The one check that does not run on this machine's nix.
 #
-# `nix develop "$root"` is the shell with the web engine in it, and on a host
+# `nix develop "$root#wpe"` is the shell with the web engine in it, and on a host
 # whose store does not already have wpewebkit that means building WebKit from
 # source — an hour of every core for a `cargo check`, which is how this hook
 # came to be answered with --no-verify. Arch has a built `wpewebkit` package
@@ -66,7 +67,7 @@ wpe_check() {
     if [ -z "$engine" ]; then
         echo "pre-commit: no podman or docker; falling back to the nix dev shell," >&2
         echo "pre-commit: which builds wpewebkit from source if the store lacks it" >&2
-        nix develop "$root" --command cargo check -p viewport --features wpe
+        nix develop "$root#wpe" --command cargo check -p viewport --features wpe
         return
     fi
 
@@ -157,7 +158,7 @@ if $rust; then
     #
     # `cargo check`, not `build`: this is about whether both configurations
     # compile, and the wpe one needs pkg-config to find wpe-webkit, which the
-    # default dev shell has and `.#rust` does not.
+    # `.#wpe` dev shell has and neither `.#rust` nor the default shell does.
     step "check without the web engine" nix develop "$root#rust" --command \
         cargo check --workspace --all-targets
     step "check with the web engine" wpe_check
