@@ -77,7 +77,22 @@ const RESPONSE_FAILED: u32 = 2;
 /// one would otherwise read as its own — so it is signed, and anything not
 /// signed this way is ignored and the user is asked instead.
 const RESTORE_VENDOR: &str = "viewport";
-const RESTORE_VERSION: u32 = 1;
+const RESTORE_VERSION: u32 = 2;
+
+/// The bus name the portal frontend answers on.
+///
+/// Its owner is the only peer whose calls mean anything here. This interface is
+/// on the session bus, which every process in the session can reach, and the
+/// calls on it start a screen share — so a peer that is not the frontend is one
+/// asking to record the desk on its own say-so.
+const FRONTEND_NAME: &str = "org.freedesktop.portal.Desktop";
+
+/// How many remembered sources are kept at once.
+///
+/// A ceiling rather than a policy: each is three short strings, and the table
+/// is only ever added to by a share the user agreed to. What it stops is a
+/// session left up for weeks accumulating one entry per share.
+const REMEMBERED_LIMIT: usize = 32;
 
 /// The application does not want the choice remembered.
 const PERSIST_NONE: u32 = 0;
@@ -85,6 +100,11 @@ const PERSIST_NONE: u32 = 0;
 /// One conversation with an application.
 #[derive(Debug, Default)]
 pub struct Session {
+    /// Which application the frontend says is asking, which is what a
+    /// remembered source is filed under. From CreateSession rather than from
+    /// each call: it is the frontend's statement about the application, and
+    /// taking it once means the three calls cannot disagree.
+    app_id: String,
     /// What SelectSources asked for, which Start then acts on.
     types: u32,
     /// What this application shared last time, if the frontend recognised the
@@ -106,9 +126,67 @@ pub struct Session {
     owner: Option<String>,
 }
 
-/// The sessions, shared between the object on the bus and the watcher that
-/// notices a frontend disappearing.
-pub type Sessions = Arc<Mutex<HashMap<OwnedObjectPath, Session>>>;
+/// What the object on the bus and the watcher both hold.
+#[derive(Debug, Default)]
+pub struct Frontend {
+    /// One conversation each, by the handle the frontend named it with.
+    sessions: HashMap<OwnedObjectPath, Session>,
+    /// Who owns [`FRONTEND_NAME`] just now, as a unique name.
+    ///
+    /// Learned once when the watcher starts and kept up to date from
+    /// NameOwnerChanged, rather than asked for on every call: the answer is a
+    /// round trip on the connection the call arrived on, and this end is
+    /// already holding up an application's dialogue while it asks.
+    ///
+    /// `None` is "nobody has said", and every call is refused while it is —
+    /// there is no frontend to be talking to, so anything on this interface is
+    /// something else.
+    owner: Option<String>,
+    /// What each application may ask for again without being asked, by the
+    /// token this end minted for it.
+    ///
+    /// The blob the frontend stores used to describe the source itself, which
+    /// made it a key: it is handed back to whoever presents it, and anybody on
+    /// the session bus could write "all outputs" and hand it over. A token
+    /// names a row here instead, and the row records which application the
+    /// choice was made by — so restoring is a choice already made by *that*
+    /// application rather than a sentence anybody can compose.
+    ///
+    /// In memory, so a compositor restart means the user is asked once more.
+    /// That is the cost of the source not being in the token, and it is the
+    /// right way round: the alternative is a token that means something on its
+    /// own.
+    remembered: Vec<(String, String, Remembered)>,
+}
+
+impl Frontend {
+    /// Write a source down for an application, and say what to call it.
+    fn remember(&mut self, app_id: &str, remembered: &Remembered) -> Option<String> {
+        let token = mint()?;
+        if self.remembered.len() >= REMEMBERED_LIMIT {
+            self.remembered.remove(0);
+        }
+        self.remembered
+            .push((token.clone(), app_id.to_owned(), remembered.clone()));
+        Some(token)
+    }
+
+    /// What a token means, for the application it was minted for.
+    ///
+    /// Nothing for anybody else's token, which is what keeps one application's
+    /// permission from being another's: the frontend files them per
+    /// application, and this end does not take that on trust either.
+    fn recall(&self, token: &str, app_id: &str) -> Option<Remembered> {
+        self.remembered
+            .iter()
+            .find(|(minted, owner, _)| minted == token && owner == app_id)
+            .map(|(_, _, remembered)| remembered.clone())
+    }
+}
+
+/// The shared state, between the object on the bus and the watcher that
+/// notices a frontend arriving or disappearing.
+pub type Sessions = Arc<Mutex<Frontend>>;
 
 /// The object on the bus.
 pub struct ScreenCast {
@@ -120,13 +198,36 @@ impl ScreenCast {
     pub fn new(sender: smithay::reexports::calloop::channel::Sender<Message>) -> Self {
         Self {
             sender,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(Frontend::default())),
         }
     }
 
-    /// The sessions, for the watcher that closes them when a frontend goes.
+    /// The shared state, for the watcher that follows the frontend.
     pub fn sessions(&self) -> Sessions {
         self.sessions.clone()
+    }
+
+    /// Whether a call came from the portal frontend, and a line in the log if
+    /// it did not.
+    ///
+    /// Every method on this interface goes through it. The frontend is the only
+    /// peer that has any business here — it is what asks the user's application
+    /// what it wants and what carries the answer back — and a call from
+    /// anywhere else is a process on the session bus asking this compositor to
+    /// hand it a screen.
+    fn called_by_frontend(&self, header: &zbus::message::Header<'_>) -> bool {
+        let sender = header.sender().map(|name| name.as_str());
+        let owner = self.sessions.lock().unwrap().owner.clone();
+        match (owner.as_deref(), sender) {
+            (Some(owner), Some(sender)) if owner == sender => true,
+            _ => {
+                tracing::warn!(
+                    "screencast: refusing a call from {sender:?} — the portal frontend is \
+                     {owner:?}"
+                );
+                false
+            }
+        }
     }
 
     /// A way to tell the compositor to stop, for the same watcher.
@@ -190,17 +291,21 @@ impl ScreenCast {
         &self,
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
-        _app_id: &str,
+        app_id: &str,
         _options: HashMap<String, OwnedValue>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !self.called_by_frontend(&header) {
+            return (RESPONSE_FAILED, HashMap::new());
+        }
         let path = OwnedObjectPath::from(session_handle);
         let owner = header.sender().map(|name| name.to_string());
-        tracing::debug!("screencast: create session {path}");
-        self.sessions.lock().unwrap().insert(
+        tracing::debug!("screencast: create session {path} for {app_id:?}");
+        self.sessions.lock().unwrap().sessions.insert(
             path.clone(),
             Session {
+                app_id: app_id.to_owned(),
                 owner,
                 ..Session::default()
             },
@@ -231,7 +336,11 @@ impl ScreenCast {
         session_handle: ObjectPath<'_>,
         _app_id: &str,
         options: HashMap<String, OwnedValue>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !self.called_by_frontend(&header) {
+            return (RESPONSE_FAILED, HashMap::new());
+        }
         let types = options
             .get("types")
             .and_then(|value| u32::try_from(value).ok())
@@ -240,23 +349,38 @@ impl ScreenCast {
             .unwrap_or(super::SOURCE_MONITOR);
 
         // What the application shared last time. The application holds an
-        // opaque token; the frontend is what turns it back into this, and it
-        // only does so for a token it issued to the same application, which is
-        // what makes restoring without asking a continuation of a choice
-        // already made rather than a new one made on the application's say-so.
-        let restore = options.get("restore_data").and_then(decode);
+        // opaque token; the frontend is what turns it back into the blob this
+        // end minted, and it only does so for a blob it issued to the same
+        // application — and the blob is then looked up here against the
+        // application it was minted for, so restoring without asking is a
+        // continuation of a choice already made rather than a new one made on
+        // whatever the data happened to say.
+        let token = options.get("restore_data").and_then(decode);
         let persist = options
             .get("persist_mode")
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(PERSIST_NONE);
 
+        let path = OwnedObjectPath::from(session_handle);
+        let mut shared = self.sessions.lock().unwrap();
+        // Which application this is, before the token is looked up: a
+        // remembered source belongs to the application that agreed to it, and
+        // that is what the session says rather than what the data says.
+        let Some(app_id) = shared
+            .sessions
+            .get(&path)
+            .map(|session| session.app_id.clone())
+        else {
+            tracing::warn!("screencast: select sources for a session that does not exist");
+            return (RESPONSE_FAILED, HashMap::new());
+        };
+        let restore = token.and_then(|token| shared.recall(&token, &app_id));
+
         tracing::debug!(
             "screencast: select sources, types {types}, persist {persist}, \
              restoring {restore:?}"
         );
-        let mut sessions = self.sessions.lock().unwrap();
-        let Some(session) = sessions.get_mut(&OwnedObjectPath::from(session_handle)) else {
-            tracing::warn!("screencast: select sources for a session that does not exist");
+        let Some(session) = shared.sessions.get_mut(&path) else {
             return (RESPONSE_FAILED, HashMap::new());
         };
         session.types = types;
@@ -280,7 +404,13 @@ impl ScreenCast {
         &self,
         _session_handle: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+        if !self.called_by_frontend(&header) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "that is not the portal frontend".to_owned(),
+            ));
+        }
         tracing::debug!("screencast: the application asked for a pipewire connection");
         let socket = pipewire_socket()
             .ok_or_else(|| zbus::fdo::Error::Failed("no pipewire socket".to_owned()))?;
@@ -298,12 +428,21 @@ impl ScreenCast {
         _app_id: &str,
         _parent_window: &str,
         _options: HashMap<String, OwnedValue>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !self.called_by_frontend(&header) {
+            return (RESPONSE_FAILED, HashMap::new());
+        }
         let path = OwnedObjectPath::from(session_handle);
-        let (types, restore, persist) = {
-            let sessions = self.sessions.lock().unwrap();
-            match sessions.get(&path) {
-                Some(session) => (session.types, session.restore.clone(), session.persist),
+        let (app_id, types, restore, persist) = {
+            let shared = self.sessions.lock().unwrap();
+            match shared.sessions.get(&path) {
+                Some(session) => (
+                    session.app_id.clone(),
+                    session.types,
+                    session.restore.clone(),
+                    session.persist,
+                ),
                 None => return (RESPONSE_FAILED, HashMap::new()),
             }
         };
@@ -332,7 +471,7 @@ impl ScreenCast {
             }
         };
 
-        if let Some(session) = self.sessions.lock().unwrap().get_mut(&path) {
+        if let Some(session) = self.sessions.lock().unwrap().sessions.get_mut(&path) {
             session.node = Some(started.node);
         }
 
@@ -368,8 +507,16 @@ impl ScreenCast {
         // Both keys or neither: the frontend stores the data against the mode,
         // and data with no mode is a token it mints and then throws away,
         // which is a restore that silently never happens.
+        //
+        // A token rather than a description of the source: what goes to the
+        // frontend names a row in this end's table, and the row is what says
+        // which source and which application. See [`Frontend::remembered`].
         if persist != PERSIST_NONE {
-            match started.remembered.as_ref().map(encode) {
+            let token = started
+                .remembered
+                .as_ref()
+                .and_then(|remembered| self.sessions.lock().unwrap().remember(&app_id, remembered));
+            match token.as_deref().map(encode) {
                 Some(Ok(data)) => {
                     results.insert("restore_data".to_owned(), data);
                     results.insert("persist_mode".to_owned(), OwnedValue::from(persist));
@@ -392,29 +539,35 @@ impl ScreenCast {
     }
 }
 
-/// Write a source down as the interface carries it: `(suv)`, which is who
-/// wrote it, which shape it is in, and the thing itself.
+/// A name for a remembered source that means nothing on its own.
 ///
-/// A dictionary inside rather than a bare string, because the fields differ by
-/// kind and a reader of the next version has to be able to skip what it does
-/// not know.
-fn encode(remembered: &Remembered) -> zvariant::Result<OwnedValue> {
+/// Sixteen bytes of the kernel's randomness, in hex. Unguessable because the
+/// frontend is not the only thing that ever sees one — it goes to disk in the
+/// permission store — and a token that could be guessed would be a screen share
+/// anybody could ask for by writing one out.
+///
+/// `None` rather than something derived from the clock if the kernel will not
+/// answer: a predictable token is worse than a share the user is asked about
+/// again.
+fn mint() -> Option<String> {
+    use std::io::Read as _;
+
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .map_err(|e| tracing::warn!("screencast: could not mint a restore token: {e}"))
+        .ok()?;
+    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Write a token down as the interface carries it: `(suv)`, which is who wrote
+/// it, which shape it is in, and the thing itself.
+///
+/// A dictionary inside rather than a bare string, because a reader of the next
+/// version has to be able to skip what it does not know.
+fn encode(token: &str) -> zvariant::Result<OwnedValue> {
     let mut fields: HashMap<String, Value<'static>> = HashMap::new();
-    let kind = match remembered {
-        Remembered::Output(name) => {
-            fields.insert("output".to_owned(), Value::from(name.clone()));
-            "output"
-        }
-        Remembered::Window { app_id, title } => {
-            fields.insert("app_id".to_owned(), Value::from(app_id.clone()));
-            fields.insert("title".to_owned(), Value::from(title.clone()));
-            "window"
-        }
-        Remembered::AllOutputs => "all-outputs",
-        Remembered::FollowWindow => "follow-window",
-        Remembered::FollowOutput => "follow-output",
-    };
-    fields.insert("kind".to_owned(), Value::from(kind));
+    fields.insert("token".to_owned(), Value::from(token.to_owned()));
 
     let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
     OwnedValue::try_from(Value::from((RESTORE_VENDOR, RESTORE_VERSION, data)))
@@ -424,10 +577,11 @@ fn encode(remembered: &Remembered) -> zvariant::Result<OwnedValue> {
 ///
 /// Every way of not being one is the same answer — a different compositor
 /// wrote it, a later version of this one did, the frontend handed back
-/// something malformed, the window kind names a field it did not send. None of
-/// them are worth failing the call over: the user is asked, which is what
-/// would have happened without a token at all.
-fn decode(value: &OwnedValue) -> Option<Remembered> {
+/// something malformed. None of them are worth failing the call over: the user
+/// is asked, which is what would have happened without a token at all. So is a
+/// token this end no longer has a row for, which is every token from before the
+/// compositor was restarted.
+fn decode(value: &OwnedValue) -> Option<String> {
     let Value::Structure(structure) = &**value else {
         return None;
     };
@@ -455,20 +609,7 @@ fn decode(value: &OwnedValue) -> Option<Remembered> {
         })
     };
 
-    match field("kind")?.as_str() {
-        "output" => Some(Remembered::Output(field("output")?)),
-        "window" => Some(Remembered::Window {
-            app_id: field("app_id")?,
-            title: field("title")?,
-        }),
-        "all-outputs" => Some(Remembered::AllOutputs),
-        "follow-window" => Some(Remembered::FollowWindow),
-        "follow-output" => Some(Remembered::FollowOutput),
-        other => {
-            tracing::debug!("screencast: restore data names a source kind, {other}, nobody offers");
-            None
-        }
-    }
+    field("token").filter(|token| !token.is_empty())
 }
 
 /// What is inside a variant, however many of them there are.
@@ -500,6 +641,7 @@ impl SessionObject {
             .sessions
             .lock()
             .unwrap()
+            .sessions
             .remove(&self.path)
             .and_then(|session| session.node);
         if let Some(node) = node {
@@ -563,8 +705,32 @@ pub fn watch_frontend(
                 }
             };
 
+            // Who has the name already. Subscribed to first, so a frontend that
+            // arrives between the two is seen by the signal rather than missed
+            // by both — the other way round is a window in which every call is
+            // refused because nobody has said who the frontend is.
+            match proxy.get_name_owner(FRONTEND_NAME.try_into().expect("a valid bus name")) {
+                Ok(owner) => {
+                    tracing::info!("the portal frontend is {owner}");
+                    sessions.lock().unwrap().owner = Some(owner.to_string());
+                }
+                // Not up yet, which is ordinary: it is started on demand, and
+                // the signal below is what says so when it is.
+                Err(e) => tracing::debug!("no portal frontend yet: {e}"),
+            }
+
             for change in changes {
                 let Ok(args) = change.args() else { continue };
+                // Who this compositor answers to, as that changes. Every call
+                // on the screencast interface is checked against it: the
+                // session bus is reachable by every process in the session, and
+                // the calls on that interface hand out a screen.
+                if args.name().as_str() == FRONTEND_NAME {
+                    let owner = args.new_owner().as_ref().map(|owner| owner.to_string());
+                    tracing::info!("the portal frontend is now {owner:?}");
+                    sessions.lock().unwrap().owner = owner;
+                }
+
                 // A name that moved to a new owner is a service restarting,
                 // not one that went away.
                 if args.new_owner().is_some() {
@@ -574,12 +740,13 @@ pub fn watch_frontend(
 
                 let mut held = sessions.lock().unwrap();
                 let closed: Vec<_> = held
+                    .sessions
                     .iter()
                     .filter(|(_, session)| session.owner.as_deref() == Some(gone.as_str()))
                     .map(|(path, session)| (path.clone(), session.node))
                     .collect();
                 for (path, _) in &closed {
-                    held.remove(path);
+                    held.sessions.remove(path);
                 }
                 drop(held);
 
@@ -609,8 +776,8 @@ mod tests {
     /// again — and a variant that survives inside this process can come back
     /// wrapped in another one. A test that passed the value straight from
     /// `encode` to `decode` would prove nothing about the case that happens.
-    fn round_trip(remembered: &Remembered) -> Option<Remembered> {
-        let encoded = encode(remembered).expect("writing it down");
+    fn round_trip(token: &str) -> Option<String> {
+        let encoded = encode(token).expect("writing it down");
         let context = zvariant::serialized::Context::new_dbus(zvariant::Endian::Little, 0);
         let bytes = zvariant::to_bytes(context, &encoded).expect("serialising it");
         let (value, _) = bytes
@@ -619,10 +786,19 @@ mod tests {
         decode(&OwnedValue::try_from(value).expect("owning it"))
     }
 
-    /// Every kind of share can be asked for again. A kind that could not be
-    /// written down is one OBS has to be told about by hand on every launch.
+    /// A token survives the frontend. One that did not is a share OBS has to
+    /// be told about by hand on every launch.
     #[test]
-    fn every_source_survives_the_frontend() {
+    fn a_token_survives_the_frontend() {
+        assert_eq!(round_trip("abc123").as_deref(), Some("abc123"));
+    }
+
+    /// Every kind of share can be asked for again, and from the table rather
+    /// than from the blob: what the frontend keeps says nothing about which
+    /// screen, so a restore is what this end wrote down for that application.
+    #[test]
+    fn every_source_is_remembered_for_its_application() {
+        let mut frontend = Frontend::default();
         for remembered in [
             Remembered::Output("DP-1".to_owned()),
             Remembered::Window {
@@ -633,20 +809,76 @@ mod tests {
             Remembered::FollowWindow,
             Remembered::FollowOutput,
         ] {
-            assert_eq!(round_trip(&remembered).as_ref(), Some(&remembered));
+            let token = frontend
+                .remember("org.mozilla.firefox", &remembered)
+                .expect("minting a token");
+            assert_eq!(
+                frontend.recall(&token, "org.mozilla.firefox").as_ref(),
+                Some(&remembered)
+            );
         }
+    }
+
+    /// One application's token is not another's permission. The frontend files
+    /// them per application and this end does not take that on trust: a token
+    /// that worked for whoever presented it would be a screen share any
+    /// application could inherit by handing over somebody else's blob.
+    #[test]
+    fn a_token_is_no_use_to_another_application() {
+        let mut frontend = Frontend::default();
+        let token = frontend
+            .remember("org.mozilla.firefox", &Remembered::AllOutputs)
+            .expect("minting a token");
+        assert_eq!(frontend.recall(&token, "com.obsproject.Studio"), None);
+    }
+
+    /// A token nobody minted names nothing, which is the whole of the fix: the
+    /// data used to describe the source itself, so any process on the session
+    /// bus could compose "all outputs" and be handed the desk without a
+    /// chooser.
+    #[test]
+    fn an_invented_token_names_nothing() {
+        let frontend = Frontend::default();
+        assert_eq!(frontend.recall("00000000", "com.obsproject.Studio"), None);
+    }
+
+    /// Two shares of the same thing are two tokens. A minted name that
+    /// repeated would be one guessable by anybody who had ever seen one.
+    #[test]
+    fn no_two_tokens_are_the_same() {
+        let mut frontend = Frontend::default();
+        let first = frontend
+            .remember("foot", &Remembered::AllOutputs)
+            .expect("minting a token");
+        let second = frontend
+            .remember("foot", &Remembered::AllOutputs)
+            .expect("minting a token");
+        assert_ne!(first, second);
+    }
+
+    /// The table does not grow for the rest of the session: a share is set up
+    /// and taken down all day, and the oldest row goes at the ceiling.
+    #[test]
+    fn the_table_has_a_ceiling() {
+        let mut frontend = Frontend::default();
+        let first = frontend
+            .remember("foot", &Remembered::AllOutputs)
+            .expect("minting a token");
+        for _ in 0..REMEMBERED_LIMIT {
+            frontend.remember("foot", &Remembered::AllOutputs);
+        }
+        assert_eq!(frontend.remembered.len(), REMEMBERED_LIMIT);
+        assert_eq!(frontend.recall(&first, "foot"), None);
     }
 
     /// A token another compositor wrote is not read as one of ours. The
     /// frontend hands back whatever it stored for the application, and a
     /// session that started under a different desktop leaves data whose fields
-    /// mean something else — restoring from it would share whatever this
-    /// reader made of somebody else's dictionary.
+    /// mean something else.
     #[test]
     fn another_compositors_token_is_ignored() {
         let mut fields: HashMap<String, Value<'static>> = HashMap::new();
-        fields.insert("kind".to_owned(), Value::from("output"));
-        fields.insert("output".to_owned(), Value::from("DP-1"));
+        fields.insert("token".to_owned(), Value::from("abc123"));
         let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
         let foreign =
             OwnedValue::try_from(Value::from(("someone-else", 1u32, data))).expect("building it");
@@ -659,12 +891,23 @@ mod tests {
     #[test]
     fn a_later_version_is_ignored() {
         let mut fields: HashMap<String, Value<'static>> = HashMap::new();
-        fields.insert("kind".to_owned(), Value::from("output"));
-        fields.insert("output".to_owned(), Value::from("DP-1"));
+        fields.insert("token".to_owned(), Value::from("abc123"));
         let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
         let later = OwnedValue::try_from(Value::from((RESTORE_VENDOR, RESTORE_VERSION + 1, data)))
             .expect("building it");
         assert_eq!(decode(&later), None);
+    }
+
+    /// And so is the version that described the source rather than naming a
+    /// row, which is exactly the data anybody on the bus could compose.
+    #[test]
+    fn the_self_describing_version_is_ignored() {
+        let mut fields: HashMap<String, Value<'static>> = HashMap::new();
+        fields.insert("kind".to_owned(), Value::from("all-outputs"));
+        let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
+        let old =
+            OwnedValue::try_from(Value::from((RESTORE_VENDOR, 1u32, data))).expect("building it");
+        assert_eq!(decode(&old), None);
     }
 
     /// Anything else is nothing, rather than a panic on the bus thread. The
@@ -689,19 +932,5 @@ mod tests {
         ] {
             assert_eq!(decode(&value), None);
         }
-    }
-
-    /// A window remembered without its title is not restored to some other
-    /// window of the same application by accident of the fields being there.
-    /// Both are written and both are required back.
-    #[test]
-    fn a_window_needs_both_names() {
-        let mut fields: HashMap<String, Value<'static>> = HashMap::new();
-        fields.insert("kind".to_owned(), Value::from("window"));
-        fields.insert("app_id".to_owned(), Value::from("foot"));
-        let data = Value::Value(Box::new(Value::from(zvariant::Dict::from(fields))));
-        let half = OwnedValue::try_from(Value::from((RESTORE_VENDOR, RESTORE_VERSION, data)))
-            .expect("building it");
-        assert_eq!(decode(&half), None);
     }
 }

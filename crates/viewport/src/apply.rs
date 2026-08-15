@@ -18,7 +18,32 @@ use crate::session;
 use crate::state::ViewportState;
 use crate::views::NO_VIEW;
 
+/// Whether carrying this request out would move the keyboard.
+///
+/// The three that set focus outright. Everything else either does not touch the
+/// seat or does so as a consequence of a window appearing, which the lock
+/// screen's own surface is drawn over anyway.
+fn moves_focus(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::ViewFocus { .. } | Request::BackgroundFocus | Request::ShellFocus
+    )
+}
+
 pub fn apply(state: &mut ViewportState, request: Request) {
+    // Nothing moves the keyboard while the session is locked.
+    //
+    // The key path already refuses to run a binding then (`input.rs`), for the
+    // reason that a chord which spawned a terminal would put one on top of the
+    // lock screen. This is the same rule for the same reason, and the theft is
+    // worse here: focus taken off the lock screen is the password being typed
+    // into whatever took it, and every one of these requests is a line on a
+    // socket the shell is not the only thing that can reach.
+    if state.locked && moves_focus(&request) {
+        tracing::debug!("ignoring {request:?} while the session is locked");
+        return;
+    }
+
     match request {
         Request::ViewLayout(layout) => view_layout(state, layout),
 

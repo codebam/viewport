@@ -171,6 +171,41 @@ impl Client {
     }
 }
 
+/// The direct children of a process that have exited and not been reaped.
+///
+/// Read from /proc rather than asked of the compositor, because the compositor
+/// has no idea: a `Child` that is dropped without being waited for leaves a
+/// process table entry nothing in this program will ever look at again.
+fn zombie_children(parent: u32) -> Vec<u32> {
+    let mut zombies = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return zombies;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // The command is in parentheses and may contain spaces and parentheses
+        // of its own, so the fields that matter are the ones after the last of
+        // them: the state, and then the parent.
+        let Some((_, rest)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        if fields.first() == Some(&"Z") && fields.get(1) == Some(&parent.to_string().as_str()) {
+            zombies.push(pid);
+        }
+    }
+    zombies
+}
+
 /// A terminal to use as the wallpaper, or nothing.
 fn terminal() -> Option<&'static str> {
     first_on_path(&["foot", "alacritty", "kitty", "xterm"])
@@ -380,6 +415,22 @@ fn every_monitor_gets_a_terminal() {
         ),
         "unplugging a monitor left its terminal running:\n{}",
         compositor.log()
+    );
+
+    // And the process it killed is reaped. Nothing in the compositor handles
+    // SIGCHLD, so a terminal killed and never waited for stays in the process
+    // table for the rest of the session — one per monitor unplugged, which on
+    // a laptop is one per time it is docked.
+    let pid = compositor.child.id();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut zombies = zombie_children(pid);
+    while !zombies.is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        zombies = zombie_children(pid);
+    }
+    assert!(
+        zombies.is_empty(),
+        "the unplugged monitor's terminal was left as a zombie: {zombies:?}"
     );
 }
 
