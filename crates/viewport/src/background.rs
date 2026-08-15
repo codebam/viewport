@@ -95,6 +95,14 @@ pub struct BackgroundTerminal {
     /// When it was asked to close, because a wallpaper program took the
     /// position. `None` while it is running for its own sake.
     closing: Option<std::time::Instant>,
+    /// The monitor its surface has been told it is on, by name.
+    ///
+    /// `wl_surface.enter` and `leave` are a pair a client is entitled to
+    /// count: toolkits keep a list of the outputs a surface is on and take the
+    /// scale and the refresh rate from it, and an enter with no matching leave
+    /// makes that list grow every time the layout changes. So this is what has
+    /// been said, and only the difference is sent.
+    entered: Option<String>,
 }
 
 impl BackgroundTerminal {
@@ -285,6 +293,7 @@ impl ViewportState {
             restarts: 0,
             restart_window: None,
             closing: None,
+            entered: None,
         });
         Ok(())
     }
@@ -351,18 +360,37 @@ impl ViewportState {
     /// omission had the shell painting at 60Hz on a 240Hz panel.
     ///
     /// One output each, unlike the shell, which is on all of them.
+    ///
+    /// Only what has changed since last time. This runs on every layout change
+    /// — a monitor plugged in, a mode change, a window moved between screens —
+    /// and an unconditional `enter` is one more than the last time for a
+    /// surface that has not moved, with no `leave` to balance it. A client that
+    /// counts them then believes its wallpaper is on four monitors.
     pub fn announce_background_outputs(&mut self) {
-        let pairs: Vec<(String, WlSurface)> = self
-            .background_terminals
-            .iter()
-            .filter_map(|background| {
-                Some((background.output.clone(), background.surface()?.clone()))
-            })
-            .collect();
-        for (name, surface) in pairs {
-            if let Some(output) = self.output_by_name(&name) {
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        for background in self.background_terminals.iter_mut() {
+            let Some(surface) = background.surface().cloned() else {
+                continue;
+            };
+            let name = outputs
+                .iter()
+                .find(|output| output.name() == background.output)
+                .map(|output| output.name());
+            if background.entered == name {
+                continue;
+            }
+            // The one it was on, if that is still there: an unplugged monitor
+            // took its instances with it, and there is nothing left to say
+            // leave to.
+            if let Some(before) = background.entered.take() {
+                if let Some(output) = outputs.iter().find(|output| output.name() == before) {
+                    output.leave(&surface);
+                }
+            }
+            if let Some(output) = outputs.iter().find(|output| Some(output.name()) == name) {
                 output.enter(&surface);
             }
+            background.entered = name;
         }
     }
 
@@ -495,6 +523,9 @@ impl ViewportState {
         );
         background.toplevel = None;
         background.configured = None;
+        // A surface that has gone was never told it left, and the next one is a
+        // new surface that has been told nothing at all.
+        background.entered = None;
         self.needs_render = true;
         true
     }
