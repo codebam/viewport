@@ -328,6 +328,35 @@ macro_rules! with_gpu {
 }
 
 impl Gpu {
+    /// Throw away every cached import, whichever renderer this is.
+    ///
+    /// A renderer caches the images it made from client buffers, because
+    /// re-importing one every frame is the cost of the import path doubled.
+    /// The entries are keyed by the client's buffer and dropped when it goes,
+    /// which is right until the images themselves stop describing anything:
+    /// after a GPU reset the queue state the import baked in — the barrier
+    /// that took the image from the foreign queue, the layout it was left in —
+    /// is gone, while every client buffer is still alive and still keyed to
+    /// the stale image. Waiting for the buffers to die would never clear them.
+    ///
+    /// Not a lost surface: the next commit imports again. It costs one import
+    /// per mapped surface, once, on a path that has just finished resetting a
+    /// graphics card.
+    ///
+    /// Reported rather than returned. Every caller is a recovery step, and a
+    /// step that cannot flush a cache still wants to run the rest of itself.
+    pub fn invalidate_caches(&mut self) {
+        use smithay::backend::renderer::Renderer as _;
+        // Stringified inside the macro because the two arms have different
+        // error types, and the body is compiled once for each.
+        let result = with_gpu!(self, |renderer| renderer
+            .invalidate_caches()
+            .map_err(|e| e.to_string()));
+        if let Err(e) = result {
+            tracing::warn!("could not invalidate the renderer's caches: {e}");
+        }
+    }
+
     /// The formats a client may hand over, whichever renderer this is.
     pub fn dmabuf_formats(&self) -> smithay::backend::allocator::format::FormatSet {
         use smithay::backend::renderer::ImportDma as _;

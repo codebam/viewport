@@ -458,6 +458,12 @@ impl ViewportState {
             tracing::warn!("gpu {index}: could not take the device back ({e})");
             return;
         }
+        // The images the renderer imported before the reset were acquired
+        // against queue state the reset threw away. The buffers they were made
+        // from are alive, so nothing else would ever drop them, and a frame
+        // drawn from one is sampling an image the driver no longer agrees
+        // about — which is the wrong pixels at best.
+        device.renderer.invalidate_caches();
         let ids = self.clear_pending(index);
         // The reset cleared every gamma ramp, and the client that set one has no
         // way to know.
