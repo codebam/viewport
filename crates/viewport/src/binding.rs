@@ -618,7 +618,15 @@ pub fn match_binding<'a>(
             // an addition to the first: `h` resizes in resize mode and moves
             // focus outside it, and matching both would do whichever came
             // first in the table.
-            binding.mode == mode && binding.modifiers == wanted && binding.keysym == keysym
+            // A key binding and not a mouse one. A button or wheel binding
+            // carries `keysym: 0`, and an unmapped keycode produces exactly
+            // that — so without this every NoSymbol press fired whatever
+            // `Mod4+Mouse4` was bound to.
+            binding.mode == mode
+                && binding.modifiers == wanted
+                && binding.keysym == keysym
+                && binding.button.is_none()
+                && binding.wheel.is_none()
         })
         .map(|binding| &binding.action)
 }
@@ -919,6 +927,24 @@ mod tests {
         assert!(match_button(std::slice::from_ref(&key), &held, 0x113, "").is_none());
         // And the button binding has keysym 0, not q.
         assert!(match_binding(&[button], &held, keysyms::KEY_q, "").is_none());
+    }
+
+    #[test]
+    fn an_unmapped_key_does_not_fire_a_mouse_binding() {
+        // An unmapped keycode comes through as NoSymbol, which is keysym 0 —
+        // and 0 is exactly what a button or wheel binding carries, because it
+        // is drawn on no key at all. Matched on the keysym alone, every press
+        // of a key xkb has no symbol for fired whatever `Mod4+Mouse4` was
+        // bound to.
+        let bindings = vec![
+            parse("Mod4+Mouse4=close").unwrap(),
+            parse("Mod4+WheelUp=exit").unwrap(),
+        ];
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert!(match_binding(&bindings, &held, 0, "").is_none());
     }
 
     #[test]
