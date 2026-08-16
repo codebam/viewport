@@ -384,6 +384,17 @@ impl ViewportState {
                 if readiness.readable {
                     state.ipc_read(id, &shared.0);
                 }
+                // Everything that run of messages left owing, before this
+                // callback returns.
+                //
+                // This is what makes the deferral in `view_layout` invisible
+                // rather than merely quick. calloop runs its sources one after
+                // another and this one has just finished, so no other source —
+                // no libinput event, no Wayland client, no vblank — can be
+                // reached until it returns. Paying up here means nothing
+                // outside this callback can ever observe a stack that is owed a
+                // restack, whatever order calloop happens to run the rest in.
+                state.settle();
                 state.ipc.reap(&state.loop_handle.clone());
                 Ok(PostAction::Continue)
             }) {

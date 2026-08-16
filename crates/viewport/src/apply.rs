@@ -31,6 +31,19 @@ fn moves_focus(request: &Request) -> bool {
 }
 
 pub fn apply(state: &mut ViewportState, request: Request) {
+    // Everything except another layout pays off what the last run of layouts
+    // left owing, first.
+    //
+    // `view.layout` is the only thing that defers work — see the end of
+    // `view_layout` — and messages are handled one at a time, so a request that
+    // reads the stack (`input.pointer` hit-tests against it, `view.list`
+    // reports it) is the only way anything inside this dispatch could see it
+    // stale. Flushing here rules that out while still letting a run of layouts,
+    // which is what an animation frame is, coalesce into one restack.
+    if !matches!(request, Request::ViewLayout(_)) {
+        state.settle();
+    }
+
     // Nothing moves the keyboard while the session is locked.
     //
     // The key path already refuses to run a binding then (`input.rs`), for the
@@ -775,14 +788,23 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     }
 
     // And whatever the focused window is, the floats stay over it.
-    state.restack();
+    //
+    // Owed rather than done: the shell lays every window out on every frame of
+    // an animation, and the stack that comes out of eight of those is the stack
+    // that comes out of the first. `settle` does it once, before anything can
+    // look — see the note on `apply` for why nothing can look before then.
+    state.needs_restack = true;
 
     // A window that just crossed onto another monitor is being shown in a
     // different colour space than the one it was drawing for. Nothing else
     // notices: the outputs themselves did not change, so `notify_output_colour`
     // never runs, and a client that asked once would keep the answer it got on
     // the screen it started on.
-    state.notify_surface_colour();
+    //
+    // Owed for the same reason, and here there is not even a reader to be
+    // early for: the answer is an event to a client, and a client cannot see
+    // one that has not been flushed yet.
+    state.needs_colour_notify = true;
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {
