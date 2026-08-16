@@ -965,7 +965,17 @@ fn warn_about_unknown_options(args: &[String]) {
 /// and failure is fine: a session with neither systemd nor D-Bus wants no part
 /// of this and works regardless.
 fn export_session_environment() {
-    const VARIABLES: [&str; 3] = ["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
+    // The cursor pair among them: a client started by systemd or activated over
+    // D-Bus does not inherit this process's environment, and one that cannot
+    // read XCURSOR_SIZE picks its own default — which is a pointer that changes
+    // size depending on how the application happened to be launched.
+    const VARIABLES: [&str; 5] = [
+        "WAYLAND_DISPLAY",
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_TYPE",
+        "XCURSOR_THEME",
+        "XCURSOR_SIZE",
+    ];
 
     let commands: [(&str, Vec<&str>); 2] = [
         (

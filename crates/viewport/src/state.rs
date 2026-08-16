@@ -5255,8 +5255,9 @@ impl ViewportState {
                     .cursor_theme
                     .image(shape.name(), scale.ceil() as i32, millis)
                 {
-                    Some((buffer, hotspot)) => {
-                        crate::render::Cursor::Image(buffer, local.to_i32_round() - hotspot)
+                    Some(image) => {
+                        let at = local.to_i32_round() - image.hotspot;
+                        crate::render::Cursor::Image(image, at)
                     }
                     None => {
                         if !self.cursor_warned {
@@ -5721,6 +5722,23 @@ impl ViewportState {
         // the hide deadline, which has nothing to do with what they look like.
         if file.cursor.theme.is_some() || file.cursor.size.is_some() {
             self.cursor_theme = crate::cursor::Theme::new();
+            // And what the portal answers, or a toolkit keeps sizing its own
+            // cursors from the value it was told when it started — which is a
+            // pointer that changes size as it crosses into a window, and a
+            // setting that appears not to have been respected at all.
+            self.appearance
+                .set_cursor(self.cursor_theme.name(), self.cursor_theme.size() as i32);
+            // The pointer on screen is still the old image, and the compositor
+            // draws on damage: nothing else here is damage.
+            self.needs_render = true;
+        }
+        // Both variables, whether or not the file named them: a session started
+        // without them in the environment has nothing to hand to the clients
+        // that are launched by systemd rather than from here, and the resolved
+        // values are what the compositor is drawing either way.
+        unsafe {
+            std::env::set_var("XCURSOR_THEME", self.cursor_theme.name());
+            std::env::set_var("XCURSOR_SIZE", self.cursor_theme.size().to_string());
         }
         if self.cursor_hide.set_after_ms(file.cursor.hide_after_ms) {
             // The deadline that hid it has just been taken away, so nothing

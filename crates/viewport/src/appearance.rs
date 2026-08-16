@@ -203,6 +203,49 @@ impl Appearance {
         Ok(())
     }
 
+    /// The cursor a toolkit is told to use.
+    ///
+    /// Told once at startup and again on every reload that touches it: a
+    /// running application sizes its own cursors from these keys, so a
+    /// compositor that changed its pointer without saying so leaves every
+    /// window drawing the old size for the rest of the session.
+    pub fn set_cursor(&mut self, theme: &str, size: i32) {
+        {
+            let mut settings = self.settings.lock().unwrap();
+            if settings.cursor_theme == theme && settings.cursor_size == size {
+                return;
+            }
+            settings.cursor_theme = theme.to_owned();
+            settings.cursor_size = size;
+        }
+
+        let Some(connection) = self.connection.as_ref() else {
+            return;
+        };
+        // In the GNOME namespace, which is where both keys live — the
+        // freedesktop one carries only the colour scheme and the contrast.
+        for (key, value) in [
+            ("cursor-theme", Value::from(theme.to_owned())),
+            ("cursor-size", Value::from(size)),
+        ] {
+            if let Err(e) = connection.emit_signal(
+                None::<&str>,
+                OBJECT_PATH,
+                INTERFACE,
+                "SettingChanged",
+                &(GNOME, key, value),
+            ) {
+                tracing::warn!("could not announce {key}: {e}");
+            }
+        }
+        tracing::info!("cursor now {theme} at {size}");
+    }
+
+    /// What the portal is currently telling clients the cursor size is.
+    pub fn cursor_size(&self) -> i32 {
+        self.settings.lock().unwrap().cursor_size
+    }
+
     pub fn is_dark(&self) -> bool {
         self.settings.lock().unwrap().color_scheme == PREFER_DARK
     }
@@ -289,6 +332,22 @@ mod tests {
             cursor_theme: "Bibata".to_owned(),
             cursor_size: 32,
         }
+    }
+
+    #[test]
+    fn a_reload_moves_the_cursor_the_portal_reports() {
+        // Set once at startup and never again meant a size changed in the
+        // config file reached the compositor's own pointer and nothing else:
+        // every toolkit kept the value it was told when it started.
+        let mut appearance = Appearance::default();
+        *appearance.settings.lock().unwrap() = dark();
+        appearance.set_cursor("Adwaita", 48);
+        assert_eq!(appearance.cursor_size(), 48);
+        let keys = gnome_settings(&appearance.settings.lock().unwrap());
+        assert_eq!(
+            String::try_from(keys["cursor-theme"].clone()).unwrap(),
+            "Adwaita"
+        );
     }
 
     #[test]

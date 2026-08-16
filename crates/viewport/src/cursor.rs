@@ -16,13 +16,25 @@ use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::{Logical, Physical, Point, Transform};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Size, Transform};
+
+/// One frame of a themed cursor, ready to draw.
+#[derive(Clone)]
+pub struct Image {
+    pub buffer: MemoryRenderBuffer,
+    /// The whole image, in the buffer's own coordinates. The buffer is built at
+    /// scale 1, so this is its size in pixels.
+    pub src: Rectangle<f64, Logical>,
+    /// How big to draw it — the size that was asked for, not the size the theme
+    /// happened to ship.
+    pub size: Size<i32, Logical>,
+    /// Where the pointer actually is within the image, at that drawn size.
+    pub hotspot: Point<i32, Physical>,
+}
 
 /// One frame of a themed cursor.
 struct Frame {
-    buffer: MemoryRenderBuffer,
-    /// Where the pointer actually is within the image.
-    hotspot: Point<i32, Physical>,
+    image: Image,
     /// How long this frame lasts, for an animated cursor.
     delay: u32,
 }
@@ -126,7 +138,8 @@ impl Theme {
     }
 
     fn load_uncached(&self, name: &str, scale: i32) -> Option<Cursor> {
-        let wanted = (self.size as i32 * scale) as u32;
+        let scale = scale.max(1);
+        let wanted = (self.size as i32 * scale).max(1) as u32;
 
         let mut names = vec![name];
         for alias in ALIASES {
@@ -143,7 +156,8 @@ impl Theme {
         let images = xcursor::parser::parse_xcursor(&bytes)?;
 
         // The size closest to what was asked for. Themes ship a handful of
-        // fixed sizes and rarely the exact one.
+        // fixed sizes and rarely the exact one — the images are picked for
+        // resolution, and the drawn size comes from the configuration below.
         let best = images
             .iter()
             .map(|image| image.size)
@@ -156,17 +170,33 @@ impl Theme {
                 // xcursor decodes to ARGB in native byte order, which on a
                 // little-endian machine is B, G, R, A in memory — the same
                 // order DRM's ARGB8888 names from the low byte up.
+                //
+                // At scale 1, because the drawn size is given explicitly: the
+                // buffer's own scale would only ever say "as many pixels as the
+                // theme shipped", which is the thing that ignored the setting.
                 let buffer = MemoryRenderBuffer::from_slice(
                     &image.pixels_rgba,
                     Fourcc::Argb8888,
                     (image.width as i32, image.height as i32),
-                    scale,
+                    1,
                     Transform::Normal,
                     None,
                 );
                 Frame {
-                    buffer,
-                    hotspot: (image.xhot as i32, image.yhot as i32).into(),
+                    image: Image {
+                        buffer,
+                        src: Rectangle::from_size((image.width as f64, image.height as f64).into()),
+                        size: (
+                            logical(image.width, best, wanted, scale),
+                            logical(image.height, best, wanted, scale),
+                        )
+                            .into(),
+                        hotspot: (
+                            rescale(image.xhot, best, wanted),
+                            rescale(image.yhot, best, wanted),
+                        )
+                            .into(),
+                    },
                     delay: image.delay,
                 }
             })
@@ -179,17 +209,32 @@ impl Theme {
         Some(Cursor { frames, duration })
     }
 
-    /// The buffer and hotspot to draw for `name` at `scale` and `millis`.
-    pub fn image(
-        &mut self,
-        name: &str,
-        scale: i32,
-        millis: u32,
-    ) -> Option<(MemoryRenderBuffer, Point<i32, Physical>)> {
+    /// What to draw for `name` at `scale` and `millis`.
+    pub fn image(&mut self, name: &str, scale: i32, millis: u32) -> Option<Image> {
         let cursor = self.load(name, scale)?;
-        let frame = cursor.frame(millis);
-        Some((frame.buffer.clone(), frame.hotspot))
+        Some(cursor.frame(millis).image.clone())
     }
+}
+
+/// A measurement from an image the theme shipped at `have`, in the physical
+/// pixels of one drawn at `wanted`.
+///
+/// Themes ship fixed sizes — 24, 32, 48 — and a size between them used to be
+/// answered with the nearest image drawn at its own resolution, which is a
+/// pointer that ignores the setting. Drawing the nearest image at the size that
+/// was asked for is what every toolkit does with the same files.
+fn rescale(value: u32, have: u32, wanted: u32) -> i32 {
+    if have == 0 {
+        return value as i32;
+    }
+    (value as f64 * wanted as f64 / have as f64).round() as i32
+}
+
+/// The same, in the logical pixels the render element wants: an output at
+/// scale 2 draws a 24px cursor 48 pixels tall, and says so by asking for 24.
+fn logical(value: u32, have: u32, wanted: u32, scale: i32) -> i32 {
+    let physical = rescale(value, have, wanted) as f64;
+    ((physical / scale.max(1) as f64).round() as i32).max(1)
 }
 
 /// Names that different themes use for the same cursor.
@@ -424,6 +469,44 @@ mod tests {
         };
         let names = theme.theme_names();
         assert_eq!(names.iter().filter(|n| *n == "default").count(), 1);
+    }
+
+    #[test]
+    fn a_size_the_theme_does_not_ship_is_still_the_size_drawn() {
+        // Themes ship 24, 32, 48 and little else. Drawing the nearest image at
+        // its own resolution is a cursor that ignores the setting entirely —
+        // asking for 40 from a theme with 32 and 48 used to give 32.
+        assert_eq!(rescale(32, 32, 40), 40);
+        assert_eq!(logical(32, 32, 40, 1), 40);
+
+        // And the hotspot moves with the image, or the point the user aims
+        // with drifts off the tip of the arrow as the cursor grows.
+        assert_eq!(rescale(4, 32, 64), 8);
+    }
+
+    #[test]
+    fn an_exact_size_is_left_alone() {
+        assert_eq!(rescale(24, 24, 24), 24);
+        assert_eq!(logical(24, 24, 24, 1), 24);
+    }
+
+    #[test]
+    fn a_scaled_output_asks_for_the_logical_size() {
+        // At scale 2 a 24px cursor is 48 physical pixels, and the element is
+        // told 24: it multiplies by the output scale itself. Handing it the
+        // physical size drew a cursor twice as big as the setting.
+        assert_eq!(logical(48, 48, 48, 2), 24);
+        // A theme with only a 24px image on the same output: still 24 logical,
+        // from an image scaled up to 48.
+        assert_eq!(logical(24, 24, 48, 2), 24);
+    }
+
+    #[test]
+    fn a_theme_with_a_zero_size_is_not_a_division_by_zero() {
+        // A malformed cursor file rather than anything a theme means to ship,
+        // but the value comes off disk and a panic here is the whole session.
+        assert_eq!(rescale(24, 0, 48), 24);
+        assert_eq!(logical(24, 0, 48, 0), 24);
     }
 
     #[test]

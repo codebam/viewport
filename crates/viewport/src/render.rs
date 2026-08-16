@@ -15,9 +15,7 @@
 // side, and everything that needs the compositor's state happens on the first.
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::renderer::element::memory::{
-    MemoryRenderBuffer, MemoryRenderBufferRenderElement,
-};
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::utils::{CropRenderElement, RescaleRenderElement};
@@ -71,8 +69,8 @@ pub enum Cursor {
     Hidden,
     /// A client's own surface, and the hotspot it declared.
     Surface(WlSurface, Point<i32, Physical>),
-    /// A themed image, already loaded.
-    Image(MemoryRenderBuffer, Point<i32, Physical>),
+    /// A themed image, already loaded, and where it goes.
+    Image(crate::cursor::Image, Point<i32, Physical>),
 }
 
 /// The shell's frame: one buffer spanning the whole output layout.
@@ -257,14 +255,17 @@ where
                 .map(OutputElement::from),
             );
         }
-        Cursor::Image(buffer, at) => {
+        Cursor::Image(image, at) => {
+            // The source rectangle and the drawn size are both given: the
+            // theme's nearest image is whatever resolution it happens to be,
+            // and the size the configuration asked for is the one on screen.
             if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 at.to_f64(),
-                buffer,
+                &image.buffer,
                 None,
-                None,
-                None,
+                Some(image.src),
+                Some(image.size),
                 Kind::Cursor,
             ) {
                 elements.push(OutputElement::from(element));
