@@ -10,8 +10,14 @@
 // policy at all, and a window with no shell-assigned rectangle has nowhere it
 // could legitimately be drawn.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::hash::Hash;
+
 use smithay::desktop::Window;
+use smithay::reexports::wayland_server::backend::ObjectId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::Resource as _;
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::{SurfaceCachedState, XdgToplevelSurfaceData};
 
@@ -138,6 +144,25 @@ impl View {
             return Some(toplevel.wl_surface().clone());
         }
         self.window.x11_surface().and_then(|x11| x11.wl_surface())
+    }
+
+    /// The identity of that surface, without handing out the surface itself.
+    ///
+    /// `surface()` clones — a toplevel only lends its `WlSurface` out by
+    /// reference — and a lookup that asked every window in turn cloned one per
+    /// candidate for an answer it threw away. This is what the index keys on,
+    /// and it is read from the window every time rather than remembered on the
+    /// view: an X11 window has no surface until Xwayland associates one, so a
+    /// remembered id would be `None` for exactly as long as it took a window to
+    /// appear and wrong forever after.
+    pub fn surface_id(&self) -> Option<ObjectId> {
+        if let Some(toplevel) = self.window.toplevel() {
+            return Some(toplevel.wl_surface().id());
+        }
+        self.window
+            .x11_surface()
+            .and_then(|x11| x11.wl_surface())
+            .map(|surface| surface.id())
     }
 
     pub fn title(&self) -> String {
@@ -313,10 +338,68 @@ impl View {
     }
 }
 
+/// Where a key was last found in a list, remembered so the next lookup does
+/// not walk it.
+///
+/// A cache and not a directory, and the difference is the whole point. Every
+/// answer it gives is checked against the list before it is returned — the
+/// entry says *where to look first*, never *what is there* — so an entry that
+/// has gone stale costs one comparison and a walk, and cannot produce a wrong
+/// answer. Nothing outside has to remember to keep it up to date, which
+/// matters because the thing being indexed changes behind everyone's back: an
+/// X11 window has no `wl_surface` until Xwayland gives it one, and there is no
+/// call into the compositor at the moment it does.
+///
+/// The alternative — an index maintained at every mutation — is one missed
+/// update away from a window that is drawn, raised and focused and silently
+/// ignores the pointer, because every hit test in the compositor starts with
+/// this lookup.
+struct Index<K> {
+    /// Interior mutability because the lookup is on a `&self` path: a hit test
+    /// runs twice per pointer motion and has no business asking for a mutable
+    /// borrow of the window list to read from it.
+    slots: RefCell<HashMap<K, usize>>,
+}
+
+impl<K> Default for Index<K> {
+    fn default() -> Self {
+        Self {
+            slots: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+impl<K: Eq + Hash + Clone> Index<K> {
+    /// The position of the item `key_of` reports `key` for, cached.
+    fn find<T>(&self, items: &[T], key: &K, key_of: impl Fn(&T) -> Option<K>) -> Option<usize> {
+        let mut slots = self.slots.borrow_mut();
+        if let Some(&at) = slots.get(key) {
+            // The check that makes staleness harmless. A key belongs to one
+            // item at a time, so an item that still reports it *is* the item
+            // asked for, whatever has happened to the list since.
+            if items.get(at).and_then(&key_of).as_ref() == Some(key) {
+                return Some(at);
+            }
+        }
+        let at = items
+            .iter()
+            .position(|item| key_of(item).as_ref() == Some(key))?;
+        slots.insert(key.clone(), at);
+        Some(at)
+    }
+
+    /// Forget everything, because the positions have moved.
+    fn clear(&self) {
+        self.slots.borrow_mut().clear();
+    }
+}
+
 #[derive(Default)]
 pub struct Views {
     next_id: u32,
     views: Vec<View>,
+    /// Surface to position in `views`. See `Index`.
+    by_surface: Index<ObjectId>,
 }
 
 impl Views {
@@ -326,10 +409,12 @@ impl Views {
         Self {
             next_id: 1,
             views: Vec::new(),
+            by_surface: Index::default(),
         }
     }
 
     pub fn insert(&mut self, window: Window) -> u32 {
+        // Onto the end, so no position the surface index has cached moves.
         let id = self.next_id;
         self.next_id += 1;
         self.views.push(View {
@@ -357,6 +442,11 @@ impl Views {
 
     pub fn remove(&mut self, id: u32) -> Option<View> {
         let index = self.views.iter().position(|v| v.id == id)?;
+        // Everything after it slides down one. The cached positions would
+        // still be checked before they were believed, so this is not what
+        // keeps the lookup honest — it is what keeps it fast, and what stops
+        // the map growing a dead entry per closed window.
+        self.by_surface.clear();
         Some(self.views.remove(index))
     }
 
@@ -402,16 +492,27 @@ impl Views {
         self.find_by_surface(&parent).map(|other| other.id)
     }
 
+    /// The view painting into a surface.
+    ///
+    /// The busiest lookup in the compositor: every commit, every hit test —
+    /// twice per pointer motion, so two thousand times a second on a 1000Hz
+    /// mouse — and every focus change starts here. It was a walk of the window
+    /// list that cloned a `WlSurface` per window it passed, which is a cost
+    /// that grows with the number of windows open on a path that runs whether
+    /// or not anything changed.
     pub fn find_by_surface(&self, surface: &WlSurface) -> Option<&View> {
-        self.views
-            .iter()
-            .find(|v| v.surface().as_ref() == Some(surface))
+        let at = self.position_of_surface(surface)?;
+        self.views.get(at)
     }
 
     pub fn find_by_surface_mut(&mut self, surface: &WlSurface) -> Option<&mut View> {
-        self.views
-            .iter_mut()
-            .find(|v| v.surface().as_ref() == Some(surface))
+        let at = self.position_of_surface(surface)?;
+        self.views.get_mut(at)
+    }
+
+    fn position_of_surface(&self, surface: &WlSurface) -> Option<usize> {
+        self.by_surface
+            .find(&self.views, &surface.id(), View::surface_id)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &View> {
@@ -466,6 +567,85 @@ mod tests {
 
         // The far edge is exclusive: a point on it is the first pixel outside.
         assert!(!clip_covers(clip, 2520.0, 540.0));
+    }
+
+    // The surface index, exercised over stand-in keys.
+    //
+    // A `WlSurface` cannot be made without a display and a connected client,
+    // and a `View` cannot be made without a `Window` which cannot be made
+    // without a surface — so the thing under test here is the index itself,
+    // over a list of optional keys standing in for "the surface each window is
+    // painting into, if it has one yet". That is exactly the shape `Views`
+    // hands it: `View::surface_id` is a function from a window to `Option`ally
+    // a key, and nothing else about a view reaches this code.
+    fn key_of(item: &Option<u32>) -> Option<u32> {
+        *item
+    }
+
+    #[test]
+    fn a_window_is_found_by_its_surface() {
+        let index = Index::default();
+        let windows = vec![Some(10), Some(11), Some(12)];
+        assert_eq!(index.find(&windows, &11, key_of), Some(1));
+        // Again, now from the cache rather than the walk. Same answer.
+        assert_eq!(index.find(&windows, &11, key_of), Some(1));
+        assert_eq!(index.find(&windows, &99, key_of), None);
+    }
+
+    #[test]
+    fn a_closed_window_takes_its_surface_with_it() {
+        let index = Index::default();
+        let mut windows = vec![Some(10), Some(11), Some(12)];
+        assert_eq!(index.find(&windows, &12, key_of), Some(2));
+
+        // `Views::remove` clears the cache; the positions after the hole have
+        // moved, and 12 is now where 11 was.
+        windows.remove(0);
+        index.clear();
+        assert_eq!(index.find(&windows, &10, key_of), None);
+        assert_eq!(index.find(&windows, &12, key_of), Some(1));
+
+        // And without the clear, which is the case that must not be able to
+        // go wrong: the cached position for 12 is 2, which is now off the end
+        // of the list, and the walk finds it anyway.
+        let stale = Index::default();
+        assert_eq!(
+            stale.find(&[Some(10), Some(11), Some(12)], &12, key_of),
+            Some(2)
+        );
+        assert_eq!(stale.find(&windows, &12, key_of), Some(1));
+    }
+
+    #[test]
+    fn an_x11_window_is_found_once_its_surface_arrives() {
+        // An X11 window is in the list from the moment Xwayland asks for it to
+        // be mapped, and has no wl_surface until some time later. Nothing
+        // tells the compositor at the moment it gets one.
+        let index = Index::default();
+        let mut windows = vec![Some(10), None];
+        assert_eq!(index.find(&windows, &11, key_of), None);
+
+        windows[1] = Some(11);
+        assert_eq!(index.find(&windows, &11, key_of), Some(1));
+    }
+
+    #[test]
+    fn a_surface_that_moved_does_not_answer_for_the_window_it_left() {
+        // The worst case the check exists for: a cached position that still
+        // holds a window, but not the window that owns the surface asked
+        // about. Believing the cache here focuses and clicks the wrong window.
+        let index = Index::default();
+        let mut windows = vec![Some(10), Some(11)];
+        assert_eq!(index.find(&windows, &11, key_of), Some(1));
+
+        // Position 1 is now a different window, and 11 belongs to no one.
+        windows[1] = Some(12);
+        assert_eq!(index.find(&windows, &11, key_of), None);
+        assert_eq!(index.find(&windows, &12, key_of), Some(1));
+
+        // And where it has moved to another window rather than vanishing.
+        windows[0] = Some(11);
+        assert_eq!(index.find(&windows, &11, key_of), Some(0));
     }
 
     #[test]
