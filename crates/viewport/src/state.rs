@@ -4903,9 +4903,9 @@ impl ViewportState {
                 // sides around the hole rather than one rectangle over it.
                 let overlay: Vec<_> = view
                     .filter(|_| drawn_on_this_output)
-                    .and_then(|view| view.frame.map(|frame| (frame, view.box_)))
-                    .map(|(frame, hole)| {
-                        crate::render::border_sides(frame, hole)
+                    .and_then(|view| view.frame.map(|frame| (frame, view.box_, view.scale)))
+                    .map(|(frame, hole, drawn_at)| {
+                        crate::render::border_sides(frame, hole, drawn_at)
                             .into_iter()
                             .zip(overlay_ids.iter().cloned())
                             .filter_map(|(side, id)| {

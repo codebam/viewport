@@ -662,11 +662,35 @@ pub fn frame_on_output(
 /// Top and bottom run the full width, so the corners belong to them and the
 /// border reads as continuous. A side with no thickness comes back empty and
 /// the caller drops it.
+///
+/// `scale` is what the window is *drawn* at, and the two rectangles are not in
+/// the same space without it. The frame is measured on screen, where the shell
+/// painted it; the hole is the size the client is, which is what the shell has
+/// to send — a window zoomed out on the canvas, or in the overview, is drawn
+/// small and never asked to resize itself. Taking the hole as it comes puts the
+/// bottom and right sides past the far corner of a shrunken frame, where they
+/// clamp to nothing and are dropped, and leaves the left side as long as the
+/// client is: one thin line hanging well below the window it belongs to, which
+/// is what zooming out looked like.
 pub fn border_sides(
     frame: viewport_ipc::geometry::Box,
     hole: viewport_ipc::geometry::Box,
+    scale: f64,
 ) -> [viewport_ipc::geometry::Box; 4] {
     use viewport_ipc::geometry::Box;
+
+    // The hole as it is drawn. Its corner is already on screen — only the size
+    // is in the client's own pixels.
+    let hole = if scale.is_finite() && scale > 0.0 && (scale - 1.0).abs() > f64::EPSILON {
+        Box::new(
+            hole.x,
+            hole.y,
+            (f64::from(hole.width) * scale).round() as i32,
+            (f64::from(hole.height) * scale).round() as i32,
+        )
+    } else {
+        hole
+    };
 
     let bottom_of_hole = hole.y + hole.height;
     let right_of_hole = hole.x + hole.width;
@@ -768,7 +792,7 @@ mod tests {
     fn the_middle_of_a_border_is_not_drawn() {
         let frame = Box::new(100, 100, 400, 300);
         let hole = Box::new(102, 102, 396, 296);
-        let sides = border_sides(frame, hole);
+        let sides = border_sides(frame, hole, 1.0);
 
         for side in sides {
             let overlaps_middle = side.x < hole.x + hole.width
@@ -918,7 +942,7 @@ mod tests {
     fn every_side_of_a_border_is_drawn() {
         let frame = Box::new(100, 100, 400, 300);
         let hole = Box::new(102, 102, 396, 296);
-        let [top, bottom, left, right] = border_sides(frame, hole);
+        let [top, bottom, left, right] = border_sides(frame, hole, 1.0);
 
         assert_eq!(top, Box::new(100, 100, 400, 2));
         assert_eq!(bottom, Box::new(100, 398, 400, 2));
@@ -927,12 +951,38 @@ mod tests {
         assert_eq!(right, Box::new(498, 102, 2, 296));
     }
 
+    /// A window drawn smaller than it is has a border around what is drawn.
+    ///
+    /// The hole arrives in the client's own pixels — that is the point of the
+    /// canvas and of the overview, where a window is drawn small and never
+    /// asked to resize itself — while the frame is measured on screen. Mixing
+    /// the two put the bottom and the right sides past the far corner of the
+    /// frame, where they came back empty and were dropped, and left the left
+    /// side as tall as the *client*: a line hanging far below the window,
+    /// which is what a zoomed-out plane looked like.
+    #[test]
+    fn a_shrunken_window_is_bordered_at_the_size_it_is_drawn() {
+        // A 800x600 client drawn at half size inside a 2px frame.
+        let frame = Box::new(100, 100, 404, 304);
+        let hole = Box::new(102, 102, 800, 600);
+        let [top, bottom, left, right] = border_sides(frame, hole, 0.5);
+
+        assert_eq!(top, Box::new(100, 100, 404, 2));
+        assert_eq!(bottom, Box::new(100, 402, 404, 2), "not clamped away");
+        assert_eq!(
+            left,
+            Box::new(100, 102, 2, 300),
+            "as tall as the window is drawn, not as tall as the client is"
+        );
+        assert_eq!(right, Box::new(502, 102, 2, 300), "and not clamped away");
+    }
+
     /// A window whose frame is its hole has no border, and asking for one
     /// gives four rectangles of nothing rather than four of something.
     #[test]
     fn a_window_with_no_border_gets_no_sides() {
         let box_ = Box::new(0, 0, 800, 600);
-        for side in border_sides(box_, box_) {
+        for side in border_sides(box_, box_, 1.0) {
             assert!(side.width == 0 || side.height == 0, "{side:?} is not empty");
         }
     }
