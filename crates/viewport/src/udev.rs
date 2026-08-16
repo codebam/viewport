@@ -2122,12 +2122,26 @@ impl ViewportState {
                             queued_at: None,
                         },
                     );
-                    // Device 0: this scan walks the primary GPU. When the
-                    // other GPUs are scanned they push their own index.
-                    started.push(OutputId {
-                        device: index,
-                        crtc,
-                    });
+                    if udev.blanked {
+                        // The session's screens are off. A monitor arriving now
+                        // — including a DisplayPort one that dropped when it
+                        // went to sleep and came back as a hotplug — comes up
+                        // asleep with them rather than lighting on its modeset
+                        // and being the one bright panel in a dark room.
+                        if let Some(surface) = udev.devices[index].surfaces.get_mut(&crtc) {
+                            let name = surface.output.name();
+                            if let Err(e) = surface.drm_output.with_compositor(|c| c.clear()) {
+                                tracing::warn!("{name}: could not blank a new output: {e}");
+                            }
+                        }
+                    } else {
+                        // Device 0: this scan walks the primary GPU. When the
+                        // other GPUs are scanned they push their own index.
+                        started.push(OutputId {
+                            device: index,
+                            crtc,
+                        });
+                    }
                 }
                 Err(e) => tracing::warn!("{name}: could not initialise: {e}"),
             }
@@ -2736,11 +2750,22 @@ impl ViewportState {
         // a full frame build that ended here. Against 120 flips a second that
         // is 13,600 frames built and thrown away, and it measured as four
         // times sway's CPU for the same client throughput.
-        let skip = self
-            .udev
-            .as_ref()
-            .and_then(|udev| udev.surface(id))
-            .map(|surface| (!surface.powered || !surface.enabled, surface.pending));
+        // `blanked` belongs here with them: the session-wide blank turns every
+        // panel off through DRM and nothing else undoes it, so a frame queued
+        // from any of the paths that call `render` directly — a vblank still in
+        // flight when the screens went off, the watchdog resuming a chain that
+        // has legitimately stopped, a connector rescan — turns them all back on
+        // a moment later. `render_if_needed` checked it and those four did not,
+        // which is `Mod4+Shift+b` appearing to do nothing.
+        let skip = self.udev.as_ref().and_then(|udev| {
+            let blanked = udev.blanked;
+            udev.surface(id).map(|surface| {
+                (
+                    blanked || !surface.powered || !surface.enabled,
+                    surface.pending,
+                )
+            })
+        });
         if let Some((off, pending)) = skip {
             if off || pending {
                 if let Some(log) = self.udev.as_mut().and_then(|udev| udev.frame_log.as_mut()) {
@@ -2853,6 +2878,12 @@ impl ViewportState {
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
         if !udev.active {
+            return;
+        }
+        // The screens are off for the session, not for this output. Checked
+        // again here for the same reason `powered` is: this is the last gate
+        // before a frame is queued, and a queued frame is what wakes a panel.
+        if udev.blanked {
             return;
         }
         // Read before the surface takes a borrow of `udev` for the rest of

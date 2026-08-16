@@ -4301,6 +4301,7 @@ impl ViewportState {
             // for.
             for surface in udev.surfaces_mut() {
                 surface.pending = false;
+                surface.queued_at = None;
                 // Everything that was on screen went with the blanking, and
                 // the damage history does not know it. Without this the screen
                 // comes back holding whatever last moved and nothing else.
@@ -4321,8 +4322,11 @@ impl ViewportState {
                 tracing::warn!("could not blank an output: {e}");
             }
             // No frame is in flight now, and none will be until the screens
-            // come back.
+            // come back. The clock on it goes too: the watchdog measures a
+            // stall from `queued_at`, and a flip abandoned here is not a GPU
+            // that stopped answering.
             surface.pending = false;
+            surface.queued_at = None;
         }
     }
 
