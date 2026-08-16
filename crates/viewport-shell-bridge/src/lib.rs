@@ -112,6 +112,57 @@ impl Sender {
     }
 }
 
+/// How much message text one `write_all` may carry.
+///
+/// A bound rather than a target: the batch is whatever was already queued, so
+/// this only decides when to stop gathering and let the syscall go. A page that
+/// posts faster than the socket drains would otherwise be able to grow this
+/// buffer without limit, because the writer only stops gathering when the
+/// channel is empty and a runaway producer never leaves it empty.
+///
+/// 64 KiB is well past a pipe's capacity and past what a layout pump produces
+/// in a frame — the case this exists for is eight `view.layout` messages, a few
+/// hundred bytes — so in practice the drain always ends because the channel ran
+/// dry, which is the point.
+const MAX_BATCH: usize = 64 * 1024;
+
+/// One message, plus everything already queued behind it, as one write.
+///
+/// The shell reports the geometry of every window it lays out on every frame
+/// (`data/shell/geometry.js`), so a desk with eight windows on it posts eight
+/// messages within the same tick. Writing them one at a time was eight syscalls
+/// per frame per window-full — around 480 a second at 60fps — for what the
+/// socket is perfectly happy to take in one.
+///
+/// Nothing here ever *waits* for a message. `try_recv` takes what the producer
+/// has already handed over and stops the moment it has not; batching that
+/// blocked for a straggler would trade syscalls for exactly the input latency
+/// this compositor cannot afford.
+///
+/// The framing on the wire is unchanged — one JSON object per line — because
+/// the compositor reads this socket with a line reader (`viewport/src/ipc.rs`)
+/// and neither end has any notion of a batch.
+fn write_batch<W: Write>(
+    first: String,
+    rx: &mpsc::Receiver<String>,
+    sink: &mut W,
+) -> std::io::Result<()> {
+    let mut buf = Vec::with_capacity(first.len() + 1);
+    buf.extend_from_slice(first.as_bytes());
+    buf.push(b'\n');
+
+    while buf.len() < MAX_BATCH {
+        let Ok(line) = rx.try_recv() else { break };
+        buf.extend_from_slice(line.as_bytes());
+        buf.push(b'\n');
+    }
+
+    // Over the bound, the caller's `recv` returns immediately with the next
+    // one still queued and this starts again: full batches keep draining, they
+    // just do not accumulate.
+    sink.write_all(&buf)
+}
+
 /// Connect to the compositor and start both directions.
 ///
 /// `on_line` runs on the reader thread. It is expected to hand the line to
@@ -130,9 +181,8 @@ where
         .name("ipc-write".into())
         .spawn(move || {
             let mut socket = socket;
-            while let Ok(mut line) = rx.recv() {
-                line.push('\n');
-                if let Err(e) = socket.write_all(line.as_bytes()) {
+            while let Ok(line) = rx.recv() {
+                if let Err(e) = write_batch(line, &rx, &mut socket) {
                     tracing::error!("writing to the compositor: {e}");
                     return;
                 }
@@ -211,6 +261,82 @@ mod tests {
         let message = format!("{error}");
         assert!(message.contains("--url"), "{message}");
         assert!(message.contains("VIEWPORT_SHELL_URL"), "{message}");
+    }
+
+    /// A sink that remembers where one `write_all` ended and the next began.
+    #[derive(Default)]
+    struct Writes(Vec<Vec<u8>>);
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.push(buf.to_vec());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn everything_already_queued_goes_out_as_one_write() {
+        let (tx, rx) = mpsc::channel();
+        for id in 0..8 {
+            tx.send(format!(r#"{{"type":"view.layout","id":{id}}}"#))
+                .expect("the receiver is still here");
+        }
+
+        let first = rx.recv().expect("the writer thread's blocking take");
+        let mut sink = Writes::default();
+        write_batch(first, &rx, &mut sink).expect("the sink never fails");
+
+        assert_eq!(sink.0.len(), 1, "a frame's worth of layout is one syscall");
+        let text = String::from_utf8(sink.0[0].clone()).expect("json is utf-8");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 8);
+        assert!(text.ends_with('\n'), "every message is terminated");
+        for (id, line) in lines.iter().enumerate() {
+            assert_eq!(*line, format!(r#"{{"type":"view.layout","id":{id}}}"#));
+        }
+    }
+
+    #[test]
+    fn a_lone_message_is_not_waited_on() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(r#"{"type":"view.layout","id":1}"#.to_owned())
+            .expect("the receiver is still here");
+
+        let first = rx.recv().expect("the one message");
+        let mut sink = Writes::default();
+        // The channel is still open, so a batcher that waited for a second
+        // message would block here rather than return.
+        write_batch(first, &rx, &mut sink).expect("the sink never fails");
+
+        assert_eq!(sink.0.len(), 1);
+        assert_eq!(sink.0[0], b"{\"type\":\"view.layout\",\"id\":1}\n".to_vec());
+    }
+
+    #[test]
+    fn a_runaway_producer_does_not_grow_the_buffer_without_limit() {
+        let (tx, rx) = mpsc::channel();
+        let message = "x".repeat(4096);
+        // Far more than the bound, all queued before a single write.
+        for _ in 0..64 {
+            tx.send(message.clone())
+                .expect("the receiver is still here");
+        }
+
+        let first = rx.recv().expect("the first of many");
+        let mut sink = Writes::default();
+        write_batch(first, &rx, &mut sink).expect("the sink never fails");
+
+        let written = sink.0[0].len();
+        assert_eq!(sink.0.len(), 1);
+        assert!(
+            written <= MAX_BATCH + message.len() + 1,
+            "one message may cross the bound, a hundred may not: {written}"
+        );
+        // And the rest is still queued, for the next pass to take.
+        assert!(rx.try_recv().is_ok());
     }
 
     #[test]
