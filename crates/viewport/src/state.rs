@@ -1369,20 +1369,20 @@ impl ViewportState {
         // part of a Firefox menu hanging past the window edge found nothing
         // and went to whatever was behind, which is a menu that cannot be
         // used. `Window::surface_under` looks through the popups as well.
-        let mut windows: Vec<(smithay::desktop::Window, Point<i32, Logical>)> = self
-            .space
-            .elements()
-            .filter_map(|window| {
-                self.space
-                    .element_location(window)
-                    .map(|location| (window.clone(), location))
-            })
-            .collect();
-        windows.reverse();
-
-        for (window, location) in windows {
+        //
+        // Walked in place, back to front. This ran through a `Vec` of cloned
+        // `Window`s built and thrown away on every call — and it is called
+        // twice for every pointer motion, so a 1000Hz mouse cloned every
+        // window on the desktop two thousand times a second to look at each of
+        // them once. `Space::elements()` reverses on its own; nothing in the
+        // loop touches the `Space` mutably, so there was never anything to
+        // borrow around.
+        for window in self.space.elements().rev() {
+            let Some(location) = self.space.element_location(window) else {
+                continue;
+            };
             // Not the part of it that is cropped away. See `clipped_out`.
-            if self.clipped_out(&window, pos) {
+            if self.clipped_out(window, pos) {
                 continue;
             }
             // Where the surface is drawn, not where the window is mapped.
@@ -1400,7 +1400,7 @@ impl ViewportState {
             // at twice its distance from the corner, which is a pointer that
             // works in the top-left of a window and misses by more the further
             // across it you go.
-            let unscaled = self.unscaled(&window, pos);
+            let unscaled = self.unscaled(window, pos);
             let render_location = location - window.geometry().loc;
             if let Some((surface, at)) =
                 window.surface_under(unscaled - render_location.to_f64(), WindowSurfaceType::ALL)
