@@ -116,9 +116,20 @@ internally, one copy more; the window's own buffer is still a DMA-BUF, so the
 handoff to the compositor is zero-copy either way. This is not hypothetical —
 it is what WebKit's web process does today against the nested backend.
 
-If the shell process itself exits, the compositor restarts it, five times in a
-minute, then leaves it down and says so. The desktop is blank at that point;
-the compositor is not.
+If the shell process itself exits, the compositor restarts it. The first
+restart is immediate and each one after it waits twice as long — 1s, 2s, 4s,
+8s — and once five have gone by inside a minute it keeps trying every thirty
+seconds instead. A process that lives longer than a minute ends the run, and
+the next crash starts over from an immediate restart.
+
+It is never given up on. Backing off is the point: the fault that this policy
+was written for was a GPU that had run out of memory, where every client on
+that GPU was dying at once and each restart asked it for another full-screen
+buffer. Restarting harder makes that worse, and stopping altogether leaves the
+desktop blank for the rest of the session even after the cause — a game, a
+capture, a model loaded on the same card — has gone away. So the shell keeps
+knocking, slowly. A page that genuinely cannot load costs a blank desktop and
+one line in the log every thirty seconds.
 
 ## chromium — the engine in a browser, driven
 

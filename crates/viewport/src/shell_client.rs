@@ -28,9 +28,11 @@
 //    than being mapped into the `Space` as an ordinary window.
 //
 // 3. **Lifetime.** It can die without taking the compositor with it, which is
-//    new. The restart budget is the same shape as the WPE one in `shell.rs`:
-//    a desktop that has crashed five times over a week is healthy, and one
-//    that crashes five times in five seconds is a page that cannot load.
+//    new. A run of crashes is told from a healthy desktop the same way the WPE
+//    backend tells them apart — a desktop that has crashed five times over a
+//    week is healthy, one that crashes five times in five seconds is not — but
+//    what a run earns here is a growing wait rather than a shell that is left
+//    down for good. See `restart_backoff`.
 //
 // Drawing the client's own buffer rather than compositing its surface is what
 // makes the rest free. `frame.shell` already draws one buffer under
@@ -55,12 +57,14 @@ use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::state::{ClientState, ViewportState};
 
-/// How many restarts in a window before the shell is left down.
+/// How many restarts in a run before they are spread out to
+/// [`RESTART_SLOW`] apart.
 ///
-/// The same policy as the WPE backend's, for the same reason — see
-/// `crate::shell::budget`. Kept separately rather than shared because that
-/// module only exists when the `wpe` feature is on, and this backend is the
-/// one that is always compiled.
+/// The same shape as the WPE backend's budget — see `crate::shell::budget` —
+/// kept separately rather than shared because that module only exists when the
+/// `wpe` feature is on, and this backend is the one that is always compiled.
+/// What happens at the end of the run differs, and deliberately: see
+/// [`restart_backoff`].
 const RESTART_LIMIT: u32 = 5;
 
 /// The status `viewport-shell-gtk` exits with when WebKit's web process has
@@ -68,7 +72,101 @@ const RESTART_LIMIT: u32 = 5;
 /// WebKit's DMA-BUF renderer off. Defined on both sides of the fork; see
 /// `RETRY_WITHOUT_DMABUF` there.
 const RETRY_WITHOUT_DMABUF: i32 = 87;
+
+/// A shell that has run this long since the last crash is a healthy one, and
+/// the next crash begins a new run.
 const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How far apart restarts are once the fast ones have been used up.
+///
+/// Under [`RESTART_WINDOW`] on purpose. The run is reset by a process that
+/// lived longer than the window, and the wait before a start counts towards
+/// that lifetime from the outside — so a retry interval at or above the window
+/// would read every instantly-crashing shell as healthy and go back to
+/// restarting it as fast as the tick allows, which is the loop this is here to
+/// stop.
+const RESTART_SLOW: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The first backoff, doubled for each restart after it.
+const RESTART_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What to do about a shell process that has just died: which attempt of the
+/// current run it is, and how long to wait before making it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Restart {
+    pub attempt: u32,
+    pub delay: std::time::Duration,
+}
+
+/// Decide when to start the shell again, and update the run.
+///
+/// A plain restart limit is wrong in both directions: a desktop up for a week
+/// that has crashed five times over that week is healthy, and one that crashes
+/// five times in five seconds is a page that cannot load. [`RESTART_WINDOW`]
+/// is what tells them apart — a crash far enough after the last one starts a
+/// new run.
+///
+/// Within a run the wait doubles. The first restart is immediate, because a
+/// shell that has crashed once is a shell that has crashed once and a second
+/// of blank desktop would buy nothing; every one after it waits longer, on the
+/// grounds that a process dying repeatedly in a few seconds is a fault that
+/// starting it again *right now* will not fix.
+///
+/// It never gives up, which is the difference from the WPE budget. That policy
+/// was written for a page that cannot load, where retrying is an infinite loop
+/// that forks — but the fault that reaches here first is not that one. The
+/// shell died five times in ninety seconds because the GPU had run out of
+/// memory with a game, a screen capture and a language model on it, and every
+/// other client on that GPU was dying the same way; the desktop then stayed
+/// blank for the rest of the session, long after closing the game would have
+/// fixed it. A page that cannot load costs one blank shell and one log line
+/// every [`RESTART_SLOW`]; a transient system-wide fault costs the desktop
+/// until the session is restarted. The second is much the worse of the two, so
+/// the run slows to a crawl rather than stopping.
+pub fn restart_backoff(
+    restarts: &mut u32,
+    window: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Restart {
+    let fresh = window.is_none_or(|last| now.duration_since(last) > RESTART_WINDOW);
+    if fresh {
+        *restarts = 0;
+    }
+    *window = Some(now);
+    *restarts += 1;
+    let attempt = *restarts;
+
+    // 0s, 1s, 2s, 4s, 8s, then the slow interval for as long as it keeps
+    // dying. The shift is bounded by the branch above it.
+    let delay = match attempt {
+        _ if attempt > RESTART_LIMIT => RESTART_SLOW,
+        0 | 1 => std::time::Duration::ZERO,
+        _ => (RESTART_BACKOFF * (1 << (attempt - 2))).min(RESTART_SLOW),
+    };
+    Restart { attempt, delay }
+}
+
+/// A shell that has died and is waiting out its backoff before starting again.
+///
+/// Held apart from `shell_clients` rather than as a dead entry in it, because
+/// everything that reads that list — placement, focus, the window protocol,
+/// rendering — means "the shells that are running", and a page waiting to come
+/// back is not one of them.
+pub struct PendingShell {
+    /// The page it was showing. Both what the restart loads and how it is
+    /// found in the plan again, which is where its rectangle and its role come
+    /// from — those can have moved while it waited.
+    pub url: String,
+    /// Whether it asked to come back with WebKit's DMA-BUF renderer off.
+    pub degraded: bool,
+    /// Which shell it was, so shell 0 goes back to being shell 0.
+    pub at: usize,
+    /// The run of crashes it belongs to, carried into the process it starts.
+    pub restarts: u32,
+    pub restart_window: Option<std::time::Instant>,
+    /// The earliest it may be started.
+    pub due: std::time::Instant,
+}
 
 /// The shell process, and everything that connects it to the compositor.
 pub struct ClientShell {
@@ -724,21 +822,13 @@ impl ViewportState {
         };
 
         let url = shell.url.clone();
-        let region = shell.region;
-        let desktop = shell.desktop;
         // Asked for by the process that just exited, and honoured for every
         // restart after it: turning it back on would only crash again.
         let degraded = shell.degraded || status.code() == Some(RETRY_WITHOUT_DMABUF);
         let now = std::time::Instant::now();
-        let fresh = shell
-            .restart_window
-            .is_none_or(|started| now.duration_since(started) > RESTART_WINDOW);
-        if fresh {
-            shell.restart_window = Some(now);
-            shell.restarts = 0;
-        }
-        shell.restarts += 1;
-        let attempt = shell.restarts;
+        let mut restarts = shell.restarts;
+        let mut window = shell.restart_window;
+        let Restart { attempt, delay } = restart_backoff(&mut restarts, &mut window, now);
 
         // Whatever it painted belonged to the process that has gone. Leaving
         // it up would be a desktop that is a photograph: it still shows
@@ -748,36 +838,103 @@ impl ViewportState {
         self.needs_render = true;
 
         if attempt > RESTART_LIMIT {
-            tracing::error!(
-                "shell {at}: exited with {status} — {attempt} times in under {}s, so it will not \
-                 be started again. That page is now blank; the compositor is not",
-                RESTART_WINDOW.as_secs()
-            );
-            return;
-        }
-
-        if degraded {
             tracing::warn!(
-                "shell {at}: exited with {status}; restarting it ({attempt}/{RESTART_LIMIT}) with \
-                 WebKit's DMA-BUF renderer off"
+                "shell {at}: exited with {status} — {attempt} times, the last {} within {}s of \
+                 each other, so it is now being retried every {}s instead of at once. That page \
+                 is blank until one of them lives",
+                RESTART_LIMIT,
+                RESTART_WINDOW.as_secs(),
+                delay.as_secs()
+            );
+        } else if degraded {
+            tracing::warn!(
+                "shell {at}: exited with {status}; restarting it in {}ms \
+                 ({attempt}/{RESTART_LIMIT}) with WebKit's DMA-BUF renderer off",
+                delay.as_millis()
             );
         } else {
             tracing::warn!(
-                "shell {at}: exited with {status}; restarting it ({attempt}/{RESTART_LIMIT})"
+                "shell {at}: exited with {status}; restarting it in {}ms \
+                 ({attempt}/{RESTART_LIMIT})",
+                delay.as_millis()
             );
         }
-        if let Err(e) = self.start_client_shell_degraded(&url, region, desktop, degraded) {
+
+        self.pending_shells.push(PendingShell {
+            url,
+            degraded,
+            at,
+            restarts: attempt,
+            restart_window: window,
+            due: now + delay,
+        });
+        // A first crash still comes back on the tick it was noticed on: its
+        // delay is zero, and making the desktop wait a whole tick for the
+        // arithmetic to agree would be a regression dressed as a fix.
+        self.start_due_shells();
+    }
+
+    /// Start whichever shell has waited out its backoff.
+    ///
+    /// The other half of `check_client_shell`, and called from the same slow
+    /// tick. Split from it because the two happen at different times: a crash
+    /// is noticed once, and the restart it earns can be up to
+    /// [`RESTART_SLOW`] later.
+    pub fn start_due_shells(&mut self) {
+        let now = std::time::Instant::now();
+        // One at a time, for the reason `check_client_shell` takes one at a
+        // time: two pages dying together is a real case and starting them a
+        // tick apart costs nothing anybody can see.
+        let Some(index) = self
+            .pending_shells
+            .iter()
+            .position(|pending| pending.due <= now)
+        else {
+            return;
+        };
+        let pending = self.pending_shells.remove(index);
+
+        // The screens can move while a restart waits, and the plan is the
+        // authority on both where a page goes and whether it is wanted at all:
+        // a monitor unplugged during the backoff can turn a page plus a
+        // desktop back into one desktop, and starting the page anyway would
+        // put a second copy of it on a screen that is gone.
+        let planned = self.plan_shells();
+        let Some(place) = planned.iter().find(|planned| planned.url == pending.url) else {
+            tracing::info!(
+                "shell {}: the screens changed while it was waiting to restart, and the page it \
+                 was showing is no longer in the plan, so it is not being started",
+                pending.at
+            );
+            return;
+        };
+        let region = place.region;
+        let desktop = place.desktop;
+
+        let at = pending.at;
+        if let Err(e) =
+            self.start_client_shell_degraded(&pending.url, region, desktop, pending.degraded)
+        {
             tracing::error!("shell {at}: could not restart it: {e:#}");
+            // Still owed a restart: a spawn that failed is not a process that
+            // lived, and dropping it here is the permanent blank desktop this
+            // is meant to avoid. It goes back on the queue one slow interval
+            // out rather than spinning on whatever made the spawn fail.
+            self.pending_shells.push(PendingShell {
+                due: now + RESTART_SLOW,
+                ..pending
+            });
             return;
         }
         // Back where it was, so shell 0 stays the page and shell 1 stays the
         // desktop — the plan is positional and a restart must not reorder it.
         let restarted = self.shell_clients.pop().expect("just pushed");
+        let at = at.min(self.shell_clients.len());
         self.shell_clients.insert(at, restarted);
         // The budget belongs to the run of crashes, not to the process, so it
         // is carried across the restart that the new process inherits.
-        self.shell_clients[at].restarts = attempt;
-        self.shell_clients[at].restart_window = Some(now);
+        self.shell_clients[at].restarts = pending.restarts;
+        self.shell_clients[at].restart_window = pending.restart_window;
     }
 
     /// The desktop shell's surface, for hit-testing and focus.
@@ -1044,6 +1201,91 @@ mod tests {
 
     fn screen(x: i32, w: i32) -> Rectangle<i32, Logical> {
         Rectangle::new((x, 0).into(), (w, 1080).into())
+    }
+
+    /// Drive `restart_backoff` over crashes at a list of offsets from a fixed
+    /// start, as a run of them would arrive.
+    fn run(offsets: &[std::time::Duration]) -> Vec<Restart> {
+        let start = std::time::Instant::now();
+        let mut restarts = 0;
+        let mut window = None;
+        offsets
+            .iter()
+            .map(|offset| restart_backoff(&mut restarts, &mut window, start + *offset))
+            .collect()
+    }
+
+    #[test]
+    fn a_first_crash_is_restarted_at_once() {
+        // The desktop is blank until it comes back, and one crash is not
+        // evidence of anything worth waiting out.
+        let outcome = run(&[std::time::Duration::ZERO]);
+        assert_eq!(outcome[0].attempt, 1);
+        assert_eq!(outcome[0].delay, std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn a_run_of_crashes_backs_off() {
+        // The fault this was written for: the GPU ran out of memory, every
+        // client on it died, and each restart asked it for another
+        // full-screen buffer. The waits have to grow.
+        let burst: Vec<_> = (0..RESTART_LIMIT)
+            .map(|n| std::time::Duration::from_millis(u64::from(n) * 100))
+            .collect();
+        let delays: Vec<_> = run(&burst).iter().map(|r| r.delay.as_secs()).collect();
+        assert_eq!(delays, vec![0, 1, 2, 4, 8]);
+        assert!(delays.windows(2).all(|pair| pair[1] > pair[0]));
+    }
+
+    #[test]
+    fn a_page_that_cannot_load_is_retried_slowly_rather_than_dropped() {
+        // Never given up on: the difference between this and the WPE budget.
+        // A page that cannot load costs one log line every RESTART_SLOW, and
+        // a shell kept down through a fault that has since cleared costs the
+        // desktop for the rest of the session.
+        let burst: Vec<_> = (0..RESTART_LIMIT + 20)
+            .map(|n| std::time::Duration::from_millis(u64::from(n) * 100))
+            .collect();
+        let outcome = run(&burst);
+        assert!(outcome
+            .iter()
+            .skip(RESTART_LIMIT as usize)
+            .all(|r| r.delay == RESTART_SLOW));
+    }
+
+    #[test]
+    fn the_slow_retry_is_inside_the_window_that_resets_the_run() {
+        // Otherwise the wait before a restart would itself look like a shell
+        // that had lived a healthy life, the run would reset, and a process
+        // dying on startup would be restarted as fast as the tick allows for
+        // ever. See RESTART_SLOW.
+        assert!(RESTART_SLOW < RESTART_WINDOW);
+    }
+
+    #[test]
+    fn crashes_spread_out_never_back_off() {
+        // A desktop up for a week that has crashed once a day is healthy. A
+        // plain counter would have it retrying every 30s by the sixth day.
+        let spread: Vec<_> = (0..20).map(|n| RESTART_WINDOW * (n + 1) * 2).collect();
+        assert!(run(&spread)
+            .iter()
+            .all(|r| r.attempt == 1 && r.delay == std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn a_shell_that_lives_starts_the_run_over() {
+        // Four crashes, then a process that lasted, then four more. The
+        // second run is a run of four and not the back half of one of eight.
+        let mut offsets: Vec<_> = (0..4)
+            .map(|n| std::time::Duration::from_millis(n * 100))
+            .collect();
+        let quiet = RESTART_WINDOW * 2;
+        offsets.extend((0..4).map(|n| quiet + std::time::Duration::from_millis(n * 100)));
+        let outcome = run(&offsets);
+        assert_eq!(
+            outcome.iter().map(|r| r.attempt).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 1, 2, 3, 4]
+        );
     }
 
     #[test]

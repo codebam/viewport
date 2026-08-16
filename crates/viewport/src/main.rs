@@ -564,6 +564,9 @@ fn run() -> Result<()> {
                 // handlers, and a desktop that has been gone for at most a
                 // second is not a thing anyone can see.
                 state.check_client_shell();
+                // And whether one that died earlier has waited out the backoff
+                // its run of crashes earned.
+                state.start_due_shells();
                 // And the wallpaper terminal, on the same terms.
                 state.check_background_terminal();
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(

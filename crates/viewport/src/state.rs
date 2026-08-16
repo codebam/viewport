@@ -231,6 +231,9 @@ pub struct ViewportState {
     /// desktop on the rest — two processes, two pages, two rectangles. See
     /// `shell_client::plan_shells`. Everything else is one entry long.
     pub shell_clients: Vec<crate::shell_client::ClientShell>,
+    /// The ones that have crashed and are waiting out a backoff before being
+    /// started again. See `shell_client::restart_backoff`.
+    pub pending_shells: Vec<crate::shell_client::PendingShell>,
     /// The id the next shell process is given, so a restarted one is not
     /// mistaken for the process it replaced.
     pub next_shell_id: u32,
@@ -1081,6 +1084,7 @@ impl ViewportState {
             shell_backend: crate::shell_backend::ShellBackend::default_for_build(),
             shell_backend_from_flag: false,
             shell_clients: Vec::new(),
+            pending_shells: Vec::new(),
             next_shell_id: 0,
             shell_url_spans: false,
             dispatch_origin: (0, 0).into(),

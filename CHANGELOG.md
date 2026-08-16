@@ -11,6 +11,22 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Changed
+- The shell is restarted with a backoff, and is no longer given up on. It used
+  to be respawned on the next tick every time, five times a minute, and then
+  left down for the rest of the session. Both halves of that were wrong on a
+  real fault: an AMD GPU that had run out of memory — a game, a screen capture
+  and a language model on the same card — rejected every command submission on
+  it, Mesa aborts a process when that happens, and the shell, Chromium and OBS
+  all died together. The shell was then respawned five times in ninety
+  seconds, each one asking the same exhausted GPU for another 5120x1440
+  buffer, before the desktop went blank until the session was restarted. Now
+  the first restart is immediate and each one after it waits twice as long
+  (1s, 2s, 4s, 8s), and a run that gets through those keeps retrying every
+  thirty seconds rather than stopping — so the desktop comes back on its own
+  once the cause has gone, and a page that genuinely cannot load costs one log
+  line every thirty seconds instead of a session.
+
 ## [0.1.7] - 2026-08-15
 
 ### Added
