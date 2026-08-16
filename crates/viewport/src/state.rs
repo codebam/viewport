@@ -4880,11 +4880,6 @@ impl ViewportState {
                     .wl_surface()
                     .as_deref()
                     .and_then(|surface| self.views.find_by_surface(surface));
-                let overlay_ids: [smithay::backend::renderer::element::Id; 4] = view
-                    .map(|view| view.overlay_ids.clone())
-                    .unwrap_or_else(|| {
-                        std::array::from_fn(|_| smithay::backend::renderer::element::Id::new())
-                    });
                 let clip = view.and_then(|view| view.clip).map(|clip| {
                     Rectangle::<i32, Logical>::new(
                         (clip.x, clip.y).into(),
@@ -4901,10 +4896,21 @@ impl ViewportState {
                 // The shell's border for this window, where it has said one
                 // has to be drawn above whatever is underneath — as four
                 // sides around the hole rather than one rectangle over it.
+                //
+                // The ids are the view's own, and there is nowhere else to get
+                // them: a border side is one element frame after frame, and an
+                // element whose id changes is an element the damage tracker
+                // believes is new. A window with no view has no border to
+                // draw, so this is also the only branch that needs any — four
+                // fresh ids were minted per window per output per frame for
+                // the case that never reaches them.
                 let overlay: Vec<_> = view
                     .filter(|_| drawn_on_this_output)
-                    .and_then(|view| view.frame.map(|frame| (frame, view.box_, view.scale)))
-                    .map(|(frame, hole, drawn_at)| {
+                    .and_then(|view| {
+                        view.frame
+                            .map(|frame| (frame, view.box_, view.scale, &view.overlay_ids))
+                    })
+                    .map(|(frame, hole, drawn_at, overlay_ids)| {
                         crate::render::border_sides(frame, hole, drawn_at)
                             .into_iter()
                             .zip(overlay_ids.iter().cloned())
@@ -5002,7 +5008,12 @@ impl ViewportState {
         // How many popups are about to be drawn, said when it changes. A menu
         // that is created, configured and then drawn zero times is a
         // different fault from one that is drawn somewhere unhelpful.
-        {
+        //
+        // Only when something is listening. The census walks every popup of
+        // every window and keys its tally by `output.name()`, which allocates
+        // — all of it per output per frame, to decide whether to emit a line
+        // that a session at the default level discards.
+        if tracing::enabled!(tracing::Level::DEBUG) {
             use smithay::desktop::PopupManager;
             use smithay::wayland::seat::WaylandFocus as _;
             let popups: usize = windows
@@ -5138,9 +5149,12 @@ impl ViewportState {
             overlay,
             cursor,
             scale,
-            lock: self
-                .lock_surfaces
-                .get(&output.name())
+            // Nothing is locked on nearly every frame this compositor ever
+            // draws, and `output.name()` allocates a `String` to ask — so the
+            // empty map is answered without building the key for it.
+            lock: (!self.lock_surfaces.is_empty())
+                .then(|| self.lock_surfaces.get(&output.name()))
+                .flatten()
                 // A locker that exited leaves its surfaces behind until the
                 // next housekeeping tick; drawing one is drawing nothing.
                 .filter(|lock| smithay::utils::IsAlive::alive(lock.wl_surface()))
