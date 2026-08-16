@@ -393,6 +393,19 @@ impl ViewportState {
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // Anything the shell asked for and has not been given yet, before this
+        // event is tested against the desktop.
+        //
+        // `surface_under` picks what a click lands on out of the space, in the
+        // space's order, so a stack owed a restack here is a click going
+        // through a dialog into the window behind it — which is the fault
+        // `restack` exists to prevent, arriving by a different door. The IPC
+        // source pays up before it returns, so this cannot actually be owed
+        // anything; it is here because "cannot" rests on calloop's ordering and
+        // a click landing in the wrong window is not a thing to leave resting
+        // on that.
+        self.settle();
+
         // Anything at all counts. Device added and removed do not — they
         // arrive when a dock is plugged in with nobody at the machine — but
         // they are filtered out before this.

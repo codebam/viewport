@@ -364,6 +364,18 @@ pub struct ViewportState {
     /// pacing barrier released for one screen's windows.
     pub dirty_outputs: std::collections::HashSet<crate::udev::OutputId>,
 
+    /// The stack is owed a `restack`, and the colour-management clients are
+    /// owed a look at whether their screen changed under them.
+    ///
+    /// Both used to run at the end of every `view.layout`, and the shell sends
+    /// one of those per window per animation frame — so a desktop with eight
+    /// windows sliding across it did the whole of `restack` and the whole of
+    /// `notify_surface_colour` eight times for one frame of one animation, when
+    /// the answer only has to be right once, by the time anything looks. See
+    /// `settle`.
+    pub needs_restack: bool,
+    pub needs_colour_notify: bool,
+
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
     pub color_management: crate::color_management::ColorManagementState,
@@ -1104,6 +1116,8 @@ impl ViewportState {
             last_layout: None,
             needs_render: false,
             dirty_outputs: std::collections::HashSet::new(),
+            needs_restack: false,
+            needs_colour_notify: false,
 
             color_management,
             compositor_state,
@@ -6917,6 +6931,12 @@ impl ViewportState {
     /// happened, so a commit that touches five subsurfaces costs one frame
     /// instead of five.
     pub fn render_if_needed(&mut self) {
+        // Before the frame is composed from it: the renderer draws in the
+        // space's order, so a stack still owed a `restack` here would be a
+        // float drawn behind the window it belongs in front of, for as long as
+        // that frame is on the screen.
+        self.settle();
+
         let all = std::mem::take(&mut self.needs_render);
         let some = std::mem::take(&mut self.dirty_outputs);
         if !all && some.is_empty() {
@@ -7012,24 +7032,58 @@ impl ViewportState {
     /// after every raise rather than only after the ones that look risky.
     /// Relative order among the floats is kept: they are re-raised bottom to
     /// top, so the one in front stays in front.
+    // A `Window` hashes and compares by its id and by nothing inside it, so
+    // the interior mutability clippy sees through the `Arc` cannot move an
+    // entry out from under the set.
+    #[allow(clippy::mutable_key_type)]
     pub fn restack(&mut self) {
-        let floating: Vec<smithay::desktop::Window> = self
+        // The floating windows as a set, looked up once.
+        //
+        // This used to ask `views.iter().any(...)` for every element in the
+        // space, which is every window times every view — and it ran once per
+        // `view.layout`, which is once per window per animation frame, so the
+        // cost of an animation went up with the cube of the number of windows
+        // on the desk.
+        let floating: std::collections::HashSet<smithay::desktop::Window> = self
+            .views
+            .iter()
+            .filter(|view| view.floating)
+            .map(|view| view.window.clone())
+            .collect();
+
+        // Bottom to top, as the space holds them.
+        let layers: Vec<Layer> = self
             .space
             .elements()
-            .filter(|window| {
-                self.views
-                    .iter()
-                    .any(|view| view.floating && view.window == **window)
-            })
-            .cloned()
+            .map(|window| Layer::of(window, &floating))
             .collect();
-        for window in floating {
+
+        // Nothing to do, which is the usual answer: the shell resends a
+        // rectangle for every window on every frame and the stack it describes
+        // is the stack that is already there. Raising each float anyway would
+        // be a `Vec` shuffle inside the space per window per frame for a
+        // desktop that has not changed shape since it was drawn.
+        if is_layered(&layers) {
+            return;
+        }
+
+        let raise: Vec<smithay::desktop::Window> = self
+            .space
+            .elements()
+            .zip(layers.iter())
+            .filter(|(_, layer)| **layer == Layer::Floating)
+            .map(|(window, _)| window.clone())
+            .collect();
+        for window in raise {
             self.space.raise_element(&window, false);
         }
 
         // Above even those: an X11 menu or tooltip, which places itself and is
         // no view at all. A float raised over an open dropdown is the same bug
         // this function exists to fix, one layer up.
+        //
+        // Recomputed rather than reused, because the raises above moved the
+        // elements the earlier pass was indexed against.
         let overrides: Vec<smithay::desktop::Window> = self
             .space
             .elements()
@@ -7042,6 +7096,27 @@ impl ViewportState {
             .collect();
         for window in overrides {
             self.space.raise_element(&window, false);
+        }
+    }
+
+    /// Do the work a run of `view.layout` messages left owing.
+    ///
+    /// The shell sends one `view.layout` per window per animation frame, and
+    /// both of these are answers about the desktop as a whole rather than about
+    /// the one window the message was for: restacking eight times in a row
+    /// gives the same stack the first one did, and asking eight times whether a
+    /// video is on a different monitor now gets the same answer eight times.
+    /// Doing them here instead costs one of each per batch of messages.
+    ///
+    /// Called where the answer is about to be *read* rather than on a timer, so
+    /// nothing can see a stale stack. See the call sites for the argument that
+    /// the list of them is complete.
+    pub fn settle(&mut self) {
+        if std::mem::take(&mut self.needs_restack) {
+            self.restack();
+        }
+        if std::mem::take(&mut self.needs_colour_notify) {
+            self.notify_surface_colour();
         }
     }
 
@@ -7883,12 +7958,107 @@ fn unscale_about(
         .into()
 }
 
+/// Which of the three bands a window belongs in, bottom to top.
+///
+/// The whole of the compositor's stacking policy: the shell owns layout, and
+/// this is the one ordering rule kept away from it. `Ord` is the policy — a
+/// bigger `Layer` sits in front of a smaller one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Layer {
+    /// Everything the shell laid out, which is the desktop as such.
+    Tiled,
+    /// A dialog, a palette, a picture-in-picture: deliberately put in front.
+    Floating,
+    /// An X11 menu or tooltip, which places itself and is no view at all.
+    Override,
+}
+
+impl Layer {
+    // Hashed by id: see the note on `restack`.
+    #[allow(clippy::mutable_key_type)]
+    fn of(
+        window: &smithay::desktop::Window,
+        floating: &std::collections::HashSet<smithay::desktop::Window>,
+    ) -> Self {
+        if window
+            .x11_surface()
+            .is_some_and(|x11| x11.is_override_redirect())
+        {
+            // Override wins over floating for a window that is somehow both,
+            // which is where the two passes in `restack` would leave it too:
+            // the second pass runs last, so it ends up on top.
+            Layer::Override
+        } else if floating.contains(window) {
+            Layer::Floating
+        } else {
+            Layer::Tiled
+        }
+    }
+}
+
+/// Whether a stack, bottom to top, is already in the order `restack` wants.
+///
+/// Which is exactly "never goes back down a band". A stack that passes this is
+/// one the raises would leave untouched — they preserve relative order within a
+/// band and every band is already above the one below it — so it is safe to
+/// skip them, and skipping them is what keeps a still desktop from shuffling
+/// its space on every frame the shell draws.
+fn is_layered(stack: &[Layer]) -> bool {
+    stack.windows(2).all(|pair| pair[0] <= pair[1])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn at(x: f64, y: f64) -> Point<f64, Logical> {
         (x, y).into()
+    }
+
+    /// The stacking policy itself, which is what `Ord` on `Layer` is.
+    ///
+    /// A float behind a tiled window is not merely hard to see but unreachable,
+    /// because the space is what a click is tested against as well as what the
+    /// renderer draws from; an X11 menu behind a float is the same fault one
+    /// layer up.
+    #[test]
+    fn a_float_is_in_front_of_the_layout_and_a_menu_in_front_of_both() {
+        assert!(Layer::Floating > Layer::Tiled);
+        assert!(Layer::Override > Layer::Floating);
+    }
+
+    /// What `restack` skips on, so it had better be exactly the stacks the
+    /// raises would have left alone.
+    #[test]
+    fn a_stack_that_never_goes_back_down_is_already_right() {
+        assert!(is_layered(&[]));
+        assert!(is_layered(&[Layer::Floating]));
+        assert!(is_layered(&[Layer::Tiled, Layer::Tiled, Layer::Floating]));
+        assert!(is_layered(&[
+            Layer::Tiled,
+            Layer::Floating,
+            Layer::Floating,
+            Layer::Override
+        ]));
+    }
+
+    /// And the ones it must not skip. Each of these is a window that has to
+    /// move, and a `restack` that returned early on one of them is the bug this
+    /// whole function exists to prevent.
+    #[test]
+    fn a_stack_that_drops_back_down_has_to_be_restacked() {
+        // The float that a newly mapped tiled window landed on top of, which
+        // is what `view.layout` does on every frame of an animation.
+        assert!(!is_layered(&[Layer::Floating, Layer::Tiled]));
+        // A float raised over an open dropdown.
+        assert!(!is_layered(&[Layer::Override, Layer::Floating]));
+        // And one buried in the middle of a stack that is otherwise fine.
+        assert!(!is_layered(&[
+            Layer::Tiled,
+            Layer::Floating,
+            Layer::Tiled,
+            Layer::Floating
+        ]));
     }
 
     /// The corner a window is scaled about does not move, whatever the scale.
