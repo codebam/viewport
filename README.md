@@ -11,6 +11,14 @@ clients.
 Smithay handles DRM/KMS, input and the `xdg-shell` protocol. WebKit renders the
 UI to a DMA-BUF. Neither ever hands a pixel to the CPU.
 
+<p align="center">
+  <a href="https://files.seanbehan.ca/viewport-demo-1080p.mp4">
+    <img src="docs/img/demo-poster.jpg" width="640" alt="Viewport demo — four tiled terminals under the web shell" />
+  </a>
+  <br />
+  <em><a href="https://files.seanbehan.ca/viewport-demo-1080p.mp4">Watch the demo</a> (69s, no audio)</em>
+</p>
+
 Which engine is a choice: WPE inside the compositor, WebKitGTK in a process of
 its own as an ordinary Wayland client, Chromium as a browser this does not link
 at all, the same Blink embedded through CEF, or Servo — driven as a browser by
