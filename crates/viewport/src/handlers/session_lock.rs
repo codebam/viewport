@@ -27,6 +27,28 @@ impl SessionLockHandler for ViewportState {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
+        // A second locker over a working one is refused.
+        //
+        // Smithay grants every `lock` request — it builds a fresh lock object
+        // with its own status flag and calls this, on the assumption that the
+        // compositor decides — so nothing below this refuses it for us. Taking
+        // it clears `lock_surfaces` a few lines down, which drops the surfaces
+        // of the locker that is *still running and still drawing*: two clients
+        // then own one screen, only the newer one is rendered, and unlocking
+        // the one you can see leaves the other holding a lock nothing can
+        // reach. That is a session that stays locked after a correct password,
+        // showing the clear colour and no way back.
+        if self.locked && self.lock_screen_is_drawing() {
+            tracing::warn!(
+                "a locker asked for a session that another locker is already \
+                 drawing; refusing it. Dropping the request tells that client \
+                 `finished`, which is what it is waiting to hear."
+            );
+            // Dropped rather than confirmed: `SessionLocker::drop` sends
+            // `finished`, and swaylock exits on it.
+            return;
+        }
+
         tracing::info!("session locked");
         self.locked = true;
         self.locked_at = Some(std::time::Instant::now());
@@ -87,6 +109,20 @@ impl SessionLockHandler for ViewportState {
 }
 
 impl ViewportState {
+    /// Whether a locker is up and has a surface on at least one screen.
+    ///
+    /// The question both refusals ask: a locked session whose locker has gone
+    /// is one anybody may take over — that is the documented way out of a
+    /// crashed locker, and `check_lock_screen` tells the user to do exactly
+    /// that. A locked session that is *drawing* is not, and a second locker
+    /// over it is how one ends up unreachable.
+    pub fn lock_screen_is_drawing(&self) -> bool {
+        use smithay::utils::IsAlive as _;
+        self.lock_surfaces
+            .values()
+            .any(|surface| surface.wl_surface().alive())
+    }
+
     /// Say so if the session is locked and nothing is drawing a lock screen.
     ///
     /// A locker that exits after taking the lock leaves the session locked

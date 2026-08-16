@@ -128,6 +128,8 @@ else
 fi
 run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"
+run session-lock-takeover "$root/tests/lock-takeover.test.sh" \
+	"$VIEWPORT" "$work/lock-client"
 run foreign-toplevel "$root/tests/foreign-toplevel.test.sh" \
 	"$VIEWPORT" "$work/foreign-toplevel-client" "$work/paint-client"
 run output-management "$root/tests/output-management.test.sh" \

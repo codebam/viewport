@@ -4602,6 +4602,22 @@ impl ViewportState {
     /// Shared by the idle deadline and the `lock` binding so there is one
     /// answer to what locking means, as in `src/binding.c:614`.
     pub fn lock_session(&mut self) {
+        // Not over a locker that is already up.
+        //
+        // The lock handler refuses the second lock, but by then a whole second
+        // locker has been started, has authenticated nobody, and is waiting to
+        // be told `finished`. Cheaper and quieter to not run it: the idle
+        // deadline fires on a session somebody locked by hand five minutes
+        // earlier, which is how two swaylocks ended up on one screen.
+        //
+        // A locked session with no locker drawing is *not* this, and is left
+        // alone deliberately — running another locker against it is the way
+        // out of a locker that crashed, and `check_lock_screen` says so.
+        if self.locked && self.lock_screen_is_drawing() {
+            tracing::info!("lock: a locker is already drawing; leaving it alone");
+            return;
+        }
+
         match self.idle_settings.lock_command.clone() {
             Some(command) => crate::input::spawn(&command),
             // Nothing to run. Said rather than silently doing nothing, because
