@@ -62,17 +62,72 @@ pub fn spawn(command: &str) {
         .arg(command)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // Kept rather than discarded. A binding that fails used to leave the
+        // log saying only that it had been started: a screenshot script that
+        // died on a missing tool, a bad argument or a `set -e` was
+        // indistinguishable from one that worked, from anywhere.
+        .stderr(Stdio::piped())
         .spawn();
     match result {
         Ok(mut child) => {
-            // Reaped immediately: sh exits as soon as it has exec'd, and
-            // waiting for the application itself would block the compositor.
+            let stderr = child.stderr.take();
+            let what = command.to_owned();
+            // Reaped on a thread of its own: sh execs the command, so this
+            // waits for the application itself, which the compositor cannot.
             std::thread::spawn(move || {
-                let _ = child.wait();
+                if let Some(stderr) = stderr {
+                    log_stderr(&what, stderr);
+                }
+                match child.wait() {
+                    // A command that failed says so, once, with its status.
+                    // Nothing else in the session would ever mention it.
+                    Ok(status) if !status.success() => {
+                        tracing::warn!("{what} exited {status}");
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("could not wait for {what}: {e}"),
+                }
             });
         }
         Err(e) => tracing::error!("could not run {command}: {e}"),
+    }
+}
+
+/// How many lines of a child's stderr reach the log.
+///
+/// A failing script says what is wrong in its first few lines. A browser left
+/// running for a day writes tens of thousands, and a compositor log that is
+/// mostly one client's chatter is no more use than one that says nothing.
+const STDERR_LINES: usize = 20;
+
+/// Copy a child's stderr into the log, tagged with the command.
+///
+/// Reading continues past the cap even though logging stops: a pipe nobody
+/// drains fills up, and the next write blocks the child in the middle of
+/// whatever it was doing — which would turn a chatty application into a hung
+/// one.
+fn log_stderr(command: &str, stderr: std::process::ChildStderr) {
+    use std::io::BufRead as _;
+
+    let mut lines = 0usize;
+    let mut suppressed = 0usize;
+    for line in std::io::BufReader::new(stderr).lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        if lines < STDERR_LINES {
+            lines += 1;
+            tracing::warn!("{command}: {line}");
+            if lines == STDERR_LINES {
+                tracing::warn!("{command}: further output is not logged");
+            }
+        } else {
+            suppressed += 1;
+        }
+    }
+    if suppressed > 0 {
+        tracing::debug!("{command}: {suppressed} more lines went unlogged");
     }
 }
 
