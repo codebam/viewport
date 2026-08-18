@@ -90,6 +90,15 @@ to summarise rather than to duplicate.
   in this program rather than in a daemon beside it.
 
 ### Fixed
+- A rounded window is no longer scanned out square. `RoundedRenderElement`
+  offered the wrapped element's buffer for direct scanout, and a hardware
+  plane draws a rectangle — a buffer, a source rectangle and a destination
+  rectangle, with nowhere to say "with the corners taken off" — so on DRM a
+  window that was a candidate for a plane went to the display controller whole
+  and the band splitting that does the rounding never ran. Headless and nested
+  composite everything, which is why nothing here ever saw it. An element that
+  actually rounds something now declines the plane; a fullscreen window is
+  drawn square anyway and still takes one.
 - A lone window with an outer gap keeps its rounded corners. Smart radius
   follows smart gaps because smart gaps push a lone window against the edge of
   the screen, where a rounded corner is a notch of wallpaper in the corner of

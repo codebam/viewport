@@ -346,6 +346,16 @@ impl<E: Element> RoundedRenderElement<E> {
         })
     }
 
+    /// Whether this element still draws a plain rectangle.
+    ///
+    /// True for a radius that cut nothing — `bands` answers the whole
+    /// rectangle for a radius of zero, and for one too small to inset a single
+    /// pixel — and that is the case where everything a rounded element does is
+    /// pass the wrapped one through.
+    fn is_rectangular(&self) -> bool {
+        matches!(self.bands.as_slice(), [only] if *only == self.geometry)
+    }
+
     /// A rectangle of `self.geometry` moved into the `dst` the renderer handed
     /// us.
     ///
@@ -472,7 +482,33 @@ impl<R: Renderer, E: RenderElement<R>> RenderElement<R> for RoundedRenderElement
         Ok(())
     }
 
+    /// The buffer behind this element — but only when this element is not
+    /// actually rounding anything.
+    ///
+    /// This is what a compositor asks before putting an element on a hardware
+    /// plane, and a plane draws a rectangle: the scanout hardware takes a
+    /// buffer, a source rectangle and a destination rectangle, and there is
+    /// nowhere in that to say "with the corners taken off". An element that
+    /// offers its buffer here is one the DRM backend may hand straight to the
+    /// display controller, and the band-splitting in `draw` — which is the
+    /// whole of the rounding — never runs.
+    ///
+    /// That is why a rounded window came out square on a real screen and round
+    /// everywhere else: on the headless and winit backends every element is
+    /// composited, so the corners were always cut, and on DRM a window that
+    /// was a candidate for a plane was scanned out whole. It is also why a
+    /// second window on the workspace "fixed" it — two overlapping windows are
+    /// a worse fit for the planes, so both got composited and both got their
+    /// corners.
+    ///
+    /// Declining costs a rounded window its direct scanout. That is not a
+    /// choice this can make differently: a window with round corners is not a
+    /// rectangle, and the one case where scanout matters most — a fullscreen
+    /// window — is drawn square anyway, so it still takes the plane.
     fn underlying_storage(&self, renderer: &mut R) -> Option<UnderlyingStorage<'_>> {
+        if !self.is_rectangular() {
+            return None;
+        }
         self.element.underlying_storage(renderer)
     }
 
@@ -636,6 +672,46 @@ mod tests {
         fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
             self.opaque.iter().copied().collect()
         }
+    }
+
+    /// A rounded element must not offer its buffer for direct scanout, and a
+    /// square one must.
+    ///
+    /// This is the whole of the bug where a window came out square on a real
+    /// screen and round everywhere else: a plane draws a rectangle, so a
+    /// compositor that puts a rounded window on one gets the buffer as it is
+    /// and none of the band splitting below. Headless and nested composite
+    /// everything, which is why nothing here ever saw it.
+    #[test]
+    fn only_a_square_element_may_be_scanned_out() {
+        let geometry = rect(0, 0, 200, 100);
+
+        let square = RoundedRenderElement::from_element(Fake::new(geometry), 1.0, geometry, 0)
+            .expect("a square element");
+        assert!(square.is_rectangular(), "a radius of zero cuts nothing");
+
+        let round = RoundedRenderElement::from_element(Fake::new(geometry), 1.0, geometry, 12)
+            .expect("a rounded element");
+        assert!(!round.is_rectangular(), "a corner is not a rectangle");
+
+        // A radius too small to inset a pixel is square in fact, whatever it
+        // says, and there is nothing to be gained by refusing the plane.
+        let hair = RoundedRenderElement::from_element(Fake::new(geometry), 1.0, geometry, 1)
+            .expect("an element rounded by nothing");
+        assert!(hair.is_rectangular());
+
+        // Cut to something smaller than the element is not a rectangle either:
+        // a plane would draw the part that was meant to be dropped.
+        let cropped =
+            RoundedRenderElement::from_element(Fake::new(geometry), 1.0, rect(10, 10, 100, 50), 0)
+                .expect("an element with its edges cut off");
+        assert!(!cropped.is_rectangular());
+
+        // And the wedges are never a rectangle.
+        let wedges =
+            RoundedRenderElement::from_bands(Fake::new(geometry), 1.0, cutaway(geometry, 12))
+                .expect("the corners of a border");
+        assert!(!wedges.is_rectangular());
     }
 
     /// What the rounding cuts away is exactly what it does not keep: every
