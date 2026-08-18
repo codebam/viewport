@@ -1014,6 +1014,42 @@ Where the tray sits on the bar is the shell's business, like every other bar
 item: it is `tray` in `bar_items`, and it draws nothing at all when there is
 nothing registered.
 
+## The clipboard history
+
+On by default, keeping the last 25 things copied.
+
+A Wayland selection is not a buffer anywhere: it is an offer from the client
+that owns it, and the data exists only while that client is running. Close the
+terminal you copied from and the clipboard is empty — which is why every
+desktop grows a clipboard manager, and why one is usually a second daemon
+holding a `wlr-data-control` connection open. The compositor is already that
+daemon: every selection on the session passes through it, so keeping the last
+few is reading what is already being offered.
+
+```jsonc
+{
+  "clipboard_history": 25   // 0 keeps nothing at all
+}
+```
+
+`Mod4+Shift+v` opens the picker, which the shell draws — so it is styled by the
+stylesheet already open in the editor, like the notifications. Choosing an
+entry puts it back on the clipboard with the compositor as the selection's
+owner, which is the whole point: the application that copied it may have exited
+hours ago. A row's ✕ forgets that entry and the footer forgets everything,
+which is what somebody asks for after copying a password.
+
+Text only, and only the clipboard. Recording the primary selection would mean
+an entry for every word dragged over with a mouse, and images are megabytes
+each with nowhere to draw them in a list of lines. Entries are capped at 256
+KiB — a clipboard holds what a person copied, and what a person copied fits on
+a screen.
+
+`"clipboard_history": 0` turns it off: nothing is read and nothing is kept, for
+a session that would rather run cliphist or one that does not want a copy of
+every password that passes through the clipboard. The setting applies on
+reload, and turning it off empties what was already there.
+
 ## Window rules
 
 ```jsonc

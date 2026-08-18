@@ -22,7 +22,7 @@ use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
 };
-use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
 
 use crate::state::ViewportState;
 
@@ -65,8 +65,78 @@ impl SeatHandler for ViewportState {
     }
 }
 
+/// Selections: what is copied, and who owns what the compositor is offering.
+///
+/// Two unrelated things set a server-side selection here — an X client, whose
+/// data comes back through the XWM, and the clipboard history, whose data the
+/// compositor is already holding — so the user data says which. Before there
+/// was a history there was only one of them, and `()` was enough.
 impl SelectionHandler for ViewportState {
-    type SelectionUserData = ();
+    type SelectionUserData = crate::clipboard::Owner;
+
+    /// Somebody copied something.
+    ///
+    /// Only the clipboard, and only text: recording the primary selection
+    /// would mean an entry for every word dragged over with a mouse. A `None`
+    /// source is the compositor's own selection — a paste out of the history —
+    /// and reading that back would be recording our own echo.
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<smithay::wayland::selection::SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        if ty != SelectionTarget::Clipboard || !self.clipboard.enabled() {
+            return;
+        }
+        let Some(source) = source else { return };
+        let Some(mime) = crate::clipboard::Clipboard::text_mime(&source.mime_types()) else {
+            // An image, a file list, an application's private type. Not an
+            // error and not worth a line: a screenshot tool puts one on the
+            // clipboard every time it runs.
+            return;
+        };
+
+        // Asked for on the next turn of the loop rather than here, and this
+        // is not tidiness. Smithay calls this handler *before* it stores the
+        // new selection on the seat, so a request made now is answered by the
+        // client that owned the clipboard a moment ago: the history came out
+        // one copy behind, and the thing just copied never appeared in it at
+        // all until something else was copied over it.
+        self.loop_handle
+            .insert_idle(move |state| state.capture_clipboard(mime));
+    }
+
+    /// A client is pasting from a selection the compositor owns.
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: std::os::unix::io::OwnedFd,
+        _seat: Seat<Self>,
+        user_data: &Self::SelectionUserData,
+    ) {
+        match user_data {
+            // An X client owns it, so the bytes come back over the X
+            // connection. Without this the compositor advertised the X
+            // selection to every Wayland client and then answered nothing when
+            // one asked: copying in an X application and pasting in a Wayland
+            // one did nothing at all.
+            crate::clipboard::Owner::Xwayland => {
+                let Some(xwm) = self.xwm.as_mut() else { return };
+                if let Err(e) = xwm.send_selection(ty, mime_type, fd) {
+                    tracing::warn!("could not hand over the X selection: {e}");
+                }
+            }
+            // Ours, out of the history, and already in memory.
+            crate::clipboard::Owner::History => {
+                let Some(text) = self.clipboard.current() else {
+                    return;
+                };
+                crate::clipboard::serve(text, fd);
+            }
+        }
+    }
 }
 
 impl DataDeviceHandler for ViewportState {

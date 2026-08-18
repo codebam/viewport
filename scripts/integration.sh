@@ -150,6 +150,9 @@ else
 	echo "=== mpris: skipped, no mpris-player to run it with"
 fi
 
+# Needs wl-copy and wl-paste, and skips (77) without them.
+run clipboard "$root/tests/clipboard.test.sh" "$VIEWPORT"
+
 run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"
 run session-lock-takeover "$root/tests/lock-takeover.test.sh" \

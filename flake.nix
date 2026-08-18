@@ -620,6 +620,12 @@
             # inside a `dbus-run-session` of its own. Without it that test can
             # only skip, and the portal half of the suite goes untested.
             dbus
+
+            # And for tests/clipboard.test.sh, which needs a real client to
+            # offer a real selection and another to ask for it: a Wayland
+            # selection exists only while the client offering it is running,
+            # so nothing in-process can stand in for one.
+            wl-clipboard
         ];
 
         # The environment both need, extracted for the same reason: an ASan

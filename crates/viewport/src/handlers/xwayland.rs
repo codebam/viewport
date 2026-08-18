@@ -264,10 +264,21 @@ impl XwmHandler for ViewportState {
 
         let dh = self.display_handle.clone();
         match selection {
-            SelectionTarget::Clipboard => {
-                set_data_device_selection(&dh, &self.seat, mime_types, ())
-            }
-            SelectionTarget::Primary => set_primary_selection(&dh, &self.seat, mime_types, ()),
+            // Tagged as the X side's, so that a Wayland client pasting is
+            // answered by asking the XWM rather than by handing it a
+            // clipboard entry that has nothing to do with this selection.
+            SelectionTarget::Clipboard => set_data_device_selection(
+                &dh,
+                &self.seat,
+                mime_types,
+                crate::clipboard::Owner::Xwayland,
+            ),
+            SelectionTarget::Primary => set_primary_selection(
+                &dh,
+                &self.seat,
+                mime_types,
+                crate::clipboard::Owner::Xwayland,
+            ),
         }
     }
 

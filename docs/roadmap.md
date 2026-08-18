@@ -8,14 +8,6 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-## Clipboard history
-
-The compositor brokers `wl_data_device`, primary selection and
-`wlr-data-control`, so it already sees every selection offered on the session.
-Keeping the last N text and image offers and drawing a picker in the shell
-gives a clipboard manager with no second process, the same argument that put
-notifications in here.
-
 ## Network and Bluetooth applets
 
 The bar reports link throughput but cannot join a network. NetworkManager and

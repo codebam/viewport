@@ -153,6 +153,27 @@ pub enum Request {
         y: i32,
     },
 
+    /// The clipboard history, please — what a picker asks when it opens.
+    #[serde(rename = "clipboard.query")]
+    ClipboardQuery,
+
+    /// Put an entry back on the clipboard.
+    ///
+    /// The compositor becomes the owner of the selection, which is the whole
+    /// point of keeping the history: the application that copied it may have
+    /// exited hours ago, and a Wayland selection lives only as long as the
+    /// client offering it.
+    #[serde(rename = "clipboard.paste")]
+    ClipboardPaste { id: u32 },
+
+    /// Forget one entry, or — with no id — all of them, which is what somebody
+    /// asks for after copying a password.
+    #[serde(rename = "clipboard.forget")]
+    ClipboardForget {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
+    },
+
     /// A button on the bar's media widget.
     ///
     /// Goes to whichever player the compositor last reported, which is the one

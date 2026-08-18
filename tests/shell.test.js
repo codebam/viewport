@@ -171,6 +171,8 @@ const notificationsEl = new El('div');
 /* And the tray menu, for the same reason: what a click on a row leaves behind
    is only visible if the element is the one the shell drew into. */
 const trayMenuEl = new El('div');
+/* And the clipboard picker. */
+const clipboardEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -199,6 +201,7 @@ global.document = {
     notifications: notificationsEl,
     screencast: screencastEl,
     'tray-menu': trayMenuEl,
+    clipboard: clipboardEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -368,6 +371,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   /* The tray menu's element, and the document's own listeners, so a test can
      see what was drawn and fire the click that missed it. */
   + ' get trayMenuEl() { return trayMenuEl; },'
+  + ' get clipboardEl() { return clipboardEl; },'
   /* What smart gaps decide, which is a question about the tree and the layout
      mode rather than about any pixel: whether this workspace holds a lone
      window that fills the tiling area. */
@@ -738,6 +742,80 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'tray.update', items: [] });
   check('and an application that exits does not leave its menu behind',
     menu().hidden === true);
+}
+
+/* The clipboard history picker. The compositor brokers every selection on the
+ * session and keeps the last few; this file draws them and sends back which
+ * one was chosen. Nothing here reads a selection or knows what a mime type is,
+ * which is the point — the history outlives the application that copied it,
+ * and that is only possible in the compositor. */
+{
+  const picker = () => globalThis.__shell.clipboardEl;
+  const rows = () => (picker().children[0]?.children ?? [])
+    .filter((el) => el._classes.has('clipboard-row'));
+  const click = (el, event = {}) => (el.listeners.click ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, ...event }));
+  const fire = (type) => (documentListeners[type] ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+
+  emit({ type: 'clipboard.history', entries: [
+    { id: 3, text: 'the newest thing' },
+    { id: 2, text: 'a\nmultiline\nentry' },
+    { id: 1, text: 'the oldest thing' },
+  ] });
+  /* Kept, but nothing drawn: the message arrives on every copy, and drawing
+     a picker nobody opened would be a composited frame of the whole desktop
+     per copy. */
+  check('the history is kept but not drawn until it is asked for',
+    picker().children.length === 0);
+
+  let before = sent.length;
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+  check('the binding opens the picker', picker().hidden === false);
+  check('and it asks the compositor what is in the clipboard now',
+    sent.slice(before).some((m) => m.type === 'clipboard.query'));
+  check('every entry is a row, newest first', rows().length === 3 &&
+    rows()[0].children[0].textContent === 'the newest thing');
+  /* What is pasted is what was copied; what is drawn is one line, or a row
+     could be as tall as the screen. */
+  check('a multi-line entry is drawn on one line',
+    rows()[1].children[0].textContent === 'a multiline entry');
+
+  before = sent.length;
+  click(rows()[2]);
+  check('choosing a row asks the compositor to put it back on the clipboard',
+    sent.slice(before).some((m) => m.type === 'clipboard.paste' && m.id === 1));
+  check('and the picker goes', picker().hidden === true);
+  check('so nothing of it is drawn over the windows any more',
+    !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
+      ?.rects ?? []).some((r) => r.name === 'clipboard'));
+
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+  before = sent.length;
+  click(rows()[0], { target: rows()[0].children[1] });
+  check('the cross on a row forgets that entry rather than pasting it',
+    sent.slice(before).some((m) => m.type === 'clipboard.forget' && m.id === 3) &&
+    !sent.slice(before).some((m) => m.type === 'clipboard.paste'));
+  check('and forgetting one leaves the picker open', picker().hidden === false);
+
+  before = sent.length;
+  const footer = picker().children[1];
+  click(footer.children[0]);
+  check('and forgetting everything names no entry at all',
+    sent.slice(before).some((m) => m.type === 'clipboard.forget' &&
+      m.id === undefined));
+
+  emit({ type: 'clipboard.history', entries: [] });
+  check('an emptied history redraws the open picker',
+    rows().length === 0);
+
+  before = sent.length;
+  fire('click');
+  check('a click that missed takes the picker down', picker().hidden === true);
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+  check('and the binding closes it again when it is already open',
+    picker().hidden === true);
 }
 
 /* Notifications are the compositor's on D-Bus and the shell's on screen, and

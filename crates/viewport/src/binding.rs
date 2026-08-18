@@ -374,6 +374,10 @@ pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
         "Mod4+Shift+e=exit".to_owned(),
         "Mod4+Shift+c=reload".to_owned(),
         "Mod4+Shift+d=appearance toggle".to_owned(),
+        // The clipboard history, drawn by the shell. Shift+v beside the paste
+        // everyone already knows, and a shell command rather than a compositor
+        // action because what a picker is belongs to the page.
+        "Mod4+Shift+v=shell clipboard".to_owned(),
         // Tab is filled in below: two layouts have windows the compositor
         // cannot cycle through, so the chord goes to the shell there.
         "Mod4+f=shell window.fullscreen".to_owned(),
@@ -1111,12 +1115,12 @@ mod tests {
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
-        // 34 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // 35 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", "wmenu-run", "tiling");
         assert_eq!(
             bindings.len(),
-            34 + 16 + 18 + 11 + 1,
+            35 + 16 + 18 + 11 + 1,
             "a default failed to parse"
         );
 

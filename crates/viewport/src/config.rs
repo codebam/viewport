@@ -296,6 +296,18 @@ pub struct File {
     /// would if this program had exited.
     pub tray: Option<bool>,
 
+    /// How many things the clipboard keeps.
+    ///
+    /// Absent is 25. Zero turns the history off: nothing is read, nothing is
+    /// kept, and the picker has nothing to show — which is what a session that
+    /// would rather run cliphist, or one that does not want a copy of every
+    /// password that passes through the clipboard, asks for.
+    ///
+    /// Only the clipboard and only text. Recording the primary selection would
+    /// mean an entry for every word dragged over with a mouse, and an image is
+    /// megabytes with nowhere to draw it.
+    pub clipboard_history: Option<usize>,
+
     /// Which icon theme a tray item's icon name is resolved against.
     ///
     /// Absent is `hicolor`, which is searched in any case — this is the theme

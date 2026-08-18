@@ -12,6 +12,26 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- A clipboard history, kept by the compositor and drawn by the shell. A
+  Wayland selection is not a buffer anywhere — it is an offer from the client
+  that owns it, and it dies with that client, which is why closing the
+  terminal you copied from empties the clipboard and why every desktop grows a
+  manager for this. The compositor is already the program every selection
+  passes through, so keeping the last few is reading what is being offered
+  rather than standing up a daemon to hold a `wlr-data-control` connection
+  open. `Mod4+Shift+v` opens a picker; choosing an entry puts it back on the
+  clipboard with the compositor as the owner, so it can be pasted long after
+  the application that copied it has exited. Text only and the clipboard only:
+  the primary selection would mean an entry for every word dragged over with a
+  mouse. `clipboard_history` says how many to keep and `0` turns it off
+  entirely, on reload as well as at startup.
+- Pasting into a Wayland window from an X11 one works. The compositor
+  advertised XWayland's selection to every Wayland client and then answered
+  nothing when one asked for it, because `SelectionHandler::send_selection`
+  was never implemented — copying in an X application and pasting in a Wayland
+  one did nothing at all, with nothing in the log. The server-side selection
+  now records who owns it, so a request is either forwarded to the XWM or
+  answered from the clipboard history.
 - A media widget for the bar: what is playing, and the buttons to drive it.
   Every player on a Linux desktop publishes MPRIS — a bus name beginning
   `org.mpris.MediaPlayer2.`, an object, and metadata behind it — which is why

@@ -145,6 +145,11 @@ let trayMenuOpen = null;
  * nothing is. Only sent while a media widget is on the bar — a desktop without
  * one does not follow the session's players at all. */
 let mprisPlayer = null;
+/* The clipboard history, as the compositor last sent it, and whether the
+ * picker is on screen. The entries are kept whether or not it is open, because
+ * they arrive on every copy and the picker opens without waiting for one. */
+let clipboardEntries = [];
+let clipboardOpen = false;
 let currentMode = 'default';
 /* The layout models the shell implements. Set by the compositor from the
  * config file, and switched at runtime with `shell layout.model`.
@@ -297,6 +302,7 @@ function dropOverlaysForOutput(name) {
 }
 const screencastEl = document.getElementById('screencast');
 const trayMenuEl = document.getElementById('tray-menu');
+const clipboardEl = document.getElementById('clipboard');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
 

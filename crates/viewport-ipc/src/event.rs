@@ -153,6 +153,16 @@ pub enum Event {
         items: Vec<TrayMenuItem>,
     },
 
+    /// The clipboard history, whole, whenever it changes — and in answer to
+    /// `clipboard.query`, which is what a picker asks when it opens.
+    ///
+    /// A snapshot for the same reason the tray is one: it is a short list the
+    /// shell redraws in a single pass, and reconciling three message kinds
+    /// would be work spent to save a few hundred bytes on a message sent when
+    /// somebody presses copy.
+    #[serde(rename = "clipboard.history")]
+    ClipboardHistory { entries: Vec<ClipboardEntry> },
+
     /// What is playing, for the bar's media widget.
     ///
     /// Sent when it changes rather than on the status tick: a track lasts
@@ -608,6 +618,19 @@ pub struct TrayItem {
     /// application to draw its own window.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_menu: bool,
+}
+
+/// One thing that was copied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardEntry {
+    /// What `clipboard.paste` names. Never reused within a session, so a
+    /// picker's answer cannot land on an entry that has moved since it was
+    /// drawn.
+    pub id: u32,
+    /// The text, as it was copied. Not truncated here: what a picker shows of
+    /// a long entry is a styling question, and a shell that was handed one
+    /// line could not offer to paste the rest.
+    pub text: String,
 }
 
 /// The media player the bar is showing.
@@ -1105,6 +1128,9 @@ mod tests {
                 actions: Vec::new(),
             })),
             json(&Event::NotificationClose { id: 1 }),
+            json(&Event::ClipboardHistory {
+                entries: Vec::new(),
+            }),
             json(&Event::MprisUpdate { player: None }),
             json(&Event::TrayUpdate { items: Vec::new() }),
             json(&Event::TrayMenu {
@@ -1145,6 +1171,7 @@ mod tests {
                 "session.restore",
                 "notification.add",
                 "notification.close",
+                "clipboard.history",
                 "mpris.update",
                 "tray.update",
                 "tray.menu",

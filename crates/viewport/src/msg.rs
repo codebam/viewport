@@ -204,6 +204,21 @@ const TYPES: &[Type] = &[
         hint: "--id KEY [--button primary|secondary|menu] [--x N --y N]",
     },
     Type {
+        name: "clipboard.query",
+        fields: &[],
+        hint: "(the history, as the shell's picker asks for it)",
+    },
+    Type {
+        name: "clipboard.paste",
+        fields: &["id"],
+        hint: "--id N",
+    },
+    Type {
+        name: "clipboard.forget",
+        fields: &["id"],
+        hint: "[--id N] (no id forgets everything)",
+    },
+    Type {
         name: "mpris.control",
         fields: &["action"],
         hint: "--action play-pause|next|previous|stop",
@@ -1279,10 +1294,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 42 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 45 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 42);
+        assert_eq!(TYPES.len(), 45);
     }
 
     #[test]

@@ -11,6 +11,7 @@ mod apply;
 mod background;
 mod binding;
 mod capture;
+mod clipboard;
 // Not gated on the web engine: an output composite is worth capturing
 // whatever is drawing into it.
 mod color_management;
@@ -679,6 +680,26 @@ fn run() -> Result<()> {
             })
             .map_err(|e| anyhow::anyhow!("inserting the media source: {e}"))?;
         state.mpris.attach(sender);
+    }
+
+    // The clipboard history. The reading happens on a thread — the other end
+    // of a selection is a pipe to another process — and what comes back lands
+    // here.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(crate::clipboard::Message::Copied(text)) = event else {
+                    return;
+                };
+                if state.clipboard.record(text) {
+                    state.notify_clipboard();
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the clipboard source: {e}"))?;
+        state.clipboard.attach(sender);
     }
 
     // The portals this compositor answers itself: dark mode, and screen

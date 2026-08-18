@@ -1,0 +1,121 @@
+/* SPDX-License-Identifier: MIT
+ *
+ * The clipboard history picker.
+ *
+ * A Wayland selection is an offer from the client that owns it: close the
+ * terminal you copied from and the clipboard is empty. The compositor brokers
+ * every selection on the session, so it keeps the last few and hands them over
+ * here — this file is the list, and nothing more. Nothing in the shell reads a
+ * selection or knows what a mime type is.
+ *
+ * One of the ordered scripts that make up the shell; see index.html for the
+ * load order and shell.md for what the whole is meant to do.
+ */
+
+/* Open it, or take it down. Bound to Mod4+Shift+v by default, which arrives
+ * here as a shell command — the compositor routes the keys, so this is never a
+ * key handler. */
+function toggleClipboard() {
+  if (clipboardOpen) {
+    closeClipboard();
+    return;
+  }
+  clipboardOpen = true;
+  /* Asked for on open rather than kept up to date: the compositor sends the
+     history whenever it changes anyway, and a picker that is not on screen has
+     no use for it. */
+  send({ type: 'clipboard.query' });
+  renderClipboard();
+}
+
+function closeClipboard() {
+  if (!clipboardOpen) return;
+  clipboardOpen = false;
+  clipboardEl.replaceChildren();
+  clipboardEl.hidden = true;
+  setOverlay('clipboard', null);
+}
+
+/* What the compositor last sent. Drawn only if the picker is open — the
+ * message arrives on every copy, and redrawing a hidden element would be a
+ * composited frame of the whole desktop per copy. */
+function applyClipboard(entries) {
+  clipboardEntries = Array.isArray(entries) ? entries : [];
+  if (clipboardOpen) renderClipboard();
+}
+
+/* One row per entry, newest first, which is the order the compositor keeps
+ * them in. Rebuilt rather than synced: this is drawn when it opens and when
+ * the history changes under it, not on a timer, and a dozen rows is nothing to
+ * build. */
+function renderClipboard() {
+  clipboardEl.replaceChildren();
+  clipboardEl.hidden = false;
+
+  const list = document.createElement('div');
+  list.className = 'clipboard-list';
+
+  if (clipboardEntries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'clipboard-empty';
+    /* Two reasons for an empty list and the shell cannot tell them apart, so
+       it says the one that is true either way. */
+    empty.textContent = 'Nothing copied yet.';
+    list.append(empty);
+  }
+
+  for (const entry of clipboardEntries) {
+    const row = document.createElement('button');
+    row.className = 'clipboard-row';
+
+    const text = document.createElement('span');
+    text.className = 'clipboard-text';
+    /* Whitespace collapsed for the row only: what is pasted is what was
+       copied, and a multi-line entry drawn as it stands would make one row as
+       tall as the screen. */
+    text.textContent = String(entry.text ?? '').replace(/\s+/g, ' ').trim();
+    row.append(text);
+
+    const forget = document.createElement('span');
+    forget.className = 'clipboard-forget';
+    forget.textContent = '✕';
+    row.append(forget);
+
+    row.addEventListener('click', (e) => {
+      e.stopPropagation?.();
+      /* The ✕ forgets the entry; anywhere else on the row pastes it. One
+         listener, because the target says which was hit — and a second
+         element with its own listener would be a second thing to keep in step
+         with the row it belongs to. */
+      if (e.target === forget) {
+        send({ type: 'clipboard.forget', id: entry.id });
+        return;
+      }
+      send({ type: 'clipboard.paste', id: entry.id });
+      closeClipboard();
+    });
+    list.append(row);
+  }
+  clipboardEl.append(list);
+
+  const footer = document.createElement('div');
+  footer.className = 'clipboard-footer';
+  const clear = document.createElement('button');
+  clear.className = 'clipboard-clear';
+  clear.textContent = 'Forget everything';
+  clear.addEventListener('click', (e) => {
+    e.stopPropagation?.();
+    /* What somebody asks for after copying a password. The selection itself is
+       left where it is: taking the clipboard away from the application that
+       owns it is not the shell's to do. */
+    send({ type: 'clipboard.forget' });
+  });
+  footer.append(clear);
+  clipboardEl.append(footer);
+
+  /* The shell is one buffer under every window, so a picker it draws is behind
+     them until the compositor is told where it is. Named rather than
+     passed through as the whole screen: what is being chosen from is text, and
+     covering the windows to offer it would be a strange way to ask. */
+  setOverlay('clipboard', clipboardEl);
+}

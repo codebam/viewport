@@ -449,6 +449,72 @@ html.behind body { background: transparent; }
 /* A title as long as the track it names would push the clock off the bar. */
 .mpris-label { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* The clipboard history picker.
+ *
+ * Centred like the screen-share chooser and drawn over the windows the same
+ * way, by naming its rectangle to the compositor. It is a list of text and
+ * nothing else: no previews, no images, because what the compositor keeps is
+ * text. */
+#clipboard {
+  position: fixed;
+  /* Above the notifications, below the share chooser: it was asked for, and a
+     question that has to be answered outranks it. */
+  z-index: 160;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  width: 32rem;
+  max-width: 80vw;
+  max-height: 70vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  font-size: .85rem;
+  overflow: hidden;
+}
+#clipboard[hidden] { display: none; }
+.clipboard-list { overflow-y: auto; padding: .35rem; }
+.clipboard-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  width: 100%;
+  padding: .45rem .6rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.clipboard-row:hover { background: var(--fill-hover); }
+/* One line each: an entry can be a page of text, and a row as tall as the
+   screen is a picker with one thing in it. */
+.clipboard-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clipboard-forget { color: var(--muted); }
+.clipboard-forget:hover { color: var(--urgent); }
+.clipboard-empty { padding: 1rem; color: var(--muted); text-align: center; }
+.clipboard-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: .35rem .6rem;
+  border-top: 1px solid var(--border);
+}
+.clipboard-clear {
+  padding: .2rem .5rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.clipboard-clear:hover { color: var(--urgent); }
+
 /* An open tray item menu.
  *
  * Positioned in layout coordinates by bar.js, because that is what the

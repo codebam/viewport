@@ -121,6 +121,10 @@ function handleShellCommand(command, args) {
       }
       break;
     }
+    case 'clipboard':
+      toggleClipboard();
+      break;
+
     case 'bar.toggle':
       toggleBar();
       break;
@@ -522,6 +526,12 @@ window.addEventListener('viewport', (event) => {
       hideScreencastPicker(message.id);
       break;
 
+    case 'clipboard.history':
+      /* Sent on every copy and in answer to clipboard.query. Drawn only while
+         the picker is open; see applyClipboard. */
+      applyClipboard(message.entries ?? []);
+      break;
+
     case 'mpris.update':
       /* Sent when it changes rather than on the status tick, so this redraws
          the widgets and nothing else: a track starting cannot move a window. */
@@ -602,7 +612,12 @@ document.addEventListener('contextmenu', (event) => {
  * client — so the menu is also closed when the focus moves, which is what a
  * click on a window causes. Between the two there is no way to leave one
  * stranded. */
-document.addEventListener('click', () => closeTrayMenu());
+document.addEventListener('click', () => {
+  closeTrayMenu();
+  /* And the clipboard picker, which is a menu in every way that matters: rows
+     stop the event themselves, so this only sees the clicks that missed. */
+  closeClipboard();
+});
 
 send({ type: 'output.query' });
 /* Before view.query: the layout has to be in place as slots before the windows
