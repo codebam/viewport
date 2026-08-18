@@ -42,9 +42,13 @@ function gapPx() {
    the inner gap. Sway's `gaps.outer`. Default 0, so without it the desktop's
    edge is just the inner gap, exactly as it has always been. */
 function gapOuterPx() {
-  const raw = typeof getComputedStyle === 'function'
+  /* The computed value first, because a theme may set this in a stylesheet
+     rather than through `gaps` — and the inline property after it, which is
+     where applyGaps() writes and the only one a shell running without a
+     browser (tests/shell.test.js) has. */
+  const raw = (typeof getComputedStyle === 'function'
     ? getComputedStyle(document.documentElement).getPropertyValue('--gap-outer')
-    : '';
+    : '') || document.documentElement.style.getPropertyValue('--gap-outer');
   const value = parseInt(raw, 10);
   return Number.isFinite(value) ? value : 0;
 }
@@ -59,9 +63,20 @@ let gapsSmart = false;
    decision unless someone says otherwise. */
 let borderSmart = null;
 
-/* Whether a lone window is drawn square. See `borderSmart`. */
+/* Whether a lone window is drawn square. See `borderSmart`.
+ *
+ * Following the gaps means following the *reason* for them, not the setting:
+ * smart gaps square a lone window because they push it against the edge of the
+ * screen, where a rounded corner is a notch of wallpaper in the corner of the
+ * monitor. An outer gap keeps it off that edge — the window is inset from the
+ * screen on every side and its corners are over the desktop, where a curve is
+ * simply a curve — so there is nothing there to square it for.
+ *
+ * Set on its own, `border.smart` is taken at its word either way: someone who
+ * asked for square corners is not asking about gaps. */
 function smartRadius() {
-  return borderSmart === null ? gapsSmart : borderSmart;
+  if (borderSmart !== null) return borderSmart;
+  return gapsSmart && gapOuterPx() === 0;
 }
 
 /* True when the workspace shows a single window that fills the tiling area —

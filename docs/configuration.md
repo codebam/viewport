@@ -658,6 +658,18 @@ it explicitly to have one without the other. As with the gaps, the scrolling
 layout counts only a lone full-width column — a half-width one does not reach
 its own screen edge to begin with.
 
+Following the gaps means following the *reason* for them, so an outer gap
+takes it back: a lone window with `gaps.outer` set is inset from the screen on
+every side, its corners are over the desktop rather than in the corner of the
+monitor, and there is nothing there to square them for. Set `border.smart`
+explicitly and it is taken at its word either way.
+
+**This is what to change if a radius seems to do nothing.** With `gaps.smart`
+on, no outer gap and one window on the workspace, that window is drawn square
+whatever `border.radius` says — and it rounds again the moment a second window
+opens, which is the shape of the report. `"border": { "smart": false }` keeps
+the corners in every case.
+
 Which window is the lone one is a question about the layout, so the shell
 answers it and sends `square` on that window's `view.layout`; the compositor
 takes the corner off the crop when it is told to, and works nothing out for

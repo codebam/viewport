@@ -2837,6 +2837,24 @@ if (mode === 'scrolling') {
       sent.some((m) => m.type === 'view.layout' && m.id === 320
         && m.square === true));
 
+    /* An outer gap keeps the lone window off the screen edge, and the reason
+       to square it goes with it: its corners are over the desktop, where a
+       curve is a curve. The gaps stay smart — the inner gap is still dropped
+       — and only the corners come back. */
+    emit({ type: 'config', layout: mode,
+      gaps: { inner: 8, outer: 10, smart: true } });
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+    check('an outer gap keeps a lone window off the edge, so it keeps its corners',
+      smart.radius() === false
+      && !out.windowsEl.classList.contains('smart-square')
+      && out.windowsEl.classList.contains('smart-single'));
+    emit({ type: 'config', layout: mode,
+      gaps: { inner: 8, outer: 0, smart: true } });
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+    check('and taking it away squares them again',
+      smart.radius() === true
+      && out.windowsEl.classList.contains('smart-square'));
+
     /* Set apart: gaps still smart, corners explicitly not. */
     emit({ type: 'config', layout: mode, border: { smart: false } });
     emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });

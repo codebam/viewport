@@ -90,6 +90,12 @@ to summarise rather than to duplicate.
   in this program rather than in a daemon beside it.
 
 ### Fixed
+- A lone window with an outer gap keeps its rounded corners. Smart radius
+  follows smart gaps because smart gaps push a lone window against the edge of
+  the screen, where a rounded corner is a notch of wallpaper in the corner of
+  the monitor — but `gaps.outer` holds that window off the edge on every side,
+  so its corners are over the desktop and there is nothing to square them for.
+  An explicit `border.smart` is still taken at its word.
 - The corners a floating window's border curves into no longer punch four
   wedges of wallpaper through the window underneath. The corners were copied
   back from the shell as whole squares — the curve *and* the piece of the hole
