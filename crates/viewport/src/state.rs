@@ -124,6 +124,12 @@ pub struct ViewportState {
     pub startup: Option<String>,
     /// The D-Bus notification service, forwarding to the shell.
     pub notifications: crate::notification::Notifications,
+    /// The system tray, forwarded to the shell the same way.
+    pub tray: crate::tray::Tray,
+    /// Whether the configuration wants a tray at all. Kept because the
+    /// configuration is read before the event loop has anywhere to send one,
+    /// and `Tray::attach` acts on it once it does.
+    pub tray_enabled: bool,
     /// The settings portal, which is how a client learns the session is dark.
     pub appearance: crate::appearance::Appearance,
     /// System statistics for the bar, sampled here because the page cannot.
@@ -1049,6 +1055,11 @@ impl ViewportState {
             output_memory: std::collections::HashMap::new(),
             startup: None,
             notifications: crate::notification::Notifications::default(),
+            tray: crate::tray::Tray::default(),
+            // On unless a file says otherwise: a desktop with no tray is a
+            // desktop where several ordinary applications have nowhere to put
+            // themselves, and nothing about that is discoverable.
+            tray_enabled: true,
             appearance: crate::appearance::Appearance::default(),
             status: crate::status::Status::default(),
             idle: crate::idle::Idle::default(),
@@ -5699,6 +5710,18 @@ impl ViewportState {
                 file.notifications.sound_file.as_deref(),
                 file.notifications.sound_name.as_deref(),
             ));
+
+        // The tray, on unless the file turns it off. Applied on every load, so
+        // a reload that flips it claims or releases the bus names then and
+        // there rather than at the next restart — the same property the
+        // stylesheet and the keybindings have.
+        self.tray_enabled = file.tray.unwrap_or(true);
+        self.tray.set_enabled(self.tray_enabled);
+        self.tray.set_icon_theme(
+            file.icon_theme
+                .clone()
+                .unwrap_or_else(|| "hicolor".to_owned()),
+        );
 
         if file.idle != crate::config::IdleConfig::default() {
             self.idle_settings = crate::idle::Settings {

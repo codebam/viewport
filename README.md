@@ -241,6 +241,7 @@ The reference material lives in `docs/`:
 | [`docs/debugging.md`](docs/debugging.md) | screenshotting the session from inside it, pointer capture, XWayland, and what happens when the shell stops answering |
 | [`docs/shell-backends.md`](docs/shell-backends.md) | the six engines the shell can be drawn by — WPE, WebKitGTK, Chromium driven, Chromium embedded, Servo driven, Servo embedded — what changes between them and what does not, and how to run the shell process by hand against a live session |
 | [`docs/benchmarks.md`](docs/benchmarks.md) | Viewport measured against sway and niri on real scanout — frame rate, CPU per frame, memory, and the second monitor while the first is saturated |
+| [`docs/roadmap.md`](docs/roadmap.md) | what is missing — the tray, media controls, clipboard history, the applets, the remaining portals — and why each belongs in here rather than in a daemon beside it |
 
 Two shells ship with it, at opposite ends of the same protocol:
 

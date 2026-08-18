@@ -192,6 +192,19 @@
   ],
   "notifications": {},
 
+  "_tray": [
+    "The system tray. On unless this is false, in which case the compositor",
+    "claims neither org.kde.StatusNotifierWatcher nor a host name and the bar",
+    "draws nothing — for a session running waybar's tray, or none at all.",
+    "Applied on reload as well as at startup.",
+    "",
+    "icon_theme is the theme an item's icon name is resolved against;",
+    "hicolor is searched in any case. An item that ships its own icons and",
+    "points at them with IconThemePath is searched there first."
+  ],
+  "tray": true,
+  "icon_theme": "hicolor",
+
   "_bar_widgets": [
     "Extra widgets to add to the bar, beyond the modules it ships with.",
     "Leave the key out (or empty) and the bar is exactly as it shipped —",

@@ -128,7 +128,8 @@ function buildDesktop() {
   const bar = new El('div');
   bar.className = 'bar';
   for (const [half, contents] of [['bar-left', ['workspaces', 'taskbar']],
-    ['bar-right', ['mode', 'clock', 'cpu', 'memory', 'load', 'disk', 'net']]]) {
+    ['bar-right', ['mode', 'tray', 'clock', 'cpu', 'memory', 'load', 'disk',
+      'net']]]) {
     const el = new El('div');
     el.className = half;
     for (const c of contents) {
@@ -584,6 +585,67 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
 
   for (const id of [60, 61, 62]) emit({ type: 'view.removed', id });
   emit({ type: 'view.focused', id: 4 });
+}
+
+/* The system tray. The compositor holds the StatusNotifierWatcher name and
+ * does every D-Bus call an item answers; the shell is handed a picture, a
+ * label and a key, and sends the key back with where the icon is. What is
+ * worth checking here is that the snapshot replaces rather than accumulates,
+ * and that a click names the item and a position — an application draws its
+ * own menu at the coordinates it is given, so a wrong number there is a menu
+ * in the corner of the screen. */
+{
+  const tray = () => globalThis.__shell.outputs.get('DP-1').modules.tray;
+  const click = (el, type, event = {}) =>
+    (el.listeners[type] ?? []).forEach((fn) => fn({ preventDefault() {}, ...event }));
+
+  emit({ type: 'tray.update', items: [
+    { id: ':1.5/StatusNotifierItem', title: 'Nextcloud', status: 'active',
+      icon: 'data:image/png;base64,AA==', tooltip: 'Up to date', is_menu: false },
+    { id: ':1.9/StatusNotifierItem', title: 'Steam', status: 'passive',
+      icon: '', tooltip: '', is_menu: true },
+  ] });
+  check('every registered item is drawn', tray().children.length === 2);
+  check('an item with no icon shows its own initial instead',
+    tray().children[1].dataset.fallback === 'S');
+  check('and one that asked not to be seen is marked rather than dropped',
+    tray().children[1]._classes.has('passive'));
+  check('the tooltip is what the item published',
+    tray().children[0].title === 'Up to date');
+
+  let before = sent.length;
+  click(tray().children[0], 'click');
+  const activate = sent.slice(before).find((m) => m.type === 'tray.activate');
+  check('a click names the item it landed on',
+    activate?.id === ':1.5/StatusNotifierItem' && activate.button === 'primary');
+  check('and where the icon is, so the application can place its own window',
+    Number.isFinite(activate?.x) && Number.isFinite(activate?.y));
+
+  before = sent.length;
+  click(tray().children[0], 'contextmenu');
+  check('a right click asks for the menu',
+    sent.slice(before).find((m) => m.type === 'tray.activate')?.button === 'menu');
+
+  before = sent.length;
+  click(tray().children[0], 'wheel', { deltaY: -1, deltaX: 0 });
+  const scroll = sent.slice(before).find((m) => m.type === 'tray.scroll');
+  check('the wheel turns into a step, not a pixel count',
+    scroll?.delta === 1 && scroll.orientation === 'vertical');
+
+  /* The message is a snapshot: an application exiting arrives as a shorter
+     list, not as a removal, and a shell that appended would keep the icon of
+     every program that has ever run. */
+  emit({ type: 'tray.update', items: [
+    { id: ':1.9/StatusNotifierItem', title: 'Steam', status: 'active',
+      icon: '', tooltip: '', is_menu: true },
+  ] });
+  check('a shorter snapshot takes the missing item off the bar',
+    tray().children.length === 1 &&
+    tray().children[0].dataset.fallback === 'S');
+
+  emit({ type: 'tray.update', items: [] });
+  check('and an empty one — the tray switched off — empties the bar',
+    tray().children.length === 0);
 }
 
 /* Notifications are the compositor's on D-Bus and the shell's on screen, and

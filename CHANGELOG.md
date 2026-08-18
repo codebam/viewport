@@ -11,6 +11,32 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- A system tray. The compositor claims `org.kde.StatusNotifierWatcher` and a
+  host name beside it, follows every application that registers an item, and
+  forwards the tray to the shell, which draws the icons on the bar — the same
+  arrangement notifications have had, and for the same reason: the shell is
+  the desktop, and a tray drawn by a separate bar would be a second program
+  with a second configuration language floating over a compositor that already
+  knows where everything is. There is no Wayland protocol for this and there is
+  not going to be one, so Discord, Steam, Nextcloud and everything else that
+  lives in a tray had nowhere to live on this desktop at all. Both
+  registration forms are accepted, because both are in use — Qt sends a bus
+  name and Ayatana's library sends an object path, and handling one of them is
+  a tray that works for half the desktop. Icons reach the shell as `data:`
+  URLs: an icon name means nothing to a browser and a `file://` path is refused
+  in a shell loaded over `http://`, so a name is resolved against the icon
+  themes and a pixmap is encoded as a PNG here — uncompressed, because a
+  deflate implementation is a lot of machinery to save two kilobytes on a
+  message sent when an application starts. Left click activates, right asks
+  for the menu, middle is the secondary action and the wheel scrolls. Items
+  that publish a `com.canonical.dbusmenu` object rather than answering
+  `ContextMenu` have a menu that is not drawn yet. `"tray": false` turns the
+  whole thing off, on reload as well as at startup, and `icon_theme` says which
+  theme names are resolved against.
+- `docs/roadmap.md`, which is what is missing and why each part of it belongs
+  in this program rather than in a daemon beside it.
+
 ## [0.1.8] - 2026-08-17
 
 ### Added

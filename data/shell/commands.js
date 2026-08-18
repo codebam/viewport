@@ -518,6 +518,13 @@ window.addEventListener('viewport', (event) => {
       hideScreencastPicker(message.id);
       break;
 
+    case 'tray.update':
+      /* The whole tray, every time any part of it changes; see the event's own
+         note. Nothing else in a tray message can move a window, so this does
+         not relayout. */
+      applyTray(message.items ?? []);
+      break;
+
     case 'notification.add':
       showNotification(message);
       break;

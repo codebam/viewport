@@ -73,6 +73,7 @@ of what was asked.
 | `status.update` | `cpu`, `memory`, `load`, `net_rx`, `net_tx`, `disk_free`, `disk_total` |
 | `notification.add` | `id`, `app_name`, `icon`, `summary`, `body`, `urgency`, `timeout`, `actions[]` with `key` and `label` |
 | `notification.close` | `id` — the application withdrew it |
+| `tray.update` | `items[]` with `id`, `title`, `status` (`active`, `passive`, `needs-attention`), `icon` (a `data:` URL, or absent), `tooltip`, `is_menu` — the system tray, whole, whenever any part of it changes |
 | `screencast.pick` | `id`, `sources[]` with `kind` (`"output"`, `"window"`, `"all-outputs"`, `"follow-window"` or `"follow-output"`), `label`, `detail`, and `selected` — an application has asked to share the screen, and this is the list to draw with the highlight where the compositor is holding it. Re-sent whole every time the highlight moves |
 | `screencast.pick.done` | `id` — the choice was made or abandoned; take the chooser down |
 | `error` | `context`, `message` |
@@ -125,6 +126,8 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `notification.action` | `id`, `action` (the key the application supplied, not the label) |
 | `notification.dismiss` | `id` |
 | `notification.expire` | `id` |
+| `tray.activate` | `id` (from `tray.update`), `button` (`primary`, `secondary` or `menu`), `x`, `y` — where the icon is, which is where the application will put its own menu |
+| `tray.scroll` | `id`, `delta` (wheel steps, positive is up), `orientation` (`vertical` or `horizontal`) |
 | `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |
 | `workspace.list` | `workspaces[]` with `id`, `name`, optional `output`, `active`, `urgent`, `hidden` — the whole list, whenever it changes. See [Workspaces](#workspaces) |
 | `output.confirm` | — cancels the pending revert; see below |

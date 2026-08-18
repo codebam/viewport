@@ -394,6 +394,27 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 .closed(id, crate::notification::CloseReason::Expired);
         }
 
+        // The shell draws the tray, so the shell is what knows which icon was
+        // hit and where it sits. Both go straight out to the application that
+        // owns the item, on the tray's own thread — an application that has
+        // stopped answering the bus must not stall the compositor.
+        Request::TrayActivate { id, button, x, y } => match button.as_str() {
+            "" | "primary" | "secondary" | "menu" => state.tray.activate(id, button, x, y),
+            other => reject(state, "tray.activate", &format!("no such button {other:?}")),
+        },
+        Request::TrayScroll {
+            id,
+            delta,
+            orientation,
+        } => match orientation.as_str() {
+            "" | "vertical" | "horizontal" => state.tray.scroll(id, delta, orientation),
+            other => reject(
+                state,
+                "tray.scroll",
+                &format!("no such orientation {other:?}"),
+            ),
+        },
+
         Request::BindAdd { chord, action } => {
             // Runtime binds from the shell are additive and expendable; the
             // ones that must survive a broken shell are the defaults.

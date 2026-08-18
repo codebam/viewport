@@ -132,6 +132,11 @@ let pendingSplit = 'horizontal';
  * second monitor silently un-fullscreened the first. */
 const fullscreens = new Map(); // workspace -> view id
 let lastStatus = {};
+/* The system tray, as the compositor last sent it: one entry per registered
+ * StatusNotifierItem. A snapshot rather than a list this shell maintains —
+ * every tray.update replaces it whole, which is why nothing here reconciles
+ * adds against removes. */
+let trayItems = [];
 let currentMode = 'default';
 /* The layout models the shell implements. Set by the compositor from the
  * config file, and switched at runtime with `shell layout.model`.

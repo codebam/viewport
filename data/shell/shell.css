@@ -389,6 +389,48 @@ html.behind body { background: transparent; }
 /* A module with nothing to say takes no space, rather than showing a gap. */
 .module:empty { display: none; }
 
+/* The system tray.
+ *
+ * A row of buttons rather than a string, so it is styled here rather than
+ * measured: nothing in the bar is reported to the compositor, and a tray icon
+ * is an ordinary element in the page the desktop is made of. An empty tray
+ * collapses through the rule above, since a tray with no items has no
+ * children. */
+.module.tray { display: inline-flex; align-items: center; gap: .25rem; padding: 0 .35rem; }
+.tray-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: .7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.tray-item img { width: 100%; height: 100%; object-fit: contain; }
+/* An item that published no icon this shell can draw shows its own initial,
+   which the sync pass writes onto the element — empty, and so drawing nothing,
+   for every item that did publish one. */
+.tray-item::before { content: attr(data-fallback); }
+.tray-item:hover { background: var(--fill-hover); color: var(--text); }
+/* Passive means the application would rather not be seen. It is dimmed rather
+   than hidden: several programs set it and never clear it, and an icon nobody
+   can find is worse than one that is quiet. */
+.tray-item.passive { opacity: .5; }
+/* And the opposite — an item asking to be noticed, which has already swapped
+   in its attention icon by the time it reaches here. */
+.tray-item.needs-attention { color: var(--urgent); animation: tray-attention 1.6s ease-in-out 3; }
+@keyframes tray-attention {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+
 /* ---------------------------------------------------------------------
  * Tiling
  *

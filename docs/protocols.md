@@ -154,6 +154,68 @@ dismissed or withdrawn — because a daemon that never reports closure leaves
 programs believing their notification is still on screen, and some wait for it
 before sending the next.
 
+## The system tray
+
+There is no Wayland protocol for a tray and there is not going to be one.
+An application that wants an icon registers itself with whichever program
+holds `org.kde.StatusNotifierWatcher` and waits to be asked what it looks
+like — the interface KDE wrote, GNOME adopted through an extension, and every
+toolkit implements.
+
+So the compositor claims the name, for the same reason it claims
+`org.freedesktop.Notifications`: the shell is the desktop, and a tray drawn by
+a separate bar would be a second program with a second configuration language
+floating over a compositor that already knows where everything is.
+
+Three names are involved and they are not the same thing. The *watcher* is the
+registry, one per session, and it is the name applications look for. A *host*
+is something that draws a tray, and it registers itself with the watcher so
+that items know somebody is listening — several applications check that before
+they will use a tray at all, and fall back to a window of their own when the
+answer is no. This is both, so it claims `org.kde.StatusNotifierHost-<pid>` as
+well.
+
+Both names are claimed the way every other name here is: queued for, never
+taken. A KDE session or a GNOME extension already drawing a tray knows more
+about that desktop than this does, and when it exits the name comes here rather
+than the session losing its tray. `"tray": false` in the configuration turns
+the whole thing off — the names are released, applications see the tray
+disappear exactly as they would if this program had exited, and the bar empties.
+The setting applies on reload, not only at startup.
+
+An item registers either a bus name or an object path, and both forms are in
+use — Qt sends the name, Ayatana's library sends the path — so an
+implementation that handles one of them has a tray that works for half the
+desktop. Removal is mostly not announced at all: what arrives is the bus name
+losing its owner, which is the only notice a crashing application gives.
+
+**What reaches the shell is a picture, not a name.** An icon arrives as a theme
+name, as raw ARGB pixmaps, or as both, and none of the three is something a
+browser can draw — an icon name means nothing to it, and a `file://` path is
+refused outright in a shell loaded over `http://`, which is how the shell is
+developed. So the compositor resolves the name against the icon themes, or
+encodes the pixmap, and sends a `data:` URL. `icon_theme` in the configuration
+says which theme is searched before `hicolor`; `hicolor` is always searched,
+because that is where a package installs an icon belonging to no theme.
+
+The PNG written for a pixmap is not compressed. A tray icon is a couple of
+kilobytes, it is encoded once and cached, and a deflate implementation is a
+great deal of machinery — or a dependency carrying one — to save a couple of
+kilobytes on a message sent when an application starts.
+
+Every call an item answers happens on the tray's own thread. Fetching thirteen
+properties from a program that has stopped answering the bus must not take the
+desktop's frame loop with it, and the reply to an activation is not waited for
+at all.
+
+**Menus are not drawn yet.** An item that says `ItemIsMenu`, and a right click
+on any item, is sent `ContextMenu`, which is what a tray item is told when the
+user wants its menu — applications that implement it draw their own window and
+those work. The ones that publish a `com.canonical.dbusmenu` object instead
+have a menu this shell cannot yet render, and for those the primary click,
+which most of them also handle, is what there is. See
+[`docs/roadmap.md`](roadmap.md).
+
 ## Tablets
 
 A stylus reports pressure, tilt, distance, its own buttons and whether it is
