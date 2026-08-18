@@ -11,6 +11,18 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Fixed
+- A floating window's rounded corners are drawn over the windows underneath
+  it. Everything the shell paints is one buffer under every client, so a
+  lifted window's border is copied back on top as four sides — and four sides
+  stop at the client's rectangle, while the border's curve crosses into it.
+  The piece between the client's own rounded corner and the corner of its hole
+  therefore stayed where the shell drew it, under whatever the window was
+  floating above: a dialog over a browser had a browser-coloured notch at each
+  corner instead of a border. The corners are now copied back as well, behind
+  the client rather than in front of it, so the client covers the part of each
+  square it fills and the curve is what shows.
+
 ## [0.1.8] - 2026-08-17
 
 ### Added

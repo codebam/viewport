@@ -5004,6 +5004,31 @@ impl ViewportState {
                     layout.size.to_f64().to_physical(scale).to_i32_round(),
                 );
                 let rounded = (radius > width).then(|| (box_, physical(radius - width)));
+
+                // The corners of that border, which the sides above do not
+                // reach: the curve crosses into the hole, and inside the hole
+                // the shell is behind whatever this window is floating over.
+                // Only for a rounded window — a square one's border is the
+                // four sides and nothing else.
+                let corners: Vec<_> = view
+                    .filter(|_| drawn_on_this_output && radius > width)
+                    .and_then(|view| {
+                        view.frame
+                            .map(|frame| (frame, view.box_, view.scale, &view.corner_ids))
+                    })
+                    .map(|(frame, hole, drawn_at, corner_ids)| {
+                        crate::render::border_corners(frame, hole, drawn_at, radius - width)
+                            .into_iter()
+                            .zip(corner_ids.iter().cloned())
+                            .filter_map(|(corner, id)| {
+                                // Held to this output, exactly as a side is.
+                                let local = crate::render::overlay_side(corner, output_geometry)?;
+                                Some((id, local.to_f64().to_physical(scale).to_i32_round()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 // The outside of the same corner, for the border sides drawn
                 // above the windows underneath a floating one.
                 let overlay_rounded = (radius > 0 && !overlay.is_empty())
@@ -5039,6 +5064,7 @@ impl ViewportState {
                     scale: view.map(|view| view.scale).unwrap_or(1.0),
                     opacity: view.map(|view| view.opacity).unwrap_or(1.0),
                     overlay,
+                    corners,
                 })
             })
             .collect();
