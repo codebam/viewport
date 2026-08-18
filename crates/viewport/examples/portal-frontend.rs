@@ -26,6 +26,16 @@ use zvariant::{ObjectPath, OwnedValue, Value};
 
 /// The connection the compositor serves both portal interfaces on.
 const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.viewport";
+
+/// The name the frontend answers on, which is also how the compositor knows a
+/// call is the frontend's.
+///
+/// Every method on the impl interface is checked against this name's owner:
+/// the interface is on the session bus, which every process in the session can
+/// reach, and a call from anywhere else is something asking to record the desk
+/// on its own say-so. A stand-in frontend therefore has to be the frontend,
+/// not merely act like one.
+const FRONTEND_NAME: &str = "org.freedesktop.portal.Desktop";
 const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 const INTERFACE: &str = "org.freedesktop.impl.portal.ScreenCast";
 
@@ -49,6 +59,9 @@ fn main() -> anyhow::Result<()> {
     let options = parse()?;
 
     let connection = zbus::blocking::Connection::session()?;
+    // Claimed before anything is called: the compositor refuses everything
+    // from a peer that does not own it.
+    connection.request_name(FRONTEND_NAME)?;
     let proxy = zbus::blocking::Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE)?;
 
     // The paths the frontend would invent per request. Anything unique will
@@ -58,15 +71,27 @@ fn main() -> anyhow::Result<()> {
     let session = ObjectPath::try_from("/org/freedesktop/portal/desktop/session/frontend/1")?;
     let app_id = "org.example.recorder";
 
-    let (response, _): (u32, HashMap<String, OwnedValue>) = proxy.call(
-        "CreateSession",
-        &(
-            &request,
-            &session,
-            app_id,
-            HashMap::<String, Value<'_>>::new(),
-        ),
-    )?;
+    // Retried, because owning the name and the compositor having noticed are
+    // two different moments: it follows NameOwnerChanged on its own connection,
+    // and a call that overtakes that signal is refused for a reason that has
+    // gone away by the time it is read.
+    let mut response = 0;
+    for _ in 0..100 {
+        let (answer, _): (u32, HashMap<String, OwnedValue>) = proxy.call(
+            "CreateSession",
+            &(
+                &request,
+                &session,
+                app_id,
+                HashMap::<String, Value<'_>>::new(),
+            ),
+        )?;
+        response = answer;
+        if response == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     if response != 0 {
         anyhow::bail!("CreateSession refused with {response}");
     }

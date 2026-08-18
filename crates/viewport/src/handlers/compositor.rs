@@ -367,7 +367,20 @@ impl ViewportState {
 }
 
 impl BufferHandler for ViewportState {
-    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
+    /// Remember to drop whatever a renderer made from this buffer.
+    ///
+    /// The Vulkan renderer holds one image per shm `wl_buffer` it has uploaded
+    /// so that a client painting every frame is not reallocated every frame,
+    /// and those entries are keyed by an object id that says nothing when the
+    /// object dies. Nothing else would ever clear them — see
+    /// `ViewportState::dead_buffers` for what that cost while a screen share
+    /// was keeping every client painting.
+    ///
+    /// Queued rather than done here: this arrives on the client's dispatch,
+    /// and the renderer to tell can be moved out of the state at that moment.
+    fn buffer_destroyed(&mut self, buffer: &wl_buffer::WlBuffer) {
+        self.dead_buffers.push(buffer.clone());
+    }
 }
 
 impl ShmHandler for ViewportState {

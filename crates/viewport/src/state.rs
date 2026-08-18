@@ -58,6 +58,56 @@ pub fn shipped_asset(relative: &str) -> String {
     format!("file://{}/data/{relative}", here.display())
 }
 
+/// An offscreen kept between captures, and what shape it is.
+///
+/// Boxed as `Any` in the state: what a renderer composites into is its own
+/// type, and the capture paths are generic over it.
+struct CaptureScratch<B> {
+    format: smithay::backend::allocator::Fourcc,
+    size: smithay::utils::Size<i32, smithay::utils::Buffer>,
+    buffer: B,
+}
+
+/// How many capture buffers are held between frames.
+///
+/// One per thing being captured at once — a monitor, the desk, a window or two
+/// — and past that the oldest goes, rather than a screen's worth of memory
+/// being held for a shape nothing asks for any more.
+const KEPT_CAPTURE_TARGETS: usize = 4;
+
+/// Take back a capture buffer of this exact shape, if one is held.
+fn take_scratch<B: 'static>(
+    held: &mut Vec<Box<dyn std::any::Any>>,
+    format: smithay::backend::allocator::Fourcc,
+    size: smithay::utils::Size<i32, smithay::utils::Buffer>,
+) -> Option<B> {
+    let at = held.iter().position(|entry| {
+        entry
+            .downcast_ref::<CaptureScratch<B>>()
+            .is_some_and(|scratch| scratch.format == format && scratch.size == size)
+    })?;
+    // Cannot fail: the position was found by downcasting to this very type.
+    let scratch = held.remove(at).downcast::<CaptureScratch<B>>().ok()?;
+    Some(scratch.buffer)
+}
+
+/// Hold a capture buffer for the next capture of the same shape.
+fn keep_scratch<B: 'static>(
+    held: &mut Vec<Box<dyn std::any::Any>>,
+    format: smithay::backend::allocator::Fourcc,
+    size: smithay::utils::Size<i32, smithay::utils::Buffer>,
+    buffer: B,
+) {
+    held.push(Box::new(CaptureScratch {
+        format,
+        size,
+        buffer,
+    }));
+    while held.len() > KEPT_CAPTURE_TARGETS {
+        held.remove(0);
+    }
+}
+
 /// A screenshot a client asked for and has not been given yet.
 #[derive(Clone)]
 pub struct PendingCopy {
@@ -602,6 +652,39 @@ pub struct ViewportState {
     /// Copies asked for and not yet made. Served the next time the output
     /// they name is drawn, because that is where its renderer is.
     pub pending_copies: Vec<PendingCopy>,
+    /// Buffers a client has destroyed whose images a renderer may still be
+    /// holding.
+    ///
+    /// The Vulkan renderer keeps one image per `wl_buffer` it has uploaded
+    /// from shared memory, so a client that paints every frame is not
+    /// reallocated and re-uploaded every frame. Those entries are keyed by the
+    /// buffer's object id and there is nothing in a dead id to notice, so the
+    /// compositor has to say — and until it did, every shm buffer any client
+    /// ever destroyed left its image behind for the life of the session. An
+    /// idle desktop hid it, because a client that is not painting is not
+    /// making buffers; a screen share does not let anything be idle, which is
+    /// how it showed up as VRAM climbing by a couple of hundred megabytes a
+    /// minute for as long as a share was open.
+    ///
+    /// Queued rather than forgotten where it happens: a buffer dies on the
+    /// client's dispatch, and the renderer it has to be forgotten from can be
+    /// moved out of the state at that moment. Drained once a turn of the event
+    /// loop, which is before any of it is moved anywhere.
+    pub dead_buffers: Vec<smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer>,
+    /// Offscreens kept between captures, by what they are.
+    ///
+    /// A capture composites into a buffer of its own and reads it back, and
+    /// allocating one is a whole screen off the GPU: fifteen megabytes at
+    /// 1440p, thirty times a second for as long as a shared-memory screen
+    /// share is open. Allocated and freed at that rate it is churn a driver
+    /// answers by holding on to memory, which reads as a share that costs a
+    /// couple of hundred megabytes of VRAM a minute and gives none of it back.
+    ///
+    /// `Any` because what a renderer draws into is its own type — a DMA-BUF
+    /// for Vulkan, a renderbuffer for GLES — and the capture paths are generic
+    /// over it. Let go of when nothing is being captured; see
+    /// `release_capture_scratch`.
+    capture_scratch: Vec<Box<dyn std::any::Any>>,
     /// ext-session-lock-v1: the screen locker.
     pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
     /// Whether the session is locked. Stays true if the locker dies, because
@@ -1176,6 +1259,8 @@ impl ViewportState {
             _alpha_modifier_state: alpha_modifier_state,
             output_management_state,
             pending_copies: Vec::new(),
+            dead_buffers: Vec::new(),
+            capture_scratch: Vec::new(),
             primary_selection_state,
             data_control_state,
             ext_data_control_state,
@@ -1667,6 +1752,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -1715,6 +1802,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -2025,6 +2114,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -2035,9 +2126,7 @@ impl ViewportState {
         let format = smithay::backend::allocator::Fourcc::Xrgb8888;
         let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
             (size.w, size.h).into();
-        let mut target = renderer
-            .create_buffer(format, buffer_size)
-            .map_err(|e| format!("allocating a desk capture target: {e}"))?;
+        let mut target: B = self.take_capture_target(renderer, format, buffer_size)?;
 
         let mapping = {
             let mut framebuffer = renderer
@@ -2069,6 +2158,7 @@ impl ViewportState {
             .map_texture(&mapping)
             .map_err(|e| format!("mapping a desk capture: {e}"))?
             .to_vec();
+        self.keep_capture_target(format, buffer_size, target);
         Ok((pixels, size))
     }
 
@@ -2086,6 +2176,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -2119,6 +2211,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -2176,6 +2270,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -2215,9 +2311,7 @@ impl ViewportState {
         // no transparency to carry, and a client that read the fourth byte as
         // alpha would show the whole image as see-through.
         let format = smithay::backend::allocator::Fourcc::Xrgb8888;
-        let mut target = renderer
-            .create_buffer(format, buffer_size)
-            .map_err(|e| format!("allocating a copy target: {e}"))?;
+        let mut target: B = self.take_capture_target(renderer, format, buffer_size)?;
 
         let mapping = {
             let mut framebuffer = renderer
@@ -2258,6 +2352,7 @@ impl ViewportState {
             .map_texture(&mapping)
             .map_err(|e| format!("mapping the copy: {e}"))?
             .to_vec();
+        self.keep_capture_target(format, buffer_size, target);
         Ok(pixels)
     }
 
@@ -2919,6 +3014,101 @@ impl ViewportState {
             .unwrap_or(true)
     }
 
+    /// Drop the images the renderers cached for buffers their clients have
+    /// destroyed.
+    ///
+    /// See `dead_buffers` for why this is a queue and why nothing else would
+    /// ever clear it. Only the Vulkan renderer keeps a cache keyed by the
+    /// buffer: the GLES one hangs its shm textures off the surface, which
+    /// Smithay drops when the surface goes.
+    pub fn forget_dead_buffers(&mut self) {
+        if self.dead_buffers.is_empty() {
+            return;
+        }
+        let Some(mut udev) = self.udev.take() else {
+            // Nested and headless draw with GLES, which caches nothing by
+            // buffer — so there is nothing to forget and no reason to keep the
+            // queue.
+            self.dead_buffers.clear();
+            return;
+        };
+        // A renderer that is out on loan cannot be told anything. The queue
+        // keeps until the next turn of the loop, by which time it is back.
+        if udev
+            .devices
+            .iter()
+            .any(|device| matches!(device.renderer, crate::udev::Gpu::Placeholder))
+        {
+            self.udev = Some(udev);
+            return;
+        }
+        for device in &mut udev.devices {
+            if let crate::udev::Gpu::Vulkan(renderer) = &mut device.renderer {
+                for buffer in &self.dead_buffers {
+                    renderer.forget_shm_buffer(buffer);
+                }
+            }
+        }
+        tracing::trace!("forgot {} destroyed buffer(s)", self.dead_buffers.len());
+        self.dead_buffers.clear();
+        self.udev = Some(udev);
+    }
+
+    /// A buffer to composite a capture into, reused if one of the same shape
+    /// is already in hand.
+    ///
+    /// Taken out rather than borrowed, so the caller can bind it — and handed
+    /// back with `keep_capture_target` once the pixels are out of it. A path
+    /// that fails in between simply drops it, which is what every capture used
+    /// to do with every buffer it made.
+    fn take_capture_target<R, B>(
+        &mut self,
+        renderer: &mut R,
+        format: smithay::backend::allocator::Fourcc,
+        size: smithay::utils::Size<i32, smithay::utils::Buffer>,
+    ) -> Result<B, String>
+    where
+        R: Offscreen<B>,
+        B: 'static,
+        B: 'static,
+    {
+        if let Some(buffer) = take_scratch(&mut self.capture_scratch, format, size) {
+            return Ok(buffer);
+        }
+        renderer
+            .create_buffer(format, size)
+            .map_err(|e| format!("allocating a capture target: {e}"))
+    }
+
+    /// Keep a capture's buffer for the next one of the same shape.
+    fn keep_capture_target<B>(
+        &mut self,
+        format: smithay::backend::allocator::Fourcc,
+        size: smithay::utils::Size<i32, smithay::utils::Buffer>,
+        buffer: B,
+    ) where
+        B: 'static,
+    {
+        keep_scratch(&mut self.capture_scratch, format, size, buffer);
+    }
+
+    /// Let the capture buffers go once nothing is being captured.
+    ///
+    /// Called once a turn of the event loop, which is where a share that has
+    /// just stopped is noticed. Holding them for a desktop nobody is recording
+    /// is several screens of VRAM for nothing.
+    pub fn release_capture_scratch(&mut self) {
+        if self.capture_scratch.is_empty() {
+            return;
+        }
+        if self.casts.is_empty()
+            && self.pending_copies.is_empty()
+            && self.pending_capture_frames.is_empty()
+        {
+            self.capture_scratch.clear();
+        }
+    }
+
     /// Start sharing an output, and say which PipeWire node to watch.
     ///
     /// The connection is made on the first request rather than at startup: a
@@ -2995,7 +3185,7 @@ impl ViewportState {
     /// dropped the share onto the shared-memory path, which is the readback
     /// per frame this was written to avoid. Nothing said so, because "could
     /// not allocate" and "this backend has no allocator" looked the same.
-    fn allocate_cast_targets<R>(
+    pub(crate) fn allocate_cast_targets<R>(
         renderer: &mut R,
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
     ) -> Vec<smithay::backend::allocator::dmabuf::Dmabuf>
@@ -3047,6 +3237,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -3312,16 +3504,22 @@ impl ViewportState {
     }
 
     /// Agree a new format for anything whose source has resized.
+    ///
     /// Called from the backend before it feeds them, because only the backend
-    /// knows whether it can allocate: `None` renegotiates without DMA-BUFs,
-    /// which is right for a nested session — its streams are shared memory
-    /// anyway, and shared memory is allocated when PipeWire asks rather than
-    /// up front.
-    pub fn resize_casts<R>(&mut self, renderer: Option<&mut R>)
+    /// can allocate: `allocate` is handed the new size and answers with the
+    /// buffers the stream will hand out, or with none — which is right for a
+    /// nested session, whose streams are shared memory anyway and whose memory
+    /// is allocated when PipeWire asks rather than up front.
+    ///
+    /// A closure rather than the renderer, because the renderer is generic in
+    /// the render pass and only one of the two can allocate at all. See
+    /// `Captures::cast_targets`.
+    pub fn resize_casts<F>(&mut self, mut allocate: F)
     where
-        R: Offscreen<smithay::backend::allocator::dmabuf::Dmabuf>,
+        F: FnMut(
+            smithay::utils::Size<i32, smithay::utils::Physical>,
+        ) -> Vec<smithay::backend::allocator::dmabuf::Dmabuf>,
     {
-        let mut renderer = renderer;
         let resized: Vec<(usize, smithay::utils::Size<i32, smithay::utils::Physical>)> = self
             .casts
             .iter()
@@ -3338,10 +3536,7 @@ impl ViewportState {
         for (at, size) in resized {
             // Buffers of the new size, before the offer goes out: the consumer
             // may take the format at once and ask for them on its own thread.
-            let targets = match renderer.as_deref_mut() {
-                Some(renderer) => Self::allocate_cast_targets(renderer, size),
-                None => Vec::new(),
-            };
+            let targets = allocate(size);
             let mut casts = std::mem::take(&mut self.casts);
             if let (Some(cast), Some(pipewire)) = (casts.get_mut(at), self.pipewire.as_ref()) {
                 if let Err(e) = cast
@@ -3519,6 +3714,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -3673,6 +3870,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
             + smithay::backend::renderer::ImportDma,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -3681,9 +3880,7 @@ impl ViewportState {
         let format = smithay::backend::allocator::Fourcc::Xrgb8888;
         let buffer_size: smithay::utils::Size<i32, smithay::utils::Buffer> =
             (size.w, size.h).into();
-        let mut target = renderer
-            .create_buffer(format, buffer_size)
-            .map_err(|e| format!("allocating a window capture target: {e}"))?;
+        let mut target: B = self.take_capture_target(renderer, format, buffer_size)?;
 
         let mapping = {
             let mut framebuffer = renderer
@@ -3718,6 +3915,7 @@ impl ViewportState {
             .map_texture(&mapping)
             .map_err(|e| format!("mapping a window capture: {e}"))?
             .to_vec();
+        self.keep_capture_target(format, buffer_size, target);
         Ok((pixels, size))
     }
 
@@ -8092,6 +8290,82 @@ mod tests {
 
     fn at(x: f64, y: f64) -> Point<f64, Logical> {
         (x, y).into()
+    }
+
+    /// A stand-in for whatever a renderer composites into, which is a DMA-BUF
+    /// under Vulkan and a renderbuffer under GLES. Only its identity matters
+    /// here: the question is whether the same buffer comes back.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Target(u32);
+
+    fn shape(
+        w: i32,
+        h: i32,
+    ) -> (
+        smithay::backend::allocator::Fourcc,
+        smithay::utils::Size<i32, smithay::utils::Buffer>,
+    ) {
+        (smithay::backend::allocator::Fourcc::Xrgb8888, (w, h).into())
+    }
+
+    /// The whole point of holding them: a share that reads its frames back
+    /// composites into a buffer of a screen's size thirty times a second, and
+    /// allocating one per frame is fifteen megabytes of VRAM churned per frame
+    /// for a buffer whose shape never changes.
+    #[test]
+    fn a_capture_of_the_same_shape_gets_the_same_buffer_back() {
+        let mut held: Vec<Box<dyn std::any::Any>> = Vec::new();
+        let (format, size) = shape(1920, 1080);
+
+        assert!(
+            take_scratch::<Target>(&mut held, format, size).is_none(),
+            "nothing is held before the first capture"
+        );
+        keep_scratch(&mut held, format, size, Target(1));
+
+        assert_eq!(
+            take_scratch::<Target>(&mut held, format, size),
+            Some(Target(1)),
+            "the second capture draws into the first one's buffer"
+        );
+        assert!(
+            held.is_empty(),
+            "and it is out of the pool while it is being drawn into"
+        );
+    }
+
+    /// A buffer of the wrong size is not a buffer: the capture would be
+    /// composited into something that cannot hold it. A resized source
+    /// allocates, which is what the pool is for the frame after.
+    #[test]
+    fn a_capture_of_another_shape_does_not_take_one_that_will_not_fit() {
+        let mut held: Vec<Box<dyn std::any::Any>> = Vec::new();
+        let (format, size) = shape(1920, 1080);
+        keep_scratch(&mut held, format, size, Target(1));
+
+        let (_, other) = shape(1280, 720);
+        assert!(take_scratch::<Target>(&mut held, format, other).is_none());
+        assert_eq!(held.len(), 1, "and the one that is held stays held");
+    }
+
+    /// Held between frames is not held for ever. A desk whose windows are
+    /// resized while a share follows them would otherwise keep a screen's
+    /// worth of memory for every size it ever passed through.
+    #[test]
+    fn the_pool_does_not_grow_past_what_is_being_captured() {
+        let mut held: Vec<Box<dyn std::any::Any>> = Vec::new();
+        for n in 0..(KEPT_CAPTURE_TARGETS as u32 + 3) {
+            let (format, size) = shape(100 + n as i32, 100);
+            keep_scratch(&mut held, format, size, Target(n));
+        }
+        assert_eq!(held.len(), KEPT_CAPTURE_TARGETS);
+
+        // The oldest went, so the first shape has to be allocated again.
+        let (format, first) = shape(100, 100);
+        assert!(take_scratch::<Target>(&mut held, format, first).is_none());
+        // And the newest is still there.
+        let (format, last) = shape(100 + KEPT_CAPTURE_TARGETS as i32 + 2, 100);
+        assert!(take_scratch::<Target>(&mut held, format, last).is_some());
     }
 
     /// The stacking policy itself, which is what `Ord` on `Layer` is.
