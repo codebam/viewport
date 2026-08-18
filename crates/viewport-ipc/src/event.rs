@@ -123,6 +123,17 @@ pub enum Event {
     #[serde(rename = "notification.close")]
     NotificationClose { id: u32 },
 
+    /// The system tray, whole, every time any part of it changes.
+    ///
+    /// Not a stream of add, change and remove messages. A tray is a handful of
+    /// items and every one of them is redrawn from a snapshot in a single
+    /// pass, so reconciling three message kinds in the shell would be work
+    /// spent to save a few hundred bytes on a message that arrives when an
+    /// application starts or its icon changes — not on a timer, and not per
+    /// frame.
+    #[serde(rename = "tray.update")]
+    TrayUpdate { items: Vec<TrayItem> },
+
     /// System statistics for the bar.
     ///
     /// `cpu` and `memory` are `-1.0` when unavailable rather than absent: the
@@ -506,6 +517,53 @@ pub struct Notification {
     pub timeout: i32,
 
     pub actions: Vec<NotificationAction>,
+}
+
+/// One entry in the system tray.
+///
+/// Flattened from `org.kde.StatusNotifierItem`, which has thirteen properties
+/// and four ways to say what an icon is. What a shell needs is a picture, a
+/// label and something to send back, so that is what this carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrayItem {
+    /// The bus name and object path, joined — what `tray.activate` names to
+    /// say which item was clicked. Opaque to the shell: it is a key, not an
+    /// address it can do anything with.
+    pub id: String,
+
+    /// What to draw under the icon, or in place of one. `Title` where the item
+    /// set it, its `Id` otherwise, because an application that sets neither
+    /// still has to be distinguishable from the one beside it.
+    pub title: String,
+
+    /// `"active"`, `"passive"` or `"needs-attention"`, lowercased from the
+    /// item's `Status`. Passive means the application would rather not be
+    /// shown; the shell decides whether that means hidden or dimmed, which is
+    /// a styling question and so belongs in the stylesheet.
+    pub status: String,
+
+    /// The icon as a `data:` URL, or empty where the item offered none that
+    /// could be resolved.
+    ///
+    /// A URL rather than a name or a path because the shell is a web page that
+    /// may have been loaded over `http://`, where a `file://` image is refused
+    /// — and because an icon name means nothing to a browser. The compositor
+    /// resolves the name against the icon theme, or encodes the pixmap the
+    /// item handed over, and what reaches here is something an `<img>` can
+    /// show.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+
+    /// The tooltip's title and body, joined with a newline, or empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tooltip: String,
+
+    /// Whether the item says its primary click should open its menu rather
+    /// than activate it — `ItemIsMenu`. The menu itself is not drawn yet, so
+    /// this is passed on for the shell to style and for the compositor to
+    /// route to `ContextMenu`.
+    #[serde(default)]
+    pub is_menu: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -919,6 +977,7 @@ mod tests {
                 actions: Vec::new(),
             })),
             json(&Event::NotificationClose { id: 1 }),
+            json(&Event::TrayUpdate { items: Vec::new() }),
             json(&Event::OutputLayout {
                 outputs: Vec::new(),
             }),
@@ -951,6 +1010,7 @@ mod tests {
                 "session.restore",
                 "notification.add",
                 "notification.close",
+                "tray.update",
                 "output.layout",
                 "screencast.pick",
                 "screencast.pick.done",

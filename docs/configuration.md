@@ -769,8 +769,8 @@ entry is either a module the bar already draws or a widget:
 }
 ```
 
-A bare string names a built-in module — `mode`, `net`, `disk`, `cpu`, `load`,
-`memory` or `clock` — and an object names a widget, taking exactly the same
+A bare string names a built-in module — `mode`, `tray`, `net`, `disk`, `cpu`,
+`load`, `memory` or `clock` — and an object names a widget, taking exactly the same
 options as a `bar_widgets` entry. The bar draws only what the list names, in
 the order given, so a widget can sit between the network and the clock, and a
 module you leave out does not appear. Present but empty draws no right side at
@@ -950,6 +950,48 @@ breadth-first with `freedesktop` as every theme's implicit parent.
 
 [sound-naming]: https://specifications.freedesktop.org/sound-naming-spec/latest/
 [symphonia]: https://github.com/pdeljanov/Symphonia
+
+## The system tray
+
+On unless a file turns it off. The compositor claims
+`org.kde.StatusNotifierWatcher` and a host name beside it, and forwards each
+registered item to the shell, which draws the icons on the bar — the same
+arrangement as notifications, and for the same reason.
+
+```jsonc
+{
+  "tray": true,           // false: claim neither name, and draw nothing
+  "icon_theme": "Papirus" // searched before hicolor, which is always searched
+}
+```
+
+`"tray": false` is for a session that would rather run waybar's tray, or one
+that wants none at all. It takes effect on reload as well as at startup: the
+bus names are released, the bar empties, and applications see the tray go away
+exactly as they would if this program had exited. Turning it back on claims
+them again.
+
+Even with it on, a KDE session or a GNOME extension that already holds the
+watcher name keeps it — the name is queued for, never taken, and the log says
+which happened. What that means in practice is that running this beside another
+tray is not a conflict, it is a decision made by whichever started first.
+
+`icon_theme` is the theme an item's icon name is resolved against. There is no
+way to ask a Wayland session what its icon theme is — GTK keeps it in dconf and
+Qt in an ini file, and neither is something a compositor should be reading — so
+it is named here. An item that ships its own icons and points at them with
+`IconThemePath` is searched there first, whatever this says, and applications
+that publish raw pixmaps rather than names need no theme at all.
+
+Clicks: left activates, right asks for the menu, middle is the secondary
+action, and the wheel scrolls — which is what a volume applet in a tray expects.
+Items that publish their menu as a `com.canonical.dbusmenu` object rather than
+answering `ContextMenu` have a menu the shell cannot draw yet; see
+[`docs/protocols.md`](protocols.md#the-system-tray).
+
+Where the tray sits on the bar is the shell's business, like every other bar
+item: it is `tray` in `bar_items`, and it draws nothing at all when there is
+nothing registered.
 
 ## Window rules
 

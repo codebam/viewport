@@ -127,6 +127,43 @@ pub enum Request {
     #[serde(rename = "notification.expire")]
     NotificationExpire { id: u32 },
 
+    /// A tray item was clicked, or scrolled over.
+    ///
+    /// The shell draws the tray, so the shell is what knows which item was
+    /// hit and where on the screen it sits — an application opening its own
+    /// menu is told the pointer's position and puts its window there, so the
+    /// coordinates are part of the message rather than something the
+    /// compositor guesses afterwards.
+    #[serde(rename = "tray.activate")]
+    TrayActivate {
+        /// The `id` from `tray.update`. An item that has since gone is
+        /// ignored rather than refused: a click landing as an application
+        /// exits is a race, not a mistake the user can do anything about.
+        id: String,
+        /// `"primary"`, `"secondary"` or `"menu"`. Anything else is refused.
+        /// An item that says `is_menu` gets its menu from a primary click too,
+        /// which is what the property is for.
+        #[serde(default)]
+        button: String,
+        /// Where the pointer was, in the layout's own coordinates — what the
+        /// item is handed so it can place its own window.
+        #[serde(default)]
+        x: i32,
+        #[serde(default)]
+        y: i32,
+    },
+
+    /// The wheel turned over a tray item.
+    #[serde(rename = "tray.scroll")]
+    TrayScroll {
+        id: String,
+        /// Wheel steps: positive is up, or right for a horizontal wheel.
+        delta: i32,
+        /// `"vertical"` or `"horizontal"`.
+        #[serde(default)]
+        orientation: String,
+    },
+
     /// Where the shell has drawn something that belongs above the windows.
     ///
     /// The shell is one buffer *under* the clients, so anything it draws over
@@ -895,6 +932,41 @@ mod tests {
         for json in table {
             serde_json::from_str::<Request>(json).unwrap_or_else(|e| panic!("{json}: {e}"));
         }
+    }
+
+    /// A tray click names an item, a button and where the pointer was, and a
+    /// scroll names how far it turned. Both default rather than fail on the
+    /// fields a terse shell leaves out.
+    #[test]
+    fn tray_messages_carry_the_item_and_the_pointer() {
+        let Request::TrayActivate {
+            id, button, x, y, ..
+        } = parse(
+            r#"{"type":"tray.activate","id":":1.42/StatusNotifierItem","button":"secondary","x":40,"y":8}"#,
+        )
+        else {
+            panic!("not a tray.activate message");
+        };
+        assert_eq!(
+            (id.as_str(), button.as_str(), x, y),
+            (":1.42/StatusNotifierItem", "secondary", 40, 8)
+        );
+
+        // Everything but the item omitted: a primary click at the origin.
+        let Request::TrayActivate { button, x, y, .. } =
+            parse(r#"{"type":"tray.activate","id":"a/b"}"#)
+        else {
+            panic!("not a tray.activate message");
+        };
+        assert_eq!((button.as_str(), x, y), ("", 0, 0));
+
+        let Request::TrayScroll {
+            delta, orientation, ..
+        } = parse(r#"{"type":"tray.scroll","id":"a/b","delta":-1}"#)
+        else {
+            panic!("not a tray.scroll message");
+        };
+        assert_eq!((delta, orientation.as_str()), (-1, ""));
     }
 
     #[test]

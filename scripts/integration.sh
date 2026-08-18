@@ -126,6 +126,19 @@ if [ -x "$frontend" ]; then
 else
 	echo "=== screencast-restore: skipped, no portal-frontend to run it with"
 fi
+# The tray item is a cargo example for the same reason the frontend is: it
+# speaks D-Bus rather than Wayland. Same skip, for a run against a binary built
+# by nix on a machine with no cargo.
+tray_item="$root/target/debug/examples/tray-item"
+if [ ! -x "$tray_item" ] && command -v cargo >/dev/null; then
+	(cd "$root" && cargo build -p viewport --example tray-item) || true
+fi
+if [ -x "$tray_item" ]; then
+	run tray "$root/tests/tray.test.sh" "$VIEWPORT" "$tray_item"
+else
+	echo "=== tray: skipped, no tray-item to run it with"
+fi
+
 run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"
 run session-lock-takeover "$root/tests/lock-takeover.test.sh" \

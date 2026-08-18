@@ -87,6 +87,9 @@ const STRING_FIELDS: &[&str] = &[
     "mode",
     // `sink` and `source`, which are words.
     "target",
+    // A tray item's button and the axis its wheel turned, both words.
+    "button",
+    "orientation",
 ];
 
 struct Type {
@@ -190,6 +193,18 @@ const TYPES: &[Type] = &[
         name: "notification.expire",
         fields: &["id"],
         hint: "--id N",
+    },
+    Type {
+        // The tray's ids are strings — a bus name and an object path joined —
+        // rather than the numbers every other `--id` here takes.
+        name: "tray.activate",
+        fields: &["id", "button", "x", "y"],
+        hint: "--id KEY [--button primary|secondary|menu] [--x N --y N]",
+    },
+    Type {
+        name: "tray.scroll",
+        fields: &["id", "delta", "orientation"],
+        hint: "--id KEY --delta N [--orientation vertical|horizontal]",
     },
     Type {
         name: "workspace.list",
@@ -1247,10 +1262,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 37 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 39 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 37);
+        assert_eq!(TYPES.len(), 39);
     }
 
     #[test]

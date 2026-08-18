@@ -77,6 +77,7 @@ function syncOutputs(list) {
         taskbarEl: el.querySelector('.taskbar'),
         modeEl: el.querySelector('.mode'),
         modules: {
+          tray: el.querySelector('.tray'),
           clock: el.querySelector('.clock'),
           cpu: el.querySelector('.cpu'),
           memory: el.querySelector('.memory'),

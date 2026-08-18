@@ -166,11 +166,146 @@ function renderBarModules(name) {
   setModule(m.disk, s.disk_free ? `󰋊 ${formatBytes(s.disk_free)}` : '');
   setModule(m.net, s.net_rx !== undefined
     ? `󰇚 ${formatBytes(s.net_rx)}/s 󰕒 ${formatBytes(s.net_tx)}/s` : '');
+  syncTray(output);
   renderBarWidgets(output);
 }
 
 function setModule(el, text) {
   if (el && el.textContent !== text) el.textContent = text;
+}
+
+/* ------------------------------------------------------------------------
+ * The system tray
+ * --------------------------------------------------------------------- */
+
+/* The tray, replaced whole whenever the compositor sends one.
+ *
+ * The compositor holds the StatusNotifierWatcher name and does every D-Bus
+ * call an item answers; what arrives here is a picture, a label and a key to
+ * send back. Nothing in this file knows an item's bus name, and that is the
+ * point — the shell cannot address an application, only name which icon was
+ * clicked. */
+function applyTray(items) {
+  trayItems = Array.isArray(items) ? items : [];
+  for (const [, output] of outputs) syncTray(output);
+}
+
+/* Where the tray sits on one output's bar, whichever shape built the bar. The
+ * override path puts the element in `modules`, the shipped markup has it in
+ * the document; both are the same element to this. */
+function trayElement(output) {
+  return output.modules?.tray ?? output.barEl?.querySelector('.tray') ?? null;
+}
+
+/* Kept and updated by position, like the workspace buttons and for the same
+ * reason: a status sample arrives every two seconds and rebuilding the tray on
+ * each one would be an allocation and a rebound listener per icon, on a bar
+ * that mostly has nothing new to say. The listeners are bound once and read
+ * the item back off the element, so they survive an icon changing places. */
+function syncTray(output) {
+  const container = trayElement(output);
+  if (!container) return;
+
+  const existing = [...container.children];
+  for (let i = 0; i < trayItems.length; i++) {
+    let el = existing[i];
+    if (el === undefined) {
+      el = document.createElement('button');
+      el.className = 'tray-item';
+      wireTrayItem(el);
+      container.append(el);
+    }
+    const item = trayItems[i];
+    el._tray = item;
+
+    /* The image element exists only while there is an icon to put in it. An
+       <img> with no source is a broken image in some engines and a request for
+       the page's own URL in others, and neither is a thing to leave on the
+       bar. */
+    if (item.icon) {
+      let img = el._img;
+      if (img === undefined) {
+        img = el._img = document.createElement('img');
+        el.append(img);
+      }
+      /* Guarded like every other write in this file: assigning a src the
+         element already has is a fetch, a decode and a repaint of the whole
+         desktop. */
+      if (img.src !== item.icon) img.src = item.icon;
+    } else if (el._img) {
+      el._img.remove();
+      el._img = undefined;
+    }
+    /* An item with no icon draws its own first letter, so a program that
+       publishes nothing this shell can show is still something to click. */
+    const fallback = item.icon ? '' : (item.title || '?').slice(0, 1).toUpperCase();
+    if (el.dataset.fallback !== fallback) el.dataset.fallback = fallback;
+
+    const title = item.tooltip || item.title || '';
+    if (el.title !== title) el.title = title;
+    const className = `tray-item ${item.status || 'active'}`;
+    if (el.className !== className) el.className = className;
+  }
+
+  for (let i = trayItems.length; i < existing.length; i++) existing[i].remove();
+}
+
+/* An item's input, bound once at build.
+ *
+ * Where the pointer is matters: an application opening its own menu is handed
+ * a position and puts its window there, so what is sent is the bottom left of
+ * the icon — the menu then hangs off the icon rather than off the pointer,
+ * which is where every other tray puts it. The coordinates are page
+ * coordinates, and the page spans the whole output layout, so they are already
+ * what the compositor means by a position. */
+function wireTrayItem(el) {
+  const at = (button) => {
+    const item = el._tray;
+    if (!item) return;
+    const rect = el.getBoundingClientRect();
+    send({
+      type: 'tray.activate',
+      id: item.id,
+      button,
+      x: Math.round(rect.left),
+      /* The bottom edge, added rather than read: `bottom` is a live rect's
+         own field and every measurement in this shell goes through top and
+         height, which is what the geometry the compositor is sent is made
+         of. */
+      y: Math.round(rect.top + rect.height),
+    });
+  };
+
+  /* Left click activates — which for an item that says it is a menu opens the
+     menu instead, decided by the compositor because the property is the
+     item's own. */
+  el.addEventListener('click', () => at('primary'));
+  /* Right click is the menu, as it is everywhere else on a desktop. The
+     engine's own context menu is already suppressed for the shell; this
+     preventDefault is for the backends where that is per element. */
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    at('menu');
+  });
+  /* Middle click is the secondary action. Items that do not implement it
+     answer an error the compositor logs and drops. */
+  el.addEventListener('auxclick', (e) => {
+    if (e.button === 1) at('secondary');
+  });
+  el.addEventListener('wheel', (e) => {
+    const item = el._tray;
+    if (!item) return;
+    e.preventDefault();
+    /* One step per notch, in whichever axis turned. A volume applet is the
+       usual consumer and it wants the sign, not the pixel delta. */
+    const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+    send({
+      type: 'tray.scroll',
+      id: item.id,
+      delta: (horizontal ? e.deltaX : e.deltaY) < 0 ? 1 : -1,
+      orientation: horizontal ? 'horizontal' : 'vertical',
+    });
+  });
 }
 
 /* ------------------------------------------------------------------------
@@ -219,6 +354,7 @@ function widgetTitle(w) {
 
 function moduleTitle(name) {
   switch (name) {
+    case 'tray': return '';
     case 'net': return 'network';
     case 'disk': return 'free on /';
     case 'cpu': return 'cpu';
@@ -365,6 +501,7 @@ function syncBarRight(output) {
       }
       /* The default module refs come back from the markup; see outputs.js. */
       output.modules = {
+        tray: container.querySelector('.tray'),
         clock: container.querySelector('.clock'),
         cpu: container.querySelector('.cpu'),
         memory: container.querySelector('.memory'),

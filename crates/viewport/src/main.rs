@@ -25,6 +25,7 @@ mod gamma;
 mod handlers;
 mod hdr;
 mod headless;
+mod icon;
 mod idle;
 mod input;
 mod ipc;
@@ -49,6 +50,7 @@ mod sound;
 mod state;
 mod status;
 mod tearing;
+mod tray;
 mod udev;
 mod views;
 mod watchdog;
@@ -617,6 +619,41 @@ fn run() -> Result<()> {
         if let Err(e) = state.notifications.start(sender) {
             tracing::warn!("notifications are unavailable: {e}");
         }
+    }
+
+    // The system tray, on the same shape: a thread on the bus, a channel back,
+    // and the shell drawing what arrives. See src/tray.rs.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(crate::tray::Message::Items(items)) = event else {
+                    return;
+                };
+                // One line per change, not per sample: this fires when an
+                // application registers, exits or says its icon changed. What
+                // it answers is the question a tray raises first — whether the
+                // compositor sees the item at all, or whether the icon is
+                // missing further along.
+                tracing::info!(
+                    "tray: {} item(s){}",
+                    items.len(),
+                    items
+                        .iter()
+                        .map(|item| format!(" {}", item.title))
+                        .collect::<String>()
+                );
+                state.notify(&viewport_ipc::Event::TrayUpdate { items });
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the tray source: {e}"))?;
+
+        // Now, rather than when the configuration was read: the configuration
+        // is applied before this loop has anywhere to send a tray, so what it
+        // asked for was remembered and is acted on here.
+        let enabled = state.tray_enabled;
+        state.tray.attach(sender, enabled);
     }
 
     // The portals this compositor answers itself: dark mode, and screen
