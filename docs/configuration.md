@@ -745,11 +745,27 @@ reading `temperature_2m` and `weather_code`. A bare `"location": "New York"`
 is the form to use; several weather widgets may list different places. Refreshed
 every fifteen minutes, and left empty on failure rather than crashing the bar.
 
+`mpris` shows what is playing, with the buttons to drive it. Every media
+player on a Linux desktop publishes MPRIS — a bus name beginning
+`org.mpris.MediaPlayer2.`, an object, and metadata behind it — which is why
+`playerctl` works everywhere; the compositor reads it, because the page has no
+bus and a widget that shelled out twice a second would be two processes a
+second on an idle desktop. It is the one widget that is not a line of text: a
+cover, a previous, a play/pause and a next button, and the track. Only the
+buttons the player answers for are drawn — `CanPause` is false on a live
+stream that can only be stopped, and a button that does nothing is worse than
+no button. Clicking the widget anywhere else is play/pause and scrolling it
+skips, up for the track before and down for the one after. Where several
+players are running, the one that is playing wins over one that is paused,
+which is the rule `playerctl` uses. Nothing playing draws nothing at all.
+
 A volume widget is optional plumbing on the compositor: since the default bar
 does not show volume, the `wpctl` subprocess is only spawned when a `volume`
 or `mic` widget is present, and only then does a status sample pay for it (one
 subprocess per audio widget kind). The same
-goes for the extra mounts — a bar with no widgets stats nothing extra.
+goes for the extra mounts — a bar with no widgets stats nothing extra. `mpris`
+is the same rule taken further: with no media widget on the bar, the
+compositor opens no connection for it, starts no thread and follows no player.
 
 ## Overriding the whole bar
 

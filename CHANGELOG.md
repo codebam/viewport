@@ -12,6 +12,21 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- A media widget for the bar: what is playing, and the buttons to drive it.
+  Every player on a Linux desktop publishes MPRIS — a bus name beginning
+  `org.mpris.MediaPlayer2.`, an object, and metadata behind it — which is why
+  `playerctl` works everywhere and why `mpris` in `bar_widgets` needs nothing
+  installed. The compositor reads it rather than the shell, because the page
+  has no bus and a widget shelling out to `playerctl` twice a second would be
+  two processes a second on an idle desktop. It is the one widget that is not
+  a line of text: a cover, previous, play/pause, next and the track — and only
+  the buttons the player answers for, since `CanPause` is false on a live
+  stream that can only be stopped and a button that does nothing is worse than
+  no button. Where several players are running the one that is playing wins,
+  which is the rule `playerctl` uses. With no media widget on the bar the
+  compositor opens no connection for it and follows no player at all, the same
+  rule that already keeps `wpctl` from being spawned for a bar with no volume
+  widget.
 - Tray menus are drawn by the shell. An item points at a
   `com.canonical.dbusmenu` object — Canonical's specification, which the tray
   one says nothing about, and which is what GTK and Qt both publish a menu

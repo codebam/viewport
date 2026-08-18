@@ -74,6 +74,7 @@ of what was asked.
 | `notification.add` | `id`, `app_name`, `icon`, `summary`, `body`, `urgency`, `timeout`, `actions[]` with `key` and `label` |
 | `notification.close` | `id` — the application withdrew it |
 | `tray.update` | `items[]` with `id`, `title`, `status` (`active`, `passive`, `needs-attention`), `icon` (a `data:` URL, or absent), `tooltip`, `is_menu`, `has_menu` — the system tray, whole, whenever any part of it changes |
+| `mpris.update` | `player` with `id`, `title`, `artist`, `album`, `status` (`playing`, `paused`, `stopped`), `art`, `can_go_next`, `can_go_previous`, `can_pause`, `can_play` — what is playing, when it changes. Absent `player` means nothing is. Sent only while a media widget is on the bar |
 | `tray.menu` | `id`, `x`, `y`, `items[]` with `id`, `label`, `kind` (`standard` or `separator`), `enabled`, `toggle` (`checkmark` or `radio`), `checked`, `icon`, `children[]` — an item's menu, fetched and ready to draw. Only for items that publish one; the rest draw their own window |
 | `screencast.pick` | `id`, `sources[]` with `kind` (`"output"`, `"window"`, `"all-outputs"`, `"follow-window"` or `"follow-output"`), `label`, `detail`, and `selected` — an application has asked to share the screen, and this is the list to draw with the highlight where the compositor is holding it. Re-sent whole every time the highlight moves |
 | `screencast.pick.done` | `id` — the choice was made or abandoned; take the chooser down |
@@ -129,6 +130,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `notification.expire` | `id` |
 | `tray.activate` | `id` (from `tray.update`), `button` (`primary`, `secondary` or `menu`), `x`, `y` — where the icon is, which is where the application will put its own menu |
 | `tray.scroll` | `id`, `delta` (wheel steps, positive is up), `orientation` (`vertical` or `horizontal`) |
+| `mpris.control` | `action` (`play-pause`, `next`, `previous` or `stop`) — a button on the media widget, sent to whichever player the compositor last reported |
 | `tray.menu.click` | `id`, `item` — a row of an open menu was chosen, named by the id the application gave it |
 | `tray.menu.closed` | `id` — the menu was dismissed without a choice |
 | `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |

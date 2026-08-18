@@ -141,6 +141,10 @@ let trayItems = [];
  * what the compositor sent and lives in the DOM; this is only what a click has
  * to name to send an answer back. */
 let trayMenuOpen = null;
+/* What is playing, as the compositor last read it off MPRIS, or null when
+ * nothing is. Only sent while a media widget is on the bar — a desktop without
+ * one does not follow the session's players at all. */
+let mprisPlayer = null;
 let currentMode = 'default';
 /* The layout models the shell implements. Set by the compositor from the
  * config file, and switched at runtime with `shell layout.model`.

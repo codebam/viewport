@@ -221,6 +221,13 @@ pub enum BarWidgetConfig {
     /// `@DEFAULT_AUDIO_SOURCE@`.
     #[serde(rename = "mic")]
     Mic,
+    /// What is playing, over MPRIS, with the buttons to drive it.
+    ///
+    /// Sampled by the compositor because the page has no bus — and only when
+    /// this widget is on the bar: a desktop with no media widget does not
+    /// follow every player on the session.
+    #[serde(rename = "mpris")]
+    Mpris,
 }
 
 /// What `background_terminal` was set to.

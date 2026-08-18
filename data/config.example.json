@@ -212,6 +212,7 @@
     "",
     "  { \"type\": \"disk\", \"path\": \"/home\" }   free space on that mount",
     "  { \"type\": \"volume\" }                     default sink's volume and mute",
+    "  { \"type\": \"mpris\" }                      what is playing, with buttons",
     "  { \"type\": \"mic\" }                        default source's (mic) volume and mute",
     "  { \"type\": \"weather\", \"location\": \"New York\" }  conditions for a place",
     "",

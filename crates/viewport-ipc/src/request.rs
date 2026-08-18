@@ -153,6 +153,19 @@ pub enum Request {
         y: i32,
     },
 
+    /// A button on the bar's media widget.
+    ///
+    /// Goes to whichever player the compositor last reported, which is the one
+    /// the widget is drawing — naming it here would be a name the shell read
+    /// off a message that may already have been replaced.
+    #[serde(rename = "mpris.control")]
+    MprisControl {
+        /// `"play-pause"`, `"next"`, `"previous"` or `"stop"`. Anything else
+        /// is refused: this is a string from a page, and the interface has
+        /// methods a bar has no business calling.
+        action: String,
+    },
+
     /// A row of an open tray menu was chosen.
     ///
     /// The menu is the compositor's: it fetched the layout and the shell drew

@@ -153,6 +153,19 @@ pub enum Event {
         items: Vec<TrayMenuItem>,
     },
 
+    /// What is playing, for the bar's media widget.
+    ///
+    /// Sent when it changes rather than on the status tick: a track lasts
+    /// minutes and a pause is instant, so a widget driven by the two-second
+    /// sample would be both stale and a redraw of the desktop every two
+    /// seconds. `player` is absent when nothing is running, which is what
+    /// takes the widget off the bar.
+    #[serde(rename = "mpris.update")]
+    MprisUpdate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        player: Option<MprisPlayer>,
+    },
+
     /// System statistics for the bar.
     ///
     /// `cpu` and `memory` are `-1.0` when unavailable rather than absent: the
@@ -496,6 +509,10 @@ pub enum BarWidget {
     /// by the compositor. Mirrors `volume` but reads `@DEFAULT_AUDIO_SOURCE@`.
     #[serde(rename = "mic")]
     Mic,
+    /// What is playing, over MPRIS, sampled by the compositor and sent as
+    /// `mpris.update` rather than with the status tick.
+    #[serde(rename = "mpris")]
+    Mpris,
 }
 
 /// One entry in a `bar_items` override, as `bar_items` in the config file,
@@ -591,6 +608,46 @@ pub struct TrayItem {
     /// application to draw its own window.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_menu: bool,
+}
+
+/// The media player the bar is showing.
+///
+/// Flattened from MPRIS, which every player on a Linux desktop publishes: a
+/// bus name, an object, and metadata behind it. What a bar needs is what is
+/// playing, whether it is playing, and which buttons are worth drawing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MprisPlayer {
+    /// The player's bus name without the MPRIS prefix — `spotify`, `mpv`,
+    /// `firefox.instance_1_15`. What it calls itself, and what the shell shows
+    /// where a track has no title.
+    pub id: String,
+
+    pub title: String,
+    /// Every artist the track names, joined — a track can have several and
+    /// players send a list even for the one.
+    pub artist: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub album: String,
+
+    /// `"playing"`, `"paused"` or `"stopped"`, lowercased from MPRIS.
+    pub status: String,
+
+    /// Cover art the page can draw: a `data:` URL for a local file, the
+    /// player's own `https://` URL where it gave one, or empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub art: String,
+
+    /// Which buttons are worth drawing. A player answers all four and they are
+    /// not decoration: `can_pause` is false for a live stream that can only be
+    /// stopped, and a button that does nothing is worse than no button.
+    #[serde(default)]
+    pub can_go_next: bool,
+    #[serde(default)]
+    pub can_go_previous: bool,
+    #[serde(default)]
+    pub can_pause: bool,
+    #[serde(default)]
+    pub can_play: bool,
 }
 
 /// One row of a tray item's menu.
@@ -1048,6 +1105,7 @@ mod tests {
                 actions: Vec::new(),
             })),
             json(&Event::NotificationClose { id: 1 }),
+            json(&Event::MprisUpdate { player: None }),
             json(&Event::TrayUpdate { items: Vec::new() }),
             json(&Event::TrayMenu {
                 id: String::new(),
@@ -1087,6 +1145,7 @@ mod tests {
                 "session.restore",
                 "notification.add",
                 "notification.close",
+                "mpris.update",
                 "tray.update",
                 "tray.menu",
                 "output.layout",

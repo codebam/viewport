@@ -492,6 +492,8 @@ function widgetTitle(w) {
     case 'weather': return `weather for ${(w.location || '').trim()}`.trim();
     case 'volume': return 'volume';
     case 'mic': return 'microphone';
+    /* The media widget writes its own, from what is playing. */
+    case 'mpris': return '';
   }
   return '';
 }
@@ -536,7 +538,11 @@ function wireWidget(el) {
   el.addEventListener('click', () => {
     const w = el._widget;
     if (!w) return;
-    if (w.type === 'disk') {
+    if (w.type === 'mpris') {
+      /* A click that missed the buttons — on the cover or the title — is the
+         same as pressing play. */
+      send({ type: 'mpris.control', action: 'play-pause' });
+    } else if (w.type === 'disk') {
       /* Open the mount in the default file manager — for this user that is
          a terminal at the directory. `xdg-open` respects the system default,
          whichever it is. */
@@ -550,6 +556,13 @@ function wireWidget(el) {
   });
   el.addEventListener('wheel', (e) => {
     const w = el._widget;
+    if (w?.type === 'mpris') {
+      e.preventDefault();
+      /* Scrolling a media widget skips, which is what every bar that has one
+         does: up for the track before, down for the one after. */
+      send({ type: 'mpris.control', action: e.deltaY < 0 ? 'previous' : 'next' });
+      return;
+    }
     if (!w || (w.type !== 'volume' && w.type !== 'mic')) return;
     e.preventDefault();
     /* Scrolling is the natural volume gesture: up to raise, down to lower,
@@ -777,9 +790,99 @@ function renderBarWidgets(output) {
       }
     } else if (w.type === 'weather') {
       text = weatherText(w.location || '');
+    } else if (w.type === 'mpris') {
+      /* The one widget that is not a string. It draws buttons, so it owns its
+         own children and returns before the assignment below — which would
+         throw them all away. */
+      syncMprisWidget(el);
+      return;
     }
     if (el.textContent !== text) el.textContent = text;
   });
+}
+
+/* The media widget: cover, what is playing, and the buttons the player says
+ * it will honour.
+ *
+ * Buttons rather than a string, because a track is something you skip rather
+ * than read — and only the ones the player answers for: `can_pause` is false
+ * on a live stream that can only be stopped, and a button that does nothing is
+ * worse than no button.
+ *
+ * Kept and updated in place like everything else on the bar. A player that
+ * reports its position sends an update every second, and rebuilding four
+ * elements on each one would be a composited frame per second for a title that
+ * has not changed. */
+function syncMprisWidget(el) {
+  const player = mprisPlayer;
+  if (!player) {
+    /* Nothing playing: the widget collapses through `.module:empty`, exactly
+       as a disk widget with no mount does. */
+    if (el.children.length) el.replaceChildren();
+    if (el.textContent !== '') el.textContent = '';
+    return;
+  }
+
+  const parts = el._mpris ?? (el._mpris = {});
+  const need = (key, tag, className) => {
+    let node = parts[key];
+    if (node === undefined) {
+      node = parts[key] = document.createElement(tag);
+      node.className = className;
+      el.append(node);
+    }
+    return node;
+  };
+
+  /* Order matters and the elements are appended once, so they are built in
+     the order they are drawn: cover, previous, play, next, then the text. */
+  const cover = player.art ? need('cover', 'img', 'mpris-art') : parts.cover;
+  if (cover) {
+    if (player.art && cover.src !== player.art) cover.src = player.art;
+    if (cover.hidden !== !player.art) cover.hidden = !player.art;
+  }
+
+  const previous = need('previous', 'button', 'mpris-button');
+  setModule(previous, '󰒮');
+  if (previous.hidden !== !player.can_go_previous) {
+    previous.hidden = !player.can_go_previous;
+  }
+
+  const play = need('play', 'button', 'mpris-button');
+  /* The glyph is what pressing it will do, which is the convention every
+     player follows: a paused track shows play. */
+  setModule(play, player.status === 'playing' ? '󰏤' : '󰐊');
+  const canToggle = player.status === 'playing' ? player.can_pause : player.can_play;
+  if (play.hidden !== !canToggle) play.hidden = !canToggle;
+
+  const next = need('next', 'button', 'mpris-button');
+  setModule(next, '󰒭');
+  if (next.hidden !== !player.can_go_next) next.hidden = !player.can_go_next;
+
+  const label = need('label', 'span', 'mpris-label');
+  /* A title, with the artist after it where there is one. A player with
+     neither — a browser tab that has published the interface for media it has
+     not loaded — is named by the player itself, so the widget still says what
+     it is. */
+  const title = player.title || player.id;
+  setModule(label, player.artist ? `${title} — ${player.artist}` : title);
+
+  const tip = [player.title, player.artist, player.album]
+    .filter(Boolean).join('\n');
+  if (el.title !== tip) el.title = tip;
+
+  /* Bound once, on the buttons themselves: the widget's own listeners handle
+     a click that landed on neither. */
+  for (const [key, action] of [['previous', 'previous'], ['play', 'play-pause'],
+    ['next', 'next']]) {
+    const button = parts[key];
+    if (button._wired) continue;
+    button._wired = true;
+    button.addEventListener('click', (e) => {
+      e.stopPropagation?.();
+      send({ type: 'mpris.control', action });
+    });
+  }
 }
 
 function renderBarsWidgets() {

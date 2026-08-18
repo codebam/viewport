@@ -90,6 +90,8 @@ const STRING_FIELDS: &[&str] = &[
     // A tray item's button and the axis its wheel turned, both words.
     "button",
     "orientation",
+    // And a media button, which is a word with a hyphen in it.
+    "action",
 ];
 
 struct Type {
@@ -200,6 +202,11 @@ const TYPES: &[Type] = &[
         name: "tray.activate",
         fields: &["id", "button", "x", "y"],
         hint: "--id KEY [--button primary|secondary|menu] [--x N --y N]",
+    },
+    Type {
+        name: "mpris.control",
+        fields: &["action"],
+        hint: "--action play-pause|next|previous|stop",
     },
     Type {
         name: "tray.menu.click",
@@ -1272,10 +1279,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 41 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 42 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 41);
+        assert_eq!(TYPES.len(), 42);
     }
 
     #[test]

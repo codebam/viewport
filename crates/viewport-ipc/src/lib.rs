@@ -134,6 +134,7 @@ fn is_known_type(name: &str) -> bool {
             | "notification.expire"
             | "tray.activate"
             | "tray.scroll"
+            | "mpris.control"
             | "tray.menu.click"
             | "tray.menu.closed"
             | "output.configure"

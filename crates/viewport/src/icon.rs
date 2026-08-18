@@ -41,6 +41,11 @@ pub fn data_url(path: &Path) -> Option<String> {
     let mime = match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => "image/png",
         "svg" | "svgz" => "image/svg+xml",
+        // Not for icons — a theme holds none of these — but for cover art,
+        // which a music library keeps as JPEG almost without exception.
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
         // XPM is still in /usr/share/pixmaps and no browser has ever drawn
         // one. Nothing is better than a broken image element.
         _ => return None,

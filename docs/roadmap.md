@@ -8,13 +8,6 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-## MPRIS media widget
-
-`mpris` appears in one place today — a keybinding that shells out to
-`playerctl`. The bar already samples PipeWire for sink and source volume on a
-timer, so a player's title, artist and play state can ride the same tick, with
-previous, play/pause and next as buttons that call back over the bus.
-
 ## Clipboard history
 
 The compositor brokers `wl_data_device`, primary selection and

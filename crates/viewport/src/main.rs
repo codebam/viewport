@@ -30,6 +30,7 @@ mod idle;
 mod input;
 mod ipc;
 mod keyboard_focus;
+mod mpris;
 mod msg;
 mod notification;
 mod output_management;
@@ -661,6 +662,23 @@ fn run() -> Result<()> {
         // asked for was remembered and is acted on here.
         let enabled = state.tray_enabled;
         state.tray.attach(sender, enabled);
+    }
+
+    // What is playing, on the same shape again — and idle until a bar widget
+    // asks for it, which `apply_config` decides.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(crate::mpris::Message::Player(player)) = event else {
+                    return;
+                };
+                state.notify(&viewport_ipc::Event::MprisUpdate { player });
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the media source: {e}"))?;
+        state.mpris.attach(sender);
     }
 
     // The portals this compositor answers itself: dark mode, and screen

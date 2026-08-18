@@ -431,6 +431,24 @@ html.behind body { background: transparent; }
   50% { opacity: .45; }
 }
 
+/* The media widget. The one bar widget that is not a string: a cover, three
+   buttons and a label, laid out in a row inside the widget's own element. */
+.module.widget:has(.mpris-label) { display: inline-flex; align-items: center; gap: .3rem; }
+.mpris-art { width: 1rem; height: 1rem; border-radius: 2px; object-fit: cover; }
+.mpris-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.mpris-button:hover { color: var(--text); }
+.mpris-button[hidden] { display: none; }
+/* A title as long as the track it names would push the clock off the bar. */
+.mpris-label { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* An open tray item menu.
  *
  * Positioned in layout coordinates by bar.js, because that is what the

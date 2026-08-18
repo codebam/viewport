@@ -402,6 +402,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             "" | "primary" | "secondary" | "menu" => state.tray.activate(id, button, x, y),
             other => reject(state, "tray.activate", &format!("no such button {other:?}")),
         },
+        // A button on the bar's media widget, sent to whichever player the
+        // compositor last reported. The action is checked there rather than
+        // here, where the list of methods lives.
+        Request::MprisControl { action } => state.mpris.control(action),
+
         // Both halves of an open menu: a row chosen, and the menu going away
         // without one. The application is told either way, because a menu it
         // is never told about closing is one it believes is still on screen.

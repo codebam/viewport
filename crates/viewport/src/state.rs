@@ -126,6 +126,8 @@ pub struct ViewportState {
     pub notifications: crate::notification::Notifications,
     /// The system tray, forwarded to the shell the same way.
     pub tray: crate::tray::Tray,
+    /// What is playing, for the bar's media widget. Idle unless one is on it.
+    pub mpris: crate::mpris::Mpris,
     /// Whether the configuration wants a tray at all. Kept because the
     /// configuration is read before the event loop has anywhere to send one,
     /// and `Tray::attach` acts on it once it does.
@@ -1056,6 +1058,7 @@ impl ViewportState {
             startup: None,
             notifications: crate::notification::Notifications::default(),
             tray: crate::tray::Tray::default(),
+            mpris: crate::mpris::Mpris::default(),
             // On unless a file says otherwise: a desktop with no tray is a
             // desktop where several ordinary applications have nowhere to put
             // themselves, and nothing about that is discoverable.
@@ -5566,6 +5569,7 @@ impl ViewportState {
                 }
                 crate::config::BarWidgetConfig::Volume => viewport_ipc::event::BarWidget::Volume,
                 crate::config::BarWidgetConfig::Mic => viewport_ipc::event::BarWidget::Mic,
+                crate::config::BarWidgetConfig::Mpris => viewport_ipc::event::BarWidget::Mpris,
             })
             .collect();
 
@@ -5593,6 +5597,9 @@ impl ViewportState {
                             }
                             crate::config::BarWidgetConfig::Mic => {
                                 viewport_ipc::event::BarWidget::Mic
+                            }
+                            crate::config::BarWidgetConfig::Mpris => {
+                                viewport_ipc::event::BarWidget::Mpris
                             }
                         })
                     }
@@ -5642,6 +5649,14 @@ impl ViewportState {
             drawn_widgets
                 .iter()
                 .any(|w| matches!(w, crate::config::BarWidgetConfig::Mic)),
+        );
+        // Following every media player on the session is worth doing only for
+        // a bar that draws one, which is the same rule the audio sampling
+        // above follows.
+        self.mpris.set_enabled(
+            drawn_widgets
+                .iter()
+                .any(|w| matches!(w, crate::config::BarWidgetConfig::Mpris)),
         );
         if let Some(url) = file.url {
             self.shell_url = Some(url);

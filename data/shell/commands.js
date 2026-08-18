@@ -522,6 +522,13 @@ window.addEventListener('viewport', (event) => {
       hideScreencastPicker(message.id);
       break;
 
+    case 'mpris.update':
+      /* Sent when it changes rather than on the status tick, so this redraws
+         the widgets and nothing else: a track starting cannot move a window. */
+      mprisPlayer = message.player ?? null;
+      renderBarsWidgets();
+      break;
+
     case 'tray.menu':
       /* The compositor fetched the menu; the shell draws exactly what it was
          handed. Only items whose menu this compositor can read send one —

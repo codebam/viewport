@@ -3526,6 +3526,61 @@ if (mode === 'scrolling') {
     !micVolume(micSentBefore).some((m) => m.target === 'sink'));
   emit({ type: 'config', layout: mode });
 
+  /* The media widget. The compositor reads MPRIS — the page has no bus — and
+     sends what is playing when it changes; the widget draws it, with only the
+     buttons the player says it will honour. */
+  {
+    emit({ type: 'config', layout: mode, bar_widgets: [{ type: 'mpris' }] });
+    const el = wout.widgetsEls[0];
+    const parts = () => el.children;
+    const press = (node) => (node.listeners.click ?? [])
+      .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+
+    check('nothing playing draws nothing at all',
+      parts().length === 0 && el.textContent === '');
+
+    emit({ type: 'mpris.update', player: { id: 'mpv', title: 'Rhubarb',
+      artist: 'Aphex Twin', album: 'Selected Ambient Works', status: 'playing',
+      art: '', can_go_next: true, can_go_previous: false, can_pause: true,
+      can_play: true } });
+    const label = parts().find((n) => n._classes.has('mpris-label'));
+    check('a playing track is drawn with its artist',
+      label?.textContent === 'Rhubarb — Aphex Twin');
+    const buttons = parts().filter((n) => n._classes.has('mpris-button'));
+    check('and a button for each thing the player says it can do',
+      buttons.filter((b) => !b.hidden).length === 2);
+    check('the one the player cannot do is hidden rather than dead',
+      buttons[0].hidden === true);
+    check('a playing track offers pause, which is what pressing it does',
+      buttons[1].textContent === '\u{f03e4}');
+
+    let before = sent.length;
+    press(buttons[1]);
+    check('pressing it drives the player over the bus, not through a program',
+      sent.slice(before).some((m) => m.type === 'mpris.control' &&
+        m.action === 'play-pause') &&
+      !sent.slice(before).some((m) => m.type === 'shell.exec'));
+
+    before = sent.length;
+    el.listeners.wheel.forEach((fn) => fn({ preventDefault() {}, deltaY: 100 }));
+    check('scrolling down skips to the next track',
+      sent.slice(before).some((m) => m.type === 'mpris.control' &&
+        m.action === 'next'));
+
+    emit({ type: 'mpris.update', player: { id: 'mpv', title: 'Rhubarb',
+      artist: 'Aphex Twin', album: '', status: 'paused', art: '',
+      can_go_next: true, can_go_previous: true, can_pause: true,
+      can_play: true } });
+    check('a paused track offers play',
+      parts().filter((n) => n._classes.has('mpris-button'))[1]
+        .textContent === '\u{f040a}');
+
+    emit({ type: 'mpris.update', player: null });
+    check('and a player that exits takes the widget off the bar',
+      parts().length === 0 && el.textContent === '');
+    emit({ type: 'config', layout: mode });
+  }
+
   /* A full bar override, `bar_items`: modules and widgets listed together in
      whatever order the config wants them drawn. Unlike bar_widgets, this
      replaces the whole right side — the built-in modules that are not listed
