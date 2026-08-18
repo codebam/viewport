@@ -236,7 +236,10 @@ that part of the shell's buffer a second time, above the windows:
   The compositor draws the four sides and not the middle: the middle of a
   frame is the desktop's own background in the buffer — `.viewport` has no
   background, but the wallpaper behind it does — and drawing it over the client
-  turns the window into a block of wallpaper.
+  turns the window into a block of wallpaper. A rounded frame gets its four
+  corners as well, drawn *below* that window instead of above it: the curve of
+  the border crosses inside the client's rectangle, where the sides stop, and
+  the client covers the part of each corner square it actually fills.
 - `floating` on `view.layout` — that this window is floating rather than tiled.
   Layout is the shell's, but the *stack* is the compositor's: it is what the
   renderer draws from and what a click is tested against, and focusing a window
