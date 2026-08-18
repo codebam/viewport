@@ -1166,14 +1166,36 @@ html.no-tutorial .empty .tutorial { display: none; }
    or more, and a single column of that is a ribbon down the middle of an
    otherwise empty screen. Bounded and scrollable, because the desktop it is
    drawn on is the one with nothing else to look at and it must not push the
-   mark off the top of it. */
+   mark off the top of it.
+
+   A wrapping flex row rather than `columns: 2`, which does not overflow the
+   way this needs. A multi-column box with a bounded height does not scroll
+   when it runs out of room -- it lays out another column to the right, and
+   since `overflow-y` on its own computes the other axis to `auto` as well, a
+   long keymap grew a horizontal scrollbar with the rest of the chords parked
+   off the side. Rows wrap downwards, so the overflow is the vertical one that
+   was asked for.
+
+   Flex and not grid: Servo has no grid and drops the declaration, which would
+   leave this a single `block` column -- the same ribbon the two columns exist
+   to avoid, on the one backend that ships. A basis rather than a fixed half,
+   so a narrow output puts one chord on a row instead of two unreadable ones. */
 .empty pre.keys {
-  display: block;
-  columns: 2;
+  display: flex;
+  flex-wrap: wrap;
   column-gap: 1.5rem;
   max-width: min(56rem, 82vw);
   max-height: min(24rem, 46vh);
   overflow-y: auto;
+  /* The desktop behind this is the compositor's, and a scroll that runs off
+     the end of the list has nowhere to go: without this the page itself takes
+     over, which on an empty desktop is a shell that scrolls for no reason. */
+  overscroll-behavior: contain;
+  /* The empty state is inert so a click on the desktop reaches the desktop.
+     This is the one part of it that has to answer the pointer, or the wheel
+     lands on whatever is underneath and the box that was made scrollable
+     cannot be scrolled. */
+  pointer-events: auto;
 }
 
 /* One chord and what it does. `break-inside` so a row is never split down the
@@ -1185,6 +1207,10 @@ html.no-tutorial .empty .tutorial { display: none; }
   align-items: baseline;
   break-inside: avoid;
   padding: .1rem 0;
+  /* Two to a row on an output wide enough for two, one on anything narrower,
+     and never a third: three of these plus their gaps is wider than the
+     `max-width` above, so the row cannot hold one. */
+  flex: 1 1 22rem;
 }
 
 /* The chord itself, fixed-width so the descriptions line up down the column

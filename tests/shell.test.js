@@ -3907,6 +3907,34 @@ if (mode === 'scrolling') {
     check('the empty state lays out with flexbox',
       sheet.value(empty, 'display') === 'flex');
 
+    /* The keymap on a full config is fifty chords or more, which is taller
+       than the box it is drawn in. That box has been bounded since it was
+       written, and until now nothing could scroll it:
+
+       `.empty` is inert so a click on an empty desktop reaches the desktop,
+       and `pointer-events` is inherited -- so the wheel went through the list
+       to the page behind it. And a `columns: 2` box with a bounded height does
+       not scroll at all: it lays out a third column to the right, which with
+       `overflow-y` computing the other axis to `auto` put the rest of the
+       chords behind a horizontal scrollbar instead.
+
+       A wrapping flex row overflows downwards, which is what a bounded box
+       wants. Flex and not grid for the reason the sweep below exists: Servo
+       has no grid, and this is drawn by Servo. */
+    const keys = new El('pre');
+    keys.className = 'keys';
+    empty.append(keys);
+    check('the keymap wraps into rows rather than into columns',
+      sheet.value(keys, 'display') === 'flex'
+      && sheet.value(keys, 'flex-wrap') === 'wrap'
+      && sheet.value(keys, 'columns') === '');
+    check('and a keymap taller than its box scrolls',
+      sheet.value(keys, 'overflow-y') === 'auto'
+      && sheet.value(keys, 'max-height') !== '');
+    check('and takes the wheel, which the empty state around it does not',
+      sheet.value(keys, 'pointer-events') === 'auto'
+      && sheet.value(empty, 'pointer-events') === 'none');
+
     const grids = text.split('\n')
       /* The `@supports` condition names the property it is testing for and is
          not a declaration of it. */
