@@ -11,6 +11,42 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Fixed
+- VRAM climbing for as long as a screen share was open — a couple of hundred
+  megabytes a minute on a shared 1440p screen, none of it given back until the
+  session ended. Two things were doing it, and a share is what made both
+  visible: it keeps every client painting, and an idle desktop paints nothing.
+  - The Vulkan renderer keeps one image per shared-memory `wl_buffer` it has
+    uploaded, so a client that paints every frame is not reallocated and
+    re-uploaded every frame. Those entries are keyed by the buffer's object id
+    and the renderer offers `forget_shm_buffer` for the compositor to call when
+    one dies — which nothing ever did. `buffer_destroyed` was an empty body, so
+    every shm buffer any client had ever destroyed left its image behind for
+    the life of the session. Destroyed buffers are now queued there and
+    forgotten once a turn of the event loop, which is before the renderer is
+    moved out to draw with.
+  - A capture composited into a buffer it allocated and freed per frame: a
+    whole screen off the GPU, thirty times a second, for every share on the
+    readback path — and one `vkCreateImage` and one import per frame with it.
+    The buffers are now kept between frames by shape, at most four of them, and
+    let go of once nothing is being captured.
+- The screencast test's stand-in frontend never claimed
+  `org.freedesktop.portal.Desktop`, so every call it made was refused as soon
+  as the compositor started checking that every caller on the impl interface is
+  the frontend. It claims the name now, and retries the first call while the
+  compositor's watcher catches up with the signal. What still fails there is a
+  token that no longer survives a compositor restart, which is a question about
+  the remembered table rather than about the test.
+- A share that was resized never went back to being drawn into directly. Only
+  the Vulkan renderer can allocate the buffers a consumer imports, and the
+  renderer is generic where a resize is answered — so the DRM backend answered
+  every renegotiation with no buffers at all, which is the offer of a DMA-BUF
+  format withdrawn. One resize of a shared window, and the share spent the rest
+  of the session compositing into an offscreen and reading it back. The
+  allocation is now asked of whichever renderer is drawing, through
+  `Captures::cast_targets`; GLES still answers with nothing, which is what puts
+  a nested session on shared memory as before.
+
 ## [0.1.8] - 2026-08-17
 
 ### Added

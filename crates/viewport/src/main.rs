@@ -757,6 +757,13 @@ fn run() -> Result<()> {
             }
         }
 
+        // Before the frame: a buffer destroyed on this turn's dispatch is one
+        // whose image the renderer is still holding, and the renderer is about
+        // to be moved out to draw with.
+        state.forget_dead_buffers();
+        // And the capture buffers, once there is nothing left to capture for.
+        state.release_capture_scratch();
+
         let at = mark();
         state.render_if_needed();
         let rendered = since(at);

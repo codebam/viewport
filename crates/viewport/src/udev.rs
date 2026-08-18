@@ -293,10 +293,37 @@ pub enum Gpu {
 /// copies of the capture paths.
 pub trait Captures: smithay::backend::renderer::RendererSuper {
     type Buffer: Send + 'static;
+
+    /// Buffers a screen share can be handed to draw into, at `size`.
+    ///
+    /// Empty from a renderer that cannot allocate them, which is what puts a
+    /// share on the shared-memory path: a frame is composited into an
+    /// offscreen, read back off the GPU and written into the consumer's
+    /// memory instead of being drawn where the consumer is already looking.
+    ///
+    /// This is on the trait because a resize has to be answered from inside
+    /// the render pass, where the renderer is generic. Answering it with
+    /// nothing — which is what happened before, for both renderers — dropped
+    /// every resized share onto that readback path for the rest of the
+    /// session, and a full screen allocated and freed thirty times a second
+    /// is the cost that arrives with it.
+    fn cast_targets(
+        &mut self,
+        _size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) -> Vec<smithay::backend::allocator::dmabuf::Dmabuf> {
+        Vec::new()
+    }
 }
 
 impl Captures for VulkanRenderer {
     type Buffer = smithay::backend::allocator::dmabuf::Dmabuf;
+
+    fn cast_targets(
+        &mut self,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) -> Vec<smithay::backend::allocator::dmabuf::Dmabuf> {
+        crate::state::ViewportState::allocate_cast_targets(self, size)
+    }
 }
 
 impl Captures for smithay::backend::renderer::gles::GlesRenderer {
@@ -3169,10 +3196,15 @@ impl ViewportState {
                 // `feed_casts`. The state does not hold the renderer while it
                 // is lent out, so anything reaching for `self.udev` in there
                 // finds nothing.
-                // Only the Vulkan renderer can allocate the DMA-BUFs a cast
-                // hands over; under GLES a share takes the shared-memory path,
-                // so there is nothing to resize here.
-                self.resize_casts(None::<&mut VulkanRenderer>);
+                // Allocated through the renderer in hand, because the state
+                // does not hold it while it is lent out: reaching for
+                // `self.udev` in there finds nothing, and a resize answered
+                // with no buffers is the DMA-BUF offer withdrawn — a share
+                // dropped onto the readback path for the rest of the session
+                // by one resize. Only Vulkan can allocate them; GLES answers
+                // with none, which is the shared-memory path a nested session
+                // was on anyway.
+                self.resize_casts(|size| renderer.cast_targets(size));
                 self.feed_casts::<_, <R as Captures>::Buffer>(output, renderer);
             }
         }
