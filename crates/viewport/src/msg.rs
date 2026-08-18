@@ -90,6 +90,8 @@ const STRING_FIELDS: &[&str] = &[
     // A tray item's button and the axis its wheel turned, both words.
     "button",
     "orientation",
+    // And a media button, which is a word with a hyphen in it.
+    "action",
 ];
 
 struct Type {
@@ -200,6 +202,36 @@ const TYPES: &[Type] = &[
         name: "tray.activate",
         fields: &["id", "button", "x", "y"],
         hint: "--id KEY [--button primary|secondary|menu] [--x N --y N]",
+    },
+    Type {
+        name: "clipboard.query",
+        fields: &[],
+        hint: "(the history, as the shell's picker asks for it)",
+    },
+    Type {
+        name: "clipboard.paste",
+        fields: &["id"],
+        hint: "--id N",
+    },
+    Type {
+        name: "clipboard.forget",
+        fields: &["id"],
+        hint: "[--id N] (no id forgets everything)",
+    },
+    Type {
+        name: "mpris.control",
+        fields: &["action"],
+        hint: "--action play-pause|next|previous|stop",
+    },
+    Type {
+        name: "tray.menu.click",
+        fields: &["id", "item"],
+        hint: "--id KEY --item N",
+    },
+    Type {
+        name: "tray.menu.closed",
+        fields: &["id"],
+        hint: "--id KEY",
     },
     Type {
         name: "tray.scroll",
@@ -1262,10 +1294,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 39 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 45 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 39);
+        assert_eq!(TYPES.len(), 45);
     }
 
     #[test]

@@ -402,6 +402,46 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             "" | "primary" | "secondary" | "menu" => state.tray.activate(id, button, x, y),
             other => reject(state, "tray.activate", &format!("no such button {other:?}")),
         },
+        // The clipboard history: what is in it, putting one back, and
+        // forgetting. Everything the compositor already sees — it brokers
+        // every selection on the session — so none of this is a second daemon
+        // holding a data-control connection open.
+        Request::ClipboardQuery => state.notify_clipboard(),
+        Request::ClipboardPaste { id } => {
+            let Some(_text) = state.clipboard.take(id) else {
+                // Gone: the history was cleared, or the limit dropped, while
+                // the picker was open. Not worth refusing over — the picker is
+                // told what the history is now.
+                state.notify_clipboard();
+                return;
+            };
+            state.offer_clipboard();
+            state.notify_clipboard();
+        }
+        Request::ClipboardForget { id } => {
+            match id {
+                Some(id) => {
+                    state.clipboard.remove(id);
+                }
+                // Everything, which is what somebody asks for after copying a
+                // password. The selection itself is left alone: taking the
+                // clipboard away from the application that owns it is not
+                // this compositor's to do.
+                None => state.clipboard.clear(),
+            }
+            state.notify_clipboard();
+        }
+
+        // A button on the bar's media widget, sent to whichever player the
+        // compositor last reported. The action is checked there rather than
+        // here, where the list of methods lives.
+        Request::MprisControl { action } => state.mpris.control(action),
+
+        // Both halves of an open menu: a row chosen, and the menu going away
+        // without one. The application is told either way, because a menu it
+        // is never told about closing is one it believes is still on screen.
+        Request::TrayMenuClick { id, item } => state.tray.menu_click(id, item),
+        Request::TrayMenuClosed { id } => state.tray.menu_closed(id),
         Request::TrayScroll {
             id,
             delta,

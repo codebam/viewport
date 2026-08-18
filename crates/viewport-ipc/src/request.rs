@@ -153,6 +153,61 @@ pub enum Request {
         y: i32,
     },
 
+    /// The clipboard history, please — what a picker asks when it opens.
+    #[serde(rename = "clipboard.query")]
+    ClipboardQuery,
+
+    /// Put an entry back on the clipboard.
+    ///
+    /// The compositor becomes the owner of the selection, which is the whole
+    /// point of keeping the history: the application that copied it may have
+    /// exited hours ago, and a Wayland selection lives only as long as the
+    /// client offering it.
+    #[serde(rename = "clipboard.paste")]
+    ClipboardPaste { id: u32 },
+
+    /// Forget one entry, or — with no id — all of them, which is what somebody
+    /// asks for after copying a password.
+    #[serde(rename = "clipboard.forget")]
+    ClipboardForget {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
+    },
+
+    /// A button on the bar's media widget.
+    ///
+    /// Goes to whichever player the compositor last reported, which is the one
+    /// the widget is drawing — naming it here would be a name the shell read
+    /// off a message that may already have been replaced.
+    #[serde(rename = "mpris.control")]
+    MprisControl {
+        /// `"play-pause"`, `"next"`, `"previous"` or `"stop"`. Anything else
+        /// is refused: this is a string from a page, and the interface has
+        /// methods a bar has no business calling.
+        action: String,
+    },
+
+    /// A row of an open tray menu was chosen.
+    ///
+    /// The menu is the compositor's: it fetched the layout and the shell drew
+    /// what it was handed, so the row is named by the id the application gave
+    /// it rather than by anything the shell made up.
+    #[serde(rename = "tray.menu.click")]
+    TrayMenuClick {
+        /// Which item's menu, as `tray.update` named it.
+        id: String,
+        /// The row, as `tray.menu` named it.
+        item: i32,
+    },
+
+    /// An open tray menu was dismissed without a choice.
+    ///
+    /// Applications are told, because a menu that is never closed is one they
+    /// believe is still on screen — several rebuild their menu on close, and
+    /// one that is never told keeps serving a stale one.
+    #[serde(rename = "tray.menu.closed")]
+    TrayMenuClosed { id: String },
+
     /// The wheel turned over a tray item.
     #[serde(rename = "tray.scroll")]
     TrayScroll {

@@ -134,6 +134,48 @@ pub enum Event {
     #[serde(rename = "tray.update")]
     TrayUpdate { items: Vec<TrayItem> },
 
+    /// A tray item's menu, fetched and ready to draw.
+    ///
+    /// Sent in answer to `tray.activate` with `button` of `menu` — but only
+    /// for the items that publish a `com.canonical.dbusmenu` object. An item
+    /// that implements `ContextMenu` instead draws its own window and nothing
+    /// comes back here, which is why this is an event rather than a reply: the
+    /// shell asks the same question for every item and draws a menu only when
+    /// there is one to draw.
+    #[serde(rename = "tray.menu")]
+    TrayMenu {
+        /// Which item's menu, as `tray.update` named it.
+        id: String,
+        /// Where the icon was, from the request — so the menu opens under the
+        /// icon that was clicked rather than wherever the shell last saw one.
+        x: i32,
+        y: i32,
+        items: Vec<TrayMenuItem>,
+    },
+
+    /// The clipboard history, whole, whenever it changes — and in answer to
+    /// `clipboard.query`, which is what a picker asks when it opens.
+    ///
+    /// A snapshot for the same reason the tray is one: it is a short list the
+    /// shell redraws in a single pass, and reconciling three message kinds
+    /// would be work spent to save a few hundred bytes on a message sent when
+    /// somebody presses copy.
+    #[serde(rename = "clipboard.history")]
+    ClipboardHistory { entries: Vec<ClipboardEntry> },
+
+    /// What is playing, for the bar's media widget.
+    ///
+    /// Sent when it changes rather than on the status tick: a track lasts
+    /// minutes and a pause is instant, so a widget driven by the two-second
+    /// sample would be both stale and a redraw of the desktop every two
+    /// seconds. `player` is absent when nothing is running, which is what
+    /// takes the widget off the bar.
+    #[serde(rename = "mpris.update")]
+    MprisUpdate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        player: Option<MprisPlayer>,
+    },
+
     /// System statistics for the bar.
     ///
     /// `cpu` and `memory` are `-1.0` when unavailable rather than absent: the
@@ -477,6 +519,10 @@ pub enum BarWidget {
     /// by the compositor. Mirrors `volume` but reads `@DEFAULT_AUDIO_SOURCE@`.
     #[serde(rename = "mic")]
     Mic,
+    /// What is playing, over MPRIS, sampled by the compositor and sent as
+    /// `mpris.update` rather than with the status tick.
+    #[serde(rename = "mpris")]
+    Mpris,
 }
 
 /// One entry in a `bar_items` override, as `bar_items` in the config file,
@@ -559,11 +605,116 @@ pub struct TrayItem {
     pub tooltip: String,
 
     /// Whether the item says its primary click should open its menu rather
-    /// than activate it — `ItemIsMenu`. The menu itself is not drawn yet, so
-    /// this is passed on for the shell to style and for the compositor to
-    /// route to `ContextMenu`.
+    /// than activate it — `ItemIsMenu`. Passed on so the shell can style it,
+    /// and acted on by the compositor, which turns that click into the menu.
     #[serde(default)]
     pub is_menu: bool,
+
+    /// Whether the item publishes a menu this compositor can draw — a
+    /// `com.canonical.dbusmenu` object it answered a layout for.
+    ///
+    /// The shell asks for a menu the same way either way; this only says
+    /// whether asking will draw one here or hand the request to the
+    /// application to draw its own window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_menu: bool,
+}
+
+/// One thing that was copied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardEntry {
+    /// What `clipboard.paste` names. Never reused within a session, so a
+    /// picker's answer cannot land on an entry that has moved since it was
+    /// drawn.
+    pub id: u32,
+    /// The text, as it was copied. Not truncated here: what a picker shows of
+    /// a long entry is a styling question, and a shell that was handed one
+    /// line could not offer to paste the rest.
+    pub text: String,
+}
+
+/// The media player the bar is showing.
+///
+/// Flattened from MPRIS, which every player on a Linux desktop publishes: a
+/// bus name, an object, and metadata behind it. What a bar needs is what is
+/// playing, whether it is playing, and which buttons are worth drawing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MprisPlayer {
+    /// The player's bus name without the MPRIS prefix — `spotify`, `mpv`,
+    /// `firefox.instance_1_15`. What it calls itself, and what the shell shows
+    /// where a track has no title.
+    pub id: String,
+
+    pub title: String,
+    /// Every artist the track names, joined — a track can have several and
+    /// players send a list even for the one.
+    pub artist: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub album: String,
+
+    /// `"playing"`, `"paused"` or `"stopped"`, lowercased from MPRIS.
+    pub status: String,
+
+    /// Cover art the page can draw: a `data:` URL for a local file, the
+    /// player's own `https://` URL where it gave one, or empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub art: String,
+
+    /// Which buttons are worth drawing. A player answers all four and they are
+    /// not decoration: `can_pause` is false for a live stream that can only be
+    /// stopped, and a button that does nothing is worse than no button.
+    #[serde(default)]
+    pub can_go_next: bool,
+    #[serde(default)]
+    pub can_go_previous: bool,
+    #[serde(default)]
+    pub can_pause: bool,
+    #[serde(default)]
+    pub can_play: bool,
+}
+
+/// One row of a tray item's menu.
+///
+/// Flattened from `com.canonical.dbusmenu`, whose properties are an open map
+/// of anything an application cares to put in it. What a shell needs to draw a
+/// menu is a label, whether the row can be chosen, whether it is ticked, and
+/// what is under it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrayMenuItem {
+    /// The item's own id, as `tray.menu.click` names it. Assigned by the
+    /// application, unique within its menu, and meaningless anywhere else.
+    pub id: i32,
+
+    pub label: String,
+
+    /// `"standard"` or `"separator"`. A separator has no label and cannot be
+    /// chosen; it is a line.
+    pub kind: String,
+
+    /// False for a row that is shown greyed out rather than hidden — an
+    /// application says which, and a shell that drew a disabled row as a live
+    /// one would send clicks nothing acts on.
+    pub enabled: bool,
+
+    /// `""`, `"checkmark"` or `"radio"`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub toggle: String,
+
+    /// Whether that tick or dot is on. Meaningless without `toggle`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub checked: bool,
+
+    /// The row's icon as a `data:` URL, resolved the same way an item's own
+    /// icon is, or empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+
+    /// A submenu, already fetched. The whole tree arrives at once rather than
+    /// a level at a time: a menu is small, the shell draws it in one pass, and
+    /// a second round trip per submenu would be a menu that opens in stages
+    /// over a compositor that is trying to hold a frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<TrayMenuItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -977,7 +1128,17 @@ mod tests {
                 actions: Vec::new(),
             })),
             json(&Event::NotificationClose { id: 1 }),
+            json(&Event::ClipboardHistory {
+                entries: Vec::new(),
+            }),
+            json(&Event::MprisUpdate { player: None }),
             json(&Event::TrayUpdate { items: Vec::new() }),
+            json(&Event::TrayMenu {
+                id: String::new(),
+                x: 0,
+                y: 0,
+                items: Vec::new(),
+            }),
             json(&Event::OutputLayout {
                 outputs: Vec::new(),
             }),
@@ -1010,7 +1171,10 @@ mod tests {
                 "session.restore",
                 "notification.add",
                 "notification.close",
+                "clipboard.history",
+                "mpris.update",
                 "tray.update",
+                "tray.menu",
                 "output.layout",
                 "screencast.pick",
                 "screencast.pick.done",

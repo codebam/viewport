@@ -121,6 +121,10 @@ function handleShellCommand(command, args) {
       }
       break;
     }
+    case 'clipboard':
+      toggleClipboard();
+      break;
+
     case 'bar.toggle':
       toggleBar();
       break;
@@ -474,6 +478,10 @@ window.addEventListener('viewport', (event) => {
       if (nextId != null && !selectedIds.has(nextId)) {
         clearSelection();
       }
+      /* A click on a window is given to the client, so the document listener
+         at the bottom of this file never sees it. The focus moving is what
+         that click looks like from here, and an open menu has to go with it. */
+      closeTrayMenu();
       focusedId = nextId;
       /* The whole state transition for the matrix layout: one splice, and the
          relayout at the bottom of this case reads the array as it now stands.
@@ -518,11 +526,35 @@ window.addEventListener('viewport', (event) => {
       hideScreencastPicker(message.id);
       break;
 
+    case 'clipboard.history':
+      /* Sent on every copy and in answer to clipboard.query. Drawn only while
+         the picker is open; see applyClipboard. */
+      applyClipboard(message.entries ?? []);
+      break;
+
+    case 'mpris.update':
+      /* Sent when it changes rather than on the status tick, so this redraws
+         the widgets and nothing else: a track starting cannot move a window. */
+      mprisPlayer = message.player ?? null;
+      renderBarsWidgets();
+      break;
+
+    case 'tray.menu':
+      /* The compositor fetched the menu; the shell draws exactly what it was
+         handed. Only items whose menu this compositor can read send one —
+         the rest draw their own window and nothing arrives here. */
+      showTrayMenu(message);
+      break;
+
     case 'tray.update':
       /* The whole tray, every time any part of it changes; see the event's own
          note. Nothing else in a tray message can move a window, so this does
          not relayout. */
       applyTray(message.items ?? []);
+      /* A tray that changed under an open menu is an application that
+         restarted, exited or changed what it is offering, and the menu on
+         screen is no longer the menu it published. */
+      closeTrayMenu();
       break;
 
     case 'notification.add':
@@ -571,6 +603,21 @@ window.addEventListener('resize', relayoutAll);
 document.addEventListener('contextmenu', (event) => {
   event.preventDefault();
 }, true);
+
+/* A click anywhere else takes an open tray menu down, which is what a menu
+ * does everywhere. Rows stop the event themselves, so this only ever sees the
+ * clicks that missed.
+ *
+ * A click on a *window* never reaches here — the compositor gives it to the
+ * client — so the menu is also closed when the focus moves, which is what a
+ * click on a window causes. Between the two there is no way to leave one
+ * stranded. */
+document.addEventListener('click', () => {
+  closeTrayMenu();
+  /* And the clipboard picker, which is a menu in every way that matters: rows
+     stop the event themselves, so this only sees the clicks that missed. */
+  closeClipboard();
+});
 
 send({ type: 'output.query' });
 /* Before view.query: the layout has to be in place as slots before the windows

@@ -137,6 +137,19 @@ let lastStatus = {};
  * every tray.update replaces it whole, which is why nothing here reconciles
  * adds against removes. */
 let trayItems = [];
+/* The tray item whose menu is open, or null. The menu itself is drawn from
+ * what the compositor sent and lives in the DOM; this is only what a click has
+ * to name to send an answer back. */
+let trayMenuOpen = null;
+/* What is playing, as the compositor last read it off MPRIS, or null when
+ * nothing is. Only sent while a media widget is on the bar — a desktop without
+ * one does not follow the session's players at all. */
+let mprisPlayer = null;
+/* The clipboard history, as the compositor last sent it, and whether the
+ * picker is on screen. The entries are kept whether or not it is open, because
+ * they arrive on every copy and the picker opens without waiting for one. */
+let clipboardEntries = [];
+let clipboardOpen = false;
 let currentMode = 'default';
 /* The layout models the shell implements. Set by the compositor from the
  * config file, and switched at runtime with `shell layout.model`.
@@ -288,6 +301,8 @@ function dropOverlaysForOutput(name) {
   if (changed) send({ type: 'shell.overlay', rects: [...overlays.values()] });
 }
 const screencastEl = document.getElementById('screencast');
+const trayMenuEl = document.getElementById('tray-menu');
+const clipboardEl = document.getElementById('clipboard');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
 

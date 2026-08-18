@@ -745,11 +745,27 @@ reading `temperature_2m` and `weather_code`. A bare `"location": "New York"`
 is the form to use; several weather widgets may list different places. Refreshed
 every fifteen minutes, and left empty on failure rather than crashing the bar.
 
+`mpris` shows what is playing, with the buttons to drive it. Every media
+player on a Linux desktop publishes MPRIS — a bus name beginning
+`org.mpris.MediaPlayer2.`, an object, and metadata behind it — which is why
+`playerctl` works everywhere; the compositor reads it, because the page has no
+bus and a widget that shelled out twice a second would be two processes a
+second on an idle desktop. It is the one widget that is not a line of text: a
+cover, a previous, a play/pause and a next button, and the track. Only the
+buttons the player answers for are drawn — `CanPause` is false on a live
+stream that can only be stopped, and a button that does nothing is worse than
+no button. Clicking the widget anywhere else is play/pause and scrolling it
+skips, up for the track before and down for the one after. Where several
+players are running, the one that is playing wins over one that is paused,
+which is the rule `playerctl` uses. Nothing playing draws nothing at all.
+
 A volume widget is optional plumbing on the compositor: since the default bar
 does not show volume, the `wpctl` subprocess is only spawned when a `volume`
 or `mic` widget is present, and only then does a status sample pay for it (one
 subprocess per audio widget kind). The same
-goes for the extra mounts — a bar with no widgets stats nothing extra.
+goes for the extra mounts — a bar with no widgets stats nothing extra. `mpris`
+is the same rule taken further: with no media widget on the bar, the
+compositor opens no connection for it, starts no thread and follows no player.
 
 ## Overriding the whole bar
 
@@ -983,15 +999,56 @@ it is named here. An item that ships its own icons and points at them with
 `IconThemePath` is searched there first, whatever this says, and applications
 that publish raw pixmaps rather than names need no theme at all.
 
-Clicks: left activates, right asks for the menu, middle is the secondary
-action, and the wheel scrolls — which is what a volume applet in a tray expects.
-Items that publish their menu as a `com.canonical.dbusmenu` object rather than
-answering `ContextMenu` have a menu the shell cannot draw yet; see
+Clicks: left activates, right opens the menu, middle is the secondary action,
+and the wheel scrolls — which is what a volume applet in a tray expects. An
+item that publishes a `com.canonical.dbusmenu` object has its menu read by the
+compositor and drawn by the shell, so it is styled by the same stylesheet as
+the rest of the desktop; one that implements `ContextMenu` instead is asked to
+draw its own window, as it would be under any other tray. Submenus open in
+place rather than flying out beside the menu — everything the shell draws over
+a window is one rectangle it has to name to the compositor, and a panel outside
+that rectangle would be drawn behind the window it is meant to be over. See
 [`docs/protocols.md`](protocols.md#the-system-tray).
 
 Where the tray sits on the bar is the shell's business, like every other bar
 item: it is `tray` in `bar_items`, and it draws nothing at all when there is
 nothing registered.
+
+## The clipboard history
+
+On by default, keeping the last 25 things copied.
+
+A Wayland selection is not a buffer anywhere: it is an offer from the client
+that owns it, and the data exists only while that client is running. Close the
+terminal you copied from and the clipboard is empty — which is why every
+desktop grows a clipboard manager, and why one is usually a second daemon
+holding a `wlr-data-control` connection open. The compositor is already that
+daemon: every selection on the session passes through it, so keeping the last
+few is reading what is already being offered.
+
+```jsonc
+{
+  "clipboard_history": 25   // 0 keeps nothing at all
+}
+```
+
+`Mod4+Shift+v` opens the picker, which the shell draws — so it is styled by the
+stylesheet already open in the editor, like the notifications. Choosing an
+entry puts it back on the clipboard with the compositor as the selection's
+owner, which is the whole point: the application that copied it may have exited
+hours ago. A row's ✕ forgets that entry and the footer forgets everything,
+which is what somebody asks for after copying a password.
+
+Text only, and only the clipboard. Recording the primary selection would mean
+an entry for every word dragged over with a mouse, and images are megabytes
+each with nowhere to draw them in a list of lines. Entries are capped at 256
+KiB — a clipboard holds what a person copied, and what a person copied fits on
+a screen.
+
+`"clipboard_history": 0` turns it off: nothing is read and nothing is kept, for
+a session that would rather run cliphist or one that does not want a copy of
+every password that passes through the clipboard. The setting applies on
+reload, and turning it off empties what was already there.
 
 ## Window rules
 

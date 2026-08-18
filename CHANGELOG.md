@@ -12,6 +12,58 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- A clipboard history, kept by the compositor and drawn by the shell. A
+  Wayland selection is not a buffer anywhere — it is an offer from the client
+  that owns it, and it dies with that client, which is why closing the
+  terminal you copied from empties the clipboard and why every desktop grows a
+  manager for this. The compositor is already the program every selection
+  passes through, so keeping the last few is reading what is being offered
+  rather than standing up a daemon to hold a `wlr-data-control` connection
+  open. `Mod4+Shift+v` opens a picker; choosing an entry puts it back on the
+  clipboard with the compositor as the owner, so it can be pasted long after
+  the application that copied it has exited. Text only and the clipboard only:
+  the primary selection would mean an entry for every word dragged over with a
+  mouse. `clipboard_history` says how many to keep and `0` turns it off
+  entirely, on reload as well as at startup.
+- Pasting into a Wayland window from an X11 one works. The compositor
+  advertised XWayland's selection to every Wayland client and then answered
+  nothing when one asked for it, because `SelectionHandler::send_selection`
+  was never implemented — copying in an X application and pasting in a Wayland
+  one did nothing at all, with nothing in the log. The server-side selection
+  now records who owns it, so a request is either forwarded to the XWM or
+  answered from the clipboard history.
+- A media widget for the bar: what is playing, and the buttons to drive it.
+  Every player on a Linux desktop publishes MPRIS — a bus name beginning
+  `org.mpris.MediaPlayer2.`, an object, and metadata behind it — which is why
+  `playerctl` works everywhere and why `mpris` in `bar_widgets` needs nothing
+  installed. The compositor reads it rather than the shell, because the page
+  has no bus and a widget shelling out to `playerctl` twice a second would be
+  two processes a second on an idle desktop. It is the one widget that is not
+  a line of text: a cover, previous, play/pause, next and the track — and only
+  the buttons the player answers for, since `CanPause` is false on a live
+  stream that can only be stopped and a button that does nothing is worse than
+  no button. Where several players are running the one that is playing wins,
+  which is the rule `playerctl` uses. With no media widget on the bar the
+  compositor opens no connection for it and follows no player at all, the same
+  rule that already keeps `wpctl` from being spawned for a bar with no volume
+  widget.
+- Tray menus are drawn by the shell. An item points at a
+  `com.canonical.dbusmenu` object — Canonical's specification, which the tray
+  one says nothing about, and which is what GTK and Qt both publish a menu
+  through — or it implements `ContextMenu` and draws its own window. Both are
+  in use, so the shell asks the same question for every item and the
+  compositor decides which it was: a menu object is read here and sent over,
+  and everything else is asked to draw its own. Reading one is `AboutToShow`
+  and then `GetLayout` at depth −1, because a menu is usually built when it is
+  asked for and because a round trip per submenu would be a menu that opens in
+  stages. Rows an application marked invisible are dropped rather than sent to
+  be hidden, labels lose the mnemonic marker the toolkit would have drawn, and
+  a row's icon is resolved the same way an item's is. Submenus open in place
+  rather than flying out: everything the shell draws over a window is one
+  rectangle it has to name, and a panel outside that rectangle would be drawn
+  behind the window it is meant to be over. Choosing a row and dismissing the
+  menu are both reported to the application — several rebuild their menu on
+  close, and one that is never told keeps serving a stale one.
 - A system tray. The compositor claims `org.kde.StatusNotifierWatcher` and a
   host name beside it, follows every application that registers an item, and
   forwards the tray to the shell, which draws the icons on the bar — the same

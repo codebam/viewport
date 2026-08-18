@@ -8,32 +8,6 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-## Tray menus (`com.canonical.dbusmenu`)
-
-The tray itself is done — see
-[`docs/protocols.md`](protocols.md#the-system-tray). What is missing is the
-menu. An item that answers `ContextMenu` draws its own window and works today;
-one that publishes a `com.canonical.dbusmenu` object instead expects the host
-to fetch its layout and draw it, and this does not yet. That is a recursive
-`GetLayout` over a variant tree, a shell overlay to draw it in, and `Event`
-calls back for clicks — and it is what stands between the current tray and the
-menus GTK applications ship.
-
-## MPRIS media widget
-
-`mpris` appears in one place today — a keybinding that shells out to
-`playerctl`. The bar already samples PipeWire for sink and source volume on a
-timer, so a player's title, artist and play state can ride the same tick, with
-previous, play/pause and next as buttons that call back over the bus.
-
-## Clipboard history
-
-The compositor brokers `wl_data_device`, primary selection and
-`wlr-data-control`, so it already sees every selection offered on the session.
-Keeping the last N text and image offers and drawing a picker in the shell
-gives a clipboard manager with no second process, the same argument that put
-notifications in here.
-
 ## Network and Bluetooth applets
 
 The bar reports link throughput but cannot join a network. NetworkManager and

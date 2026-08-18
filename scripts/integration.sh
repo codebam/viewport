@@ -139,6 +139,20 @@ else
 	echo "=== tray: skipped, no tray-item to run it with"
 fi
 
+# The media player is a cargo example for the same reason again.
+mpris_player="$root/target/debug/examples/mpris-player"
+if [ ! -x "$mpris_player" ] && command -v cargo >/dev/null; then
+	(cd "$root" && cargo build -p viewport --example mpris-player) || true
+fi
+if [ -x "$mpris_player" ]; then
+	run mpris "$root/tests/mpris.test.sh" "$VIEWPORT" "$mpris_player"
+else
+	echo "=== mpris: skipped, no mpris-player to run it with"
+fi
+
+# Needs wl-copy and wl-paste, and skips (77) without them.
+run clipboard "$root/tests/clipboard.test.sh" "$VIEWPORT"
+
 run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"
 run session-lock-takeover "$root/tests/lock-takeover.test.sh" \

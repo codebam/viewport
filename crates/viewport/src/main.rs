@@ -11,6 +11,7 @@ mod apply;
 mod background;
 mod binding;
 mod capture;
+mod clipboard;
 // Not gated on the web engine: an output composite is worth capturing
 // whatever is drawing into it.
 mod color_management;
@@ -30,6 +31,7 @@ mod idle;
 mod input;
 mod ipc;
 mod keyboard_focus;
+mod mpris;
 mod msg;
 mod notification;
 mod output_management;
@@ -629,8 +631,15 @@ fn run() -> Result<()> {
             .handle()
             .insert_source(source, |event, _, state| {
                 use smithay::reexports::calloop::channel::Event;
-                let Event::Msg(crate::tray::Message::Items(items)) = event else {
+                let Event::Msg(message) = event else {
                     return;
+                };
+                let items = match message {
+                    crate::tray::Message::Items(items) => items,
+                    crate::tray::Message::Menu { id, x, y, items } => {
+                        state.notify(&viewport_ipc::Event::TrayMenu { id, x, y, items });
+                        return;
+                    }
                 };
                 // One line per change, not per sample: this fires when an
                 // application registers, exits or says its icon changed. What
@@ -654,6 +663,43 @@ fn run() -> Result<()> {
         // asked for was remembered and is acted on here.
         let enabled = state.tray_enabled;
         state.tray.attach(sender, enabled);
+    }
+
+    // What is playing, on the same shape again — and idle until a bar widget
+    // asks for it, which `apply_config` decides.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(crate::mpris::Message::Player(player)) = event else {
+                    return;
+                };
+                state.notify(&viewport_ipc::Event::MprisUpdate { player });
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the media source: {e}"))?;
+        state.mpris.attach(sender);
+    }
+
+    // The clipboard history. The reading happens on a thread — the other end
+    // of a selection is a pipe to another process — and what comes back lands
+    // here.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(crate::clipboard::Message::Copied(text)) = event else {
+                    return;
+                };
+                if state.clipboard.record(text) {
+                    state.notify_clipboard();
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the clipboard source: {e}"))?;
+        state.clipboard.attach(sender);
     }
 
     // The portals this compositor answers itself: dark mode, and screen

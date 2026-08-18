@@ -203,6 +203,15 @@
     "points at them with IconThemePath is searched there first."
   ],
   "tray": true,
+
+  "_clipboard_history": [
+    "How many things the clipboard remembers. Mod4+Shift+v opens the picker.",
+    "0 keeps nothing at all, for a session that would rather run cliphist —",
+    "or one that does not want a copy of every password that passes through.",
+    "Text only, and only the clipboard: the primary selection would mean an",
+    "entry for every word dragged over with a mouse."
+  ],
+  "clipboard_history": 25,
   "icon_theme": "hicolor",
 
   "_bar_widgets": [
@@ -212,6 +221,7 @@
     "",
     "  { \"type\": \"disk\", \"path\": \"/home\" }   free space on that mount",
     "  { \"type\": \"volume\" }                     default sink's volume and mute",
+    "  { \"type\": \"mpris\" }                      what is playing, with buttons",
     "  { \"type\": \"mic\" }                        default source's (mic) volume and mute",
     "  { \"type\": \"weather\", \"location\": \"New York\" }  conditions for a place",
     "",

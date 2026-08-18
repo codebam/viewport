@@ -168,6 +168,11 @@ const screencastEl = new El('div');
    element rather than a fresh one per lookup: what a dismissal leaves behind
    is only visible if the container is the one the shell appended to. */
 const notificationsEl = new El('div');
+/* And the tray menu, for the same reason: what a click on a row leaves behind
+   is only visible if the element is the one the shell drew into. */
+const trayMenuEl = new El('div');
+/* And the clipboard picker. */
+const clipboardEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -195,6 +200,8 @@ global.document = {
     outputs: outputsEl,
     notifications: notificationsEl,
     screencast: screencastEl,
+    'tray-menu': trayMenuEl,
+    clipboard: clipboardEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -361,6 +368,10 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      a real timer, so nothing synchronous can observe the message — and what
      is worth checking is what goes *into* the file rather than when. */
   + ' sessionForTest: { serialise: serialiseSession },'
+  /* The tray menu's element, and the document's own listeners, so a test can
+     see what was drawn and fire the click that missed it. */
+  + ' get trayMenuEl() { return trayMenuEl; },'
+  + ' get clipboardEl() { return clipboardEl; },'
   /* What smart gaps decide, which is a question about the tree and the layout
      mode rather than about any pixel: whether this workspace holds a lone
      window that fills the tiling area. */
@@ -646,6 +657,165 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'tray.update', items: [] });
   check('and an empty one — the tray switched off — empties the bar',
     tray().children.length === 0);
+}
+
+/* A tray item's menu. The compositor reads it off the application over
+ * com.canonical.dbusmenu and sends it whole; the shell draws exactly that and
+ * decides nothing about what is in it. What is worth checking here is that a
+ * chosen row is named back by the application's own id, that a submenu opens
+ * without the menu leaving its rectangle, and that a menu is never left on
+ * screen with nobody told. */
+{
+  const menu = () => globalThis.__shell.trayMenuEl;
+  const rows = () => menu().children[0]?.children ?? [];
+  const click = (el, type = 'click', event = {}) =>
+    (el.listeners[type] ?? []).forEach((fn) =>
+      fn({ preventDefault() {}, stopPropagation() {}, ...event }));
+  const fire = (type) =>
+    (documentListeners[type] ?? []).forEach((fn) =>
+      fn({ preventDefault() {}, stopPropagation() {} }));
+
+  const open = () => emit({ type: 'tray.menu', id: ':1.5/StatusNotifierItem',
+    x: 100, y: 30, items: [
+      { id: 1, label: 'Open', kind: 'standard', enabled: true },
+      { id: 2, label: '', kind: 'separator', enabled: true },
+      { id: 3, label: 'Sync now', kind: 'standard', enabled: false },
+      { id: 4, label: 'Automatic', kind: 'standard', enabled: true,
+        toggle: 'checkmark', checked: true },
+      { id: 5, label: 'Recent', kind: 'standard', enabled: true, children: [
+        { id: 6, label: 'notes.md', kind: 'standard', enabled: true },
+      ] },
+    ] });
+
+  open();
+  check('the menu is drawn where the compositor said the icon was',
+    menu().hidden === false && menu().style.top === '30px');
+  check('every row the application published is there', rows().length === 6);
+  check('a separator is a line, not a button',
+    rows()[1].tagName === 'div' && rows()[1]._classes.has('tray-menu-separator'));
+  check('a disabled row is marked rather than dropped',
+    rows()[2]._classes.has('disabled'));
+  check('a ticked row says so in text, not in colour alone',
+    rows()[3].children[0].textContent.startsWith('✓'));
+  check('and a submenu starts closed', rows()[5].hidden === true);
+
+  let before = sent.length;
+  click(rows()[2]);
+  check('a disabled row sends nothing',
+    !sent.slice(before).some((m) => m.type === 'tray.menu.click'));
+
+  before = sent.length;
+  click(rows()[4]);
+  check('a row with children opens instead of choosing',
+    rows()[5].hidden === false &&
+    !sent.slice(before).some((m) => m.type === 'tray.menu.click'));
+
+  before = sent.length;
+  click(rows()[5]);
+  const chosen = sent.slice(before).find((m) => m.type === 'tray.menu.click');
+  check('choosing a row names it by the application\'s own id',
+    chosen?.item === 6 && chosen.id === ':1.5/StatusNotifierItem');
+  check('and the menu goes', menu().hidden === true);
+  check('with nothing sent about closing, because the click said so',
+    !sent.slice(before).some((m) => m.type === 'tray.menu.closed'));
+  check('so nothing of it is drawn over the windows any more',
+    !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
+      ?.rects ?? []).some((r) => r.name === 'tray-menu'));
+
+  open();
+  before = sent.length;
+  fire('click');
+  check('a click that missed the menu takes it down',
+    menu().hidden === true);
+  check('and the application is told, because nothing else told it',
+    sent.slice(before).some((m) => m.type === 'tray.menu.closed' &&
+      m.id === ':1.5/StatusNotifierItem'));
+
+  open();
+  before = sent.length;
+  emit({ type: 'view.focused', id: 4 });
+  check('a click on a window closes it too — the shell never sees that click',
+    menu().hidden === true &&
+    sent.slice(before).some((m) => m.type === 'tray.menu.closed'));
+
+  open();
+  emit({ type: 'tray.update', items: [] });
+  check('and an application that exits does not leave its menu behind',
+    menu().hidden === true);
+}
+
+/* The clipboard history picker. The compositor brokers every selection on the
+ * session and keeps the last few; this file draws them and sends back which
+ * one was chosen. Nothing here reads a selection or knows what a mime type is,
+ * which is the point — the history outlives the application that copied it,
+ * and that is only possible in the compositor. */
+{
+  const picker = () => globalThis.__shell.clipboardEl;
+  const rows = () => (picker().children[0]?.children ?? [])
+    .filter((el) => el._classes.has('clipboard-row'));
+  const click = (el, event = {}) => (el.listeners.click ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, ...event }));
+  const fire = (type) => (documentListeners[type] ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+
+  emit({ type: 'clipboard.history', entries: [
+    { id: 3, text: 'the newest thing' },
+    { id: 2, text: 'a\nmultiline\nentry' },
+    { id: 1, text: 'the oldest thing' },
+  ] });
+  /* Kept, but nothing drawn: the message arrives on every copy, and drawing
+     a picker nobody opened would be a composited frame of the whole desktop
+     per copy. */
+  check('the history is kept but not drawn until it is asked for',
+    picker().children.length === 0);
+
+  let before = sent.length;
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+  check('the binding opens the picker', picker().hidden === false);
+  check('and it asks the compositor what is in the clipboard now',
+    sent.slice(before).some((m) => m.type === 'clipboard.query'));
+  check('every entry is a row, newest first', rows().length === 3 &&
+    rows()[0].children[0].textContent === 'the newest thing');
+  /* What is pasted is what was copied; what is drawn is one line, or a row
+     could be as tall as the screen. */
+  check('a multi-line entry is drawn on one line',
+    rows()[1].children[0].textContent === 'a multiline entry');
+
+  before = sent.length;
+  click(rows()[2]);
+  check('choosing a row asks the compositor to put it back on the clipboard',
+    sent.slice(before).some((m) => m.type === 'clipboard.paste' && m.id === 1));
+  check('and the picker goes', picker().hidden === true);
+  check('so nothing of it is drawn over the windows any more',
+    !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
+      ?.rects ?? []).some((r) => r.name === 'clipboard'));
+
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+  before = sent.length;
+  click(rows()[0], { target: rows()[0].children[1] });
+  check('the cross on a row forgets that entry rather than pasting it',
+    sent.slice(before).some((m) => m.type === 'clipboard.forget' && m.id === 3) &&
+    !sent.slice(before).some((m) => m.type === 'clipboard.paste'));
+  check('and forgetting one leaves the picker open', picker().hidden === false);
+
+  before = sent.length;
+  const footer = picker().children[1];
+  click(footer.children[0]);
+  check('and forgetting everything names no entry at all',
+    sent.slice(before).some((m) => m.type === 'clipboard.forget' &&
+      m.id === undefined));
+
+  emit({ type: 'clipboard.history', entries: [] });
+  check('an emptied history redraws the open picker',
+    rows().length === 0);
+
+  before = sent.length;
+  fire('click');
+  check('a click that missed takes the picker down', picker().hidden === true);
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+  check('and the binding closes it again when it is already open',
+    picker().hidden === true);
 }
 
 /* Notifications are the compositor's on D-Bus and the shell's on screen, and
@@ -3433,6 +3603,61 @@ if (mode === 'scrolling') {
   check('and the microphone is never confused with the speakers',
     !micVolume(micSentBefore).some((m) => m.target === 'sink'));
   emit({ type: 'config', layout: mode });
+
+  /* The media widget. The compositor reads MPRIS — the page has no bus — and
+     sends what is playing when it changes; the widget draws it, with only the
+     buttons the player says it will honour. */
+  {
+    emit({ type: 'config', layout: mode, bar_widgets: [{ type: 'mpris' }] });
+    const el = wout.widgetsEls[0];
+    const parts = () => el.children;
+    const press = (node) => (node.listeners.click ?? [])
+      .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+
+    check('nothing playing draws nothing at all',
+      parts().length === 0 && el.textContent === '');
+
+    emit({ type: 'mpris.update', player: { id: 'mpv', title: 'Rhubarb',
+      artist: 'Aphex Twin', album: 'Selected Ambient Works', status: 'playing',
+      art: '', can_go_next: true, can_go_previous: false, can_pause: true,
+      can_play: true } });
+    const label = parts().find((n) => n._classes.has('mpris-label'));
+    check('a playing track is drawn with its artist',
+      label?.textContent === 'Rhubarb — Aphex Twin');
+    const buttons = parts().filter((n) => n._classes.has('mpris-button'));
+    check('and a button for each thing the player says it can do',
+      buttons.filter((b) => !b.hidden).length === 2);
+    check('the one the player cannot do is hidden rather than dead',
+      buttons[0].hidden === true);
+    check('a playing track offers pause, which is what pressing it does',
+      buttons[1].textContent === '\u{f03e4}');
+
+    let before = sent.length;
+    press(buttons[1]);
+    check('pressing it drives the player over the bus, not through a program',
+      sent.slice(before).some((m) => m.type === 'mpris.control' &&
+        m.action === 'play-pause') &&
+      !sent.slice(before).some((m) => m.type === 'shell.exec'));
+
+    before = sent.length;
+    el.listeners.wheel.forEach((fn) => fn({ preventDefault() {}, deltaY: 100 }));
+    check('scrolling down skips to the next track',
+      sent.slice(before).some((m) => m.type === 'mpris.control' &&
+        m.action === 'next'));
+
+    emit({ type: 'mpris.update', player: { id: 'mpv', title: 'Rhubarb',
+      artist: 'Aphex Twin', album: '', status: 'paused', art: '',
+      can_go_next: true, can_go_previous: true, can_pause: true,
+      can_play: true } });
+    check('a paused track offers play',
+      parts().filter((n) => n._classes.has('mpris-button'))[1]
+        .textContent === '\u{f040a}');
+
+    emit({ type: 'mpris.update', player: null });
+    check('and a player that exits takes the widget off the bar',
+      parts().length === 0 && el.textContent === '');
+    emit({ type: 'config', layout: mode });
+  }
 
   /* A full bar override, `bar_items`: modules and widgets listed together in
      whatever order the config wants them drawn. Unlike bar_widgets, this

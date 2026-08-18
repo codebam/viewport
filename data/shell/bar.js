@@ -250,6 +250,150 @@ function syncTray(output) {
   for (let i = trayItems.length; i < existing.length; i++) existing[i].remove();
 }
 
+/* ------------------------------------------------------------------------
+ * A tray item's menu
+ * --------------------------------------------------------------------- */
+
+/* The menu the compositor fetched, drawn where the icon is.
+ *
+ * Every row here came from the application, through `com.canonical.dbusmenu`
+ * and the compositor: the shell decides none of it and invents nothing. What
+ * it does decide is the shape — submenus open in place rather than flying out
+ * beside the menu, because everything the shell draws over a window is one
+ * rectangle it has to name to the compositor, and a submenu hanging outside
+ * that rectangle would be drawn behind the window it is meant to be over. An
+ * accordion has one rectangle by construction.
+ */
+function showTrayMenu(message) {
+  trayMenuOpen = message.id;
+  trayMenuEl.replaceChildren();
+  trayMenuEl.hidden = false;
+
+  const list = document.createElement('div');
+  list.className = 'tray-menu-list';
+  buildTrayMenuRows(list, message.items ?? [], 0);
+  trayMenuEl.append(list);
+
+  /* Under the icon that was clicked, and inside the screen: a menu opened by
+     the rightmost icon on the bar would otherwise run off the edge, and the
+     compositor draws exactly the rectangle it is given — including the part
+     that is not on any monitor. */
+  const width = 240;
+  const bounds = outputBoundsAt(message.x, message.y);
+  const left = Math.max(bounds.left, Math.min(message.x, bounds.right - width));
+  trayMenuEl.style.left = `${Math.round(left)}px`;
+  trayMenuEl.style.top = `${Math.round(message.y)}px`;
+  trayMenuEl.style.width = `${width}px`;
+  trayMenuEl.style.maxHeight = `${Math.max(120, bounds.bottom - message.y - 8)}px`;
+
+  setOverlay('tray-menu', trayMenuEl);
+}
+
+/* The output the click landed on, in layout coordinates, so a menu can be
+ * kept on the monitor it was opened from. Falls back to the whole page, which
+ * is what a click at a position no output claims would have got anyway. */
+function outputBoundsAt(x, y) {
+  for (const [, output] of outputs) {
+    const rect = output.el?.getBoundingClientRect?.();
+    if (!rect) continue;
+    const right = rect.left + rect.width;
+    const bottom = rect.top + rect.height;
+    if (x >= rect.left && x < right && y >= rect.top && y < bottom) {
+      return { left: rect.left, top: rect.top, right, bottom };
+    }
+  }
+  return { left: 0, top: 0, right: 1e6, bottom: 1e6 };
+}
+
+/* One level of rows, and everything under it, indented.
+ *
+ * A row that has children is a toggle rather than a command: dbusmenu says so
+ * by giving it children, and clicking one sends nothing to the application. */
+function buildTrayMenuRows(list, items, depth) {
+  for (const item of items) {
+    if (item.kind === 'separator') {
+      const line = document.createElement('div');
+      line.className = 'tray-menu-separator';
+      list.append(line);
+      continue;
+    }
+
+    const row = document.createElement('button');
+    row.className = 'tray-menu-row';
+    if (!item.enabled) row.classList.add('disabled');
+    if (item.checked) row.classList.add('checked');
+    if (item.children?.length) row.classList.add('parent');
+    if (depth > 0) row.style.paddingLeft = `${8 + depth * 14}px`;
+
+    if (item.icon) {
+      const img = document.createElement('img');
+      img.src = item.icon;
+      row.append(img);
+    }
+
+    const label = document.createElement('span');
+    label.className = 'tray-menu-label';
+    /* A ticked row says so with a mark rather than with colour alone, which
+       is the one part of a menu a stylesheet cannot supply: the state is the
+       application's and has to be visible without one. */
+    const mark = item.toggle === 'radio' ? '◉' : '✓';
+    label.textContent = item.checked ? `${mark} ${item.label}` : item.label;
+    row.append(label);
+
+    if (item.children?.length) {
+      const chevron = document.createElement('span');
+      chevron.className = 'tray-menu-chevron';
+      chevron.textContent = '▸';
+      row.append(chevron);
+    }
+
+    row.addEventListener('click', (e) => {
+      /* The document closes the menu on any click that is not in it; this is
+         in it. */
+      e.stopPropagation?.();
+      if (!item.enabled) return;
+      if (item.children?.length) {
+        /* Open in place. The rectangle the compositor was given grows with
+           the menu, so it is re-reported after the rows appear. */
+        const open = row.classList.contains('open');
+        row.classList.toggle('open', !open);
+        for (const child of [...list.children]) {
+          if (child._parentRow === row) child.hidden = open;
+        }
+        setOverlay('tray-menu', trayMenuEl);
+        return;
+      }
+      send({ type: 'tray.menu.click', id: trayMenuOpen, item: item.id });
+      closeTrayMenu(false);
+    });
+    list.append(row);
+
+    if (item.children?.length) {
+      const before = list.children.length;
+      buildTrayMenuRows(list, item.children, depth + 1);
+      for (let i = before; i < list.children.length; i++) {
+        const child = list.children[i];
+        /* Which parent a row belongs to, so opening one shows exactly its own
+           descendants. Written on the element rather than kept in a map: the
+           menu is rebuilt from scratch every time it opens. */
+        if (child._parentRow === undefined) child._parentRow = row;
+        child.hidden = true;
+      }
+    }
+  }
+}
+
+/* Take the menu down. `notify` is false when the application already knows —
+ * it was told by the click that chose a row. */
+function closeTrayMenu(notify = true) {
+  if (trayMenuOpen === null) return;
+  if (notify) send({ type: 'tray.menu.closed', id: trayMenuOpen });
+  trayMenuOpen = null;
+  trayMenuEl.replaceChildren();
+  trayMenuEl.hidden = true;
+  setOverlay('tray-menu', null);
+}
+
 /* An item's input, bound once at build.
  *
  * Where the pointer is matters: an application opening its own menu is handed
@@ -348,6 +492,8 @@ function widgetTitle(w) {
     case 'weather': return `weather for ${(w.location || '').trim()}`.trim();
     case 'volume': return 'volume';
     case 'mic': return 'microphone';
+    /* The media widget writes its own, from what is playing. */
+    case 'mpris': return '';
   }
   return '';
 }
@@ -392,7 +538,11 @@ function wireWidget(el) {
   el.addEventListener('click', () => {
     const w = el._widget;
     if (!w) return;
-    if (w.type === 'disk') {
+    if (w.type === 'mpris') {
+      /* A click that missed the buttons — on the cover or the title — is the
+         same as pressing play. */
+      send({ type: 'mpris.control', action: 'play-pause' });
+    } else if (w.type === 'disk') {
       /* Open the mount in the default file manager — for this user that is
          a terminal at the directory. `xdg-open` respects the system default,
          whichever it is. */
@@ -406,6 +556,13 @@ function wireWidget(el) {
   });
   el.addEventListener('wheel', (e) => {
     const w = el._widget;
+    if (w?.type === 'mpris') {
+      e.preventDefault();
+      /* Scrolling a media widget skips, which is what every bar that has one
+         does: up for the track before, down for the one after. */
+      send({ type: 'mpris.control', action: e.deltaY < 0 ? 'previous' : 'next' });
+      return;
+    }
     if (!w || (w.type !== 'volume' && w.type !== 'mic')) return;
     e.preventDefault();
     /* Scrolling is the natural volume gesture: up to raise, down to lower,
@@ -633,9 +790,99 @@ function renderBarWidgets(output) {
       }
     } else if (w.type === 'weather') {
       text = weatherText(w.location || '');
+    } else if (w.type === 'mpris') {
+      /* The one widget that is not a string. It draws buttons, so it owns its
+         own children and returns before the assignment below — which would
+         throw them all away. */
+      syncMprisWidget(el);
+      return;
     }
     if (el.textContent !== text) el.textContent = text;
   });
+}
+
+/* The media widget: cover, what is playing, and the buttons the player says
+ * it will honour.
+ *
+ * Buttons rather than a string, because a track is something you skip rather
+ * than read — and only the ones the player answers for: `can_pause` is false
+ * on a live stream that can only be stopped, and a button that does nothing is
+ * worse than no button.
+ *
+ * Kept and updated in place like everything else on the bar. A player that
+ * reports its position sends an update every second, and rebuilding four
+ * elements on each one would be a composited frame per second for a title that
+ * has not changed. */
+function syncMprisWidget(el) {
+  const player = mprisPlayer;
+  if (!player) {
+    /* Nothing playing: the widget collapses through `.module:empty`, exactly
+       as a disk widget with no mount does. */
+    if (el.children.length) el.replaceChildren();
+    if (el.textContent !== '') el.textContent = '';
+    return;
+  }
+
+  const parts = el._mpris ?? (el._mpris = {});
+  const need = (key, tag, className) => {
+    let node = parts[key];
+    if (node === undefined) {
+      node = parts[key] = document.createElement(tag);
+      node.className = className;
+      el.append(node);
+    }
+    return node;
+  };
+
+  /* Order matters and the elements are appended once, so they are built in
+     the order they are drawn: cover, previous, play, next, then the text. */
+  const cover = player.art ? need('cover', 'img', 'mpris-art') : parts.cover;
+  if (cover) {
+    if (player.art && cover.src !== player.art) cover.src = player.art;
+    if (cover.hidden !== !player.art) cover.hidden = !player.art;
+  }
+
+  const previous = need('previous', 'button', 'mpris-button');
+  setModule(previous, '󰒮');
+  if (previous.hidden !== !player.can_go_previous) {
+    previous.hidden = !player.can_go_previous;
+  }
+
+  const play = need('play', 'button', 'mpris-button');
+  /* The glyph is what pressing it will do, which is the convention every
+     player follows: a paused track shows play. */
+  setModule(play, player.status === 'playing' ? '󰏤' : '󰐊');
+  const canToggle = player.status === 'playing' ? player.can_pause : player.can_play;
+  if (play.hidden !== !canToggle) play.hidden = !canToggle;
+
+  const next = need('next', 'button', 'mpris-button');
+  setModule(next, '󰒭');
+  if (next.hidden !== !player.can_go_next) next.hidden = !player.can_go_next;
+
+  const label = need('label', 'span', 'mpris-label');
+  /* A title, with the artist after it where there is one. A player with
+     neither — a browser tab that has published the interface for media it has
+     not loaded — is named by the player itself, so the widget still says what
+     it is. */
+  const title = player.title || player.id;
+  setModule(label, player.artist ? `${title} — ${player.artist}` : title);
+
+  const tip = [player.title, player.artist, player.album]
+    .filter(Boolean).join('\n');
+  if (el.title !== tip) el.title = tip;
+
+  /* Bound once, on the buttons themselves: the widget's own listeners handle
+     a click that landed on neither. */
+  for (const [key, action] of [['previous', 'previous'], ['play', 'play-pause'],
+    ['next', 'next']]) {
+    const button = parts[key];
+    if (button._wired) continue;
+    button._wired = true;
+    button.addEventListener('click', (e) => {
+      e.stopPropagation?.();
+      send({ type: 'mpris.control', action });
+    });
+  }
 }
 
 function renderBarsWidgets() {

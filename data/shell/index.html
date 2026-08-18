@@ -26,6 +26,19 @@
 -->
 <div id="screencast" hidden></div>
 
+<!--
+  An open tray menu. Page level for the same reason again: it belongs to the
+  item that was clicked rather than to a desktop, and it is positioned in
+  layout coordinates, which is what the page is measured in.
+-->
+<div id="tray-menu" hidden></div>
+
+<!--
+  The clipboard history picker, opened with Mod4+Shift+v. Page level like the
+  chooser above: it belongs to the session rather than to one desktop.
+-->
+<div id="clipboard" hidden></div>
+
 <template id="desktop-template">
   <main class="desktop">
     <nav class="bar">
@@ -120,5 +133,6 @@ Mod4+d       launcher</pre>
 <script src="outputs.js"></script>
 <script src="windows.js"></script>
 <script src="bar.js"></script>
+<script src="clipboard.js"></script>
 <script src="screencast.js"></script>
 <script src="commands.js"></script>

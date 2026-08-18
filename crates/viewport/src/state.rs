@@ -176,6 +176,11 @@ pub struct ViewportState {
     pub notifications: crate::notification::Notifications,
     /// The system tray, forwarded to the shell the same way.
     pub tray: crate::tray::Tray,
+    /// What is playing, for the bar's media widget. Idle unless one is on it.
+    pub mpris: crate::mpris::Mpris,
+    /// The last few things copied, so a selection outlives the client that
+    /// offered it.
+    pub clipboard: crate::clipboard::Clipboard,
     /// Whether the configuration wants a tray at all. Kept because the
     /// configuration is read before the event loop has anywhere to send one,
     /// and `Tray::attach` acts on it once it does.
@@ -1139,6 +1144,8 @@ impl ViewportState {
             startup: None,
             notifications: crate::notification::Notifications::default(),
             tray: crate::tray::Tray::default(),
+            mpris: crate::mpris::Mpris::default(),
+            clipboard: crate::clipboard::Clipboard::default(),
             // On unless a file says otherwise: a desktop with no tray is a
             // desktop where several ordinary applications have nowhere to put
             // themselves, and nothing about that is discoverable.
@@ -5764,6 +5771,7 @@ impl ViewportState {
                 }
                 crate::config::BarWidgetConfig::Volume => viewport_ipc::event::BarWidget::Volume,
                 crate::config::BarWidgetConfig::Mic => viewport_ipc::event::BarWidget::Mic,
+                crate::config::BarWidgetConfig::Mpris => viewport_ipc::event::BarWidget::Mpris,
             })
             .collect();
 
@@ -5791,6 +5799,9 @@ impl ViewportState {
                             }
                             crate::config::BarWidgetConfig::Mic => {
                                 viewport_ipc::event::BarWidget::Mic
+                            }
+                            crate::config::BarWidgetConfig::Mpris => {
+                                viewport_ipc::event::BarWidget::Mpris
                             }
                         })
                     }
@@ -5840,6 +5851,14 @@ impl ViewportState {
             drawn_widgets
                 .iter()
                 .any(|w| matches!(w, crate::config::BarWidgetConfig::Mic)),
+        );
+        // Following every media player on the session is worth doing only for
+        // a bar that draws one, which is the same rule the audio sampling
+        // above follows.
+        self.mpris.set_enabled(
+            drawn_widgets
+                .iter()
+                .any(|w| matches!(w, crate::config::BarWidgetConfig::Mpris)),
         );
         if let Some(url) = file.url {
             self.shell_url = Some(url);
@@ -5915,6 +5934,12 @@ impl ViewportState {
         // stylesheet and the keybindings have.
         self.tray_enabled = file.tray.unwrap_or(true);
         self.tray.set_enabled(self.tray_enabled);
+        // How much the clipboard remembers, or nothing at all. Applied on
+        // every load, so a reload that turns it off empties it there and then
+        // rather than at the next restart.
+        self.clipboard
+            .set_limit(file.clipboard_history.unwrap_or(25));
+
         self.tray.set_icon_theme(
             file.icon_theme
                 .clone()
@@ -6647,6 +6672,68 @@ impl ViewportState {
             .max()
             .map(|refresh| std::time::Duration::from_nanos(1_000_000_000_000 / refresh))
             .unwrap_or_else(|| std::time::Duration::from_millis(16))
+    }
+
+    /// Read whatever is on the clipboard now, for the history.
+    ///
+    /// Called from an idle rather than from the selection handler, because
+    /// smithay runs that handler before it stores the new selection: asking
+    /// the seat inside it hands back the *previous* client's data. See
+    /// `SelectionHandler::new_selection` in `handlers`.
+    pub fn capture_clipboard(&mut self, mime: String) {
+        use smithay::wayland::selection::data_device::request_data_device_client_selection;
+
+        if !self.clipboard.enabled() {
+            return;
+        }
+        // A pipe: the client fills the write end, a thread reads this one.
+        // Both ends run on another process's schedule, which is why neither is
+        // touched on the compositor's thread.
+        let (read, write) = match smithay::reexports::rustix::pipe::pipe() {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!("no pipe for the clipboard: {e}");
+                return;
+            }
+        };
+        if let Err(e) = request_data_device_client_selection(&self.seat, mime, write) {
+            // The client that owned it has gone in the meantime, or offered a
+            // type it will not actually send. Neither is worth more than a
+            // debug line: the next copy is another chance.
+            tracing::debug!("could not ask for the selection: {e}");
+            return;
+        }
+        self.clipboard.capture(read);
+    }
+
+    /// Tell the shell what the clipboard history holds.
+    ///
+    /// Sent whole, whenever it changes and whenever a picker asks: it is a
+    /// short list drawn in one pass, and a shell that reconciled adds against
+    /// removes would be doing bookkeeping to save a message sent when somebody
+    /// presses copy.
+    pub fn notify_clipboard(&mut self) {
+        let entries = self.clipboard.entries().to_vec();
+        self.notify(&viewport_ipc::Event::ClipboardHistory { entries });
+    }
+
+    /// Offer the entry the history has just moved to the top, with the
+    /// compositor as the selection's owner.
+    ///
+    /// This is the whole point of keeping a history: the application that
+    /// copied something may have exited hours ago, and a Wayland selection
+    /// lives only as long as the client offering it. Owning it here means the
+    /// compositor answers when a client pastes — see `send_selection` in
+    /// `handlers`.
+    pub fn offer_clipboard(&mut self) {
+        use smithay::wayland::selection::data_device::set_data_device_selection;
+        let dh = self.display_handle.clone();
+        set_data_device_selection(
+            &dh,
+            &self.seat,
+            crate::clipboard::offered_mimes(),
+            crate::clipboard::Owner::History,
+        );
     }
 
     pub fn notify_output_layout(&mut self) {
