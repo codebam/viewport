@@ -393,16 +393,32 @@ window.addEventListener('viewport', (event) => {
           ? message.tiling_mode : 'manual';
         if (next !== tilingMode) {
           tilingMode = next;
-          relayoutAll();
         }
       }
       if (LAYOUT_MODES.includes(message.layout)) {
         if (message.layout !== layoutMode) {
           layoutMode = message.layout;
           normaliseForLayout();
-          relayoutAll();
         }
       }
+      /* And then lay the desktop out again, whatever changed.
+       *
+       * Everything above is either a style the browser reflows for or a value
+       * the geometry pass reads — the gaps, the border's width, whether a lone
+       * window is drawn square — and the compositor is told about all of it
+       * through `view.layout`, which is only sent when a measurement differs
+       * from the last one that was sent. Nothing measures on its own: a
+       * desktop nobody is touching runs no pump, so a setting changed over the
+       * control socket reached the page, changed the stylesheet, and then sat
+       * there.
+       *
+       * That is what "the radius does nothing until I open another window"
+       * was: opening one relayouts, the pass runs, and the values that had
+       * been sitting in the page since the message arrived finally go out.
+       * A config message is rare — a connect, a reload, a line typed at the
+       * socket — so doing this unconditionally costs nothing anybody can
+       * measure. */
+      relayoutAll();
       break;
 
     case 'modifiers':

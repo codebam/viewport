@@ -90,6 +90,14 @@ to summarise rather than to duplicate.
   in this program rather than in a daemon beside it.
 
 ### Fixed
+- A setting changed over the control socket reaches the windows at once. The
+  shell applies a `config` message by writing custom properties and reading
+  them back on the next geometry pass — and nothing runs a geometry pass on
+  its own, so on a desktop nobody was touching the new value sat in the page
+  until something else moved. `config.border --radius 20` did nothing until a
+  window opened, and turning `border.smart` off did not bring the corners
+  back; opening a second window is what "fixed" both, because opening one lays
+  the desktop out again. A config message now does that itself.
 - A rounded window is no longer scanned out square. `RoundedRenderElement`
   offered the wrapped element's buffer for direct scanout, and a hardware
   plane draws a rectangle — a buffer, a source rectangle and a destination

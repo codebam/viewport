@@ -2855,8 +2855,18 @@ if (mode === 'scrolling') {
       smart.radius() === true
       && out.windowsEl.classList.contains('smart-square'));
 
-    /* Set apart: gaps still smart, corners explicitly not. */
+    /* Set apart: gaps still smart, corners explicitly not.
+
+       The config message alone has to do it. Nothing measures on its own — a
+       desktop nobody is touching runs no geometry pass — so a setting that
+       arrives over the socket and waits for the next thing to happen is a
+       setting that appears to do nothing: this is the whole of "the radius
+       does nothing until I open a second window", where opening one is what
+       finally lays the desktop out again. */
     emit({ type: 'config', layout: mode, border: { smart: false } });
+    check('a config message lays the desktop out by itself',
+      !out.windowsEl.classList.contains('smart-square'));
+
     emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
     check('border.smart false keeps the corners while the gaps stay smart',
       smart.radius() === false
