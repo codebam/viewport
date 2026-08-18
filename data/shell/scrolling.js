@@ -57,10 +57,16 @@ function gapOuterPx() {
 let gapsSmart = false;
 
 /* Whether smart radius squares that same window's corners, and null for "not
-   said". Null follows the gaps rather than meaning off: smart gaps push a lone
-   window against the edge of the screen, and a rounded corner there is a notch
-   of wallpaper in the corner of the monitor — so the two belong to the same
-   decision unless someone says otherwise. */
+   said".
+
+   Null means off. It used to follow `gaps.smart`, on the argument that smart
+   gaps push a lone window against the edge of the screen and a rounded corner
+   there is a notch of wallpaper in the corner of the monitor. That argument is
+   still true and it is still not worth what it cost: a radius that was asked
+   for went unhonoured on every desktop with one window on it, which reads as
+   the setting being broken rather than as a rule being applied — and it comes
+   back the moment a second window opens, which reads as nothing at all.
+   Somebody who wants sway's behaviour asks for it with `border.smart`. */
 let borderSmart = null;
 
 /* Whether a lone window is drawn square. See `borderSmart`.
@@ -75,8 +81,7 @@ let borderSmart = null;
  * Set on its own, `border.smart` is taken at its word either way: someone who
  * asked for square corners is not asking about gaps. */
 function smartRadius() {
-  if (borderSmart !== null) return borderSmart;
-  return gapsSmart && gapOuterPx() === 0;
+  return borderSmart === true;
 }
 
 /* True when the workspace shows a single window that fills the tiling area —

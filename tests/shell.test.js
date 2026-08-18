@@ -2827,33 +2827,22 @@ if (mode === 'scrolling') {
       smart.single(alone)
       && out.windowsEl.classList.contains('smart-single')
       && smart.edge(alone) === 0);
-    /* Smart radius follows smart gaps unless it is set on its own: the same
-       window the gaps pushed against the screen edge is the one whose rounded
-       corner would show wallpaper through it. */
-    check('and squares its corners with them',
+    /* Smart radius is its own setting and is off unless asked for. It used to
+       follow the gaps, which meant a radius somebody had set went unhonoured
+       on every desktop with one window on it — read, reasonably, as the radius
+       being broken. */
+    check('but leaves the corners alone, which is a separate setting',
+      smart.radius() === false
+      && !out.windowsEl.classList.contains('smart-square'));
+
+    emit({ type: 'config', layout: mode, border: { smart: true } });
+    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+    check('and squares them when it is asked for',
       smart.radius() === true
       && out.windowsEl.classList.contains('smart-square'));
     check('which the compositor is told about per window',
       sent.some((m) => m.type === 'view.layout' && m.id === 320
         && m.square === true));
-
-    /* An outer gap keeps the lone window off the screen edge, and the reason
-       to square it goes with it: its corners are over the desktop, where a
-       curve is a curve. The gaps stay smart — the inner gap is still dropped
-       — and only the corners come back. */
-    emit({ type: 'config', layout: mode,
-      gaps: { inner: 8, outer: 10, smart: true } });
-    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
-    check('an outer gap keeps a lone window off the edge, so it keeps its corners',
-      smart.radius() === false
-      && !out.windowsEl.classList.contains('smart-square')
-      && out.windowsEl.classList.contains('smart-single'));
-    emit({ type: 'config', layout: mode,
-      gaps: { inner: 8, outer: 0, smart: true } });
-    emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
-    check('and taking it away squares them again',
-      smart.radius() === true
-      && out.windowsEl.classList.contains('smart-square'));
 
     /* Set apart: gaps still smart, corners explicitly not.
 

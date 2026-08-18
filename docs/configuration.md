@@ -651,24 +651,17 @@ windows to separate them.
 
 `border.smart` squares the corners of a workspace's lone window, the way
 `gaps.smart` drops its inner gap — sway's `smart_borders` for the same window.
-Absent *follows `gaps.smart`* rather than meaning off, because the two are one
-decision: smart gaps push that window against the edge of the screen, and a
-rounded corner there is a notch of wallpaper in the corner of the monitor. Set
-it explicitly to have one without the other. As with the gaps, the scrolling
-layout counts only a lone full-width column — a half-width one does not reach
-its own screen edge to begin with.
+Absent is **off**, and it is its own setting: `gaps.smart` says nothing about
+it. As with the gaps, the scrolling layout counts only a lone full-width
+column — a half-width one does not reach its own screen edge to begin with.
 
-Following the gaps means following the *reason* for them, so an outer gap
-takes it back: a lone window with `gaps.outer` set is inset from the screen on
-every side, its corners are over the desktop rather than in the corner of the
-monitor, and there is nothing there to square them for. Set `border.smart`
-explicitly and it is taken at its word either way.
-
-**This is what to change if a radius seems to do nothing.** With `gaps.smart`
-on, no outer gap and one window on the workspace, that window is drawn square
-whatever `border.radius` says — and it rounds again the moment a second window
-opens, which is the shape of the report. `"border": { "smart": false }` keeps
-the corners in every case.
+It used to follow `gaps.smart`, on the argument that smart gaps push a lone
+window against the edge of the screen and a rounded corner there is a notch of
+wallpaper in the corner of the monitor. The argument holds and the default did
+not: a radius that had been asked for went unhonoured on every desktop with a
+single window on it, and came back when a second one opened, which reads as a
+broken setting rather than as a rule. Anyone who wants that behaviour asks for
+it with `"border": { "smart": true }`.
 
 Which window is the lone one is a question about the layout, so the shell
 answers it and sends `square` on that window's `view.layout`; the compositor

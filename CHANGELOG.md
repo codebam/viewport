@@ -107,12 +107,14 @@ to summarise rather than to duplicate.
   composite everything, which is why nothing here ever saw it. An element that
   actually rounds something now declines the plane; a fullscreen window is
   drawn square anyway and still takes one.
-- A lone window with an outer gap keeps its rounded corners. Smart radius
-  follows smart gaps because smart gaps push a lone window against the edge of
-  the screen, where a rounded corner is a notch of wallpaper in the corner of
-  the monitor — but `gaps.outer` holds that window off the edge on every side,
-  so its corners are over the desktop and there is nothing to square them for.
-  An explicit `border.smart` is still taken at its word.
+- A lone window keeps its rounded corners. `border.smart` used to default to
+  following `gaps.smart` — smart gaps push a lone window against the edge of
+  the screen, and a rounded corner there is a notch of wallpaper in the corner
+  of the monitor. The argument holds; the default did not. A radius that had
+  been asked for went unhonoured on every desktop with one window on it, and
+  came back the moment a second window opened, which reads as a broken setting
+  rather than as a rule being applied. It is its own setting now and off unless
+  asked for: `"border": { "smart": true }` is sway's `smart_borders`.
 - The corners a floating window's border curves into no longer punch four
   wedges of wallpaper through the window underneath. The corners were copied
   back from the shell as whole squares — the curve *and* the piece of the hole
