@@ -26,6 +26,13 @@
 -->
 <div id="screencast" hidden></div>
 
+<!--
+  An open tray menu. Page level for the same reason again: it belongs to the
+  item that was clicked rather than to a desktop, and it is positioned in
+  layout coordinates, which is what the page is measured in.
+-->
+<div id="tray-menu" hidden></div>
+
 <template id="desktop-template">
   <main class="desktop">
     <nav class="bar">

@@ -168,6 +168,9 @@ const screencastEl = new El('div');
    element rather than a fresh one per lookup: what a dismissal leaves behind
    is only visible if the container is the one the shell appended to. */
 const notificationsEl = new El('div');
+/* And the tray menu, for the same reason: what a click on a row leaves behind
+   is only visible if the element is the one the shell drew into. */
+const trayMenuEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -195,6 +198,7 @@ global.document = {
     outputs: outputsEl,
     notifications: notificationsEl,
     screencast: screencastEl,
+    'tray-menu': trayMenuEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -361,6 +365,9 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      a real timer, so nothing synchronous can observe the message — and what
      is worth checking is what goes *into* the file rather than when. */
   + ' sessionForTest: { serialise: serialiseSession },'
+  /* The tray menu's element, and the document's own listeners, so a test can
+     see what was drawn and fire the click that missed it. */
+  + ' get trayMenuEl() { return trayMenuEl; },'
   /* What smart gaps decide, which is a question about the tree and the layout
      mode rather than about any pixel: whether this workspace holds a lone
      window that fills the tiling area. */
@@ -646,6 +653,91 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'tray.update', items: [] });
   check('and an empty one — the tray switched off — empties the bar',
     tray().children.length === 0);
+}
+
+/* A tray item's menu. The compositor reads it off the application over
+ * com.canonical.dbusmenu and sends it whole; the shell draws exactly that and
+ * decides nothing about what is in it. What is worth checking here is that a
+ * chosen row is named back by the application's own id, that a submenu opens
+ * without the menu leaving its rectangle, and that a menu is never left on
+ * screen with nobody told. */
+{
+  const menu = () => globalThis.__shell.trayMenuEl;
+  const rows = () => menu().children[0]?.children ?? [];
+  const click = (el, type = 'click', event = {}) =>
+    (el.listeners[type] ?? []).forEach((fn) =>
+      fn({ preventDefault() {}, stopPropagation() {}, ...event }));
+  const fire = (type) =>
+    (documentListeners[type] ?? []).forEach((fn) =>
+      fn({ preventDefault() {}, stopPropagation() {} }));
+
+  const open = () => emit({ type: 'tray.menu', id: ':1.5/StatusNotifierItem',
+    x: 100, y: 30, items: [
+      { id: 1, label: 'Open', kind: 'standard', enabled: true },
+      { id: 2, label: '', kind: 'separator', enabled: true },
+      { id: 3, label: 'Sync now', kind: 'standard', enabled: false },
+      { id: 4, label: 'Automatic', kind: 'standard', enabled: true,
+        toggle: 'checkmark', checked: true },
+      { id: 5, label: 'Recent', kind: 'standard', enabled: true, children: [
+        { id: 6, label: 'notes.md', kind: 'standard', enabled: true },
+      ] },
+    ] });
+
+  open();
+  check('the menu is drawn where the compositor said the icon was',
+    menu().hidden === false && menu().style.top === '30px');
+  check('every row the application published is there', rows().length === 6);
+  check('a separator is a line, not a button',
+    rows()[1].tagName === 'div' && rows()[1]._classes.has('tray-menu-separator'));
+  check('a disabled row is marked rather than dropped',
+    rows()[2]._classes.has('disabled'));
+  check('a ticked row says so in text, not in colour alone',
+    rows()[3].children[0].textContent.startsWith('✓'));
+  check('and a submenu starts closed', rows()[5].hidden === true);
+
+  let before = sent.length;
+  click(rows()[2]);
+  check('a disabled row sends nothing',
+    !sent.slice(before).some((m) => m.type === 'tray.menu.click'));
+
+  before = sent.length;
+  click(rows()[4]);
+  check('a row with children opens instead of choosing',
+    rows()[5].hidden === false &&
+    !sent.slice(before).some((m) => m.type === 'tray.menu.click'));
+
+  before = sent.length;
+  click(rows()[5]);
+  const chosen = sent.slice(before).find((m) => m.type === 'tray.menu.click');
+  check('choosing a row names it by the application\'s own id',
+    chosen?.item === 6 && chosen.id === ':1.5/StatusNotifierItem');
+  check('and the menu goes', menu().hidden === true);
+  check('with nothing sent about closing, because the click said so',
+    !sent.slice(before).some((m) => m.type === 'tray.menu.closed'));
+  check('so nothing of it is drawn over the windows any more',
+    !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
+      ?.rects ?? []).some((r) => r.name === 'tray-menu'));
+
+  open();
+  before = sent.length;
+  fire('click');
+  check('a click that missed the menu takes it down',
+    menu().hidden === true);
+  check('and the application is told, because nothing else told it',
+    sent.slice(before).some((m) => m.type === 'tray.menu.closed' &&
+      m.id === ':1.5/StatusNotifierItem'));
+
+  open();
+  before = sent.length;
+  emit({ type: 'view.focused', id: 4 });
+  check('a click on a window closes it too — the shell never sees that click',
+    menu().hidden === true &&
+    sent.slice(before).some((m) => m.type === 'tray.menu.closed'));
+
+  open();
+  emit({ type: 'tray.update', items: [] });
+  check('and an application that exits does not leave its menu behind',
+    menu().hidden === true);
 }
 
 /* Notifications are the compositor's on D-Bus and the shell's on screen, and

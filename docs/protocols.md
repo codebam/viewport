@@ -208,13 +208,34 @@ properties from a program that has stopped answering the bus must not take the
 desktop's frame loop with it, and the reply to an activation is not waited for
 at all.
 
-**Menus are not drawn yet.** An item that says `ItemIsMenu`, and a right click
-on any item, is sent `ContextMenu`, which is what a tray item is told when the
-user wants its menu — applications that implement it draw their own window and
-those work. The ones that publish a `com.canonical.dbusmenu` object instead
-have a menu this shell cannot yet render, and for those the primary click,
-which most of them also handle, is what there is. See
-[`docs/roadmap.md`](roadmap.md).
+**Menus come from a second specification.** The tray one says nothing about
+them: an item points at a `com.canonical.dbusmenu` object — Canonical's, written
+for Unity, and what GTK and Qt both publish a menu through — or it implements
+`ContextMenu` and draws its own window. Both are in use and an item may do
+either, so the shell asks the same question for every item and the compositor
+decides which it was: a menu object is read here and sent to the shell to draw,
+and everything else is asked to draw its own.
+
+Reading one is two calls. `AboutToShow` first, because a menu is usually built
+when it is asked for and an application that populates lazily answers an empty
+layout to anything that skips it. Then `GetLayout` at depth −1, which is the
+whole tree in one call — a menu is small, the shell draws it in one pass, and a
+round trip per submenu would be a menu that opens in stages while the
+compositor is trying to hold a frame. Its answer is `(ia{sv}av)`, recursively:
+an id, an open map of properties, and children that are *variants*, which is
+what makes the recursion fall out of the type.
+
+What the shell is handed is a label, whether the row can be chosen, whether it
+is ticked and what is under it. Rows an application marked invisible are
+dropped here rather than sent to be hidden, labels lose the mnemonic marker the
+toolkit would have drawn — `_Quit` and `&Quit` are both in use — and a row's
+icon is resolved exactly as an item's is, except that `icon-data` is already a
+PNG and only needs wrapping.
+
+Going back the other way, `Event` is sent for the row that was chosen and again
+when the menu closes with nothing chosen. Applications rely on the second:
+several rebuild their menu on close, and one that is never told keeps serving a
+stale one.
 
 ## Tablets
 

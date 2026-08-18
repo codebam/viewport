@@ -54,6 +54,22 @@ pub fn data_url(path: &Path) -> Option<String> {
     Some(format!("data:{mime};base64,{}", base64(&bytes)))
 }
 
+/// Raw image bytes as a `data:` URL.
+///
+/// For the icon a menu row carries: `com.canonical.dbusmenu` says `icon-data`
+/// is a PNG, so unlike a tray item's pixmap there is nothing to encode — the
+/// bytes are already a file, and all that is missing is the wrapper a browser
+/// wants.
+pub fn png_data_url(bytes: &[u8]) -> Option<String> {
+    // Not a length check dressed up as a format check: an empty property is
+    // how an application says it has no icon, and PNG's signature is what
+    // tells that from a property holding something else entirely.
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.len() as u64 > MAX_FILE {
+        return None;
+    }
+    Some(format!("data:image/png;base64,{}", base64(bytes)))
+}
+
 /// Where an icon name resolves to, searching the installed themes.
 ///
 /// `theme_path` is the item's own `IconThemePath` — the property an
@@ -420,6 +436,18 @@ mod tests {
             size_in(Path::new("/usr/share/icons/hicolor/scalable/apps/a.svg")),
             None
         );
+    }
+
+    /// A menu row's icon is a PNG already; anything else is refused rather
+    /// than wrapped in a URL that says it is one.
+    #[test]
+    fn png_data_is_recognised_by_its_signature() {
+        let png = png(1, 1, &[0, 0, 0, 0]);
+        assert!(png_data_url(&png)
+            .expect("a data URL")
+            .starts_with("data:image/png;base64,iVBOR"));
+        assert_eq!(png_data_url(b""), None);
+        assert_eq!(png_data_url(b"GIF89a"), None);
     }
 
     /// An absolute path is the icon, not a name to search for.

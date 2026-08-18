@@ -202,6 +202,16 @@ const TYPES: &[Type] = &[
         hint: "--id KEY [--button primary|secondary|menu] [--x N --y N]",
     },
     Type {
+        name: "tray.menu.click",
+        fields: &["id", "item"],
+        hint: "--id KEY --item N",
+    },
+    Type {
+        name: "tray.menu.closed",
+        fields: &["id"],
+        hint: "--id KEY",
+    },
+    Type {
         name: "tray.scroll",
         fields: &["id", "delta", "orientation"],
         hint: "--id KEY --delta N [--orientation vertical|horizontal]",
@@ -1262,10 +1272,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 39 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 41 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 39);
+        assert_eq!(TYPES.len(), 41);
     }
 
     #[test]

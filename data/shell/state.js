@@ -137,6 +137,10 @@ let lastStatus = {};
  * every tray.update replaces it whole, which is why nothing here reconciles
  * adds against removes. */
 let trayItems = [];
+/* The tray item whose menu is open, or null. The menu itself is drawn from
+ * what the compositor sent and lives in the DOM; this is only what a click has
+ * to name to send an answer back. */
+let trayMenuOpen = null;
 let currentMode = 'default';
 /* The layout models the shell implements. Set by the compositor from the
  * config file, and switched at runtime with `shell layout.model`.
@@ -288,6 +292,7 @@ function dropOverlaysForOutput(name) {
   if (changed) send({ type: 'shell.overlay', rects: [...overlays.values()] });
 }
 const screencastEl = document.getElementById('screencast');
+const trayMenuEl = document.getElementById('tray-menu');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
 

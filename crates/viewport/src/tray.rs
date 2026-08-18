@@ -38,6 +38,14 @@ use viewport_ipc::event::TrayItem;
 #[derive(Debug)]
 pub enum Message {
     Items(Vec<TrayItem>),
+    /// One item's menu, fetched and ready for the shell to draw. Carries the
+    /// position the click came with, so the menu opens under the icon.
+    Menu {
+        id: String,
+        x: i32,
+        y: i32,
+        items: Vec<viewport_ipc::event::TrayMenuItem>,
+    },
 }
 
 /// The interface every tray item implements, whichever toolkit wrote it.
@@ -45,6 +53,12 @@ pub enum Message {
 /// Ayatana's fork of this specification kept the KDE interface name, so there
 /// is only one to speak.
 const ITEM: &str = "org.kde.StatusNotifierItem";
+/// The menu interface an item points at with its `Menu` property.
+///
+/// Not part of the tray specification at all — it is Canonical's, written for
+/// Unity, and it is what GTK and Qt both publish a menu through. An item that
+/// implements neither this nor `ContextMenu` has no menu, which is allowed.
+const MENU: &str = "com.canonical.dbusmenu";
 const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 
@@ -138,6 +152,16 @@ impl Tray {
         self.send(Command::Activate { id, button, x, y });
     }
 
+    /// A row of an open menu was chosen.
+    pub fn menu_click(&self, id: String, item: i32) {
+        self.send(Command::MenuClick { id, item });
+    }
+
+    /// An open menu was dismissed without a choice.
+    pub fn menu_closed(&self, id: String) {
+        self.send(Command::MenuClosed { id });
+    }
+
     /// The wheel over an item.
     pub fn scroll(&self, id: String, delta: i32, orientation: String) {
         self.send(Command::Scroll {
@@ -181,6 +205,13 @@ enum Command {
         id: String,
         delta: i32,
         orientation: String,
+    },
+    MenuClick {
+        id: String,
+        item: i32,
+    },
+    MenuClosed {
+        id: String,
     },
     Enable(bool),
     IconTheme(String),
@@ -380,6 +411,11 @@ impl Watcher {
 struct Entry {
     service: String,
     path: String,
+    /// The `com.canonical.dbusmenu` object this item points at, where it has
+    /// one that answered a layout. `None` for an item with no menu, and for
+    /// one whose menu could not be read — both mean the same thing here:
+    /// asking for the menu is the application's job.
+    menu: Option<String>,
     item: TrayItem,
 }
 
@@ -452,13 +488,36 @@ impl Worker {
                         return_missing(&id);
                         continue;
                     };
+                    let wants_menu = button == "menu" || entry.item.is_menu;
+                    // A menu this compositor can draw is drawn here; anything
+                    // else is the application's own job, which is what
+                    // `ContextMenu` asks it to do. The shell asks the same
+                    // question for both, because which it is depends on the
+                    // toolkit the application was written with and is not
+                    // something a desktop should have an opinion about.
+                    if wants_menu && entry.menu.is_some() {
+                        self.open_menu(&id, x, y);
+                        continue;
+                    }
                     let method = match button.as_str() {
                         "secondary" => "SecondaryActivate",
-                        "menu" => "ContextMenu",
-                        _ if entry.item.is_menu => "ContextMenu",
+                        _ if wants_menu => "ContextMenu",
                         _ => "Activate",
                     };
                     self.call(&id, method, &(x, y));
+                }
+                Command::MenuClick { id, item } => {
+                    // `clicked` is the event a chosen row sends, and the
+                    // timestamp is the specification's — zero where there is
+                    // none to give, which is what a click routed through the
+                    // shell has.
+                    self.menu_event(&id, item, "clicked");
+                }
+                Command::MenuClosed { id } => {
+                    // Closing is reported against the root, because that is
+                    // what was opened. Applications rebuild their menu on
+                    // this: one that is never told keeps serving a stale one.
+                    self.menu_event(&id, 0, "closed");
                 }
                 Command::Scroll {
                     id,
@@ -543,6 +602,7 @@ impl Worker {
             self.entries.push(Entry {
                 service,
                 path,
+                menu: None,
                 item: TrayItem {
                     id: key,
                     title: String::new(),
@@ -550,6 +610,7 @@ impl Worker {
                     icon: String::new(),
                     tooltip: String::new(),
                     is_menu: false,
+                    has_menu: false,
                 },
             });
             let index = self.entries.len() - 1;
@@ -648,12 +709,200 @@ impl Worker {
             .unwrap_or_default();
         let is_menu = proxy.get_property::<bool>("ItemIsMenu").unwrap_or(false);
 
+        // Where the item keeps its menu, if it keeps one here at all. The
+        // property is an object path and "/" is what an item with no menu
+        // publishes — a valid path pointing at nothing, which every toolkit
+        // sends rather than leaving the property out.
+        let menu = proxy
+            .get_property::<zvariant::OwnedObjectPath>("Menu")
+            .ok()
+            .map(|path| path.as_str().to_owned())
+            .filter(|path| path != "/");
+
         let entry = &mut self.entries[index];
         entry.item.title = title;
         entry.item.status = status;
         entry.item.icon = icon;
         entry.item.tooltip = tooltip;
         entry.item.is_menu = is_menu;
+        entry.item.has_menu = menu.is_some();
+        entry.menu = menu;
+    }
+
+    /// Fetch one item's menu and hand it to the shell.
+    ///
+    /// Two calls, in the order the specification wants them. `AboutToShow`
+    /// first, because a menu is usually built when it is asked for — an
+    /// application that populates lazily answers an empty layout to anything
+    /// that skips it, which looks like a menu with nothing in it. Its answer
+    /// says whether the layout changed and is ignored: the layout is fetched
+    /// either way, and an item that does not implement the call answers an
+    /// error that means nothing about whether it has a menu.
+    ///
+    /// The whole tree comes back in one call. A menu is small, the shell draws
+    /// it in one pass, and a round trip per submenu would be a menu that opens
+    /// in stages while the compositor is trying to hold a frame.
+    fn open_menu(&mut self, id: &str, x: i32, y: i32) {
+        let Some(index) = self.index_of(id) else {
+            return_missing(id);
+            return;
+        };
+        let (service, menu) = {
+            let entry = &self.entries[index];
+            (entry.service.clone(), entry.menu.clone())
+        };
+        let Some(menu) = menu else { return };
+        let Some(proxy) = self.menu_proxy(&service, &menu) else {
+            return;
+        };
+
+        let _ = proxy.call::<_, _, bool>("AboutToShow", &(0i32));
+
+        // Depth -1 is the whole tree, and the empty list of property names
+        // means every property rather than none — both are the specification's
+        // spelling, and both read backwards.
+        let layout: zbus::Result<(u32, MenuNode)> =
+            proxy.call("GetLayout", &(0i32, -1i32, Vec::<&str>::new()));
+        let items = match layout {
+            Ok((_revision, root)) => self.menu_items(&root.2),
+            Err(e) => {
+                // Falling back rather than showing nothing: an item whose menu
+                // object does not answer may still draw its own window, which
+                // is what every tray does with an item like that.
+                tracing::debug!("{id}: no menu layout: {e}");
+                self.call(id, "ContextMenu", &(x, y));
+                return;
+            }
+        };
+
+        // Told it is open, as the specification asks, so an application that
+        // tracks its own menu knows one is on screen.
+        let _ = proxy.call_noreply(
+            "Event",
+            &(0i32, "opened", zvariant::Value::from(0i32), 0u32),
+        );
+
+        let _ = self.events.send(Message::Menu {
+            id: id.to_owned(),
+            x,
+            y,
+            items,
+        });
+    }
+
+    /// Tell an application what happened to its menu.
+    fn menu_event(&self, id: &str, item: i32, event: &str) {
+        let Some(index) = self.index_of(id) else {
+            return_missing(id);
+            return;
+        };
+        let (service, menu) = {
+            let entry = &self.entries[index];
+            (entry.service.clone(), entry.menu.clone())
+        };
+        let Some(menu) = menu else { return };
+        let Some(proxy) = self.menu_proxy(&service, &menu) else {
+            return;
+        };
+        // Zero for the timestamp: the specification wants the moment the user
+        // acted, and what this has is a message from a page that has no clock
+        // the application shares. Every implementation sends zero here.
+        if let Err(e) =
+            proxy.call_noreply("Event", &(item, event, zvariant::Value::from(0i32), 0u32))
+        {
+            tracing::debug!("{id}: menu {event} on {item} failed: {e}");
+        }
+    }
+
+    /// One level of a menu, and everything under it.
+    fn menu_items(
+        &mut self,
+        children: &[zvariant::OwnedValue],
+    ) -> Vec<viewport_ipc::event::TrayMenuItem> {
+        children
+            .iter()
+            .filter_map(|child| MenuNode::try_from(child.clone()).ok())
+            .filter_map(|node| self.menu_item(&node))
+            .collect()
+    }
+
+    /// One row, or nothing where the application asked for it not to be shown.
+    fn menu_item(&mut self, node: &MenuNode) -> Option<viewport_ipc::event::TrayMenuItem> {
+        let props = &node.1;
+        let text = |name: &str| -> String {
+            props
+                .get(name)
+                .and_then(|value| <&str>::try_from(value).ok())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let flag = |name: &str, default: bool| -> bool {
+            props
+                .get(name)
+                .and_then(|value| bool::try_from(value).ok())
+                .unwrap_or(default)
+        };
+
+        // Both default to true, which is the specification's way of saying
+        // that the common row carries no properties at all.
+        if !flag("visible", true) {
+            return None;
+        }
+
+        let kind = match text("type").as_str() {
+            "separator" => "separator".to_owned(),
+            _ => "standard".to_owned(),
+        };
+
+        // The icon: a theme name, or a PNG the row carries itself. Menus use
+        // the second far more than tray items do, because a row's icon is
+        // usually part of the application rather than part of the desktop.
+        let icon = self
+            .icon_by_name(&text("icon-name"), "")
+            .or_else(|| {
+                props
+                    .get("icon-data")
+                    .and_then(|value| <Vec<u8>>::try_from(value.clone()).ok())
+                    .and_then(|bytes| crate::icon::png_data_url(&bytes))
+            })
+            .unwrap_or_default();
+
+        let toggle = match text("toggle-type").as_str() {
+            "checkmark" => "checkmark".to_owned(),
+            "radio" => "radio".to_owned(),
+            _ => String::new(),
+        };
+        // Three states, not two: 1 is on, 0 is off and -1 is "this row does
+        // not say", which is drawn as off.
+        let checked = props
+            .get("toggle-state")
+            .and_then(|value| i32::try_from(value).ok())
+            .is_some_and(|state| state == 1);
+
+        Some(viewport_ipc::event::TrayMenuItem {
+            id: node.0,
+            label: strip_mnemonics(&text("label")),
+            kind,
+            enabled: flag("enabled", true),
+            toggle,
+            checked,
+            icon,
+            children: self.menu_items(&node.2),
+        })
+    }
+
+    /// A proxy onto one item's menu object.
+    fn menu_proxy(&self, service: &str, path: &str) -> Option<zbus::blocking::Proxy<'static>> {
+        zbus::blocking::proxy::Builder::new(&self.connection)
+            .destination(service.to_owned())
+            .ok()?
+            .path(path.to_owned())
+            .ok()?
+            .interface(MENU)
+            .ok()?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .ok()
     }
 
     /// An icon name resolved through the themes, cached by name and by the
@@ -727,6 +976,40 @@ impl Worker {
     }
 }
 
+/// One node of a menu layout: an id, its properties, and its children.
+///
+/// `GetLayout` answers `(ia{sv}av)` — and the children are variants, which is
+/// what makes the recursion fall out: every level below the root converts from
+/// an `OwnedValue` into this same type. Only the root arrives as a bare
+/// structure, which is why it is named here at all.
+type MenuNode = (
+    i32,
+    HashMap<String, zvariant::OwnedValue>,
+    Vec<zvariant::OwnedValue>,
+);
+
+/// A label with its keyboard mnemonic taken out.
+///
+/// Menu labels carry the underline marker the toolkit would have drawn —
+/// `_Quit`, or `&Quit` in the Qt spelling — and a shell that draws the string
+/// as it arrives shows the underscore. Doubled means a literal one, which is
+/// how a program with an underscore in a filename spells it.
+fn strip_mnemonics(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        if (c == '_' || c == '&') && chars.peek() == Some(&c) {
+            out.push(c);
+            chars.next();
+        } else if c == '_' || c == '&' {
+            // The marker itself: dropped, and the letter after it kept.
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// A click on an item that has already gone is a race, not a fault: the shell
 /// draws what it was last told and an application may exit between the paint
 /// and the press.
@@ -786,6 +1069,19 @@ mod tests {
             key(":1.42", "/org/ayatana/NotificationItem/a"),
             key(":1.42", "/org/ayatana/NotificationItem/b")
         );
+    }
+
+    /// A label arrives with the underline marker the toolkit would have
+    /// drawn. Both spellings are in use — GTK writes `_Quit` and Qt `&Quit` —
+    /// and a doubled one is a literal character rather than a marker.
+    #[test]
+    fn a_label_loses_its_mnemonic_and_keeps_its_letters() {
+        assert_eq!(strip_mnemonics("_Quit"), "Quit");
+        assert_eq!(strip_mnemonics("&Quit"), "Quit");
+        assert_eq!(strip_mnemonics("Save _As…"), "Save As…");
+        assert_eq!(strip_mnemonics("my__file"), "my_file");
+        assert_eq!(strip_mnemonics("Tom && Jerry"), "Tom & Jerry");
+        assert_eq!(strip_mnemonics("Quit"), "Quit");
     }
 
     /// A tooltip is four fields and two of them are the ones with text in.

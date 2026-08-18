@@ -983,10 +983,15 @@ it is named here. An item that ships its own icons and points at them with
 `IconThemePath` is searched there first, whatever this says, and applications
 that publish raw pixmaps rather than names need no theme at all.
 
-Clicks: left activates, right asks for the menu, middle is the secondary
-action, and the wheel scrolls — which is what a volume applet in a tray expects.
-Items that publish their menu as a `com.canonical.dbusmenu` object rather than
-answering `ContextMenu` have a menu the shell cannot draw yet; see
+Clicks: left activates, right opens the menu, middle is the secondary action,
+and the wheel scrolls — which is what a volume applet in a tray expects. An
+item that publishes a `com.canonical.dbusmenu` object has its menu read by the
+compositor and drawn by the shell, so it is styled by the same stylesheet as
+the rest of the desktop; one that implements `ContextMenu` instead is asked to
+draw its own window, as it would be under any other tray. Submenus open in
+place rather than flying out beside the menu — everything the shell draws over
+a window is one rectangle it has to name to the compositor, and a panel outside
+that rectangle would be drawn behind the window it is meant to be over. See
 [`docs/protocols.md`](protocols.md#the-system-tray).
 
 Where the tray sits on the bar is the shell's business, like every other bar

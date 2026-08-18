@@ -134,6 +134,25 @@ pub enum Event {
     #[serde(rename = "tray.update")]
     TrayUpdate { items: Vec<TrayItem> },
 
+    /// A tray item's menu, fetched and ready to draw.
+    ///
+    /// Sent in answer to `tray.activate` with `button` of `menu` — but only
+    /// for the items that publish a `com.canonical.dbusmenu` object. An item
+    /// that implements `ContextMenu` instead draws its own window and nothing
+    /// comes back here, which is why this is an event rather than a reply: the
+    /// shell asks the same question for every item and draws a menu only when
+    /// there is one to draw.
+    #[serde(rename = "tray.menu")]
+    TrayMenu {
+        /// Which item's menu, as `tray.update` named it.
+        id: String,
+        /// Where the icon was, from the request — so the menu opens under the
+        /// icon that was clicked rather than wherever the shell last saw one.
+        x: i32,
+        y: i32,
+        items: Vec<TrayMenuItem>,
+    },
+
     /// System statistics for the bar.
     ///
     /// `cpu` and `memory` are `-1.0` when unavailable rather than absent: the
@@ -559,11 +578,63 @@ pub struct TrayItem {
     pub tooltip: String,
 
     /// Whether the item says its primary click should open its menu rather
-    /// than activate it — `ItemIsMenu`. The menu itself is not drawn yet, so
-    /// this is passed on for the shell to style and for the compositor to
-    /// route to `ContextMenu`.
+    /// than activate it — `ItemIsMenu`. Passed on so the shell can style it,
+    /// and acted on by the compositor, which turns that click into the menu.
     #[serde(default)]
     pub is_menu: bool,
+
+    /// Whether the item publishes a menu this compositor can draw — a
+    /// `com.canonical.dbusmenu` object it answered a layout for.
+    ///
+    /// The shell asks for a menu the same way either way; this only says
+    /// whether asking will draw one here or hand the request to the
+    /// application to draw its own window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_menu: bool,
+}
+
+/// One row of a tray item's menu.
+///
+/// Flattened from `com.canonical.dbusmenu`, whose properties are an open map
+/// of anything an application cares to put in it. What a shell needs to draw a
+/// menu is a label, whether the row can be chosen, whether it is ticked, and
+/// what is under it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrayMenuItem {
+    /// The item's own id, as `tray.menu.click` names it. Assigned by the
+    /// application, unique within its menu, and meaningless anywhere else.
+    pub id: i32,
+
+    pub label: String,
+
+    /// `"standard"` or `"separator"`. A separator has no label and cannot be
+    /// chosen; it is a line.
+    pub kind: String,
+
+    /// False for a row that is shown greyed out rather than hidden — an
+    /// application says which, and a shell that drew a disabled row as a live
+    /// one would send clicks nothing acts on.
+    pub enabled: bool,
+
+    /// `""`, `"checkmark"` or `"radio"`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub toggle: String,
+
+    /// Whether that tick or dot is on. Meaningless without `toggle`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub checked: bool,
+
+    /// The row's icon as a `data:` URL, resolved the same way an item's own
+    /// icon is, or empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+
+    /// A submenu, already fetched. The whole tree arrives at once rather than
+    /// a level at a time: a menu is small, the shell draws it in one pass, and
+    /// a second round trip per submenu would be a menu that opens in stages
+    /// over a compositor that is trying to hold a frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<TrayMenuItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -978,6 +1049,12 @@ mod tests {
             })),
             json(&Event::NotificationClose { id: 1 }),
             json(&Event::TrayUpdate { items: Vec::new() }),
+            json(&Event::TrayMenu {
+                id: String::new(),
+                x: 0,
+                y: 0,
+                items: Vec::new(),
+            }),
             json(&Event::OutputLayout {
                 outputs: Vec::new(),
             }),
@@ -1011,6 +1088,7 @@ mod tests {
                 "notification.add",
                 "notification.close",
                 "tray.update",
+                "tray.menu",
                 "output.layout",
                 "screencast.pick",
                 "screencast.pick.done",

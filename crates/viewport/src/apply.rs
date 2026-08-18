@@ -402,6 +402,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             "" | "primary" | "secondary" | "menu" => state.tray.activate(id, button, x, y),
             other => reject(state, "tray.activate", &format!("no such button {other:?}")),
         },
+        // Both halves of an open menu: a row chosen, and the menu going away
+        // without one. The application is told either way, because a menu it
+        // is never told about closing is one it believes is still on screen.
+        Request::TrayMenuClick { id, item } => state.tray.menu_click(id, item),
+        Request::TrayMenuClosed { id } => state.tray.menu_closed(id),
         Request::TrayScroll {
             id,
             delta,

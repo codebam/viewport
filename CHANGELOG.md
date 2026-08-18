@@ -12,6 +12,23 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- Tray menus are drawn by the shell. An item points at a
+  `com.canonical.dbusmenu` object — Canonical's specification, which the tray
+  one says nothing about, and which is what GTK and Qt both publish a menu
+  through — or it implements `ContextMenu` and draws its own window. Both are
+  in use, so the shell asks the same question for every item and the
+  compositor decides which it was: a menu object is read here and sent over,
+  and everything else is asked to draw its own. Reading one is `AboutToShow`
+  and then `GetLayout` at depth −1, because a menu is usually built when it is
+  asked for and because a round trip per submenu would be a menu that opens in
+  stages. Rows an application marked invisible are dropped rather than sent to
+  be hidden, labels lose the mnemonic marker the toolkit would have drawn, and
+  a row's icon is resolved the same way an item's is. Submenus open in place
+  rather than flying out: everything the shell draws over a window is one
+  rectangle it has to name, and a panel outside that rectangle would be drawn
+  behind the window it is meant to be over. Choosing a row and dismissing the
+  menu are both reported to the application — several rebuild their menu on
+  close, and one that is never told keeps serving a stale one.
 - A system tray. The compositor claims `org.kde.StatusNotifierWatcher` and a
   host name beside it, follows every application that registers an item, and
   forwards the tray to the shell, which draws the icons on the bar — the same

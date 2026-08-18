@@ -8,17 +8,6 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-## Tray menus (`com.canonical.dbusmenu`)
-
-The tray itself is done — see
-[`docs/protocols.md`](protocols.md#the-system-tray). What is missing is the
-menu. An item that answers `ContextMenu` draws its own window and works today;
-one that publishes a `com.canonical.dbusmenu` object instead expects the host
-to fetch its layout and draw it, and this does not yet. That is a recursive
-`GetLayout` over a variant tree, a shell overlay to draw it in, and `Event`
-calls back for clicks — and it is what stands between the current tray and the
-menus GTK applications ship.
-
 ## MPRIS media widget
 
 `mpris` appears in one place today — a keybinding that shells out to

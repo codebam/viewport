@@ -153,6 +153,27 @@ pub enum Request {
         y: i32,
     },
 
+    /// A row of an open tray menu was chosen.
+    ///
+    /// The menu is the compositor's: it fetched the layout and the shell drew
+    /// what it was handed, so the row is named by the id the application gave
+    /// it rather than by anything the shell made up.
+    #[serde(rename = "tray.menu.click")]
+    TrayMenuClick {
+        /// Which item's menu, as `tray.update` named it.
+        id: String,
+        /// The row, as `tray.menu` named it.
+        item: i32,
+    },
+
+    /// An open tray menu was dismissed without a choice.
+    ///
+    /// Applications are told, because a menu that is never closed is one they
+    /// believe is still on screen — several rebuild their menu on close, and
+    /// one that is never told keeps serving a stale one.
+    #[serde(rename = "tray.menu.closed")]
+    TrayMenuClosed { id: String },
+
     /// The wheel turned over a tray item.
     #[serde(rename = "tray.scroll")]
     TrayScroll {

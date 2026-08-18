@@ -629,8 +629,15 @@ fn run() -> Result<()> {
             .handle()
             .insert_source(source, |event, _, state| {
                 use smithay::reexports::calloop::channel::Event;
-                let Event::Msg(crate::tray::Message::Items(items)) = event else {
+                let Event::Msg(message) = event else {
                     return;
+                };
+                let items = match message {
+                    crate::tray::Message::Items(items) => items,
+                    crate::tray::Message::Menu { id, x, y, items } => {
+                        state.notify(&viewport_ipc::Event::TrayMenu { id, x, y, items });
+                        return;
+                    }
                 };
                 // One line per change, not per sample: this fires when an
                 // application registers, exits or says its icon changed. What

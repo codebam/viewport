@@ -135,8 +135,6 @@ check "the item is named by its owner and its path" yes \
 # And back the other way: what a click on the bar does.
 "$viewport" msg --socket "$socket" -t tray.activate --id "$id" \
 	--button primary --x 40 --y 30 >/dev/null 2>&1
-"$viewport" msg --socket "$socket" -t tray.activate --id "$id" \
-	--button menu --x 40 --y 30 >/dev/null 2>&1
 "$viewport" msg --socket "$socket" -t tray.scroll --id "$id" --delta 1 \
 	--orientation vertical >/dev/null 2>&1
 for _ in $(seq 1 100); do
@@ -146,10 +144,66 @@ done
 
 check "a click reaches the application, with where the icon was" "activate 40 30" \
 	"$(grep -o '^activate .*' "$workdir/item.log" | tail -1)"
-check "a right click asks it for its menu" "menu 40 30" \
-	"$(grep -o '^menu .*' "$workdir/item.log" | tail -1)"
 check "and the wheel is a step in an axis" "scroll 1 vertical" \
 	"$(grep -o '^scroll .*' "$workdir/item.log" | tail -1)"
+
+# ---------------------------------------------------------------------------
+# The menu. An application publishes it as a com.canonical.dbusmenu object and
+# the compositor reads it — the layout, the properties on each row, and the
+# events going back the other way. This is the half no unit test can reach.
+# ---------------------------------------------------------------------------
+check "the item says it has a menu this compositor can draw" yes \
+	"$(case "$update" in *'"has_menu":true'*) echo yes ;; *) echo no ;; esac)"
+
+"$viewport" msg --socket "$socket" --timeout 10 -t subscribe tray.menu \
+	>"$workdir/menu.json" 2>&1 &
+subscribe_pid=$!
+sleep 0.5
+"$viewport" msg --socket "$socket" -t tray.activate --id "$id" \
+	--button menu --x 40 --y 30 >/dev/null 2>&1
+for _ in $(seq 1 100); do
+	grep -q '"tray.menu"' "$workdir/menu.json" && break
+	sleep 0.1
+done
+kill "$subscribe_pid" 2>/dev/null
+wait "$subscribe_pid" 2>/dev/null
+menu=$(grep '"tray.menu"' "$workdir/menu.json" | tail -1)
+
+check "asking for the menu fetches a layout" yes \
+	"$([ -n "$menu" ] && echo yes || echo no)"
+check "the application was asked first, as the specification wants" yes \
+	"$(grep -q "^menu about to show" "$workdir/item.log" && echo yes || echo no)"
+check "a label arrives without the mnemonic the toolkit would have drawn" yes \
+	"$(case "$menu" in *'"Open"'*) echo yes ;; *) echo no ;; esac)"
+check "a separator comes through as one" yes \
+	"$(case "$menu" in *'"separator"'*) echo yes ;; *) echo no ;; esac)"
+check "a disabled row is marked rather than dropped" yes \
+	"$(case "$menu" in *'"enabled":false'*) echo yes ;; *) echo no ;; esac)"
+# Two substrings rather than one pattern: the fields are written in whatever
+# order the serialiser puts them, and a test that depends on that order is a
+# test of the serialiser.
+check "a ticked row carries both its kind and its state" yes \
+	"$(case "$menu" in *'"toggle":"checkmark"'*) case "$menu" in
+		*'"checked":true'*) echo yes ;; *) echo no ;; esac ;;
+	*) echo no ;; esac)"
+check "a submenu comes with it, rather than in a second round trip" yes \
+	"$(case "$menu" in *'"notes.md"'*) echo yes ;; *) echo no ;; esac)"
+# A row the application asked not to show is dropped here rather than sent for
+# the shell to hide: the shell draws what it is given.
+check "a row marked invisible is not sent at all" no \
+	"$(case "$menu" in *'"Hidden"'*) echo yes ;; *) echo no ;; esac)"
+
+"$viewport" msg --socket "$socket" -t tray.menu.click --id "$id" --item 6 \
+	>/dev/null 2>&1
+"$viewport" msg --socket "$socket" -t tray.menu.closed --id "$id" >/dev/null 2>&1
+for _ in $(seq 1 100); do
+	grep -q "^menu event 0 closed" "$workdir/item.log" && break
+	sleep 0.1
+done
+check "choosing a row reaches the application as a click on that row" yes \
+	"$(grep -q "^menu event 6 clicked" "$workdir/item.log" && echo yes || echo no)"
+check "and a menu dismissed without a choice is reported too" yes \
+	"$(grep -q "^menu event 0 closed" "$workdir/item.log" && echo yes || echo no)"
 
 # An application exiting is not announced by anything but its bus name going
 # away, which is the only notice a crash gives either.
@@ -162,6 +216,31 @@ for _ in $(seq 1 100); do
 done
 check "an item whose application exits leaves the tray" yes \
 	"$(grep -q "tray: 0 item" "$log" && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+# The other half of the desktop: an item that publishes no menu object and
+# draws its own window when it is asked for one. Nothing is fetched for it and
+# the request goes out as ContextMenu, which is what it is waiting for.
+# ---------------------------------------------------------------------------
+"$item" --no-menu Steam >"$workdir/plain.log" 2>&1 &
+item_pid=$!
+for _ in $(seq 1 100); do
+	grep -q "^registered " "$workdir/plain.log" && break
+	kill -0 "$item_pid" 2>/dev/null || break
+	sleep 0.1
+done
+plain=$(grep -o "^registered .*" "$workdir/plain.log" | cut -d' ' -f2)/StatusNotifierItem
+"$viewport" msg --socket "$socket" -t tray.activate --id "$plain" \
+	--button menu --x 40 --y 30 >/dev/null 2>&1
+for _ in $(seq 1 100); do
+	grep -q "^menu " "$workdir/plain.log" && break
+	sleep 0.1
+done
+check "an item with no menu object is asked to draw its own" "menu 40 30" \
+	"$(grep -o '^menu .*' "$workdir/plain.log" | tail -1)"
+kill "$item_pid" 2>/dev/null
+wait "$item_pid" 2>/dev/null
+item_pid=
 
 # ---------------------------------------------------------------------------
 # And with it turned off. A session that would rather run somebody else's tray

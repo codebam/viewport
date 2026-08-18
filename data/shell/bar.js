@@ -250,6 +250,150 @@ function syncTray(output) {
   for (let i = trayItems.length; i < existing.length; i++) existing[i].remove();
 }
 
+/* ------------------------------------------------------------------------
+ * A tray item's menu
+ * --------------------------------------------------------------------- */
+
+/* The menu the compositor fetched, drawn where the icon is.
+ *
+ * Every row here came from the application, through `com.canonical.dbusmenu`
+ * and the compositor: the shell decides none of it and invents nothing. What
+ * it does decide is the shape — submenus open in place rather than flying out
+ * beside the menu, because everything the shell draws over a window is one
+ * rectangle it has to name to the compositor, and a submenu hanging outside
+ * that rectangle would be drawn behind the window it is meant to be over. An
+ * accordion has one rectangle by construction.
+ */
+function showTrayMenu(message) {
+  trayMenuOpen = message.id;
+  trayMenuEl.replaceChildren();
+  trayMenuEl.hidden = false;
+
+  const list = document.createElement('div');
+  list.className = 'tray-menu-list';
+  buildTrayMenuRows(list, message.items ?? [], 0);
+  trayMenuEl.append(list);
+
+  /* Under the icon that was clicked, and inside the screen: a menu opened by
+     the rightmost icon on the bar would otherwise run off the edge, and the
+     compositor draws exactly the rectangle it is given — including the part
+     that is not on any monitor. */
+  const width = 240;
+  const bounds = outputBoundsAt(message.x, message.y);
+  const left = Math.max(bounds.left, Math.min(message.x, bounds.right - width));
+  trayMenuEl.style.left = `${Math.round(left)}px`;
+  trayMenuEl.style.top = `${Math.round(message.y)}px`;
+  trayMenuEl.style.width = `${width}px`;
+  trayMenuEl.style.maxHeight = `${Math.max(120, bounds.bottom - message.y - 8)}px`;
+
+  setOverlay('tray-menu', trayMenuEl);
+}
+
+/* The output the click landed on, in layout coordinates, so a menu can be
+ * kept on the monitor it was opened from. Falls back to the whole page, which
+ * is what a click at a position no output claims would have got anyway. */
+function outputBoundsAt(x, y) {
+  for (const [, output] of outputs) {
+    const rect = output.el?.getBoundingClientRect?.();
+    if (!rect) continue;
+    const right = rect.left + rect.width;
+    const bottom = rect.top + rect.height;
+    if (x >= rect.left && x < right && y >= rect.top && y < bottom) {
+      return { left: rect.left, top: rect.top, right, bottom };
+    }
+  }
+  return { left: 0, top: 0, right: 1e6, bottom: 1e6 };
+}
+
+/* One level of rows, and everything under it, indented.
+ *
+ * A row that has children is a toggle rather than a command: dbusmenu says so
+ * by giving it children, and clicking one sends nothing to the application. */
+function buildTrayMenuRows(list, items, depth) {
+  for (const item of items) {
+    if (item.kind === 'separator') {
+      const line = document.createElement('div');
+      line.className = 'tray-menu-separator';
+      list.append(line);
+      continue;
+    }
+
+    const row = document.createElement('button');
+    row.className = 'tray-menu-row';
+    if (!item.enabled) row.classList.add('disabled');
+    if (item.checked) row.classList.add('checked');
+    if (item.children?.length) row.classList.add('parent');
+    if (depth > 0) row.style.paddingLeft = `${8 + depth * 14}px`;
+
+    if (item.icon) {
+      const img = document.createElement('img');
+      img.src = item.icon;
+      row.append(img);
+    }
+
+    const label = document.createElement('span');
+    label.className = 'tray-menu-label';
+    /* A ticked row says so with a mark rather than with colour alone, which
+       is the one part of a menu a stylesheet cannot supply: the state is the
+       application's and has to be visible without one. */
+    const mark = item.toggle === 'radio' ? '◉' : '✓';
+    label.textContent = item.checked ? `${mark} ${item.label}` : item.label;
+    row.append(label);
+
+    if (item.children?.length) {
+      const chevron = document.createElement('span');
+      chevron.className = 'tray-menu-chevron';
+      chevron.textContent = '▸';
+      row.append(chevron);
+    }
+
+    row.addEventListener('click', (e) => {
+      /* The document closes the menu on any click that is not in it; this is
+         in it. */
+      e.stopPropagation?.();
+      if (!item.enabled) return;
+      if (item.children?.length) {
+        /* Open in place. The rectangle the compositor was given grows with
+           the menu, so it is re-reported after the rows appear. */
+        const open = row.classList.contains('open');
+        row.classList.toggle('open', !open);
+        for (const child of [...list.children]) {
+          if (child._parentRow === row) child.hidden = open;
+        }
+        setOverlay('tray-menu', trayMenuEl);
+        return;
+      }
+      send({ type: 'tray.menu.click', id: trayMenuOpen, item: item.id });
+      closeTrayMenu(false);
+    });
+    list.append(row);
+
+    if (item.children?.length) {
+      const before = list.children.length;
+      buildTrayMenuRows(list, item.children, depth + 1);
+      for (let i = before; i < list.children.length; i++) {
+        const child = list.children[i];
+        /* Which parent a row belongs to, so opening one shows exactly its own
+           descendants. Written on the element rather than kept in a map: the
+           menu is rebuilt from scratch every time it opens. */
+        if (child._parentRow === undefined) child._parentRow = row;
+        child.hidden = true;
+      }
+    }
+  }
+}
+
+/* Take the menu down. `notify` is false when the application already knows —
+ * it was told by the click that chose a row. */
+function closeTrayMenu(notify = true) {
+  if (trayMenuOpen === null) return;
+  if (notify) send({ type: 'tray.menu.closed', id: trayMenuOpen });
+  trayMenuOpen = null;
+  trayMenuEl.replaceChildren();
+  trayMenuEl.hidden = true;
+  setOverlay('tray-menu', null);
+}
+
 /* An item's input, bound once at build.
  *
  * Where the pointer is matters: an application opening its own menu is handed
