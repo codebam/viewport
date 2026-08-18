@@ -90,6 +90,17 @@ to summarise rather than to duplicate.
   in this program rather than in a daemon beside it.
 
 ### Fixed
+- The corners a floating window's border curves into no longer punch four
+  wedges of wallpaper through the window underneath. The corners were copied
+  back from the shell as whole squares — the curve *and* the piece of the hole
+  inside it — on the reasoning that the client covers the inside. A client
+  covers what it is drawn on, and a terminal is a few pixels short of its hole
+  in each direction because it rounds down to whole cells, so what showed in
+  that margin was the desktop's own background, over whatever the window was
+  floating above. Only the wedge the curve actually occupies is copied now,
+  which is the complement of the rounding the client is cut to and is derived
+  from it so the two cannot disagree; where a client falls short of its hole,
+  the window underneath shows through, as it does along the straight edges.
 - VRAM climbing for as long as a screen share was open — a couple of hundred
   megabytes a minute on a shared 1440p screen, none of it given back until the
   session ended. Two things were doing it, and a share is what made both

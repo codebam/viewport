@@ -128,9 +128,12 @@ pub struct WindowFrame {
     ///
     /// Below rather than above, which is the whole difference between these
     /// and `overlay`: a side is outside the client's rectangle and a corner is
-    /// inside it — see [`border_corners`] — so drawing one in front would put
+    /// inside it — see [`crate::rounded::cutaway`] — so drawing one in front
     /// a square of desktop over the corner of the client it belongs to.
-    pub corners: Vec<(Id, Rectangle<i32, Physical>)>,
+    /// One id and the wedges to draw with it — the parts of the hole the
+    /// border's curve crosses into, and nothing else. Empty for a square
+    /// window, or one with nothing lifted above anything.
+    pub corners: Option<(Id, Vec<Rectangle<i32, Physical>>)>,
     /// The box the shell drew for this window, and the corner radius to cut
     /// out of it — both in physical pixels on this output.
     ///
@@ -453,15 +456,15 @@ where
             }));
         } else {
             match (clip, shrink) {
-            // Cropped to the hole the shell drew. Without this a window
-            // mid-animation, or one scrolled half off its column, covers the
-            // bar and the wallpaper with its own background.
-                (Some(clip), false) => elements.extend(surfaces.into_iter().filter_map(
-                    |surface| {
+                // Cropped to the hole the shell drew. Without this a window
+                // mid-animation, or one scrolled half off its column, covers the
+                // bar and the wallpaper with its own background.
+                (Some(clip), false) => {
+                    elements.extend(surfaces.into_iter().filter_map(|surface| {
                         CropRenderElement::from_element(surface, scale, *clip)
                             .map(OutputElement::from)
-                    },
-                )),
+                    }))
+                }
                 (Some(clip), true) => elements.extend(surfaces.into_iter().filter_map(|surface| {
                     CropRenderElement::from_element(surface, scale, *clip).map(|cropped| {
                         OutputElement::from(RescaleRenderElement::from_element(
@@ -490,13 +493,23 @@ where
         // part of each square the client actually fills stays the client —
         // what shows is the sliver its rounded corner leaves, which is the
         // border, and which without this is the window underneath.
-        if let Some(shell) = frame.shell.as_ref() {
-            for (id, corner) in corners {
-                let Some(element) = shell_element(renderer, shell, id.clone()) else {
-                    break;
-                };
-                if let Some(cropped) = CropRenderElement::from_element(element, scale, *corner) {
-                    elements.push(OutputElement::from(cropped));
+        if let (Some(shell), Some((id, wedges))) = (frame.shell.as_ref(), corners) {
+            // Bounded first, so the texture is not carried around whole, and
+            // then cut to the wedges: what is drawn is the curve of the
+            // border and not the hole it curves into. The hole in the shell's
+            // buffer is the desktop's own background, and this is drawn over
+            // whatever the window is lifted above.
+            if let Some(bounds) = bounding(wedges) {
+                if let Some(element) = shell_element(renderer, shell, id.clone()) {
+                    if let Some(cropped) = CropRenderElement::from_element(element, scale, bounds) {
+                        if let Some(rounded) = crate::rounded::RoundedRenderElement::from_bands(
+                            cropped,
+                            scale,
+                            wedges.clone(),
+                        ) {
+                            elements.push(OutputElement::from(rounded));
+                        }
+                    }
                 }
             }
         }
@@ -736,6 +749,16 @@ pub fn border_sides(
     ]
 }
 
+/// The smallest rectangle holding all of them, or nothing where there are
+/// none.
+fn bounding(rects: &[Rectangle<i32, Physical>]) -> Option<Rectangle<i32, Physical>> {
+    rects
+        .iter()
+        .copied()
+        .reduce(|acc, rect| acc.merge(rect))
+        .filter(|rect| !rect.is_empty())
+}
+
 /// The hole as it is drawn. Its corner is already on screen — only the size is
 /// in the client's own pixels, so a window the shell is showing as a thumbnail
 /// has a hole that has to be scaled and not moved.
@@ -753,76 +776,12 @@ fn drawn_hole(hole: viewport_ipc::geometry::Box, scale: f64) -> viewport_ipc::ge
     }
 }
 
-/// The four squares of the shell's frame that fall *inside* the hole it drew:
-/// the corners, top-left first and clockwise.
+/// The hole as it is drawn, in the shell's own coordinates.
 ///
-/// [`border_sides`] covers everything of a frame outside the hole, which for a
-/// square window is the whole border. A rounded one has more. The border's
-/// curve leaves the straight sides and crosses the corner of the hole, so the
-/// piece of it between the client's own rounded corner and the corner of the
-/// hole is inside the rectangle the sides stop at. On a tiled window that
-/// piece costs nothing — the shell is behind everything and there is nothing
-/// over it there — and on a window lifted above another one it is the window
-/// underneath that shows through instead, which is a floating window with a
-/// square notch of somebody else's client at each corner.
-///
-/// `radius` is the client's own corner — the frame's radius less the border's
-/// width, which is what the surface is cut to — in the same coordinates as the
-/// hole and scaled with it. That is exactly how far into the hole the missing
-/// piece reaches: past it the client is solid and paints over this anyway.
-///
-/// Each square is held to `frame`, because that is the part of the shell that
-/// was drawn for this window: the shell has already trimmed the frame to the
-/// monitor and to the workspace's area, and a corner reaching past it would
-/// crop somebody else's desktop and paint it over the window below.
-pub fn border_corners(
-    frame: viewport_ipc::geometry::Box,
-    hole: viewport_ipc::geometry::Box,
-    scale: f64,
-    radius: i32,
-) -> [viewport_ipc::geometry::Box; 4] {
-    use viewport_ipc::geometry::Box;
-
-    let hole = drawn_hole(hole, scale);
-    // Scaled with the hole: a thumbnail is the same frame drawn smaller, so
-    // its corner shrinks along with the window.
-    let scaled = if scale.is_finite() && scale > 0.0 {
-        (f64::from(radius) * scale).round() as i32
-    } else {
-        radius
-    };
-    let r = scaled.min(hole.width / 2).min(hole.height / 2).max(0);
-    if r == 0 {
-        return [Box::new(0, 0, 0, 0); 4];
-    }
-
-    let right = hole.x + hole.width - r;
-    let bottom = hole.y + hole.height - r;
-    [
-        Box::new(hole.x, hole.y, r, r),
-        Box::new(right, hole.y, r, r),
-        Box::new(right, bottom, r, r),
-        Box::new(hole.x, bottom, r, r),
-    ]
-    .map(|corner| intersect(corner, frame))
-}
-
-/// `a` clipped to `b`, or a box of no size when the two do not meet — which is
-/// what [`overlay_side`] drops.
-fn intersect(
-    a: viewport_ipc::geometry::Box,
-    b: viewport_ipc::geometry::Box,
-) -> viewport_ipc::geometry::Box {
-    use viewport_ipc::geometry::Box;
-    let left = a.x.max(b.x);
-    let top = a.y.max(b.y);
-    let right = (a.x + a.width).min(b.x + b.width);
-    let bottom = (a.y + a.height).min(b.y + b.height);
-    if right > left && bottom > top {
-        Box::new(left, top, right - left, bottom - top)
-    } else {
-        Box::new(0, 0, 0, 0)
-    }
+/// The scale is the one a thumbnail is drawn at: the corner shrinks with the
+/// window, and the origin does not move.
+pub fn drawn_hole_of(hole: viewport_ipc::geometry::Box, scale: f64) -> viewport_ipc::geometry::Box {
+    drawn_hole(hole, scale)
 }
 
 /// Where one monitor's picture goes when every monitor is captured at once,
@@ -1094,99 +1053,5 @@ mod tests {
         for side in border_sides(box_, box_, 1.0) {
             assert!(side.width == 0 || side.height == 0, "{side:?} is not empty");
         }
-    }
-
-    /// The corners are inside the hole, which is exactly where the sides stop.
-    ///
-    /// That is the bug they exist for: the border's curve crosses into the
-    /// client's own rectangle, the sides are held outside it, and over another
-    /// window the shell there is covered — so a floating window's corners were
-    /// four square notches of whatever it was floating above.
-    #[test]
-    fn a_rounded_border_gets_its_corners_inside_the_hole() {
-        let frame = Box::new(100, 100, 400, 300);
-        let hole = Box::new(102, 102, 396, 296);
-        // A 12px frame corner around a 2px border is a 10px client corner.
-        let [top_left, top_right, bottom_right, bottom_left] =
-            border_corners(frame, hole, 1.0, 10);
-
-        assert_eq!(top_left, Box::new(102, 102, 10, 10));
-        assert_eq!(top_right, Box::new(488, 102, 10, 10));
-        assert_eq!(bottom_right, Box::new(488, 388, 10, 10));
-        assert_eq!(bottom_left, Box::new(102, 388, 10, 10));
-
-        // And each one is inside the hole, so the client covers the part of
-        // it the corner does not cut away.
-        for corner in [top_left, top_right, bottom_right, bottom_left] {
-            assert!(corner.x >= hole.x && corner.y >= hole.y, "{corner:?}");
-            assert!(
-                corner.x + corner.width <= hole.x + hole.width
-                    && corner.y + corner.height <= hole.y + hole.height,
-                "{corner:?}"
-            );
-        }
-    }
-
-    /// A square window has no curve to cover, and asking for one gives four
-    /// rectangles of nothing.
-    #[test]
-    fn a_square_window_gets_no_corners() {
-        let frame = Box::new(100, 100, 400, 300);
-        let hole = Box::new(102, 102, 396, 296);
-        for corner in border_corners(frame, hole, 1.0, 0) {
-            assert!(
-                corner.width == 0 || corner.height == 0,
-                "{corner:?} is not empty"
-            );
-        }
-    }
-
-    /// A thumbnail's corner shrinks with it, like its hole and its sides.
-    #[test]
-    fn a_shrunken_window_gets_the_corners_it_is_drawn_with() {
-        // The same 800x600 client at half size inside a 2px frame.
-        let frame = Box::new(100, 100, 404, 304);
-        let hole = Box::new(102, 102, 800, 600);
-        let [top_left, top_right, bottom_right, bottom_left] =
-            border_corners(frame, hole, 0.5, 10);
-
-        assert_eq!(top_left, Box::new(102, 102, 5, 5));
-        assert_eq!(top_right, Box::new(497, 102, 5, 5));
-        assert_eq!(bottom_right, Box::new(497, 397, 5, 5));
-        assert_eq!(bottom_left, Box::new(102, 397, 5, 5));
-    }
-
-    /// A corner past the frame is a corner the shell never painted.
-    ///
-    /// The frame is already trimmed to the monitor and to the workspace's
-    /// area, so a window scrolled half off its column has a frame that stops
-    /// short of its own hole — and a corner reaching past it crops the desktop
-    /// somewhere else and lays it over the window underneath.
-    #[test]
-    fn a_corner_is_held_to_the_frame() {
-        // A frame cut off 20px into the hole: only the left corners survive,
-        // and the top-left one only partly.
-        let frame = Box::new(100, 100, 22, 300);
-        let hole = Box::new(102, 102, 396, 296);
-        let [top_left, top_right, bottom_right, bottom_left] =
-            border_corners(frame, hole, 1.0, 10);
-
-        assert_eq!(top_left, Box::new(102, 102, 10, 10));
-        assert_eq!(bottom_left, Box::new(102, 388, 10, 10));
-        assert_eq!(top_right, Box::new(0, 0, 0, 0), "past the frame");
-        assert_eq!(bottom_right, Box::new(0, 0, 0, 0), "past the frame");
-    }
-
-    /// A corner is never more than half the window, however round the shell
-    /// asked for — two that met in the middle would draw the desktop across
-    /// the client rather than around it.
-    #[test]
-    fn a_corner_larger_than_the_window_is_clamped() {
-        let frame = Box::new(100, 100, 40, 24);
-        let hole = Box::new(100, 100, 40, 24);
-        let [top_left, _, bottom_right, _] = border_corners(frame, hole, 1.0, 400);
-
-        assert_eq!(top_left, Box::new(100, 100, 12, 12));
-        assert_eq!(bottom_right, Box::new(128, 112, 12, 12));
     }
 }

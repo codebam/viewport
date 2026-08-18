@@ -72,14 +72,18 @@ pub struct View {
     /// drawing the whole rectangle paints the desktop over the client, which is
     /// a floating window that has become a solid block of wallpaper.
     pub overlay_ids: [smithay::backend::renderer::element::Id; 4],
-    /// Element ids for the four corners of the same frame, on the same terms.
+    /// The element id for the corners of the same frame, on the same terms.
     ///
-    /// Separate from the sides because they are drawn at a different depth:
-    /// a side sits outside the client and goes in front of it, a corner sits
-    /// *inside* the client's own rectangle — the square the border's curve
-    /// cuts across — and has to go behind it, so the client covers the part
-    /// of that square it actually fills.
-    pub corner_ids: [smithay::backend::renderer::element::Id; 4],
+    /// One rather than four, because the four wedges are drawn as one element
+    /// in several bands — the same shape a rounded window is drawn as, and for
+    /// the same reason: one element the damage tracker can follow rather than
+    /// a handful of slivers that come and go.
+    ///
+    /// Separate from the sides because it is drawn at a different depth: a
+    /// side sits outside the client and goes in front of it, and the corners
+    /// sit *inside* the client's own rectangle — the part of the hole the
+    /// border's curve crosses — so they go behind it.
+    pub corner_id: smithay::backend::renderer::element::Id,
 
     /// The shell is floating this window rather than tiling it, as its last
     /// `view.layout` said. Stacking reads it: a floating window belongs over
@@ -441,7 +445,7 @@ impl Views {
             floating: false,
             square: false,
             overlay_ids: std::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
-            corner_ids: std::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
+            corner_id: smithay::backend::renderer::element::Id::new(),
             opacity: 1.0,
             configured: None,
             foreign: None,

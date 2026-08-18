@@ -103,6 +103,48 @@ pub fn bands(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32, 
     bands
 }
 
+/// What a rounding of `radius` cuts *away* from `rect`: the four corner
+/// wedges, and nothing else.
+///
+/// The complement of [`bands`] inside the same rectangle, derived from it
+/// rather than computed again — the two have to agree to the pixel, because
+/// one is what a client is drawn as and the other is what is drawn behind it.
+///
+/// This is what the shell's border curve occupies inside the hole it drew. It
+/// matters that it is the wedge and not the whole corner square: the rest of
+/// that square is the hole, which in the shell's buffer is the desktop's own
+/// background, and drawing that over the window a floating one is lifted above
+/// is four triangles of wallpaper punched through it.
+pub fn cutaway(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32, Physical>> {
+    let radius = radius.min(rect.size.w / 2).min(rect.size.h / 2);
+    if radius <= 0 || rect.is_empty() {
+        return Vec::new();
+    }
+
+    let right_of = |r: Rectangle<i32, Physical>| r.loc.x + r.size.w;
+    let mut wedges = Vec::new();
+    for band in bands(rect, radius) {
+        // The rows of a band are inset by the same amount on both sides, so
+        // what the rounding took is the strip left of the band and the strip
+        // right of it.
+        let left = band.loc.x - rect.loc.x;
+        if left > 0 {
+            wedges.push(Rectangle::new(
+                (rect.loc.x, band.loc.y).into(),
+                (left, band.size.h).into(),
+            ));
+        }
+        let right = right_of(rect) - right_of(band);
+        if right > 0 {
+            wedges.push(Rectangle::new(
+                (right_of(band), band.loc.y).into(),
+                (right, band.size.h).into(),
+            ));
+        }
+    }
+    wedges
+}
+
 /// How far in from the edge the circle is at `row` rows from the top of the
 /// corner.
 ///
@@ -268,6 +310,39 @@ impl<E: Element> RoundedRenderElement<E> {
             geometry,
             bands,
             solid,
+        })
+    }
+
+    /// Draw `element`, but only the rectangles in `bands`.
+    ///
+    /// The other constructor is handed a shape and cuts corners out of it;
+    /// this one is handed the pieces directly, for the caller that already
+    /// knows exactly which slivers it wants — see [`cutaway`], which is the
+    /// only one.
+    ///
+    /// Nothing is claimed as opaque. The pieces this is used for are the
+    /// antialiased edge of the shell's own border, which is translucent at the
+    /// curve; promising the renderer it is solid would let it skip drawing
+    /// what is underneath.
+    pub fn from_bands(
+        element: E,
+        scale: impl Into<Scale<f64>>,
+        bands: Vec<Rectangle<i32, Physical>>,
+    ) -> Option<Self> {
+        let geometry = element.geometry(scale.into());
+        let bands: Vec<_> = bands
+            .into_iter()
+            .filter_map(|band| band.intersection(geometry))
+            .filter(|band| !band.is_empty())
+            .collect();
+        if geometry.is_empty() || bands.is_empty() {
+            return None;
+        }
+        Some(RoundedRenderElement {
+            element,
+            geometry,
+            bands: std::rc::Rc::new(bands),
+            solid: std::rc::Rc::new(Vec::new()),
         })
     }
 
@@ -560,6 +635,85 @@ mod tests {
         }
         fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
             self.opaque.iter().copied().collect()
+        }
+    }
+
+    /// What the rounding cuts away is exactly what it does not keep: every
+    /// wedge is inside the rectangle, none of them overlaps a band, and
+    /// together the two cover the whole of it.
+    ///
+    /// That is the property the bug turned on. The corners used to be drawn as
+    /// whole squares, which is the wedge *plus* the part of the hole the
+    /// client covers — and where the client fell short of its hole, as every
+    /// terminal does by a few pixels of cell rounding, what showed through was
+    /// the desktop's own background over the window underneath.
+    #[test]
+    fn the_cutaway_is_everything_the_rounding_does_not_keep() {
+        let rect = Rectangle::<i32, Physical>::new((100, 100).into(), (60, 40).into());
+        let radius = 10;
+        let kept = bands(rect, radius);
+        let cut = cutaway(rect, radius);
+        assert!(!cut.is_empty());
+
+        let area = |rects: &[Rectangle<i32, Physical>]| -> i32 {
+            rects.iter().map(|r| r.size.w * r.size.h).sum()
+        };
+        assert_eq!(
+            area(&kept) + area(&cut),
+            rect.size.w * rect.size.h,
+            "the two halves are the whole rectangle"
+        );
+        for wedge in &cut {
+            assert_eq!(wedge.intersection(rect), Some(*wedge), "inside the rect");
+            for band in &kept {
+                assert!(
+                    wedge.intersection(*band).is_none_or(|hit| hit.is_empty()),
+                    "{wedge:?} overlaps {band:?}"
+                );
+            }
+        }
+    }
+
+    /// The wedges sit in the corners and nowhere else: nothing is cut from the
+    /// middle of an edge, which would be a bite out of the border.
+    #[test]
+    fn the_cutaway_is_only_corners() {
+        let rect = Rectangle::<i32, Physical>::new((0, 0).into(), (60, 40).into());
+        let radius = 8;
+        for wedge in cutaway(rect, radius) {
+            let top = wedge.loc.y < radius;
+            let bottom = wedge.loc.y + wedge.size.h > rect.size.h - radius;
+            let left = wedge.loc.x < radius;
+            let right = wedge.loc.x + wedge.size.w > rect.size.w - radius;
+            assert!(top || bottom, "{wedge:?} is not in a corner row");
+            assert!(left || right, "{wedge:?} is not in a corner column");
+        }
+    }
+
+    /// A square window cuts nothing away, so there is nothing to draw behind
+    /// it — and asking costs no rectangles at all.
+    #[test]
+    fn a_square_window_has_no_cutaway() {
+        let rect = Rectangle::<i32, Physical>::new((0, 0).into(), (60, 40).into());
+        assert!(cutaway(rect, 0).is_empty());
+        assert!(cutaway(rect, -4).is_empty());
+        assert!(cutaway(Rectangle::default(), 10).is_empty());
+    }
+
+    /// A radius larger than the window is clamped to half of it, exactly as
+    /// the bands are — the two are the same shape read from opposite sides.
+    #[test]
+    fn a_cutaway_larger_than_the_window_is_clamped() {
+        let rect = Rectangle::<i32, Physical>::new((0, 0).into(), (40, 24).into());
+        let cut = cutaway(rect, 400);
+        let kept = bands(rect, 400);
+        let area = |rects: &[Rectangle<i32, Physical>]| -> i32 {
+            rects.iter().map(|r| r.size.w * r.size.h).sum()
+        };
+        assert_eq!(area(&cut) + area(&kept), rect.size.w * rect.size.h);
+        for wedge in cut {
+            assert!(wedge.size.w <= rect.size.w / 2, "{wedge:?}");
+            assert!(wedge.size.h <= rect.size.h / 2, "{wedge:?}");
         }
     }
 

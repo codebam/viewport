@@ -5226,24 +5226,25 @@ impl ViewportState {
                 // the shell is behind whatever this window is floating over.
                 // Only for a rounded window — a square one's border is the
                 // four sides and nothing else.
-                let corners: Vec<_> = view
+                //
+                // The wedges the border's curve occupies inside the hole, and
+                // not the corner squares that hold them: the rest of each
+                // square is the hole itself, which in the shell's buffer is
+                // the desktop's own background. Drawing that over the window a
+                // floating one is lifted above puts four triangles of
+                // wallpaper through it — and a client that does not fill its
+                // hole to the pixel, which is every terminal, leaves room for
+                // exactly that.
+                let corners = view
                     .filter(|_| drawn_on_this_output && radius > width)
-                    .and_then(|view| {
-                        view.frame
-                            .map(|frame| (frame, view.box_, view.scale, &view.corner_ids))
-                    })
-                    .map(|(frame, hole, drawn_at, corner_ids)| {
-                        crate::render::border_corners(frame, hole, drawn_at, radius - width)
-                            .into_iter()
-                            .zip(corner_ids.iter().cloned())
-                            .filter_map(|(corner, id)| {
-                                // Held to this output, exactly as a side is.
-                                let local = crate::render::overlay_side(corner, output_geometry)?;
-                                Some((id, local.to_f64().to_physical(scale).to_i32_round()))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                    .and_then(|view| view.frame.map(|_| (view.box_, view.scale, &view.corner_id)))
+                    .and_then(|(hole, drawn_at, corner_id)| {
+                        let hole = crate::render::drawn_hole_of(hole, drawn_at);
+                        let hole = crate::render::overlay_side(hole, output_geometry)?;
+                        let hole = hole.to_f64().to_physical(scale).to_i32_round();
+                        let wedges = crate::rounded::cutaway(hole, physical(radius - width));
+                        (!wedges.is_empty()).then(|| (corner_id.clone(), wedges))
+                    });
 
                 // The outside of the same corner, for the border sides drawn
                 // above the windows underneath a floating one.
