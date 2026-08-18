@@ -11,6 +11,22 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-17
+
+### Added
+- A binding's output and exit status reach the log. A spawned command had its
+  stderr on `/dev/null` and its status thrown away, so the log said only that
+  something had been started — a screenshot script that died on a bad argument,
+  a missing tool or a `set -e` two lines in looked exactly like one that
+  worked, and there is no terminal watching to tell them apart. The first
+  twenty lines of a child's stderr are now logged against the command that
+  produced them, and a non-zero exit is logged with its status. Twenty because
+  a failing script says what is wrong at the start, while a browser left
+  running for a day writes tens of thousands of lines that would bury
+  everything else; reading continues past the cap even though logging stops,
+  since a pipe nobody drains fills up and the next write would block the child
+  mid-task.
+
 ### Changed
 - The shell is restarted with a backoff, and is no longer given up on. It used
   to be respawned on the next tick every time, five times a minute, and then
@@ -26,6 +42,88 @@ to summarise rather than to duplicate.
   thirty seconds rather than stopping — so the desktop comes back on its own
   once the cause has gone, and a page that genuinely cannot load costs one log
   line every thirty seconds instead of a session.
+- A frame costs less, and the desktop stops re-answering questions it has
+  already answered. The shell posts one `view.layout` per window per animation
+  frame, and each one used to end by restacking the whole space and re-asking
+  which output colour every feedback surface sits on — questions about the
+  desktop rather than about the window the message was for, so eight windows
+  got the same answer eight times, each time allocating and scanning every
+  view. Both are now owed once and settled once per batch, before anything
+  else in the event loop can see a stack that has not been restacked. Around
+  that: `views` keeps a surface-to-position index, checked against the list
+  before it is trusted and falling back to the old walk when it is stale, so
+  finding the window behind a commit, a focus change or a hit test no longer
+  costs a `WlSurface` clone per window passed; the bridge's writer thread
+  drains whatever the producer has already queued into one `write_all`,
+  bounded at 64 KiB and never waiting for a straggler, which takes an
+  eight-window desk at 60fps from around 480 small syscalls a second to a
+  handful; and `frame_for` stops minting border element ids for windows with
+  no view, stops building a `String` key per output per frame for a debug line
+  nobody is listening to, and stops looking up a lock surface in a map that is
+  empty outside a locked session. No behaviour changes from any of it.
+
+### Fixed
+- A second locker taking a screen from a lock screen that is drawing, which
+  could leave a session locked after a correct password. Smithay grants every
+  `ext-session-lock` request and leaves the decision to the compositor, so
+  nothing refused the second one; taking it also cleared `lock_surfaces`,
+  dropping the surfaces of a locker that was still running and still drawing.
+  Two clients then owned one screen, only the newer was rendered, and
+  unlocking the one you could see left the other holding a lock nothing on
+  screen could reach. It needed nothing unusual to hit: the idle deadline and
+  the `lock` binding both call `lock_session` and neither asked whether the
+  session was already locked, so locking by hand and then letting the idle
+  timer expire was two lockers. The rule is about pixels rather than about who
+  asked first — a lock screen that is drawing may not be taken over, one that
+  is not may, because running another locker is the only way out of a locker
+  that crashed and `check_lock_screen` says to do exactly that. A refusal
+  drops the `SessionLocker`, whose `Drop` sends `finished`.
+- `Mod4+Shift+b` turning the screens off and something turning them straight
+  back on. `render_if_needed` was the only place that checked whether the
+  session was blanked, and four paths call `render` around it: the vblank of a
+  flip still in the air when the screens went off, the watchdog resuming a
+  chain that has legitimately stopped, a connector rescan, and a session
+  resume. Any one of them queues a frame, and a queued frame is what wakes a
+  panel. The check now sits where the frame is built and committed, and again
+  in `render_pass`, the last gate before KMS — so a monitor that arrives
+  during a blank comes up asleep with the rest rather than lighting on its
+  modeset, which a DisplayPort screen does on its own after sleeping.
+- The cursor being drawn at whatever size the theme happened to ship rather
+  than the size asked for: the nearest image to `XCURSOR_SIZE` * scale was
+  drawn at its own resolution, so asking for 40 from a theme with 32 and 48
+  gave 32. The nearest image is now picked for resolution only and drawn with
+  an explicit source rectangle and logical size, with the hotspot rescaled to
+  match or the pointer aims off the tip of the arrow. Two related leaks are
+  closed with it: a reload rebuilt the compositor's theme without telling the
+  settings portal, so every toolkit sized its own cursors from the startup
+  value for the rest of the session — the portal is now updated, announced,
+  and the pointer redrawn rather than waiting for the next motion — and
+  neither `XCURSOR` variable reached the session environment, so a client
+  started by systemd or activated over D-Bus picked its own default.
+- The keymap on an empty desktop not scrolling when it does not fit. The
+  tutorial block has had a max-height and `overflow-y: auto` since it was
+  written and neither did anything: `.empty` is inert so a click reaches the
+  desktop behind it, `pointer-events` is inherited, and the wheel went through
+  the list to the page — the one box on screen meant to scroll was the one
+  that could not. A `columns: 2` box with a bounded height does not scroll in
+  any case, since multicol lays out another column to the right and
+  `overflow-y` alone computes the other axis to `auto` as well, so the chords
+  that did not fit went behind a horizontal scrollbar instead of below the
+  fold. The list is now a wrapping flex row, which overflows downwards, and
+  takes the pointer itself while the empty state around it stays
+  click-through. Flex and not grid because Servo drops `display: grid` and the
+  box falls back to `block` — a single ribbon down the middle, which is what
+  two columns exist to avoid.
+- The border on a zoomed-out window: one thin line hanging below it and
+  nothing anywhere else. `border_sides` was given the frame the shell measured
+  on screen together with the hole in the client's own pixels, which are the
+  same rectangle only at scale 1. A window on a zoomed-out canvas plane — or a
+  thumbnail in the overview, or a cold window in solar's outer orbit — is
+  drawn small and never asked to resize itself, so the hole was far larger
+  than the frame around it: the bottom and right sides started past the
+  frame's far corner and clamped to nothing, and the left side kept the
+  client's full height. The scale now comes with it and the hole is converted
+  to what is actually drawn before the sides are cut out.
 
 ## [0.1.7] - 2026-08-15
 
@@ -268,7 +366,8 @@ deleted C compositor and the tree stopped carrying two implementations.
   missing — WebKit treated such pages as empty documents (see the `wpe`
   PKGBUILD's notes on `shared-mime-info`).
 
-[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/codebam/viewport/releases/tag/v0.1.8
 [0.1.7]: https://github.com/codebam/viewport/releases/tag/v0.1.7
 [0.1.6]: https://github.com/codebam/viewport/releases/tag/v0.1.6
 [0.1.5]: https://github.com/codebam/viewport/releases/tag/v0.1.5
