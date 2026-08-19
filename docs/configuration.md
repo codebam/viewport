@@ -139,6 +139,9 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+Shift+d` | toggle dark mode |
 | `Mod4+Shift+q` / `+e` / `+c` | close / exit / reload the shell |
 | `Mod4+Shift+Return` | give the keyboard to the wallpaper terminal, and take it back |
+| `Mod4+Shift+v` | the clipboard history |
+| `Mod4+Shift+n` / `Mod4+Shift+t` | the Wi-Fi picker / the Bluetooth picker |
+| `Mod4+Shift+k` | the on-screen keyboard, which otherwise comes up on its own |
 
 ## The pointer
 
@@ -595,6 +598,41 @@ loaded from a `file://` URL beside the binary.
 `viewport msg` takes its own options; `viewport msg --help` lists every message
 and its fields, and [IPC](ipc.md) is what they do.
 
+## Screen sharing and remote control
+
+Both are portals, both are answered by the compositor itself, and both put the
+same dialog on screen before anything happens.
+
+`org.freedesktop.impl.portal.ScreenCast` is why a browser can share a *window*
+here. The usual backend is xdg-desktop-portal-wlr, which can only offer
+monitors — it captures through wlr-screencopy, which captures outputs and
+nothing else — so an application asking for a window was handed a whole screen.
+The chooser lists every window and every monitor, plus three sources that name
+whatever is in front at the time: all monitors at once, the focused window, and
+the active monitor.
+
+`org.freedesktop.impl.portal.RemoteDesktop` is the same interface with input
+added — a remote-support tool, or a call where the other end takes the mouse.
+The dialog says which devices are being asked for (`keyboard`, `mouse`,
+`touchscreen`), because that is the part being agreed to, and Enter allows all
+of them while Esc refuses. An application that also asked for a picture gets
+the source list underneath, and the one choice covers both.
+
+Two things it deliberately will not do. It never remembers a grant: a screen
+share can be restored from a token so that OBS finds the same monitor months
+later, and the same trick applied to a keyboard would be a process that can
+type into this machine on the strength of a blob in the permission store. And
+it refuses outright when the desktop page is not drawing, so a broken shell
+cannot become a way in — a screen share falls back to the focused window in
+that case, which is a much smaller thing to get wrong.
+
+Registering both needs the same three environment variables the Settings
+portal needs, listed under **Dark mode** above; `start.sh` sets them.
+`data/portal-config` and `data/portal-share` are the two files that name this
+compositor as the backend, and they have to name it for *both* interfaces —
+the frontend uses one session handle across the two, so a configuration that
+sends ScreenCast here and RemoteDesktop somewhere else cannot work.
+
 ## Gaps
 
 The space around and between windows. Every layout model reads the same
@@ -835,8 +873,14 @@ that moved and a bar that did not until the next two-second tick.
   directory.
 - **`weather`** — clicking opens the place in a browser.
 
-The built-in modules (a bare string in `bar_items`) carry none of this — they
-are read-only. The workspace pills and the taskbar are: clicking a number
+- **`net`** — the one built-in module that is not read-only: clicking it opens
+  the Wi-Fi picker, the same one `Mod4+Shift+n` opens. Its tooltip names the
+  network in use once the picker has been opened at least once — before that
+  the compositor has not spoken to NetworkManager at all, so there is nothing
+  truthful to say.
+
+The other built-in modules (a bare string in `bar_items`) carry none of this —
+they are read-only. The workspace pills and the taskbar are: clicking a number
 switches to that workspace, clicking a title focuses that window.
 
 Under `bar: auto` the bar is on screen only while Mod4 is held, so every click
@@ -1068,6 +1112,81 @@ a screen.
 a session that would rather run cliphist or one that does not want a copy of
 every password that passes through the clipboard. The setting applies on
 reload, and turning it off empties what was already there.
+
+## Wi-Fi and Bluetooth
+
+`Mod4+Shift+n` opens the Wi-Fi picker and `Mod4+Shift+t` the Bluetooth one;
+clicking the bar's `net` module opens the first as well. Both are drawn by the
+shell — so they are styled by the stylesheet already open in the editor, like
+the notifications — and both are answered by the compositor, because the page
+has no bus and NetworkManager and BlueZ are both on it.
+
+There is nothing to configure and no daemon to add. Whatever already manages
+the machine's networking is what these talk to: a network joined here is a
+NetworkManager connection that `nmcli` and every other applet can see, and the
+passphrase goes into NetworkManager's own secret store rather than anywhere in
+this compositor.
+
+Neither radio is touched until a picker is opened. Reading the access point
+list is several bus round trips per access point and a scan is the radio
+transmitting, so the compositor connects to NetworkManager on the first press
+and stops reading the moment the picker closes; the Bluetooth picker starts a
+discovery when it opens and stops it when it closes. A picker left open is a
+radio left scanning, which is why a click anywhere else takes both down.
+
+In the Wi-Fi picker, a row is a network rather than an access point — a mesh
+publishing one name from three radios is one row — and clicking it does the
+obvious thing: leave the one in use, join one that is already saved or open,
+ask for a passphrase for one that is neither. The passphrase box is a real
+text field, and the shell asks the compositor for the keyboard while it is up
+(`shell.focus`) and hands it back to the window that had it afterwards. An
+enterprise network is named as one and not offered a box: it wants a
+certificate and an identity, which is `nmcli` work.
+
+In the Bluetooth picker, tapping a device connects it — pairing and trusting
+first when it has never been paired, so it comes back on its own next time —
+and tapping a connected one disconnects it. The ✕ on a paired device forgets
+it, which is the way out of a pairing that went wrong.
+
+Pairing needs an agent, which is the piece `bluetoothctl` makes you type
+`agent on` for. The compositor registers one the first time something is
+paired, with the `NoInputNoOutput` capability — there is no dialog here to
+show a six-digit code in — which is the mode every headset, mouse and speaker
+uses. It is deliberately *not* made the session's default agent: that would
+also answer incoming pairing requests, and answering those automatically is
+how a stranger pairs with your laptop. A device that insists on a displayed
+code cannot be paired from here; BlueZ says so and the picker shows what it
+said.
+
+## The on-screen keyboard
+
+There is nothing to configure here either — no setting turns it on, because it
+is always available, the way the clipboard picker and the two radios above are.
+It comes up on its own when the focused client enables a `zwp_text_input_v3`,
+which is the protocol's own way of saying a text field wants typing into, and
+goes back down when that stops being true. `Mod4+Shift+k` raises and lowers it
+by hand, for a desk that has a keyboard already and wants to test it, or to
+type into something that never asked.
+
+It types by pressing keys, not by handing text to the client directly. This
+compositor has both paths wired up — a fork of smithay's
+`zwp_text_input_v3`/`zwp_input_method_v2` machinery, with an escape hatch that
+lets the compositor stand in for a real input method, and `inject_keysym`,
+the same call remote-desktop keyboard injection already goes through — and it
+uses the second. `commit_string` only reaches a client that has bound
+text-input and enabled it, which every toolkit does for a real text field but
+a terminal emulator or a login prompt typically does not, so a keyboard that
+only worked that way would go silent on exactly the desks that most need one.
+Key presses reach anything with a keyboard, the ordinary way. See the doc
+comment on `Request::OskKey` in `crates/viewport-ipc/src/request.rs` for the
+whole of that reasoning, including how Shift and Caps Lock are made to work
+over a path that can only press keys rather than glyphs.
+
+Held keys repeat the way a hardware key does — the seat's own repeat, from
+`repeat_rate` and `repeat_delay` above, and nothing timed by the keyboard
+itself — because a tap is `pressed: true` immediately followed by
+`pressed: false`, and a key held down is `true` once and `false` on release,
+exactly like a real one.
 
 ## Window rules
 

@@ -437,6 +437,34 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         Request::MprisControl { action } => state.mpris.control(action),
         Request::PowerProfile { profile } => state.power.set_profile(profile),
 
+        // The on-screen keyboard, and the only place it touches this file:
+        // everything else it needs — the layout to draw, when to show
+        // itself — is decided in the shell and in `sync_osk_wanted`. A tap is
+        // `pressed: true` immediately followed by `pressed: false`; a key
+        // held down is `true` once and `false` on lift, and the seat's own
+        // keyboard repeat takes it from there, the same as a hardware key.
+        // See `Request::OskKey`'s doc comment for why this is `inject_keysym`
+        // and not `commit_string` through the input-method path.
+        Request::OskKey { keysym, pressed } => {
+            state.inject_keysym(keysym, pressed);
+        }
+
+        // The two radios. Everything here is handed straight to the worker
+        // that owns the bus connection — the checking is done there, where the
+        // list of what NetworkManager and BlueZ will be asked lives, and the
+        // compositor's loop never waits for either of them.
+        //
+        // `network.scan` and `bluetooth.scan` are also how the shell says a
+        // picker is open: absent `enabled` means yes, which is what a picker
+        // sends when it opens, and `false` is what it sends when it goes away.
+        Request::NetworkScan { enabled } => state.network.watch(enabled.unwrap_or(true)),
+        Request::NetworkConnect { ssid, passphrase } => state.network.connect(ssid, passphrase),
+        Request::NetworkDisconnect => state.network.disconnect(),
+        Request::NetworkRadio { enabled } => state.network.radio(enabled),
+        Request::BluetoothPower { enabled } => state.bluetooth.power(enabled),
+        Request::BluetoothScan { enabled } => state.bluetooth.watch(enabled.unwrap_or(true)),
+        Request::BluetoothDevice { address, action } => state.bluetooth.device(address, action),
+
         // Both halves of an open menu: a row chosen, and the menu going away
         // without one. The application is told either way, because a menu it
         // is never told about closing is one it believes is still on screen.

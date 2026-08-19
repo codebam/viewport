@@ -474,3 +474,13 @@ global had never been there, while a client that does carry one falls back
 either way. Absence tells both of them the same thing. Should either
 capability arrive — an export path off the scanout planes, or a virtual-input
 back end — the global comes back with it.
+
+A remote-desktop client does not need either. `org.freedesktop.impl.portal.
+RemoteDesktop` is implemented, and it drives the one real seat: the pointer,
+keyboard and touch a person is already using, through the same `inject_*` path
+in `crates/viewport/src/input.rs` that the control socket uses. That is the
+whole reason a transient seat is not wanted here — a second seat exists so a
+remote session can have devices of its own, and a compositor that can inject
+into the first one has nothing to put on the second. What it costs is that a
+remote pointer and a local one fight over the same cursor, which is what
+somebody sharing control of their machine expects to happen.

@@ -378,6 +378,24 @@ pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
         // everyone already knows, and a shell command rather than a compositor
         // action because what a picker is belongs to the page.
         "Mod4+Shift+v=shell clipboard".to_owned(),
+        // The two radios, on the same terms as the clipboard picker above: the
+        // compositor does the talking to NetworkManager and BlueZ, because the
+        // page has no bus, and the shell draws the list — so these are shell
+        // verbs rather than compositor actions.
+        //
+        // `n` and `t` rather than anything mnemonic for Bluetooth: `Mod4+n`
+        // already toggles the bar, so the network sits beside it under Shift,
+        // and `b` is taken by the horizontal split with `Mod4+Shift+b`
+        // blanking the screens. `t` is what is left that nothing else wants.
+        "Mod4+Shift+n=shell network".to_owned(),
+        "Mod4+Shift+t=shell bluetooth".to_owned(),
+        // The on-screen keyboard. It also comes up on its own — see
+        // `osk.wanted` in ipc.md — so this is only for the desk that has no
+        // hardware keyboard to press it with in the first place; it exists
+        // for the desk that does, where the desktop wants to bring it up to
+        // test it or to type into something that never asked. `k` for
+        // keyboard, which nothing else on this modifier has claimed.
+        "Mod4+Shift+k=shell osk".to_owned(),
         // Tab is filled in below: two layouts have windows the compositor
         // cannot cycle through, so the chord goes to the shell there.
         "Mod4+f=shell window.fullscreen".to_owned(),
@@ -1115,12 +1133,12 @@ mod tests {
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
-        // 35 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // 38 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", "wmenu-run", "tiling");
         assert_eq!(
             bindings.len(),
-            35 + 16 + 18 + 11 + 1,
+            38 + 16 + 18 + 11 + 1,
             "a default failed to parse"
         );
 
@@ -1173,6 +1191,52 @@ mod tests {
         assert_eq!(
             defaults("foot", "wmenu-run", "orbital").len(),
             bindings.len()
+        );
+    }
+
+    /// The two radio pickers are bound, and bound to the shell.
+    ///
+    /// Both are verbs the shell answers — the compositor holds the bus
+    /// connection and the page draws the list — so a default that reached
+    /// `Action::Exec` or an unparsed chord would be a key that does nothing
+    /// visible: `filter_map` drops a binding it cannot read, and a shell verb
+    /// nothing recognises is a message that goes out and is ignored. Neither
+    /// failure is one anybody would notice without pressing the key.
+    #[test]
+    fn the_radio_pickers_are_bound_to_shell_verbs() {
+        let bindings = defaults("foot", "wmenu-run", "tiling");
+        for (chord, verb) in [("Mod4+Shift+n", "network"), ("Mod4+Shift+t", "bluetooth")] {
+            let wanted = parse_chord(chord).expect("the test's own chord parses");
+            let found = bindings.iter().find(|binding| {
+                binding.mode.is_empty()
+                    && binding.keysym == wanted.keysym
+                    && binding.modifiers == wanted.modifiers
+            });
+            assert_eq!(
+                found.map(|binding| binding.action.clone()),
+                Some(Action::Shell(verb.to_owned())),
+                "{chord} should open the {verb} picker"
+            );
+        }
+    }
+
+    /// The on-screen keyboard is bound to a shell verb, on the same terms as
+    /// the radio pickers above: it is the shell that draws it and decides
+    /// whether it is up, so the compositor's part is forwarding a keybinding
+    /// rather than owning any state of its own.
+    #[test]
+    fn the_on_screen_keyboard_is_bound_to_a_shell_verb() {
+        let bindings = defaults("foot", "wmenu-run", "tiling");
+        let wanted = parse_chord("Mod4+Shift+k").expect("the test's own chord parses");
+        let found = bindings.iter().find(|binding| {
+            binding.mode.is_empty()
+                && binding.keysym == wanted.keysym
+                && binding.modifiers == wanted.modifiers
+        });
+        assert_eq!(
+            found.map(|binding| binding.action.clone()),
+            Some(Action::Shell("osk".to_owned())),
+            "Mod4+Shift+k should toggle the on-screen keyboard"
         );
     }
 

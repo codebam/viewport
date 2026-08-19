@@ -62,6 +62,12 @@ impl SeatHandler for ViewportState {
         let dh = &self.display_handle;
         let client = focused.and_then(|focus| dh.get_client(focus.surface().id()).ok());
         set_data_device_focus(dh, seat, client);
+        // Catches a text-input that was already enabled on the surface
+        // gaining focus — `commit` alone would only notice the next time that
+        // client paints, which for a window that was merely clicked into and
+        // not typed into yet might be a while. See `sync_osk_wanted`'s own
+        // doc comment in `input.rs` for the rest of when this runs.
+        self.sync_osk_wanted();
     }
 }
 

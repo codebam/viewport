@@ -553,6 +553,124 @@ html.behind body { background: transparent; }
 }
 .clipboard-clear:hover { color: var(--urgent); }
 
+/* The two radio pickers: Wi-Fi and Bluetooth.
+ *
+ * One set of rules for both, because they are the same picker twice — the
+ * same shape as the clipboard and the power list above, centred and named as
+ * an overlay so it draws over the windows. Wider than the power list because
+ * a row here carries four things (a strength, a name, a word and a lock) where
+ * that one carries a word.
+ *
+ * They are never both up: each toggle closes on a second press and the
+ * document's click closes either, so the shared z-index is not a stack. */
+#network-picker,
+#bluetooth-picker {
+  position: fixed;
+  z-index: 160;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  width: 26rem;
+  max-width: 80vw;
+  max-height: 70vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  font-size: .85rem;
+  overflow: hidden;
+}
+#network-picker[hidden],
+#bluetooth-picker[hidden] { display: none; }
+
+.radio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  padding: .5rem .7rem;
+  border-bottom: 1px solid var(--border);
+}
+.radio-title { font-weight: 600; }
+/* The radio's own switch. A button rather than a checkbox: it says what the
+   radio is rather than what it would become, which is the only reading that
+   survives the state changing under it while somebody looks at it. */
+.radio-toggle {
+  padding: .15rem .55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.radio-toggle.on { color: var(--accent); border-color: var(--accent); }
+
+.radio-list { overflow-y: auto; padding: .35rem; }
+.radio-item { display: block; }
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  width: 100%;
+  padding: .45rem .6rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.radio-row:hover { background: var(--fill-hover); }
+.radio-row.active { color: var(--accent); }
+/* Fixed width so the names line up down the list rather than stepping in and
+   out as the signal glyphs change width. */
+.radio-icon { width: 1.2rem; text-align: center; }
+/* One line each: an SSID can be as long as somebody's sense of humour, and a
+   row that wrapped would make the list a different height on every scan. */
+.radio-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.radio-detail { color: var(--muted); font-size: .78rem; }
+.radio-lock { color: var(--muted); }
+.radio-forget { color: var(--muted); }
+.radio-forget:hover { color: var(--urgent); }
+.radio-empty { padding: 1rem; color: var(--muted); text-align: center; }
+.radio-error {
+  padding: .5rem .7rem;
+  border-top: 1px solid var(--border);
+  color: var(--urgent);
+}
+
+/* The passphrase box, under the row it belongs to rather than in a dialog of
+   its own: what is being typed into stays next to the name it is for. */
+.radio-passphrase {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .35rem .6rem .5rem;
+}
+.radio-input {
+  flex: 1;
+  padding: .3rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  color: var(--text);
+  font: inherit;
+}
+.radio-input:focus { outline: 1px solid var(--accent); }
+.radio-join {
+  padding: .3rem .7rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--surface);
+  font: inherit;
+  cursor: pointer;
+}
+
 /* An open tray item menu.
  *
  * Positioned in layout coordinates by bar.js, because that is what the
@@ -1637,6 +1755,17 @@ html.no-tutorial .empty .tutorial { display: none; }
   font-size: .85em;
 }
 
+/* What a remote session would be allowed to use.
+ *
+ * The one line in this dialog that is a warning rather than a description, so
+ * it is the one line that is not dimmed: everything else here says what is on
+ * offer, and this says what is being given away. */
+.screencast-devices {
+  font-size: .85em;
+  color: var(--urgent);
+  font-weight: 500;
+}
+
 .screencast-list {
   display: flex;
   flex-direction: column;
@@ -1704,3 +1833,91 @@ html.no-tutorial .empty .tutorial { display: none; }
   opacity: .6;
   font-size: .8em;
 }
+
+/* ------------------------------------------------------------------------
+ * The on-screen keyboard
+ *
+ * Docked to the bottom of the output it is typing into rather than centred
+ * like every other overlay in this file: it is a keyboard, and a keyboard
+ * that appeared in the middle of the screen would cover exactly the field it
+ * was raised to type into. `#osk` spans the whole output — see osk.js's
+ * renderOsk, which sets its rect from the output the same way #screencast
+ * does — and `pointer-events: none` on it keeps everything above the panel
+ * itself clickable; only `.osk-panel`, docked to the box's own bottom edge,
+ * takes touches.
+ * --------------------------------------------------------------------- */
+
+#osk {
+  position: fixed;
+  /* Below the screen-share chooser (200), which already holds the keyboard
+     and needs no help typing; above every picker (160), since the keyboard
+     being covered by one is the rarer problem and the more annoying one to
+     have. */
+  z-index: 180;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: none;
+}
+#osk[hidden] { display: none; }
+
+.osk-panel {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  width: min(100%, 46rem);
+  margin-bottom: env(safe-area-inset-bottom, 0);
+  padding: .5rem;
+  border: 1px solid var(--border);
+  border-top-left-radius: var(--radius-lg);
+  border-top-right-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.osk-row {
+  display: flex;
+  gap: .3rem;
+}
+
+/* The middle letter row of a real keyboard sits half a key in from the one
+   above it; nothing here depends on the offset, but a keyboard that did not
+   have it would look like a bug to anyone who has used a physical one. */
+.osk-row:nth-child(2) { padding: 0 1.15rem; }
+
+.osk-key {
+  flex: 1;
+  min-width: 0;
+  padding: .55rem 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  color: var(--text);
+  font: inherit;
+  font-size: .95rem;
+  text-align: center;
+  cursor: pointer;
+  /* A finger dragging across the keyboard must not select the letters under
+     it, and a double-tap must not zoom the page — both are the browser
+     engine's own gestures, and both are wrong on something that is meant to
+     be pressed rather than read. */
+  user-select: none;
+  touch-action: none;
+}
+.osk-key:hover { background: var(--fill-hover); }
+/* The one state that matters more than hover: a key visibly depressed while
+   the finger is still on it is what makes a touch keyboard with no physical
+   click feel like it registered anything at all. */
+.osk-key.osk-key-down { background: var(--border-focus); color: var(--surface); }
+
+.osk-key-wide { flex: 2; }
+.osk-key-space { flex: 5; }
+
+.osk-key-shift.osk-key-active { color: var(--accent); }
+.osk-key-page,
+.osk-key-hide { color: var(--muted); }
+
+.osk-row-nav { justify-content: flex-end; }
+.osk-row-nav .osk-key { flex: 0 0 2.6rem; }
+.osk-row-nav .osk-key-hide { flex: 1; }

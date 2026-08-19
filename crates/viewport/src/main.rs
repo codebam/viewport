@@ -10,6 +10,7 @@ mod appearance;
 mod apply;
 mod background;
 mod binding;
+mod bluetooth;
 mod capture;
 mod clipboard;
 // Not gated on the web engine: an output composite is worth capturing
@@ -33,6 +34,7 @@ mod ipc;
 mod keyboard_focus;
 mod mpris;
 mod msg;
+mod network;
 mod notification;
 mod output_management;
 mod output_power;
@@ -703,6 +705,39 @@ fn run() -> Result<()> {
             })
             .map_err(|e| anyhow::anyhow!("inserting the power source: {e}"))?;
         state.power.attach(sender);
+    }
+
+    // The two radios, on the same shape again: a worker thread each, started
+    // by the first request from a picker rather than by the configuration.
+    // Which one is wanted is a question only the shell can answer, because the
+    // answer is whether somebody has a picker open.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(crate::network::Message::Snapshot(snapshot)) = event else {
+                    return;
+                };
+                state.notify(&viewport_ipc::Event::NetworkUpdate(snapshot));
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the network source: {e}"))?;
+        state.network.attach(sender);
+    }
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(crate::bluetooth::Message::Snapshot(snapshot)) = event else {
+                    return;
+                };
+                state.notify(&viewport_ipc::Event::BluetoothUpdate(snapshot));
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the Bluetooth source: {e}"))?;
+        state.bluetooth.attach(sender);
     }
 
     // The clipboard history. The reading happens on a thread — the other end

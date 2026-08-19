@@ -340,6 +340,30 @@ otherwise upstreamable, and the fork should go away when it lands.
     OBS and anything else that keeps a token gets the same monitor or window
     back without the chooser, by name rather than by an id that dies with the
     compositor.
+14. **Done. The RemoteDesktop portal.**
+    `org.freedesktop.impl.portal.RemoteDesktop`, served from the same object,
+    the same bus name and the same session table as ScreenCast — the frontend
+    uses one session handle across both interfaces, so answering one of them
+    from another backend cannot work. CreateSession, SelectDevices and Start,
+    then one D-Bus call per input event, each checked against the devices the
+    person at the machine actually allowed and handed to the seat through the
+    `inject_*` helpers in `crates/viewport/src/input.rs`. Consent goes through
+    the screen-share chooser with the device set named in it, because agreeing
+    to be watched and agreeing to be typed into are different decisions.
+
+    Two deliberate refusals. A remote-desktop grant is never restored from a
+    token: `restore_data` is the right trade for a picture and the wrong one
+    for a keyboard, so `persist_mode` is answered with zero and every session
+    asks. And a session is refused outright when no desktop page is drawing —
+    the screen-share path falls back to sharing the focused window in that
+    case, which is not a fallback to make when what is being handed over is
+    control of the machine.
+
+    Version 1 of the interface, not 2. Version 2 is the one that promises
+    ConnectToEIS, and answering that properly means a libei server inside the
+    compositor: a second wire protocol with its own handshake, device objects
+    and lifetime. The method exists and returns `NotSupported`, and the
+    version property keeps the frontend on the Notify path, which works.
 
 ### Still open
 

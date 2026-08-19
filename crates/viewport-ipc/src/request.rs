@@ -195,6 +195,135 @@ pub enum Request {
     #[serde(rename = "power.profile")]
     PowerProfile { profile: String },
 
+    /// One key of the on-screen keyboard, pressed or released.
+    ///
+    /// `keysym` rather than a raw keycode, for the reason `inject_keysym`
+    /// exists at all: the shell knows what character or symbol is printed on
+    /// the key it drew, and finding a physical key in the client's own
+    /// layout that produces it is a lookup this compositor already does for
+    /// remote-desktop keyboard injection. Handed straight to `inject_keysym`
+    /// — see the long comment there for what "prefer the input-method path"
+    /// turned out to mean here and why this compositor does not do that.
+    ///
+    /// A tap is `pressed: true` immediately followed by `pressed: false`; a
+    /// key held down — a finger resting on Backspace — is `true` once and
+    /// `false` once, on lift, exactly like a hardware key. Nothing repeats a
+    /// character on the shell's side: the seat's own keyboard repeat, already
+    /// running for every other key on this desktop, does that once a keysym
+    /// has been down past its delay, on the same rate a physical key gets.
+    /// Letters are always sent in their base, unshifted form — `a`, not `A` —
+    /// with the shell wrapping the pair in a real `Shift_L` press of its own
+    /// when the key it drew needs one; see `osk.js` for why that, and not a
+    /// second keysym meaning "the same letter, capitalised," is what makes
+    /// Shift and Caps Lock work at all through a compositor that can only
+    /// press keys, not glyphs.
+    #[serde(rename = "osk.key")]
+    OskKey {
+        /// An X11/XKB keysym — `0x61` for `a`, `0xff08` for Backspace, and so
+        /// on. The shell computes these; `xkbcommon-keysyms.h` is the map if
+        /// you are adding a key that is not already in `osk.js`.
+        keysym: u32,
+        pressed: bool,
+    },
+
+    /// Look for wireless networks, and keep the shell up to date while it is
+    /// looking.
+    ///
+    /// Sent when the picker opens, and again with `false` when it closes. It
+    /// is a request rather than something the compositor does on a timer for
+    /// two reasons: a scan is the radio transmitting, and reading the list is
+    /// four bus round trips per access point — neither is worth doing while
+    /// nothing on screen is asking. Absent `enabled` means yes, so the message
+    /// with no body is the one a picker sends to open.
+    ///
+    /// The answer is a `network.update`, and further ones as NetworkManager
+    /// changes its mind about what is out there.
+    #[serde(rename = "network.scan")]
+    NetworkScan {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// Join a wireless network.
+    ///
+    /// With no `passphrase` this activates the saved connection
+    /// NetworkManager already has, which is what `known` on an access point
+    /// means. With one it creates a connection and activates that — the same
+    /// thing `nmcli device wifi connect` does, and the only way to join a
+    /// network for the first time.
+    ///
+    /// The passphrase is not kept anywhere in this compositor. It is handed to
+    /// NetworkManager, which owns the secret store the rest of the desktop
+    /// already reads, and the request is dropped.
+    #[serde(rename = "network.connect")]
+    NetworkConnect {
+        ssid: String,
+        /// Absent for a network that is already known, and for an open one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passphrase: Option<String>,
+    },
+
+    /// Leave the wireless network in use.
+    ///
+    /// The device is deactivated rather than the connection deleted: what
+    /// somebody means by leaving a network is not usually forgetting the
+    /// passphrase, and there is no way back from the second through this
+    /// picker.
+    #[serde(rename = "network.disconnect")]
+    NetworkDisconnect,
+
+    /// Switch the wireless radio on or off. Absent `enabled` toggles, as
+    /// `output.hdr` does.
+    #[serde(rename = "network.radio")]
+    NetworkRadio {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// Switch the Bluetooth adapter on or off. Absent `enabled` toggles.
+    #[serde(rename = "bluetooth.power")]
+    BluetoothPower {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// Look for devices, and keep the shell up to date while looking. Absent
+    /// `enabled` means yes, so the message with no body is the one a picker
+    /// sends to open; `false` is what it sends when it closes.
+    ///
+    /// Explicit rather than implied, for the reason `network.scan` is a
+    /// message at all: discovery is the radio transmitting, and the only thing
+    /// that knows whether anybody is looking at the list is the shell that
+    /// drew it. The two halves — reading the list and running the radio — are
+    /// one message because there is no useful state where they differ.
+    #[serde(rename = "bluetooth.scan")]
+    BluetoothScan {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// Do something to one Bluetooth device.
+    ///
+    /// One message with a verb rather than six messages, like
+    /// `mpris.control`: every one of them names a device by address and
+    /// nothing else, and the difference between them is a word BlueZ already
+    /// spells. Anything not in the list below is refused — this is a string
+    /// from a page, and `org.bluez.Device1` has methods a picker has no
+    /// business calling.
+    #[serde(rename = "bluetooth.device")]
+    BluetoothDevice {
+        /// `AA:BB:CC:DD:EE:FF`, as `bluetooth.update` gave it.
+        address: String,
+        /// `"pair"`, `"connect"`, `"disconnect"`, `"trust"`, `"untrust"` or
+        /// `"forget"`.
+        ///
+        /// `"connect"` is the one a picker sends for a device somebody tapped:
+        /// it pairs first when the device is not paired, trusts it so BlueZ
+        /// brings it back on its own, and then connects. The other verbs are
+        /// there for the row's own controls.
+        action: String,
+    },
+
     /// A row of an open tray menu was chosen.
     ///
     /// The menu is the compositor's: it fetched the layout and the shell drew
@@ -995,6 +1124,73 @@ mod tests {
         for json in table {
             serde_json::from_str::<Request>(json).unwrap_or_else(|e| panic!("{json}: {e}"));
         }
+    }
+
+    /// One tap of the on-screen keyboard's Backspace key, as two messages —
+    /// which is the whole of what `osk.key` is: a keysym and whether it went
+    /// down or came back up, with nothing else to say about it.
+    #[test]
+    fn an_osk_key_is_a_keysym_and_whether_it_is_down() {
+        assert_eq!(
+            parse(r#"{"type":"osk.key","keysym":65288,"pressed":true}"#),
+            Request::OskKey {
+                keysym: 0xff08,
+                pressed: true,
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"osk.key","keysym":65288,"pressed":false}"#),
+            Request::OskKey {
+                keysym: 0xff08,
+                pressed: false,
+            }
+        );
+    }
+
+    /// The two radios, whose messages are the only ones that carry a secret
+    /// and the only ones that name a device by a hardware address.
+    ///
+    /// A passphrase is optional because a known network does not need one, and
+    /// the toggles' `enabled` is optional because absent means toggle — the
+    /// shape `output.hdr` already uses. Both defaults are what a shell relies
+    /// on rather than a convenience: a picker that had to say "toggle" would
+    /// have to know what the state was first, which is a race with the
+    /// snapshot it drew from.
+    #[test]
+    fn the_radios_take_a_secret_and_toggle_without_one() {
+        assert_eq!(
+            parse(r#"{"type":"network.connect","ssid":"kitchen"}"#),
+            Request::NetworkConnect {
+                ssid: "kitchen".to_owned(),
+                passphrase: None,
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"network.connect","ssid":"kitchen","passphrase":"hunter2"}"#),
+            Request::NetworkConnect {
+                ssid: "kitchen".to_owned(),
+                passphrase: Some("hunter2".to_owned()),
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"network.radio"}"#),
+            Request::NetworkRadio { enabled: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"bluetooth.scan","enabled":false}"#),
+            Request::BluetoothScan {
+                enabled: Some(false)
+            }
+        );
+        assert_eq!(
+            parse(
+                r#"{"type":"bluetooth.device","address":"AA:BB:CC:DD:EE:FF","action":"connect"}"#
+            ),
+            Request::BluetoothDevice {
+                address: "AA:BB:CC:DD:EE:FF".to_owned(),
+                action: "connect".to_owned(),
+            }
+        );
     }
 
     /// A tray click names an item, a button and where the pointer was, and a

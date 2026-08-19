@@ -177,6 +177,14 @@ const trayMenuEl = new El('div');
 /* And the clipboard picker. */
 const clipboardEl = new El('div');
 const powerEl = new El('div');
+/* And the two radio pickers, which are one element each for the same reason:
+   what a click on a row left behind is only visible if the element the shell
+   drew into is the one the test reads back. */
+const networkEl = new El('div');
+const bluetoothEl = new El('div');
+/* And the on-screen keyboard, on the same terms: what a tap leaves behind is
+   only visible if the element the shell drew into is the one read back. */
+const oskEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -207,6 +215,9 @@ global.document = {
     'tray-menu': trayMenuEl,
     clipboard: clipboardEl,
     'power-picker': powerEl,
+    'network-picker': networkEl,
+    'bluetooth-picker': bluetoothEl,
+    osk: oskEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -378,6 +389,19 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' get trayMenuEl() { return trayMenuEl; },'
   + ' get clipboardEl() { return clipboardEl; },'
   + ' get powerEl() { return powerEl; },'
+  + ' get networkEl() { return networkEl; },'
+  + ' get bluetoothEl() { return bluetoothEl; },'
+  + ' get oskEl() { return oskEl; },'
+  /* The keyboard's own idea of Shift and which page it is on, which nothing
+     drawn on the page says directly — a test reading capitalisation off a
+     rendered key would be testing toUpperCase rather than the shell. */
+  + ' get oskShiftStateForTest() { return oskShiftState; },'
+  + ' get oskPageForTest() { return oskPage; },'
+  /* So a test can put the double-tap-lock timer somewhere it is not about to
+     collide with the fake clock's actual value, without reaching for the
+     fake clock itself — bumping that would also move every tween in every
+     other section of this file that runs after this one. */
+  + ' set oskShiftTappedAtForTest(v) { oskShiftTappedAt = v; },'
   /* What smart gaps decide, which is a question about the tree and the layout
      mode rather than about any pixel: whether this workspace holds a lone
      window that fills the tiling area. */
@@ -822,6 +846,430 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'shell.command', command: 'clipboard', args: [] });
   check('and the binding closes it again when it is already open',
     picker().hidden === true);
+}
+
+/* The two radio pickers. NetworkManager and BlueZ are on the system bus, which
+ * the page cannot reach; the compositor reads them and sends a snapshot, and
+ * everything here is what the shell does with one. What is worth checking is
+ * that a row sends the verb the compositor accepts and nothing else — a picker
+ * that names an access point by object path, or asks to connect to a network
+ * it should be asking for a passphrase for, is a picker that does nothing at
+ * all on a real desktop. */
+{
+  const picker = () => globalThis.__shell.networkEl;
+  const rows = () => (picker().children[1]?.children ?? [])
+    .map((item) => item.children[0]);
+  const click = (el, event = {}) => (el.listeners.click ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, ...event }));
+  const key = (el, k) => (el.listeners.keydown ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, key: k }));
+  const fire = (type) => (documentListeners[type] ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+
+  const snapshot = (extra = {}) => ({
+    type: 'network.update',
+    available: true,
+    wireless: true,
+    enabled: true,
+    state: 'connected',
+    ssid: 'kitchen',
+    access_points: [
+      { ssid: 'kitchen', strength: 88, security: 'wpa2', known: true, active: true },
+      { ssid: 'office', strength: 70, security: 'wpa2', known: true, active: false },
+      { ssid: 'neighbour', strength: 61, security: 'wpa2', known: false, active: false },
+      { ssid: 'cafe', strength: 40, security: '', known: false, active: false },
+      { ssid: 'campus', strength: 30, security: 'enterprise', known: false, active: false },
+    ],
+    ...extra,
+  });
+
+  emit(snapshot());
+  check('a snapshot is kept but nothing is drawn until the picker is asked for',
+    picker().children.length === 0);
+
+  let before = sent.length;
+  emit({ type: 'shell.command', command: 'network', args: [] });
+  check('the binding opens the picker', picker().hidden === false);
+  /* Absent `enabled` is the open: a scan is the radio transmitting, so the
+     compositor does not start one until something says it is being looked
+     at. */
+  check('and says it is open, which is what starts the scan',
+    sent.slice(before).some((m) => m.type === 'network.scan' &&
+      m.enabled === undefined));
+  check('every access point the compositor listed is a row',
+    rows().length === 5);
+  check('the one in use says so',
+    rows()[0]._classes.has('active') &&
+    rows()[0].children[2].textContent === 'connected');
+  check('a network with a saved connection is marked as one',
+    rows()[1].children[2].textContent === 'saved');
+  check('an open one says that rather than nothing',
+    rows()[3].children[2].textContent === 'open');
+  /* The one word that changes what the row does: a passphrase is the wrong
+     question for an enterprise network, and the picker has to know before it
+     offers a box. */
+  check('and an enterprise one is named as what it is',
+    rows()[4].children[2].textContent === 'enterprise');
+
+  before = sent.length;
+  click(rows()[0]);
+  check('clicking the network in use leaves it',
+    sent.slice(before).some((m) => m.type === 'network.disconnect'));
+
+  before = sent.length;
+  click(rows()[1]);
+  check('a saved network is joined with no passphrase asked for',
+    sent.slice(before).some((m) => m.type === 'network.connect' &&
+      m.ssid === 'office' && m.passphrase === undefined));
+
+  before = sent.length;
+  click(rows()[3]);
+  check('and so is an open one',
+    sent.slice(before).some((m) => m.type === 'network.connect' &&
+      m.ssid === 'cafe' && m.passphrase === undefined));
+
+  before = sent.length;
+  click(rows()[4]);
+  check('an enterprise network is not offered a passphrase box it cannot use',
+    !sent.slice(before).some((m) => m.type === 'network.connect') &&
+    picker().children[2]?._classes.has('radio-error') === true);
+
+  /* The passphrase box, which is the one part of this shell that receives real
+     typed text. The out-of-process shell is a Wayland client, so keys reach it
+     the way they reach any client — once something moves the keyboard, which
+     is what `shell.focus` is for. */
+  emit({ type: 'view.focused', id: 3 });
+  emit(snapshot());
+  before = sent.length;
+  click(rows()[2]);
+  check('an unknown secured network asks for a passphrase rather than joining',
+    !sent.slice(before).some((m) => m.type === 'network.connect'));
+  check('and takes the keyboard, or the box could be clicked and not typed in',
+    sent.slice(before).some((m) => m.type === 'shell.focus'));
+
+  const box = () => picker().children[1].children[2].children[1];
+  check('the box is under the row it belongs to',
+    box()?._classes.has('radio-passphrase') === true);
+  const input = () => box().children[0];
+  check('and it is a password field, not a plain one',
+    input().type === 'password');
+
+  before = sent.length;
+  key(input(), 'Enter');
+  check('an empty passphrase sends nothing at all',
+    !sent.slice(before).some((m) => m.type === 'network.connect'));
+
+  /* A snapshot arrives several times a second while the radio scans, and a
+     redraw rebuilds the picker from nothing — which would throw away a
+     half-typed passphrase on a message nobody sent. */
+  input().value = 'part';
+  emit(snapshot({ scanning: true }));
+  check('a snapshot arriving mid-passphrase does not rebuild the box under it',
+    input().value === 'part');
+
+  input().value = 'hunter2';
+  before = sent.length;
+  key(input(), 'Enter');
+  check('Enter joins the network with what was typed',
+    sent.slice(before).some((m) => m.type === 'network.connect' &&
+      m.ssid === 'neighbour' && m.passphrase === 'hunter2'));
+  /* Joining takes seconds and fails often — a mistyped passphrase is the usual
+     reason — and a picker that closed on submit would take the answer with
+     it. */
+  check('and the picker stays up to show what came of it',
+    picker().hidden === false);
+  check('and gives the keyboard back to the window that had it',
+    sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 3));
+
+  emit({ type: 'view.focused', id: 3 });
+  click(rows()[2]);
+  before = sent.length;
+  key(input(), 'Escape');
+  check('Escape abandons the box without joining anything',
+    !sent.slice(before).some((m) => m.type === 'network.connect') &&
+    picker().children[1].children[2].children.length === 1);
+  check('and hands the keyboard back the same way',
+    sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 3));
+
+  before = sent.length;
+  click(picker().children[0].children[1]);
+  /* Absent `enabled` rather than the opposite of what was drawn: the snapshot
+     the picker drew from may already be stale, and a computed opposite would
+     turn the radio back on a moment after somebody turned it off. */
+  check('the header switch toggles the radio without saying which way',
+    sent.slice(before).some((m) => m.type === 'network.radio' &&
+      m.enabled === undefined));
+
+  emit(snapshot({ error: 'Secrets were required, but not provided' }));
+  check('and what NetworkManager said about a refusal is drawn on the picker',
+    picker().children.at(-1).textContent.includes('Secrets were required'));
+
+  before = sent.length;
+  fire('click');
+  check('a click that missed takes the picker down', picker().hidden === true);
+  check('and stops the scan, which is a radio nobody is looking at',
+    sent.slice(before).some((m) => m.type === 'network.scan' &&
+      m.enabled === false));
+
+  emit({ type: 'network.update', available: false });
+  emit({ type: 'shell.command', command: 'network', args: [] });
+  check('no NetworkManager is said rather than drawn as an empty list',
+    picker().children[1].children[0].textContent.includes('NetworkManager'));
+  emit({ type: 'network.update', available: true, wireless: true, enabled: false });
+  check('and a radio that is switched off says that instead',
+    picker().children[1].children[0].textContent.includes('switched off'));
+  emit({ type: 'shell.command', command: 'network', args: [] });
+}
+
+/* The Bluetooth picker, which is the same overlay with different verbs. */
+{
+  const picker = () => globalThis.__shell.bluetoothEl;
+  const rows = () => picker().children[1]?.children ?? [];
+  const click = (el, event = {}) => (el.listeners.click ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, ...event }));
+  const fire = (type) => (documentListeners[type] ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+
+  emit({ type: 'bluetooth.update', available: true, powered: true,
+    discovering: true, adapter: 'thinkpad', devices: [
+      { address: 'AA:BB:CC:DD:EE:01', name: 'mouse', icon: 'input-mouse',
+        paired: true, trusted: true, connected: true },
+      { address: 'AA:BB:CC:DD:EE:02', name: 'headset', icon: 'audio-headset',
+        paired: true, trusted: true, connected: false },
+      { address: 'AA:BB:CC:DD:EE:03', name: 'speaker', icon: '',
+        paired: false, trusted: false, connected: false, rssi: -74 },
+    ] });
+  check('a snapshot is kept but nothing is drawn until the picker is asked for',
+    picker().children.length === 0);
+
+  let before = sent.length;
+  emit({ type: 'shell.command', command: 'bluetooth', args: [] });
+  check('the binding opens the picker', picker().hidden === false);
+  check('and starts the discovery, which is the radio transmitting',
+    sent.slice(before).some((m) => m.type === 'bluetooth.scan' &&
+      m.enabled === undefined));
+  check('every device is a row', rows().length === 3);
+  check('a device the adapter can hear says how loudly',
+    rows()[2].children[2].textContent === '-74 dBm');
+
+  before = sent.length;
+  click(rows()[2]);
+  /* One verb for a row somebody tapped. The compositor pairs, trusts and
+     connects in that order — doing it here would be three messages and an
+     order the shell has no reason to know. */
+  check('tapping a device that is not connected connects it, by address',
+    sent.slice(before).some((m) => m.type === 'bluetooth.device' &&
+      m.address === 'AA:BB:CC:DD:EE:03' && m.action === 'connect'));
+
+  before = sent.length;
+  click(rows()[0]);
+  check('and tapping the one that is disconnects it',
+    sent.slice(before).some((m) => m.type === 'bluetooth.device' &&
+      m.address === 'AA:BB:CC:DD:EE:01' && m.action === 'disconnect'));
+
+  before = sent.length;
+  click(rows()[1], { target: rows()[1].children[3] });
+  check('the cross on a paired device forgets it rather than connecting',
+    sent.slice(before).some((m) => m.type === 'bluetooth.device' &&
+      m.address === 'AA:BB:CC:DD:EE:02' && m.action === 'forget') &&
+    !sent.slice(before).some((m) => m.action === 'connect'));
+
+  before = sent.length;
+  click(picker().children[0].children[1]);
+  check('the header switch toggles the adapter without saying which way',
+    sent.slice(before).some((m) => m.type === 'bluetooth.power' &&
+      m.enabled === undefined));
+
+  before = sent.length;
+  fire('click');
+  check('a click that missed takes the picker down', picker().hidden === true);
+  check('and stops the discovery with it',
+    sent.slice(before).some((m) => m.type === 'bluetooth.scan' &&
+      m.enabled === false));
+
+  emit({ type: 'bluetooth.update', available: false });
+  emit({ type: 'shell.command', command: 'bluetooth', args: [] });
+  check('no adapter is said rather than drawn as an empty list',
+    picker().children[1].children[0].textContent.includes('No Bluetooth'));
+  emit({ type: 'shell.command', command: 'bluetooth', args: [] });
+}
+
+/* The on-screen keyboard. Unlike every picker above, what it sends is not a
+ * fact read off a snapshot but an instruction — press this key — so what is
+ * worth checking is that a tap on a drawn key is the keysym `osk.key` says it
+ * is, that Shift and Caps Lock change what gets sent rather than only what is
+ * drawn, and that the two independent reasons it can be on screen — the
+ * compositor's `osk.wanted` and a person's own Mod4+Shift+k — behave the way
+ * their own comments in osk.js say they do. */
+{
+  const el = () => globalThis.__shell.oskEl;
+  const panel = () => el().children[0];
+  const row = (i) => panel().children[i];
+  const press = (button) => (button.listeners.pointerdown ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, pointerId: 1 }));
+  const release = (button) => (button.listeners.pointerup ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, pointerId: 1 }));
+  const tap = (button) => { press(button); release(button); };
+  const clickIt = (button) => (button.listeners.click ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+  const keysOf = (m) => m.filter((x) => x.type === 'osk.key');
+
+  check('the keyboard is not drawn until something asks for it',
+    el().children.length === 0);
+
+  let before = sent.length;
+  emit({ type: 'osk.wanted', wanted: true });
+  check('a text-input becoming enabled brings it up on its own',
+    el().hidden === false);
+  check('on the letters page, to start', globalThis.__shell.oskPageForTest === 'letters');
+  check('the top row is the ten letters of a QWERTY keyboard',
+    row(0).children.length === 10 && row(0).children[0].textContent === 'q');
+  check('the middle row is nine letters, no Shift or Backspace on it',
+    row(1).children.length === 9);
+  check('the bottom letter row carries Shift and Backspace either side of seven letters',
+    row(2).children.length === 9 &&
+    row(2).children[1].textContent === 'z');
+
+  before = sent.length;
+  tap(row(0).children[0]);
+  check('tapping "q" presses and releases its own keysym, nothing else',
+    keysOf(sent.slice(before)).length === 2 &&
+    sent[before].keysym === 'q'.codePointAt(0) && sent[before].pressed === true &&
+    sent[before + 1].keysym === 'q'.codePointAt(0) && sent[before + 1].pressed === false);
+
+  /* Shift: one tap arms a single capital letter, sent as the base keysym
+     wrapped in a real Shift_L rather than as the capital's own keysym — see
+     the file banner in osk.js for why sending 'A' directly would not work. */
+  clickIt(row(2).children[0]);
+  check('one tap on Shift arms the next letter', globalThis.__shell.oskShiftStateForTest === 'upper');
+  check('and the keyboard redraws showing capitals',
+    row(0).children[0].textContent === 'Q');
+
+  before = sent.length;
+  tap(row(0).children[0]);
+  const oneShot = keysOf(sent.slice(before));
+  check('a capital is a real Shift_L held around the base letter, not the capital\'s own keysym',
+    oneShot.length === 4 &&
+    oneShot[0].keysym === 0xffe1 && oneShot[0].pressed === true &&
+    oneShot[1].keysym === 'q'.codePointAt(0) && oneShot[1].pressed === true &&
+    oneShot[2].keysym === 'q'.codePointAt(0) && oneShot[2].pressed === false &&
+    oneShot[3].keysym === 0xffe1 && oneShot[3].pressed === false);
+  check('and the one-shot is consumed: the next letter is lower case again',
+    globalThis.__shell.oskShiftStateForTest === 'lower');
+
+  /* Caps Lock: a double tap on Shift, entered the same way a phone keyboard
+     enters it since there is no separate key here to dedicate to it. The
+     lock timer is reset well outside the double-tap window first, or this
+     block's own first click would read as a double tap of the single tap
+     above rather than as the first of a pair of its own. */
+  globalThis.__shell.oskShiftTappedAtForTest = -Infinity;
+  clickIt(row(2).children[0]);
+  clickIt(row(2).children[0]);
+  check('a double tap on Shift locks it',
+    globalThis.__shell.oskShiftStateForTest === 'caps');
+
+  before = sent.length;
+  tap(row(0).children[0]);
+  const capped = keysOf(sent.slice(before));
+  check('a locked capital sends the base keysym with no Shift wrapped around it — '
+    + 'the real Caps Lock modifier is already doing the casing',
+    capped.length === 2 && capped[0].keysym === 'q'.codePointAt(0));
+  check('and Caps Lock does not consume itself the way the one-shot does',
+    globalThis.__shell.oskShiftStateForTest === 'caps');
+
+  clickIt(row(2).children[0]);
+  check('a third tap on Shift, not a double tap, leaves Caps Lock',
+    globalThis.__shell.oskShiftStateForTest === 'lower');
+
+  /* Symbols: the same base-plus-real-Shift trick, over a different pair of
+     rows, so a shifted symbol's own keysym is never sent either. */
+  const pageToggle = () => row(3).children[0];
+  check('the bottom row opens with the page toggle', pageToggle().textContent === '?123');
+  clickIt(pageToggle());
+  check('the page toggle switches to symbols', globalThis.__shell.oskPageForTest === 'symbols');
+  check('the number row is drawn plain', row(0).children[0].textContent === '1');
+
+  before = sent.length;
+  tap(row(0).children[0]);
+  check('an unshifted digit is sent as itself, no Shift involved',
+    keysOf(sent.slice(before)).length === 2 &&
+    sent[before].keysym === '1'.codePointAt(0));
+
+  /* Reset again: without it this tap would land inside the double-tap window
+     of the click that left Caps Lock above and lock it right back on rather
+     than arming a one-shot Shift. */
+  globalThis.__shell.oskShiftTappedAtForTest = -Infinity;
+  clickIt(row(2).children[0]);
+  check('Shift is drawn on the symbols page too', row(0).children[0].textContent === '!');
+  before = sent.length;
+  tap(row(0).children[0]);
+  const shiftedSymbol = keysOf(sent.slice(before));
+  check('a shifted symbol is the digit\'s own base keysym under a real Shift, not "!"\'s own',
+    shiftedSymbol[0].keysym === 0xffe1 &&
+    shiftedSymbol[1].keysym === '1'.codePointAt(0));
+  clickIt(pageToggle());
+  check('the toggle reads ABC on the symbols page and switches back',
+    globalThis.__shell.oskPageForTest === 'letters');
+
+  /* Backspace, Space, Enter and the arrows: each its own fixed keysym, none
+     of them touched by Shift. */
+  before = sent.length;
+  tap(row(2).children.at(-1));
+  check('Backspace sends the BackSpace keysym',
+    keysOf(sent.slice(before))[0].keysym === 0xff08);
+
+  const bottomRow = row(3);
+  before = sent.length;
+  tap(bottomRow.children[2]);
+  check('the wide middle key of the bottom row is Space',
+    keysOf(sent.slice(before))[0].keysym === 0x0020);
+  before = sent.length;
+  tap(bottomRow.children.at(-1));
+  check('and the last key of it is Enter',
+    keysOf(sent.slice(before))[0].keysym === 0xff0d);
+
+  const navRow = row(4);
+  before = sent.length;
+  tap(navRow.children[1]);
+  check('the arrow row sends Left, Up, Down, Right in that order',
+    keysOf(sent.slice(before))[0].keysym === 0xff51);
+
+  /* A key held down when the keyboard is hidden out from under it — an
+     `osk.wanted: false` arriving mid-press — must still send its release, or
+     the client the last tap landed on would be left with that key logically
+     down forever. */
+  before = sent.length;
+  press(row(0).children[0]);
+  emit({ type: 'osk.wanted', wanted: false });
+  check('hiding the keyboard mid-press releases whatever was held',
+    keysOf(sent.slice(before)).some((m) => m.pressed === false));
+  check('and the keyboard actually went away', el().hidden === true);
+
+  /* The two independent reasons the keyboard can be up. */
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  check('Mod4+Shift+k opens it by hand', el().hidden === false);
+  emit({ type: 'osk.wanted', wanted: false });
+  check('a manual open outlives the field it was for losing focus, wanted or not',
+    el().hidden === false);
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  check('the same binding closes a manually-opened keyboard', el().hidden === true);
+
+  emit({ type: 'osk.wanted', wanted: true });
+  check('wanted still opens it once nothing is pinning it open', el().hidden === false);
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  check('the hide button (the same toggle) dismisses it even though the field is still enabled',
+    el().hidden === true);
+  /* `osk.wanted` is only ever sent on the edge — see its own doc comment in
+     event.rs — so the compositor never repeats a `true` the shell has not
+     seen turn `false` first; a dismissal only has to survive until the next
+     *change*, which is what this checks. */
+  emit({ type: 'osk.wanted', wanted: false });
+  emit({ type: 'osk.wanted', wanted: true });
+  check('a fresh want — the field losing focus and gaining it again — gets to ask again',
+    el().hidden === false);
+
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  emit({ type: 'osk.wanted', wanted: false });
 }
 
 /* Notifications are the compositor's on D-Bus and the shell's on screen, and

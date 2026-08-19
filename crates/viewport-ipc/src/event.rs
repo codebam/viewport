@@ -186,6 +186,52 @@ pub enum Event {
     #[serde(rename = "power.update")]
     PowerUpdate(PowerSnapshot),
 
+    /// The focused client just started or stopped wanting text typed into it.
+    ///
+    /// `zwp_text_input_v3`'s own way of saying so is `enable`/`disable`,
+    /// committed — the protocol's words for "an input method would be useful
+    /// here," which on this desktop is the on-screen keyboard rather than a
+    /// process like fcitx. Sent only on the edge, not on every check: the
+    /// compositor has no dedicated callback for the request in the smithay
+    /// fork this is built against, so it is noticed the same places every
+    /// other per-surface bookkeeping already runs — see `sync_osk_wanted` in
+    /// `input.rs` for exactly where and why that is close enough.
+    ///
+    /// The shell decides what to do with it. Showing the keyboard is the
+    /// obvious answer and is what the reference shell does, but `wanted` is a
+    /// fact about the focused client, not an instruction — a shell running on
+    /// a desk with a real keyboard attached is entitled to ignore it outright.
+    #[serde(rename = "osk.wanted")]
+    OskWanted {
+        /// Whether the client with keyboard focus right now has an enabled
+        /// text-input.
+        wanted: bool,
+    },
+
+    /// What the wireless radio can see and what it is joined to.
+    ///
+    /// NetworkManager is on the system bus, which the page cannot reach, so
+    /// the compositor reads it and the shell draws the list. Sent whenever it
+    /// changes: an access point's strength moves as somebody walks around the
+    /// house, and NetworkManager says so on a signal rather than on a poll.
+    ///
+    /// A snapshot rather than adds and removes, for the reason every other
+    /// list here is one — the picker redraws in a single pass, and a scan
+    /// replaces the whole list anyway. `available` false is the answer on a
+    /// machine with no NetworkManager at all, which is a picker that says so
+    /// rather than an empty one that looks broken.
+    #[serde(rename = "network.update")]
+    NetworkUpdate(NetworkSnapshot),
+
+    /// The adapter, and the devices it can see or has already met.
+    ///
+    /// BlueZ, through `org.freedesktop.DBus.ObjectManager` — which is the only
+    /// way to enumerate it: adapters and devices are objects under `/org/bluez`
+    /// and there is no list property anywhere. The same snapshot rule as
+    /// `network.update`, and for the same reasons.
+    #[serde(rename = "bluetooth.update")]
+    BluetoothUpdate(BluetoothSnapshot),
+
     /// System statistics for the bar.
     ///
     /// `cpu` and `memory` are `-1.0` when unavailable rather than absent: the
@@ -247,6 +293,18 @@ pub enum Event {
         sources: Vec<CastSource>,
         /// Where the highlight is, as an index into `sources`.
         selected: u32,
+        /// What the application is asking to be able to *drive*, when this is
+        /// a RemoteDesktop request rather than a screen share: some of
+        /// `keyboard`, `mouse` and `touchscreen`, in that order.
+        ///
+        /// Empty for an ordinary screen share, which is what a shell reads to
+        /// tell the two apart. They are different questions — being watched
+        /// and being typed into — and a chooser that asked the second one in
+        /// the words of the first would be collecting consent for the wrong
+        /// thing. Absent from the JSON when empty, so an older shell sees the
+        /// message it has always seen.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        devices: Vec<String>,
     },
 
     /// The choice was made, or it was abandoned. The shell takes its chooser
@@ -723,6 +781,166 @@ pub struct PowerSnapshot {
     pub profiles: Vec<String>,
 }
 
+/// One wireless network the radio can see, as `network.update` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessPoint {
+    /// The network's name. Non-UTF-8 SSIDs exist and are not offered: the
+    /// protocol is JSON, the picker draws text, and a name that cannot be
+    /// written down cannot be shown or typed back.
+    pub ssid: String,
+
+    /// Signal strength, 0–100, as NetworkManager reports it.
+    pub strength: u8,
+
+    /// `""` for an open network, otherwise `"wep"`, `"wpa"`, `"wpa2"`,
+    /// `"wpa3"` or `"enterprise"`.
+    ///
+    /// What the picker needs it for is whether to ask for a passphrase and
+    /// what to draw beside the row. Enterprise is named separately because a
+    /// passphrase is not what it wants — a certificate and an identity are —
+    /// and a picker that asked for one would be offering a box that cannot
+    /// work.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub security: String,
+
+    /// Whether NetworkManager already has a saved connection for this network,
+    /// which is the difference between joining it and being asked for a
+    /// passphrase first.
+    #[serde(default)]
+    pub known: bool,
+
+    /// Whether this is the one in use.
+    #[serde(default)]
+    pub active: bool,
+}
+
+/// The wireless radio and what it can see, as `network.update` carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct NetworkSnapshot {
+    /// Whether NetworkManager answered at all. False on a machine that runs
+    /// systemd-networkd, iwd on its own, or nothing — where the honest thing
+    /// for a picker to say is that there is nobody to ask, rather than to
+    /// draw an empty list of networks.
+    #[serde(default)]
+    pub available: bool,
+
+    /// Whether there is a wireless device. False on a desktop with one
+    /// Ethernet port, which is a picker with nothing to offer but the wired
+    /// state.
+    #[serde(default)]
+    pub wireless: bool,
+
+    /// Whether the wireless radio is switched on. A rfkill switch and
+    /// NetworkManager's own `WirelessEnabled` are the same bit here.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Whether a scan is running, so the picker can say so rather than look
+    /// empty for the two seconds one takes.
+    #[serde(default)]
+    pub scanning: bool,
+
+    /// `"connected"`, `"connecting"`, `"disconnected"` or `"unknown"` — the
+    /// whole machine's state, not one device's.
+    #[serde(default)]
+    pub state: String,
+
+    /// Whether a wired connection is up. Not a list of interfaces: what a
+    /// picker does with this is explain why the machine is online while no
+    /// network is joined.
+    #[serde(default)]
+    pub wired: bool,
+
+    /// The network in use, when one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssid: Option<String>,
+
+    /// Everything the radio can see, strongest first, one row per name. Two
+    /// access points with the same SSID are one row: a house with a mesh has
+    /// three of them and joining is joining the network, not the radio.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access_points: Vec<AccessPoint>,
+
+    /// Why the last attempt failed, if it did. Cleared by the next one.
+    ///
+    /// Carried on the snapshot rather than sent as an `error` event because it
+    /// belongs on the picker, next to the network that refused: a wrong
+    /// passphrase is not a protocol error and the shell's error handler logs
+    /// to a console nobody is looking at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One Bluetooth device, as `bluetooth.update` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BluetoothDevice {
+    /// `AA:BB:CC:DD:EE:FF`. What every request names a device by, because it
+    /// is the one property that does not change: a name is whatever the
+    /// device advertises and two headsets ship with the same one.
+    pub address: String,
+
+    /// What to call it. BlueZ's `Alias`, which is the name the device gave
+    /// unless somebody renamed it; empty for a device that has not said.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+
+    /// BlueZ's `Icon` — `"audio-headset"`, `"input-keyboard"`, `"phone"` and
+    /// so on. A freedesktop icon name, which the shell uses to pick a glyph
+    /// rather than to load a file: the page has no icon theme.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+
+    #[serde(default)]
+    pub paired: bool,
+
+    /// Whether BlueZ may reconnect this device on its own. The bit that makes
+    /// a headset come back when it is switched on, rather than needing the
+    /// picker opened again.
+    #[serde(default)]
+    pub trusted: bool,
+
+    #[serde(default)]
+    pub connected: bool,
+
+    /// Signal strength in dBm while a scan is running; absent for a device
+    /// that is remembered rather than in front of the machine right now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rssi: Option<i16>,
+}
+
+/// The adapter and its devices, as `bluetooth.update` carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct BluetoothSnapshot {
+    /// Whether there is a BlueZ adapter at all. False on a desktop with no
+    /// radio and on a session with no bluetoothd, which a picker says rather
+    /// than drawing an empty list.
+    #[serde(default)]
+    pub available: bool,
+
+    #[serde(default)]
+    pub powered: bool,
+
+    /// Whether a discovery is running. The picker starts one when it opens and
+    /// stops it when it closes — a scan is a radio transmitting, and one left
+    /// running is a battery cost nothing on screen accounts for.
+    #[serde(default)]
+    pub discovering: bool,
+
+    /// The adapter's own name, as the machine advertises itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub adapter: String,
+
+    /// Paired devices first, then whatever the scan found, each group by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<BluetoothDevice>,
+
+    /// Why the last request failed, if it did. On the snapshot for the same
+    /// reason the network's is: a pairing that was refused belongs beside the
+    /// device that refused it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// One row of a tray item's menu.
 ///
 /// Flattened from `com.canonical.dbusmenu`, whose properties are an open map
@@ -1183,6 +1401,9 @@ mod tests {
             }),
             json(&Event::MprisUpdate { player: None }),
             json(&Event::PowerUpdate(PowerSnapshot::default())),
+            json(&Event::OskWanted { wanted: false }),
+            json(&Event::NetworkUpdate(NetworkSnapshot::default())),
+            json(&Event::BluetoothUpdate(BluetoothSnapshot::default())),
             json(&Event::TrayUpdate { items: Vec::new() }),
             json(&Event::TrayMenu {
                 id: String::new(),
@@ -1197,6 +1418,7 @@ mod tests {
                 id: 0,
                 sources: Vec::new(),
                 selected: 0,
+                devices: Vec::new(),
             }),
             json(&Event::ScreencastPickDone { id: 0 }),
             json(&Event::ShellCommand {
@@ -1225,6 +1447,9 @@ mod tests {
                 "clipboard.history",
                 "mpris.update",
                 "power.update",
+                "osk.wanted",
+                "network.update",
+                "bluetooth.update",
                 "tray.update",
                 "tray.menu",
                 "output.layout",

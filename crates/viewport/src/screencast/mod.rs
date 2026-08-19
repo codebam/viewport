@@ -14,6 +14,12 @@ pub mod stream;
 
 pub mod portal;
 
+// The other interface served on the same bus name, out of the same session
+// table: the screen share plus the input that drives it. It lives here rather
+// than beside it because it is not a second portal so much as the same one
+// with the keyboard added — see `remote.rs`.
+pub mod remote;
+
 use smithay::output::Output;
 
 /// What a client asked to watch.
@@ -190,8 +196,51 @@ pub struct Picker {
     /// where it was. Taking focus is how the chooser gets the keys at all, and
     /// leaving it nowhere afterwards is a desktop that stops typing.
     pub restore: u32,
+    /// What a remote-desktop session is asking to be able to drive, when this
+    /// chooser is one of those; zero for a plain screen share.
+    ///
+    /// Carried on the chooser rather than left to the reply because it is the
+    /// part the person has to read. Agreeing to be watched and agreeing to be
+    /// typed into are different decisions, and a dialogue that showed the same
+    /// list of windows for both would be asking the second question in the
+    /// words of the first.
+    pub devices: u32,
     /// Where the answer goes when there is one.
-    pub reply: async_channel::Sender<Result<portal::Started, String>>,
+    pub reply: Reply,
+}
+
+/// Who is waiting on the chooser.
+///
+/// Two shapes because the two interfaces answer differently — a screen share
+/// hands back one stream, a remote-desktop session hands back the devices that
+/// were granted and a stream only if one was asked for — and one chooser
+/// because there is one keyboard and one person. Making `Picker` generic over
+/// the answer would put a type parameter on the compositor's single chooser
+/// slot for the sake of two variants.
+#[derive(Debug)]
+pub enum Reply {
+    Cast(async_channel::Sender<Result<portal::Started, String>>),
+    Remote(async_channel::Sender<Result<remote::Started, String>>),
+}
+
+impl Reply {
+    /// Tell whoever is waiting that nothing was chosen.
+    ///
+    /// Both arms say the same thing, and they have to: an application left
+    /// waiting on a chooser that has gone shows a share, or a remote session,
+    /// that is forever about to start. Dropping the sender would also end the
+    /// wait — the other end reads a closed channel as no answer — but saying
+    /// it keeps the reason in one place.
+    pub fn refuse(self, why: &str) {
+        match self {
+            Self::Cast(reply) => {
+                let _ = reply.try_send(Err(why.to_owned()));
+            }
+            Self::Remote(reply) => {
+                let _ = reply.try_send(Err(why.to_owned()));
+            }
+        }
+    }
 }
 
 impl Picker {

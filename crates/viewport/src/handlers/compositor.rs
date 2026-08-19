@@ -156,6 +156,13 @@ impl ViewportState {
     fn commit_inner(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
 
+        // Every commit rather than only this surface's: a text-input's
+        // `enable` takes effect on *its own* commit, not the window's, and
+        // there is no cheaper way to notice one than a check this is already
+        // cheap enough to make unconditionally. See `sync_osk_wanted`'s own
+        // doc comment in `input.rs`.
+        self.sync_osk_wanted();
+
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {

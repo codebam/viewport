@@ -604,6 +604,333 @@ impl ViewportState {
         }
     }
 
+    /// A mouse that moved by this much, rather than one put somewhere.
+    ///
+    /// The companion to `inject_pointer`, and not a convenience wrapper around
+    /// it: a relative movement is its own event on the wire. A client that has
+    /// locked the pointer — a game, a virtual machine — is told nothing about
+    /// where the cursor is and reads `zwp_relative_pointer_v1` instead, so a
+    /// remote session that only ever sent absolute positions could not turn
+    /// such a client's camera at all. That is the same reason the libinput
+    /// path sends the relative event first and unconditionally, and this
+    /// mirrors it deliberately: what a client sees must not depend on whether
+    /// the hand on the mouse is in the room.
+    ///
+    /// Clamped to the monitors, and held inside a confinement region if the
+    /// client under the cursor nominated one, exactly as a real mouse is.
+    pub fn inject_pointer_relative(&mut self, dx: f64, dy: f64) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let from = pointer.current_location();
+        let under = self.surface_under(from);
+        let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
+
+        let delta = (dx, dy).into();
+        let time = self.start_time.elapsed().as_millis() as u32;
+        pointer.relative_motion(
+            self,
+            under.clone(),
+            &smithay::input::pointer::RelativeMotionEvent {
+                delta,
+                // Nothing accelerated it — an injected movement is already the
+                // distance that was meant — so the raw delta is also the
+                // unaccelerated one.
+                delta_unaccel: delta,
+                // The protocol carries microseconds here, not the
+                // milliseconds every other event uses.
+                utime: time as u64 * 1000,
+            },
+        );
+        if locked {
+            // The cursor does not move, which is the whole of what a lock
+            // asks for. The relative event above is what the client reads.
+            pointer.frame(self);
+            return;
+        }
+
+        let outputs: Vec<_> = self
+            .space
+            .outputs()
+            .filter_map(|o| self.space.output_geometry(o))
+            .collect();
+        let mut pos = crate::cursor::clamp(&outputs, from, from + delta);
+        if let Some((region, origin)) = confine_to {
+            let local = pos - origin.to_f64();
+            if let Some(snapped) = crate::pointer::confine(&region, local) {
+                pos = snapped + origin.to_f64();
+            }
+        }
+
+        let serial = SERIAL_COUNTER.next_serial();
+        let under = self.surface_under(pos);
+        let on_shell = under.is_none();
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location: pos,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        self.drag_to(pos);
+        self.shell_pointer_motion(pos, on_shell, time);
+        self.needs_render = true;
+        self.cursor_activity();
+    }
+
+    /// A scroll, smooth or in wheel notches.
+    ///
+    /// `v120` is what tells the two apart all the way down to the client: a
+    /// wheel reports whole detents of 120 and a touchpad reports a distance,
+    /// and a client uses the difference to decide whether to animate. Passing
+    /// the notch count rather than deriving it from the distance is what keeps
+    /// a remote wheel feeling like a wheel — dividing 15 pixels back into
+    /// eighths of a detent is arithmetic that never quite comes out.
+    ///
+    /// `finish` is the touchpad's other half: two fingers leaving the surface
+    /// is what stops a client's kinetic scroll, and without it a remote
+    /// gesture coasts forever.
+    ///
+    /// The shell is offered the scroll first when the cursor is over it, for
+    /// the same reason the libinput path does: the bar, the notification list
+    /// and a chooser longer than the screen all scroll, and they are not
+    /// surfaces anything else would route to.
+    pub fn inject_axis(
+        &mut self,
+        horizontal: f64,
+        vertical: f64,
+        v120: Option<(i32, i32)>,
+        finish: bool,
+    ) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let time = self.start_time.elapsed().as_millis() as u32;
+        // A wheel when the caller counted notches, a touchpad-like continuous
+        // source otherwise. Not `Finger`, which promises that a real finger is
+        // on a real touchpad and that a stop event will follow when it lifts;
+        // `Continuous` is the source for a scroll that comes from somewhere
+        // else, which is exactly what this is.
+        let source = if v120.is_some() {
+            AxisSource::Wheel
+        } else {
+            AxisSource::Continuous
+        };
+        let mut frame = AxisFrame::new(time).source(source);
+        if horizontal != 0.0 {
+            frame = frame.value(Axis::Horizontal, horizontal);
+        }
+        if vertical != 0.0 {
+            frame = frame.value(Axis::Vertical, vertical);
+        }
+        if let Some((horizontal_120, vertical_120)) = v120 {
+            if horizontal_120 != 0 {
+                frame = frame.v120(Axis::Horizontal, horizontal_120);
+            }
+            if vertical_120 != 0 {
+                frame = frame.v120(Axis::Vertical, vertical_120);
+            }
+        }
+        if finish {
+            frame = frame.stop(Axis::Horizontal).stop(Axis::Vertical);
+        }
+
+        let at = pointer.current_location();
+        if self.surface_under(at).is_none() && self.shell_is_up() {
+            self.shell_pointer_axis(at, horizontal, vertical, source == AxisSource::Finger, time);
+        }
+        pointer.axis(self, frame);
+        pointer.frame(self);
+        self.cursor_activity();
+    }
+
+    /// A key named by what it types rather than by where it is.
+    ///
+    /// An application that has only a character to send — a remote session
+    /// relaying what somebody typed on a different keyboard, an on-screen
+    /// keyboard whose buttons are letters — has no keycode to give, and the
+    /// keycode is what the protocol carries. So one is looked up in the keymap
+    /// the seat is actually using, at any shift level of the active layout,
+    /// and the key is pressed as if it were that one.
+    ///
+    /// That is a real approximation and worth naming. Sending the keycode for
+    /// `a` while Shift is held types `A`, because the client applies its own
+    /// modifiers to the code it is given — this end cannot press a keysym, only
+    /// a key. Doing it properly means swapping the keymap for a synthetic one
+    /// per character, which is what a virtual keyboard client does and what an
+    /// on-screen keyboard should do when it needs a character the layout does
+    /// not have.
+    ///
+    /// Answers with whether the keymap had one, so a caller can say so rather
+    /// than leaving a key that silently did nothing.
+    pub fn inject_keysym(&mut self, keysym: u32, pressed: bool) -> bool {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let keysym = smithay::input::keyboard::Keysym::new(keysym);
+        let Some(keycode) = keyboard.keycode_for_keysym(keysym) else {
+            tracing::debug!(
+                "no key in this layout produces {}",
+                smithay::input::keyboard::xkb::keysym_get_name(keysym)
+            );
+            return false;
+        };
+        // Back to evdev's numbering, which is what `inject_key` takes and what
+        // libinput reports: xkb's keycodes are offset by eight from it, and
+        // this is the one place the offset has to be undone rather than
+        // applied.
+        self.inject_key(keycode.raw().saturating_sub(8), pressed);
+        true
+    }
+
+    // Why the on-screen keyboard types by pressing keys rather than by
+    // committing text.
+    //
+    // `zwp_text_input_v3` plus `zwp_input_method_v2` is the protocol built
+    // for exactly this — a client asks for text input, something on the
+    // compositor's side supplies characters, and `commit_string` hands them
+    // over as real text rather than as a simulated keystroke. This
+    // compositor even has the escape hatch a fork of smithay added for it:
+    // `TextInputHandle::set_compositor_input_method`, switched on
+    // permanently in `state.rs`, makes the seat's text-input machinery run
+    // with no real IME bound at all.
+    //
+    // It is not used to type. Two things ruled it out, and both are about
+    // coverage rather than difficulty. First, `commit_string` only reaches a
+    // client that has bound `zwp_text_input_v3` *and* called `enable` on it
+    // — every toolkit does for a real text field, but a terminal emulator
+    // does not, and a login prompt or a game's own text box often does not
+    // either, so a keyboard that only worked through that path would go
+    // silent on exactly the applications a touch-only desk most needs it
+    // for. Second, `commit_string` only carries literal text: Backspace,
+    // Enter, Tab and the arrows are not characters, and an application
+    // reading them as one rather than as the editing command they are would
+    // be a keyboard that types "backspace" instead of erasing.
+    //
+    // `inject_keysym` has neither limit — it presses a key, which is what
+    // every client with a keyboard already knows what to do with — and its
+    // own doc comment already named this as the intended caller before this
+    // keyboard existed. So `osk.key` is handed straight to it in `apply.rs`,
+    // and the input-method escape hatch stays switched on for exactly one
+    // job: letting `sync_osk_wanted`, below, see a text-input's `enable` at
+    // all. See that request's doc comment in `viewport-ipc` for how Shift
+    // and Caps Lock are made to work over a path that can only press keys.
+    //
+    /// Tell the shell whether the client with keyboard focus currently has an
+    /// enabled text-input, so an on-screen keyboard can raise and lower
+    /// itself without a binding to press.
+    ///
+    /// `zwp_text_input_v3`'s `enable`/`disable` are the client's own way of
+    /// asking, but this smithay fork has no callback for them — a real
+    /// `zwp_input_method_v2` client is expected to notice by receiving
+    /// `activate`/`deactivate`, and this compositor is not one. What it has
+    /// instead is `TextInputHandle::with_active_text_input`, which is
+    /// accurate the instant it is asked but says nothing on its own, so this
+    /// is called from the two places already in this file that run close to
+    /// "the focused client just told the compositor something": every
+    /// `wl_surface.commit`, because `enable` only takes effect on the
+    /// text-input's own commit and a client asking for a keyboard tends to
+    /// repaint soon after — a cursor starting to blink, if nothing else — and
+    /// every keyboard focus change, which catches a field that was already
+    /// enabled before its window had focus. Between the two, the delay a
+    /// person actually experiences is not the kind anybody notices; a
+    /// dedicated callback would close the small remaining gap and was not
+    /// worth adding to a vendored fork for it.
+    ///
+    /// Notifies only on the edge — see `osk_wanted`'s own doc comment in
+    /// `state.rs` for why sending on every check would be worse than the gap
+    /// this leaves.
+    pub fn sync_osk_wanted(&mut self) {
+        use smithay::wayland::text_input::TextInputSeat as _;
+
+        let mut wanted = false;
+        self.seat
+            .text_input()
+            .with_active_text_input(|_text_input, _surface| wanted = true);
+
+        if wanted == self.osk_wanted {
+            return;
+        }
+        self.osk_wanted = wanted;
+        self.notify(&viewport_ipc::Event::OskWanted { wanted });
+    }
+
+    /// One input event from a remote-desktop session.
+    ///
+    /// The dispatcher, and nothing more: every arm is a call to one of the
+    /// helpers above, which are the same ones the control socket drives and
+    /// the same ones an on-screen keyboard will. Whether this session was
+    /// allowed to send the event was settled on the bus thread against the
+    /// grant the user gave — see `screencast::remote` — so what is left here
+    /// is only where on the desk it lands.
+    pub fn inject_remote(&mut self, injection: crate::screencast::remote::Injection) {
+        use crate::screencast::remote::Injection;
+
+        match injection {
+            Injection::PointerMotion { dx, dy } => self.inject_pointer_relative(dx, dy),
+            Injection::PointerMotionAbsolute { stream, x, y } => {
+                // Nothing at all when the node names no stream, rather than a
+                // click at the origin: the application is pointing at a
+                // picture this compositor is not sending, and the top left
+                // corner of the desk is not a better guess than none.
+                match self.remote_point(stream, x, y) {
+                    Some(at) => self.inject_pointer(at.x, at.y),
+                    None => tracing::debug!(
+                        "remote desktop: a pointer position in stream {stream}, which is not one \
+                         of ours"
+                    ),
+                }
+            }
+            Injection::PointerButton { button, pressed } => self.inject_button(button, pressed),
+            Injection::PointerAxis { dx, dy, finish } => self.inject_axis(dx, dy, None, finish),
+            Injection::PointerAxisDiscrete { axis, steps } => {
+                let (horizontal, vertical) = crate::screencast::remote::discrete_axis(axis, steps);
+                let notches = crate::screencast::remote::discrete_v120(steps);
+                let v120 = match (horizontal != 0.0, vertical != 0.0) {
+                    (true, _) => (notches, 0),
+                    (_, true) => (0, notches),
+                    // An axis this end does not know, which `discrete_axis`
+                    // has already turned into no movement. Dropped rather than
+                    // sent as an empty frame.
+                    _ => return,
+                };
+                self.inject_axis(horizontal, vertical, Some(v120), false);
+            }
+            Injection::KeyboardKeycode { keycode, pressed } => match u32::try_from(keycode) {
+                Ok(keycode) => self.inject_key(keycode, pressed),
+                Err(_) => tracing::debug!("remote desktop: ignoring keycode {keycode}"),
+            },
+            Injection::KeyboardKeysym { keysym, pressed } => match u32::try_from(keysym) {
+                Ok(keysym) => {
+                    self.inject_keysym(keysym, pressed);
+                }
+                Err(_) => tracing::debug!("remote desktop: ignoring keysym {keysym}"),
+            },
+            Injection::TouchDown { stream, slot, x, y } => {
+                if let Some(at) = self.remote_point(stream, x, y) {
+                    self.inject_touch_down(slot, at.x, at.y);
+                    // One finger per event on this interface, so each one is
+                    // its own frame. A client that never receives a frame
+                    // never acts on the touch at all.
+                    self.inject_touch_frame();
+                }
+            }
+            Injection::TouchMotion { stream, slot, x, y } => {
+                if let Some(at) = self.remote_point(stream, x, y) {
+                    self.inject_touch_motion(slot, at.x, at.y);
+                    self.inject_touch_frame();
+                }
+            }
+            Injection::TouchUp { slot } => {
+                self.inject_touch_up(slot);
+                self.inject_touch_frame();
+            }
+        }
+    }
+
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         // Anything the shell asked for and has not been given yet, before this
         // event is tested against the desktop.

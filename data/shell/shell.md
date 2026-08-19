@@ -64,7 +64,9 @@ rather than keeping its own list, so the two cannot drift apart.
 | `bar.js` | The status bar, its widgets, the system tray and its menus. |
 | `clipboard.js` | The clipboard history picker. |
 | `power.js` | The power-profile picker, opened from the battery widget. |
-| `screencast.js` | The screen-share chooser. Drawn here, steered from the compositor: the shell receives no input of its own, so the highlight arrives in the message. |
+| `network.js` | The Wi-Fi and Bluetooth pickers, opened from `Mod4+Shift+n`, `Mod4+Shift+t` and the bar's network module. Clicked rather than steered, like the clipboard picker — and the one place in the shell that receives real typed text, because a passphrase field does: it asks for the keyboard with `shell.focus` and gives it back. |
+| `screencast.js` | The screen-share chooser, and the remote-control one. Drawn here, steered from the compositor: the shell receives no input of its own, so the highlight arrives in the message. A `screencast.pick` carrying `devices` is the RemoteDesktop portal rather than ScreenCast, and the dialog asks that question instead. |
+| `osk.js` | The on-screen keyboard. Docked to the bottom of an output rather than centred like the pickers above it, and the one part of the shell whose taps are not clicks on the DOM but instructions to the compositor: every key sends an `osk.key` keysym, pressed and released like a real one, and the seat's own keyboard repeat does the rest. Comes up on its own when the focused client's text-input is enabled (`osk.wanted`), or by hand with `Mod4+Shift+k`. |
 | `commands.js` | Commands from the compositor and the inbound message loop. Loaded last: its bottom asks for the state the shell starts from, so everything handling the answer must already exist. |
 
 `shell.css` styles all of it, and `index.html` is the document.

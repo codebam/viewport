@@ -93,6 +93,18 @@ function syncOutputs(list) {
         workspace: 0,
       };
       el.dataset.output = info.name;
+      /* The network module answers a click by opening the network picker, the
+         way the battery widget opens the profile list. Wired here because this
+         is the shipped markup's own element — a `bar_items` override builds its
+         own and wires them through `wireWidget`, which does the same thing.
+         The click is stopped so that the document listener that closes every
+         picker does not close the one it just opened. */
+      if (output.modules.net) {
+        output.modules.net.addEventListener('click', (e) => {
+          e.stopPropagation?.();
+          toggleNetworkPicker();
+        });
+      }
       el.addEventListener('mouseenter', () => setActiveOutput(info.name));
       outputsEl.append(el);
       outputs.set(info.name, output);

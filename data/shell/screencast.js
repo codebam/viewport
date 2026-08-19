@@ -1,9 +1,17 @@
 /* SPDX-License-Identifier: MIT
  *
- * The screen-share chooser.
+ * The screen-share chooser, and the remote-control one.
  *
  * An application asks to share the screen, the portal asks the compositor, and
  * the compositor asks the person sitting there. This draws the asking.
+ *
+ * Two questions through one dialog, because there is one keyboard and one
+ * person and the compositor has one chooser slot. A 'screencast.pick' with a
+ * 'devices' list is the RemoteDesktop portal rather than ScreenCast: the
+ * application is asking to drive this machine, not only to watch it. The rows
+ * and the keys are identical — it may also have asked for a picture, in which
+ * case there is a list to choose from — and what changes is the sentence at
+ * the top, which is the part somebody is actually agreeing to.
  *
  * It draws only. The highlight moves and the choice is made in the compositor,
  * which sends the whole list again each time — the shell is a page the
@@ -15,6 +23,16 @@
  * One of the ordered scripts that make up the shell; see index.html for the
  * load order and shell.md for what the whole is meant to do.
  */
+
+/* A list of words as somebody would say it: 'a', 'a and b', 'a, b and c'.
+ *
+ * Written out rather than joined with commas because this line is a sentence
+ * the person is being asked to agree to, and 'keyboard, mouse' in the middle of
+ * one reads as a fragment of a form. */
+function listPhrase(words) {
+  if (words.length <= 1) return words.join('');
+  return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+}
 
 /* What to call a source whose own name is empty.
  *
@@ -91,15 +109,40 @@ function renderScreencastPicker() {
   const dialog = document.createElement('div');
   dialog.className = 'screencast-dialog';
 
+  /* What is being asked for. An empty list — or a compositor too old to send
+     one — is the screen share this dialog has always been. */
+  const devices = Array.isArray(screencastPick.devices)
+    ? screencastPick.devices
+    : [];
+  const remote = devices.length > 0;
+
   const title = document.createElement('div');
   title.className = 'screencast-title';
-  title.textContent = 'Share your screen';
+  title.textContent = remote
+    ? 'Let an application control this computer'
+    : 'Share your screen';
   dialog.append(title);
 
   const help = document.createElement('div');
   help.className = 'screencast-help';
-  help.textContent = 'An application is asking for a picture of this desktop.';
+  help.textContent = remote
+    ? 'An application is asking to use this desktop as if it were sitting here.'
+    : 'An application is asking for a picture of this desktop.';
   dialog.append(help);
+
+  /* The device set, spelled out and marked as the warning it is.
+   *
+   * Separate from the help line rather than folded into it because it is the
+   * specific thing being agreed to and the one part that varies between one
+   * request and the next: a session that only wants the mouse is a different
+   * decision from one that wants the keyboard too. The compositor sends the
+   * words already in a fixed order, so this joins rather than sorts. */
+  if (remote) {
+    const grant = document.createElement('div');
+    grant.className = 'screencast-devices';
+    grant.textContent = `It would be able to use the ${listPhrase(devices)}.`;
+    dialog.append(grant);
+  }
 
   const list = document.createElement('div');
   list.className = 'screencast-list';
@@ -107,6 +150,15 @@ function renderScreencastPicker() {
   const sources = Array.isArray(screencastPick.sources)
     ? screencastPick.sources
     : [];
+  /* A remote session that also asked for a picture has rows to choose between,
+     and without a word here the list reads as a second, unrelated question.
+     One that did not has no rows at all, and the dialog is a plain yes or no. */
+  if (remote && sources.length > 0) {
+    const heading = document.createElement('div');
+    heading.className = 'screencast-help';
+    heading.textContent = 'It would also see:';
+    dialog.append(heading);
+  }
   sources.forEach((source, index) => {
     const row = document.createElement('div');
     row.className = 'screencast-source';
@@ -137,7 +189,16 @@ function renderScreencastPicker() {
 
   const keys = document.createElement('div');
   keys.className = 'screencast-keys';
-  keys.textContent = '↑↓ choose · Enter share · Esc cancel';
+  /* The verb has to match what Enter does. 'Enter share' over a dialog that
+     hands somebody the keyboard would be describing the wrong consent, and a
+     list with no rows in it has nothing to choose between. */
+  keys.textContent = [
+    sources.length > 1 ? '↑↓ choose' : null,
+    remote ? 'Enter allow' : 'Enter share',
+    'Esc cancel',
+  ]
+    .filter(Boolean)
+    .join(' · ');
   dialog.append(keys);
 
   screencastEl.append(dialog);

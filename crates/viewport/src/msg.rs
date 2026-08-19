@@ -92,6 +92,15 @@ const STRING_FIELDS: &[&str] = &[
     "orientation",
     // And a media button, which is a word with a hyphen in it.
     "action",
+    // A network's name, which is whatever somebody called their router: `5`
+    // and `true` are both names a person has given a network, and read as
+    // JSON they would be a number and a boolean rather than the network.
+    "ssid",
+    // And the secret for it, which is a string of anything at all and is the
+    // one field here where guessing at its type could change what is sent.
+    "passphrase",
+    // A Bluetooth address, which is hexadecimal separated by colons.
+    "address",
 ];
 
 struct Type {
@@ -227,6 +236,46 @@ const TYPES: &[Type] = &[
         name: "power.profile",
         fields: &["profile"],
         hint: "--profile power-saver|balanced|performance",
+    },
+    Type {
+        name: "osk.key",
+        fields: &["keysym", "pressed"],
+        hint: "--keysym N --pressed BOOL   (an X11/XKB keysym, e.g. 65288 for Backspace)",
+    },
+    Type {
+        name: "network.scan",
+        fields: &["enabled"],
+        hint: "[--enabled BOOL]   (absent means yes; false closes the picker)",
+    },
+    Type {
+        name: "network.connect",
+        fields: &["ssid", "passphrase"],
+        hint: "--ssid NAME [--passphrase SECRET]   (no passphrase joins a known network)",
+    },
+    Type {
+        name: "network.disconnect",
+        fields: &[],
+        hint: "(leave the wireless network in use)",
+    },
+    Type {
+        name: "network.radio",
+        fields: &["enabled"],
+        hint: "[--enabled BOOL]   (absent toggles)",
+    },
+    Type {
+        name: "bluetooth.power",
+        fields: &["enabled"],
+        hint: "[--enabled BOOL]   (absent toggles)",
+    },
+    Type {
+        name: "bluetooth.scan",
+        fields: &["enabled"],
+        hint: "[--enabled BOOL]   (absent means yes; false closes the picker)",
+    },
+    Type {
+        name: "bluetooth.device",
+        fields: &["address", "action"],
+        hint: "--address AA:BB:CC:DD:EE:FF --action pair|connect|disconnect|trust|untrust|forget",
     },
     Type {
         name: "tray.menu.click",
@@ -1299,10 +1348,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 46 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 54 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 46);
+        assert_eq!(TYPES.len(), 54);
     }
 
     #[test]

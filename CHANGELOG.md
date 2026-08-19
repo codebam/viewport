@@ -12,6 +12,69 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- An on-screen keyboard, HTML and CSS drawn by the shell rather than a second
+  Wayland client — `input-method` and `virtual-keyboard` were already wired
+  up and touch was already complete, so the last piece was a keyboard to type
+  on. It comes up on its own when the focused client enables a
+  `zwp_text_input_v3` (`osk.wanted`), or by hand with `Mod4+Shift+k`, and it
+  types by pressing keys rather than by committing text: `osk.key` is handed
+  straight to `inject_keysym`, the same call remote-desktop keyboard
+  injection already used, because `zwp_input_method_v2`'s `commit_string`
+  only reaches a client that has bound text-input and enabled it — every
+  toolkit does for a real field, a terminal emulator typically does not — and
+  a keyboard that only worked one of those ways would go silent on exactly
+  the desks that need it most. Letters and symbols are always sent in their
+  base, unshifted form, with the shell wrapping a tap in a real `Shift_L`
+  press of its own whenever the key it drew needs one, because this
+  compositor can press a key but not a glyph; Caps Lock is the same trick
+  played once, toggling the seat's real lock modifier so every letter after
+  it needs no wrapping at all. Nothing here repeats a character on a timer —
+  a key held down is `pressed: true` once and `false` on release, exactly
+  like a hardware one, and the seat's own keyboard repeat does the rest.
+- Wi-Fi and Bluetooth pickers. The bar has always reported link throughput,
+  which says a network is being used and nothing about which one or how to
+  get on it. NetworkManager and BlueZ both live on the system bus, which the
+  page cannot reach, so the compositor talks to them and the shell draws the
+  lists — the same split the tray and the power picker already run on, and a
+  client of whatever already manages the machine rather than a second thing
+  with an opinion about networking. `Mod4+Shift+n` opens the Wi-Fi picker (so
+  does clicking the bar's network module) and `Mod4+Shift+t` the Bluetooth
+  one. Joining a network that is saved or open is one click; one that is
+  neither gets a real passphrase field, which asks the compositor for the
+  keyboard with `shell.focus` and hands it back afterwards. A network joined
+  here is an ordinary NetworkManager connection that `nmcli` and every other
+  applet can see, and the passphrase goes into NetworkManager's secret store
+  rather than anywhere in this compositor. Pairing registers a
+  `NoInputNoOutput` agent — the piece `bluetoothctl` makes you type `agent on`
+  for — and deliberately not as the session's *default* agent, because that
+  would auto-accept incoming pairing requests as well. Neither radio is
+  touched until a picker opens and both stop when it closes: a scan is the
+  radio transmitting, and one nobody is looking at is a battery cost with
+  nothing on screen to account for it. New messages: `network.update`,
+  `bluetooth.update`, `network.scan`, `network.connect`, `network.disconnect`,
+  `network.radio`, `bluetooth.scan`, `bluetooth.power`, `bluetooth.device`.
+- The RemoteDesktop portal. `org.freedesktop.impl.portal.RemoteDesktop`, so an
+  application can drive this machine and not only watch it — remote support, a
+  call where the other end takes the mouse. It is the ScreenCast interface with
+  input added and it is served from the same object, the same bus name and the
+  same session table: the frontend uses one session handle across both, so a
+  configuration that answers one of them from another backend cannot work, and
+  `data/portal-config` now names this compositor for both. CreateSession,
+  SelectDevices and Start, then one call per input event, each checked against
+  the devices the person at the machine allowed and handed to the seat through
+  the `inject_*` helpers in `crates/viewport/src/input.rs` — which grew three:
+  `inject_pointer_relative` for a mouse that moved rather than one put
+  somewhere (a client with the pointer locked reads nothing else),
+  `inject_axis` for scrolling, and `inject_keysym` for a caller that has a
+  character rather than a key. Consent goes through the screen-share chooser
+  with the device set named in it, because being watched and being typed into
+  are different questions. A grant is never remembered — `restore_data` is the
+  right trade for a picture and the wrong one for a keyboard — and a session is
+  refused outright when no desktop page is drawing, rather than falling back to
+  granting it the way a screen share falls back to sharing the focused window.
+  Version 1 of the interface: version 2 promises ConnectToEIS, which needs a
+  libei server this compositor has not got, so the method answers
+  `NotSupported` and the frontend stays on the path that works.
 - A battery widget, lid policy and power-profile picker. UPower's
   DisplayDevice is the charge the bar should show, `LidIsClosed` is the
   hinge, and the power-profiles daemon is `power-saver` / `balanced` /
@@ -26,7 +89,7 @@ to summarise rather than to duplicate.
   There is no plugin loader; adding a model is still a file and those lists.
 - `inject_pointer`, `inject_button` and `inject_touch_*` next to `inject_key`,
   so a scripted pointer, a scripted finger and a real one share a path. The
-  RemoteDesktop portal and the on-screen keyboard will both call these.
+  RemoteDesktop portal calls these; the on-screen keyboard does too.
 
 - A clipboard history, kept by the compositor and drawn by the shell. A
   Wayland selection is not a buffer anywhere — it is an offer from the client

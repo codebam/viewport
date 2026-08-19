@@ -166,12 +166,37 @@ function renderBarModules(name) {
   setModule(m.disk, s.disk_free ? `󰋊 ${formatBytes(s.disk_free)}` : '');
   setModule(m.net, s.net_rx !== undefined
     ? `󰇚 ${formatBytes(s.net_rx)}/s 󰕒 ${formatBytes(s.net_tx)}/s` : '');
+  /* The throughput stays the number on the bar — it is what a status bar's
+     network module has always been — and which network it is goes in the
+     tooltip. Two figures and a name would not fit, and the name is the part
+     somebody looks up rather than watches. Only once the picker has been
+     opened at least once: nothing talks to NetworkManager before that, so
+     until then there is nothing truthful to say. */
+  setModuleTitle(m.net, networkTitle());
   syncTray(output);
   renderBarWidgets(output);
 }
 
 function setModule(el, text) {
   if (el && el.textContent !== text) el.textContent = text;
+}
+
+/* Guarded like setModule and for the same reason: an assignment dirties the
+ * element whether or not the string is new, and this runs on every status
+ * sample. */
+function setModuleTitle(el, title) {
+  if (el && el.title !== title) el.title = title;
+}
+
+/* What the network module's tooltip says. The wired case matters: a desktop on
+ * a cable is online with no network joined, and a tooltip that said "not
+ * connected" would be wrong in the way that sends somebody looking for a
+ * fault. */
+function networkTitle() {
+  if (!networkState?.available) return 'network';
+  if (networkState.ssid) return `network — ${networkState.ssid}`;
+  if (networkState.wired) return 'network — wired';
+  return 'network — not connected';
 }
 
 /* ------------------------------------------------------------------------
@@ -536,9 +561,19 @@ function wireWidget(el) {
   /* The element carries its own widget (`el._widget`), set by the sync pass;
      the handlers below are bound once and read it, so they always act on the
      widget the element currently stands for. */
-  el.addEventListener('click', () => {
+  el.addEventListener('click', (e) => {
     const w = el._widget;
-    if (!w) return;
+    if (!w) {
+      /* A module rather than a widget. Only one of them answers a click: the
+         network module opens the picker, the way the battery widget opens the
+         profile list. Stopped here so the document's own listener — which
+         closes every picker — does not close the one this just opened. */
+      if (el._module === 'net') {
+        e.stopPropagation?.();
+        toggleNetworkPicker();
+      }
+      return;
+    }
     if (w.type === 'mpris') {
       /* A click that missed the buttons — on the cover or the title — is the
          same as pressing play. */
@@ -713,10 +748,15 @@ function syncBarRight(output) {
 
     if (typeof item === 'string') {
       el._widget = null;
+      /* Which built-in module this element is standing for, read back by the
+         click handler: the elements are kept by position and a config change
+         can move a different module onto this one. */
+      el._module = item;
       const title = moduleTitle(item);
       if (el.title !== title) el.title = title;
     } else {
       el._widget = item;
+      el._module = null;
       const key = `${item.type}:${item.path || item.location || ''}`;
       if (el.dataset.widget !== key) el.dataset.widget = key;
       const title = widgetTitle(item);

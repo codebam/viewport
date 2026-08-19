@@ -181,6 +181,12 @@ pub struct ViewportState {
     /// Battery, lid and power profiles. Idle unless a widget or lid policy
     /// wants it.
     pub power: crate::power::Power,
+    /// The wireless radio, for the shell's network picker. Idle until one
+    /// opens; the compositor has no use for it otherwise.
+    pub network: crate::network::Network,
+    /// The Bluetooth adapter, for the shell's Bluetooth picker. Idle on the
+    /// same terms, and stops the radio scanning when the picker closes.
+    pub bluetooth: crate::bluetooth::Bluetooth,
     /// What closing the lid does. Applied here rather than on the worker:
     /// lock and blank are compositor policy.
     pub lid: crate::power::LidAction,
@@ -581,6 +587,13 @@ pub struct ViewportState {
     pub _text_input_state: smithay::wayland::text_input::TextInputManagerState,
     pub _input_method_state: smithay::wayland::input_method::InputMethodManagerState,
     pub _virtual_keyboard_state: smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState,
+    /// Whether the client with keyboard focus had an active text-input, last
+    /// time `sync_osk_wanted` in `input.rs` checked. Mirrored to the shell as
+    /// `osk.wanted` only when it changes, which is what this is kept for: the
+    /// check itself is cheap enough to run on every commit, but a message the
+    /// shell was not going to act on differently is not free once WebKit has
+    /// to receive and parse it.
+    pub osk_wanted: bool,
     /// ext-image-capture-source-v1 and ext-image-copy-capture-v1: the
     /// standardised replacement for wlr-screencopy, and what a current
     /// xdg-desktop-portal reaches for first.
@@ -1097,6 +1110,28 @@ impl ViewportState {
         // client that has already decided start listening.
         seat.add_touch();
 
+        // Have the compositor stand in for a real `zwp_input_method_v2`
+        // client on this seat, permanently, for one reason only: without
+        // *something* willing to be the seat's input method, this smithay
+        // fork discards every `zwp_text_input_v3` request before
+        // `active_text_input_id` is ever set, and with it discarded there is
+        // no way to notice a client asking for text input at all — not to
+        // type into it, which this compositor does through `inject_keysym`
+        // instead (see the long comment on `Request::OskKey`), but even to
+        // know a text field was focused so the on-screen keyboard can come up
+        // on its own. Turning this on is what makes `sync_osk_wanted` in
+        // `input.rs` see anything.
+        //
+        // Safe to leave on whether or not a real input method is also
+        // running: `enter`/`leave` on a text-input already fire whenever
+        // either `input_method.has_instance()` or this flag is true, so a
+        // real IME binding later changes nothing a client can observe, and
+        // nothing here ever calls `commit_string` on its own — the one method
+        // this flag additionally unlocks — so there is no second writer for
+        // a real input method to race.
+        smithay::wayland::text_input::TextInputSeat::text_input(&seat)
+            .set_compositor_input_method(true);
+
         let socket_name = Self::init_wayland_listener(display, event_loop)?;
 
         // The control socket is named after the Wayland display, so it has to
@@ -1162,6 +1197,8 @@ impl ViewportState {
             tray: crate::tray::Tray::default(),
             mpris: crate::mpris::Mpris::default(),
             power: crate::power::Power::default(),
+            network: crate::network::Network::default(),
+            bluetooth: crate::bluetooth::Bluetooth::default(),
             lid: crate::power::LidAction::default(),
             last_lid_closed: None,
             clipboard: crate::clipboard::Clipboard::default(),
@@ -1260,6 +1297,7 @@ impl ViewportState {
             _text_input_state: text_input_state,
             _input_method_state: input_method_state,
             _virtual_keyboard_state: virtual_keyboard_state,
+            osk_wanted: false,
             gamma_state,
             output_power_state,
             pipewire: None,
@@ -3501,6 +3539,63 @@ impl ViewportState {
         }
     }
 
+    /// Where on the desk a point inside one of this session's streams lands.
+    ///
+    /// The only coordinate space a remote application has. It is looking at a
+    /// picture — of a monitor, of a window, of the whole desk — and it clicks
+    /// on what it sees, so what reaches the portal is a position inside that
+    /// picture and a node number saying which picture. Turning that back into
+    /// a place on the desk is this end's job, and nothing else can do it: the
+    /// application has never been told where the window is, and it must not be.
+    ///
+    /// Mapped proportionally rather than by adding an origin and dividing by a
+    /// scale. The two are the same for the ordinary case and only the
+    /// proportional one survives the others: a rotated monitor streams at its
+    /// transformed size, a HiDPI one streams at more pixels than it occupies
+    /// in the layout, and a share of the whole desk streams at the largest
+    /// scale of any monitor on it (see `all_outputs_layout`). One ratio covers
+    /// all three, and the alternative is three special cases that each go
+    /// wrong on somebody's desk.
+    ///
+    /// `None` when the node names no stream this compositor handed out, or
+    /// when what it was following has gone — a share of the focused window
+    /// with focus nowhere. Dropping the event is the right answer to both:
+    /// guessing at a position would click on whatever happened to be under it.
+    pub fn remote_point(&self, node: u32, x: f64, y: f64) -> Option<Point<f64, Logical>> {
+        let cast = self.casts.iter().find(|cast| cast.stream.node_id == node)?;
+        let target = self.resolve_cast(&cast.source)?;
+        let rect = self.target_rect(&target)?;
+        let size = self.target_size(&target)?;
+        if size.w <= 0 || size.h <= 0 {
+            return None;
+        }
+        let inside: Point<f64, Logical> = (
+            x * rect.size.w as f64 / size.w as f64,
+            y * rect.size.h as f64 / size.h as f64,
+        )
+            .into();
+        Some(rect.loc.to_f64() + inside)
+    }
+
+    /// Where a captured thing sits in the layout, in the layout's own units.
+    ///
+    /// The companion to `target_size`, which answers the same question in the
+    /// pixels the stream carries. Both are needed together and only together:
+    /// one says how big the picture is and the other says what part of the
+    /// desk it is a picture of.
+    fn target_rect(&self, target: &crate::screencast::Target) -> Option<Rectangle<i32, Logical>> {
+        match target {
+            crate::screencast::Target::Output(output) => self.space.output_geometry(output),
+            crate::screencast::Target::Window(id) => {
+                let view = self.views.get(*id)?;
+                self.space.element_geometry(&view.window)
+            }
+            crate::screencast::Target::AllOutputs => {
+                self.all_outputs_layout().map(|(union, _)| union)
+            }
+        }
+    }
+
     /// What to call a stream, which is what a consumer shows in its own list.
     ///
     /// From the source rather than from what it currently resolves to: the name
@@ -4027,6 +4122,12 @@ impl ViewportState {
                 restore,
                 reply,
             } => self.open_screencast_picker(types, restore, reply),
+            Message::StartRemote {
+                devices,
+                types,
+                reply,
+            } => self.open_remote_picker(devices, types, reply),
+            Message::Inject(injection) => self.inject_remote(injection),
             Message::Close { node } => self.stop_cast(node),
         }
     }
@@ -4135,6 +4236,24 @@ impl ViewportState {
             return;
         }
 
+        self.raise_picker(sources, 0, crate::screencast::Reply::Cast(reply));
+    }
+
+    /// Put a chooser on screen and hand the keyboard to it.
+    ///
+    /// Everything the two kinds of chooser have in common, which is all of it
+    /// except what is being asked: minting an id so a late answer cannot land
+    /// on a later question, taking the keys, telling the shell, and arming the
+    /// clock that answers for a user who walked away. Shared rather than
+    /// copied because the remote-desktop chooser is the same dialogue with a
+    /// different sentence at the top, and a second copy of this would be a
+    /// second place for the focus restore or the timeout to be forgotten.
+    fn raise_picker(
+        &mut self,
+        sources: Vec<crate::screencast::Source>,
+        devices: u32,
+        reply: crate::screencast::Reply,
+    ) {
         let id = self.next_pick;
         self.next_pick = self.next_pick.wrapping_add(1).max(1);
         self.picker = Some(crate::screencast::Picker {
@@ -4142,6 +4261,7 @@ impl ViewportState {
             sources,
             selected: 0,
             restore: self.focused,
+            devices,
             reply,
         });
 
@@ -4165,12 +4285,83 @@ impl ViewportState {
             smithay::reexports::calloop::timer::Timer::from_duration(Self::PICK_TIMEOUT),
             move |_, _, state| {
                 if state.picker.as_ref().is_some_and(|picker| picker.id == id) {
-                    tracing::info!("nobody chose what to share");
+                    tracing::info!("nobody answered the chooser");
                     state.cancel_screencast_pick();
                 }
                 smithay::reexports::calloop::timer::TimeoutAction::Drop
             },
         );
+    }
+
+    /// Ask the user whether an application may drive this machine.
+    ///
+    /// The same overlay the screen-share chooser uses, and deliberately so: it
+    /// is the one piece of the desktop that already means "somebody is asking
+    /// for something and you are about to answer", it already takes the
+    /// keyboard away from whatever had it, and it already puts itself back.
+    /// What differs is the sentence at the top and the device set underneath
+    /// it, both of which travel in the same `screencast.pick` event.
+    ///
+    /// Three refusals before the question is ever asked, and each one is the
+    /// safe direction:
+    ///
+    /// A chooser already on screen refuses, as it does for a share. Two
+    /// dialogues and one keyboard is a race the person cannot see, and the one
+    /// they lose here hands over the machine.
+    ///
+    /// No desktop page to draw with refuses too, and this is where it parts
+    /// company with the screen-share path. That path falls back to sharing the
+    /// focused window without asking, because a compositor running without its
+    /// shell is a test or a crash and a portal that never works is worse than
+    /// one that shares a window. The same reasoning does not survive being
+    /// applied to a keyboard: a machine that grants control of itself because
+    /// its own user interface is broken has turned a shell bug into a way in.
+    ///
+    /// And an application that asked to see the desk as well gets nothing if
+    /// there is nothing to show it, rather than a grant with no picture — it
+    /// asked for both, and half of it is not what it agreed to drive.
+    fn open_remote_picker(
+        &mut self,
+        devices: u32,
+        types: Option<u32>,
+        reply: async_channel::Sender<Result<crate::screencast::remote::Started, String>>,
+    ) {
+        if self.picker.is_some() {
+            let _ = reply.try_send(Err("something else is already being chosen".to_owned()));
+            return;
+        }
+        if !self.shell_can_draw() {
+            // Said at warn rather than info: this is a request for the
+            // keyboard that was turned down for a reason that has nothing to
+            // do with the person who would have answered it, and the only
+            // place that can be seen is here.
+            tracing::warn!(
+                "no desktop page is drawing, so refusing to let an application drive this machine"
+            );
+            let _ = reply.try_send(Err("there is nobody to ask".to_owned()));
+            return;
+        }
+
+        let sources = match types {
+            Some(types) => {
+                let sources = self.screencast_sources(types);
+                if sources.is_empty() {
+                    let _ = reply.try_send(Err("there is nothing to share".to_owned()));
+                    return;
+                }
+                sources
+            }
+            // A session that drives without watching. The chooser is then a
+            // plain yes or no, which `Picker::step` already handles: an empty
+            // list has no highlight to move.
+            None => Vec::new(),
+        };
+
+        tracing::info!(
+            "an application is asking to drive the {}",
+            crate::screencast::remote::device_names(devices).join(", ")
+        );
+        self.raise_picker(sources, devices, crate::screencast::Reply::Remote(reply));
     }
 
     /// Whether there is an engine in this process to be sent input.
@@ -4283,6 +4474,7 @@ impl ViewportState {
         };
         let id = picker.id;
         let selected = picker.selected as u32;
+        let devices = picker.devices;
         let sources = picker
             .sources
             .iter()
@@ -4331,6 +4523,9 @@ impl ViewportState {
             id,
             sources,
             selected,
+            // Empty for a plain screen share, which is what the shell reads to
+            // decide which of the two questions it is asking.
+            devices: crate::screencast::remote::device_names(devices),
         };
         self.notify(&event);
     }
@@ -4344,31 +4539,73 @@ impl ViewportState {
         self.notify_picker();
     }
 
-    /// Share what is highlighted.
+    /// Agree to what is highlighted.
+    ///
+    /// The two kinds of chooser part company only here, at the answer. A
+    /// screen share picks one row and starts a stream from it. A
+    /// remote-desktop session grants the devices that were asked for — the
+    /// whole set, because the chooser asks about the set and there is no row
+    /// to leave out — and starts a stream as well if the application asked to
+    /// watch as well as drive.
+    ///
+    /// Granting exactly what was asked for rather than less is worth being
+    /// explicit about: the interface lets an implementation grant a subset,
+    /// and a chooser that offered the devices one at a time would be a better
+    /// dialogue. It is not what this one draws, and answering with a subset
+    /// nobody chose would be inventing a decision.
     pub fn confirm_screencast_pick(&mut self) {
         let Some(picker) = self.picker.take() else {
             return;
         };
         let id = picker.id;
-        let Some(source) = picker.sources.into_iter().nth(picker.selected) else {
-            let _ = picker.reply.try_send(Err("nothing was chosen".to_owned()));
-            self.notify(&Event::ScreencastPickDone { id });
-            return;
-        };
-        let answer = self.begin_cast(source);
-        let _ = picker.reply.try_send(answer);
+        let devices = picker.devices;
+        let selected = picker.sources.into_iter().nth(picker.selected);
+
+        match picker.reply {
+            crate::screencast::Reply::Cast(reply) => match selected {
+                Some(source) => {
+                    let _ = reply.try_send(self.begin_cast(source));
+                }
+                // A share with nothing selected is a chooser that had no rows,
+                // which the screen-share path refuses before it ever gets
+                // here. Answered rather than dropped all the same.
+                None => {
+                    let _ = reply.try_send(Err("nothing was chosen".to_owned()));
+                }
+            },
+            crate::screencast::Reply::Remote(reply) => {
+                let cast = match selected {
+                    Some(source) => match self.begin_cast(source) {
+                        Ok(cast) => Some(cast),
+                        // The window closed while the chooser was up, or
+                        // PipeWire is not there. The application asked to see
+                        // the desk and to drive it, so half of it is not the
+                        // thing it agreed to: the whole session is refused.
+                        Err(e) => {
+                            tracing::warn!("remote desktop: {e}");
+                            let _ = reply.try_send(Err(e));
+                            self.notify(&Event::ScreencastPickDone { id });
+                            self.restore_focus(picker.restore);
+                            return;
+                        }
+                    },
+                    None => None,
+                };
+                let _ = reply.try_send(Ok(crate::screencast::remote::Started { devices, cast }));
+            }
+        }
         self.notify(&Event::ScreencastPickDone { id });
         self.restore_focus(picker.restore);
     }
 
-    /// Share nothing, which the application is told is a refusal.
+    /// Agree to nothing, which the application is told is a refusal.
     pub fn cancel_screencast_pick(&mut self) {
         let Some(picker) = self.picker.take() else {
             return;
         };
         // Dropping the sender would answer too — the other end reads a closed
         // channel as no answer — but saying so keeps the reason in one place.
-        let _ = picker.reply.try_send(Err("nothing was chosen".to_owned()));
+        picker.reply.refuse("nothing was chosen");
         self.notify(&Event::ScreencastPickDone { id: picker.id });
         self.restore_focus(picker.restore);
     }

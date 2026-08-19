@@ -42,6 +42,31 @@ pub enum Message {
         restore: Option<Remembered>,
         reply: async_channel::Sender<Result<Started, String>>,
     },
+    /// The same question for a remote-desktop session: may this application
+    /// drive the machine, and — if it also asked to see it — what with.
+    ///
+    /// A separate variant rather than a flag on [`Message::Start`] because the
+    /// answer is a different shape. A screen share hands back one stream; a
+    /// remote-desktop session hands back the set of devices that were actually
+    /// granted, and a stream only when the application asked for one too.
+    StartRemote {
+        /// What the application asked to be able to drive, as the interface's
+        /// bitmask. Never more than this is granted, and the user may grant
+        /// less.
+        devices: u32,
+        /// What kind of source the application also wants to see, if it called
+        /// SelectSources on the same session. `None` is a session that drives
+        /// the machine without watching it, which the interface allows and
+        /// which is what a session set up purely to type into it looks like.
+        types: Option<u32>,
+        reply: async_channel::Sender<Result<super::remote::Started, String>>,
+    },
+    /// One input event from a session that was granted the device it names.
+    ///
+    /// Checked on the bus thread before it is sent — see
+    /// [`super::remote::RemoteDesktop`] — so by the time it reaches the
+    /// compositor the only question left is where on the desk it lands.
+    Inject(super::remote::Injection),
     Close {
         node: u32,
     },
@@ -98,15 +123,50 @@ const REMEMBERED_LIMIT: usize = 32;
 const PERSIST_NONE: u32 = 0;
 
 /// One conversation with an application.
+///
+/// Shared with the RemoteDesktop implementation next door rather than
+/// duplicated for it, because the interfaces genuinely share a session: the
+/// frontend calls CreateSession on RemoteDesktop, SelectSources on ScreenCast
+/// with the *same* session handle, and Start on RemoteDesktop again. Two
+/// tables keyed by the same path would mean the second call landing in a table
+/// the third one does not read, which is a session that asked to see the
+/// screen and is handed no stream.
 #[derive(Debug, Default)]
 pub struct Session {
     /// Which application the frontend says is asking, which is what a
     /// remembered source is filed under. From CreateSession rather than from
     /// each call: it is the frontend's statement about the application, and
     /// taking it once means the three calls cannot disagree.
-    app_id: String,
+    pub(super) app_id: String,
     /// What SelectSources asked for, which Start then acts on.
-    types: u32,
+    pub(super) types: u32,
+    /// Whether SelectSources was called on this session at all.
+    ///
+    /// Only a remote-desktop session has to ask: a plain screen share reaches
+    /// Start through ScreenCast, where the answer is always yes. For a
+    /// remote-desktop session it is the difference between a grant that also
+    /// hands back a PipeWire node and one that only lets the application type,
+    /// and `types` cannot say — a session that never selected sources and one
+    /// that selected none both leave it at zero.
+    pub(super) sources_selected: bool,
+    /// Which interface created this session.
+    ///
+    /// A session begun on RemoteDesktop is finished on RemoteDesktop, and
+    /// ScreenCast.Start on one is refused. The frontend does not do that, but
+    /// the two interfaces sit on one bus name at one object path and the
+    /// consequence of getting it wrong is a screen handed over by the call
+    /// that was meant to ask about a keyboard.
+    pub(super) remote: bool,
+    /// What a remote-desktop session asked to be able to drive, as the
+    /// interface's bitmask, and what the user actually allowed.
+    ///
+    /// Both, because they differ: the application asks for everything it might
+    /// use and the person at the keyboard is the one who decides. Every
+    /// Notify* call is checked against `granted`, which is zero until Start
+    /// has been answered — so an application that skips the asking and starts
+    /// typing is injecting nothing.
+    pub(super) wanted_devices: u32,
+    pub(super) granted_devices: u32,
     /// What this application shared last time, if the frontend recognised the
     /// token it presented.
     restore: Option<Remembered>,
@@ -116,21 +176,42 @@ pub struct Session {
     /// whether an answer is sent at all.
     persist: u32,
     /// The stream handed out, so closing the session stops it.
-    node: Option<u32>,
+    pub(super) node: Option<u32>,
     /// Who asked — the portal frontend's connection, not the application's.
     ///
     /// Kept so a frontend that dies takes its sessions with it. Nothing else
     /// would: the frontend is what calls Close, and one that crashed will not,
     /// which leaves a compositor sharing a screen to nobody with no way to be
     /// told to stop.
-    owner: Option<String>,
+    pub(super) owner: Option<String>,
+}
+
+impl Session {
+    /// A conversation just begun, on whichever of the two interfaces began it.
+    ///
+    /// A constructor rather than a struct literal with `..Default::default()`
+    /// because two modules build one of these and the rest of the fields —
+    /// what was restored, how long to remember it, which node was handed out —
+    /// are nobody's business outside this file. The three arguments are
+    /// exactly what CreateSession knows.
+    pub(super) fn new(app_id: &str, owner: Option<String>, remote: bool) -> Self {
+        Self {
+            app_id: app_id.to_owned(),
+            owner,
+            remote,
+            ..Self::default()
+        }
+    }
 }
 
 /// What the object on the bus and the watcher both hold.
 #[derive(Debug, Default)]
 pub struct Frontend {
     /// One conversation each, by the handle the frontend named it with.
-    sessions: HashMap<OwnedObjectPath, Session>,
+    ///
+    /// One table for both interfaces. See [`Session`] for why they cannot be
+    /// two.
+    pub(super) sessions: HashMap<OwnedObjectPath, Session>,
     /// Who owns [`FRONTEND_NAME`] just now, as a unique name.
     ///
     /// Learned once when the watcher starts and kept up to date from
@@ -188,6 +269,36 @@ impl Frontend {
 /// notices a frontend arriving or disappearing.
 pub type Sessions = Arc<Mutex<Frontend>>;
 
+/// Whether a call came from the portal frontend, and a line in the log if it
+/// did not.
+///
+/// Written as a free function rather than a method because both interfaces
+/// served on this bus name need it and both need exactly the same answer.
+/// ScreenCast hands out a picture of the desk; RemoteDesktop hands out the
+/// keyboard, so if anything the second is the one that must not be reachable
+/// by a peer that merely knows the name — and the session bus is reachable by
+/// every process in the session.
+///
+/// `what` names the interface in the log line, so a refused call can be told
+/// from its neighbour when both are being tried.
+pub(super) fn called_by_frontend(
+    sessions: &Sessions,
+    what: &str,
+    header: &zbus::message::Header<'_>,
+) -> bool {
+    let sender = header.sender().map(|name| name.as_str());
+    let owner = sessions.lock().unwrap().owner.clone();
+    match (owner.as_deref(), sender) {
+        (Some(owner), Some(sender)) if owner == sender => true,
+        _ => {
+            tracing::warn!(
+                "{what}: refusing a call from {sender:?} — the portal frontend is {owner:?}"
+            );
+            false
+        }
+    }
+}
+
 /// The object on the bus.
 pub struct ScreenCast {
     sender: smithay::reexports::calloop::channel::Sender<Message>,
@@ -216,18 +327,7 @@ impl ScreenCast {
     /// anywhere else is a process on the session bus asking this compositor to
     /// hand it a screen.
     fn called_by_frontend(&self, header: &zbus::message::Header<'_>) -> bool {
-        let sender = header.sender().map(|name| name.as_str());
-        let owner = self.sessions.lock().unwrap().owner.clone();
-        match (owner.as_deref(), sender) {
-            (Some(owner), Some(sender)) if owner == sender => true,
-            _ => {
-                tracing::warn!(
-                    "screencast: refusing a call from {sender:?} — the portal frontend is \
-                     {owner:?}"
-                );
-                false
-            }
-        }
+        called_by_frontend(&self.sessions, "screencast", header)
     }
 
     /// A way to tell the compositor to stop, for the same watcher.
@@ -302,14 +402,11 @@ impl ScreenCast {
         let path = OwnedObjectPath::from(session_handle);
         let owner = header.sender().map(|name| name.to_string());
         tracing::debug!("screencast: create session {path} for {app_id:?}");
-        self.sessions.lock().unwrap().sessions.insert(
-            path.clone(),
-            Session {
-                app_id: app_id.to_owned(),
-                owner,
-                ..Session::default()
-            },
-        );
+        self.sessions
+            .lock()
+            .unwrap()
+            .sessions
+            .insert(path.clone(), Session::new(app_id, owner, false));
 
         // The session object the frontend closes when the application is
         // done. Without it a share runs until the compositor exits: nothing
@@ -386,6 +483,12 @@ impl ScreenCast {
         session.types = types;
         session.restore = restore;
         session.persist = persist;
+        // Said out loud, because a remote-desktop session reads it back. The
+        // frontend calls this interface's SelectSources on a session that
+        // RemoteDesktop created when the application wants to see the desk as
+        // well as drive it, and RemoteDesktop.Start has no other way to tell
+        // that apart from a session that only wants the keyboard.
+        session.sources_selected = true;
         (RESPONSE_SUCCESS, HashMap::new())
     }
 
@@ -437,6 +540,17 @@ impl ScreenCast {
         let (app_id, types, restore, persist) = {
             let shared = self.sessions.lock().unwrap();
             match shared.sessions.get(&path) {
+                // A session that RemoteDesktop created is finished on
+                // RemoteDesktop, whose Start asks about the keyboard as well
+                // as the screen. Answering it here would hand over a picture
+                // of the desk from the one call in the conversation that was
+                // never going to mention that anyone could type into it.
+                Some(session) if session.remote => {
+                    tracing::warn!(
+                        "screencast: refusing to start {path} — it is a remote-desktop session"
+                    );
+                    return (RESPONSE_FAILED, HashMap::new());
+                }
                 Some(session) => (
                     session.app_id.clone(),
                     session.types,
@@ -626,6 +740,11 @@ fn inside<'v>(value: &'v Value<'v>) -> &'v Value<'v> {
 }
 
 /// The session object the frontend closes when the application is done.
+///
+/// One kind for both interfaces: a remote-desktop session publishes the same
+/// object, and closing it does the same two things — takes the row out of the
+/// table, which is what revokes a remote grant, and stops the stream if there
+/// was one.
 pub struct SessionObject {
     pub path: OwnedObjectPath,
     pub sender: smithay::reexports::calloop::channel::Sender<Message>,
@@ -636,7 +755,7 @@ pub struct SessionObject {
 impl SessionObject {
     /// The application has stopped sharing.
     async fn close(&self, #[zbus(object_server)] server: &zbus::ObjectServer) {
-        tracing::debug!("screencast: the frontend closed a session");
+        tracing::debug!("portal: the frontend closed session {}", self.path);
         let node = self
             .sessions
             .lock()

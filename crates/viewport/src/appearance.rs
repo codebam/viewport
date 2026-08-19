@@ -184,9 +184,20 @@ impl Appearance {
         let sessions = screencast.sessions();
         let closer = screencast.closer();
 
+        // The fourth interface, built here rather than passed in, because
+        // everything it needs is what the screencast object already holds: the
+        // same session table — the frontend uses one session handle across
+        // both interfaces, see `portal::Session` — and the same channel to the
+        // compositor. Handing it in from `main` would mean threading both of
+        // those out of the screencast object and back in, to arrive at the
+        // same pair.
+        let remote =
+            crate::screencast::remote::RemoteDesktop::new(closer.clone(), sessions.clone());
+
         let connection = zbus::blocking::connection::Builder::session()?
             .serve_at(OBJECT_PATH, portal)?
             .serve_at(OBJECT_PATH, screencast)?
+            .serve_at(OBJECT_PATH, remote)?
             .serve_at(OBJECT_PATH, screenshot)?
             .build()?;
 
@@ -201,7 +212,10 @@ impl Appearance {
         crate::screencast::portal::watch_frontend(connection.clone(), sessions, closer);
 
         self.connection = Some(connection);
-        tracing::info!("settings, screencast, and screenshot portals up, color-scheme={scheme}");
+        tracing::info!(
+            "settings, screencast, remote desktop, and screenshot portals up, \
+             color-scheme={scheme}"
+        );
         Ok(())
     }
 

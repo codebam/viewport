@@ -150,6 +150,22 @@ let mprisPlayer = null;
  * on the bar — lid policy can still run without one. */
 let powerState = null;
 let powerOpen = false;
+/* The wireless radio and the Bluetooth adapter, as the compositor last read
+ * them off NetworkManager and BlueZ, and whether either picker is on screen.
+ * Both are null until a picker has been opened once: neither daemon is talked
+ * to at all until something asks, because a scan is a radio transmitting. */
+let networkState = null;
+let networkOpen = false;
+/* The network the passphrase box is open for, or null when it is not. One at a
+ * time — it is a box under one row, not a dialog — and the name is what the
+ * answer is sent back with. */
+let networkAsking = null;
+/* Which window had the keyboard before the passphrase box took it, so it can
+ * be given back. Null when nothing did, which is a box opened on an empty
+ * desktop. */
+let networkRestoreId = null;
+let bluetoothState = null;
+let bluetoothOpen = false;
 /* The clipboard history, as the compositor last sent it, and whether the
  * picker is on screen. The entries are kept whether or not it is open, because
  * they arrive on every copy and the picker opens without waiting for one. */
@@ -309,6 +325,9 @@ const screencastEl = document.getElementById('screencast');
 const trayMenuEl = document.getElementById('tray-menu');
 const clipboardEl = document.getElementById('clipboard');
 const powerEl = document.getElementById('power-picker');
+const networkEl = document.getElementById('network-picker');
+const bluetoothEl = document.getElementById('bluetooth-picker');
+const oskEl = document.getElementById('osk');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
 

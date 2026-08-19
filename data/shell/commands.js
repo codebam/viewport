@@ -124,6 +124,22 @@ function handleShellCommand(command, args) {
     case 'clipboard':
       toggleClipboard();
       break;
+    /* The two radios. Bound to Mod4+Shift+n and Mod4+Shift+t, and reachable
+       by clicking the bar's network module — the same two ways in the
+       clipboard and the power picker have between them. */
+    case 'network':
+      toggleNetworkPicker();
+      break;
+    case 'bluetooth':
+      toggleBluetoothPicker();
+      break;
+    /* The on-screen keyboard. Bound to Mod4+Shift+k for a desk that has a
+       real keyboard and wants to raise it anyway; a touch-only desk never
+       needs the chord, because `osk.wanted` already brings it up. See
+       osk.js. */
+    case 'osk':
+      toggleOsk();
+      break;
 
     case 'bar.toggle':
       toggleBar();
@@ -559,6 +575,21 @@ window.addEventListener('viewport', (event) => {
       applyPower(message);
       break;
 
+    case 'osk.wanted':
+      applyOskWanted(message.wanted === true);
+      break;
+
+    case 'network.update':
+      /* Sent whenever NetworkManager changes its mind, which while a scan is
+         running is several times a second. Drawn only while the picker is
+         open; see applyNetwork. */
+      applyNetwork(message);
+      break;
+
+    case 'bluetooth.update':
+      applyBluetooth(message);
+      break;
+
     case 'tray.menu':
       /* The compositor fetched the menu; the shell draws exactly what it was
          handed. Only items whose menu this compositor can read send one —
@@ -637,6 +668,13 @@ document.addEventListener('click', () => {
   /* And the clipboard picker, which is a menu in every way that matters: rows
      stop the event themselves, so this only sees the clicks that missed. */
   closeClipboard();
+  /* And the two radio pickers, on the same terms. Closing them is not only
+     tidiness: the network picker stops the scan and the Bluetooth one stops
+     the discovery, so one left open by a click that missed is a radio left
+     transmitting. The click that opens the network picker — on the bar's
+     network module — stops itself for exactly this reason. */
+  closeNetworkPicker();
+  closeBluetoothPicker();
 });
 
 send({ type: 'output.query' });

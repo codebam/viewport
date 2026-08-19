@@ -46,6 +46,24 @@
 -->
 <div id="power-picker" hidden></div>
 
+<!--
+  The wireless network picker and the Bluetooth picker, opened with
+  Mod4+Shift+n and Mod4+Shift+t. Page level like the two above: a radio belongs
+  to the machine rather than to one desktop, and the passphrase box inside the
+  first one holds the keyboard while it is up, which is a session-wide thing to
+  be doing.
+-->
+<div id="network-picker" hidden></div>
+<div id="bluetooth-picker" hidden></div>
+
+<!--
+  The on-screen keyboard. Page level like everything above it, and for the
+  same reason: what it types into is whichever client has the keyboard, not
+  one desktop. It comes up on its own when a text field asks for it, or with
+  Mod4+Shift+k.
+-->
+<div id="osk" hidden></div>
+
 <template id="desktop-template">
   <main class="desktop">
     <nav class="bar">
@@ -142,5 +160,7 @@ Mod4+d       launcher</pre>
 <script src="bar.js"></script>
 <script src="clipboard.js"></script>
 <script src="power.js"></script>
+<script src="network.js"></script>
 <script src="screencast.js"></script>
+<script src="osk.js"></script>
 <script src="commands.js"></script>
