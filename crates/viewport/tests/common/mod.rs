@@ -25,6 +25,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// How long a message that is expected to arrive is waited for.
+///
+/// Long enough that a sanitized build under a loaded CI runner still makes it,
+/// short enough that a genuine "it never came" fails inside a test run rather
+/// than at the suite timeout. Nothing waits this long when the message turns
+/// up — the wait ends on the message, not on the clock.
+const PATIENCE: Duration = Duration::from_secs(10);
+
 pub struct Compositor {
     pub child: Child,
     pub socket: PathBuf,
@@ -309,6 +317,18 @@ impl Client {
     /// assertions is that a particular message never arrives, and there is no
     /// count that says "and nothing else".
     pub fn drain_lines(&mut self, within: Duration) -> Vec<String> {
+        self.read_lines(within, |_| false)
+    }
+
+    /// Read until `enough` accepts a line, or `within` passes.
+    ///
+    /// Everything read is handed back either way, including the line that
+    /// stopped it.
+    fn read_lines(
+        &mut self,
+        within: Duration,
+        mut enough: impl FnMut(&str) -> bool,
+    ) -> Vec<String> {
         let deadline = Instant::now() + within;
         let mut lines = Vec::new();
         self.writer
@@ -318,11 +338,53 @@ impl Client {
             let mut line = String::new();
             match self.reader.read_line(&mut line) {
                 Ok(0) => break,
-                Ok(_) => lines.push(line.trim_end().to_owned()),
+                Ok(_) => {
+                    let line = line.trim_end().to_owned();
+                    let stop = enough(&line);
+                    lines.push(line);
+                    if stop {
+                        break;
+                    }
+                }
                 Err(_) => continue,
             }
         }
         lines
+    }
+
+    /// Throw away everything readable right now.
+    fn discard_pending(&mut self) {
+        self.writer
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        loop {
+            let mut line = String::new();
+            match self.reader.read_line(&mut line) {
+                Ok(n) if n > 0 => continue,
+                _ => break,
+            }
+        }
+    }
+
+    /// The first message of this `type`, waiting as long as it takes up to
+    /// [`PATIENCE`].
+    ///
+    /// A message that is expected to arrive is waited for rather than looked
+    /// for in a fixed window: on a fast machine this returns the moment it
+    /// lands, and under a sanitizer — where every reply costs ten times as
+    /// much — it still returns. A fixed window has to be one or the other, and
+    /// the wallpaper suite has flaked on exactly that.
+    pub fn expect(&mut self, kind: &str) -> serde_json::Value {
+        let lines = self.read_lines(PATIENCE, |line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .map(|value| value["type"] == kind)
+                .unwrap_or(false)
+        });
+        lines
+            .iter()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|message| message["type"] == kind)
+            .unwrap_or_else(|| panic!("no {kind} message arrived within {PATIENCE:?}"))
     }
 
     /// The same, as parsed JSON, dropping anything that is not.
@@ -339,10 +401,11 @@ impl Client {
     /// starts with the config — so this is the same answer the desktop itself
     /// would be given.
     pub fn config(&mut self) -> serde_json::Value {
+        // Anything already queued is a config from *before* this question —
+        // the compositor pushes one whenever the config changes — and taking
+        // that one would answer with the state the test just moved away from.
+        self.discard_pending();
         self.send(r#"{"type":"view.query"}"#);
-        self.drain(Duration::from_millis(600))
-            .into_iter()
-            .find(|message| message["type"] == "config")
-            .expect("no config event in the reply to view.query")
+        self.expect("config")
     }
 }

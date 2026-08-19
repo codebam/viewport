@@ -16,7 +16,6 @@ mod common;
 
 use common::Compositor;
 use std::path::PathBuf;
-use std::time::Duration;
 
 /// A file to point a wallpaper at. The contents are never decoded here —
 /// nothing in this process draws — so what matters is only that it exists.
@@ -145,11 +144,7 @@ fn a_wallpaper_that_is_not_there_is_refused() {
     let _ = client.config();
 
     client.send(r#"{"type":"config.wallpaper","path":"/nowhere/wall.png","mode":"fill"}"#);
-    let messages = client.drain(Duration::from_millis(400));
-    let error = messages
-        .iter()
-        .find(|message| message["type"] == "error")
-        .expect("no error event");
+    let error = client.expect("error");
     assert_eq!(error["context"], "config.wallpaper", "{error}");
 
     // The mode from the refused message was not applied either.
@@ -165,11 +160,7 @@ fn an_unknown_wallpaper_mode_is_refused() {
     let mut client = compositor.connect();
 
     client.send(r#"{"type":"config.wallpaper","mode":"zoom"}"#);
-    let messages = client.drain(Duration::from_millis(400));
-    let error = messages
-        .iter()
-        .find(|message| message["type"] == "error")
-        .expect("no error event");
+    let error = client.expect("error");
     assert_eq!(error["context"], "config.wallpaper", "{error}");
     assert!(
         error["message"]
