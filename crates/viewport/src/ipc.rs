@@ -37,15 +37,39 @@ impl AsFd for Shared {
     }
 }
 
-/// How much unsent event text one client may be owed before it is dropped.
+/// How much unsent event text one client may be owed before it is suspected of
+/// not reading at all.
 ///
 /// The mirror of `framing::MAX_PENDING`, which bounds what a client may send
 /// us: a connection that reads nothing while `subscribe` pours events at it
 /// otherwise grows the compositor's heap without limit, because a write that
 /// comes back `WouldBlock` leaves everything behind and nothing ever takes it.
 /// A megabyte is hundreds of events — far more than a reader that is merely
-/// slow falls behind by, and nothing a reader that has stopped will ever take.
+/// slow falls behind by.
 const MAX_BACKLOG: usize = 1 << 20;
+
+/// How long a client may sit above [`MAX_BACKLOG`] taking none of it.
+///
+/// Size alone was the test here, and it was the wrong one: a backlog says how
+/// much a client has been sent, not whether it is reading. One event can be
+/// over the line by itself — a tray item's 512-pixel icon was 1.4MB of data
+/// URL — and the shell, which reads everything it is sent within a frame, was
+/// dropped for a message it had not been given a chance to take yet. The
+/// desktop went with it.
+///
+/// So what is measured is progress. A reader handed a burst it has to work
+/// through drains some of it every pass through the loop and resets this; a
+/// reader that has stopped moves nothing, and after five seconds of moving
+/// nothing it is gone whatever its socket still says.
+const STUCK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The backlog no client is given the benefit of the doubt over.
+///
+/// [`STUCK`] bounds how long the compositor waits, and this bounds what that
+/// wait may cost it in the meantime: a client that has genuinely stopped while
+/// something floods it with events would otherwise take the compositor's heap
+/// with it before its five seconds were up.
+const HARD_BACKLOG: usize = 64 << 20;
 
 struct Client {
     stream: Rc<UnixStream>,
@@ -60,9 +84,15 @@ struct Client {
     /// What a short write left behind. Nothing else will send it, so the
     /// writable half of the source has to.
     ///
-    /// Bounded by [`MAX_BACKLOG`]: a subscriber that stops reading is not a
-    /// reason for the compositor to grow.
+    /// Bounded by [`MAX_BACKLOG`] and [`STUCK`] together: a subscriber that
+    /// stops reading is not a reason for the compositor to grow.
     pending: Vec<u8>,
+    /// When this client last had a backlog over [`MAX_BACKLOG`] and took none
+    /// of it, or `None` while it is keeping up.
+    ///
+    /// Cleared by any successful write, so the clock measures a reader that is
+    /// stuck rather than one that is busy.
+    stalled_since: Option<std::time::Instant>,
     token: RegistrationToken,
     /// The write-readiness source, which exists only while `pending` does.
     ///
@@ -331,13 +361,24 @@ impl Client {
         }
         self.pending.extend_from_slice(bytes);
         self.flush();
-        // Same rule as `Framed::Overrun` on the read side: a client that has
-        // stopped taking what it asked for is gone, whatever its socket still
-        // says.
-        if self.pending.len() > MAX_BACKLOG {
+
+        if self.pending.len() <= MAX_BACKLOG {
+            self.stalled_since = None;
+            return;
+        }
+        // Over the line. Same rule as `Framed::Overrun` on the read side — a
+        // client that has stopped taking what it asked for is gone — but only
+        // once it has had [`STUCK`] to take any of it, because being sent a lot
+        // at once is not the same as reading none of it.
+        let since = *self
+            .stalled_since
+            .get_or_insert_with(std::time::Instant::now);
+        if self.pending.len() > HARD_BACKLOG || since.elapsed() > STUCK {
             tracing::warn!(
-                "control client is {} bytes behind; dropping it",
-                self.pending.len()
+                "control client is {} bytes behind and has taken none of it for {:.1}s; \
+                 dropping it",
+                self.pending.len(),
+                since.elapsed().as_secs_f32()
             );
             self.dead = true;
             self.pending.clear();
@@ -353,6 +394,9 @@ impl Client {
                 }
                 Ok(n) => {
                     self.pending.drain(..n);
+                    // It is reading. Whatever it is still owed, it is not the
+                    // connection `STUCK` exists to reap.
+                    self.stalled_since = None;
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
@@ -423,6 +467,7 @@ impl ViewportState {
                 pid,
                 framer: Framer::new(),
                 pending: Vec::new(),
+                stalled_since: None,
                 token,
                 write_token: None,
                 dead: false,

@@ -199,21 +199,108 @@ pub struct Pixmap {
     pub argb: Vec<u8>,
 }
 
+/// How much larger than the size wanted a pixmap may be encoded as it came.
+///
+/// Not one, because the shell draws the icon on whatever scale the screen has
+/// and a picture handed over at exactly 22 pixels is soft on a 2x display.
+/// Four is that headroom with room to spare, and it is what bounds the message
+/// the shell is sent: a 22-pixel icon at this multiple is 88 pixels, which is
+/// 31KB of pixels and 42KB of data URL however big the item's own copy was.
+const OVERSAMPLE: u32 = 4;
+
 /// The pixmap nearest the size wanted, encoded as a PNG data URL.
 ///
 /// Applications send several sizes and the specification does not order them,
 /// so the choice is made here rather than by taking the first — GNOME's own
 /// items send 16, 22, 24 and 32 pixel copies in whatever order the toolkit
 /// built them.
+///
+/// An item that sends *one* size gets it whatever that size is, which is where
+/// picking the nearest stops being enough: Electron's tray publishes a single
+/// 512x512 pixmap and nothing else, so "nearest" is a megabyte of pixels. This
+/// file's PNG writer does not compress, so that megabyte survived encoding,
+/// and the 1.4MB data URL that came out of it was a single control message
+/// larger than the shell's whole backlog allowance — the compositor dropped
+/// the desktop's connection the moment such an application started, and the
+/// shell died with it. So anything above [`OVERSAMPLE`] times the size wanted
+/// is scaled down first, and the picture the shell is sent is bounded by what
+/// the bar can draw rather than by what the application felt like sending.
 pub fn pixmap_url(pixmaps: &[Pixmap], want: u32) -> Option<String> {
     let best = pixmaps
         .iter()
         .filter(|p| p.width > 0 && p.height > 0)
         .filter(|p| p.argb.len() >= (p.width as usize) * (p.height as usize) * 4)
         .min_by_key(|p| (p.width as u32).abs_diff(want))?;
-    let rgba = argb_to_rgba(&best.argb, best.width as usize * best.height as usize);
-    let png = png(best.width as u32, best.height as u32, &rgba);
+    let width = best.width as usize;
+    let height = best.height as usize;
+    let rgba = argb_to_rgba(&best.argb, width * height);
+
+    let limit = (want.max(1) * OVERSAMPLE) as usize;
+    let (width, height, rgba) = if width > limit || height > limit {
+        downscale(&rgba, width, height, limit)
+    } else {
+        (width, height, rgba)
+    };
+
+    let png = png(width as u32, height as u32, &rgba);
     Some(format!("data:image/png;base64,{}", base64(&png)))
+}
+
+/// `rgba` fitted inside `limit` on its longer side, keeping its shape.
+///
+/// A box filter — every destination pixel is the average of the source
+/// rectangle it covers — rather than dropping rows and columns, because an
+/// icon reduced by nearest neighbour loses the thin strokes that are most of
+/// what an icon is.
+///
+/// The average is taken with the colour premultiplied by alpha and undone
+/// afterwards. Averaging colour straight would let whatever is behind the
+/// transparent part of an icon — black, in every toolkit that clears its
+/// buffer — bleed into the edge of the visible part, which is the dark halo a
+/// naive resize puts around a logo.
+fn downscale(rgba: &[u8], width: usize, height: usize, limit: usize) -> (usize, usize, Vec<u8>) {
+    let longest = width.max(height);
+    let dest_width = (width * limit / longest).max(1);
+    let dest_height = (height * limit / longest).max(1);
+
+    let mut out = Vec::with_capacity(dest_width * dest_height * 4);
+    for y in 0..dest_height {
+        let top = y * height / dest_height;
+        let bottom = (((y + 1) * height).div_ceil(dest_height))
+            .max(top + 1)
+            .min(height);
+        for x in 0..dest_width {
+            let left = x * width / dest_width;
+            let right = (((x + 1) * width).div_ceil(dest_width))
+                .max(left + 1)
+                .min(width);
+
+            let (mut red, mut green, mut blue, mut alpha) = (0u64, 0u64, 0u64, 0u64);
+            for row in top..bottom {
+                for column in left..right {
+                    let at = (row * width + column) * 4;
+                    let weight = u64::from(rgba[at + 3]);
+                    red += u64::from(rgba[at]) * weight;
+                    green += u64::from(rgba[at + 1]) * weight;
+                    blue += u64::from(rgba[at + 2]) * weight;
+                    alpha += weight;
+                }
+            }
+
+            let pixels = ((bottom - top) * (right - left)) as u64;
+            // A fully transparent block has no colour to recover — its
+            // weights are all zero — and black at zero alpha is what every
+            // other pixel of empty space in the image already is.
+            let colour = |sum: u64| sum.checked_div(alpha).unwrap_or(0) as u8;
+            out.extend_from_slice(&[
+                colour(red),
+                colour(green),
+                colour(blue),
+                (alpha / pixels) as u8,
+            ]);
+        }
+    }
+    (dest_width, dest_height, out)
 }
 
 /// ARGB in network byte order — which is what the specification says and what
@@ -422,6 +509,46 @@ mod tests {
         // three orders of magnitude longer.
         assert!(url.starts_with("data:image/png;base64,"));
         assert!(url.len() < 8000, "the 512-pixel pixmap was encoded instead");
+    }
+
+    /// The one that killed the desktop: an item with a single 512-pixel
+    /// pixmap and no smaller copy. Encoded as it came, that is a 1.4MB data
+    /// URL in one control message — more than the shell's whole backlog
+    /// allowance, so the compositor dropped the shell's connection and the
+    /// shell died. It is scaled down instead.
+    #[test]
+    fn one_enormous_pixmap_is_scaled_rather_than_sent_whole() {
+        let pixmaps = vec![Pixmap {
+            width: 512,
+            height: 512,
+            argb: vec![0x80; 512 * 512 * 4],
+        }];
+        let url = pixmap_url(&pixmaps, 22).expect("a pixmap");
+        // 88x88 of pixels, its PNG wrapper and base64's third on top: tens of
+        // kilobytes, against the megabyte the pixmap arrived as.
+        assert!(url.len() < 64 * 1024, "{} bytes of icon", url.len());
+    }
+
+    /// The picture, not just its size: a block of one colour stays that
+    /// colour, and the shape it was sent in is kept.
+    #[test]
+    fn scaling_averages_rather_than_drops_pixels() {
+        // Four pixels, one of them opaque red and the rest transparent.
+        let rgba = [
+            255, 0, 0, 255, // red
+            0, 0, 0, 0, // and three of nothing
+            0, 0, 0, 0, //
+            0, 0, 0, 0, //
+        ];
+        let (width, height, out) = downscale(&rgba, 2, 2, 1);
+        assert_eq!((width, height), (1, 1));
+        // Red at a quarter of the alpha — not black, which is what averaging
+        // the colour without premultiplying would give.
+        assert_eq!(out, vec![255, 0, 0, 63]);
+
+        // A wide icon keeps its shape rather than becoming a square.
+        let (width, height, _) = downscale(&vec![0; 64 * 16 * 4], 64, 16, 8);
+        assert_eq!((width, height), (8, 2));
     }
 
     /// A pixmap whose declared size does not match the bytes behind it is

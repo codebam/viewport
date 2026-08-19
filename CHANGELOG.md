@@ -97,6 +97,26 @@ to summarise rather than to duplicate.
   regions directly via the compositor.
 
 ### Fixed
+- Starting an application with a large tray icon no longer takes the desktop
+  down with it. Electron's tray publishes one 512x512 pixmap and no smaller
+  copy, so picking the pixmap nearest the bar's 22 pixels picked a megabyte of
+  ARGB; this file's PNG writer does not compress, so a megabyte is what came
+  out, and the 1.4MB data URL was a single control message larger than a
+  client's whole backlog allowance. The compositor dropped the shell's
+  connection the moment such an application started — after which no window
+  was ever placed, the bridge broke, and the shell died and restarted, which
+  is what opening a music player looked like from the outside. Pixmaps are now
+  scaled down to four times the size asked for before they are encoded, with a
+  box filter over premultiplied alpha so a shrunken logo keeps its strokes and
+  grows no dark halo.
+- A control client is no longer dropped for being sent a lot at once. The
+  backlog test asked how much a client was owed and not whether it was reading
+  any of it, so one oversized event killed a connection that had done nothing
+  wrong — and the connection was usually the shell, because the shell is what
+  everything is sent. A client over the limit now has five seconds to take
+  some of it, any successful write clears the clock, and only a genuinely
+  stuck reader is reaped. An absolute ceiling still bounds what that patience
+  can cost the compositor's heap.
 - The three or four pixels of wallpaper at the corners of a floating window,
   for real this time. Two more places were copying the page's background over
   the window underneath. The corner wedge is a copy of the shell's buffer, and
