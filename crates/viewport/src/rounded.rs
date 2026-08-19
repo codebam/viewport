@@ -116,17 +116,15 @@ pub fn bands(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32, 
 /// background, and drawing that over the window a floating one is lifted above
 /// is four triangles of wallpaper punched through it.
 pub fn cutaway(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32, Physical>> {
-    let radius = radius.min(rect.size.w / 2).min(rect.size.h / 2);
-    if radius <= 0 || rect.is_empty() {
-        return Vec::new();
-    }
-
     let right_of = |r: Rectangle<i32, Physical>| r.loc.x + r.size.w;
     let mut wedges = Vec::new();
     for band in bands(rect, radius) {
         // The rows of a band are inset by the same amount on both sides, so
         // what the rounding took is the strip left of the band and the strip
-        // right of it.
+        // right of it. Derived from `bands` rather than computed again: the
+        // two have to tile the rectangle exactly, and a pixel that belongs to
+        // neither falls through to the shell's buffer — where, inside a
+        // window's hole, the desktop's own background is what is waiting.
         let left = band.loc.x - rect.loc.x;
         if left > 0 {
             wedges.push(Rectangle::new(
@@ -148,14 +146,27 @@ pub fn cutaway(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32
 /// How far in from the edge the circle is at `row` rows from the top of the
 /// corner.
 ///
-/// Measured at the middle of the row rather than its edge, so a radius of 1
-/// clips the single corner pixel rather than nothing or a whole row, and the
-/// steps land where a curve drawn through them would.
+/// Measured at the middle of the row, and rounded *down* — a step is only
+/// taken where the circle has definitely passed it.
+///
+/// Which way this rounds decides two things at once, because the same numbers
+/// cut the client and describe the wedge of the shell's border drawn behind it
+/// ([`cutaway`]). Rounding to nearest puts the boundary on the curve, which
+/// reads better on its own and means the outermost pixel of each wedge is one
+/// the page antialiased — part border, part hole, and the hole in the shell's
+/// buffer is the desktop's own background. Over a window a floating one is
+/// lifted above, that is a few pixels of wallpaper in each corner: exactly
+/// what a corner drawn "on" the curve costs when what is behind it is a
+/// picture of the desktop.
+///
+/// Flooring puts the boundary a hair outside the curve, so every wedge pixel
+/// is inside the border and the client covers the rest. The corner is a pixel
+/// squarer than the page's own arc, and nothing shows through it.
 fn inset(radius: i32, row: i32) -> i32 {
     let r = f64::from(radius);
     let dy = r - (f64::from(row) + 0.5);
     let chord = (r * r - dy * dy).max(0.0).sqrt();
-    ((r - chord).round() as i32).clamp(0, radius)
+    ((r - chord).floor() as i32).clamp(0, radius)
 }
 
 /// An element with the corners of `rect` cut off it.
@@ -714,6 +725,46 @@ mod tests {
         assert!(!wedges.is_rectangular());
     }
 
+    /// Every pixel of the cutaway is outside the circle the corner is drawn
+    /// to — never on it, never inside it. Which is the same statement as: the
+    /// client covers every pixel the circle touches.
+    ///
+    /// This is the three or four pixels of wallpaper in the corner of a
+    /// window. What is drawn there comes out of the shell's buffer, where
+    /// inside the curve is the hole and the hole is the desktop's own
+    /// background; a staircase step that lands one pixel inside the curve is
+    /// that background, drawn over whatever the window is lifted above.
+    #[test]
+    fn the_cutaway_never_crosses_the_curve() {
+        for radius in [4, 8, 12, 16, 24, 40] {
+            let rect = Rectangle::<i32, Physical>::new((0, 0).into(), (200, 120).into());
+            for wedge in cutaway(rect, radius) {
+                for y in wedge.loc.y..wedge.loc.y + wedge.size.h {
+                    for x in wedge.loc.x..wedge.loc.x + wedge.size.w {
+                        // Which corner this pixel belongs to, as a distance
+                        // from that corner's centre of curvature.
+                        let cx = if x < radius {
+                            radius
+                        } else {
+                            rect.size.w - radius
+                        };
+                        let cy = if y < radius {
+                            radius
+                        } else {
+                            rect.size.h - radius
+                        };
+                        let dx = f64::from(x) + 0.5 - f64::from(cx);
+                        let dy = f64::from(y) + 0.5 - f64::from(cy);
+                        assert!(
+                            dx * dx + dy * dy >= f64::from(radius) * f64::from(radius),
+                            "radius {radius}: ({x},{y}) is inside the curve"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// What the rounding cuts away is exactly what it does not keep: every
     /// wedge is inside the rectangle, none of them overlaps a band, and
     /// together the two cover the whole of it.
@@ -737,7 +788,8 @@ mod tests {
         assert_eq!(
             area(&kept) + area(&cut),
             rect.size.w * rect.size.h,
-            "the two halves are the whole rectangle"
+            "the two halves tile the rectangle exactly: a pixel belonging to \
+             neither falls through to the desktop behind the window"
         );
         for wedge in &cut {
             assert_eq!(wedge.intersection(rect), Some(*wedge), "inside the rect");

@@ -115,6 +115,18 @@ to summarise rather than to duplicate.
   came back the moment a second window opened, which reads as a broken setting
   rather than as a rule being applied. It is its own setting now and off unless
   asked for: `"border": { "smart": true }` is sway's `smart_borders`.
+- The last few pixels of wallpaper in the corner of a window. The rounding
+  used to put the boundary between the client and the shell's border curve
+  *on* the curve, by rounding to nearest — which leaves the outermost pixel of
+  each row one the page antialiased, part border and part hole, and the hole
+  in the shell's buffer is the desktop's own background. Over a window a
+  floating one is lifted above, that showed as three or four pixels of
+  wallpaper at each corner. The boundary is rounded down now, a hair outside
+  the curve, so every pixel the compositor takes from the border is inside the
+  border and the client covers the rest; the corner is a pixel squarer than
+  the page's own arc and nothing shows through it. The two halves are derived
+  from one function, because a pixel that belongs to neither falls through to
+  the desktop.
 - The corners a floating window's border curves into no longer punch four
   wedges of wallpaper through the window underneath. The corners were copied
   back from the shell as whole squares — the curve *and* the piece of the hole
