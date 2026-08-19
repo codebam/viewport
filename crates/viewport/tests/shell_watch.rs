@@ -215,3 +215,36 @@ fn a_burst_of_changes_reloads_once() {
         compositor.log()
     );
 }
+
+#[test]
+fn saving_the_configuration_file_reloads_settings() {
+    let dir = PathBuf::from(format!("/tmp/viewport-config-watch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let config = dir.join("config.json");
+    std::fs::write(&config, "{\"gaps\":{\"inner\":10}}\n").expect("write");
+
+    let compositor = Compositor::builder("config-watch")
+        .prefix("viewport-watch")
+        .args(["--watch-config", "--config"])
+        .arg(&config)
+        .owning(dir)
+        .awaiting("for configuration changes", Duration::from_secs(10))
+        .start();
+
+    // Change the configuration file
+    let temporary = config.with_extension("tmp");
+    std::fs::write(&temporary, "{\"gaps\":{\"inner\":24}}\n").expect("write");
+    std::fs::rename(&temporary, &config).expect("rename");
+
+    assert!(
+        compositor
+            .wait_for(
+                "the configuration file changed: reloading",
+                Duration::from_secs(5)
+            )
+            .is_some(),
+        "no reload after config change:\n{}",
+        compositor.log()
+    );
+}

@@ -136,6 +136,17 @@ pub fn wanted(args: &[String]) -> bool {
     }
 }
 
+/// Whether the session was asked to watch the configuration file.
+pub fn config_wanted(args: &[String]) -> bool {
+    if args.iter().any(|arg| arg == "--watch-config") {
+        return true;
+    }
+    match std::env::var("VIEWPORT_WATCH_CONFIG") {
+        Ok(value) => matches!(value.trim(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
+
 impl ViewportState {
     /// Reload every shell that is running, whichever backend is drawing it.
     ///
@@ -384,6 +395,134 @@ impl ViewportState {
         tracing::info!("the shell's files changed: reloading");
         self.reload_shells();
     }
+
+    /// Watch the active config file, and reload its settings on a change.
+    pub fn watch_config_file(&mut self) {
+        use smithay::reexports::rustix::fs::inotify;
+
+        let Some(config_path) = self.config_file_path.clone() else {
+            return;
+        };
+        let Some(directory) = config_path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+
+        if !directory.is_dir() {
+            tracing::warn!("watch config: {}: not a directory", directory.display());
+            return;
+        }
+
+        let fd = match inotify::init(inotify::CreateFlags::NONBLOCK | inotify::CreateFlags::CLOEXEC)
+        {
+            Ok(fd) => fd,
+            Err(e) => {
+                tracing::warn!("watch config: no inotify ({e})");
+                return;
+            }
+        };
+
+        let watching = inotify::WatchFlags::CLOSE_WRITE
+            | inotify::WatchFlags::MOVED_TO
+            | inotify::WatchFlags::MOVED_FROM
+            | inotify::WatchFlags::CREATE
+            | inotify::WatchFlags::DELETE;
+
+        let config_name = config_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        if let Err(e) = inotify::add_watch(&fd, &directory, watching) {
+            tracing::warn!("watch config: {}: {e}", directory.display());
+            return;
+        }
+
+        self.config_reload_timer = self.create_tick("config watch", Self::config_file_settled);
+
+        let target_name = config_name.clone();
+        if let Err(e) = self.loop_handle.insert_source(
+            Generic::new(fd, Interest::READ, Mode::Level),
+            move |_, fd, state: &mut Self| {
+                let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
+                let mut reader = inotify::Reader::new(&*fd, &mut buffer);
+                let mut interesting = false;
+                loop {
+                    match reader.next() {
+                        Ok(event) => {
+                            let name = event
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            if name == target_name {
+                                interesting = true;
+                            }
+                        }
+                        Err(smithay::reexports::rustix::io::Errno::WOULDBLOCK) => break,
+                        Err(e) => {
+                            tracing::warn!("config watch: {e}");
+                            break;
+                        }
+                    }
+                }
+                if interesting {
+                    state.config_file_changed();
+                }
+                Ok(PostAction::Continue)
+            },
+        ) {
+            tracing::warn!("watch config: could not watch config ({e})");
+            return;
+        }
+
+        tracing::info!(
+            "watching {} for configuration changes; a save reloads settings",
+            config_path.display()
+        );
+    }
+
+    /// The config file changed: reload once it settles.
+    fn config_file_changed(&mut self) {
+        if Self::arm_tick("config watch", self.config_reload_timer.as_ref(), SETTLE) {
+            return;
+        }
+        if self.config_reload_pending {
+            return;
+        }
+        self.config_reload_pending = true;
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(SETTLE);
+        if let Err(e) = self
+            .loop_handle
+            .insert_source(timer, move |_, _, state: &mut Self| {
+                state.config_file_settled();
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            })
+        {
+            tracing::warn!("config watch: {e}");
+            self.config_reload_pending = false;
+        }
+    }
+
+    /// The config file has stopped changing. Re-read and apply.
+    fn config_file_settled(&mut self) {
+        self.config_reload_pending = false;
+        let Some(path) = self.config_file_path.clone() else {
+            return;
+        };
+        tracing::info!(
+            "the configuration file changed: reloading {}",
+            path.display()
+        );
+        let file = match crate::config::load(&path) {
+            Ok(Some(file)) => file,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!("{}: {e}; keeping the current configuration", path.display());
+                return;
+            }
+        };
+        self.apply_config(file);
+        self.notify_config();
+    }
 }
 
 #[cfg(test)]
@@ -485,5 +624,10 @@ mod tests {
     fn watching_is_off_unless_it_is_asked_for() {
         assert!(!wanted(&["viewport".to_owned()]));
         assert!(wanted(&["viewport".to_owned(), "--watch-shell".to_owned()]));
+        assert!(!config_wanted(&["viewport".to_owned()]));
+        assert!(config_wanted(&[
+            "viewport".to_owned(),
+            "--watch-config".to_owned()
+        ]));
     }
 }

@@ -510,8 +510,8 @@ windows make four columns, consume and expel are inverses, a tabbed container
 shows exactly one window and it is the focused one.
 
 ```sh
-timeout 20 node tests/shell.test.js data/shell/shell.js tiling
-timeout 20 node tests/shell.test.js data/shell/shell.js scrolling
+timeout 20 node tests/shell.test.js data/shell tiling
+timeout 20 node tests/shell.test.js data/shell scrolling
 ```
 
 `timeout` because the shell sets a live-reload interval and so never exits.
@@ -524,7 +524,7 @@ symptom of the broken version had to be reported by a person sharing a window
 in a browser, and every wrong guess cost them their session.
 
 ```sh
-meson test -C build
+scripts/integration.sh target/debug/viewport
 ```
 
 That starts the compositor headless, opens a window painted one colour inside

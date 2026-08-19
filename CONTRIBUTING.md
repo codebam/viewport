@@ -39,11 +39,12 @@ node tests/shell.test.js data/shell tiling
 node tests/shell.test.js data/shell scrolling
 node tests/shell.test.js data/shell solar
 node tests/shell.test.js data/shell matrix
+node tests/shell.test.js data/shell canvas
 node tests/kiosk.test.js examples/kiosk
 ```
 
 Each layout model also has a `session` variant (`node tests/shell.test.js
-data/shell tiling session`), which is where the three are most likely to
+data/shell tiling session`), which is where the models are most likely to
 disagree — restoring a saved layout is the one thing that writes the tree
 rather than reading it.
 

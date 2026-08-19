@@ -228,10 +228,16 @@ fn argb_to_rgba(argb: &[u8], pixels: usize) -> Vec<u8> {
 
 /// A PNG, stored rather than compressed.
 ///
+/// A valid PNG containing `rgba` pixels at `width`x`height`.
+///
 /// The zlib stream is deflate's "stored" block type: no compression, a length
 /// and its complement, and the data. Every decoder handles it because it is
 /// the format's own escape hatch for incompressible input, and it means this
 /// file contains no compressor.
+pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    png(width, height, rgba)
+}
+
 fn png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
 

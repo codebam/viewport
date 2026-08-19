@@ -21,13 +21,6 @@ xdg-desktop-portal-wlr could only offer whole outputs. RemoteDesktop is the
 same interface plus input injection, and the virtual keyboard and pointer
 protocols this already speaks are the injection half.
 
-## Screenshot portal
-
-Still routed to xdg-desktop-portal-wlr in `data/portal-config`, which captures
-outputs and nothing else — the exact limit that made ScreenCast worth
-implementing here. Window and region screenshots need the window list this
-compositor already holds.
-
 ## Battery and power
 
 Nothing here talks to UPower. The idle configuration covers a machine left
@@ -48,9 +41,3 @@ means writing a file and editing `index.html`. Documenting the contract a
 layout implements — what it receives, what it must measure, what it may not
 transform — would turn the strongest thing about this design into something a
 user can extend without patching the shell.
-
-## Configuration reload
-
-Saving a shell file reloads the page under `--watch-shell`, and `Mod4+Shift+c`
-reloads it by hand. The configuration file should have the same property, so
-that editing a binding or a gap does not cost a session.

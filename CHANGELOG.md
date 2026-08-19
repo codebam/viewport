@@ -82,12 +82,19 @@ to summarise rather than to duplicate.
   deflate implementation is a lot of machinery to save two kilobytes on a
   message sent when an application starts. Left click activates, right asks
   for the menu, middle is the secondary action and the wheel scrolls. Items
-  that publish a `com.canonical.dbusmenu` object rather than answering
-  `ContextMenu` have a menu that is not drawn yet. `"tray": false` turns the
-  whole thing off, on reload as well as at startup, and `icon_theme` says which
-  theme names are resolved against.
+  Items that publish a `com.canonical.dbusmenu` object have their menu read
+  and sent to the shell to draw; items implementing `ContextMenu` draw their
+  own window. `"tray": false` turns the whole thing off, on reload as well as at
+  startup, and `icon_theme` says which theme names are resolved against.
 - `docs/roadmap.md`, which is what is missing and why each part of it belongs
   in this program rather than in a daemon beside it.
+- Live configuration reload (`--watch-config`, or automatically when `--watch-shell`
+  watches local shell assets). Editing `~/.config/viewport/config.json` patches
+  live state (gaps, borders, bindings, wallpaper, rules) and notifies the shell
+  without losing the session.
+- The `org.freedesktop.impl.portal.Screenshot` portal implementation, letting
+  desktop screenshot requests capture whole outputs, windows, or interactive
+  regions directly via the compositor.
 
 ### Fixed
 - The three or four pixels of wallpaper at the corners of a floating window,

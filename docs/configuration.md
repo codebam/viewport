@@ -571,6 +571,7 @@ Precedence is flags > config file > defaults.
 --url URL                    a page to run instead of the bundled desktop
 --url-span                   give that page every monitor, not just the first
 --watch-shell                reload the shell when its files change
+--watch-config               reload the configuration file when it changes
 --background-terminal [CMD]  a terminal for a wallpaper, running CMD if one is given
 --wallpaper PATH             a picture for the desktop background, over the config file
 --wallpaper-mode NAME        how it is fitted: fill, fit, stretch, center or tile
@@ -846,7 +847,9 @@ on.
 
 **The watch.** `--watch-shell`, or `VIEWPORT_WATCH_SHELL=1`, watches the
 directory the page was loaded from and reloads when a file in it changes, so
-saving *is* the reload. Off by default: a reload throws the shell's state away,
+saving *is* the reload. `--watch-config`, or `VIEWPORT_WATCH_CONFIG=1` (or
+running with `--watch-shell`), watches the active configuration file and
+reloads its settings on save. Off by default: a reload throws the shell's state away,
 and an installed desktop's files do not change under it.
 
 What is watched is the directory holding the `file://` URL that was loaded —

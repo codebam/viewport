@@ -140,7 +140,7 @@ start_viewport() {
 	"$viewport" --headless >"$log" 2>&1 &
 	viewport_pid=$!
 	for _ in $(seq 1 100); do
-		grep -q "screencast portals up" "$log" && return 0
+		grep -q "portals up" "$log" && return 0
 		kill -0 "$viewport_pid" 2>/dev/null || break
 		sleep 0.1
 	done

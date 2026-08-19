@@ -159,6 +159,7 @@ impl Appearance {
         &mut self,
         settings: Settings,
         screencast: crate::screencast::portal::ScreenCast,
+        screenshot: crate::screenshot::Screenshot,
     ) -> anyhow::Result<()> {
         let scheme = settings.color_scheme;
         *self.settings.lock().unwrap() = settings;
@@ -186,6 +187,7 @@ impl Appearance {
         let connection = zbus::blocking::connection::Builder::session()?
             .serve_at(OBJECT_PATH, portal)?
             .serve_at(OBJECT_PATH, screencast)?
+            .serve_at(OBJECT_PATH, screenshot)?
             .build()?;
 
         // Asked for with `crate::dbus::name_flags` rather than the builder's
@@ -199,7 +201,7 @@ impl Appearance {
         crate::screencast::portal::watch_frontend(connection.clone(), sessions, closer);
 
         self.connection = Some(connection);
-        tracing::info!("settings and screencast portals up, color-scheme={scheme}");
+        tracing::info!("settings, screencast, and screenshot portals up, color-scheme={scheme}");
         Ok(())
     }
 

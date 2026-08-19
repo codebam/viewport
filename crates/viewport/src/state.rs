@@ -657,6 +657,7 @@ pub struct ViewportState {
     /// Copies asked for and not yet made. Served the next time the output
     /// they name is drawn, because that is where its renderer is.
     pub pending_copies: Vec<PendingCopy>,
+    pub pending_screenshots: Vec<crate::screenshot::PendingScreenshot>,
     /// Buffers a client has destroyed whose images a renderer may still be
     /// holding.
     ///
@@ -767,6 +768,12 @@ pub struct ViewportState {
     /// Whether that watchdog is already armed, so a flip on every output does
     /// not arm a timer per output.
     pub gpu_watch: bool,
+    /// The path to the active configuration file, if any.
+    pub config_file_path: Option<std::path::PathBuf>,
+    /// The timer the config's live reload settles on, when watched.
+    pub config_reload_timer: Option<std::os::fd::OwnedFd>,
+    /// Whether a config reload is already waiting on the timer.
+    pub config_reload_pending: bool,
     /// The timer the shell's live reload settles on, when `--watch-shell` set
     /// one up. Same reasoning again — see [`crate::shell_watch`].
     pub shell_reload_timer: Option<std::os::fd::OwnedFd>,
@@ -1266,6 +1273,7 @@ impl ViewportState {
             _alpha_modifier_state: alpha_modifier_state,
             output_management_state,
             pending_copies: Vec::new(),
+            pending_screenshots: Vec::new(),
             dead_buffers: Vec::new(),
             capture_scratch: Vec::new(),
             primary_selection_state,
@@ -1303,6 +1311,9 @@ impl ViewportState {
             barrier_timer: None,
             gpu_timer: None,
             gpu_watch: false,
+            config_file_path: None,
+            config_reload_timer: None,
+            config_reload_pending: false,
             shell_reload_timer: None,
             shell_reload_pending: false,
             barrier_quiet: 0,
@@ -1790,6 +1801,74 @@ impl ViewportState {
                 Err(e) => {
                     tracing::warn!("screencopy failed: {e}");
                     copy.frame.failed();
+                }
+            }
+        }
+
+        self.service_portal_screenshots::<R, B>(output, renderer);
+    }
+
+    /// Serve pending portal screenshot requests on `output`.
+    pub fn service_portal_screenshots<R, B>(&mut self, output: &Output, renderer: &mut R)
+    where
+        R: Renderer
+            + Bind<B>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma,
+        B: 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
+        if self.pending_screenshots.is_empty() {
+            return;
+        }
+
+        let mut mine = Vec::new();
+        self.pending_screenshots.retain(|req| {
+            if req.output.as_ref() == Some(output)
+                || (req.output.is_none() && self.space.outputs().next() == Some(output))
+            {
+                mine.push(req.reply.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        for reply in mine {
+            let mode = output
+                .current_mode()
+                .unwrap_or_else(|| smithay::output::Mode {
+                    size: (1920, 1080).into(),
+                    refresh: 60_000,
+                });
+            let region = smithay::utils::Rectangle::new((0, 0).into(), mode.size);
+            match self.read_output_pixels::<R, B>(output, region, true, renderer) {
+                Ok(pixels) => {
+                    let png_bytes =
+                        crate::icon::encode_png(mode.size.w as u32, mode.size.h as u32, &pixels);
+                    let filename = format!(
+                        "viewport-screenshot-{}-{}.png",
+                        std::process::id(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                    );
+                    let path = std::env::temp_dir().join(filename);
+                    if let Err(e) = std::fs::write(&path, png_bytes) {
+                        let _ =
+                            reply.try_send(Err(format!("could not write screenshot file: {e}")));
+                    } else {
+                        let uri = format!("file://{}", path.display());
+                        let _ = reply.try_send(Ok(uri));
+                    }
+                }
+                Err(e) => {
+                    let _ = reply.try_send(Err(e));
                 }
             }
         }
@@ -3940,6 +4019,35 @@ impl ViewportState {
         }
     }
 
+    /// Carry out a screenshot portal request.
+    pub fn handle_screenshot(&mut self, message: crate::screenshot::Message) {
+        use crate::screenshot::Message;
+
+        match message {
+            Message::Capture {
+                interactive: _,
+                modal: _,
+                reply,
+            } => {
+                let output = self
+                    .active_output
+                    .as_deref()
+                    .and_then(|name| self.space.outputs().find(|o| o.name() == name))
+                    .cloned()
+                    .or_else(|| self.space.outputs().next().cloned());
+                self.pending_screenshots
+                    .push(crate::screenshot::PendingScreenshot {
+                        output,
+                        window_id: None,
+                        reply,
+                    });
+                for output in self.space.outputs() {
+                    output.user_data().insert_if_missing(|| ());
+                }
+            }
+        }
+    }
+
     /// How long a chooser stays up before it gives up on being answered.
     ///
     /// The application is waiting on this: its own dialogue says the share is
@@ -5660,8 +5768,7 @@ impl ViewportState {
     }
 
     pub fn notify_config(&mut self) {
-        // Config parsing is not ported yet; these are the C build's defaults
-        // (`src/main.c:61`).
+        // Broadcast the active configuration to the shell.
         //
         // logo and tutorial are true there — "the empty desktop explains
         // itself until told not to". Sending false is not a smaller default,

@@ -255,10 +255,10 @@ protocols are the difference rather than something else about the client.
 `VIEWPORT_FIFO=0` withdraws both globals without a rebuild, because these two
 have frozen every client that used them once already.
 
-Still not implemented, all present in Smithay: `ext-workspace` — external bars
-cannot see the workspaces, which are the shell's and are not published —
-`drm-lease`, `security-context`, `xdg-toplevel-icon`, `xdg-foreign` and
-`xwayland-keyboard-grab`.
+Still not implemented: `wlr-export-dmabuf` and `ext-transient-seat`
+(both deliberately not advertised until backend export/input support exists).
+`ext-workspace`, `drm-lease`, `security-context`, `xdg-toplevel-icon`,
+`xdg-foreign` and `xwayland-keyboard-grab` are all implemented.
 
 ## Why smithay is a fork
 

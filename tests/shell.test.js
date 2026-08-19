@@ -22,9 +22,12 @@
  *
  *   node tests/shell.test.js data/shell tiling
  *   node tests/shell.test.js data/shell scrolling
+ *   node tests/shell.test.js data/shell solar
+ *   node tests/shell.test.js data/shell matrix
+ *   node tests/shell.test.js data/shell canvas
  *   node tests/shell.test.js data/shell tiling session
  *
- * Exits non-zero on failure. CI runs all four combinations in the `shell`
+ * Exits non-zero on failure. CI runs all ten combinations in the `shell`
  * job; run one by hand with the lines above when a case fails.
  */
 const fs = require('fs');

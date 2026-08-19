@@ -42,6 +42,7 @@ mod render;
 mod rounded;
 mod screencast;
 mod screencopy;
+mod screenshot;
 mod session;
 #[cfg(feature = "wpe")]
 mod shell;
@@ -267,8 +268,12 @@ fn run() -> Result<()> {
     // Watching the shell's own files, if asked. After the URL, because the URL
     // is what says which directory to watch, and before any of it is loaded,
     // because a change between here and the first paint should still count.
+    state.config_file_path = config_path.clone();
     if shell_watch::wanted(&args) {
         state.watch_shell_assets();
+        state.watch_config_file();
+    } else if shell_watch::config_wanted(&args) {
+        state.watch_config_file();
     }
 
     // A terminal for a wallpaper, from the command line.
@@ -719,6 +724,19 @@ fn run() -> Result<()> {
             })
             .map_err(|e| anyhow::anyhow!("inserting the screencast source: {e}"))?;
 
+        let (screenshot_sender, screenshot_source) =
+            smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(screenshot_source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(message) = event else {
+                    return;
+                };
+                state.handle_screenshot(message);
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the screenshot source: {e}"))?;
+
         let settings = crate::appearance::Settings {
             color_scheme: if state.dark_mode {
                 crate::appearance::PREFER_DARK
@@ -731,11 +749,12 @@ fn run() -> Result<()> {
             cursor_size: state.cursor_theme.size() as i32,
         };
         let screencast = crate::screencast::portal::ScreenCast::new(sender);
+        let screenshot = crate::screenshot::Screenshot::new(screenshot_sender);
 
         // Not fatal: a real desktop portal already holding the name knows more
         // about the session than this does, and applications keep the defaults
         // they had a moment ago.
-        if let Err(e) = state.appearance.start(settings, screencast) {
+        if let Err(e) = state.appearance.start(settings, screencast, screenshot) {
             tracing::warn!("the portals are unavailable: {e}");
         }
     }
@@ -960,6 +979,11 @@ const OPTIONS: &[Opt] = &[
         flag: "--watch-shell",
         value: "",
         what: "reload the shell when its files change",
+    },
+    Opt {
+        flag: "--watch-config",
+        value: "",
+        what: "reload the configuration file when it changes",
     },
     Opt {
         flag: "--background-terminal",
