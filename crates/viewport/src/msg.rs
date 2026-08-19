@@ -224,6 +224,11 @@ const TYPES: &[Type] = &[
         hint: "--action play-pause|next|previous|stop",
     },
     Type {
+        name: "power.profile",
+        fields: &["profile"],
+        hint: "--profile power-saver|balanced|performance",
+    },
+    Type {
         name: "tray.menu.click",
         fields: &["id", "item"],
         hint: "--id KEY --item N",
@@ -1294,10 +1299,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 45 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 46 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 45);
+        assert_eq!(TYPES.len(), 46);
     }
 
     #[test]

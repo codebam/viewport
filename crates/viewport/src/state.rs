@@ -178,6 +178,15 @@ pub struct ViewportState {
     pub tray: crate::tray::Tray,
     /// What is playing, for the bar's media widget. Idle unless one is on it.
     pub mpris: crate::mpris::Mpris,
+    /// Battery, lid and power profiles. Idle unless a widget or lid policy
+    /// wants it.
+    pub power: crate::power::Power,
+    /// What closing the lid does. Applied here rather than on the worker:
+    /// lock and blank are compositor policy.
+    pub lid: crate::power::LidAction,
+    /// Last lid state the worker reported, so a repeat snapshot does not
+    /// lock again.
+    pub last_lid_closed: Option<bool>,
     /// The last few things copied, so a selection outlives the client that
     /// offered it.
     pub clipboard: crate::clipboard::Clipboard,
@@ -1152,6 +1161,9 @@ impl ViewportState {
             notifications: crate::notification::Notifications::default(),
             tray: crate::tray::Tray::default(),
             mpris: crate::mpris::Mpris::default(),
+            power: crate::power::Power::default(),
+            lid: crate::power::LidAction::default(),
+            last_lid_closed: None,
             clipboard: crate::clipboard::Clipboard::default(),
             // On unless a file says otherwise: a desktop with no tray is a
             // desktop where several ordinary applications have nowhere to put
@@ -4921,6 +4933,35 @@ impl ViewportState {
         }
     }
 
+    /// A snapshot from the UPower worker: paint the bar, and act on the lid
+    /// if it moved.
+    pub fn handle_power(&mut self, snapshot: viewport_ipc::event::PowerSnapshot) {
+        let closed = snapshot.lid_closed;
+        if self.last_lid_closed != Some(closed) {
+            self.last_lid_closed = Some(closed);
+            if self.lid != crate::power::LidAction::Ignore {
+                if closed {
+                    self.apply_lid_close();
+                } else {
+                    self.set_outputs_enabled(true);
+                }
+            }
+        }
+        if self.power.widget() {
+            self.notify(&viewport_ipc::Event::PowerUpdate(snapshot));
+        }
+    }
+
+    /// The lid just closed.
+    pub fn apply_lid_close(&mut self) {
+        match self.lid {
+            crate::power::LidAction::Ignore => {}
+            crate::power::LidAction::Lock => self.lock_session(),
+            crate::power::LidAction::Blank => self.blank_screens(),
+            crate::power::LidAction::Suspend => self.power.suspend(),
+        }
+    }
+
     /// Run the configured locker.
     ///
     /// Shared by the idle deadline and the `lock` binding so there is one
@@ -5922,6 +5963,7 @@ impl ViewportState {
                 crate::config::BarWidgetConfig::Volume => viewport_ipc::event::BarWidget::Volume,
                 crate::config::BarWidgetConfig::Mic => viewport_ipc::event::BarWidget::Mic,
                 crate::config::BarWidgetConfig::Mpris => viewport_ipc::event::BarWidget::Mpris,
+                crate::config::BarWidgetConfig::Battery => viewport_ipc::event::BarWidget::Battery,
             })
             .collect();
 
@@ -5952,6 +5994,9 @@ impl ViewportState {
                             }
                             crate::config::BarWidgetConfig::Mpris => {
                                 viewport_ipc::event::BarWidget::Mpris
+                            }
+                            crate::config::BarWidgetConfig::Battery => {
+                                viewport_ipc::event::BarWidget::Battery
                             }
                         })
                     }
@@ -6010,6 +6055,10 @@ impl ViewportState {
                 .iter()
                 .any(|w| matches!(w, crate::config::BarWidgetConfig::Mpris)),
         );
+        let want_battery = drawn_widgets
+            .iter()
+            .any(|w| matches!(w, crate::config::BarWidgetConfig::Battery));
+        self.power.set_widget(want_battery);
         if let Some(url) = file.url {
             self.shell_url = Some(url);
         }
@@ -6103,6 +6152,22 @@ impl ViewportState {
                 lock_command: file.idle.lock_command,
             };
         }
+
+        self.lid = match file.lid.as_deref() {
+            Some(name) => match crate::power::LidAction::parse(name) {
+                Some(action) => action,
+                None => {
+                    tracing::warn!(
+                        "lid: {name:?} is not ignore, lock, blank or suspend; leaving as {:?}",
+                        self.lid
+                    );
+                    self.lid
+                }
+            },
+            None => crate::power::LidAction::default_for(self.idle_settings.lock_command.is_some()),
+        };
+        self.power
+            .set_enabled(self.power.widget() || self.lid != crate::power::LidAction::Ignore);
 
         // The cursor theme. The xcursor loader reads the environment, which is
         // also how every toolkit resolves it — so setting it here is what makes

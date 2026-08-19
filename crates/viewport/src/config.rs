@@ -228,6 +228,14 @@ pub enum BarWidgetConfig {
     /// follow every player on the session.
     #[serde(rename = "mpris")]
     Mpris,
+    /// Charge and charging state, from UPower, plus a click that opens the
+    /// power-profile picker.
+    ///
+    /// Sampled by the compositor because the page has no bus — and only when
+    /// this widget is on the bar. Lid policy can still talk to UPower without
+    /// one.
+    #[serde(rename = "battery")]
+    Battery,
 }
 
 /// What `background_terminal` was set to.
@@ -357,6 +365,12 @@ pub struct File {
     pub keyboard: KeyboardConfig,
     pub cursor: CursorConfig,
     pub idle: IdleConfig,
+
+    /// What to do when the laptop lid closes: `"ignore"`, `"lock"`, `"blank"`
+    /// or `"suspend"`. Absent is lock when `idle.lock_command` is set,
+    /// otherwise blank. A desktop has no lid, so the setting never fires.
+    pub lid: Option<String>,
+
     pub gaps: GapsConfig,
     pub border: BorderConfig,
     pub notifications: NotificationsConfig,
@@ -958,12 +972,13 @@ mod tests {
                     {"type":"disk"},
                     {"type":"weather","location":"New York"},
                     {"type":"volume"},
-                    {"type":"mic"}
+                    {"type":"mic"},
+                    {"type":"battery"}
                 ]
             }"#,
         )
         .expect("should parse");
-        assert_eq!(file.bar_widgets.len(), 5);
+        assert_eq!(file.bar_widgets.len(), 6);
         assert_eq!(
             file.bar_widgets[0],
             BarWidgetConfig::Disk {
@@ -981,6 +996,15 @@ mod tests {
         );
         assert_eq!(file.bar_widgets[3], BarWidgetConfig::Volume);
         assert_eq!(file.bar_widgets[4], BarWidgetConfig::Mic);
+        assert_eq!(file.bar_widgets[5], BarWidgetConfig::Battery);
+    }
+
+    #[test]
+    fn lid_parses_as_a_name() {
+        let file: File = serde_json::from_str(r#"{"lid":"suspend"}"#).expect("should parse");
+        assert_eq!(file.lid.as_deref(), Some("suspend"));
+        let file: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(file.lid, None);
     }
 
     #[test]

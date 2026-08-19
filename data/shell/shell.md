@@ -63,6 +63,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | `windows.js` | The window lifecycle: added, focused, closed, floated, fullscreened. |
 | `bar.js` | The status bar, its widgets, the system tray and its menus. |
 | `clipboard.js` | The clipboard history picker. |
+| `power.js` | The power-profile picker, opened from the battery widget. |
 | `screencast.js` | The screen-share chooser. Drawn here, steered from the compositor: the shell receives no input of its own, so the highlight arrives in the message. |
 | `commands.js` | Commands from the compositor and the inbound message loop. Loaded last: its bottom asks for the state the shell starts from, so everything handling the answer must already exist. |
 

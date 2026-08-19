@@ -187,6 +187,14 @@ pub enum Request {
         action: String,
     },
 
+    /// Switch the power profile.
+    ///
+    /// Goes to the power-profiles daemon through the compositor, which is
+    /// already talking to it for the bar. `"power-saver"`, `"balanced"` or
+    /// `"performance"`, or any name the last `power.update` listed.
+    #[serde(rename = "power.profile")]
+    PowerProfile { profile: String },
+
     /// A row of an open tray menu was chosen.
     ///
     /// The menu is the compositor's: it fetched the layout and the shell drew

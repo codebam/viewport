@@ -76,6 +76,7 @@ of what was asked.
 | `tray.update` | `items[]` with `id`, `title`, `status` (`active`, `passive`, `needs-attention`), `icon` (a `data:` URL, or absent), `tooltip`, `is_menu`, `has_menu` — the system tray, whole, whenever any part of it changes |
 | `clipboard.history` | `entries[]` with `id` and `text` — the clipboard history, newest first, whenever it changes and in answer to `clipboard.query` |
 | `mpris.update` | `player` with `id`, `title`, `artist`, `album`, `status` (`playing`, `paused`, `stopped`), `art`, `can_go_next`, `can_go_previous`, `can_pause`, `can_play` — what is playing, when it changes. Absent `player` means nothing is. Sent only while a media widget is on the bar |
+| `power.update` | `batteries[]` with `percentage`, `state` (`charging`, `discharging`, `full`, `empty`, `unknown`), optional `time_to_empty` / `time_to_full`; `on_battery`; `lid_closed`; optional `profile`; `profiles[]` — charge, lid and power profiles, when they change. Empty `batteries` means nothing to show. Sent only while a battery widget is on the bar |
 | `tray.menu` | `id`, `x`, `y`, `items[]` with `id`, `label`, `kind` (`standard` or `separator`), `enabled`, `toggle` (`checkmark` or `radio`), `checked`, `icon`, `children[]` — an item's menu, fetched and ready to draw. Only for items that publish one; the rest draw their own window |
 | `screencast.pick` | `id`, `sources[]` with `kind` (`"output"`, `"window"`, `"all-outputs"`, `"follow-window"` or `"follow-output"`), `label`, `detail`, and `selected` — an application has asked to share the screen, and this is the list to draw with the highlight where the compositor is holding it. Re-sent whole every time the highlight moves |
 | `screencast.pick.done` | `id` — the choice was made or abandoned; take the chooser down |
@@ -135,6 +136,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `clipboard.paste` | `id` — put that entry back on the clipboard, with the compositor as its owner |
 | `clipboard.forget` | optional `id` — forget one entry, or all of them |
 | `mpris.control` | `action` (`play-pause`, `next`, `previous` or `stop`) — a button on the media widget, sent to whichever player the compositor last reported |
+| `power.profile` | `profile` (`power-saver`, `balanced`, `performance`, or a name the last `power.update` listed) — switch the power-profiles daemon |
 | `tray.menu.click` | `id`, `item` — a row of an open menu was chosen, named by the id the application gave it |
 | `tray.menu.closed` | `id` — the menu was dismissed without a choice |
 | `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |

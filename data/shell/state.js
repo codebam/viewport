@@ -145,6 +145,11 @@ let trayMenuOpen = null;
  * nothing is. Only sent while a media widget is on the bar — a desktop without
  * one does not follow the session's players at all. */
 let mprisPlayer = null;
+/* Battery, lid and profiles, as the compositor last read them off UPower,
+ * or null when nothing has arrived. Only sent while a battery widget is
+ * on the bar — lid policy can still run without one. */
+let powerState = null;
+let powerOpen = false;
 /* The clipboard history, as the compositor last sent it, and whether the
  * picker is on screen. The entries are kept whether or not it is open, because
  * they arrive on every copy and the picker opens without waiting for one. */
@@ -303,6 +308,7 @@ function dropOverlaysForOutput(name) {
 const screencastEl = document.getElementById('screencast');
 const trayMenuEl = document.getElementById('tray-menu');
 const clipboardEl = document.getElementById('clipboard');
+const powerEl = document.getElementById('power-picker');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
 

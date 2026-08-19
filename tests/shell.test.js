@@ -176,6 +176,7 @@ const notificationsEl = new El('div');
 const trayMenuEl = new El('div');
 /* And the clipboard picker. */
 const clipboardEl = new El('div');
+const powerEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -205,6 +206,7 @@ global.document = {
     screencast: screencastEl,
     'tray-menu': trayMenuEl,
     clipboard: clipboardEl,
+    'power-picker': powerEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -375,6 +377,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      see what was drawn and fire the click that missed it. */
   + ' get trayMenuEl() { return trayMenuEl; },'
   + ' get clipboardEl() { return clipboardEl; },'
+  + ' get powerEl() { return powerEl; },'
   /* What smart gaps decide, which is a question about the tree and the layout
      mode rather than about any pixel: whether this workspace holds a lone
      window that fills the tiling area. */
@@ -3676,6 +3679,52 @@ if (mode === 'scrolling') {
     emit({ type: 'mpris.update', player: null });
     check('and a player that exits takes the widget off the bar',
       parts().length === 0 && el.textContent === '');
+    emit({ type: 'config', layout: mode });
+  }
+
+  /* Battery widget. The compositor reads UPower; the page draws the
+     percentage and opens the profile picker. */
+  {
+    emit({ type: 'config', layout: mode, bar_widgets: [{ type: 'battery' }] });
+    const el = wout.widgetsEls[0];
+    check('no battery draws nothing at all',
+      el.textContent === '');
+
+    emit({ type: 'power.update', batteries: [{ percentage: 87, state: 'discharging' }],
+      on_battery: true, lid_closed: false, profile: 'balanced',
+      profiles: ['power-saver', 'balanced', 'performance'] });
+    check('a discharging battery is drawn with its percentage',
+      el.textContent.includes('87%'));
+
+    emit({ type: 'power.update', batteries: [{ percentage: 40, state: 'charging' }],
+      on_battery: false, lid_closed: false, profile: 'balanced',
+      profiles: ['power-saver', 'balanced', 'performance'] });
+    check('a charging battery keeps showing the percentage',
+      el.textContent.includes('40%'));
+
+    let before = sent.length;
+    (el.listeners.click ?? []).forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+    check('clicking it opens the profile picker',
+      globalThis.__shell.powerEl.hidden === false);
+    check('and names the overlay so it draws over the windows',
+      sent.slice(before).some((m) => m.type === 'shell.overlay'));
+
+    const rows = globalThis.__shell.powerEl.children[0]?.children ?? [];
+    check('every profile the compositor listed is a row',
+      rows.length === 3 && rows[1].textContent === 'balanced');
+
+    before = sent.length;
+    (rows[0].listeners.click ?? []).forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+    check('choosing a row asks the compositor to switch profile',
+      sent.slice(before).some((m) => m.type === 'power.profile' &&
+        m.profile === 'power-saver'));
+    check('and takes the picker down',
+      globalThis.__shell.powerEl.hidden === true);
+
+    emit({ type: 'power.update', batteries: [], on_battery: false,
+      lid_closed: false });
+    check('and no battery takes the widget off the bar',
+      el.textContent === '');
     emit({ type: 'config', layout: mode });
   }
 

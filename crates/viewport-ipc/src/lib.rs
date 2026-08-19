@@ -138,6 +138,7 @@ fn is_known_type(name: &str) -> bool {
             | "clipboard.paste"
             | "clipboard.forget"
             | "mpris.control"
+            | "power.profile"
             | "tray.menu.click"
             | "tray.menu.closed"
             | "output.configure"

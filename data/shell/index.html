@@ -39,6 +39,13 @@
 -->
 <div id="clipboard" hidden></div>
 
+<!--
+  The power-profile picker, opened by clicking the battery widget. Page
+  level like the clipboard: it belongs to the session rather than to one
+  desktop.
+-->
+<div id="power-picker" hidden></div>
+
 <template id="desktop-template">
   <main class="desktop">
     <nav class="bar">
@@ -134,5 +141,6 @@ Mod4+d       launcher</pre>
 <script src="windows.js"></script>
 <script src="bar.js"></script>
 <script src="clipboard.js"></script>
+<script src="power.js"></script>
 <script src="screencast.js"></script>
 <script src="commands.js"></script>

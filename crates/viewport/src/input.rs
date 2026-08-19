@@ -33,6 +33,15 @@ const BTN_RIGHT: u32 = 0x111;
 use crate::state::ViewportState;
 use crate::views::NO_VIEW;
 
+/// The protocol slot a scripted touch names.
+///
+/// libinput reports an `Option<u32>`; a script names a finger as `0`, `1`.
+/// `None` is the unnamed single-touch slot, which a script has no reason to
+/// ask for.
+fn inject_touch_slot(slot: u32) -> smithay::backend::input::TouchSlot {
+    smithay::backend::input::TouchSlot::from(Some(slot))
+}
+
 /// Run a command, detached.
 ///
 /// Double-forked through a shell so the compositor does not accumulate
@@ -444,6 +453,154 @@ impl ViewportState {
         );
         if let Some(action) = action.flatten() {
             self.handle_action(action);
+        }
+    }
+
+    /// A pointer motion from the control socket rather than from libinput.
+    ///
+    /// The same three calls the libinput path makes, in the same order, so a
+    /// scripted click and a real one are the same event by the time anything
+    /// sees it.
+    pub fn inject_pointer(&mut self, x: f64, y: f64) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let location = (x, y).into();
+        let under = self.surface_under(location);
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = self.start_time.elapsed().as_millis() as u32;
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        self.needs_render = true;
+        self.cursor_activity();
+    }
+
+    /// A pointer button from the control socket rather than from libinput.
+    pub fn inject_button(&mut self, button: u32, pressed: bool) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let focus = pointer.current_focus();
+            let shell = self.shell_client_surface().cloned();
+            tracing::debug!(
+                "button {button} {} -> focus {:?}, shell surface {:?}, same: {}",
+                if pressed { "press" } else { "release" },
+                focus
+                    .as_ref()
+                    .map(smithay::reexports::wayland_server::Resource::id),
+                shell
+                    .as_ref()
+                    .map(smithay::reexports::wayland_server::Resource::id),
+                focus
+                    .as_ref()
+                    .map(|f| Some(f) == shell.as_ref())
+                    .unwrap_or(false),
+            );
+        }
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = self.start_time.elapsed().as_millis() as u32;
+        pointer.button(
+            self,
+            &smithay::input::pointer::ButtonEvent {
+                button,
+                state: if pressed {
+                    smithay::backend::input::ButtonState::Pressed
+                } else {
+                    smithay::backend::input::ButtonState::Released
+                },
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        self.cursor_activity();
+    }
+
+    /// A touch from the control socket rather than from libinput.
+    ///
+    /// Same path as a real finger: hit-test, focus the window under it, then
+    /// `wl_touch`. Slot is the finger index the protocol uses, 0 for the
+    /// first. Coordinates are the layout's, not a fraction of the output —
+    /// a script already thinks in those.
+    pub fn inject_touch_down(&mut self, slot: u32, x: f64, y: f64) {
+        let Some(touch) = self.seat.get_touch() else {
+            return;
+        };
+        let position = (x, y).into();
+        let serial = SERIAL_COUNTER.next_serial();
+        let under = self.surface_under(position);
+        if let Some((surface, _)) = under.as_ref() {
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                let focus = self
+                    .views
+                    .find_by_surface(surface)
+                    .and_then(|view| crate::keyboard_focus::KeyboardFocus::for_window(&view.window))
+                    .unwrap_or_else(|| surface.clone().into());
+                keyboard.set_focus(self, Some(focus), serial);
+            }
+        }
+        touch.down(
+            self,
+            under,
+            &smithay::input::touch::DownEvent {
+                slot: inject_touch_slot(slot),
+                location: position,
+                serial,
+                time: self.start_time.elapsed().as_millis() as u32,
+            },
+        );
+        self.needs_render = true;
+    }
+
+    pub fn inject_touch_motion(&mut self, slot: u32, x: f64, y: f64) {
+        let Some(touch) = self.seat.get_touch() else {
+            return;
+        };
+        let position = (x, y).into();
+        let under = self.surface_under(position);
+        touch.motion(
+            self,
+            under,
+            &smithay::input::touch::MotionEvent {
+                slot: inject_touch_slot(slot),
+                location: position,
+                time: self.start_time.elapsed().as_millis() as u32,
+            },
+        );
+    }
+
+    pub fn inject_touch_up(&mut self, slot: u32) {
+        let Some(touch) = self.seat.get_touch() else {
+            return;
+        };
+        touch.up(
+            self,
+            &smithay::input::touch::UpEvent {
+                slot: inject_touch_slot(slot),
+                serial: SERIAL_COUNTER.next_serial(),
+                time: self.start_time.elapsed().as_millis() as u32,
+            },
+        );
+    }
+
+    pub fn inject_touch_frame(&mut self) {
+        if let Some(touch) = self.seat.get_touch() {
+            touch.frame(self);
+        }
+    }
+
+    pub fn inject_touch_cancel(&mut self) {
+        if let Some(touch) = self.seat.get_touch() {
+            touch.cancel(self);
         }
     }
 
@@ -2264,6 +2421,21 @@ mod tests {
             alt,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn inject_touch_slots_are_named_fingers() {
+        // A script says 0, 1, 2. Those have to be the same slots a real
+        // two-finger gesture uses, or a scripted pinch is two unknown fingers
+        // a client never tracks.
+        assert_eq!(
+            inject_touch_slot(0),
+            smithay::backend::input::TouchSlot::from(Some(0))
+        );
+        assert_eq!(
+            inject_touch_slot(1),
+            smithay::backend::input::TouchSlot::from(Some(1))
+        );
     }
 
     #[test]

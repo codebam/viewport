@@ -21,23 +21,9 @@ xdg-desktop-portal-wlr could only offer whole outputs. RemoteDesktop is the
 same interface plus input injection, and the virtual keyboard and pointer
 protocols this already speaks are the injection half.
 
-## Battery and power
-
-Nothing here talks to UPower. The idle configuration covers a machine left
-alone; a laptop also has a battery to show, a lid to react to and a power
-profile to switch.
-
 ## On-screen keyboard
 
 `input-method` and `virtual-keyboard` are wired up and touch is complete, so
 the missing piece is a keyboard to type on. The shell is a web page, which
 means an on-screen keyboard is HTML and CSS rather than a second Wayland
 client.
-
-## Layouts as an extension point
-
-Five layouts ship: tiling, scrolling, solar, matrix and canvas. Adding a sixth
-means writing a file and editing `index.html`. Documenting the contract a
-layout implements — what it receives, what it must measure, what it may not
-transform — would turn the strongest thing about this design into something a
-user can extend without patching the shell.

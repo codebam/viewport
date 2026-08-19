@@ -37,6 +37,7 @@ mod notification;
 mod output_management;
 mod output_power;
 mod pointer;
+mod power;
 mod recovery;
 mod render;
 mod rounded;
@@ -685,6 +686,23 @@ fn run() -> Result<()> {
             })
             .map_err(|e| anyhow::anyhow!("inserting the media source: {e}"))?;
         state.mpris.attach(sender);
+    }
+
+    // Battery, lid and power profiles. Same shape as MPRIS: idle until
+    // `apply_config` decides a widget or a lid policy wants it.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(crate::power::Message::Snapshot(snapshot)) = event else {
+                    return;
+                };
+                state.handle_power(snapshot);
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the power source: {e}"))?;
+        state.power.attach(sender);
     }
 
     // The clipboard history. The reading happens on a thread — the other end

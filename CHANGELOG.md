@@ -12,6 +12,22 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- A battery widget, lid policy and power-profile picker. UPower's
+  DisplayDevice is the charge the bar should show, `LidIsClosed` is the
+  hinge, and the power-profiles daemon is `power-saver` / `balanced` /
+  `performance`. The compositor reads them — the page has no bus — and only
+  talks to UPower when a `battery` widget is on the bar or a lid policy is
+  in force. `"lid"` is `lock`, `blank`, `suspend` (via logind) or `ignore`;
+  absent is lock when `idle.lock_command` is set, otherwise blank. Clicking
+  the widget opens a picker of the profiles the daemon listed.
+- `docs/layout-extension.md`, the contract a sixth layout implements: what
+  it must plan, render and clear, what it may not transform, how session
+  restore differs, and the three name lists that have to stay in agreement.
+  There is no plugin loader; adding a model is still a file and those lists.
+- `inject_pointer`, `inject_button` and `inject_touch_*` next to `inject_key`,
+  so a scripted pointer, a scripted finger and a real one share a path. The
+  RemoteDesktop portal and the on-screen keyboard will both call these.
+
 - A clipboard history, kept by the compositor and drawn by the shell. A
   Wayland selection is not a buffer anywhere — it is an offer from the client
   that owns it, and it dies with that client, which is why closing the

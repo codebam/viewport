@@ -555,6 +555,10 @@ window.addEventListener('viewport', (event) => {
       renderBarsWidgets();
       break;
 
+    case 'power.update':
+      applyPower(message);
+      break;
+
     case 'tray.menu':
       /* The compositor fetched the menu; the shell draws exactly what it was
          handed. Only items whose menu this compositor can read send one —

@@ -222,6 +222,7 @@
     "  { \"type\": \"disk\", \"path\": \"/home\" }   free space on that mount",
     "  { \"type\": \"volume\" }                     default sink's volume and mute",
     "  { \"type\": \"mpris\" }                      what is playing, with buttons",
+    "  { \"type\": \"battery\" }                    charge, and a click for profiles",
     "  { \"type\": \"mic\" }                        default source's (mic) volume and mute",
     "  { \"type\": \"weather\", \"location\": \"New York\" }  conditions for a place",
     "",
@@ -284,6 +285,13 @@
     "lock_command": "swaylock -f",
     "blank_after": 900
   },
+
+  "_lid": [
+    "What to do when the laptop lid closes. ignore, lock, blank or suspend.",
+    "Absent is lock when idle.lock_command is set, otherwise blank. A desktop",
+    "has no lid, so the setting never fires. suspend talks to logind."
+  ],
+  "lid": "lock",
 
   "_keyboard": [
     "The keymap, in xkb's own names — the ones setxkbmap takes. Leave the",

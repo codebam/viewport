@@ -23,6 +23,7 @@ a TTY.
   "pixel_format": "auto",   // or "10" / "8" bits per channel; see below
   "idle": { "lock_after": 600, "lock_command": "swaylock -f",
             "blank_after": 900 },
+  "lid": "lock",            // or "blank" / "suspend" / "ignore"; see below
   "cursor": { "theme": "Bibata-Modern-Classic", "size": 24,
               "hide_after_ms": 3000 },   // see below; absent is never
   "wallpaper": "~/Pictures/wall.png",  // the desktop background; see below
@@ -52,7 +53,10 @@ Actions are `exec COMMAND`, `close`, `exit`, `reload`, `focus DIRECTION`,
 see below.
 `lock` runs the same `idle.lock_command` the idle timer would, so there is one
 place to configure what locking means; `blank` turns the outputs off until the
-next input, exactly as the idle timer does. Chords use sway's
+next input, exactly as the idle timer does. `lid` is what the laptop hinge
+does: `"lock"`, `"blank"`, `"suspend"` (via logind) or `"ignore"`. Absent is
+lock when `idle.lock_command` is set, otherwise blank. A desktop has no lid,
+so the setting never fires. Chords use sway's
 spelling — `Mod4`/`Super`/`Logo`, `Shift`, `Ctrl`, `Alt` — and any key
 `xkb_keysym_from_name` accepts, including `XF86AudioRaiseVolume`. Caps and num
 lock are masked out of matching. Bindings outrank both the focused client and
@@ -773,6 +777,13 @@ goes for the extra mounts — a bar with no widgets stats nothing extra. `mpris`
 is the same rule taken further: with no media widget on the bar, the
 compositor opens no connection for it, starts no thread and follows no player.
 
+`battery` shows the charge, from UPower's DisplayDevice. The compositor reads
+it — the page has no bus — and only while this widget is on the bar. Clicking
+it opens a picker of power profiles (`power-saver`, `balanced`, `performance`)
+from the power-profiles daemon, the same way the clipboard picker lists
+history. No battery, or no UPower, draws nothing at all. Lid policy can still
+talk to UPower with no widget on the bar; see `lid` below.
+
 ## Overriding the whole bar
 
 `bar_widgets` adds to the shipped set, but it cannot move a widget into the
@@ -1194,6 +1205,8 @@ switches at runtime, with a name or with no argument to cycle:
 ```json
 "binds_override": { "Mod4+Shift+m": "shell layout.model" }
 ```
+
+Adding a sixth model is [docs/layout-extension.md](layout-extension.md).
 
 
 ## Dynamic tiling arrangements

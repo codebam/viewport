@@ -176,6 +176,16 @@ pub enum Event {
         player: Option<MprisPlayer>,
     },
 
+    /// Battery, lid and power profile, for the bar and for the session.
+    ///
+    /// Sent when it changes rather than on the status tick: a percentage
+    /// moves slowly and a lid is instant, so a widget driven by the
+    /// two-second sample would be both stale and a redraw of the desktop
+    /// every two seconds. Empty `batteries` means UPower has nothing to
+    /// show, which is what takes the widget off the bar.
+    #[serde(rename = "power.update")]
+    PowerUpdate(PowerSnapshot),
+
     /// System statistics for the bar.
     ///
     /// `cpu` and `memory` are `-1.0` when unavailable rather than absent: the
@@ -523,6 +533,13 @@ pub enum BarWidget {
     /// `mpris.update` rather than with the status tick.
     #[serde(rename = "mpris")]
     Mpris,
+    /// Charge, charging state and the power-profile picker.
+    ///
+    /// Sampled by the compositor from UPower, and only when this widget is
+    /// on the bar — a desktop with no battery widget does not follow the
+    /// DisplayDevice. Lid policy can still talk to UPower without one.
+    #[serde(rename = "battery")]
+    Battery,
 }
 
 /// One entry in a `bar_items` override, as `bar_items` in the config file,
@@ -671,6 +688,39 @@ pub struct MprisPlayer {
     pub can_pause: bool,
     #[serde(default)]
     pub can_play: bool,
+}
+
+/// One battery, as UPower's DisplayDevice reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerBattery {
+    /// 0–100. Absent or unknown is not sent; an empty `batteries` list is
+    /// what takes the widget off the bar.
+    pub percentage: f64,
+    /// `"charging"`, `"discharging"`, `"full"`, `"empty"` or `"unknown"`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_empty: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_full: Option<i64>,
+}
+
+/// Battery, lid and power profile, as `power.update` carries them.
+///
+/// One snapshot for the same reason the tray is one: the bar redraws in a
+/// single pass, and reconciling four message kinds would be work spent to
+/// save a few dozen bytes on a message sent when the percentage ticks.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PowerSnapshot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub batteries: Vec<PowerBattery>,
+    #[serde(default)]
+    pub on_battery: bool,
+    #[serde(default)]
+    pub lid_closed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<String>,
 }
 
 /// One row of a tray item's menu.
@@ -1132,6 +1182,7 @@ mod tests {
                 entries: Vec::new(),
             }),
             json(&Event::MprisUpdate { player: None }),
+            json(&Event::PowerUpdate(PowerSnapshot::default())),
             json(&Event::TrayUpdate { items: Vec::new() }),
             json(&Event::TrayMenu {
                 id: String::new(),
@@ -1173,6 +1224,7 @@ mod tests {
                 "notification.close",
                 "clipboard.history",
                 "mpris.update",
+                "power.update",
                 "tray.update",
                 "tray.menu",
                 "output.layout",

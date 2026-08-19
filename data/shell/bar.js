@@ -494,6 +494,7 @@ function widgetTitle(w) {
     case 'mic': return 'microphone';
     /* The media widget writes its own, from what is playing. */
     case 'mpris': return '';
+    case 'battery': return 'battery';
   }
   return '';
 }
@@ -542,6 +543,8 @@ function wireWidget(el) {
       /* A click that missed the buttons — on the cover or the title — is the
          same as pressing play. */
       send({ type: 'mpris.control', action: 'play-pause' });
+    } else if (w.type === 'battery') {
+      togglePowerPicker();
     } else if (w.type === 'disk') {
       /* Open the mount in the default file manager — for this user that is
          a terminal at the directory. `xdg-open` respects the system default,
@@ -796,9 +799,25 @@ function renderBarWidgets(output) {
          throw them all away. */
       syncMprisWidget(el);
       return;
+    } else if (w.type === 'battery') {
+      text = batteryText();
     }
     if (el.textContent !== text) el.textContent = text;
   });
+}
+
+/* Charge and charging state, as UPower last reported them. Empty when there
+ * is no battery — a desktop, or a laptop whose DisplayDevice has gone —
+ * so the widget collapses through `.module:empty`. */
+function batteryText() {
+  const bat = powerState?.batteries?.[0];
+  if (!bat || !(bat.percentage >= 0)) return '';
+  const pct = Math.round(bat.percentage);
+  /* md-battery / md-battery-charging / md-battery-alert. Alert is empty. */
+  const glyph = bat.state === 'charging' ? '󰂄'
+    : bat.state === 'empty' ? '󰂃'
+    : '󰁹';
+  return `${glyph} ${pct}%`;
 }
 
 /* The media widget: cover, what is playing, and the buttons the player says

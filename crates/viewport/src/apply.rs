@@ -8,7 +8,6 @@
 
 use smithay::output::{Mode as OutputMode, Scale};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
-use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Transform as SmithayTransform, SERIAL_COUNTER};
 
 use viewport_ipc::request::OutputConfigure;
@@ -436,6 +435,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         // compositor last reported. The action is checked there rather than
         // here, where the list of methods lives.
         Request::MprisControl { action } => state.mpris.control(action),
+        Request::PowerProfile { profile } => state.power.set_profile(profile),
 
         // Both halves of an open menu: a row chosen, and the menu going away
         // without one. The application is told either way, because a menu it
@@ -474,72 +474,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         // Driving the pointer from the socket. The same three calls the
         // libinput path makes, in the same order, so a scripted click and a
         // real one are the same event by the time anything sees it.
-        Request::InputPointer { x, y } => {
-            let Some(pointer) = state.seat.get_pointer() else {
-                return;
-            };
-            let location = (x, y).into();
-            let under = state.surface_under(location);
-            let serial = SERIAL_COUNTER.next_serial();
-            let time = state.start_time.elapsed().as_millis() as u32;
-            pointer.motion(
-                state,
-                under,
-                &smithay::input::pointer::MotionEvent {
-                    location,
-                    serial,
-                    time,
-                },
-            );
-            pointer.frame(state);
-            // The cursor moved and nothing else would draw it.
-            state.needs_render = true;
-            // And a scripted pointer is a pointer being used, so the hide
-            // deadline starts again — otherwise a test that drives the mouse
-            // from the socket watches its cursor disappear underneath it.
-            state.cursor_activity();
-        }
+        Request::InputPointer { x, y } => state.inject_pointer(x, y),
 
-        Request::InputButton { button, pressed } => {
-            let Some(pointer) = state.seat.get_pointer() else {
-                return;
-            };
-            // Who is about to be sent this, which is the question whenever a
-            // click appears to do nothing: the pointer delivers to its current
-            // focus, and "the shell" and "the window under the shell" are easy
-            // to confuse from outside.
-            if tracing::enabled!(tracing::Level::DEBUG) {
-                let focus = pointer.current_focus();
-                let shell = state.shell_client_surface().cloned();
-                tracing::debug!(
-                    "button {button} {} -> focus {:?}, shell surface {:?}, same: {}",
-                    if pressed { "press" } else { "release" },
-                    focus.as_ref().map(Resource::id),
-                    shell.as_ref().map(Resource::id),
-                    focus
-                        .as_ref()
-                        .map(|f| Some(f) == shell.as_ref())
-                        .unwrap_or(false),
-                );
-            }
-            let serial = SERIAL_COUNTER.next_serial();
-            let time = state.start_time.elapsed().as_millis() as u32;
-            pointer.button(
-                state,
-                &smithay::input::pointer::ButtonEvent {
-                    button,
-                    state: if pressed {
-                        smithay::backend::input::ButtonState::Pressed
-                    } else {
-                        smithay::backend::input::ButtonState::Released
-                    },
-                    serial,
-                    time,
-                },
-            );
-            pointer.frame(state);
-            state.cursor_activity();
-        }
+        Request::InputButton { button, pressed } => state.inject_button(button, pressed),
 
         Request::InputKey { keycode, pressed } => state.inject_key(keycode, pressed),
 
