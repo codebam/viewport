@@ -343,9 +343,15 @@ where
                 };
                 match overlay_rounded {
                     Some((rect, radius)) => {
-                        if let Some(rounded) =
-                            RoundedRenderElement::from_element(cropped, scale, *rect, *radius)
-                        {
+                        // `within`, not the window cut: a side is a piece of
+                        // the shell's buffer, and past the frame's antialiased
+                        // outer arc that buffer is whatever the page drew
+                        // behind the frame — over another window, wallpaper.
+                        // The staircase stays a hair inside the arc rather
+                        // than a hair past it.
+                        if let Some(rounded) = RoundedRenderElement::from_element_within(
+                            cropped, scale, *rect, *radius,
+                        ) {
                             elements.push(OutputElement::from(rounded));
                         }
                     }

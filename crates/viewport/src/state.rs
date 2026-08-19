@@ -5237,12 +5237,28 @@ impl ViewportState {
                 // exactly that.
                 let corners = view
                     .filter(|_| drawn_on_this_output && radius > width)
-                    .and_then(|view| view.frame.map(|_| (view.box_, view.scale, &view.corner_id)))
-                    .and_then(|(hole, drawn_at, corner_id)| {
+                    .and_then(|view| {
+                        view.frame
+                            .map(|frame| (frame, view.box_, view.scale, &view.corner_id))
+                    })
+                    .and_then(|(frame, hole, drawn_at, corner_id)| {
                         let hole = crate::render::drawn_hole_of(hole, drawn_at);
                         let hole = crate::render::overlay_side(hole, output_geometry)?;
                         let hole = hole.to_f64().to_physical(scale).to_i32_round();
                         let wedges = crate::rounded::cutaway(hole, physical(radius - width));
+                        // Held inside the frame's own outer arc. The wedge is
+                        // a copy of the shell's buffer, and with a radius much
+                        // past the border's width the hole's square corner
+                        // pokes *outside* the rounded frame — where the buffer
+                        // is not border but whatever the page drew behind the
+                        // frame, which over another window is the wallpaper.
+                        // That was three or four pixels of it at each corner.
+                        let frame = crate::render::overlay_side(frame, output_geometry)?;
+                        let frame = frame.to_f64().to_physical(scale).to_i32_round();
+                        let wedges = crate::rounded::clip_to(
+                            wedges,
+                            &crate::rounded::bands_within(frame, physical(radius)),
+                        );
                         (!wedges.is_empty()).then(|| (corner_id.clone(), wedges))
                     });
 

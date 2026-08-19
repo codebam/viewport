@@ -40,6 +40,28 @@ use smithay::utils::{Buffer as BufferCoord, Physical, Rectangle, Scale, Transfor
 /// Returns the whole rectangle as one band for a radius of zero or less, which
 /// is what makes "no rounding" cost nothing but the wrapper.
 pub fn bands(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32, Physical>> {
+    bands_by(rect, radius, inset)
+}
+
+/// The same shape, held strictly *inside* the curve.
+///
+/// [`bands`] rounds its staircase outward, so that what is drawn as a window
+/// covers every pixel the circle touches — the right direction for a client,
+/// whose edge pixels sit over the shell's border. It is exactly the wrong
+/// direction for a piece of the shell's own buffer: the pixels just past the
+/// page's antialiased arc are whatever is behind the frame there, which for a
+/// floating window is the wallpaper, copied over the window underneath. A
+/// shell piece is cut with these bands instead, and stops a hair short of the
+/// arc rather than a hair past it.
+pub fn bands_within(rect: Rectangle<i32, Physical>, radius: i32) -> Vec<Rectangle<i32, Physical>> {
+    bands_by(rect, radius, inset_within)
+}
+
+fn bands_by(
+    rect: Rectangle<i32, Physical>,
+    radius: i32,
+    inset: fn(i32, i32) -> i32,
+) -> Vec<Rectangle<i32, Physical>> {
     let radius = radius.min(rect.size.w / 2).min(rect.size.h / 2);
     if radius <= 0 || rect.is_empty() {
         return vec![rect];
@@ -169,6 +191,39 @@ fn inset(radius: i32, row: i32) -> i32 {
     ((r - chord).floor() as i32).clamp(0, radius)
 }
 
+/// How far in from the edge the circle has *at least* reached, at `row` rows
+/// from the top of the corner: [`inset`] rounded up instead of down.
+fn inset_within(radius: i32, row: i32) -> i32 {
+    let r = f64::from(radius);
+    let dy = r - (f64::from(row) + 0.5);
+    let chord = (r * r - dy * dy).max(0.0).sqrt();
+    ((r - chord).ceil() as i32).clamp(0, radius)
+}
+
+/// Every part of `parts` that falls inside `shape`.
+///
+/// For holding one staircase to another: the corner wedges are cut against the
+/// *client's* curve, and the piece of the shell they copy has an edge of its
+/// own — the frame's outer arc, past which the buffer is not border but
+/// whatever the page drew behind the frame. A wedge is small and a shape is a
+/// few dozen bands, so this is a handful of rectangle intersections.
+pub fn clip_to(
+    parts: Vec<Rectangle<i32, Physical>>,
+    shape: &[Rectangle<i32, Physical>],
+) -> Vec<Rectangle<i32, Physical>> {
+    let mut clipped = Vec::with_capacity(parts.len());
+    for part in parts {
+        for band in shape {
+            if let Some(hit) = part.intersection(*band) {
+                if !hit.is_empty() {
+                    clipped.push(hit);
+                }
+            }
+        }
+    }
+    clipped
+}
+
 /// An element with the corners of `rect` cut off it.
 ///
 /// The rectangle is in the same space as the wrapped element's geometry, which
@@ -224,7 +279,7 @@ thread_local! {
 /// hashable — `Rectangle` is neither `Hash` nor `Ord`.
 ///
 /// The rectangle, the radius, and the geometry the bands were clipped to.
-type ShapeKey = [i32; 9];
+type ShapeKey = [i32; 10];
 
 /// How many shapes to keep. A desk with a window per column on four screens is
 /// a few dozen live keys; past this the map is holding rectangles for windows
@@ -236,6 +291,7 @@ fn shape(
     rect: Rectangle<i32, Physical>,
     radius: i32,
     geometry: Rectangle<i32, Physical>,
+    within: bool,
 ) -> (Shape, Shape) {
     let key: ShapeKey = [
         rect.loc.x,
@@ -247,6 +303,7 @@ fn shape(
         geometry.loc.y,
         geometry.size.w,
         geometry.size.h,
+        i32::from(within),
     ];
     SHAPES.with(|shapes| {
         let mut shapes = shapes.borrow_mut();
@@ -258,11 +315,15 @@ fn shape(
         // rounding whatever the two happen to share: a window scrolled half
         // off its output has a geometry that is not the box the shell drew,
         // and the corner belongs to the box.
-        let cut: Vec<_> = bands(rect, radius)
-            .into_iter()
-            .filter_map(|band| band.intersection(geometry))
-            .filter(|band| !band.is_empty())
-            .collect();
+        let cut: Vec<_> = if within {
+            bands_within(rect, radius)
+        } else {
+            bands(rect, radius)
+        }
+        .into_iter()
+        .filter_map(|band| band.intersection(geometry))
+        .filter(|band| !band.is_empty())
+        .collect();
 
         let radius = radius.min(rect.size.w / 2).min(rect.size.h / 2).max(0);
         let solid: Vec<_> = [
@@ -305,13 +366,35 @@ impl<E: Element> RoundedRenderElement<E> {
         rect: Rectangle<i32, Physical>,
         radius: i32,
     ) -> Option<Self> {
+        Self::build(element, scale, rect, radius, false)
+    }
+
+    /// The same cut, held strictly inside the curve — for a piece of the
+    /// shell's own buffer rather than a window. See [`bands_within`] for why
+    /// the two round in opposite directions.
+    pub fn from_element_within(
+        element: E,
+        scale: impl Into<Scale<f64>>,
+        rect: Rectangle<i32, Physical>,
+        radius: i32,
+    ) -> Option<Self> {
+        Self::build(element, scale, rect, radius, true)
+    }
+
+    fn build(
+        element: E,
+        scale: impl Into<Scale<f64>>,
+        rect: Rectangle<i32, Physical>,
+        radius: i32,
+        within: bool,
+    ) -> Option<Self> {
         let scale = scale.into();
         let geometry = element.geometry(scale);
         if geometry.is_empty() {
             return None;
         }
 
-        let (bands, solid) = shape(rect, radius, geometry);
+        let (bands, solid) = shape(rect, radius, geometry, within);
         if bands.is_empty() {
             return None;
         }
@@ -758,6 +841,95 @@ mod tests {
                         assert!(
                             dx * dx + dy * dy >= f64::from(radius) * f64::from(radius),
                             "radius {radius}: ({x},{y}) is inside the curve"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The inward staircase never crosses its curve outward: every pixel of
+    /// [`bands_within`] is inside the circle.
+    ///
+    /// This is the shell-piece rule, and it is the [`cutaway`] rule mirrored.
+    /// A window's bands round outward so the client covers the page's
+    /// antialiased arc; a piece of the shell's own buffer must stop short of
+    /// the arc instead, because past it the buffer is whatever the page drew
+    /// behind the frame — over another window, the wallpaper.
+    #[test]
+    fn the_within_bands_never_cross_the_curve() {
+        for radius in [4, 8, 12, 20, 40] {
+            let rect = Rectangle::<i32, Physical>::new((0, 0).into(), (200, 120).into());
+            for band in bands_within(rect, radius) {
+                for y in [band.loc.y, band.loc.y + band.size.h - 1] {
+                    for x in [band.loc.x, band.loc.x + band.size.w - 1] {
+                        let cx = if x < radius {
+                            radius
+                        } else {
+                            rect.size.w - radius
+                        };
+                        let cy = if y < radius {
+                            radius
+                        } else {
+                            rect.size.h - radius
+                        };
+                        let dx = f64::from(x) + 0.5 - f64::from(cx);
+                        let dy = f64::from(y) + 0.5 - f64::from(cy);
+                        // Only corner pixels are constrained; the middle of an
+                        // edge is outside both corner circles by construction.
+                        let corner_row = y < radius || y >= rect.size.h - radius;
+                        let corner_col = x < radius || x >= rect.size.w - radius;
+                        if corner_row && corner_col {
+                            assert!(
+                                dx * dx + dy * dy <= f64::from(radius) * f64::from(radius),
+                                "radius {radius}: ({x},{y}) is outside the curve"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A corner wedge held to the frame's own rounded shape never paints past
+    /// the frame's outer arc.
+    ///
+    /// With a radius much larger than the border's width, the hole's square
+    /// corner pokes outside the rounded frame entirely — and the shell's
+    /// buffer there is not border but whatever the page drew behind the
+    /// frame. This is the three or four pixels of wallpaper at each corner of
+    /// a floating window, the third time they were reported.
+    #[test]
+    fn a_clipped_wedge_stays_inside_the_frame() {
+        let (radius, width) = (20, 4);
+        let frame = Rectangle::<i32, Physical>::new((0, 0).into(), (300, 200).into());
+        let hole = Rectangle::<i32, Physical>::new(
+            (width, width).into(),
+            (300 - 2 * width, 200 - 2 * width).into(),
+        );
+        let wedges = clip_to(cutaway(hole, radius - width), &bands_within(frame, radius));
+        assert!(!wedges.is_empty(), "the ring's corner still gets drawn");
+        for wedge in wedges {
+            for y in wedge.loc.y..wedge.loc.y + wedge.size.h {
+                for x in wedge.loc.x..wedge.loc.x + wedge.size.w {
+                    let cx = if x < radius {
+                        radius
+                    } else {
+                        frame.size.w - radius
+                    };
+                    let cy = if y < radius {
+                        radius
+                    } else {
+                        frame.size.h - radius
+                    };
+                    let corner = (y < radius || y >= frame.size.h - radius)
+                        && (x < radius || x >= frame.size.w - radius);
+                    if corner {
+                        let dx = f64::from(x) + 0.5 - f64::from(cx);
+                        let dy = f64::from(y) + 0.5 - f64::from(cy);
+                        assert!(
+                            dx * dx + dy * dy <= f64::from(radius) * f64::from(radius),
+                            "({x},{y}) is outside the frame's arc"
                         );
                     }
                 }

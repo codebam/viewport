@@ -90,6 +90,23 @@ to summarise rather than to duplicate.
   in this program rather than in a daemon beside it.
 
 ### Fixed
+- The three or four pixels of wallpaper at the corners of a floating window,
+  for real this time. Two more places were copying the page's background over
+  the window underneath. The corner wedge is a copy of the shell's buffer, and
+  with a radius much past the border's width the hole's square corner pokes
+  *outside* the page's rounded frame — where the buffer is not border but
+  whatever the page drew behind the frame, which is the wallpaper. The wedge
+  is now held to the frame's own outer arc. And the border sides drawn above
+  the windows underneath used the same outward-rounded staircase as a window's
+  corners, which put their edge a pixel past the page's antialiased arc — the
+  right direction for a client, which covers those pixels, and exactly the
+  wrong one for a piece of the shell's buffer. Shell pieces round inward now;
+  the two directions are separate constructors, and tests hold each staircase
+  to its own side of the curve. Verified on a nested session with a window
+  lifted over another: the pre-fix build paints page background between the
+  ring and the window below at every corner, the fixed build paints none —
+  headless runs never composite the shell buffer at all, which is how the
+  earlier "verifications" of this bug passed without testing it.
 - A setting changed over the control socket reaches the windows at once. The
   shell applies a `config` message by writing custom properties and reading
   them back on the next geometry pass — and nothing runs a geometry pass on
