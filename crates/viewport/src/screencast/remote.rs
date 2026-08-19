@@ -14,8 +14,17 @@
 // The conversation is three calls again. CreateSession makes the handle,
 // SelectDevices says which of keyboard, pointer and touchscreen are wanted,
 // and Start asks the person at the machine and answers with the set that was
-// actually granted. After that the frontend forwards one D-Bus call per input
-// event, which this end checks against that grant and hands to the compositor.
+// actually granted. After that there are two ways for input to arrive, and
+// both are implemented here.
+//
+// The first is the Notify calls: one D-Bus call per input event, forwarded by
+// the frontend, checked here against the grant and handed to the compositor
+// over a channel. The second is ConnectToEIS, which version two of the
+// interface added and which answers with a libei socket the application
+// speaks directly — see `crate::libei` for the server behind it and for what
+// this end does and deliberately does not do on the bus thread. The Notify
+// path is not deprecated by it and is not going anywhere: an application
+// picks, and a frontend talking to an older implementation only has the one.
 //
 // Two decisions are worth stating outright, because both are refusals.
 //
@@ -276,6 +285,20 @@ impl RemoteDesktop {
         }
     }
 
+    /// Undo the mark that says a session is holding a libei socket.
+    ///
+    /// For the two ways handing one out can fail after the session has been
+    /// marked. A session left marked would send a revocation on close for a
+    /// connection that was never made, which the compositor ignores — so this
+    /// is tidiness rather than safety, and it is worth having because the mark
+    /// is also what a reader of the table would take as "this session has a
+    /// socket", and it would be wrong.
+    fn forget_eis(&self, path: &OwnedObjectPath) {
+        if let Some(session) = self.sessions.lock().unwrap().sessions.get_mut(path) {
+            session.eis = false;
+        }
+    }
+
     /// Ask the compositor, and wait for it.
     ///
     /// The same shape as the ScreenCast side's `ask`, and awaited for the same
@@ -305,17 +328,23 @@ impl RemoteDesktop {
         ALL_DEVICES
     }
 
-    /// Version one of the interface.
+    /// Version two of the interface.
     ///
-    /// Two is the version that adds ConnectToEIS, and this end deliberately
-    /// does not claim it: EIS is a libei socket, which means a libei server
-    /// inside the compositor speaking a second wire protocol, and there is not
-    /// one here. Saying one is what keeps the frontend on the Notify path,
-    /// which is implemented and works. See [`RemoteDesktop::connect_to_eis`]
-    /// for what happens to an application that asks anyway.
+    /// Two is the version that adds ConnectToEIS, and there is a real EI
+    /// server behind it now — see [`RemoteDesktop::connect_to_eis`] and
+    /// `crate::libei`. Claiming it is what lets the frontend offer an
+    /// application the socket instead of the Notify calls, which is the
+    /// difference between one D-Bus round trip per pointer movement and none.
+    ///
+    /// The rest of what version two describes is optional and answered
+    /// deliberately. `restore_data` and `persist_mode` on SelectDevices are a
+    /// remote-desktop grant restored from a token, which this end refuses on
+    /// principle — see the note at the top of this file — so the option is
+    /// read as the zero it defaults to and Start answers with no restore data.
+    /// `clipboard_enabled` is answered explicitly, and it is false.
     #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     /// The application is starting a conversation.
@@ -710,31 +739,104 @@ impl RemoteDesktop {
         self.notify(session_handle, &header, Injection::TouchUp { slot });
     }
 
-    /// A libei socket, which this compositor does not have.
+    /// A libei socket for a session that has already been granted one.
     ///
-    /// Version two of the interface added this so an application could send
-    /// input over a socket of its own instead of one D-Bus call per event,
-    /// which is the right design — a remote session moving a pointer is
-    /// hundreds of round trips a second through the frontend. Answering it
-    /// properly means an EIS server inside the compositor: a second wire
-    /// protocol, its own handshake, its own device objects and its own
-    /// lifetime tied to this session. That is a piece of work in its own right
-    /// and none of it is written here.
+    /// The whole of what happens on this thread is: check the caller, check
+    /// the grant, make a socket pair, send one half to the compositor and
+    /// answer with the other. It deliberately builds no EI context and touches
+    /// no compositor state — see `crate::libei` for why that division is
+    /// forced rather than chosen, and for what the compositor does with the
+    /// half it receives.
     ///
-    /// So the honest answer is a refusal, and the version property says one.
-    /// A frontend reading that never routes an application here — it uses the
-    /// Notify calls, which are implemented — and the method exists only so
-    /// that something calling it out of order gets an error it can read rather
-    /// than an UnknownMethod that reads like the interface is broken.
+    /// Granted, not merely selected. An application that has called
+    /// CreateSession and SelectDevices but not Start has asked for nothing yet
+    /// and been given nothing, and a socket handed out at that point would be
+    /// a way to drive the machine that never put a question on screen. So the
+    /// test is `granted_devices`, which is zero until a person said yes, and
+    /// the refusal for a session that has not got there is an error the
+    /// application can read.
+    ///
+    /// The devices the socket may carry are the granted ones, sent along with
+    /// it. Consent on this path cannot be a check per event — there are no
+    /// events on this thread to check — so it is spent when the client's
+    /// devices are created, which happens once and out of the client's reach.
+    /// Named by hand because zbus would spell it `ConnectToEis`, from the
+    /// method's own name, and the interface spells it `ConnectToEIS`. A method
+    /// under the wrong name is not on the interface at all: the frontend calls
+    /// the name in the specification and gets UnknownMethod back, which reads
+    /// like a compositor that never implemented it.
+    #[zbus(name = "ConnectToEIS")]
     fn connect_to_eis(
         &self,
-        _session_handle: ObjectPath<'_>,
-        _app_id: &str,
+        session_handle: ObjectPath<'_>,
+        app_id: &str,
         _options: HashMap<String, OwnedValue>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<zvariant::OwnedFd> {
-        Err(zbus::fdo::Error::NotSupported(
-            "this compositor has no EIS server; use the Notify calls".to_owned(),
-        ))
+        if !self.called_by_frontend(&header) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "that is not the portal frontend".to_owned(),
+            ));
+        }
+        let path = OwnedObjectPath::from(session_handle);
+
+        // The grant, read once. Marked as having a socket in the same lock:
+        // the mark is what makes closing the session close the socket — see
+        // [`Message::RevokeEis`] — and marking it after the fd had gone out
+        // would leave a window in which a session could be closed while
+        // holding a connection nobody would then revoke.
+        let devices = {
+            let mut shared = self.sessions.lock().unwrap();
+            let Some(session) = shared.sessions.get_mut(&path) else {
+                return Err(zbus::fdo::Error::InvalidArgs(format!(
+                    "{path} is not a session this compositor knows"
+                )));
+            };
+            if session.granted_devices == 0 {
+                tracing::warn!(
+                    "remote desktop: refusing an EI socket for {path}, which was granted nothing"
+                );
+                return Err(zbus::fdo::Error::AccessDenied(
+                    "this session has not been granted any devices".to_owned(),
+                ));
+            }
+            session.eis = true;
+            session.granted_devices
+        };
+
+        // Two connected ends of one socket: `theirs` is the fd this call
+        // answers with and `ours` is the one the compositor reads the EI
+        // protocol out of. Named that way round because getting them the wrong
+        // way round is a portal that hands an application the server's own end
+        // and then waits for a handshake on the half nobody is speaking to.
+        let (theirs, ours) = match std::os::unix::net::UnixStream::pair() {
+            Ok(pair) => pair,
+            Err(e) => {
+                self.forget_eis(&path);
+                return Err(zbus::fdo::Error::Failed(format!(
+                    "could not make an EI socket: {e}"
+                )));
+            }
+        };
+        tracing::info!(
+            "remote desktop: handing {app_id:?} an EI socket for {path}, with the {}",
+            device_names(devices).join(", ")
+        );
+        if self
+            .sender
+            .send(Message::ConnectEis {
+                session: path.clone(),
+                stream: ours,
+                devices,
+            })
+            .is_err()
+        {
+            self.forget_eis(&path);
+            return Err(zbus::fdo::Error::Failed(
+                "the compositor is not listening".to_owned(),
+            ));
+        }
+        Ok(zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(theirs)))
     }
 }
 

@@ -179,13 +179,15 @@ fn the_interface_is_on_the_bus() {
         .expect("AvailableDeviceTypes");
     assert_eq!(u32::try_from(&devices).expect("a number"), ALL_DEVICES);
 
-    // Version one, deliberately: two is the version that promises
-    // ConnectToEIS, and there is no EIS server here. Claiming it would send
-    // applications down a path that answers with an error.
+    // Version two, which is the version that promises ConnectToEIS. There is
+    // an EI server behind it now — see `crates/viewport/src/libei.rs` — and
+    // the number is what a frontend reads to decide whether to offer an
+    // application the socket at all, so a compositor that had one and said
+    // "1" would never be asked for it.
     let version = properties
         .get(INTERFACE.try_into().unwrap(), "version")
         .expect("version");
-    assert_eq!(u32::try_from(&version).expect("a number"), 1);
+    assert_eq!(u32::try_from(&version).expect("a number"), 2);
 }
 
 /// A peer that is not the portal frontend is refused.
@@ -386,11 +388,139 @@ fn an_ungranted_session_injects_nothing() {
     let version = properties
         .get(INTERFACE.try_into().unwrap(), "version")
         .expect("the portal is still answering");
-    assert_eq!(u32::try_from(&version).expect("a number"), 1);
+    assert_eq!(u32::try_from(&version).expect("a number"), 2);
 
     assert!(
         !compositor.log().contains("panicked"),
         "the compositor panicked; its log:\n{}",
+        compositor.log()
+    );
+}
+
+/// A session that was never granted anything is refused an EI socket.
+///
+/// The consent check on the libei path is not per event — there are no events
+/// on the bus thread to check — so it is this one call and the device set it
+/// hands over. An application that has created a session and selected devices
+/// has asked for something and been given nothing; a socket at that point
+/// would be a way to drive the machine that never put a question on screen,
+/// and it would be a way that no later check catches, because after this call
+/// the application is talking to a socket rather than to the portal.
+///
+/// The headless compositor cannot get past Start — there is no desktop page to
+/// ask through, which the test above this one is about — so an ungranted
+/// session is the only kind there is here. That is the one worth testing
+/// anyway: the granted case is a socket, and the ungranted case is the hole.
+#[test]
+fn an_ungranted_session_is_refused_an_ei_socket() {
+    let Some(bus) = Bus::start() else {
+        eprintln!("skipped: no dbus-daemon to start a private bus with");
+        return;
+    };
+    let compositor = compositor_on(&bus, "noeis");
+
+    let connection = connect(&bus);
+    connection
+        .request_name(FRONTEND_NAME)
+        .expect("claiming the frontend name");
+    let proxy = proxy(&connection);
+
+    let request = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/4")
+        .expect("a path");
+    let session = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/4")
+        .expect("a path");
+    assert_eq!(create_session(&proxy, &request, &session), RESPONSE_SUCCESS);
+
+    let mut devices: HashMap<String, zvariant::Value<'_>> = HashMap::new();
+    devices.insert("types".to_owned(), zvariant::Value::from(ALL_DEVICES));
+    let (response, _): (u32, HashMap<String, zvariant::OwnedValue>) = proxy
+        .call(
+            "SelectDevices",
+            &(&request, &session, "org.example.remote", devices),
+        )
+        .expect("SelectDevices");
+    assert_eq!(response, RESPONSE_SUCCESS);
+
+    // No Start, so nothing was granted. An error rather than a file
+    // descriptor: unlike the Notify calls this one has a return value, so the
+    // refusal can be said out loud.
+    let answer: zbus::Result<zvariant::OwnedFd> = proxy.call(
+        "ConnectToEIS",
+        &(&session, "org.example.remote", no_options()),
+    );
+    assert!(
+        answer.is_err(),
+        "a session that was granted nothing was handed an EI socket"
+    );
+    assert!(
+        compositor.saw("which was granted nothing", Duration::from_secs(2)),
+        "the compositor did not say why it refused; its log:\n{}",
+        compositor.log()
+    );
+}
+
+/// And a session nobody created is refused one too.
+///
+/// The path in the call is a name the caller chose. A compositor that made a
+/// socket for an unknown one would be handing out control of itself to
+/// whichever object path was asked for, which is the same hole as the one
+/// above reached by not bothering with a session at all.
+#[test]
+fn an_invented_session_is_refused_an_ei_socket() {
+    let Some(bus) = Bus::start() else {
+        eprintln!("skipped: no dbus-daemon to start a private bus with");
+        return;
+    };
+    let _compositor = compositor_on(&bus, "eisinvented");
+
+    let connection = connect(&bus);
+    connection
+        .request_name(FRONTEND_NAME)
+        .expect("claiming the frontend name");
+    let proxy = proxy(&connection);
+
+    let session = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/99")
+        .expect("a path");
+    let answer: zbus::Result<zvariant::OwnedFd> = proxy.call(
+        "ConnectToEIS",
+        &(&session, "org.example.remote", no_options()),
+    );
+    assert!(
+        answer.is_err(),
+        "a session that does not exist was handed an EI socket"
+    );
+}
+
+/// A peer that is not the portal frontend cannot ask for an EI socket.
+///
+/// The same check every other method on this interface makes, and the one it
+/// matters most on: what this call answers with is a socket that drives the
+/// machine, held by whoever asked, for as long as they hold it. Every process
+/// in the session can reach this bus name.
+#[test]
+fn a_stranger_cannot_ask_for_an_ei_socket() {
+    let Some(bus) = Bus::start() else {
+        eprintln!("skipped: no dbus-daemon to start a private bus with");
+        return;
+    };
+    let compositor = compositor_on(&bus, "eisstranger");
+
+    let connection = connect(&bus);
+    let proxy = proxy(&connection);
+    let session = zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/5")
+        .expect("a path");
+
+    let answer: zbus::Result<zvariant::OwnedFd> = proxy.call(
+        "ConnectToEIS",
+        &(&session, "org.example.intruder", no_options()),
+    );
+    assert!(
+        answer.is_err(),
+        "a peer that is not the frontend was handed an EI socket"
+    );
+    assert!(
+        compositor.saw("refusing a call from", Duration::from_secs(2)),
+        "the compositor said nothing about refusing a stranger; its log:\n{}",
         compositor.log()
     );
 }

@@ -99,4 +99,13 @@ features = [
     # X11 applications, through Xwayland. Not optional in practice: the
     # holdouts are the ones people cannot replace.
     "xwayland",
+    # The EI server the RemoteDesktop portal's ConnectToEIS hands out — see
+    # src/libei.rs. Smithay's wrapper is what makes that a small piece of
+    # work rather than a second wire protocol written here: it turns a libei
+    # socket into a calloop event source whose events are the same
+    # `InputEvent`s libinput produces, so a remote pointer is routed by the
+    # code a real one is routed by. The feature costs no new dependency —
+    # `reis`, which it is a wrapper around, is already in the tree as one of
+    # smithay's own and is built either way.
+    "backend_libei",
 ]

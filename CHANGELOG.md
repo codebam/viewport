@@ -12,6 +12,27 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- An EI server, so `org.freedesktop.impl.portal.RemoteDesktop` answers
+  ConnectToEIS and the interface advertises version 2. The Notify calls it
+  sits beside are one D-Bus round trip through the portal frontend per input
+  event — a remote pointer moves hundreds of times a second — and libei
+  replaces the whole of that with a socket the application speaks directly.
+  The bus thread makes a `socketpair`, answers the call with one half and
+  sends the other to the compositor, because an EI context is read by a
+  calloop source and the D-Bus reply is synchronous; neither thread can do
+  the other's job. Events off the socket go through `process_input_event`,
+  the same path libinput's take, because smithay's `backend_libei` presents
+  an EI client as an `InputBackend` — so a remote chord is filtered by the
+  table a typed one is filtered by and counts as the same activity against
+  the idle timer. Only the granted devices are created, so a session allowed
+  a mouse and not a keyboard has nothing to type with rather than something
+  to be refused per event; the client is sent the keymap the seat is actually
+  using, and an absolute pointer or touchscreen is told where the monitors
+  are in the layout's own coordinates, refreshed when they move. Closing the
+  session closes the socket — as does the portal frontend disappearing, which
+  is the case nothing else would catch — and whatever the client was holding
+  down when it went is released, because a process killed mid-drag would
+  otherwise leave a button or a modifier latched in the one real seat.
 - An on-screen keyboard, HTML and CSS drawn by the shell rather than a second
   Wayland client — `input-method` and `virtual-keyboard` were already wired
   up and touch was already complete, so the last piece was a keyboard to type
@@ -72,9 +93,8 @@ to summarise rather than to duplicate.
   right trade for a picture and the wrong one for a keyboard — and a session is
   refused outright when no desktop page is drawing, rather than falling back to
   granting it the way a screen share falls back to sharing the focused window.
-  Version 1 of the interface: version 2 promises ConnectToEIS, which needs a
-  libei server this compositor has not got, so the method answers
-  `NotSupported` and the frontend stays on the path that works.
+  ConnectToEIS and the version the interface advertises are the entry above
+  this one, which is the other half of the same portal.
 - A battery widget, lid policy and power-profile picker. UPower's
   DisplayDevice is the charge the bar should show, `LidIsClosed` is the
   hinge, and the power-profiles daemon is `power-saver` / `balanced` /

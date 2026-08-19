@@ -67,6 +67,35 @@ pub enum Message {
     /// [`super::remote::RemoteDesktop`] — so by the time it reaches the
     /// compositor the only question left is where on the desk it lands.
     Inject(super::remote::Injection),
+    /// A libei socket for a session that was granted one, and what it was
+    /// granted.
+    ///
+    /// The stream rather than the context: an `eis::Context` is read by a
+    /// calloop source that owns it, and calloop belongs to the compositor
+    /// thread. So the bus thread makes the pair, answers ConnectToEIS with one
+    /// half, and sends the other half here to be built into a server. See
+    /// [`crate::libei`] for the whole path, and
+    /// [`super::remote::RemoteDesktop::connect_to_eis`] for the checks that
+    /// happen before this message exists at all.
+    ///
+    /// `devices` travels with it because it is the grant: what the compositor
+    /// does with it is create exactly those devices and no others, which is
+    /// how consent is enforced on a connection nobody checks per event.
+    ConnectEis {
+        session: OwnedObjectPath,
+        stream: std::os::unix::net::UnixStream,
+        devices: u32,
+    },
+    /// A session with a libei socket has ended, so the socket must go.
+    ///
+    /// The Notify path needs nothing like this — the grant is checked per
+    /// event, and an event for a session that is no longer in the table is
+    /// dropped. A libei client is holding a socket instead, and a socket goes
+    /// on working after the table forgets about it. Sent from both places a
+    /// session can end: [`SessionObject::close`] and [`watch_frontend`].
+    RevokeEis {
+        session: OwnedObjectPath,
+    },
     Close {
         node: u32,
     },
@@ -167,6 +196,15 @@ pub struct Session {
     /// typing is injecting nothing.
     pub(super) wanted_devices: u32,
     pub(super) granted_devices: u32,
+    /// Whether this session has been handed a libei socket.
+    ///
+    /// Kept so that closing a session that has one says so, and closing one
+    /// that has not — every screen share, and every remote-desktop session
+    /// that stayed on the Notify calls — costs nothing. The compositor would
+    /// ignore a revocation for a session it has no connection for, so this is
+    /// not a correctness check; it is what keeps the common case from sending
+    /// a message per closed share across the channel.
+    pub(super) eis: bool,
     /// What this application shared last time, if the frontend recognised the
     /// token it presented.
     restore: Option<Remembered>,
@@ -756,15 +794,18 @@ impl SessionObject {
     /// The application has stopped sharing.
     async fn close(&self, #[zbus(object_server)] server: &zbus::ObjectServer) {
         tracing::debug!("portal: the frontend closed session {}", self.path);
-        let node = self
-            .sessions
-            .lock()
-            .unwrap()
-            .sessions
-            .remove(&self.path)
-            .and_then(|session| session.node);
-        if let Some(node) = node {
+        let closed = self.sessions.lock().unwrap().sessions.remove(&self.path);
+        if let Some(node) = closed.as_ref().and_then(|session| session.node) {
             let _ = self.sender.send(Message::Close { node });
+        }
+        // And the libei socket, if this session was given one. Taking the row
+        // out of the table is what revokes a Notify grant and it is not enough
+        // here: the application is holding a socket, which goes on carrying
+        // input until somebody closes it. See [`Message::RevokeEis`].
+        if closed.as_ref().is_some_and(|session| session.eis) {
+            let _ = self.sender.send(Message::RevokeEis {
+                session: self.path.clone(),
+            });
         }
 
         // And off the bus. Every share published one of these and none of them
@@ -862,17 +903,27 @@ pub fn watch_frontend(
                     .sessions
                     .iter()
                     .filter(|(_, session)| session.owner.as_deref() == Some(gone.as_str()))
-                    .map(|(path, session)| (path.clone(), session.node))
+                    .map(|(path, session)| (path.clone(), session.node, session.eis))
                     .collect();
-                for (path, _) in &closed {
+                for (path, _, _) in &closed {
                     held.sessions.remove(path);
                 }
                 drop(held);
 
-                for (path, node) in closed {
+                for (path, node, eis) in closed {
                     tracing::info!("the portal frontend went away, closing session {path}");
                     if let Some(node) = node {
                         let _ = sender.send(Message::Close { node });
+                    }
+                    // A frontend that crashed is the case this whole watcher
+                    // exists for, and it is the case where a libei socket
+                    // matters most: nothing else will ever call Close, so a
+                    // remote session left holding one would go on driving this
+                    // machine with no portal left to stop it.
+                    if eis {
+                        let _ = sender.send(Message::RevokeEis {
+                            session: path.clone(),
+                        });
                     }
                     if let Err(e) = connection.object_server().remove::<SessionObject, _>(&path) {
                         tracing::warn!("could not take an abandoned session off the bus: {e}");

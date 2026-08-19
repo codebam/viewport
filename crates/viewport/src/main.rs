@@ -32,6 +32,7 @@ mod idle;
 mod input;
 mod ipc;
 mod keyboard_focus;
+mod libei;
 mod mpris;
 mod msg;
 mod network;

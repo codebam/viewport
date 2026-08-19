@@ -456,6 +456,76 @@ impl ViewportState {
         }
     }
 
+    /// Let go of a key that something else was holding down when it vanished.
+    ///
+    /// For one caller: a libei client that disconnects mid-chord, see
+    /// `crate::libei`. Its presses went through `process_input_event`, so a key
+    /// the compositor took for itself is on `suppressed_keys` and a key the
+    /// shell was given is held down in the page. Releasing such a key with
+    /// `inject_key` would do neither thing — it would forward a release to
+    /// whatever has focus now, which never saw the press, and leave the
+    /// suppression behind to swallow somebody's real release later.
+    ///
+    /// So this is the release half of that arm and nothing else: the same
+    /// bookkeeping in the same order, with the press half — bindings, the
+    /// chooser, the shortcut table — left out because a release cannot start
+    /// any of them. What it deliberately does not do is the rest of
+    /// `process_input_event`: a client that died is not activity, and waking
+    /// the screens for it would light up a desk nobody is at.
+    pub fn release_injected_key(&mut self, code: smithay::input::keyboard::Keycode) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = self.start_time.elapsed().as_millis() as u32;
+        let to_shell = keyboard.current_focus().is_none() && self.shell_is_up();
+        let modifiers_now = self.shell_modifiers();
+        let mods_before = keyboard.modifier_state();
+
+        let action = keyboard.input::<Option<Action>, _>(
+            self,
+            code,
+            smithay::backend::input::KeyState::Released,
+            serial,
+            time,
+            |state, _modifiers, handle| {
+                let keysym = handle.modified_sym();
+                let Some(at) = state.suppressed_keys.iter().position(|k| *k == keysym) else {
+                    // Nobody took the press, so the client that has it now is
+                    // the client that saw it: an ordinary release.
+                    return FilterResult::Forward;
+                };
+                state.suppressed_keys.remove(at);
+                // A key the page was given has to be released to it as well,
+                // or the page has one held down for ever.
+                if to_shell {
+                    FilterResult::Intercept(Some(Action::Web(WebKey {
+                        keycode: handle.raw_code().raw() + 8,
+                        keysym: keysym.raw(),
+                        pressed: false,
+                        modifiers: modifiers_now,
+                        time,
+                    })))
+                } else {
+                    FilterResult::Intercept(Some(Action::Swallow))
+                }
+            },
+        );
+
+        let intercepted = action.is_some();
+        if let Some(action) = action.flatten() {
+            self.handle_action(action);
+        }
+        // For the reason the same two lines in `process_input_event` give: an
+        // intercepted key is never forwarded, so a modifier that has just been
+        // let go of would otherwise stay depressed as far as the focused client
+        // is concerned — and this is the case where the key was let go of by
+        // nobody, which is exactly when nothing else will correct it.
+        if intercepted && keyboard.modifier_state() != mods_before {
+            keyboard.advertise_modifier_state(self);
+        }
+    }
+
     /// A pointer motion from the control socket rather than from libinput.
     ///
     /// The same three calls the libinput path makes, in the same order, so a
@@ -1303,66 +1373,8 @@ impl ViewportState {
                 let Some(output_geo) = self.space.output_geometry(output) else {
                     return;
                 };
-                let mut pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
-                let Some(pointer) = self.seat.get_pointer() else {
-                    return;
-                };
-
-                // A capture holds whatever device is driving the cursor, not
-                // just a mouse. A pen or a touchscreen walking through an
-                // active lock would move a cursor the client has been told is
-                // standing still, and hand a game absolute positions it reads
-                // as an enormous jump.
-                let from = pointer.current_location();
-                // Once, and reused: a hit test walks every window in the
-                // `Space` and clones each one it walks past, and asking the
-                // same question of the same point twice costs that twice.
-                let under = self.surface_under(from);
-                let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
-
-                // The delta this absolute position implies. It is what a
-                // captured client is driven by, and the only thing it gets:
-                // the position itself is exactly what a lock withholds.
-                let delta = pos - from;
-                pointer.relative_motion(
-                    self,
-                    under,
-                    &smithay::input::pointer::RelativeMotionEvent {
-                        delta,
-                        // Nothing accelerated it, so the raw delta is the
-                        // unaccelerated one.
-                        delta_unaccel: delta,
-                        utime: event.time(),
-                    },
-                );
-                if locked {
-                    pointer.frame(self);
-                    return;
-                }
-                if let Some((region, origin)) = confine_to {
-                    let local = pos - origin.to_f64();
-                    if let Some(snapped) = crate::pointer::confine(&region, local) {
-                        pos = snapped + origin.to_f64();
-                    }
-                }
-
-                let serial = SERIAL_COUNTER.next_serial();
-                let under = self.surface_under(pos);
-                let on_shell = under.is_none();
-
-                pointer.motion(
-                    self,
-                    under,
-                    &MotionEvent {
-                        location: pos,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
-                self.drag_to(pos);
-                self.shell_pointer_motion(pos, on_shell, event.time_msec());
-                self.needs_render = true;
+                let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
+                self.pointer_absolute_to(pos, event.time(), event.time_msec());
             }
 
             InputEvent::PointerButton { event, .. } => {
@@ -2018,65 +2030,17 @@ impl ViewportState {
             // touch — and one that does not is better served by nothing than
             // by a pointer that teleports to wherever a finger landed.
             InputEvent::TouchDown { event, .. } => {
-                let Some(touch) = self.seat.get_touch() else {
-                    return;
-                };
                 let Some(position) = self.touch_position(&event) else {
                     return;
                 };
-                let serial = SERIAL_COUNTER.next_serial();
-                let under = self.surface_under(position);
-
-                // The window under the finger takes the keyboard too. There is
-                // no other way to focus something on a touchscreen: there is no
-                // pointer to click with and no way to reach a chord.
-                if let Some((surface, _)) = under.as_ref() {
-                    if let Some(keyboard) = self.seat.get_keyboard() {
-                        // By window where there is one, for the reason the click
-                        // path gives: an X11 window focused as a bare surface
-                        // leaves the X server at `PointerRoot`, so nothing under
-                        // Xwayland is ever told a finger gave it the keyboard.
-                        let focus = self
-                            .views
-                            .find_by_surface(surface)
-                            .and_then(|view| {
-                                crate::keyboard_focus::KeyboardFocus::for_window(&view.window)
-                            })
-                            .unwrap_or_else(|| surface.clone().into());
-                        keyboard.set_focus(self, Some(focus), serial);
-                    }
-                }
-
-                touch.down(
-                    self,
-                    under,
-                    &smithay::input::touch::DownEvent {
-                        slot: event.slot(),
-                        location: position,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                self.needs_render = true;
+                self.touch_down_at(event.slot(), position, event.time_msec());
             }
 
             InputEvent::TouchMotion { event, .. } => {
-                let Some(touch) = self.seat.get_touch() else {
-                    return;
-                };
                 let Some(position) = self.touch_position(&event) else {
                     return;
                 };
-                let under = self.surface_under(position);
-                touch.motion(
-                    self,
-                    under,
-                    &smithay::input::touch::MotionEvent {
-                        slot: event.slot(),
-                        location: position,
-                        time: event.time_msec(),
-                    },
-                );
+                self.touch_motion_at(event.slot(), position, event.time_msec());
             }
 
             InputEvent::TouchUp { event, .. } => {
@@ -2129,6 +2093,167 @@ impl ViewportState {
         let output = self.space.outputs().next()?;
         let geometry = self.space.output_geometry(output)?;
         Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
+    }
+
+    /// A finger put down at a place in the layout.
+    ///
+    /// Split from the `TouchDown` arm for the reason
+    /// [`ViewportState::pointer_absolute_to`] is split from its own: the two
+    /// kinds of touch device this compositor has disagree about what the
+    /// numbers mean and about nothing else. A real touchscreen reports a
+    /// fraction of the screen it is glued to, which `touch_position` scales;
+    /// a libei client is told the layout's coordinates and sends those.
+    ///
+    /// Distinct from `inject_touch_down`, which is deliberately the bare
+    /// `wl_touch.down` a script asks for: this is the whole of what a finger
+    /// does, focus included.
+    pub fn touch_down_at(
+        &mut self,
+        slot: smithay::backend::input::TouchSlot,
+        position: Point<f64, Logical>,
+        time: u32,
+    ) {
+        let Some(touch) = self.seat.get_touch() else {
+            return;
+        };
+        let serial = SERIAL_COUNTER.next_serial();
+        let under = self.surface_under(position);
+
+        // The window under the finger takes the keyboard too. There is
+        // no other way to focus something on a touchscreen: there is no
+        // pointer to click with and no way to reach a chord.
+        if let Some((surface, _)) = under.as_ref() {
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                // By window where there is one, for the reason the click
+                // path gives: an X11 window focused as a bare surface
+                // leaves the X server at `PointerRoot`, so nothing under
+                // Xwayland is ever told a finger gave it the keyboard.
+                let focus = self
+                    .views
+                    .find_by_surface(surface)
+                    .and_then(|view| crate::keyboard_focus::KeyboardFocus::for_window(&view.window))
+                    .unwrap_or_else(|| surface.clone().into());
+                keyboard.set_focus(self, Some(focus), serial);
+            }
+        }
+
+        touch.down(
+            self,
+            under,
+            &smithay::input::touch::DownEvent {
+                slot,
+                location: position,
+                serial,
+                time,
+            },
+        );
+        self.needs_render = true;
+    }
+
+    /// A finger that moved to a place in the layout. See
+    /// [`ViewportState::touch_down_at`] for why the coordinates arrive already
+    /// resolved.
+    pub fn touch_motion_at(
+        &mut self,
+        slot: smithay::backend::input::TouchSlot,
+        position: Point<f64, Logical>,
+        time: u32,
+    ) {
+        let Some(touch) = self.seat.get_touch() else {
+            return;
+        };
+        let under = self.surface_under(position);
+        touch.motion(
+            self,
+            under,
+            &smithay::input::touch::MotionEvent {
+                slot,
+                location: position,
+                time,
+            },
+        );
+    }
+
+    /// Put the pointer at a place in the layout, as an absolute device does.
+    ///
+    /// Split out of the `PointerMotionAbsolute` arm above rather than left
+    /// inside it because two kinds of device produce an absolute position and
+    /// they disagree about only one thing: what the numbers mean before they
+    /// are a place on the desk. A touchscreen or a tablet reports a fraction of
+    /// the screen it is attached to, so `touch_position` and the arm above have
+    /// to scale it against an output first. A libei client — see
+    /// `crate::libei` — is told the layout's own coordinates in
+    /// `ei_device.region` and answers in them, so there is nothing to scale and
+    /// scaling anyway would put a remote pointer on the wrong monitor. What
+    /// happens after the position is known is identical for both, and it is
+    /// everything that matters: a pointer lock is honoured, a confinement is
+    /// applied, a window being dragged follows, and the shell is told when the
+    /// pointer is over it rather than over a client.
+    ///
+    /// `utime` is microseconds, as `wp_relative_pointer` wants, and `time` is
+    /// the millisecond stamp `wl_pointer` carries. Both are passed rather than
+    /// one derived from the other because the device supplies both and a
+    /// derived one is a rounded one.
+    pub fn pointer_absolute_to(&mut self, mut pos: Point<f64, Logical>, utime: u64, time: u32) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+
+        // A capture holds whatever device is driving the cursor, not
+        // just a mouse. A pen or a touchscreen walking through an
+        // active lock would move a cursor the client has been told is
+        // standing still, and hand a game absolute positions it reads
+        // as an enormous jump.
+        let from = pointer.current_location();
+        // Once, and reused: a hit test walks every window in the
+        // `Space` and clones each one it walks past, and asking the
+        // same question of the same point twice costs that twice.
+        let under = self.surface_under(from);
+        let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
+
+        // The delta this absolute position implies. It is what a
+        // captured client is driven by, and the only thing it gets:
+        // the position itself is exactly what a lock withholds.
+        let delta = pos - from;
+        pointer.relative_motion(
+            self,
+            under,
+            &smithay::input::pointer::RelativeMotionEvent {
+                delta,
+                // Nothing accelerated it, so the raw delta is the
+                // unaccelerated one.
+                delta_unaccel: delta,
+                utime,
+            },
+        );
+        if locked {
+            pointer.frame(self);
+            return;
+        }
+        if let Some((region, origin)) = confine_to {
+            let local = pos - origin.to_f64();
+            if let Some(snapped) = crate::pointer::confine(&region, local) {
+                pos = snapped + origin.to_f64();
+            }
+        }
+
+        let serial = SERIAL_COUNTER.next_serial();
+        let under = self.surface_under(pos);
+        let on_shell = under.is_none();
+
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: pos,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        self.drag_to(pos);
+        self.shell_pointer_motion(pos, on_shell, time);
+        self.needs_render = true;
     }
 
     /// Carry out one of the compositor's own chords.

@@ -476,9 +476,16 @@ capability arrive — an export path off the scanout planes, or a virtual-input
 back end — the global comes back with it.
 
 A remote-desktop client does not need either. `org.freedesktop.impl.portal.
-RemoteDesktop` is implemented, and it drives the one real seat: the pointer,
-keyboard and touch a person is already using, through the same `inject_*` path
-in `crates/viewport/src/input.rs` that the control socket uses. That is the
+RemoteDesktop` is implemented at version 2, and it drives the one real seat:
+the pointer, keyboard and touch a person is already using. There are two ways
+in and both end there. The Notify calls hand each event to the `inject_*` path
+in `crates/viewport/src/input.rs` that the control socket uses; ConnectToEIS
+hands the application a libei socket instead, and the events off it go through
+`process_input_event` — the same path libinput's do — because smithay's
+`backend_libei` presents an EI client as an `InputBackend`. Which devices that
+socket carries is decided when the client's devices are created, from what the
+person at the machine granted, and closing the session closes the socket. See
+`crates/viewport/src/libei.rs`. That is the
 whole reason a transient seat is not wanted here — a second seat exists so a
 remote session can have devices of its own, and a compositor that can inject
 into the first one has nothing to put on the second. What it costs is that a

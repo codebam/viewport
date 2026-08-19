@@ -359,11 +359,25 @@ otherwise upstreamable, and the fork should go away when it lands.
     case, which is not a fallback to make when what is being handed over is
     control of the machine.
 
-    Version 1 of the interface, not 2. Version 2 is the one that promises
-    ConnectToEIS, and answering that properly means a libei server inside the
-    compositor: a second wire protocol with its own handshake, device objects
-    and lifetime. The method exists and returns `NotSupported`, and the
-    version property keeps the frontend on the Notify path, which works.
+    Version 2 of the interface, which is the version that adds ConnectToEIS:
+    a libei socket the application drives directly instead of a D-Bus call per
+    event. The server behind it is `crates/viewport/src/libei.rs`, built on
+    smithay's `backend_libei`, and the reason it is a small file is that
+    smithay's wrapper presents a libei client as an `InputBackend` — so a
+    remote keystroke goes through `process_input_event` and is filtered by the
+    same shortcut table a real one is. The bus thread makes a `socketpair`,
+    answers the call with one half and sends the other to the compositor,
+    because an EI context is read by a calloop source and the D-Bus call has
+    to be answered synchronously. Consent is spent when the client's devices
+    are created: only the granted ones exist, so an ungranted capability has
+    no object to bind. Revocation is the socket closing — closing the session,
+    or the frontend's bus name going away, drops the source that owns it — and
+    anything the client was holding down when it went is released, because a
+    process killed mid-drag would otherwise leave a button or a modifier
+    latched in the one real seat.
+
+    The Notify path is unchanged and still works; an application picks. Both
+    end at the same seat.
 
 ### Still open
 

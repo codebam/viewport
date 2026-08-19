@@ -639,6 +639,20 @@ pub struct ViewportState {
     /// connection open.
     pub pipewire: Option<crate::screencast::stream::Pipewire>,
     pub casts: Vec<crate::screencast::Cast>,
+    /// The libei sockets handed out by the remote-desktop portal's
+    /// ConnectToEIS, one per session that asked for one. See [`crate::libei`]
+    /// — in particular for why a connection is remembered at all, which is
+    /// that closing the session has to be able to close the socket.
+    pub eis: crate::libei::Connections,
+    /// The keymap the seat is using, as the config file described it.
+    ///
+    /// Kept because a keymap cannot be read back out of a seat in a form
+    /// anything else can be given: `add_keyboard` takes an `XkbConfig` and
+    /// hands back a handle, and a libei client has to be sent the *same*
+    /// description or it composes keycodes against a layout this desk does not
+    /// type in. Empty until a config file names one, which is the built-in
+    /// keymap — the same default `Seat::add_keyboard` was given at startup.
+    pub keyboard_config: crate::config::KeyboardConfig,
     /// A window being dragged with the pointer, and what the drag is doing to
     /// it.
     pub pointer_drag: Option<PointerDrag>,
@@ -1302,6 +1316,8 @@ impl ViewportState {
             output_power_state,
             pipewire: None,
             casts: Vec::new(),
+            eis: crate::libei::Connections::default(),
+            keyboard_config: crate::config::KeyboardConfig::default(),
             pointer_drag: None,
             pointer_on_shell: false,
             pointer_grabbed_by_shell: false,
@@ -2695,6 +2711,13 @@ impl ViewportState {
         let location = location.into();
         self.space.map_output(output, location);
         output.change_current_state(None, None, None, Some(location));
+        // And anything remote that was told where the monitors are. A libei
+        // client points in the layout's own coordinates, which it was handed a
+        // description of when its devices were made — see
+        // `crate::libei::ViewportState::refresh_eis_regions`. This is the one
+        // call every rearrangement goes through, and it costs nothing at all
+        // when nobody is connected, which is nearly always.
+        self.refresh_eis_regions();
     }
 
     /// Program a mode on the hardware, not only in the description of it.
@@ -4128,6 +4151,16 @@ impl ViewportState {
                 reply,
             } => self.open_remote_picker(devices, types, reply),
             Message::Inject(injection) => self.inject_remote(injection),
+            // The reading half of the socket ConnectToEIS answered with. The
+            // bus thread made the pair and checked the grant; this end builds
+            // the EI context, because the context is read by a calloop source
+            // and calloop is here. See [`crate::libei`].
+            Message::ConnectEis {
+                session,
+                stream,
+                devices,
+            } => self.connect_eis(session, stream, devices),
+            Message::RevokeEis { session } => self.revoke_eis(&session),
             Message::Close { node } => self.stop_cast(node),
         }
     }
@@ -6463,15 +6496,25 @@ impl ViewportState {
             let delay = keyboard.repeat_delay.unwrap_or(200);
             let rate = keyboard.repeat_rate.unwrap_or(25);
             match self.seat.add_keyboard(xkb, delay, rate) {
-                Ok(_) => tracing::info!(
-                    "keymap {:?}{}, repeat {rate}/s after {delay}ms",
-                    keyboard.layout.as_deref().unwrap_or("(default)"),
-                    keyboard
-                        .variant
-                        .as_deref()
-                        .map(|v| format!(" {v}"))
-                        .unwrap_or_default(),
-                ),
+                Ok(_) => {
+                    // Written down for anything that has to be told what this
+                    // desk types in rather than asked to guess — which today
+                    // is a libei client, whose keymap is sent to it when its
+                    // keyboard device is made. Only on success: a layout that
+                    // was refused left the previous keymap in place, and
+                    // recording the refused one would send a remote client a
+                    // keymap the seat is not using.
+                    self.keyboard_config = keyboard.clone();
+                    tracing::info!(
+                        "keymap {:?}{}, repeat {rate}/s after {delay}ms",
+                        keyboard.layout.as_deref().unwrap_or("(default)"),
+                        keyboard
+                            .variant
+                            .as_deref()
+                            .map(|v| format!(" {v}"))
+                            .unwrap_or_default(),
+                    );
+                }
                 // Naming it matters: an unknown layout otherwise leaves the
                 // built-in one in place and looks like the config was ignored.
                 Err(e) => tracing::error!(
