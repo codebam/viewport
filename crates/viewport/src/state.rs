@@ -594,6 +594,26 @@ pub struct ViewportState {
     /// shell was not going to act on differently is not free once WebKit has
     /// to receive and parse it.
     pub osk_wanted: bool,
+    /// What `osk` in the config file said: whether the keyboard may raise
+    /// itself, and whether the chord still works if it may not. Read by
+    /// `sync_osk_wanted` in `input.rs`; see `config::OskMode` for what each
+    /// value means and why a boolean could not say it.
+    pub osk_mode: crate::config::OskMode,
+    /// Whether a touch-capable input device has ever been seen on this seat,
+    /// from `DeviceCapability::Touch` on an `InputEvent::DeviceAdded` in
+    /// `input.rs`. Sticky rather than a live count: `seat.add_touch()` in
+    /// `Self::new`, below, gives every seat a `wl_touch` unconditionally, so
+    /// unlike a tablet this cannot be read off the seat itself, and a
+    /// touchscreen unplugged mid-session should not suddenly stop the
+    /// keyboard it was raising a moment before.
+    ///
+    /// This is what `OskMode::Auto` actually decides on: raising the
+    /// keyboard for every focused text-input regardless of hardware, which
+    /// is what this compositor did before this field existed, is right for a
+    /// tablet and wrong for the desk that has a keyboard and a mouse and
+    /// nothing else — and there is no way to tell the two apart from the
+    /// config file alone, since both would leave `osk` unset.
+    pub osk_touch_seen: bool,
     /// ext-image-capture-source-v1 and ext-image-copy-capture-v1: the
     /// standardised replacement for wlr-screencopy, and what a current
     /// xdg-desktop-portal reaches for first.
@@ -1202,6 +1222,10 @@ impl ViewportState {
                 // a config file, a flag or `config.wallpaper` names one.
                 wallpaper: None,
                 wallpaper_mode: None,
+                // The same default OskMode::Auto is, spelled the way the
+                // shell reads it back — see apply_config for where a config
+                // file overrides both this and osk_mode together.
+                osk: "auto".to_owned(),
             },
             shell_url: None,
             output_config: std::collections::HashMap::new(),
@@ -1312,6 +1336,8 @@ impl ViewportState {
             _input_method_state: input_method_state,
             _virtual_keyboard_state: virtual_keyboard_state,
             osk_wanted: false,
+            osk_mode: crate::config::OskMode::Auto,
+            osk_touch_seen: false,
             gamma_state,
             output_power_state,
             pipewire: None,
@@ -6358,6 +6384,26 @@ impl ViewportState {
         }
         if let Some(allowed) = file.vt_switching {
             self.vt_switching = allowed;
+        }
+        if let Some(mode) = file.osk.as_deref() {
+            match crate::config::parse_osk_mode(mode) {
+                Ok(mode) => {
+                    self.osk_mode = mode;
+                    self.config.osk = mode.as_str().to_owned();
+                    // A reload can turn the keyboard off, or take a touch
+                    // desk from manual back to auto, while a client's
+                    // text-input is still enabled — recomputing right away is
+                    // what makes that take effect immediately rather than at
+                    // the next commit or focus change. Only half the story:
+                    // this can lower a keyboard `osk.wanted` raised, but not
+                    // one somebody pinned open by hand with the chord, which
+                    // is not this function's to know about. That half is the
+                    // shell's, driven by the `osk` field notify_config sends
+                    // right after this — see `applyOskMode` in `osk.js`.
+                    self.sync_osk_wanted();
+                }
+                Err(e) => tracing::warn!("{e}; leaving osk as {:?}", self.osk_mode.as_str()),
+            }
         }
         if let Some(dark) = file.dark_mode {
             self.dark_mode = dark;

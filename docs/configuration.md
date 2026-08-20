@@ -1160,13 +1160,30 @@ said.
 
 ## The on-screen keyboard
 
-There is nothing to configure here either — no setting turns it on, because it
-is always available, the way the clipboard picker and the two radios above are.
-It comes up on its own when the focused client enables a `zwp_text_input_v3`,
-which is the protocol's own way of saying a text field wants typing into, and
-goes back down when that stops being true. `Mod4+Shift+k` raises and lowers it
-by hand, for a desk that has a keyboard already and wants to test it, or to
-type into something that never asked.
+It is always available, the way the clipboard picker and the two radios above
+are — `Mod4+Shift+k` raises and lowers it by hand regardless of anything
+below, for a desk that has a keyboard already and wants to test it, or to type
+into something that never asked. What `"osk"` in the config file controls is
+only whether it also comes up *on its own*, when the focused client enables a
+`zwp_text_input_v3` — the protocol's own way of saying a text field wants
+typing into — and goes back down when that stops being true.
+
+* `"auto"`, the default, does that, but only once the seat has actually seen a
+  touch device: a desk with just a keyboard and a mouse never has, so on one
+  of those it behaves exactly like `"manual"` below without a config file
+  having to say so. This is what a touch panel wants and a desktop with a
+  hardware keyboard does not, without either one having to name itself —
+  raising a keyboard nobody asked for on top of whatever is being typed into
+  with a real one is the problem this exists to avoid.
+* `"manual"` never raises it on its own; `Mod4+Shift+k` is the only way it
+  comes up. For a desk that would rather decide every time, or that hits the
+  rare window a hardware keyboard cannot reach at all — a login prompt drawn
+  before the session's own input method exists, say.
+* `"off"` does neither. `Mod4+Shift+k` is bound to nothing else while this is
+  set, so pressing it does exactly nothing — a deliberate consequence of
+  asking for the keyboard gone entirely, not a chord left unfinished. Changing
+  the setting takes effect immediately on a reload, including hiding a
+  keyboard that was already pinned open by hand.
 
 It types by pressing keys, not by handing text to the client directly. This
 compositor has both paths wired up — a fork of smithay's

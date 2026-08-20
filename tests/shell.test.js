@@ -1272,6 +1272,53 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'osk.wanted', wanted: false });
 }
 
+/* The `osk` config key: 'auto' (the default), 'manual' and 'off'. Whether
+ * `osk.wanted` is ever sent true is the compositor's own decision — see
+ * sync_osk_wanted's tests in input.rs, which this file cannot reach — so what
+ * is left to check here is the one thing only the shell can enforce: 'off'
+ * refuses the chord, and drops a keyboard that was already pinned open the
+ * moment the setting reaches it, rather than leaving it up until something
+ * else changes. 'manual' is not tested beyond "the chord still works", since
+ * as far as this file can see it behaves exactly like 'auto'. */
+{
+  const el = () => globalThis.__shell.oskEl;
+  const config = (osk) => emit({ type: 'config', layout: mode, rules: HARNESS_RULES, osk });
+
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  check('the chord opens the keyboard under the default auto mode', el().hidden === false);
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  check('and closes it again', el().hidden === true);
+
+  config('manual');
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  check('manual leaves the chord working — only the automatic raise is its own to '
+    + 'suppress, and that half already happened compositor-side', el().hidden === false);
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  check('and it still closes', el().hidden === true);
+
+  config('off');
+  let before = sent.length;
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  check('off refuses the chord: nothing is sent for it and the keyboard stays down',
+    sent.length === before && el().hidden === true);
+
+  /* A keyboard pinned open by hand under a more permissive setting must not
+     survive a reload that turns it off — see applyOskMode's own comment in
+     osk.js for why 'off' is the one transition that reaches across a pin. */
+  config('auto');
+  emit({ type: 'shell.command', command: 'osk', args: [] });
+  check('back under auto, the chord opens it again', el().hidden === false);
+  before = sent.length;
+  config('off');
+  check('and turning the setting off closes an already-pinned keyboard immediately',
+    el().hidden === true);
+  check('by releasing it in the shell alone — nothing is sent for a reload closing it',
+    !sent.slice(before).some((m) => m.type === 'osk.key'));
+
+  /* Restored for whatever runs after this block. */
+  config('auto');
+}
+
 /* Notifications are the compositor's on D-Bus and the shell's on screen, and
  * each one is drawn over the output of the app that sent it. 'test' matches no
  * open window, so it falls back to the active output — the one output there is. */

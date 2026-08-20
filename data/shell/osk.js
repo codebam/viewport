@@ -105,6 +105,17 @@ let oskWanted = false;
 let oskPinned = false;
 let oskDismissed = false;
 
+/* 'auto' (the default), 'manual' or 'off' — the `osk` key of the config
+ * event, mirrored here so `toggleOsk` can answer the chord without asking
+ * the compositor first. The compositor already refuses to send `oskWanted:
+ * true` under 'manual' or 'off' (see `sync_osk_wanted` in input.rs), so this
+ * variable only has one job of its own: under 'off', the chord must do
+ * nothing rather than pin the keyboard open, and that decision is made here
+ * because Mod4+Shift+k reaches the shell as a bare `shell osk` action the
+ * compositor does not itself interpret — see run_binding's `Bound::Shell`
+ * arm in input.rs. */
+let oskMode = 'auto';
+
 /* Whether the keyboard is actually on screen right now, tracked here rather
  * than read back off `oskEl.hidden` — the same choice every other picker in
  * this shell makes (`networkOpen`, `clipboardOpen`) and for the same reason:
@@ -439,13 +450,42 @@ function applyOskWanted(wanted) {
   syncOskVisibility();
 }
 
+/* The `osk` field of the config event, sent on connect and on every reload —
+ * see `Config::osk`'s doc comment in event.rs. Turning the setting to 'off'
+ * is the one transition that has to reach across `oskPinned`: the compositor
+ * can lower an `oskWanted` it raised on its own by sending `osk.wanted:
+ * false`, and does, but it has no way to take back a pin the chord set by
+ * hand on an earlier, more permissive setting, because pins live only here.
+ * Left alone, a keyboard pinned open under 'auto' or 'manual' would still be
+ * on screen after a reload turned it off, which is exactly the "I don't want
+ * to see this thing" 'off' was asked for. 'auto' and 'manual' both leave
+ * whatever is currently on screen exactly as it was — neither promises the
+ * keyboard gone, only that it will not raise itself uninvited from here
+ * on. */
+function applyOskMode(mode) {
+  oskMode = mode === 'manual' || mode === 'off' ? mode : 'auto';
+  if (oskMode === 'off') {
+    oskPinned = false;
+    oskDismissed = true;
+    syncOskVisibility();
+  }
+}
+
 /* Mod4+Shift+k, and the keyboard's own hide button. Opening always pins it
  * open regardless of what the compositor currently thinks the focused client
  * wants — a keyboard raised by hand is for typing into whatever is focused,
  * chord-bound or touch-tapped is the same request either way. Closing while
  * `osk.wanted` is still true has nothing else to change, so it marks the
- * want dismissed instead — see oskShouldBeVisible. */
+ * want dismissed instead — see oskShouldBeVisible.
+ *
+ * Under `oskMode === 'off'` this does nothing at all, deliberately: the
+ * keyboard's own hide button cannot be reached while it is off screen, so
+ * the only caller left is the chord, and refusing it here is what "off"
+ * promised — see `oskMode`'s own comment above and `OskMode::Off` in
+ * config.rs for why a silently-dead binding is the point rather than a bug
+ * in it. */
 function toggleOsk() {
+  if (oskMode === 'off') return;
   if (oskShouldBeVisible()) {
     oskPinned = false;
     oskDismissed = true;

@@ -52,6 +52,18 @@ to summarise rather than to duplicate.
   it needs no wrapping at all. Nothing here repeats a character on a timer —
   a key held down is `pressed: true` once and `false` on release, exactly
   like a hardware one, and the seat's own keyboard repeat does the rest.
+- An `"osk"` config key for the on-screen keyboard above: `"auto"` (the
+  default), `"manual"` or `"off"`. A boolean was not enough, because "stop it
+  popping up while I have a real keyboard" and "I never want to see it" are
+  different requests — the first still wants `Mod4+Shift+k` to reach it, and
+  only the second wants the chord dead too, which `"off"` makes it, on
+  purpose. `"auto"` also changed its own default behaviour: it now raises the
+  keyboard only once the seat has actually seen a touch device, rather than
+  for any client that enables a text-input regardless of hardware, so a desk
+  with just a keyboard and a mouse no longer gets a keyboard fighting its own
+  keyboard for a login prompt. Applies immediately on a config reload,
+  including hiding a keyboard that was pinned open by hand before `"off"` was
+  set.
 - Wi-Fi and Bluetooth pickers. The bar has always reported link throughput,
   which says a network is being used and nothing about which one or how to
   get on it. NetworkManager and BlueZ both live on the system bus, which the

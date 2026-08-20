@@ -520,10 +520,31 @@ pub struct Config {
     /// out, and swapping the picture keeps the mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallpaper_mode: Option<String>,
+
+    /// Whether the on-screen keyboard may raise itself, and whether
+    /// `Mod4+Shift+k` still works if not: `"auto"`, `"manual"` or `"off"`.
+    ///
+    /// The compositor's own half of this — whether `osk.wanted` is ever sent
+    /// true — is already handled before this arrives, in
+    /// `ViewportState::sync_osk_wanted`. What only the shell can do is the
+    /// other half: refuse the chord under `"off"`, and drop a keyboard that
+    /// was pinned open by hand the moment a reload turns the setting off out
+    /// from under it — see `osk.js`'s `applyOskMode`. Always present rather
+    /// than optional, unlike most of this struct, because there is no config
+    /// file this could be absent from the way `bar` or `theme` can: the
+    /// compositor always has some answer, `"auto"` included, and sending
+    /// nothing would leave an older shell's own default fighting the
+    /// compositor's rather than agreeing with it.
+    #[serde(default = "osk_auto")]
+    pub osk: String,
 }
 
 fn yes() -> bool {
     true
+}
+
+fn osk_auto() -> String {
+    "auto".to_owned()
 }
 
 /// Window gap settings, as `gaps` in the config file, carried to the shell.
@@ -1161,6 +1182,7 @@ mod tests {
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
+            osk: "auto".to_owned(),
         }));
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
@@ -1193,6 +1215,7 @@ mod tests {
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
+            osk: "auto".to_owned(),
         }));
         assert_eq!(value["border"]["radius"], 12);
         assert_eq!(value["border"]["width"], 3);
@@ -1222,6 +1245,7 @@ mod tests {
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
+            osk: "auto".to_owned(),
         }));
         assert_eq!(value["gaps"]["inner"], 15);
         assert_eq!(value["gaps"]["outer"], 4);
@@ -1264,6 +1288,7 @@ mod tests {
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
+            osk: "auto".to_owned(),
         }));
         assert_eq!(value["focus_crosses_outputs"], false);
     }
@@ -1287,6 +1312,7 @@ mod tests {
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
+            osk: "auto".to_owned(),
         }));
         assert!(value["rules"].is_array(), "rules must not be a string");
         assert_eq!(value["rules"][0]["app_id"], "mpv");
@@ -1380,6 +1406,7 @@ mod tests {
                 background_terminal: false,
                 wallpaper: None,
                 wallpaper_mode: None,
+                osk: "auto".to_owned(),
             })),
             json(&Event::Modifiers { logo: true }),
             json(&Event::SessionRestore {

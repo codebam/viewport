@@ -352,6 +352,13 @@ pub struct File {
     pub adaptive_sync: Option<bool>,
     pub vt_switching: Option<bool>,
 
+    /// Whether the on-screen keyboard is allowed to raise itself, and if not,
+    /// whether `Mod4+Shift+k` still can: `"auto"`, `"manual"` or `"off"`.
+    /// Absent is `"auto"`. See [`OskMode`] for what each one means and why a
+    /// boolean was not enough, and `ViewportState::sync_osk_wanted` in
+    /// `input.rs` for how `"auto"` decides.
+    pub osk: Option<String>,
+
     /// `"client"` gives the frame back to the client; anything else, including
     /// absence, keeps it here (`src/config.c:315`).
     pub decorations: Option<String>,
@@ -770,6 +777,73 @@ pub fn parse_pixel_format(value: &str) -> anyhow::Result<PixelFormat> {
     }
 }
 
+/// Whether the on-screen keyboard is allowed to raise itself, and if not,
+/// whether `Mod4+Shift+k` still can.
+///
+/// A boolean is not enough because it conflates two different complaints. "I
+/// have a hardware keyboard, stop putting a second one on top of my search
+/// box" and "I never want to see this thing" are not the same request: the
+/// first still wants the on-screen keyboard reachable by hand for the rare
+/// window that never takes hardware input in the first place — a login
+/// prompt XWayland drew before the session's own input method was up, most
+/// often — while the second is asking for it gone entirely, chord included.
+/// A plain on/off can only grant one of those two without also granting the
+/// other, so this is three values instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OskMode {
+    /// Raises itself the way it always has, and `Mod4+Shift+k` still works
+    /// on top of that. The default — but see `ViewportState::sync_osk_wanted`
+    /// in `input.rs` for the one change made to what "raises itself" means:
+    /// only once the seat has actually seen a touch device, rather than on
+    /// every text-input a focused client enables. A desktop with a keyboard
+    /// and a mouse and nothing else never sees one, so this behaves like
+    /// [`OskMode::Manual`] there without a config file having to say so.
+    Auto,
+    /// Never raises itself; only `Mod4+Shift+k`, or the keyboard's own hide
+    /// button once it is up, brings it up or down. For a desk that has a
+    /// keyboard already and wants the on-screen one kept out of the way but
+    /// not out of reach.
+    Manual,
+    /// Neither raises itself nor answers the chord. `Mod4+Shift+k` is bound
+    /// to nothing else while this is set, so pressing it does exactly
+    /// nothing — a deliberate consequence of asking for the keyboard gone
+    /// entirely, not a bug in the keymap. See `commands.js`'s `osk` case in
+    /// the shell for where that is enforced, since the chord reaches the
+    /// shell as a plain `shell osk` action the compositor does not itself
+    /// interpret.
+    Off,
+}
+
+impl OskMode {
+    /// The spelling this reads back as, over the config event to the shell —
+    /// kept next to [`parse_osk_mode`] so the two stay in agreement about
+    /// what the three values are called.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OskMode::Auto => "auto",
+            OskMode::Manual => "manual",
+            OskMode::Off => "off",
+        }
+    }
+}
+
+/// What `osk` in the config file accepts.
+///
+/// Unknown is an error rather than a silent `"auto"`, for the same reason
+/// [`parse_pixel_format`] refuses a bad value instead of guessing: a typo
+/// here would leave someone's hardware-keyboard desktop with the popup they
+/// were trying to turn off, and no indication the setting was ignored.
+pub fn parse_osk_mode(value: &str) -> anyhow::Result<OskMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(OskMode::Auto),
+        "manual" => Ok(OskMode::Manual),
+        "off" => Ok(OskMode::Off),
+        _ => Err(anyhow::anyhow!(
+            "osk mode {value:?} is not one of auto, manual or off"
+        )),
+    }
+}
+
 /// Percent-encode everything a path may contain that a URI may not.
 ///
 /// `/` is kept, because it is the path separator rather than data. Everything
@@ -843,6 +917,36 @@ mod tests {
         assert!(parse_pixel_format("16").is_err());
         assert!(parse_pixel_format("argb8888").is_err());
         assert!(parse_pixel_format("bit").is_err());
+    }
+
+    #[test]
+    fn an_osk_mode_names_the_three_things_someone_can_mean() {
+        assert_eq!(parse_osk_mode("auto").unwrap(), OskMode::Auto);
+        assert_eq!(parse_osk_mode("manual").unwrap(), OskMode::Manual);
+        assert_eq!(parse_osk_mode("off").unwrap(), OskMode::Off);
+        // Trimmed and case-folded, the same forgiveness pixel_format gets —
+        // a config file is typed by hand and "Off" is as clear as "off".
+        assert_eq!(parse_osk_mode(" Off ").unwrap(), OskMode::Off);
+        assert_eq!(parse_osk_mode("MANUAL").unwrap(), OskMode::Manual);
+    }
+
+    #[test]
+    fn an_osk_mode_round_trips_through_its_own_spelling() {
+        // as_str is what state.rs hands the shell back over the config event;
+        // it has to agree with what parse_osk_mode accepted or a reload could
+        // display a mode the file never actually asked for.
+        for mode in [OskMode::Auto, OskMode::Manual, OskMode::Off] {
+            assert_eq!(parse_osk_mode(mode.as_str()).unwrap(), mode);
+        }
+    }
+
+    #[test]
+    fn an_osk_mode_that_is_not_one_of_the_three_is_reported_not_ignored() {
+        // A typo silently falling back to auto would leave the keyboard
+        // popping up on exactly the desk that configured it to stop.
+        assert!(parse_osk_mode("").is_err());
+        assert!(parse_osk_mode("never").is_err());
+        assert!(parse_osk_mode("true").is_err());
     }
 
     #[test]

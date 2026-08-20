@@ -321,6 +321,9 @@ window.addEventListener('viewport', (event) => {
       applyBarMode(message.bar);
       applyBarWidgets(message.bar_widgets);
       applyBarItems(message.bar_items);
+      /* 'auto', 'manual' or 'off' — see applyOskMode in osk.js for what
+         changing it does to a keyboard already on screen. */
+      applyOskMode(message.osk);
       /* Absent means on: a config file that says nothing should get the
          explanation, and only someone who has read it once turns it off. */
       document.documentElement.classList.toggle('no-logo',

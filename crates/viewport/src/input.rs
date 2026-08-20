@@ -913,6 +913,19 @@ impl ViewportState {
     /// Notifies only on the edge — see `osk_wanted`'s own doc comment in
     /// `state.rs` for why sending on every check would be worse than the gap
     /// this leaves.
+    ///
+    /// What "wanted" means is gated by `osk_mode`, config's `osk` key. Under
+    /// `OskMode::Manual` and `OskMode::Off` a text-input enabling is never
+    /// enough on its own — the keyboard only comes up if somebody reaches
+    /// for the chord, which this function has no part in — so `wanted` is
+    /// forced false before it ever reaches `osk_wanted` or a notification.
+    /// Under `OskMode::Auto` it is further gated on `osk_touch_seen`: raising
+    /// the keyboard for every enabled text-input regardless of hardware is
+    /// right for a tablet, where the desk has no other way to type, and
+    /// wrong for the desk that has a keyboard and a mouse and nothing
+    /// touch-capable at all, where it is only ever in the way. See that
+    /// field's own doc comment in `state.rs` for why it is sticky rather than
+    /// a live reading of the seat.
     pub fn sync_osk_wanted(&mut self) {
         use smithay::wayland::text_input::TextInputSeat as _;
 
@@ -920,6 +933,11 @@ impl ViewportState {
         self.seat
             .text_input()
             .with_active_text_input(|_text_input, _surface| wanted = true);
+
+        wanted = match self.osk_mode {
+            crate::config::OskMode::Auto => wanted && self.osk_touch_seen,
+            crate::config::OskMode::Manual | crate::config::OskMode::Off => false,
+        };
 
         if wanted == self.osk_wanted {
             return;
@@ -1732,6 +1750,22 @@ impl ViewportState {
                     let dh = self.display_handle.clone();
                     self.seat.tablet_seat().add_wp_tablet(&dh, &descriptor);
                     tracing::info!("tablet: {}", descriptor.name);
+                }
+                // Sticky rather than toggled back off in DeviceRemoved — see
+                // `osk_touch_seen`'s own doc comment in state.rs for why a
+                // touchscreen unplugging mid-session should not be the thing
+                // that stops the on-screen keyboard raising itself.
+                if device.has_capability(smithay::backend::input::DeviceCapability::Touch)
+                    && !self.osk_touch_seen
+                {
+                    self.osk_touch_seen = true;
+                    // Recomputed immediately rather than waiting for the next
+                    // commit or focus change: a touchscreen appearing after
+                    // login (a USB panel plugged in, a Bluetooth one paired)
+                    // should be able to raise the keyboard for whatever
+                    // already has an enabled text-input, not only for the
+                    // next thing focused after it.
+                    self.sync_osk_wanted();
                 }
             }
             InputEvent::DeviceRemoved { device } => {

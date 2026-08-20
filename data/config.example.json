@@ -131,6 +131,17 @@
   ],
   "decorations": "server",
 
+  "_osk": [
+    "\"auto\" raises the on-screen keyboard for a focused text-input by",
+    "itself, but only once the seat has actually seen a touch device — a",
+    "desk with just a keyboard and a mouse never does, so this is the same",
+    "as \"manual\" there. \"manual\" never raises it on its own, but",
+    "Mod4+Shift+k still does. \"off\" does neither: the chord is bound to",
+    "nothing else while this is set, so pressing it does nothing at all,",
+    "which is deliberate rather than a keymap left incomplete."
+  ],
+  "osk": "auto",
+
   "_empty": [
     "What the shell draws when a workspace has no windows: the mark, and the",
     "note naming the keys that open something. Worth having the first time",
