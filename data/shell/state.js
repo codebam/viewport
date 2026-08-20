@@ -171,6 +171,13 @@ let bluetoothOpen = false;
  * they arrive on every copy and the picker opens without waiting for one. */
 let clipboardEntries = [];
 let clipboardOpen = false;
+/* What has been notified, as the compositor last sent it, and whether the
+ * centre is on screen. Kept whether or not it is open, for the same reason the
+ * clipboard's entries are: they arrive as things happen and the centre opens
+ * without waiting for one. The list itself lives in the compositor — this is a
+ * copy of what it last said, and a reload asks again. */
+let notificationHistory = [];
+let notificationCentreOpen = false;
 let currentMode = 'default';
 /* The layout models the shell implements. Set by the compositor from the
  * config file, and switched at runtime with `shell layout.model`.
@@ -324,6 +331,7 @@ function dropOverlaysForOutput(name) {
 const screencastEl = document.getElementById('screencast');
 const trayMenuEl = document.getElementById('tray-menu');
 const clipboardEl = document.getElementById('clipboard');
+const notificationCentreEl = document.getElementById('notification-centre');
 const powerEl = document.getElementById('power-picker');
 const networkEl = document.getElementById('network-picker');
 const bluetoothEl = document.getElementById('bluetooth-picker');

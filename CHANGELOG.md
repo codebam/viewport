@@ -23,6 +23,21 @@ to summarise rather than to duplicate.
   and answering with another is worse than announcing nothing.
 
 ### Added
+- A notification centre. A notification was a popup and then it was nothing:
+  one that arrived over a fullscreen window, or while the screens were
+  blanked, was never seen and could not be gone back to — which is what every
+  desktop's notification centre is for, and what a second daemon is usually
+  installed to keep, while the only copy that ever existed was already in this
+  process on its way to the shell. The compositor now keeps the last 50
+  (`notifications.history`; `0` keeps none) and the shell draws them at
+  `Mod4+Shift+m`, with the application's own action buttons still on each row.
+  Popups that expired or were dismissed stay in the list; ones that were acted
+  on, or withdrawn by the application that sent them, leave it. The record is
+  the compositor's rather than the page's because the shell restarts when it
+  crashes and reloads when its stylesheet changes, and a history kept there
+  would be lost by both. Two new messages, `notification.list` and
+  `notification.forget`, and `notification.add` now carries the time it
+  arrived.
 - Global shortcuts: `org.freedesktop.impl.portal.GlobalShortcuts`, which is
   how a chat program gets push-to-talk and a recorder gets a start key that
   works while somebody is typing in another window. X11 gave those out as

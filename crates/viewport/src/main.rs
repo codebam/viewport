@@ -607,9 +607,25 @@ fn run() -> Result<()> {
                 };
                 match message {
                     crate::notification::Message::Add(notification) => {
+                        // Kept before it is drawn. The popup is the part that
+                        // goes away; this is the part that is still there
+                        // afterwards, and a shell that never draws the popup
+                        // — one still starting, one on a blanked screen —
+                        // has not cost the record of it.
+                        if state.notification_history.record(&notification) {
+                            state.publish_notification_history();
+                        }
                         state.notify(&viewport_ipc::Event::NotificationAdd(*notification));
                     }
                     crate::notification::Message::Close(id) => {
+                        // Withdrawn by the sender rather than seen and
+                        // dismissed by the user: a progress bar that finished,
+                        // a chat message read on the phone instead. Keeping it
+                        // in the centre would be keeping a message its own
+                        // application says is no longer true.
+                        if state.notification_history.forget(id) {
+                            state.publish_notification_history();
+                        }
                         state.notify(&viewport_ipc::Event::NotificationClose { id });
                         // And tell the sender, which the specification requires
                         // and this did not do: a notification closed by

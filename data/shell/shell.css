@@ -583,6 +583,126 @@ html.behind body { background: transparent; }
 }
 .clipboard-clear:hover { color: var(--urgent); }
 
+/* The notification centre — what was notified, after the popups have gone.
+ *
+ * The same box-and-dialog shape as the clipboard picker above, and positioned
+ * the same way for the same reason. What differs is the row: a clipboard entry
+ * is one line of text and a notification is a small document — an app, a time,
+ * a summary, a body and possibly buttons — so rows here are blocks that wrap
+ * rather than lines that ellipsize. The centre is read, not scanned.
+ *
+ * The popups themselves are `.notification`, further up: same messages, and a
+ * different thing on screen. */
+#notification-centre {
+  position: fixed;
+  /* Beside the clipboard picker in the stack, and for the same reasons: over
+     the popups, under the share chooser. */
+  z-index: 160;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+#notification-centre[hidden] { display: none; }
+
+.notification-centre-dialog {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  width: 26rem;
+  max-width: 80%;
+  max-height: 70%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  font-size: .85rem;
+  overflow: hidden;
+}
+.notification-centre-list { overflow-y: auto; padding: .35rem; }
+.notification-centre-row {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  padding: .5rem .6rem;
+  border-radius: var(--radius-sm);
+}
+.notification-centre-row + .notification-centre-row {
+  border-top: 1px solid var(--border);
+}
+/* Only the rows that do something on click say so. A row with no default
+   action is text, and a pointer over text that cannot be pressed is a promise
+   the list does not keep. */
+.notification-centre-clickable { cursor: pointer; }
+.notification-centre-clickable:hover { background: var(--fill-hover); }
+.notification-centre-head {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  color: var(--muted);
+  font-size: .75rem;
+}
+.notification-centre-app { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notification-centre-age { flex: none; }
+.notification-centre-forget {
+  flex: none;
+  padding: 0 .2rem;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.notification-centre-forget:hover { color: var(--urgent); }
+.notification-centre-summary { color: var(--text); font-weight: 600; }
+/* Wrapped rather than clipped: a notification body is the message itself, and
+   a centre that shows the first line of it is a centre that answers "was there
+   something?" and not "what was it?". Bounded so one long message cannot make
+   the whole list scroll past everything else. */
+.notification-centre-body {
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 8rem;
+  overflow-y: auto;
+}
+/* Urgency, as the popups draw it: critical stands out and low recedes. */
+.notification-centre-row.urgency-2 .notification-centre-summary { color: var(--urgent); }
+.notification-centre-row.urgency-0 { opacity: .75; }
+.notification-centre-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem;
+  margin-top: .2rem;
+}
+.notification-centre-actions button {
+  padding: .2rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.notification-centre-actions button:hover { background: var(--fill-hover); }
+.notification-centre-empty { padding: 1rem; color: var(--muted); text-align: center; }
+.notification-centre-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: .35rem .6rem;
+  border-top: 1px solid var(--border);
+}
+.notification-centre-clear {
+  padding: .2rem .5rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.notification-centre-clear:hover { color: var(--urgent); }
+
 /* The two radio pickers: Wi-Fi and Bluetooth.
  *
  * One set of rules for both, because they are the same picker twice — the

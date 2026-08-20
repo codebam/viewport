@@ -176,6 +176,10 @@ const notificationsEl = new El('div');
 const trayMenuEl = new El('div');
 /* And the clipboard picker. */
 const clipboardEl = new El('div');
+/* And the notification centre, for the same reason: what a forget leaves
+   behind is only visible if the element the shell drew into is the one the
+   test reads back. */
+const notificationCentreEl = new El('div');
 const powerEl = new El('div');
 /* And the two radio pickers, which are one element each for the same reason:
    what a click on a row left behind is only visible if the element the shell
@@ -214,6 +218,7 @@ global.document = {
     screencast: screencastEl,
     'tray-menu': trayMenuEl,
     clipboard: clipboardEl,
+    'notification-centre': notificationCentreEl,
     'power-picker': powerEl,
     'network-picker': networkEl,
     'bluetooth-picker': bluetoothEl,
@@ -388,6 +393,11 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      see what was drawn and fire the click that missed it. */
   + ' get trayMenuEl() { return trayMenuEl; },'
   + ' get clipboardEl() { return clipboardEl; },'
+  + ' get notificationCentreEl() { return notificationCentreEl; },'
+  /* The age formatter, which is the one piece of the centre with an
+     answer a test can state exactly: everything else it draws is text
+     handed to it. */
+  + ' notificationAgeForTest: notificationAge,'
   + ' get powerEl() { return powerEl; },'
   + ' get networkEl() { return networkEl; },'
   + ' get bluetoothEl() { return bluetoothEl; },'
@@ -851,6 +861,108 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'shell.command', command: 'clipboard', args: [] });
   check('and the binding closes it again when it is already open',
     picker().hidden === true);
+}
+
+/* The notification centre. A popup is a moment; this is the record of it, kept
+ * by the compositor because the shell is a page that restarts and reloads.
+ * What is checked here is that the page draws the list it is given, sends the
+ * two verbs back, and does not throw away what it cannot act on. */
+{
+  const centre = () => globalThis.__shell.notificationCentreEl;
+  const dialog = () => centre().children[0];
+  const rows = () => (dialog()?.children[0]?.children ?? [])
+    .filter((el) => el._classes.has('notification-centre-row'));
+  const click = (el, event = {}) => (el.listeners.click ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, ...event }));
+  const fire = (type) => (documentListeners[type] ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+  const now = Math.floor(Date.now() / 1000);
+
+  emit({ type: 'notification.history', entries: [
+    { id: 3, app_name: 'chat', summary: 'newest', body: 'a message',
+      urgency: 1, timeout: -1, actions: [], at: now - 30 },
+    { id: 2, app_name: 'mail', summary: 'middle', body: 'another',
+      urgency: 1, timeout: -1,
+      actions: [{ key: 'default', label: 'Open' }, { key: 'read', label: 'Mark read' }],
+      at: now - 7200 },
+    { id: 1, app_name: 'backup', summary: 'oldest', body: '', urgency: 0,
+      timeout: -1, actions: [], at: 0 },
+  ] });
+  check('the history is kept but not drawn until the centre is asked for',
+    centre().children.length === 0);
+
+  let before = sent.length;
+  emit({ type: 'shell.command', command: 'notifications', args: [] });
+  check('the binding opens the centre', centre().hidden === false);
+  check('and it asks the compositor for the history now',
+    sent.slice(before).some((m) => m.type === 'notification.list'));
+  check('every notification is a row, newest first', rows().length === 3 &&
+    rows()[0].children[1].textContent === 'newest');
+
+  /* The body is drawn in full rather than on one line: a centre that shows
+     the first line answers "was there something?" and not "what was it?". */
+  check('the body is drawn under the summary',
+    rows()[0].children[2].textContent === 'a message');
+
+  before = sent.length;
+  click(rows()[0].children[0].children[2]);
+  check('the cross on a row forgets that notification',
+    sent.slice(before).some((m) => m.type === 'notification.forget' && m.id === 3));
+  check('and forgetting one leaves the centre open', centre().hidden === false);
+
+  before = sent.length;
+  const buttons = rows()[1].children[3];
+  click(buttons.children[0]);
+  check('an action button sends the same message the popup sends',
+    sent.slice(before).some((m) => m.type === 'notification.action' &&
+      m.id === 2 && m.action === 'read'));
+
+  before = sent.length;
+  click(rows()[1]);
+  check('and clicking a row with a default action invokes it',
+    sent.slice(before).some((m) => m.type === 'notification.action' &&
+      m.id === 2 && m.action === 'default'));
+
+  before = sent.length;
+  click(rows()[2]);
+  check('while a row with no default action does nothing at all',
+    !sent.slice(before).some((m) => m.type === 'notification.action'));
+
+  before = sent.length;
+  const footer = dialog().children[1];
+  click(footer.children[0]);
+  check('clearing names no notification at all',
+    sent.slice(before).some((m) => m.type === 'notification.forget' &&
+      m.id === undefined));
+
+  emit({ type: 'notification.history', entries: [] });
+  check('an emptied history redraws the open centre', rows().length === 0);
+
+  before = sent.length;
+  fire('click');
+  check('a click that missed takes the centre down', centre().hidden === true);
+  check('so nothing of it is drawn over the windows any more',
+    !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
+      ?.rects ?? []).some((r) => r.name === 'notifications-centre'));
+
+  emit({ type: 'shell.command', command: 'notifications', args: [] });
+  emit({ type: 'shell.command', command: 'notifications', args: [] });
+  check('and the binding closes it again when it is already open',
+    centre().hidden === true);
+
+  /* The ages. Seconds are not drawn — eleven seconds ago and forty are the
+     same thing to somebody reading a list — and an unstamped notification
+     draws as nothing rather than as 1970. */
+  const age = globalThis.__shell.notificationAgeForTest;
+  const stamp = 1_700_000_000;
+  check('a notification from seconds ago is "just now"',
+    age(stamp, stamp * 1000 + 30_000) === 'just now');
+  check('minutes are minutes', age(stamp, stamp * 1000 + 5 * 60_000) === '5m ago');
+  check('hours are hours', age(stamp, stamp * 1000 + 3 * 3600_000) === '3h ago');
+  check('and anything older than a day is a date rather than arithmetic',
+    !/ago$/.test(age(stamp, stamp * 1000 + 48 * 3600_000)));
+  check('an unstamped notification says nothing about when it arrived',
+    age(0) === '');
 }
 
 /* Placement on a two-monitor desk. The shell is one page spanning the whole

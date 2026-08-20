@@ -40,6 +40,14 @@
 <div id="clipboard" hidden></div>
 
 <!--
+  The notification centre, opened with Mod4+Shift+m. Page level for the same
+  reason as the picker above: what has been notified belongs to the session
+  rather than to one desktop, and the list is drawn over whichever one is
+  being looked at.
+-->
+<div id="notification-centre" hidden></div>
+
+<!--
   The power-profile picker, opened by clicking the battery widget. Page
   level like the clipboard: it belongs to the session rather than to one
   desktop.
@@ -159,6 +167,7 @@ Mod4+d       launcher</pre>
 <script src="windows.js"></script>
 <script src="bar.js"></script>
 <script src="clipboard.js"></script>
+<script src="notifications.js"></script>
 <script src="power.js"></script>
 <script src="network.js"></script>
 <script src="screencast.js"></script>

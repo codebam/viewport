@@ -146,6 +146,7 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+Shift+q` / `+e` / `+c` | close / exit / reload the shell |
 | `Mod4+Shift+Return` | give the keyboard to the wallpaper terminal, and take it back |
 | `Mod4+Shift+v` | the clipboard history |
+| `Mod4+Shift+m` | the notification centre |
 | `Mod4+Shift+n` / `Mod4+Shift+t` | the Wi-Fi picker / the Bluetooth picker |
 | `Mod4+Shift+k` | the on-screen keyboard, which otherwise comes up on its own |
 
@@ -987,7 +988,8 @@ no notification daemon left to configure.
 {
   "notifications": {
     "sound_file": "/run/current-system/sw/share/sounds/…/message.oga",
-    "sound_name": "message-new-instant"   // ignored when sound_file is set
+    "sound_name": "message-new-instant",  // ignored when sound_file is set
+    "history": 50                         // 0 keeps no record at all
   }
 }
 ```
@@ -1082,6 +1084,44 @@ that rectangle would be drawn behind the window it is meant to be over. See
 Where the tray sits on the bar is the shell's business, like every other bar
 item: it is `tray` in `bar_items`, and it draws nothing at all when there is
 nothing registered.
+
+## The notification centre
+
+On by default, keeping the last 50 notifications.
+
+A notification is a popup and then it is nothing. One that arrived over a
+fullscreen game, or while the screens were blanked, or in the ninety seconds
+somebody was making coffee, was never seen and cannot be gone back to — which
+is what every desktop's notification centre is for, and what a second daemon is
+usually installed to keep. The compositor is already that daemon: it claims
+`org.freedesktop.Notifications`, so the only copy that ever existed was already
+in this process on its way to the shell.
+
+`Mod4+Shift+m` opens the centre. It is drawn by the shell, so it is styled by
+the stylesheet already open in the editor, like the popups themselves. A row's
+✕ forgets that notification, the footer forgets all of them, and a row whose
+application offered buttons still has them: pressing one tells the application
+exactly what pressing it on the popup would have.
+
+What stays and what goes:
+
+| | |
+| --- | --- |
+| the popup timed out | kept — this is the case the centre exists for |
+| dismissed with its ✕ | kept: the popup went, which is not the same as dealt with |
+| an action was pressed | gone — a mail opened is not something to go back to |
+| the application withdrew it | gone: it says the message is no longer true |
+| forgotten from the centre | gone, and the application is not told |
+
+The record is the compositor's rather than the shell's, and deliberately: the
+shell is a web page, restarted when it crashes and reloaded when its stylesheet
+changes, and a history kept there would be lost by both. It is memory only —
+nothing is written to disk, so a compositor that exits takes the list with it.
+
+`"history": 0` turns it off: popups are drawn and nothing is kept, which is
+what a session that would rather not hold a list of everything that notified it
+asks for. The setting applies on reload, and lowering it drops the oldest
+entries there and then rather than waiting for them to age out.
 
 ## The clipboard history
 

@@ -170,6 +170,11 @@ run clipboard "$root/tests/clipboard.test.sh" "$VIEWPORT"
 # for the shell process. Skips (77) without python3.
 run shell-stop "$root/tests/shell-stop.test.sh" "$VIEWPORT"
 
+# What is kept after a popup has gone: the notification on the bus, and the
+# history read back the way the shell's centre reads it. Needs gdbus and a
+# private bus, and skips (77) without either.
+run notification-centre "$root/tests/notification-centre.test.sh" "$VIEWPORT"
+
 run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"
 run session-lock-takeover "$root/tests/lock-takeover.test.sh" \

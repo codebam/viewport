@@ -174,6 +174,11 @@ pub struct ViewportState {
     pub startup: Option<String>,
     /// The D-Bus notification service, forwarding to the shell.
     pub notifications: crate::notification::Notifications,
+    /// What was notified, kept after the popup has gone.
+    ///
+    /// Here rather than in the shell because the shell is a page that
+    /// restarts and reloads; see `crate::notification::History`.
+    pub notification_history: crate::notification::History,
     /// The system tray, forwarded to the shell the same way.
     pub tray: crate::tray::Tray,
     /// What is playing, for the bar's media widget. Idle unless one is on it.
@@ -1268,6 +1273,7 @@ impl ViewportState {
             output_memory: std::collections::HashMap::new(),
             startup: None,
             notifications: crate::notification::Notifications::default(),
+            notification_history: crate::notification::History::default(),
             tray: crate::tray::Tray::default(),
             mpris: crate::mpris::Mpris::default(),
             power: crate::power::Power::default(),
@@ -6729,6 +6735,20 @@ impl ViewportState {
                 file.notifications.sound_file.as_deref(),
                 file.notifications.sound_name.as_deref(),
             ));
+
+        // How much of a record to keep, on the same terms: applied on every
+        // load, so a reload that lowers it drops the oldest entries there and
+        // then, and one that sets zero empties the centre rather than leaving
+        // what is already in it behind a setting that says it keeps nothing.
+        let before = self.notification_history.entries().len();
+        self.notification_history.set_limit(
+            file.notifications
+                .history
+                .unwrap_or(crate::notification::DEFAULT_HISTORY),
+        );
+        if self.notification_history.entries().len() != before {
+            self.publish_notification_history();
+        }
 
         // The tray, on unless the file turns it off. Applied on every load, so
         // a reload that flips it claims or releases the bus names then and

@@ -127,6 +127,31 @@ pub enum Request {
     #[serde(rename = "notification.expire")]
     NotificationExpire { id: u32 },
 
+    /// Send the history back, as `notification.history`.
+    ///
+    /// Asked for when the centre opens. The compositor also sends it
+    /// unprompted whenever it changes, so a centre already open stays right
+    /// without asking again.
+    #[serde(rename = "notification.list")]
+    NotificationList,
+
+    /// Drop one notification from the history, or all of them.
+    ///
+    /// `id` absent is "forget everything", which is the button at the bottom
+    /// of the centre — the same shape as `clipboard.forget`, and for the same
+    /// reason: one verb, because a list and a row are the same act at
+    /// different scales.
+    ///
+    /// Forgetting is not closing. A notification the sender still considers
+    /// open is not reported closed by this: the sender was already told when
+    /// the popup went, and being tidied out of a list the sender cannot see
+    /// is not an event it has any use for.
+    #[serde(rename = "notification.forget")]
+    NotificationForget {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
+    },
+
     /// A tray item was clicked, or scrolled over.
     ///
     /// The shell draws the tray, so the shell is what knows which item was

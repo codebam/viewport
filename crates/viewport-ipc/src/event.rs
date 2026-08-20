@@ -123,6 +123,19 @@ pub enum Event {
     #[serde(rename = "notification.close")]
     NotificationClose { id: u32 },
 
+    /// Everything the compositor is still keeping, newest first.
+    ///
+    /// A popup is a moment and this is the record of it. The same shape as
+    /// `clipboard.history` and for the same reason: a notification centre is
+    /// a list redrawn whole, so reconciling add and remove messages in the
+    /// shell would be work spent to save a few hundred bytes on a message
+    /// that arrives when something notifies.
+    ///
+    /// Sent whenever the history changes, and in answer to
+    /// `notification.list`.
+    #[serde(rename = "notification.history")]
+    NotificationHistory { entries: Vec<Notification> },
+
     /// The system tray, whole, every time any part of it changes.
     ///
     /// Not a stream of add, change and remove messages. A tray is a handful of
@@ -700,6 +713,20 @@ pub struct Notification {
     pub timeout: i32,
 
     pub actions: Vec<NotificationAction>,
+
+    /// When it arrived, in seconds since the epoch.
+    ///
+    /// A popup does not need this — it is on screen now — but the centre
+    /// does: a list of messages with no times on them is a list nobody can
+    /// place. Stamped by the compositor when the notification is taken off
+    /// the bus rather than by the shell when it draws it, because a shell
+    /// that restarts redraws a history it did not witness arriving.
+    ///
+    /// Defaulted so that a shell or a test that builds a notification without
+    /// one still deserialises; zero means "not stamped", which the shell
+    /// draws as no time rather than as 1970.
+    #[serde(default)]
+    pub at: u64,
 }
 
 /// One entry in the system tray.
@@ -1462,8 +1489,12 @@ mod tests {
                 urgency: 1,
                 timeout: -1,
                 actions: Vec::new(),
+                at: 0,
             })),
             json(&Event::NotificationClose { id: 1 }),
+            json(&Event::NotificationHistory {
+                entries: Vec::new(),
+            }),
             json(&Event::ClipboardHistory {
                 entries: Vec::new(),
             }),
@@ -1518,6 +1549,7 @@ mod tests {
                 "session.restore",
                 "notification.add",
                 "notification.close",
+                "notification.history",
                 "clipboard.history",
                 "mpris.update",
                 "power.update",

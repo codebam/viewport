@@ -71,8 +71,9 @@ of what was asked.
 | `shell.command` | `command`, `args[]` — a keybinding forwarded for the shell to act on |
 | `session.restore` | `state` (whatever was last saved, or empty) |
 | `status.update` | `cpu`, `memory`, `load`, `net_rx`, `net_tx`, `disk_free`, `disk_total` |
-| `notification.add` | `id`, `app_name`, `icon`, `summary`, `body`, `urgency`, `timeout`, `actions[]` with `key` and `label` |
+| `notification.add` | `id`, `app_name`, `icon`, `summary`, `body`, `urgency`, `timeout`, `at` (seconds since the epoch, `0` where it was not stamped), `actions[]` with `key` and `label` |
 | `notification.close` | `id` — the application withdrew it |
+| `notification.history` | `entries[]`, each shaped exactly like a `notification.add` — what has been notified and is still kept, newest first, whenever it changes and in answer to `notification.list`. The record the compositor keeps once the popup has gone; a notification acted on or withdrawn by its sender leaves it, one that merely expired or was dismissed stays. Empty when `notifications.history` is `0` |
 | `tray.update` | `items[]` with `id`, `title`, `status` (`active`, `passive`, `needs-attention`), `icon` (a `data:` URL, or absent), `tooltip`, `is_menu`, `has_menu` — the system tray, whole, whenever any part of it changes |
 | `clipboard.history` | `entries[]` with `id` and `text` — the clipboard history, newest first, whenever it changes and in answer to `clipboard.query` |
 | `mpris.update` | `player` with `id`, `title`, `artist`, `album`, `status` (`playing`, `paused`, `stopped`), `art`, `can_go_next`, `can_go_previous`, `can_pause`, `can_play` — what is playing, when it changes. Absent `player` means nothing is. Sent only while a media widget is on the bar |
@@ -135,6 +136,8 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `notification.action` | `id`, `action` (the key the application supplied, not the label) |
 | `notification.dismiss` | `id` |
 | `notification.expire` | `id` |
+| `notification.list` | — the history, please; what the centre asks when it opens |
+| `notification.forget` | optional `id` — forget one, or all of them. Forgetting is not closing: no sender is told, because it was already told when the popup went |
 | `tray.activate` | `id` (from `tray.update`), `button` (`primary`, `secondary` or `menu`), `x`, `y` — where the icon is, which is where the application will put its own menu |
 | `tray.scroll` | `id`, `delta` (wheel steps, positive is up), `orientation` (`vertical` or `horizontal`) |
 | `clipboard.query` | — the history, please; what the picker asks when it opens |

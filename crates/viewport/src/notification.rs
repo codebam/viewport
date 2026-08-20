@@ -215,6 +215,7 @@ impl Server {
             urgency: urgency(&hints),
             timeout: expire_timeout,
             actions: parse_actions(&actions),
+            at: now(),
         };
         let _ = self.sender.send(Message::Add(Box::new(notification)));
         id
@@ -260,6 +261,119 @@ impl Server {
 ///
 /// A trailing key with no label is dropped rather than shown with an empty
 /// one: a button with no text is a button nobody can use.
+/// Seconds since the epoch, or zero if the clock is before it.
+///
+/// Zero is also what a notification built without a stamp carries, and the
+/// shell draws both the same way — as no time rather than as 1970.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0)
+}
+
+/// How many notifications are kept unless the configuration says otherwise.
+///
+/// A centre is read by scrolling, and the entries below the first screenful
+/// are ones somebody is looking for rather than at. Fifty is a working day of
+/// an ordinary desk and a few hundred kilobytes at the outside.
+pub const DEFAULT_HISTORY: usize = 50;
+
+/// What was notified, kept after the popup has gone.
+///
+/// A notification is a popup and then it is nothing: one that arrived over a
+/// fullscreen game, or while the screens were blanked, was never seen and
+/// cannot be gone back to. That is what every desktop's notification centre
+/// is for — and what a second daemon is usually installed to keep, while the
+/// only copy that ever existed was in this process, on its way to the shell.
+///
+/// So it is kept here rather than in the shell. The shell is a web page that
+/// is restarted when it crashes and reloaded when its stylesheet changes, and
+/// a history that lived there would be lost by both. This survives either,
+/// because the page asks for it again on load — see `notification.list`.
+///
+/// Newest first, which is the order a centre shows them in.
+pub struct History {
+    entries: Vec<Notification>,
+    limit: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            limit: DEFAULT_HISTORY,
+        }
+    }
+}
+
+impl History {
+    /// How many to keep. Zero turns the centre off and empties it, which is
+    /// what a session that would rather keep no record asks for.
+    ///
+    /// Applied on reload as well as at startup, so lowering it takes the
+    /// oldest entries away rather than waiting for them to age out.
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit;
+        self.trim();
+    }
+
+    pub fn entries(&self) -> &[Notification] {
+        &self.entries
+    }
+
+    /// Record one, and say whether anything changed.
+    ///
+    /// A replacement — a sender reusing its own id for a progress bar, a chat
+    /// window counting up — replaces the entry it names rather than stacking
+    /// beside it, and moves to the top: it is news again. Without that a file
+    /// copy would fill the centre by itself.
+    pub fn record(&mut self, notification: &Notification) -> bool {
+        if self.limit == 0 {
+            return false;
+        }
+        self.entries.retain(|kept| kept.id != notification.id);
+        self.entries.insert(0, notification.clone());
+        self.trim();
+        true
+    }
+
+    /// Drop one, and say whether it was there.
+    pub fn forget(&mut self, id: u32) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|kept| kept.id != id);
+        self.entries.len() != before
+    }
+
+    /// Drop all of them, and say whether there were any.
+    pub fn clear(&mut self) -> bool {
+        let had = !self.entries.is_empty();
+        self.entries.clear();
+        had
+    }
+
+    fn trim(&mut self) {
+        if self.entries.len() > self.limit {
+            self.entries.truncate(self.limit);
+        }
+    }
+}
+
+impl crate::state::ViewportState {
+    /// Send the centre what it is drawing.
+    ///
+    /// Pushed on every change rather than polled, which is what
+    /// `clipboard.history` does and for the same reason: the shell draws it
+    /// only while the centre is open, and a message on a notification is not
+    /// a message on a timer.
+    pub fn publish_notification_history(&mut self) {
+        let event = viewport_ipc::Event::NotificationHistory {
+            entries: self.notification_history.entries().to_vec(),
+        };
+        self.notify(&event);
+    }
+}
+
 fn parse_actions(flat: &[String]) -> Vec<NotificationAction> {
     flat.chunks_exact(2)
         .map(|pair| NotificationAction {
@@ -339,6 +453,98 @@ fn suppress_sound(hints: &HashMap<String, zvariant::OwnedValue>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One notification, with only the fields the history cares about set.
+    fn kept(id: u32, summary: &str) -> Notification {
+        Notification {
+            id,
+            app_name: "test".to_owned(),
+            icon: String::new(),
+            summary: summary.to_owned(),
+            body: String::new(),
+            urgency: 1,
+            timeout: -1,
+            actions: Vec::new(),
+            at: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn the_history_is_newest_first() {
+        let mut history = History::default();
+        history.record(&kept(1, "first"));
+        history.record(&kept(2, "second"));
+        let ids: Vec<u32> = history.entries().iter().map(|n| n.id).collect();
+        assert_eq!(ids, vec![2, 1]);
+    }
+
+    #[test]
+    fn a_replacement_takes_the_place_of_what_it_replaces() {
+        let mut history = History::default();
+        history.record(&kept(1, "downloading"));
+        history.record(&kept(2, "something else"));
+        history.record(&kept(1, "downloaded"));
+
+        // One entry for that sender, not two, and back at the top: it is news
+        // again. A file copy counting up would otherwise fill the centre by
+        // itself.
+        let ids: Vec<u32> = history.entries().iter().map(|n| n.id).collect();
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(history.entries()[0].summary, "downloaded");
+    }
+
+    #[test]
+    fn the_oldest_go_when_the_limit_is_reached() {
+        let mut history = History::default();
+        history.set_limit(2);
+        history.record(&kept(1, "one"));
+        history.record(&kept(2, "two"));
+        history.record(&kept(3, "three"));
+        let ids: Vec<u32> = history.entries().iter().map(|n| n.id).collect();
+        assert_eq!(ids, vec![3, 2]);
+    }
+
+    #[test]
+    fn lowering_the_limit_drops_what_is_already_over_it() {
+        // The reload case: a configuration that now keeps fewer has to take
+        // the oldest away then and there, not wait for them to age out.
+        let mut history = History::default();
+        for id in 1..=5 {
+            history.record(&kept(id, "x"));
+        }
+        history.set_limit(2);
+        assert_eq!(history.entries().len(), 2);
+    }
+
+    #[test]
+    fn a_limit_of_zero_keeps_nothing_and_empties_what_was_kept() {
+        let mut history = History::default();
+        history.record(&kept(1, "one"));
+        history.set_limit(0);
+        assert!(history.entries().is_empty());
+        assert!(!history.record(&kept(2, "two")));
+        assert!(history.entries().is_empty());
+    }
+
+    #[test]
+    fn forgetting_says_whether_there_was_anything_to_forget() {
+        let mut history = History::default();
+        history.record(&kept(1, "one"));
+        assert!(history.forget(1));
+        // Twice is not an error: a dismissal and an expiry can both land on
+        // the same id, and neither is worth a message to the shell.
+        assert!(!history.forget(1));
+        assert!(!history.clear());
+    }
+
+    #[test]
+    fn a_stamp_is_carried_through() {
+        // What the centre draws a time from. A popup does not need one; a list
+        // of messages with no times on it is a list nobody can place.
+        let mut history = History::default();
+        history.record(&kept(1, "one"));
+        assert_eq!(history.entries()[0].at, 1_700_000_000);
+    }
 
     #[test]
     fn actions_pair_up_into_buttons() {

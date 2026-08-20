@@ -206,6 +206,16 @@ const TYPES: &[Type] = &[
         hint: "--id N",
     },
     Type {
+        name: "notification.list",
+        fields: &[],
+        hint: "(the history, as the shell's centre asks for it)",
+    },
+    Type {
+        name: "notification.forget",
+        fields: &["id"],
+        hint: "[--id N] (no id forgets everything)",
+    },
+    Type {
         // The tray's ids are strings — a bus name and an object path joined —
         // rather than the numbers every other `--id` here takes.
         name: "tray.activate",
@@ -1348,10 +1358,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 54 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 56 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 54);
+        assert_eq!(TYPES.len(), 56);
     }
 
     #[test]

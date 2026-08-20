@@ -63,6 +63,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | `windows.js` | The window lifecycle: added, focused, closed, floated, fullscreened. |
 | `bar.js` | The status bar, its widgets, the system tray and its menus. |
 | `clipboard.js` | The clipboard history picker. |
+| `notifications.js` | The notification centre, opened from `Mod4+Shift+m`: what has been notified, after the popups have gone. The list itself is the compositor's — this draws it and sends back forget-one and forget-all. The popups are `session.js`, which is the same notifications and a different job. |
 | `power.js` | The power-profile picker, opened from the battery widget. |
 | `network.js` | The Wi-Fi and Bluetooth pickers, opened from `Mod4+Shift+n`, `Mod4+Shift+t` and the bar's network module. Clicked rather than steered, like the clipboard picker — and the one place in the shell that receives real typed text, because a passphrase field does: it asks for the keyboard with `shell.focus` and gives it back. |
 | `screencast.js` | The screen-share chooser, the remote-control one, and the shortcut one. Drawn here, steered from the compositor: the shell receives no input of its own, so the highlight arrives in the message. A `screencast.pick` carrying `devices` is the RemoteDesktop portal rather than ScreenCast, and the dialog asks that question instead. A `shortcuts.pick` is the third question — which keys an application may hear while something else has focus — and has no highlight at all, because the answer is yes or no to the whole list. |

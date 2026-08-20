@@ -381,6 +381,16 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             state
                 .notifications
                 .closed(id, crate::notification::CloseReason::Dismissed);
+            // Acted on is finished with. A message whose button has been
+            // pressed — a mail opened, an update started — is not something
+            // to go back to later, which is what the centre is for.
+            //
+            // Dismissing and expiring do not do this, deliberately: both mean
+            // the popup went, and the popup going is the reason a centre
+            // exists at all.
+            if state.notification_history.forget(id) {
+                state.publish_notification_history();
+            }
         }
         Request::NotificationDismiss { id } => {
             state
@@ -391,6 +401,27 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             state
                 .notifications
                 .closed(id, crate::notification::CloseReason::Expired);
+        }
+
+        // The centre. Kept by the compositor rather than by the page, because
+        // the page is restarted when it crashes and reloaded when its
+        // stylesheet changes, and a history that lived there would be lost by
+        // both — see `crate::notification::History`.
+        Request::NotificationList => {
+            state.publish_notification_history();
+        }
+
+        Request::NotificationForget { id } => {
+            // Forgetting is not closing, so no sender is told: it was already
+            // told when the popup went, and being tidied out of a list it
+            // cannot see is not an event it has any use for.
+            let changed = match id {
+                Some(id) => state.notification_history.forget(id),
+                None => state.notification_history.clear(),
+            };
+            if changed {
+                state.publish_notification_history();
+            }
         }
 
         // The shell draws the tray, so the shell is what knows which icon was

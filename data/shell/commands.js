@@ -124,6 +124,13 @@ function handleShellCommand(command, args) {
     case 'clipboard':
       toggleClipboard();
       break;
+    /* The notification centre — what was notified while nobody was looking.
+       A shell verb rather than a compositor action for the same reason the
+       clipboard picker is one: the compositor keeps the list, the page draws
+       it. */
+    case 'notifications':
+      toggleNotificationCentre();
+      break;
     /* The two radios. Bound to Mod4+Shift+n and Mod4+Shift+t, and reachable
        by clicking the bar's network module — the same two ways in the
        clipboard and the power picker have between them. */
@@ -577,6 +584,13 @@ window.addEventListener('viewport', (event) => {
       applyClipboard(message.entries ?? []);
       break;
 
+    case 'notification.history':
+      /* Sent whenever the compositor's record changes and in answer to
+         notification.list. Drawn only while the centre is open; see
+         applyNotificationHistory. */
+      applyNotificationHistory(message.entries ?? []);
+      break;
+
     case 'mpris.update':
       /* Sent when it changes rather than on the status tick, so this redraws
          the widgets and nothing else: a track starting cannot move a window. */
@@ -681,6 +695,10 @@ document.addEventListener('click', () => {
   /* And the clipboard picker, which is a menu in every way that matters: rows
      stop the event themselves, so this only sees the clicks that missed. */
   closeClipboard();
+  /* And the notification centre, on the same terms. Its rows stop the clicks
+     that act — forget, and an action button — so what reaches here is a click
+     on the list's own background or beyond it. */
+  closeNotificationCentre();
   /* And the two radio pickers, on the same terms. Closing them is not only
      tidiness: the network picker stops the scan and the Bluetooth one stops
      the discovery, so one left open by a click that missed is a radio left

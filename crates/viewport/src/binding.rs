@@ -378,6 +378,11 @@ pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
         // everyone already knows, and a shell command rather than a compositor
         // action because what a picker is belongs to the page.
         "Mod4+Shift+v=shell clipboard".to_owned(),
+        // The notification centre — the record of what was notified while
+        // nobody was looking. `m` for message, which nothing else on this
+        // modifier has claimed, and a shell verb for the reason the clipboard
+        // picker is one: the compositor keeps the list and the page draws it.
+        "Mod4+Shift+m=shell notifications".to_owned(),
         // The two radios, on the same terms as the clipboard picker above: the
         // compositor does the talking to NetworkManager and BlueZ, because the
         // page has no bus, and the shell draws the list — so these are shell
@@ -1133,12 +1138,12 @@ mod tests {
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
-        // 38 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // 39 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", "wmenu-run", "tiling");
         assert_eq!(
             bindings.len(),
-            38 + 16 + 18 + 11 + 1,
+            39 + 16 + 18 + 11 + 1,
             "a default failed to parse"
         );
 

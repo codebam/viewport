@@ -132,6 +132,8 @@ fn is_known_type(name: &str) -> bool {
             | "notification.action"
             | "notification.dismiss"
             | "notification.expire"
+            | "notification.list"
+            | "notification.forget"
             | "tray.activate"
             | "tray.scroll"
             | "clipboard.query"

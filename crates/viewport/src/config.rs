@@ -91,6 +91,17 @@ pub struct NotificationsConfig {
     /// Ignored when `sound_file` is set, for the reason `Sound::from_config`
     /// gives: a path always resolves and a name may resolve to nothing.
     pub sound_name: Option<String>,
+
+    /// How many notifications the centre keeps after their popups have gone.
+    ///
+    /// Absent is 50. Zero turns the record off: a popup is drawn and then it
+    /// is nothing, which is what this compositor did before it kept any, and
+    /// what a session that would rather not have a list of everything that
+    /// notified it asks for.
+    ///
+    /// The setting applies on reload, so lowering it drops the oldest entries
+    /// there and then rather than at the next restart.
+    pub history: Option<usize>,
 }
 
 /// The `gaps` block.

@@ -199,7 +199,13 @@
     "theme every distribution installs has no notification event of its",
     "own, so a default here would be one desktop's taste imposed on the",
     "rest. A sender's own sound-file / sound-name hints override these for",
-    "its notification, and its suppress-sound hint silences them."
+    "its notification, and its suppress-sound hint silences them.",
+    "",
+    "`history` is how many notifications the centre keeps once their popups",
+    "have gone — Mod4+Shift+m opens it. 50 unless this says otherwise; 0",
+    "keeps no record at all, for a session that would rather not hold a list",
+    "of everything that notified it. Memory only: nothing is written to disk,",
+    "so a compositor that exits takes the list with it."
   ],
   "notifications": {},
 

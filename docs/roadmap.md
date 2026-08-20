@@ -8,7 +8,11 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-Global shortcuts were the last entry taken off it —
+The notification centre was the last entry taken off it —
+`crates/viewport/src/notification.rs`'s `History` for what is kept and what
+leaves it, `data/shell/notifications.js` for the list, `notification.list` and
+`notification.forget` in `docs/ipc.md`, and `notifications.history` in
+`docs/configuration.md`. Before it, global shortcuts —
 `crates/viewport/src/shortcuts.rs`, `docs/protocols.md`'s section of that name
 for what is remembered and why, and `shortcuts.pick` in `docs/ipc.md` for the
 dialogue. Before that, modifier feedback to a libei client
@@ -44,20 +48,14 @@ out" means when the compositor *is* the session — quitting is already `exit`,
 and a menu offering both without a difference between them is a menu that
 lies.
 
-**A notification is a popup and then it is nothing.** The compositor owns
-`org.freedesktop.Notifications` (`crates/viewport/src/notification.rs`) and the
-shell draws each one as it arrives (`data/shell/session.js`); when it expires
-there is no copy of it anywhere. One that came in over a fullscreen game, or
-while the screens were blanked, was never seen and cannot be gone back to.
-That is what every desktop's notification centre is for, and what a second
-daemon is usually installed to keep — while the only copy that ever existed
-was in this process.
-
 **Nothing can say "not now".** Do-not-disturb is missing, and the two moments
 that most want it are moments this compositor can already see without being
 told: a window it made fullscreen, and a screencast session it is itself
 serving (`crates/viewport/src/screencast/`). A notification popped over a
-shared screen is the one failure mode with an audience.
+shared screen is the one failure mode with an audience. What was in the way of
+this is now built: silencing a popup is only acceptable if the notification is
+still somewhere afterwards, and `crate::notification::History` is where it
+would be — so this is a question of when to draw rather than of what to keep.
 
 **The clock is a line of text.** `clockText()` in `data/shell/bar.js` formats
 it and nothing sits under it. This is the one entry on this list that needs no
