@@ -11,6 +11,17 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Fixed
+- Dark mode is announced in both settings namespaces rather than one. The
+  toggle emitted `SettingChanged` for `org.freedesktop.appearance` only, so
+  everything reading that namespace followed and everything reading
+  `org.gnome.desktop.interface` — GTK3, which goes by the theme *name* rather
+  than the scheme — kept whatever it had read at startup. Half a desktop
+  switching looks exactly like a portal that does not work. The values are now
+  taken from the same functions `ReadAll` answers from, so what is announced
+  is what a client that re-reads on the signal is handed; announcing one value
+  and answering with another is worse than announcing nothing.
+
 ### Added
 - Modifier state sent back to a libei client, over `ei_keyboard.modifiers`.
   A remote client composes a capital the way a keyboard does — press Shift,

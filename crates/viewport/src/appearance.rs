@@ -295,17 +295,66 @@ impl Appearance {
         let Some(connection) = self.connection.as_ref() else {
             return;
         };
-        if let Err(e) = connection.emit_signal(
-            None::<&str>,
-            OBJECT_PATH,
-            INTERFACE,
-            "SettingChanged",
-            &(APPEARANCE, "color-scheme", Value::from(value)),
-        ) {
-            tracing::warn!("could not announce the colour scheme: {e}");
+        // Both namespaces, because clients read one or the other and not both.
+        //
+        // `ReadAll` answers with all three of these keys and a client reads
+        // whichever it knows, so a toggle announced in one namespace only
+        // reaches half of them: an application that read
+        // `org.freedesktop.appearance` follows, and one that read
+        // `org.gnome.desktop.interface` keeps the scheme it started with for
+        // the rest of the session and looks like a portal that does not work.
+        // GTK3 is in the second group — it reads the theme *name* — which is
+        // why `gtk-theme` is announced beside the scheme rather than left to
+        // be re-read.
+        // The values come out of the same functions `ReadAll` answers from, so
+        // a key whose spelling changes there changes here with it rather than
+        // being announced as one thing and read back as another.
+        let announced = announced(&self.settings.lock().unwrap());
+        for (namespace, key, value) in announced {
+            if let Err(e) = connection.emit_signal(
+                None::<&str>,
+                OBJECT_PATH,
+                INTERFACE,
+                "SettingChanged",
+                &(namespace, key, value),
+            ) {
+                tracing::warn!("could not announce {namespace}/{key}: {e}");
+            }
         }
         tracing::info!("color-scheme now {}", if dark { "dark" } else { "light" });
     }
+}
+
+/// The keys a change of colour scheme has to be announced under.
+///
+/// Both namespaces, because clients read one or the other and not both. An
+/// application that read `org.freedesktop.appearance` follows a toggle
+/// announced there; one that read `org.gnome.desktop.interface` keeps the
+/// scheme it started with for the rest of the session and looks like a portal
+/// that does not work. GTK3 is in the second group — it reads the theme
+/// *name* — which is why `gtk-theme` is in here beside the scheme.
+///
+/// Read out of `appearance_settings` and `gnome_settings` rather than written
+/// again, so the value announced is the value the next `ReadAll` will answer
+/// with.
+fn announced(settings: &Settings) -> Vec<(&'static str, &'static str, Value<'static>)> {
+    let appearance = appearance_settings(settings);
+    let gnome = gnome_settings(settings);
+    [
+        (APPEARANCE, "color-scheme"),
+        (GNOME, "color-scheme"),
+        (GNOME, "gtk-theme"),
+    ]
+    .into_iter()
+    .filter_map(|(namespace, key)| {
+        let value = if namespace == APPEARANCE {
+            appearance.get(key)
+        } else {
+            gnome.get(key)
+        }?;
+        Some((namespace, key, Value::from(value.clone())))
+    })
+    .collect()
 }
 
 /// The object on the bus.
@@ -393,6 +442,52 @@ mod tests {
             u32::try_from(&appearance_settings(&light)["color-scheme"]).unwrap(),
             2
         );
+    }
+
+    /// A toggle has to be announced in both namespaces. GTK3 reads the theme
+    /// name in the GNOME one and never looks at the freedesktop scheme, so a
+    /// session that announced only the latter switched the compositor, the
+    /// shell and libadwaita applications and left every GTK3 window light.
+    #[test]
+    fn a_toggle_is_announced_in_both_namespaces() {
+        let keys = announced(&dark());
+        let named: Vec<(&str, &str)> = keys
+            .iter()
+            .map(|(namespace, key, _)| (*namespace, *key))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                (APPEARANCE, "color-scheme"),
+                (GNOME, "color-scheme"),
+                (GNOME, "gtk-theme"),
+            ]
+        );
+    }
+
+    /// And what is announced is what the next read answers with. Announcing a
+    /// value that `ReadAll` does not agree with is worse than announcing
+    /// nothing: a client that re-reads on the signal — which is what a client
+    /// is supposed to do — would be handed back the value it just replaced.
+    #[test]
+    fn what_is_announced_is_what_is_answered() {
+        for settings in [
+            dark(),
+            Settings {
+                color_scheme: PREFER_LIGHT,
+                ..dark()
+            },
+        ] {
+            for (namespace, key, value) in announced(&settings) {
+                let answered =
+                    lookup(&settings, namespace, key).expect("an announced key is a readable key");
+                assert_eq!(
+                    value,
+                    Value::from(answered),
+                    "{namespace}/{key} is announced as something else"
+                );
+            }
+        }
     }
 
     #[test]

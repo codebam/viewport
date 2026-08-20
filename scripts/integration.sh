@@ -150,6 +150,9 @@ else
 	echo "=== mpris: skipped, no mpris-player to run it with"
 fi
 
+# Needs dbus-monitor and a private bus, and skips (77) without either.
+run appearance "$root/tests/appearance.test.sh" "$VIEWPORT"
+
 # Needs gdbus and a private bus, and skips (77) without either. The holder is a
 # cargo example for the reason the frontend and the tray item are: it speaks
 # D-Bus rather than Wayland. Without it the interface checks still run and the
