@@ -23,6 +23,31 @@ to summarise rather than to duplicate.
   and answering with another is worse than announcing nothing.
 
 ### Added
+- Global shortcuts: `org.freedesktop.impl.portal.GlobalShortcuts`, which is
+  how a chat program gets push-to-talk and a recorder gets a start key that
+  works while somebody is typing in another window. X11 gave those out as
+  server-side key grabs and Wayland does not, deliberately — a client that can
+  grab one chord can grab every chord — so what replaces the grab is a
+  question, and the compositor is the only thing in the session that can
+  answer it: the chord has to be resolved before the focused client is offered
+  the key. The dialogue is the one the screen-share and remote-control
+  requests already use, with a third sentence at the top and the chords listed
+  as the config file spells them, because the person answering is comparing
+  them against the keyboard in front of them. The desk's own keymap wins: a
+  shortcut is matched only after the built-in chords and everything in `binds`
+  have declined the key, so an application asking for `Mod4+Return` gets a
+  grant that never fires rather than a terminal that stops opening. A trigger
+  this keymap cannot read is refused before anybody is asked, since agreeing
+  to a chord that can never fire is agreeing to nothing while telling the
+  application it has something. A grant is remembered — by application and by
+  chord, in `~/.local/state/viewport/shortcuts.json` — which is the opposite
+  of what this compositor does with a remote-desktop grant and for a reason
+  worth stating: that one is a process that could type anything on the
+  strength of a file, this one is a single chord reaching a single application
+  while it runs, and asking again at every login is how somebody learns to
+  agree to dialogues without reading them. Both halves of a press are
+  announced, because a push-to-talk key holds a microphone open and nothing
+  else would ever say it came back up.
 - Modifier state sent back to a libei client, over `ei_keyboard.modifiers`.
   A remote client composes a capital the way a keyboard does — press Shift,
   press the letter, release both — against its own idea of the seat's state,

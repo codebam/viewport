@@ -312,6 +312,29 @@ pub enum Event {
     #[serde(rename = "screencast.pick.done")]
     ScreencastPickDone { id: u32 },
 
+    /// An application is asking to be told about a key chord it does not have
+    /// focus for — push-to-talk, a recorder's start and stop.
+    ///
+    /// Its own message rather than a third shape of `screencast.pick` because
+    /// it is a third question: not "what may this watch" or "may this drive
+    /// the machine", but "may this hear these keys, and keep hearing them".
+    /// There is nothing to highlight and nothing to step through — the answer
+    /// is yes or no to the whole list — so there is no `selected` here.
+    #[serde(rename = "shortcuts.pick")]
+    ShortcutsPick {
+        /// Which request this is, so an answer cannot land on a later one.
+        id: u32,
+        /// What the application calls itself, as the portal frontend reported
+        /// it. Empty for an application the frontend could not identify, which
+        /// a shell should say out loud rather than leave blank.
+        app: String,
+        shortcuts: Vec<ShortcutRow>,
+    },
+
+    /// The answer came, or nobody gave one. The shell takes the dialogue down.
+    #[serde(rename = "shortcuts.pick.done")]
+    ShortcutsPickDone { id: u32 },
+
     /// Throw the page away and load it again, ignoring the HTTP cache.
     ///
     /// For the shell process rather than for the page, and the only event that
@@ -330,6 +353,24 @@ pub enum Event {
     /// must see on the channel it already listens to.
     #[serde(rename = "error")]
     Error { context: String, message: String },
+}
+
+/// One shortcut an application is asking to be told about.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShortcutRow {
+    /// The application's own name for it, which comes back on every activation
+    /// so it knows which of its shortcuts fired.
+    pub id: String,
+    /// What the application says the shortcut is for, in words meant for the
+    /// person answering. This is the only thing in the dialogue that explains
+    /// *why*, so a shell should draw it even when it is empty — an application
+    /// asking for a key and declining to say what for is worth seeing.
+    pub description: String,
+    /// The chord, spelled the way `binds` in the config file spells it —
+    /// `Mod4+Shift+s` — rather than the way the portal spelled it. The person
+    /// answering has to compare it against the keyboard they already have, and
+    /// a second spelling of the same chord makes that harder for no gain.
+    pub trigger: String,
 }
 
 /// Something an application could be given a picture of.
@@ -1448,6 +1489,12 @@ mod tests {
                 devices: Vec::new(),
             }),
             json(&Event::ScreencastPickDone { id: 0 }),
+            json(&Event::ShortcutsPick {
+                id: 0,
+                app: String::new(),
+                shortcuts: Vec::new(),
+            }),
+            json(&Event::ShortcutsPickDone { id: 0 }),
             json(&Event::ShellCommand {
                 command: String::new(),
                 args: Vec::new(),
@@ -1482,6 +1529,8 @@ mod tests {
                 "output.layout",
                 "screencast.pick",
                 "screencast.pick.done",
+                "shortcuts.pick",
+                "shortcuts.pick.done",
                 "shell.command",
                 "error",
             ]

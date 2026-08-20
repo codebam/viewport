@@ -207,6 +207,31 @@ pub struct ViewportState {
     /// Locking and blanking after a while, off unless the file asks.
     pub idle: crate::idle::Idle,
     pub idle_settings: crate::idle::Settings,
+    /// Global shortcuts an application is allowed to hear, by session.
+    ///
+    /// Read on every key press that no binding claimed, which is why it is a
+    /// flat list rather than a map: it is empty on a desktop where nothing has
+    /// asked, and a handful of entries where something has.
+    pub shortcuts: Vec<crate::shortcuts::Grant>,
+    /// Which of those are held down right now, by the key that fired them, so
+    /// the release can say which shortcut stopped.
+    pub shortcuts_held: Vec<(u32, crate::shortcuts::Fired)>,
+    /// Shortcuts that fired during the key filter, waiting to be announced.
+    ///
+    /// Queued rather than emitted where they are noticed: the filter runs
+    /// inside the keyboard's own borrow of the seat, and a D-Bus write from
+    /// there would be one more thing happening under a lock that the rest of
+    /// the input path depends on.
+    pub shortcuts_to_announce: Vec<(bool, crate::shortcuts::Fired)>,
+    /// Whose request the chooser on screen is answering, when it is a
+    /// shortcuts one. The session handle is not something the person has to
+    /// read, so it travels here rather than on the `Picker` beside the chords
+    /// and the application name, which are.
+    pub pending_shortcuts: Option<(zvariant::OwnedObjectPath, String)>,
+    /// What was agreed to in earlier sessions.
+    pub shortcuts_store: crate::shortcuts::Store,
+    /// How the `Activated` and `Deactivated` signals get out.
+    pub shortcut_signals: crate::shortcuts::Signals,
     /// The `org.freedesktop.ScreenSaver` connection, kept because dropping it
     /// takes the interface off the bus. Nothing else reads it.
     pub screensaver: Option<zbus::blocking::Connection>,
@@ -1259,6 +1284,12 @@ impl ViewportState {
             status: crate::status::Status::default(),
             idle: crate::idle::Idle::default(),
             idle_settings: crate::idle::Settings::default(),
+            shortcuts: Vec::new(),
+            shortcuts_held: Vec::new(),
+            shortcuts_to_announce: Vec::new(),
+            pending_shortcuts: None,
+            shortcuts_store: crate::shortcuts::Store::load(crate::shortcuts::Store::default_path()),
+            shortcut_signals: crate::shortcuts::Signals::default(),
             screensaver: None,
             bus_inhibitors: crate::inhibit::Registry::default(),
             vt_switching: true,
@@ -4308,7 +4339,13 @@ impl ViewportState {
             return;
         }
 
-        self.raise_picker(sources, 0, crate::screencast::Reply::Cast(reply));
+        self.raise_picker(
+            sources,
+            0,
+            Vec::new(),
+            String::new(),
+            crate::screencast::Reply::Cast(reply),
+        );
     }
 
     /// Put a chooser on screen and hand the keyboard to it.
@@ -4324,6 +4361,8 @@ impl ViewportState {
         &mut self,
         sources: Vec<crate::screencast::Source>,
         devices: u32,
+        shortcuts: Vec<crate::shortcuts::Granted>,
+        app: String,
         reply: crate::screencast::Reply,
     ) {
         let id = self.next_pick;
@@ -4334,6 +4373,8 @@ impl ViewportState {
             selected: 0,
             restore: self.focused,
             devices,
+            shortcuts,
+            app,
             reply,
         });
 
@@ -4363,6 +4404,175 @@ impl ViewportState {
                 smithay::reexports::calloop::timer::TimeoutAction::Drop
             },
         );
+    }
+
+    /// Answer a global-shortcuts request.
+    ///
+    /// Three ways it can go, and only the middle one puts anything on screen.
+    /// Nothing this keymap can match is refused without asking — see
+    /// `Granted::from_request`, and note that a partial list is still put to
+    /// the person, because what they are agreeing to is what the application
+    /// will actually end up holding. A list this application has already
+    /// agreed to is granted on the spot; anything else is a dialogue.
+    pub fn handle_shortcuts(&mut self, message: crate::shortcuts::Message) {
+        match message {
+            crate::shortcuts::Message::Bind {
+                app_id,
+                session,
+                shortcuts,
+                reply,
+            } => {
+                let wanted: Vec<crate::shortcuts::Granted> = shortcuts
+                    .iter()
+                    .filter_map(|request| {
+                        let granted = crate::shortcuts::Granted::from_request(request);
+                        if granted.is_none() {
+                            // Said out loud: from the application's side this
+                            // is a shortcut that never fires, and the reason
+                            // is a trigger this desktop could not read.
+                            tracing::info!(
+                                "shortcuts: {app_id:?} asked for {:?} on {:?}, which is not a chord here",
+                                request.id,
+                                request.trigger
+                            );
+                        }
+                        granted
+                    })
+                    .collect();
+
+                if wanted.is_empty() {
+                    let _ = reply.try_send(Err("no shortcut here could be matched".to_owned()));
+                    return;
+                }
+
+                // Already agreed to, so not asked again. The record is by
+                // application and by chord; see `shortcuts::Store`.
+                if self.shortcuts_store.covers(&app_id, &wanted) {
+                    tracing::info!(
+                        "shortcuts: {app_id:?} keeps {} it was already given",
+                        crate::shortcuts::count(wanted.len())
+                    );
+                    self.grant_shortcuts(&session, &app_id, &wanted);
+                    let _ = reply.try_send(Ok(wanted));
+                    return;
+                }
+
+                if self.picker.is_some() {
+                    let _ =
+                        reply.try_send(Err("something else is already being chosen".to_owned()));
+                    return;
+                }
+                // The same refusal the remote-desktop path makes, for the same
+                // reason: a machine that hands out keys because its own user
+                // interface is broken has turned a shell bug into a way in.
+                if !self.shell_can_draw() {
+                    tracing::warn!(
+                        "no desktop page is drawing, so refusing to give an application a global shortcut"
+                    );
+                    let _ = reply.try_send(Err("there is nobody to ask".to_owned()));
+                    return;
+                }
+
+                tracing::info!(
+                    "{app_id:?} is asking for {}: {}",
+                    crate::shortcuts::count(wanted.len()),
+                    wanted
+                        .iter()
+                        .map(|shortcut| shortcut.chord.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                self.pending_shortcuts = Some((session, app_id.clone()));
+                self.raise_picker(
+                    Vec::new(),
+                    0,
+                    wanted,
+                    app_id,
+                    crate::screencast::Reply::Shortcuts(reply),
+                );
+            }
+            crate::shortcuts::Message::List { session, reply } => {
+                let held: Vec<crate::shortcuts::Granted> = self
+                    .shortcuts
+                    .iter()
+                    .filter(|grant| grant.session == session)
+                    .map(|grant| grant.shortcut.clone())
+                    .collect();
+                let _ = reply.try_send(Ok(held));
+            }
+            crate::shortcuts::Message::Close { session } => {
+                let before = self.shortcuts.len();
+                self.shortcuts.retain(|grant| grant.session != session);
+                // And anything of this session's that was held down when it
+                // went. Nothing will ever release it otherwise, and the key it
+                // is on would go on being swallowed from every window.
+                self.shortcuts_held
+                    .retain(|(_, fired)| fired.session != session);
+                if self.shortcuts.len() != before {
+                    tracing::debug!("shortcuts: session {session} closed");
+                }
+            }
+        }
+    }
+
+    /// Write a granted list into the table the key path reads.
+    ///
+    /// A session that binds twice replaces what it had rather than
+    /// accumulating: `BindShortcuts` describes the shortcuts the application
+    /// wants *now*, and a shortcut it has stopped asking for should stop being
+    /// taken from the window under it.
+    pub fn grant_shortcuts(
+        &mut self,
+        session: &zvariant::OwnedObjectPath,
+        app_id: &str,
+        shortcuts: &[crate::shortcuts::Granted],
+    ) {
+        self.shortcuts.retain(|grant| &grant.session != session);
+        for shortcut in shortcuts {
+            self.shortcuts.push(crate::shortcuts::Grant {
+                session: session.clone(),
+                app_id: app_id.to_owned(),
+                shortcut: shortcut.clone(),
+            });
+        }
+    }
+
+    /// Which granted shortcut a key press is, if it is one.
+    ///
+    /// Asked only after the compositor's own chords and the configured
+    /// bindings have both declined it, so a shortcut can never take a key the
+    /// desktop itself is using — an application that asks for `Mod4+Return`
+    /// gets a grant that never fires rather than a terminal that stops
+    /// opening.
+    pub fn shortcut_for(
+        &self,
+        modifiers: &smithay::input::keyboard::ModifiersState,
+        keysym: u32,
+    ) -> Option<crate::shortcuts::Fired> {
+        let wanted = crate::binding::Modifiers::from_state(modifiers);
+        self.shortcuts
+            .iter()
+            .find(|grant| grant.shortcut.keysym == keysym && grant.shortcut.modifiers == wanted)
+            .map(|grant| crate::shortcuts::Fired {
+                session: grant.session.clone(),
+                id: grant.shortcut.id.clone(),
+            })
+    }
+
+    /// Announce everything the key filter noticed.
+    ///
+    /// Drained after the filter rather than inside it: the filter runs under
+    /// the keyboard's own borrow, and a D-Bus write from there happens with
+    /// the input path's lock held.
+    pub fn flush_shortcuts(&mut self) {
+        if self.shortcuts_to_announce.is_empty() {
+            return;
+        }
+        let timestamp = self.start_time.elapsed().as_micros() as u64;
+        for (activated, fired) in std::mem::take(&mut self.shortcuts_to_announce) {
+            self.shortcut_signals
+                .emit(activated, &fired.session, &fired.id, timestamp);
+        }
     }
 
     /// Ask the user whether an application may drive this machine.
@@ -4433,7 +4643,13 @@ impl ViewportState {
             "an application is asking to drive the {}",
             crate::screencast::remote::device_names(devices).join(", ")
         );
-        self.raise_picker(sources, devices, crate::screencast::Reply::Remote(reply));
+        self.raise_picker(
+            sources,
+            devices,
+            Vec::new(),
+            String::new(),
+            crate::screencast::Reply::Remote(reply),
+        );
     }
 
     /// Whether there is an engine in this process to be sent input.
@@ -4545,6 +4761,24 @@ impl ViewportState {
             return;
         };
         let id = picker.id;
+        // A shortcuts request is its own message: there is nothing to
+        // highlight and nothing to step through, and the rows are chords
+        // rather than things to look at. Sent once — the list cannot change
+        // while it is up — where a share re-sends on every keypress.
+        if !picker.shortcuts.is_empty() {
+            let app = picker.app.clone();
+            let shortcuts = picker
+                .shortcuts
+                .iter()
+                .map(|shortcut| viewport_ipc::ShortcutRow {
+                    id: shortcut.id.clone(),
+                    description: shortcut.description.clone(),
+                    trigger: shortcut.chord.clone(),
+                })
+                .collect();
+            self.notify(&Event::ShortcutsPick { id, app, shortcuts });
+            return;
+        }
         let selected = picker.selected as u32;
         let devices = picker.devices;
         let sources = picker
@@ -4632,6 +4866,12 @@ impl ViewportState {
         let id = picker.id;
         let devices = picker.devices;
         let selected = picker.sources.into_iter().nth(picker.selected);
+        let picker = crate::screencast::Answered {
+            shortcuts: picker.shortcuts,
+            restore: picker.restore,
+            reply: picker.reply,
+        };
+        let mut shortcuts_answered = false;
 
         match picker.reply {
             crate::screencast::Reply::Cast(reply) => match selected {
@@ -4665,8 +4905,33 @@ impl ViewportState {
                 };
                 let _ = reply.try_send(Ok(crate::screencast::remote::Started { devices, cast }));
             }
+            crate::screencast::Reply::Shortcuts(reply) => {
+                shortcuts_answered = true;
+                match self.pending_shortcuts.take() {
+                    Some((session, app_id)) => {
+                        tracing::info!(
+                            "{app_id:?} may hear {}",
+                            crate::shortcuts::count(picker.shortcuts.len())
+                        );
+                        self.grant_shortcuts(&session, &app_id, &picker.shortcuts);
+                        // Written down only now, so a refusal leaves no trace
+                        // and the next launch asks again.
+                        self.shortcuts_store.remember(&app_id, &picker.shortcuts);
+                        let _ = reply.try_send(Ok(picker.shortcuts));
+                    }
+                    // The request went away while the dialogue was up. Nothing
+                    // to grant it to, and nothing to write down.
+                    None => {
+                        let _ = reply.try_send(Err("the request is gone".to_owned()));
+                    }
+                }
+            }
         }
-        self.notify(&Event::ScreencastPickDone { id });
+        if shortcuts_answered {
+            self.notify(&Event::ShortcutsPickDone { id });
+        } else {
+            self.notify(&Event::ScreencastPickDone { id });
+        }
         self.restore_focus(picker.restore);
     }
 
@@ -4677,8 +4942,14 @@ impl ViewportState {
         };
         // Dropping the sender would answer too — the other end reads a closed
         // channel as no answer — but saying so keeps the reason in one place.
+        self.pending_shortcuts = None;
+        let shortcuts = !picker.shortcuts.is_empty();
         picker.reply.refuse("nothing was chosen");
-        self.notify(&Event::ScreencastPickDone { id: picker.id });
+        if shortcuts {
+            self.notify(&Event::ShortcutsPickDone { id: picker.id });
+        } else {
+            self.notify(&Event::ScreencastPickDone { id: picker.id });
+        }
         self.restore_focus(picker.restore);
     }
 

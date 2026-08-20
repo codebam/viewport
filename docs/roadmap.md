@@ -8,10 +8,12 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-Modifier feedback to a libei client was the last entry taken off it —
-`sync_eis_modifiers` in `crates/viewport/src/libei.rs`, with the remote-desktop
-part of `docs/protocols.md` for why a remote session needs to hear about a
-Shift pressed at the desk. Before that, the inhibit interfaces:
+Global shortcuts were the last entry taken off it —
+`crates/viewport/src/shortcuts.rs`, `docs/protocols.md`'s section of that name
+for what is remembered and why, and `shortcuts.pick` in `docs/ipc.md` for the
+dialogue. Before that, modifier feedback to a libei client
+(`sync_eis_modifiers` in `crates/viewport/src/libei.rs`); before that, the
+inhibit interfaces:
 `org.freedesktop.ScreenSaver` and `org.freedesktop.impl.portal.Inhibit` in
 `crates/viewport/src/inhibit.rs`; and before those, the on-screen keyboard:
 `data/shell/osk.js`, `docs/ipc.md`'s `osk.key`/`osk.wanted` and
@@ -70,21 +72,6 @@ further away than that: the keys `exec brightnessctl`, so the shell never
 learns the value and could not draw it if it wanted to. A backlight is read
 from sysfs or over logind, which is this side of the line, and both would feed
 the same transient indicator.
-
-## Portals that nothing answers
-
-**`org.freedesktop.impl.portal.GlobalShortcuts` is not implemented.** It is
-the interface behind push-to-talk in Discord and hotkeys in OBS: how an
-application hears a key it does not have focus for. Nothing else on this
-desktop can answer it, because the compositor owns the whole keymap and
-resolves every chord before the focused client or the shell is offered it, and
-it already takes new bindings at runtime through `bind.add`. The consent
-dialog is the split `crates/viewport/src/screencast/portal.rs` and
-`data/shell/screencast.js` already implement together. What makes it a
-separate question rather than a second copy of that one is persistence: a
-global shortcut is *meant* to be remembered per application, which is exactly
-what the RemoteDesktop backend here refuses to do for an input grant, so the
-reasoning that produced that refusal has to be redone rather than inherited.
 
 ## Remote desktop
 

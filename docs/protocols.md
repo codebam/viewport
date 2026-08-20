@@ -358,6 +358,44 @@ guest rather than opening a terminal here.
 only while that client holds focus, so the bindings come back the moment focus
 moves away.
 
+## Global shortcuts
+
+`org.freedesktop.impl.portal.GlobalShortcuts` is how an application hears a
+chord it does not have focus for — push-to-talk in a chat program, start and
+stop in a recorder. On X11 those were server-side key grabs, which is why they
+worked and also why they were removed: a client that can grab one chord can
+grab every chord. The portal replaces the grab with a question, and the
+compositor is the only thing in the session that can answer it, because the
+chord has to be resolved before the focused client is offered the key.
+
+A grant is asked for once and then remembered, which is the opposite of what
+the RemoteDesktop backend here does with an input grant, so the difference is
+worth stating. A remembered remote-desktop grant is a process that can type
+anything into this machine on the strength of a file. A remembered shortcut is
+one chord reaching one application, only while that application is running and
+holding a session — and the alternative is asking the same question at every
+login for the same push-to-talk key, which teaches somebody to agree to
+dialogues without reading them. What was agreed to is written to
+`~/.local/state/viewport/shortcuts.json`, by application and by chord, so it
+can be read and deleted.
+
+The desk's own keymap wins. A shortcut is matched only after the compositor's
+built-in chords and everything in `binds` have declined the key, so an
+application asking for `Mod4+Return` gets a grant that never fires rather than
+a terminal that stops opening. A trigger this keymap cannot read — an
+unknown modifier, a key xkb does not have, a mouse button — is refused before
+the question is asked, because agreeing to it would be agreeing to something
+that can never happen. An empty trigger, which is the portal's way of saying
+"you choose", is refused for the same reason: choosing needs a shortcut editor
+to choose in, and there is none here.
+
+Version 1: `CreateSession`, `BindShortcuts`, `ListShortcuts`, and the
+`Activated`/`Deactivated` signals, which carry the session, the application's
+own id for the shortcut and the timestamp of the key that moved. A
+push-to-talk key is the reason both halves are sent — the application is
+holding a microphone open on the strength of the press, and nothing else will
+tell it the key came back up.
+
 ## Status
 
 The architecture is grounded in the real 2.52.5 headers: the `WPEDisplay` and

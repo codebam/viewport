@@ -1170,6 +1170,24 @@ impl ViewportState {
                                 return FilterResult::Forward;
                             }
 
+                            // A global shortcut, but only after everything
+                            // above has declined the key. An application that
+                            // asks for a chord this desktop is already using
+                            // gets a grant that never fires, rather than a
+                            // terminal that stops opening — the desk's own
+                            // keymap is not something a portal call may
+                            // change. See `crate::shortcuts`.
+                            if let Some(fired) = state.shortcut_for(modifiers, unmodified) {
+                                state.suppressed_keys.push(keysym);
+                                state.shortcuts_to_announce.push((true, fired.clone()));
+                                // Remembered by the key it arrived on, because
+                                // the release is matched by keysym and carries
+                                // nothing else to identify it — and by then the
+                                // modifiers may already be up.
+                                state.shortcuts_held.push((keysym.raw(), fired));
+                                return FilterResult::Intercept(Some(Action::Swallow));
+                            }
+
                             match crate::binding::match_binding(
                                 &state.bindings,
                                 modifiers,
@@ -1201,6 +1219,20 @@ impl ViewportState {
                             state.suppressed_keys.iter().position(|k| *k == keysym)
                         {
                             state.suppressed_keys.remove(at);
+                            // The other half of a global shortcut. A
+                            // push-to-talk key is the case that makes this
+                            // more than tidiness: the application is holding a
+                            // microphone open on the strength of the press,
+                            // and nothing else will ever tell it the key came
+                            // back up.
+                            if let Some(at) = state
+                                .shortcuts_held
+                                .iter()
+                                .position(|(code, _)| *code == keysym.raw())
+                            {
+                                let (_, fired) = state.shortcuts_held.remove(at);
+                                state.shortcuts_to_announce.push((false, fired));
+                            }
                             // A key the page was given has to be released to
                             // it as well, or the page has one held down for
                             // ever.
@@ -1248,6 +1280,10 @@ impl ViewportState {
                 if intercepted && keyboard.modifier_state() != mods_before {
                     keyboard.advertise_modifier_state(self);
                 }
+
+                // Anything the filter noticed a global shortcut on, announced
+                // now that the keyboard's own borrow has ended.
+                self.flush_shortcuts();
 
                 // And any libei client, for the same reason from further away:
                 // a remote session composes its own chords and cannot see the

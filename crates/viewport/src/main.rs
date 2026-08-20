@@ -54,6 +54,7 @@ mod shell;
 mod shell_backend;
 mod shell_client;
 mod shell_watch;
+mod shortcuts;
 mod sound;
 mod state;
 mod status;
@@ -804,6 +805,25 @@ fn run() -> Result<()> {
             cursor_size: state.cursor_theme.size() as i32,
         };
         let screencast = crate::screencast::portal::ScreenCast::new(sender);
+
+        // Global shortcuts, on the same connection and answered by the same
+        // chooser. It needs the screencast object's session table for one
+        // question only — whether a call came from the portal frontend — and
+        // its own channel for everything else, because what it asks the
+        // compositor for is a key rather than a picture.
+        let (shortcuts_sender, shortcuts_source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(shortcuts_source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(message) = event else {
+                    return;
+                };
+                state.handle_shortcuts(message);
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the shortcuts source: {e}"))?;
+        let shortcuts =
+            crate::shortcuts::GlobalShortcuts::new(shortcuts_sender, screencast.sessions());
         let screenshot = crate::screenshot::Screenshot::new(screenshot_sender);
 
         // The inhibit backend goes up with them, on the same connection and
@@ -816,7 +836,7 @@ fn run() -> Result<()> {
         // they had a moment ago.
         if let Err(e) = state
             .appearance
-            .start(settings, screencast, screenshot, inhibit)
+            .start(settings, screencast, screenshot, inhibit, shortcuts)
         {
             tracing::warn!("the portals are unavailable: {e}");
         }
@@ -824,7 +844,13 @@ fn run() -> Result<()> {
             // So a request abandoned by a frontend that crashed can be taken
             // off the bus, not only out of the table. See
             // `inhibit::watch_owners`.
-            state.bus_inhibitors.set_portal_connection(connection);
+            state
+                .bus_inhibitors
+                .set_portal_connection(connection.clone());
+            // And how a chord that fired reaches the application waiting for
+            // it: the signal goes out on the connection the interface is
+            // served from, and the compositor is not the thread that built it.
+            state.shortcut_signals.set_connection(connection);
         }
     }
 

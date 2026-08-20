@@ -561,6 +561,16 @@ window.addEventListener('viewport', (event) => {
       hideScreencastPicker(message.id);
       break;
 
+    case 'shortcuts.pick':
+      /* Sent once rather than per keypress: there is no highlight to move,
+         because the answer is yes or no to the whole list. */
+      showShortcutsPicker(message);
+      break;
+
+    case 'shortcuts.pick.done':
+      hideShortcutsPicker(message.id);
+      break;
+
     case 'clipboard.history':
       /* Sent on every copy and in answer to clipboard.query. Drawn only while
          the picker is open; see applyClipboard. */

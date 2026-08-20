@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: MIT
  *
- * The screen-share chooser, and the remote-control one.
+ * The screen-share chooser, the remote-control one, and the shortcut one.
  *
  * An application asks to share the screen, the portal asks the compositor, and
  * the compositor asks the person sitting there. This draws the asking.
  *
- * Two questions through one dialog, because there is one keyboard and one
+ * Three questions through one dialog, because there is one keyboard and one
  * person and the compositor has one chooser slot. A 'screencast.pick' with a
  * 'devices' list is the RemoteDesktop portal rather than ScreenCast: the
  * application is asking to drive this machine, not only to watch it. The rows
@@ -211,6 +211,111 @@ function renderScreencastPicker() {
     selected.scrollIntoView({ block: 'nearest' });
   }
 
+  reportScreencastRect(dialog);
+}
+
+/* The third question: keys an application wants to hear without having focus.
+ *
+ * 'shortcuts.pick' rather than a third shape of 'screencast.pick' because it
+ * is not about what may be watched or driven — it is about which chords stop
+ * belonging to whatever has focus, for as long as that application runs. There
+ * is nothing to choose between, so there is no highlight and no ↑↓: the answer
+ * is yes or no to the whole list, and the compositor routes Enter and Esc here
+ * exactly as it does for the other two. */
+let shortcutsPick = null;
+let shortcutsPickId = 0;
+
+function showShortcutsPicker(message) {
+  shortcutsPick = message;
+  shortcutsPickId = message.id;
+  renderShortcutsPicker();
+}
+
+function hideShortcutsPicker(id) {
+  if (id !== undefined && id !== shortcutsPickId) return;
+  shortcutsPick = null;
+  shortcutsPickId = 0;
+  renderShortcutsPicker();
+}
+
+/* The same element the other two use, because the compositor has one chooser
+ * slot and cannot have two of these up at once. Sharing it is also what keeps
+ * the overlay bookkeeping honest: one dialog, one rectangle reported, one
+ * piece of the shell drawn above the windows. */
+function renderShortcutsPicker() {
+  const wasUp = !screencastEl.hidden;
+  screencastEl.replaceChildren();
+  if (!shortcutsPick) {
+    screencastEl.hidden = true;
+    reportScreencastRect(null);
+    return;
+  }
+  screencastEl.hidden = false;
+
+  const output = outputs.get(activeOutputName());
+  if (output?.rect) {
+    Object.assign(screencastEl.style, {
+      left: `${output.rect.x}px`,
+      top: `${output.rect.y}px`,
+      width: `${output.rect.width}px`,
+      height: `${output.rect.height}px`,
+    });
+  }
+
+  const dialog = document.createElement('div');
+  dialog.className = 'screencast-dialog';
+
+  const title = document.createElement('div');
+  title.className = 'screencast-title';
+  title.textContent = 'Give an application a keyboard shortcut';
+  dialog.append(title);
+
+  const help = document.createElement('div');
+  help.className = 'screencast-help';
+  /* Named where the frontend could name it. An application it could not
+     identify is worth saying out loud rather than leaving the sentence to read
+     as though nothing were asking. */
+  const app = shortcutsPick.app || 'An unidentified application';
+  help.textContent =
+    `${app} is asking to be told when these keys are pressed, `
+    + 'even while you are working in another window.';
+  dialog.append(help);
+
+  const list = document.createElement('div');
+  list.className = 'screencast-list';
+  const shortcuts = Array.isArray(shortcutsPick.shortcuts)
+    ? shortcutsPick.shortcuts
+    : [];
+  shortcuts.forEach((shortcut) => {
+    const row = document.createElement('div');
+    /* No 'selected' on any of them: nothing here is being chosen between, and
+       a highlight would say otherwise. */
+    row.className = 'screencast-source';
+    row.dataset.kind = 'shortcut';
+
+    const label = document.createElement('div');
+    label.className = 'screencast-label';
+    label.textContent = shortcut.trigger || 'an unspelled chord';
+    row.append(label);
+
+    const detail = document.createElement('div');
+    detail.className = 'screencast-detail';
+    /* An application that declines to say what a key is for is worth seeing as
+       exactly that, rather than as a blank line. */
+    detail.textContent = shortcut.description || 'no reason given';
+    row.append(detail);
+
+    list.append(row);
+  });
+  dialog.append(list);
+
+  const keys = document.createElement('div');
+  keys.className = 'screencast-keys';
+  keys.textContent = 'Enter allow · Esc cancel';
+  dialog.append(keys);
+
+  screencastEl.append(dialog);
+  if (!wasUp) animateScreencastIn(dialog, [...list.children]);
   reportScreencastRect(dialog);
 }
 

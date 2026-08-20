@@ -14,7 +14,7 @@ pub mod geometry;
 pub mod js;
 pub mod request;
 
-pub use event::{CastSource, Event};
+pub use event::{CastSource, Event, ShortcutRow};
 pub use geometry::{Box, PartialBox, Transform};
 pub use request::Request;
 

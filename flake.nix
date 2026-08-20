@@ -1124,6 +1124,10 @@
                 # Nothing else in the session can hold off a deadline it
                 # cannot see.
                 "org.freedesktop.impl.portal.Inhibit" = [ "viewport" "gtk" ];
+                # GlobalShortcuts likewise: a chord has to be resolved before
+                # the focused window sees the key, and the compositor is the
+                # only thing in the session that sees one first.
+                "org.freedesktop.impl.portal.GlobalShortcuts" = [ "viewport" "gnome" ];
               };
             };
           };

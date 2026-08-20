@@ -319,7 +319,7 @@ pub type Sessions = Arc<Mutex<Frontend>>;
 ///
 /// `what` names the interface in the log line, so a refused call can be told
 /// from its neighbour when both are being tried.
-pub(super) fn called_by_frontend(
+pub fn called_by_frontend(
     sessions: &Sessions,
     what: &str,
     header: &zbus::message::Header<'_>,

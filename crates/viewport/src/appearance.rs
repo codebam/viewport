@@ -161,6 +161,7 @@ impl Appearance {
         screencast: crate::screencast::portal::ScreenCast,
         screenshot: crate::screenshot::Screenshot,
         inhibit: crate::inhibit::PortalInhibit,
+        shortcuts: crate::shortcuts::GlobalShortcuts,
     ) -> anyhow::Result<()> {
         let scheme = settings.color_scheme;
         *self.settings.lock().unwrap() = settings;
@@ -201,6 +202,7 @@ impl Appearance {
             .serve_at(OBJECT_PATH, remote)?
             .serve_at(OBJECT_PATH, screenshot)?
             .serve_at(OBJECT_PATH, inhibit)?
+            .serve_at(OBJECT_PATH, shortcuts)?
             .build()?;
 
         // Asked for with `crate::dbus::name_flags` rather than the builder's
@@ -215,7 +217,8 @@ impl Appearance {
 
         self.connection = Some(connection);
         tracing::info!(
-            "settings, screencast, remote desktop, screenshot and inhibit portals up, \
+            "settings, screencast, remote desktop, screenshot, inhibit and \
+             global-shortcuts portals up, \
              color-scheme={scheme}"
         );
         Ok(())

@@ -205,6 +205,17 @@ pub struct Picker {
     /// list of windows for both would be asking the second question in the
     /// words of the first.
     pub devices: u32,
+    /// The shortcuts an application is asking to be told about, when this
+    /// chooser is one of those; empty otherwise.
+    ///
+    /// Carried here for the same reason `devices` is: it is what the person
+    /// has to read. A list of chords is a third question — not what may be
+    /// watched, not whether the machine may be driven, but which keys stop
+    /// belonging to whatever has focus — and it is asked in its own message,
+    /// `shortcuts.pick`.
+    pub shortcuts: Vec<crate::shortcuts::Granted>,
+    /// Which application is asking, for the sentence at the top of that one.
+    pub app: String,
     /// Where the answer goes when there is one.
     pub reply: Reply,
 }
@@ -221,6 +232,10 @@ pub struct Picker {
 pub enum Reply {
     Cast(async_channel::Sender<Result<portal::Started, String>>),
     Remote(async_channel::Sender<Result<remote::Started, String>>),
+    /// A global-shortcuts request: the answer is the list of chords the
+    /// application may hear. Here rather than in a chooser of its own because
+    /// there is one keyboard and one person — see `Picker`.
+    Shortcuts(async_channel::Sender<Result<Vec<crate::shortcuts::Granted>, String>>),
 }
 
 impl Reply {
@@ -239,8 +254,24 @@ impl Reply {
             Self::Remote(reply) => {
                 let _ = reply.try_send(Err(why.to_owned()));
             }
+            Self::Shortcuts(reply) => {
+                let _ = reply.try_send(Err(why.to_owned()));
+            }
         }
     }
+}
+
+/// What is left of a chooser once the choice has been taken out of it.
+///
+/// `confirm_screencast_pick` moves the selected source out of `sources`, which
+/// consumes the `Picker`; the three fields below are still needed after that —
+/// what to answer, where the keyboard goes back to, and the shortcut list a
+/// shortcuts request is agreeing to. A struct rather than three locals so that
+/// adding a fourth is a change in one place.
+pub struct Answered {
+    pub shortcuts: Vec<crate::shortcuts::Granted>,
+    pub restore: u32,
+    pub reply: Reply,
 }
 
 impl Picker {

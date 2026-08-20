@@ -4809,6 +4809,49 @@ if (mode === 'scrolling') {
   const gone = sent.filter((m) => m.type === 'shell.overlay').at(-1);
   check('and tells the compositor there is nothing on top now',
     gone !== undefined && gone.rects.length === 0);
+
+  /* The third question through the same dialog: keys an application wants to
+     hear while something else has focus. There is nothing to choose between,
+     so there is no highlight and the list is sent once. */
+  emit({ type: 'shortcuts.pick', id: 9, app: 'Discord', shortcuts: [
+    { id: 'talk', description: 'push to talk', trigger: 'Mod4+grave' },
+    { id: 'mute', description: '', trigger: 'Mod4+Shift+m' },
+  ] });
+  check('the shortcut dialog is up', screencastEl.hidden === false);
+  check('one row per shortcut', rows().length === 2);
+  /* The chord is what the person compares against their own keyboard, so it
+     is the row's headline rather than the description. */
+  check('a row is headed by the chord', label(rows()[0]) === 'Mod4+grave');
+  check('with what it is for under it',
+    rows()[0].children[1].textContent === 'push to talk');
+  /* An application that will not say what a key is for is worth seeing as
+     exactly that. */
+  check('an unexplained shortcut says so',
+    rows()[1].children[1].textContent === 'no reason given');
+  /* Nothing is being chosen between: a highlight would say otherwise. */
+  check('nothing is highlighted', highlighted() === -1);
+  const shortcutOverlay = sent.filter((m) => m.type === 'shell.overlay').at(-1);
+  check('the shell says where the shortcut dialog is',
+    shortcutOverlay !== undefined
+      && shortcutOverlay.rects.some((r) => r.width > 0 && r.height > 0));
+
+  emit({ type: 'shortcuts.pick.done', id: 8 });
+  check('a stale answer leaves the shortcut dialog alone',
+    screencastEl.hidden === false);
+  emit({ type: 'shortcuts.pick.done', id: 9 });
+  check('and it goes away when it is answered', screencastEl.hidden === true);
+
+  /* An application the frontend could not name is still an application asking
+     for a key, and a sentence with a hole in it would read as though nothing
+     were asking. */
+  emit({ type: 'shortcuts.pick', id: 10, app: '', shortcuts: [
+    { id: 'talk', description: 'push to talk', trigger: 'Mod4+grave' },
+  ] });
+  const help = screencastEl.children[0].children
+    .find((c) => c._classes.has('screencast-help'));
+  check('an unnamed application is named as one',
+    help.textContent.startsWith('An unidentified application'));
+  emit({ type: 'shortcuts.pick.done', id: 10 });
 }
 
 /* --- the stylesheet ----------------------------------------------------
