@@ -1107,7 +1107,17 @@
                 # lets it offer one. wlr stays the fallback for a session
                 # running the C build, which does not answer this.
                 "org.freedesktop.impl.portal.ScreenCast" = [ "viewport" "wlr" ];
-                "org.freedesktop.impl.portal.Screenshot" = [ "wlr" ];
+                # RemoteDesktop has to name whoever ScreenCast named. It is
+                # that interface plus input injection, served from the same
+                # object out of the same session table, and the frontend uses
+                # one session handle across the two — so a configuration
+                # sending ScreenCast here and RemoteDesktop elsewhere is the
+                # one that cannot work.
+                "org.freedesktop.impl.portal.RemoteDesktop" = [ "viewport" "wlr" ];
+                # Screenshot is answered here too: a screenshot of a window,
+                # rather than of the screen the window is on, needs the
+                # compositor that composited it.
+                "org.freedesktop.impl.portal.Screenshot" = [ "viewport" "wlr" ];
                 # Inhibit is answered by the compositor for the plainest
                 # reason of all: what is being inhibited is its own idle
                 # timer, which is where the lock and blank deadlines live.
