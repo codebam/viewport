@@ -12,6 +12,22 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- Modifier state sent back to a libei client, over `ei_keyboard.modifiers`.
+  A remote client composes a capital the way a keyboard does — press Shift,
+  press the letter, release both — against its own idea of the seat's state,
+  and that state has two sources the client cannot see: somebody at the
+  machine pressing Shift, and a key the client itself sent latching Caps Lock.
+  Nothing told it about either, so a session drifted and typed capitals nobody
+  asked for until something unrelated resettled it. Sent on a change rather
+  than per event, since typing at the desk moves the modifier state twice per
+  shifted character and none of that concerns a remote client that has not
+  drifted; a client is caught up outright the moment it binds a keyboard,
+  because until then `ei_keyboard.modifiers` has no device to go to and a
+  session that started under a locked Caps Lock would otherwise hear about it
+  only when somebody pressed Caps Lock again. The four numbers go in libei's
+  order, which is not `wl_keyboard`'s — depressed, locked, latched, group,
+  with the middle pair swapped — and there is a test for that alone, because
+  getting it wrong is silent and reads as a held Shift that never comes up.
 - The two D-Bus interfaces that keep a screen awake: `org.freedesktop.
   ScreenSaver`, which is what Firefox and mpv reach for, and
   `org.freedesktop.impl.portal.Inhibit`, which is where a sandboxed

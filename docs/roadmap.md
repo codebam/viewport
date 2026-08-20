@@ -8,10 +8,12 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-The inhibit interfaces were the last entry taken off it —
-`org.freedesktop.ScreenSaver` and `org.freedesktop.impl.portal.Inhibit`, in
-`crates/viewport/src/inhibit.rs`, with `docs/protocols.md`'s Idle section for
-what a hold is and when it ends. Before that it was the on-screen keyboard:
+Modifier feedback to a libei client was the last entry taken off it —
+`sync_eis_modifiers` in `crates/viewport/src/libei.rs`, with the remote-desktop
+part of `docs/protocols.md` for why a remote session needs to hear about a
+Shift pressed at the desk. Before that, the inhibit interfaces:
+`org.freedesktop.ScreenSaver` and `org.freedesktop.impl.portal.Inhibit` in
+`crates/viewport/src/inhibit.rs`; and before those, the on-screen keyboard:
 `data/shell/osk.js`, `docs/ipc.md`'s `osk.key`/`osk.wanted` and
 `docs/configuration.md`'s default bindings.
 
@@ -89,17 +91,6 @@ reasoning that produced that refusal has to be redone rather than inherited.
 The EI server itself is done and works — `crates/viewport/src/libei.rs`, and
 `docs/protocols.md` for how it sits beside the Notify calls. These are the
 pieces around it that are not.
-
-**Modifier state is not sent back to a libei client.** `ei_keyboard.modifiers`
-is how a client learns that the compositor's keyboard state changed — the
-person at the machine pressed Shift, or a key the client itself sent latched
-Caps Lock — and smithay's wrapper exposes it as
-`EiInputSeat::keyboard_modifiers`. Nothing calls it. A client that composes
-keystrokes from its own idea of the modifier state therefore drifts from the
-seat's, which shows up as a remote session typing capitals nobody asked for
-after somebody at the desk touches Shift. Closing it means noticing every
-modifier change and telling each connected seat, which is a hook in the
-keyboard path rather than anything in the EI code.
 
 **No clipboard for a remote session.** `Start` answers `clipboard_enabled`
 with a stated false, and `org.freedesktop.portal.Clipboard` is the interface

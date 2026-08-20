@@ -86,6 +86,46 @@ const TEXT_NAME: &str = "viewport remote text";
 #[derive(Default)]
 pub struct Connections {
     live: HashMap<OwnedObjectPath, Connection>,
+    /// What every connected client was last told the modifiers are.
+    ///
+    /// One value for all of them, because there is one seat and they are all
+    /// being told about it. Kept so that ordinary typing — which changes the
+    /// modifier state twice per shifted character — does not put two messages
+    /// on every remote socket per keystroke when nothing a client cares about
+    /// has changed. A client that connects later is caught up by
+    /// [`ViewportState::prime_eis_modifiers`] rather than by this.
+    modifiers: Option<smithay::input::keyboard::SerializedMods>,
+}
+
+impl Connections {
+    /// Whether this modifier state is news, and remember it if it is.
+    ///
+    /// Split out from the send so the rule can be tested without a socket:
+    /// ordinary typing moves the modifier state twice per shifted character
+    /// and almost none of that is a change any client has to hear about.
+    fn changed(&mut self, mods: smithay::input::keyboard::SerializedMods) -> bool {
+        if self.modifiers == Some(mods) {
+            return false;
+        }
+        self.modifiers = Some(mods);
+        true
+    }
+}
+
+/// The four numbers `ei_keyboard.modifiers` takes, in the order it takes them.
+///
+/// Written once because the order is a trap: `wl_keyboard.modifiers` is
+/// depressed, latched, locked, group, and libei's is depressed, **locked,
+/// latched**, group. Both are bitmasks over the same modifiers, so swapping
+/// the middle pair compiles, runs, and shows up only as a held Shift that a
+/// remote client reads as a latched one.
+fn modifier_args(mods: smithay::input::keyboard::SerializedMods) -> (u32, u32, u32, u32) {
+    (
+        mods.depressed,
+        mods.locked,
+        mods.latched,
+        mods.layout_effective,
+    )
 }
 
 /// One libei client.
@@ -418,10 +458,19 @@ impl ViewportState {
                 }
                 self.process_input_event::<EiInput>(InputEvent::TouchCancel { event });
             }
+            // A device the client has just bound. Handed on like the rest —
+            // it means nothing different coming from a socket — and then used
+            // for the one thing only this moment can do: a keyboard that has
+            // this instant appeared is a keyboard that can now be told what
+            // the modifiers are. Before it, there was nothing to tell.
+            InputEvent::DeviceAdded { device } => {
+                self.process_input_event::<EiInput>(InputEvent::DeviceAdded { device });
+                self.prime_eis_modifiers(session);
+            }
             // Relative motion, scrolling, the frame that ends a set of touches,
-            // and the devices appearing and going away as the client binds and
-            // unbinds them. None of them can leave anything held and none of
-            // them mean anything different coming from a socket.
+            // and the devices going away as the client unbinds them. None of
+            // them can leave anything held and none of them mean anything
+            // different coming from a socket.
             event => self.process_input_event::<EiInput>(event),
         }
     }
@@ -520,6 +569,72 @@ impl ViewportState {
             .collect()
     }
 
+    /// Tell every connected client what the seat's modifiers are now.
+    ///
+    /// `ei_keyboard.modifiers` is how a client learns that the compositor's
+    /// keyboard state changed under it. It has two sources and a client can
+    /// see neither: the person at the machine pressing Shift, and a key the
+    /// client itself sent latching Caps Lock. A client composes its keystrokes
+    /// against its own idea of the state — press Shift, press a, release both,
+    /// for a capital — so a state that drifted is a remote session typing
+    /// capitals nobody asked for until something happens to resynchronise it.
+    ///
+    /// Sent only on a change, because ordinary typing at the desk moves the
+    /// modifier state twice per shifted character and a remote client has
+    /// nothing to do with most of that. Reading the state is a lock on the
+    /// seat's keyboard, so the empty case comes first: a desktop with no
+    /// remote session pays nothing for this at all.
+    ///
+    /// The order the four numbers go in is libei's rather than
+    /// `wl_keyboard`'s; see [`modifier_args`].
+    pub fn sync_eis_modifiers(&mut self) {
+        if self.eis.live.is_empty() {
+            return;
+        }
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let mods = keyboard.modifier_state().serialized;
+        if !self.eis.changed(mods) {
+            return;
+        }
+        let (depressed, locked, latched, group) = modifier_args(mods);
+        for connection in self.eis.live.values() {
+            if let Some(seat) = connection.seat.as_ref() {
+                seat.keyboard_modifiers(depressed, locked, latched, group);
+            }
+        }
+    }
+
+    /// Tell one client the modifier state it has just become able to hear.
+    ///
+    /// For the client that has this moment bound a keyboard. Until it does,
+    /// `ei_keyboard.modifiers` has no device to go to and saying it is the
+    /// same as not saying it — so a session that started while Caps Lock was
+    /// on would otherwise be told about it only when somebody pressed Caps
+    /// Lock again. The broadcast above cannot serve this: it sends on a
+    /// change, and a client arriving into an unchanged state needs the state
+    /// rather than the change.
+    fn prime_eis_modifiers(&mut self, session: &OwnedObjectPath) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let mods = keyboard.modifier_state().serialized;
+        let Some(seat) = self
+            .eis
+            .live
+            .get(session)
+            .and_then(|connection| connection.seat.as_ref())
+        else {
+            return;
+        };
+        let (depressed, locked, latched, group) = modifier_args(mods);
+        seat.keyboard_modifiers(depressed, locked, latched, group);
+        // So the next broadcast is measured against what everybody has now
+        // been told, rather than re-sending on the first unrelated change.
+        self.eis.changed(mods);
+    }
+
     /// Tell every connected client where the monitors are now.
     ///
     /// Called when the layout changes, because a region is fixed when the
@@ -565,5 +680,55 @@ mod tests {
         // And a release of something never pressed leaves nothing behind.
         Held::note(&mut held, 0x112, false);
         assert_eq!(held, [0x111]);
+    }
+
+    fn mods(depressed: u32, latched: u32, locked: u32) -> smithay::input::keyboard::SerializedMods {
+        smithay::input::keyboard::SerializedMods {
+            depressed,
+            latched,
+            locked,
+            layout_effective: 0,
+        }
+    }
+
+    /// libei takes locked before latched, and `wl_keyboard` takes them the
+    /// other way round. Both are bitmasks over the same modifiers, so getting
+    /// it wrong compiles and runs — a held Shift arrives at the client as a
+    /// latched one, which is a remote session that keeps shifting long after
+    /// the key came up.
+    #[test]
+    fn the_argument_order_is_libeis_and_not_waylands() {
+        let (depressed, locked, latched, group) =
+            modifier_args(smithay::input::keyboard::SerializedMods {
+                depressed: 1,
+                latched: 2,
+                locked: 4,
+                layout_effective: 8,
+            });
+        assert_eq!((depressed, locked, latched, group), (1, 4, 2, 8));
+    }
+
+    /// Only a change is worth a message. Ordinary typing at the desk moves the
+    /// modifier state twice per shifted character, and a remote client has
+    /// nothing to do with most of that — without this every keystroke somebody
+    /// types puts two more messages on every remote socket.
+    #[test]
+    fn the_same_state_twice_is_said_once() {
+        let mut connections = Connections::default();
+        assert!(connections.changed(mods(0, 0, 0)), "nothing was ever sent");
+        assert!(!connections.changed(mods(0, 0, 0)));
+        assert!(connections.changed(mods(1, 0, 0)), "shift went down");
+        assert!(!connections.changed(mods(1, 0, 0)));
+        assert!(connections.changed(mods(0, 0, 0)), "and came back up");
+    }
+
+    /// A latched modifier and a locked one are not the same state, even where
+    /// the same bits are set. Caps Lock latching and Caps Lock locking are the
+    /// difference between one capital and every capital after it.
+    #[test]
+    fn latched_and_locked_are_different_news() {
+        let mut connections = Connections::default();
+        assert!(connections.changed(mods(0, 2, 0)));
+        assert!(connections.changed(mods(0, 0, 2)));
     }
 }

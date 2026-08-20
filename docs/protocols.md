@@ -506,6 +506,16 @@ either way. Absence tells both of them the same thing. Should either
 capability arrive — an export path off the scanout planes, or a virtual-input
 back end — the global comes back with it.
 
+A connected libei client is also told when the seat's modifiers change, over
+`ei_keyboard.modifiers`. It has to be: a client composes a capital as press
+Shift, press the letter, release both, against its own idea of the state, and
+the state has two sources it cannot see — the person at the machine pressing
+Shift, and a key the client itself sent latching Caps Lock. A session that
+drifted types capitals nobody asked for until something happens to resettle it.
+Sent only on a change, because typing at the desk moves the modifier state
+twice per shifted character; a client that has just bound a keyboard is told
+the current state outright, since before that there was no device to tell.
+
 A remote-desktop client does not need either. `org.freedesktop.impl.portal.
 RemoteDesktop` is implemented at version 2, and it drives the one real seat:
 the pointer, keyboard and touch a person is already using. There are two ways

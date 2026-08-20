@@ -454,6 +454,10 @@ impl ViewportState {
         if let Some(action) = action.flatten() {
             self.handle_action(action);
         }
+        // A key injected here changes the seat's modifiers exactly as a typed
+        // one does — this is the path the on-screen keyboard's Shift takes —
+        // and a remote client watching the same seat has to hear about it.
+        self.sync_eis_modifiers();
     }
 
     /// Let go of a key that something else was holding down when it vanished.
@@ -1244,6 +1248,13 @@ impl ViewportState {
                 if intercepted && keyboard.modifier_state() != mods_before {
                     keyboard.advertise_modifier_state(self);
                 }
+
+                // And any libei client, for the same reason from further away:
+                // a remote session composes its own chords and cannot see the
+                // desk. See `sync_eis_modifiers`. Not conditional on
+                // `intercepted` — a modifier the compositor forwarded reached
+                // the focused client and still never reached the socket.
+                self.sync_eis_modifiers();
 
                 // Whether the logo key is held, which is what the bar rides on
                 // when it is set to appear only while Mod4 is down.
