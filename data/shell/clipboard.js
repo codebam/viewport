@@ -52,6 +52,25 @@ function renderClipboard() {
   clipboardEl.replaceChildren();
   clipboardEl.hidden = false;
 
+  /* Over the output being looked at, rather than centred across all of them:
+     the shell is one page spanning the whole layout, so a dialog centred in
+     it lands in the middle of the desk — between two monitors, on the usual
+     two-monitor desk. `#clipboard` is only the docking box; the dialog inside
+     it is what `.clipboard-dialog`'s flex centring puts in the middle of that
+     box, the same way renderScreencastPicker positions `#screencast`. */
+  const output = outputs.get(activeOutputName());
+  if (output?.rect) {
+    Object.assign(clipboardEl.style, {
+      left: `${output.rect.x}px`,
+      top: `${output.rect.y}px`,
+      width: `${output.rect.width}px`,
+      height: `${output.rect.height}px`,
+    });
+  }
+
+  const dialog = document.createElement('div');
+  dialog.className = 'clipboard-dialog';
+
   const list = document.createElement('div');
   list.className = 'clipboard-list';
 
@@ -96,7 +115,7 @@ function renderClipboard() {
     });
     list.append(row);
   }
-  clipboardEl.append(list);
+  dialog.append(list);
 
   const footer = document.createElement('div');
   footer.className = 'clipboard-footer';
@@ -111,11 +130,18 @@ function renderClipboard() {
     send({ type: 'clipboard.forget' });
   });
   footer.append(clear);
-  clipboardEl.append(footer);
+  dialog.append(footer);
 
-  /* The shell is one buffer under every window, so a picker it draws is behind
-     them until the compositor is told where it is. Named rather than
-     passed through as the whole screen: what is being chosen from is text, and
-     covering the windows to offer it would be a strange way to ask. */
-  setOverlay('clipboard', clipboardEl);
+  clipboardEl.append(dialog);
+
+  /* Tell the compositor where the dialog is, so it draws that piece of the
+     shell above the windows — see setOverlay's own comment in state.js. The
+     dialog alone, not the docking box that spans the whole output: what is
+     being chosen from is text, and covering the windows to offer it would be
+     a strange way to ask. */
+  reportClipboardRect(dialog);
+}
+
+function reportClipboardRect(dialog) {
+  setOverlay('clipboard', dialog);
 }

@@ -38,6 +38,24 @@ function renderPowerPicker() {
   powerEl.replaceChildren();
   powerEl.hidden = false;
 
+  /* Over the output being looked at, rather than centred across all of them —
+     see renderClipboard's own comment for why 50%/50% is the wrong centre on
+     a multi-monitor desk. `#power-picker` is only the docking box; the dialog
+     inside it is what `.power-dialog`'s flex centring puts in the middle of
+     that box. */
+  const output = outputs.get(activeOutputName());
+  if (output?.rect) {
+    Object.assign(powerEl.style, {
+      left: `${output.rect.x}px`,
+      top: `${output.rect.y}px`,
+      width: `${output.rect.width}px`,
+      height: `${output.rect.height}px`,
+    });
+  }
+
+  const dialog = document.createElement('div');
+  dialog.className = 'power-dialog';
+
   const list = document.createElement('div');
   list.className = 'power-list';
 
@@ -61,6 +79,11 @@ function renderPowerPicker() {
     });
     list.append(row);
   }
-  powerEl.append(list);
-  setOverlay('power', powerEl);
+  dialog.append(list);
+  powerEl.append(dialog);
+
+  /* Tell the compositor where the dialog is, so it draws that piece of the
+     shell above the windows — see setOverlay's own comment in state.js. The
+     dialog alone, not the docking box that spans the whole output. */
+  setOverlay('power', dialog);
 }

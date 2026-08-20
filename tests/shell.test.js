@@ -781,7 +781,12 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
  * and that is only possible in the compositor. */
 {
   const picker = () => globalThis.__shell.clipboardEl;
-  const rows = () => (picker().children[0]?.children ?? [])
+  /* The docking box `picker()` names to the compositor is only ever the
+     output-sized frame the dialog is centred in — see renderClipboard's own
+     comment for why. Everything actually drawn is one level in, inside the
+     `.clipboard-dialog` that box holds. */
+  const dialog = () => picker().children[0];
+  const rows = () => (dialog()?.children[0]?.children ?? [])
     .filter((el) => el._classes.has('clipboard-row'));
   const click = (el, event = {}) => (el.listeners.click ?? [])
     .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, ...event }));
@@ -829,7 +834,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   check('and forgetting one leaves the picker open', picker().hidden === false);
 
   before = sent.length;
-  const footer = picker().children[1];
+  const footer = dialog().children[1];
   click(footer.children[0]);
   check('and forgetting everything names no entry at all',
     sent.slice(before).some((m) => m.type === 'clipboard.forget' &&
@@ -848,6 +853,41 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     picker().hidden === true);
 }
 
+/* Placement on a two-monitor desk. The shell is one page spanning the whole
+ * layout — two 2560x1440 monitors are one 5120x1440 canvas to it — so a
+ * picker centred at 50%/50% of the page lands on the seam between two
+ * monitors rather than in the middle of either. `#clipboard` is instead
+ * docked over the active output's own rect from renderClipboard, the same
+ * way `#osk` is docked from renderOsk, and this is the one thing the harness
+ * can actually observe about that without a real layout engine: the inline
+ * style renderClipboard set from `output.rect`. */
+{
+  const picker = () => globalThis.__shell.clipboardEl;
+
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 2560, height: 1440,
+      usable_x: 0, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-2', x: 2560, y: 0, width: 2560, height: 1440,
+      usable_x: 2560, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-2'] });
+
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+  check('the docking box sits over the active output, not the middle of the page',
+    picker().style.left === '2560px' && picker().style.top === '0px' &&
+    picker().style.width === '2560px' && picker().style.height === '1440px');
+  emit({ type: 'shell.command', command: 'clipboard', args: [] });
+
+  /* Back to the single-output desk every other test in this file assumes. */
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+}
+
 /* The two radio pickers. NetworkManager and BlueZ are on the system bus, which
  * the page cannot reach; the compositor reads them and sends a snapshot, and
  * everything here is what the shell does with one. What is worth checking is
@@ -857,7 +897,12 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
  * all on a real desktop. */
 {
   const picker = () => globalThis.__shell.networkEl;
-  const rows = () => (picker().children[1]?.children ?? [])
+  /* The docking box `picker()` names to the compositor is only ever the
+     output-sized frame the dialog is centred in — see renderNetworkPicker's
+     own comment for why. Everything actually drawn is one level in, inside
+     the `.radio-dialog` that box holds. */
+  const dialog = () => picker().children[0];
+  const rows = () => (dialog()?.children[1]?.children ?? [])
     .map((item) => item.children[0]);
   const click = (el, event = {}) => (el.listeners.click ?? [])
     .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, ...event }));
@@ -932,7 +977,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   click(rows()[4]);
   check('an enterprise network is not offered a passphrase box it cannot use',
     !sent.slice(before).some((m) => m.type === 'network.connect') &&
-    picker().children[2]?._classes.has('radio-error') === true);
+    dialog().children[2]?._classes.has('radio-error') === true);
 
   /* The passphrase box, which is the one part of this shell that receives real
      typed text. The out-of-process shell is a Wayland client, so keys reach it
@@ -947,7 +992,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   check('and takes the keyboard, or the box could be clicked and not typed in',
     sent.slice(before).some((m) => m.type === 'shell.focus'));
 
-  const box = () => picker().children[1].children[2].children[1];
+  const box = () => dialog().children[1].children[2].children[1];
   check('the box is under the row it belongs to',
     box()?._classes.has('radio-passphrase') === true);
   const input = () => box().children[0];
@@ -987,12 +1032,12 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   key(input(), 'Escape');
   check('Escape abandons the box without joining anything',
     !sent.slice(before).some((m) => m.type === 'network.connect') &&
-    picker().children[1].children[2].children.length === 1);
+    dialog().children[1].children[2].children.length === 1);
   check('and hands the keyboard back the same way',
     sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 3));
 
   before = sent.length;
-  click(picker().children[0].children[1]);
+  click(dialog().children[0].children[1]);
   /* Absent `enabled` rather than the opposite of what was drawn: the snapshot
      the picker drew from may already be stale, and a computed opposite would
      turn the radio back on a moment after somebody turned it off. */
@@ -1002,7 +1047,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
 
   emit(snapshot({ error: 'Secrets were required, but not provided' }));
   check('and what NetworkManager said about a refusal is drawn on the picker',
-    picker().children.at(-1).textContent.includes('Secrets were required'));
+    dialog().children.at(-1).textContent.includes('Secrets were required'));
 
   before = sent.length;
   fire('click');
@@ -1014,17 +1059,53 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'network.update', available: false });
   emit({ type: 'shell.command', command: 'network', args: [] });
   check('no NetworkManager is said rather than drawn as an empty list',
-    picker().children[1].children[0].textContent.includes('NetworkManager'));
+    dialog().children[1].children[0].textContent.includes('NetworkManager'));
   emit({ type: 'network.update', available: true, wireless: true, enabled: false });
   check('and a radio that is switched off says that instead',
-    picker().children[1].children[0].textContent.includes('switched off'));
+    dialog().children[1].children[0].textContent.includes('switched off'));
   emit({ type: 'shell.command', command: 'network', args: [] });
+}
+
+/* Placement on a two-monitor desk — see the clipboard's own placement test
+ * above for why 50%/50% is the wrong centre and what the harness can check
+ * about the fix instead. This is the bug as it was actually reported: the
+ * Wi-Fi picker opened from the bar's `net` module landing between two
+ * monitors rather than on the one that was clicked. */
+{
+  const picker = () => globalThis.__shell.networkEl;
+
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 2560, height: 1440,
+      usable_x: 0, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-2', x: 2560, y: 0, width: 2560, height: 1440,
+      usable_x: 2560, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-2'] });
+
+  emit({ type: 'shell.command', command: 'network', args: [] });
+  check('the docking box sits over the active output, not the middle of the page',
+    picker().style.left === '2560px' && picker().style.top === '0px' &&
+    picker().style.width === '2560px' && picker().style.height === '1440px');
+  emit({ type: 'shell.command', command: 'network', args: [] });
+
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
 }
 
 /* The Bluetooth picker, which is the same overlay with different verbs. */
 {
   const picker = () => globalThis.__shell.bluetoothEl;
-  const rows = () => picker().children[1]?.children ?? [];
+  /* The docking box `picker()` names to the compositor is only ever the
+     output-sized frame the dialog is centred in — see renderBluetoothPicker's
+     own comment for why. Everything actually drawn is one level in, inside
+     the `.radio-dialog` that box holds. */
+  const dialog = () => picker().children[0];
+  const rows = () => dialog()?.children[1]?.children ?? [];
   const click = (el, event = {}) => (el.listeners.click ?? [])
     .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, ...event }));
   const fire = (type) => (documentListeners[type] ?? [])
@@ -1075,7 +1156,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     !sent.slice(before).some((m) => m.action === 'connect'));
 
   before = sent.length;
-  click(picker().children[0].children[1]);
+  click(dialog().children[0].children[1]);
   check('the header switch toggles the adapter without saying which way',
     sent.slice(before).some((m) => m.type === 'bluetooth.power' &&
       m.enabled === undefined));
@@ -1090,8 +1171,37 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'bluetooth.update', available: false });
   emit({ type: 'shell.command', command: 'bluetooth', args: [] });
   check('no adapter is said rather than drawn as an empty list',
-    picker().children[1].children[0].textContent.includes('No Bluetooth'));
+    dialog().children[1].children[0].textContent.includes('No Bluetooth'));
   emit({ type: 'shell.command', command: 'bluetooth', args: [] });
+}
+
+/* Placement on a two-monitor desk — see the clipboard's own placement test
+ * above for why 50%/50% is the wrong centre and what the harness can check
+ * about the fix instead. */
+{
+  const picker = () => globalThis.__shell.bluetoothEl;
+
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 2560, height: 1440,
+      usable_x: 0, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-2', x: 2560, y: 0, width: 2560, height: 1440,
+      usable_x: 2560, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-2'] });
+
+  emit({ type: 'shell.command', command: 'bluetooth', args: [] });
+  check('the docking box sits over the active output, not the middle of the page',
+    picker().style.left === '2560px' && picker().style.top === '0px' &&
+    picker().style.width === '2560px' && picker().style.height === '1440px');
+  emit({ type: 'shell.command', command: 'bluetooth', args: [] });
+
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
 }
 
 /* The on-screen keyboard. Unlike every picker above, what it sends is not a
@@ -4204,7 +4314,10 @@ if (mode === 'scrolling') {
     check('and names the overlay so it draws over the windows',
       sent.slice(before).some((m) => m.type === 'shell.overlay'));
 
-    const rows = globalThis.__shell.powerEl.children[0]?.children ?? [];
+    /* `powerEl` is only the docking box; the dialog centred inside it —
+       `.power-dialog`, the same split renderPowerPicker's own comment
+       explains for the reason — is where the rows actually live. */
+    const rows = globalThis.__shell.powerEl.children[0]?.children[0]?.children ?? [];
     check('every profile the compositor listed is a row',
       rows.length === 3 && rows[1].textContent === 'balanced');
 
@@ -4215,6 +4328,32 @@ if (mode === 'scrolling') {
         m.profile === 'power-saver'));
     check('and takes the picker down',
       globalThis.__shell.powerEl.hidden === true);
+
+    /* Placement on a two-monitor desk — see the clipboard picker's own
+       placement test for why 50%/50% is the wrong centre and what the
+       harness can check about the fix instead. `powerEl` is the docking box
+       renderPowerPicker sizes and positions from the active output's rect. */
+    emit({ type: 'output.layout', outputs: [
+      { name: 'DP-1', x: 0, y: 0, width: 2560, height: 1440,
+        usable_x: 0, usable_y: 30, usable_width: 2560, usable_height: 1410,
+        scale: 1, transform: 'normal', modes: [], enabled: true },
+      { name: 'DP-2', x: 2560, y: 0, width: 2560, height: 1440,
+        usable_x: 2560, usable_y: 30, usable_width: 2560, usable_height: 1410,
+        scale: 1, transform: 'normal', modes: [], enabled: true },
+    ] });
+    emit({ type: 'shell.command', command: 'output.focus', args: ['DP-2'] });
+    (el.listeners.click ?? []).forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+    check('the docking box sits over the active output, not the middle of the page',
+      globalThis.__shell.powerEl.style.left === '2560px' &&
+      globalThis.__shell.powerEl.style.top === '0px' &&
+      globalThis.__shell.powerEl.style.width === '2560px' &&
+      globalThis.__shell.powerEl.style.height === '1440px');
+    (el.listeners.click ?? []).forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+    emit({ type: 'output.layout', outputs: [
+      { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+        usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+        scale: 1, transform: 'normal', modes: [], enabled: true },
+    ] });
 
     emit({ type: 'power.update', batteries: [], on_battery: false,
       lid_closed: false });

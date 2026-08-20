@@ -113,8 +113,28 @@ function renderNetworkPicker() {
   networkEl.replaceChildren();
   networkEl.hidden = false;
 
+  /* Over the output being looked at, rather than centred across all of them:
+     the shell is one page spanning the whole layout, so a dialog centred in
+     it lands in the middle of the desk — between two monitors, on the usual
+     two-monitor desk. `#network-picker` is only the docking box; the dialog
+     inside it is what `.radio-dialog`'s flex centring puts in the middle of
+     that box, the same way osk.js docks the keyboard over the output being
+     typed into — see renderOsk's own comment there. */
+  const output = outputs.get(activeOutputName());
+  if (output?.rect) {
+    Object.assign(networkEl.style, {
+      left: `${output.rect.x}px`,
+      top: `${output.rect.y}px`,
+      width: `${output.rect.width}px`,
+      height: `${output.rect.height}px`,
+    });
+  }
+
+  const dialog = document.createElement('div');
+  dialog.className = 'radio-dialog';
+
   const state = networkState;
-  networkEl.append(pickerHeader('Wi-Fi', state?.available && state?.wireless
+  dialog.append(pickerHeader('Wi-Fi', state?.available && state?.wireless
     ? {
       label: state.enabled ? 'On' : 'Off',
       on: state.enabled === true,
@@ -148,9 +168,11 @@ function renderNetworkPicker() {
   for (const point of state?.access_points ?? []) {
     list.append(networkRow(point));
   }
-  networkEl.append(list);
+  dialog.append(list);
 
-  if (state?.error) networkEl.append(radioError(state.error));
+  if (state?.error) dialog.append(radioError(state.error));
+
+  networkEl.append(dialog);
 
   /* The passphrase box is focused here rather than where it is built, because
      `focus()` on an element that is not in the document does nothing and the
@@ -165,7 +187,7 @@ function renderNetworkPicker() {
      them until the compositor is told where it is. The dialog alone rather
      than the whole screen: what is being chosen between is a network, and
      covering the windows to ask about one would be a strange way to ask. */
-  setOverlay('network', networkEl);
+  setOverlay('network', dialog);
 }
 
 /* One network. The row says what it is and what would happen if it were
@@ -354,8 +376,23 @@ function renderBluetoothPicker() {
   bluetoothEl.replaceChildren();
   bluetoothEl.hidden = false;
 
+  /* Over the output being looked at — see renderNetworkPicker's own comment
+     for why 50%/50% is the wrong centre on a multi-monitor desk. */
+  const output = outputs.get(activeOutputName());
+  if (output?.rect) {
+    Object.assign(bluetoothEl.style, {
+      left: `${output.rect.x}px`,
+      top: `${output.rect.y}px`,
+      width: `${output.rect.width}px`,
+      height: `${output.rect.height}px`,
+    });
+  }
+
+  const dialog = document.createElement('div');
+  dialog.className = 'radio-dialog';
+
   const state = bluetoothState;
-  bluetoothEl.append(pickerHeader('Bluetooth', state?.available
+  dialog.append(pickerHeader('Bluetooth', state?.available
     ? {
       label: state.powered ? 'On' : 'Off',
       on: state.powered === true,
@@ -377,14 +414,17 @@ function renderBluetoothPicker() {
   for (const device of state?.devices ?? []) {
     list.append(bluetoothRow(device));
   }
-  bluetoothEl.append(list);
+  dialog.append(list);
 
-  if (state?.error) bluetoothEl.append(radioError(state.error));
+  if (state?.error) dialog.append(radioError(state.error));
+
+  bluetoothEl.append(dialog);
 
   /* Named to the compositor for the same reason the network picker is: the
      shell is one buffer under the windows, and a list nobody can see is not a
-     picker. */
-  setOverlay('bluetooth', bluetoothEl);
+     picker. The dialog alone, not the docking box that spans the whole
+     output. */
+  setOverlay('bluetooth', dialog);
 }
 
 /* One device. Tapping the row does the obvious thing — connect what is not

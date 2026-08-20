@@ -208,6 +208,18 @@ to summarise rather than to duplicate.
   regions directly via the compositor.
 
 ### Fixed
+- The Wi-Fi, Bluetooth, power-profile and clipboard pickers no longer open
+  between the two monitors on a two-monitor desk. The shell is one page
+  spanning the whole output layout — two 2560x1440 monitors are one 5120x1440
+  canvas to it — and all four were centred with `top: 50%; left: 50%`, which
+  is the middle of that canvas rather than the middle of either monitor; on
+  the usual two-monitor desk that middle is the seam between them. Each is now
+  docked over the active output's own rect, the same way the on-screen
+  keyboard and the screen-share chooser already were, with the visible dialog
+  centred inside that per-output box instead of inside the page. Their
+  `max-width`/`max-height` moved from `vw`/`vh` to percentages for the same
+  reason: a canvas-wide viewport unit let a picker grow wider than the very
+  monitor it was centred over.
 - Starting an application with a large tray icon no longer takes the desktop
   down with it. Electron's tray publishes one 512x512 pixmap and no smaller
   copy, so picking the pixmap nearest the bar's 22 pixels picked a megabyte of
