@@ -216,24 +216,61 @@ function animateModeIn(el) {
  * container until removal, so it still counts as being there. See
  * reportNotificationRect. */
 
+/* The properties both tweens move, and the only ones they may.
+ *
+ * A notification is drawn over a window by the compositor redrawing this strip
+ * of the shell on top of it, cropped to the rectangle the page reported. What
+ * is *behind* the notification inside that rectangle is not the window — it is
+ * the page, which is to say the wallpaper. So anything that leaves part of the
+ * reported rectangle uncovered puts the desktop background over the window for
+ * as long as it lasts:
+ *
+ *   * Opacity does it everywhere at once. A notification fading out is a
+ *     rectangle of wallpaper fading *in* over whatever it was covering.
+ *   * A transform does it at the edges. `scale` shrinks what is painted and
+ *     leaves the layout box — which is what the rectangle is measured from —
+ *     exactly where it was.
+ *
+ * Both were how these two animated, and both are why closing a notification
+ * showed the background colour behind it. What is left is the box itself:
+ * collapsing and growing the height, and the padding and borders with it, so
+ * the shrinking rectangle and the shrinking picture are the same shrinking
+ * thing. `.notification` is `overflow: hidden` so the text inside is clipped
+ * by that box rather than spilling out of it. */
+const NOTIFICATION_BOX = [
+  'height',
+  'marginTop',
+  'marginBottom',
+  'paddingTop',
+  'paddingBottom',
+  'borderTopWidth',
+  'borderBottomWidth',
+];
+
+/* The collapsed state, as tween values: every box property at zero. */
+function notificationCollapsed() {
+  return Object.fromEntries(NOTIFICATION_BOX.map((key) => [key, 0]));
+}
+
 /* One arriving.
  *
  * It grows into place rather than sliding in from the edge of the screen,
- * which is what a notification usually does and what this cannot. The strip's
+ * which is what a notification usually does and what this cannot: the strip's
  * rect is measured off the container and handed to the compositor, which draws
- * this piece of the shell cropped to exactly that — and a child translated
- * past the container's edge is drawn outside the crop, which is to say not
- * drawn. Scaling up from just under full size keeps every frame inside the
- * box. Same constraint as the screen-share dialog, one level down. */
+ * this piece of the shell cropped to exactly that, and a child translated past
+ * the container's edge is drawn outside the crop — which is to say not drawn.
+ *
+ * `from` rather than `fromTo`, because the values it grows *to* are whatever
+ * the stylesheet and the text made them: the box is measured, never assumed.
+ * See NOTIFICATION_BOX for why the growth is the box and not a fade. */
 function animateNotificationIn(el) {
   if (!motionAllowed()) return;
 
-  gsap.fromTo(el, { opacity: 0, scale: 0.94 }, {
-    opacity: 1,
-    scale: 1,
+  gsap.from(el, {
+    ...notificationCollapsed(),
     duration: motionSeconds('--anim-slow'),
     ease: MOTION_EASE,
-    clearProps: 'opacity,transform',
+    clearProps: NOTIFICATION_BOX.join(','),
     /* The strip grew, and it is growing for the length of the tween. The
        overlay rect is measured off the container, so it has to be re-measured
        while the thing inside it is still settling or the compositor spends the
@@ -264,27 +301,22 @@ function animateNotificationOut(el, remove) {
     remove();
   };
 
-  const timeline = gsap.timeline({ onComplete: done });
-  timeline.to(el, {
-    opacity: 0,
-    scale: 0.94,
+  /* One tween, not two. This used to fade and shrink first and collapse the
+     box afterwards, and the fade was the bug the user saw: for the length of
+     it the compositor went on drawing a strip-sized rectangle of shell over
+     the window while the notification inside it dissolved, so what appeared
+     underneath was the wallpaper rather than the window that was really
+     there. See NOTIFICATION_BOX.
+
+     Measured, not assumed: the box is whatever the text made it, and the
+     stack above has to travel exactly that far. GSAP reads the current
+     computed values itself, which is why only the destination is named. */
+  gsap.to(el, {
+    ...notificationCollapsed(),
     duration: motionSeconds('--anim'),
     ease: MOTION_EASE,
     onUpdate: reportNotificationRect,
-  });
-  /* Measured, not assumed: the box is whatever the text made it, and the
-     stack above has to travel exactly that far. */
-  timeline.to(el, {
-    height: 0,
-    marginTop: 0,
-    marginBottom: 0,
-    paddingTop: 0,
-    paddingBottom: 0,
-    borderTopWidth: 0,
-    borderBottomWidth: 0,
-    duration: motionSeconds('--anim'),
-    ease: MOTION_EASE,
-    onUpdate: reportNotificationRect,
+    onComplete: done,
   });
 }
 

@@ -1754,6 +1754,12 @@ html.no-tutorial .empty .tutorial { display: none; }
   box-shadow: var(--shadow-2);
   cursor: pointer;
   transition: border-color var(--anim) var(--ease);
+  /* Because arriving and leaving are the box collapsing and growing rather
+     than a fade — see NOTIFICATION_BOX in motion.js — the text has to be
+     clipped by that box on the way past. Without this it spills out of a
+     notification that is half closed and is drawn outside it, over the
+     notification below. */
+  overflow: hidden;
 }
 
 /* Arriving and leaving are both tweens — animateNotificationIn() and

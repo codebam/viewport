@@ -305,8 +305,37 @@ function runTween(targets, from, to) {
       to.onUpdate?.();
     }
     applyTweenValues(target, to);
+    /* What GSAP's own `clearProps` does at the end: take the inline values off
+       again and leave the element to the stylesheet. Modelled because the
+       shell uses it to grow a notification into whatever size its text made it
+       — a stub that left the tween's own numbers behind would leave every
+       arrival pinned to the box it was measured against. */
+    if (to.clearProps && target.style) {
+      for (const key of String(to.clearProps).split(',')) {
+        target.style.removeProperty(key.trim());
+      }
+    }
   }
   to.onComplete?.();
+}
+
+/* `gsap.from` animates *from* the values it is given to whatever the element
+ * already has, which is not the same as running the same values twice: a
+ * notification growing in is growing to a height nothing has written down. So
+ * the destination is read off the target before the start values are applied
+ * over it. */
+function runFromTween(targets, vars) {
+  const list = Array.isArray(targets) ? targets : [targets];
+  for (const target of list) {
+    const destination = { duration: vars.duration, ease: vars.ease,
+      onUpdate: vars.onUpdate, onComplete: vars.onComplete,
+      clearProps: vars.clearProps };
+    for (const key of Object.keys(vars)) {
+      if (TWEEN_KEYS.has(key)) continue;
+      destination[key] = target.style ? target.style[key] : target[key];
+    }
+    runTween(target, vars, destination);
+  }
 }
 
 global.gsap = {
@@ -316,7 +345,7 @@ global.gsap = {
   config: () => {},
   defaults: () => {},
   to: (targets, vars) => runTween(targets, null, vars),
-  from: (targets, vars) => runTween(targets, vars, { ...vars, duration: vars.duration }),
+  from: (targets, vars) => runFromTween(targets, vars),
   fromTo: (targets, from, to) => runTween(targets, from, to),
   set: (targets, vars) => runTween(targets, null, { ...vars, duration: 0 }),
   /* A timeline runs each tween as it is added and there is no clock to hold
@@ -335,7 +364,7 @@ global.gsap = {
     };
     const self = {
       to: (targets, vars) => { runTween(targets, null, vars); finish(); return self; },
-      from: (targets, vars) => { runTween(targets, vars, vars); finish(); return self; },
+      from: (targets, vars) => { runFromTween(targets, vars); finish(); return self; },
       fromTo: (targets, from, to) => { runTween(targets, from, to); finish(); return self; },
     };
     return self;
@@ -1553,10 +1582,48 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   check('a notification arriving is drawn on its output',
     strip().children.length === 1);
 
+  /* Nothing translucent, and nothing transformed. The compositor draws this
+     strip over a window by redrawing the page cropped to the rectangle the
+     page reported, and what is behind the notification inside that rectangle
+     is the wallpaper rather than the window — so a notification that fades is
+     a rectangle of desktop background fading in over whatever it covered, and
+     one that scales leaves the same background around its edges. Both are
+     what closing one used to look like. The element is held here rather than
+     read back off the strip because the exit ends by removing it. */
+  const leaving = strip().children[0];
+  check('an arriving notification leaves nothing inline behind it',
+    leaving.style.opacity === '' && leaving.style.height === '');
+  check('and is never drawn scaled', leaving.style.scale === ''
+    && leaving.style.transform === '');
+
+  /* The entrance is checked at the source as well as at the element, because
+     what an arrival leaves behind cannot show what it looked like on the way
+     in: `clearProps` takes the inline values off at the end, so a tween that
+     faded the whole way and one that never touched opacity end identically.
+     What can be stated is that neither tween names either property. */
+  {
+    const motion = fs.readFileSync(`${shellDir}/motion.js`, 'utf8');
+    const tweens = motion
+      .slice(motion.indexOf('function animateNotificationIn'),
+        motion.indexOf('The screen-share chooser'));
+    check('neither notification tween asks for opacity or a transform',
+      !/\bopacity\s*:/.test(tweens) && !/\bscale\s*:/.test(tweens)
+      && !/\b(x|y)\s*:\s*-?\d/.test(tweens));
+  }
+
   const before = sent.length;
   emit({ type: 'notification.close', id: 7 });
   check('an application withdrawing one sends nothing back',
     !sent.slice(before).some((m) => String(m.type).startsWith('notification')));
+
+  check('and the one leaving is not made translucent either',
+    leaving.style.opacity === '');
+  check('nor scaled on its way out', leaving.style.scale === ''
+    && leaving.style.transform === '');
+  /* What it does instead: the box itself goes to nothing, so the rectangle
+     the compositor is given and the picture inside it shrink together. */
+  check('what collapses is the box', leaving.style.height === 0
+    && leaving.style.paddingTop === 0 && leaving.style.borderTopWidth === 0);
 
   /* One that has been dismissed animates out, and the removal is what the
      animation is handed rather than something that has already happened — so

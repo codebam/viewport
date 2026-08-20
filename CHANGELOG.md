@@ -12,6 +12,16 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- A notification closing no longer shows the desktop background where it was.
+  The compositor draws the notification strip over a window by redrawing that
+  piece of the page cropped to the rectangle the page reported, and what is
+  behind a notification inside that rectangle is the wallpaper rather than the
+  window — so the exit's fade was a rectangle of background fading *in* over
+  whatever the notification had been covering, and the shrink that went with
+  it left the same background around the edges, because a transform moves what
+  is painted and not the layout box the rectangle is measured from. Both
+  animations are now the box itself collapsing and growing, so the shrinking
+  rectangle and the shrinking picture are the same shrinking thing.
 - Dark mode is announced in both settings namespaces rather than one. The
   toggle emitted `SettingChanged` for `org.freedesktop.appearance` only, so
   everything reading that namespace followed and everything reading
