@@ -90,6 +90,20 @@ const RESTART_SLOW: std::time::Duration = std::time::Duration::from_secs(30);
 /// The first backoff, doubled for each restart after it.
 const RESTART_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How long a shell process is given to stop by itself at quit.
+///
+/// It is told by the control socket closing, which is the same end-of-session
+/// it already handles, and a shell that takes longer than this is one nobody
+/// is waiting on any more: the screens are about to go.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// And how long after `SIGTERM` before it is killed outright.
+const STOP_TERM_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// How often a stopping shell is looked at. Short enough that the common case
+/// — a shell that exits in a few milliseconds — costs nothing measurable.
+const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// What to do about a shell process that has just died: which attempt of the
 /// current run it is, and how long to wait before making it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -798,6 +812,80 @@ impl ViewportState {
         shell.owned = Some((dmabuf, size));
         self.needs_render = true;
         true
+    }
+
+    /// Stop every shell process, before the compositor's own sockets go.
+    ///
+    /// Quitting used to be a drop: the loop stopped, everything the compositor
+    /// owned was dropped in declaration order, and the shell first heard about
+    /// it when its Wayland connection broke mid-frame. What that produced was
+    /// not a clean exit but a crash — servoshell took winit's error path, ran
+    /// its exit handlers on a half-torn-down engine and died of `SIGSEGV`
+    /// inside them, and the compositor then reaped a shell it had already
+    /// killed.
+    ///
+    /// So the order is made explicit here, and it is the order the shell was
+    /// written for:
+    ///
+    /// 1. Close the control socket. Every out-of-process backend watches it
+    ///    and stops its engine when it closes — the same path as a compositor
+    ///    that has genuinely gone away, except that this time the display is
+    ///    still up while the engine shuts down, so nothing takes a broken-pipe
+    ///    path on the way out.
+    /// 2. Wait [`STOP_GRACE`] for the process to go.
+    /// 3. `SIGTERM`, then [`STOP_TERM_GRACE`], then kill it. A shell that
+    ///    ignores its socket closing does not get to hold up the quit.
+    ///
+    /// Called from `main` after the event loop returns and before the display
+    /// is dropped, which is the only place both halves of that ordering exist.
+    pub fn stop_client_shells(&mut self) {
+        if self.shell_clients.is_empty() {
+            return;
+        }
+
+        // First, because it is what the shells are waiting to hear.
+        self.ipc.close_all();
+
+        let deadline = std::time::Instant::now() + STOP_GRACE;
+        while std::time::Instant::now() < deadline && self.any_shell_running() {
+            std::thread::sleep(STOP_POLL);
+        }
+
+        for shell in &mut self.shell_clients {
+            if matches!(shell.child.try_wait(), Ok(None)) {
+                if let Some(pid) = shell.pid() {
+                    tracing::info!(
+                        "shell {}: still up after its socket closed; SIGTERM",
+                        shell.id
+                    );
+                    // SAFETY: a plain `kill(2)` on a pid this process owns and
+                    // has not yet reaped, so the pid cannot have been reused.
+                    unsafe { libc::kill(pid, libc::SIGTERM) };
+                }
+            }
+        }
+
+        let deadline = std::time::Instant::now() + STOP_TERM_GRACE;
+        while std::time::Instant::now() < deadline && self.any_shell_running() {
+            std::thread::sleep(STOP_POLL);
+        }
+
+        for shell in &mut self.shell_clients {
+            if matches!(shell.child.try_wait(), Ok(None)) {
+                tracing::warn!("shell {}: did not stop; killing it", shell.id);
+                let _ = shell.child.kill();
+            }
+            // Reaped either way: this is the process that started it, and a
+            // shell left as a zombie outlives the compositor's own exit.
+            let _ = shell.child.wait();
+        }
+    }
+
+    /// Whether any shell process is still alive, for the waits above.
+    fn any_shell_running(&mut self) -> bool {
+        self.shell_clients
+            .iter_mut()
+            .any(|shell| matches!(shell.child.try_wait(), Ok(None)))
     }
 
     /// Notice the shell process dying, and start it again.

@@ -1014,6 +1014,13 @@ fn run() -> Result<()> {
             }
         }
     })?;
+
+    // The loop has stopped; the display and everything else is still up. That
+    // is the one moment a shell can be stopped in the order it was written for
+    // — socket first, engine next, display last. Dropping out of here instead
+    // took the display away under a running engine, and the shell died of it.
+    // See `ViewportState::stop_client_shells`.
+    state.stop_client_shells();
     Ok(())
 }
 

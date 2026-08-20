@@ -166,6 +166,10 @@ run inhibit "$root/tests/inhibit.test.sh" "$VIEWPORT" "$inhibit_holder"
 # Needs wl-copy and wl-paste, and skips (77) without them.
 run clipboard "$root/tests/clipboard.test.sh" "$VIEWPORT"
 
+# The order the compositor tears itself down in, with a python stub standing in
+# for the shell process. Skips (77) without python3.
+run shell-stop "$root/tests/shell-stop.test.sh" "$VIEWPORT"
+
 run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"
 run session-lock-takeover "$root/tests/lock-takeover.test.sh" \

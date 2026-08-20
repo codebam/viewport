@@ -2804,6 +2804,7 @@ name = "viewport-shell-servoshell"
 version = "0.1.8"
 dependencies = [
  "anyhow",
+ "libc",
  "serde",
  "serde_json",
  "tracing",

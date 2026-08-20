@@ -61,6 +61,7 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -76,6 +77,41 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(25);
 /// How often the main thread looks at the child it started.
 const CHILD_POLL: Duration = Duration::from_millis(200);
 
+/// How long servoshell is given to exit on `SIGTERM` before it is killed.
+///
+/// Servo's own exit path is not fast and not always quiet — a run that is cut
+/// off mid-teardown has been seen to fault in its exit handlers — so this is
+/// long enough for the ordinary case and short enough that a wedged engine
+/// does not hold up the compositor's quit.
+const TERM_GRACE: Duration = Duration::from_millis(1500);
+
+/// How often a stopping child is looked at within that grace.
+const TERM_POLL: Duration = Duration::from_millis(20);
+
+/// Set from a signal handler when this process is asked to stop.
+///
+/// The compositor closing the control socket is the ordinary end of a session
+/// and needs none of this. A signal is the other way it can arrive — and
+/// without a handler the default action ends this process where it stands,
+/// leaving servoshell running with nothing left to stop it and a Wayland
+/// connection that is about to break. So the signal is turned into the same
+/// end-of-session the socket produces.
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// SAFETY: a single relaxed store to a `static` and nothing else, which is
+/// async-signal-safe. Everything that acts on it runs on the main thread.
+extern "C" fn on_stop_signal(_signal: libc::c_int) {
+    STOPPING.store(true, Ordering::Relaxed);
+}
+
+/// Ask for `SIGTERM` and `SIGINT` rather than dying of them.
+fn catch_stop_signals() {
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+        // SAFETY: installing a handler that does nothing but store a flag.
+        unsafe { libc::signal(signal, on_stop_signal as *const () as libc::sighandler_t) };
+    }
+}
+
 /// Where the browser is.
 fn servoshell_binary() -> String {
     std::env::var("VIEWPORT_SERVOSHELL_BIN").unwrap_or_else(|_| "servoshell".to_owned())
@@ -88,6 +124,8 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    catch_stop_signals();
 
     let args: Vec<String> = std::env::args().collect();
     let options = Options::parse(&args)?;
@@ -140,14 +178,43 @@ fn main() -> Result<()> {
         }
         if queue.is_closed() {
             tracing::info!("the compositor closed the socket; stopping servoshell");
-            let _ = child.kill();
-            break child.wait().context("reaping servoshell")?;
+            break stop(&mut child)?;
+        }
+        if STOPPING.load(Ordering::Relaxed) {
+            tracing::info!("asked to stop; stopping servoshell");
+            break stop(&mut child)?;
         }
         std::thread::sleep(CHILD_POLL);
     };
 
     tracing::info!("servoshell exited: {status}");
     Ok(())
+}
+
+/// Stop servoshell, and wait for it.
+///
+/// `SIGTERM` first, because `Child::kill` is `SIGKILL` and a browser killed
+/// outright leaves its own children — content processes, its GPU process —
+/// behind. The grace is bounded: a `SIGKILL` after [`TERM_GRACE`] is what
+/// stops a wedged engine from outliving the session it was drawing.
+fn stop(child: &mut Child) -> Result<std::process::ExitStatus> {
+    if let Ok(pid) = i32::try_from(child.id()) {
+        // SAFETY: `kill(2)` on this process's own child, which has not been
+        // reaped — so the pid is still its own and cannot have been reused.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+    }
+
+    let deadline = std::time::Instant::now() + TERM_GRACE;
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait().context("waiting for servoshell")? {
+            return Ok(status);
+        }
+        std::thread::sleep(TERM_POLL);
+    }
+
+    tracing::warn!("servoshell did not stop on SIGTERM; killing it");
+    let _ = child.kill();
+    child.wait().context("reaping servoshell")
 }
 
 /// Start the browser on the connection this process was handed.

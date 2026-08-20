@@ -8,6 +8,7 @@ description = "The Viewport shell, rendered out of process by servoshell"
 
 [dependencies]
 viewport-ipc.workspace = true
+libc = "0.2"
 viewport-shell-bridge.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

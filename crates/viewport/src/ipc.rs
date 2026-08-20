@@ -262,6 +262,26 @@ impl Ipc {
         self.arm_writer(client_id);
     }
 
+    /// Close every connection, before the process that owns them goes away.
+    ///
+    /// Shutting the sockets down rather than dropping the clients, because a
+    /// stream is held by its calloop sources as well as by the map here and a
+    /// drop only closes the last handle. `shutdown` acts on the connection
+    /// itself, so the peer reads end-of-file whoever else is still holding it.
+    ///
+    /// What this buys is the order at quit. An out-of-process shell watches
+    /// this socket and stops its engine when it closes, so closing it first
+    /// and waiting means the engine exits while the Wayland display is still
+    /// there. Exiting the other way round is what made a quit noisy: the
+    /// display went first, servoshell took its broken-pipe path, and died in
+    /// its own exit handlers on the way out.
+    pub fn close_all(&mut self) {
+        for client in self.clients.values_mut() {
+            let _ = client.stream.shutdown(std::net::Shutdown::Both);
+            client.dead = true;
+        }
+    }
+
     /// Ask about writability for any client a write came up short on.
     ///
     /// The `any` first so that the ordinary case — every write completed,
