@@ -150,6 +150,16 @@ else
 	echo "=== mpris: skipped, no mpris-player to run it with"
 fi
 
+# Needs gdbus and a private bus, and skips (77) without either. The holder is a
+# cargo example for the reason the frontend and the tray item are: it speaks
+# D-Bus rather than Wayland. Without it the interface checks still run and the
+# two deadline checks — which need a connection that stays open — are skipped.
+inhibit_holder="$root/target/debug/examples/inhibit-holder"
+if [ ! -x "$inhibit_holder" ] && command -v cargo >/dev/null; then
+	(cd "$root" && cargo build -p viewport --example inhibit-holder) || true
+fi
+run inhibit "$root/tests/inhibit.test.sh" "$VIEWPORT" "$inhibit_holder"
+
 # Needs wl-copy and wl-paste, and skips (77) without them.
 run clipboard "$root/tests/clipboard.test.sh" "$VIEWPORT"
 

@@ -8,7 +8,10 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-The on-screen keyboard was the last entry taken off it — see
+The inhibit interfaces were the last entry taken off it —
+`org.freedesktop.ScreenSaver` and `org.freedesktop.impl.portal.Inhibit`, in
+`crates/viewport/src/inhibit.rs`, with `docs/protocols.md`'s Idle section for
+what a hold is and when it ends. Before that it was the on-screen keyboard:
 `data/shell/osk.js`, `docs/ipc.md`'s `osk.key`/`osk.wanted` and
 `docs/configuration.md`'s default bindings.
 
@@ -80,16 +83,6 @@ separate question rather than a second copy of that one is persistence: a
 global shortcut is *meant* to be remembered per application, which is exactly
 what the RemoteDesktop backend here refuses to do for an input grant, so the
 reasoning that produced that refusal has to be redone rather than inherited.
-
-**Nothing answers `org.freedesktop.ScreenSaver` or `portal.Inhibit`.**
-Wayland's `idle-inhibit-v1` is honoured — see `docs/protocols.md`'s Idle
-section — but the D-Bus interface is the one browsers and video players
-actually call, and a film watched here therefore blanks the screen underneath
-itself. The policy it would drive is already written and already configured
-(`idle.lock_after`, `blank_after` in `crates/viewport/src/idle.rs`), which is
-why this is an interface to answer rather than a feature to build.
-`portal.Inhibit` adds the logout and switch-user flags, which belong with the
-power menu above and arrive with it.
 
 ## Remote desktop
 

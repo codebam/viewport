@@ -12,6 +12,30 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- The two D-Bus interfaces that keep a screen awake: `org.freedesktop.
+  ScreenSaver`, which is what Firefox and mpv reach for, and
+  `org.freedesktop.impl.portal.Inhibit`, which is where a sandboxed
+  application's request arrives from the portal frontend. Wayland's
+  `idle-inhibit-v1` was already honoured and is not the interface anything
+  actually uses — it postdates the bus one, and every toolkit already had code
+  for that — so a film on this desktop was watched with the screen blanking
+  under it, and the fix a user finds is to turn the idle policy off for
+  everything. Both end in one registry that the idle timer reads where it
+  already reads the Wayland inhibitors, so a hold of either kind holds off the
+  same two deadlines. The screensaver interface is served at
+  `/org/freedesktop/ScreenSaver` and at `/ScreenSaver`, because software asks
+  at both. A hold is released when the connection that took it goes, not only
+  when the program remembers to give it back: a player killed mid-film never
+  calls `UnInhibit`, and waiting for one would keep the screens lit for the
+  rest of the session with nothing on screen to say why. A cookie may only be
+  released by the connection that took it, since the session bus is reachable
+  by every process in the session and one program guessing another's cookie
+  would turn the screen off in the middle of somebody's film. The portal
+  interface is version 1 deliberately — version 2 adds the logout dialog and
+  the wait for its answer, and there is no logout here to be about — and
+  `GetActive` answers false rather than erroring, because a client that gets an
+  error there sometimes concludes the whole interface is missing and stops
+  inhibiting with it.
 - An EI server, so `org.freedesktop.impl.portal.RemoteDesktop` answers
   ConnectToEIS and the interface advertises version 2. The Notify calls it
   sits beside are one D-Bus round trip through the portal frontend per input

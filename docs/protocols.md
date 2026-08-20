@@ -288,6 +288,37 @@ video on a hidden workspace is not keeping anyone awake. An inhibitor counts as
 activity rather than merely pausing the countdown, so releasing one starts the
 clock again instead of firing immediately.
 
+Wayland's inhibitor is not the one most software uses, so it is not the only
+one honoured. A browser playing video, a video player, a presentation tool: all
+of them hold the screen awake over D-Bus, because that interface predates
+Wayland and every toolkit already had code for it. Two are answered here, both
+ending in the same registry the idle timer reads —
+`org.freedesktop.ScreenSaver`, which is what Firefox and mpv reach for, served
+at `/org/freedesktop/ScreenSaver` and at `/ScreenSaver` because software asks
+at both; and `org.freedesktop.impl.portal.Inhibit`, which is where a sandboxed
+application's request arrives from the portal frontend. Without them a film on
+this desktop is watched with the screen blanking under it, and the fix somebody
+finds is to turn the idle policy off for everything.
+
+A bus hold is released when its owner's connection goes, not only when the
+program remembers to give it back. A player killed mid-film never calls
+`UnInhibit`, and a compositor waiting for one would keep the screens lit for
+the rest of the session with nothing on screen to say why. A cookie may only be
+released by the connection that took it: the session bus is reachable by every
+process in the session, and one program guessing another's cookie would turn
+the screen off in the middle of somebody's film.
+
+`SimulateUserActivity` is answered too, and goes through the path a keypress
+takes — including bringing blanked screens back, because a program saying
+somebody is there means what somebody being there means. The portal interface
+is version 1 deliberately: version 2 adds `CreateMonitor` and
+`QueryEndResponse`, which exist to put a "you are about to be logged out"
+dialog on screen and wait for the answer, and there is no logout here to be
+about. `GetActive` answers false rather than erroring, because a client that
+gets an error on it sometimes concludes the whole interface is missing and
+stops inhibiting with it — this compositor never draws a screensaver, since
+locking runs `lock_command` in a process of its own.
+
 Key presses count as activity; releases do not. That is what makes blanking
 from a keybinding possible at all — the chord fires on press, and letting go of
 it would otherwise say someone is there and turn the screens straight back on.

@@ -29,6 +29,7 @@ mod hdr;
 mod headless;
 mod icon;
 mod idle;
+mod inhibit;
 mod input;
 mod ipc;
 mod keyboard_focus;
@@ -805,11 +806,57 @@ fn run() -> Result<()> {
         let screencast = crate::screencast::portal::ScreenCast::new(sender);
         let screenshot = crate::screenshot::Screenshot::new(screenshot_sender);
 
+        // The inhibit backend goes up with them, on the same connection and
+        // for the same reason: one bus name, so whichever interface was built
+        // second would otherwise be missing from the bus entirely.
+        let inhibit = crate::inhibit::PortalInhibit::new(state.bus_inhibitors.clone());
+
         // Not fatal: a real desktop portal already holding the name knows more
         // about the session than this does, and applications keep the defaults
         // they had a moment ago.
-        if let Err(e) = state.appearance.start(settings, screencast, screenshot) {
+        if let Err(e) = state
+            .appearance
+            .start(settings, screencast, screenshot, inhibit)
+        {
             tracing::warn!("the portals are unavailable: {e}");
+        }
+        if let Some(connection) = state.appearance.connection() {
+            // So a request abandoned by a frontend that crashed can be taken
+            // off the bus, not only out of the table. See
+            // `inhibit::watch_owners`.
+            state.bus_inhibitors.set_portal_connection(connection);
+        }
+    }
+
+    // And the screensaver interface, which is the one a browser actually uses
+    // to keep the screen awake. A connection of its own, because it is a bus
+    // name of its own — see `crate::inhibit`.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(crate::inhibit::Message::Activity) = event else {
+                    return;
+                };
+                // The same path a keypress takes, including bringing blanked
+                // screens back: a program saying somebody is there means the
+                // same thing as somebody being there.
+                if state.idle.activity(crate::idle::Activity::Deliberate) {
+                    state.set_outputs_enabled(true);
+                }
+                let seat = state.seat.clone();
+                state.idle_notifier_state.notify_activity(&seat);
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the inhibit source: {e}"))?;
+
+        // Not fatal, on the same terms as the rest: a session with no bus, or
+        // one where a screensaver daemon already holds the name, has the idle
+        // policy it had a moment ago.
+        match crate::inhibit::start(state.bus_inhibitors.clone(), sender) {
+            Ok(connection) => state.screensaver = Some(connection),
+            Err(e) => tracing::warn!("the screensaver interface is unavailable: {e}"),
         }
     }
 

@@ -160,6 +160,7 @@ impl Appearance {
         settings: Settings,
         screencast: crate::screencast::portal::ScreenCast,
         screenshot: crate::screenshot::Screenshot,
+        inhibit: crate::inhibit::PortalInhibit,
     ) -> anyhow::Result<()> {
         let scheme = settings.color_scheme;
         *self.settings.lock().unwrap() = settings;
@@ -199,6 +200,7 @@ impl Appearance {
             .serve_at(OBJECT_PATH, screencast)?
             .serve_at(OBJECT_PATH, remote)?
             .serve_at(OBJECT_PATH, screenshot)?
+            .serve_at(OBJECT_PATH, inhibit)?
             .build()?;
 
         // Asked for with `crate::dbus::name_flags` rather than the builder's
@@ -213,7 +215,7 @@ impl Appearance {
 
         self.connection = Some(connection);
         tracing::info!(
-            "settings, screencast, remote desktop, and screenshot portals up, \
+            "settings, screencast, remote desktop, screenshot and inhibit portals up, \
              color-scheme={scheme}"
         );
         Ok(())
@@ -255,6 +257,16 @@ impl Appearance {
             }
         }
         tracing::info!("cursor now {theme} at {size}");
+    }
+
+    /// The connection the portal interfaces are served on.
+    ///
+    /// Handed out so the inhibit registry can remove a request object left
+    /// behind by a frontend that crashed — the one piece of cleanup that needs
+    /// the connection from outside this file. `None` when the name could not
+    /// be claimed, in which case nothing was published on it either.
+    pub fn connection(&self) -> Option<zbus::blocking::Connection> {
+        self.connection.clone()
     }
 
     /// What the portal is currently telling clients the cursor size is.

@@ -1108,6 +1108,12 @@
                 # running the C build, which does not answer this.
                 "org.freedesktop.impl.portal.ScreenCast" = [ "viewport" "wlr" ];
                 "org.freedesktop.impl.portal.Screenshot" = [ "wlr" ];
+                # Inhibit is answered by the compositor for the plainest
+                # reason of all: what is being inhibited is its own idle
+                # timer, which is where the lock and blank deadlines live.
+                # Nothing else in the session can hold off a deadline it
+                # cannot see.
+                "org.freedesktop.impl.portal.Inhibit" = [ "viewport" "gtk" ];
               };
             };
           };

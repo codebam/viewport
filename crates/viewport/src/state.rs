@@ -207,6 +207,17 @@ pub struct ViewportState {
     /// Locking and blanking after a while, off unless the file asks.
     pub idle: crate::idle::Idle,
     pub idle_settings: crate::idle::Settings,
+    /// The `org.freedesktop.ScreenSaver` connection, kept because dropping it
+    /// takes the interface off the bus. Nothing else reads it.
+    pub screensaver: Option<zbus::blocking::Connection>,
+    /// Everything holding idle off from the session bus.
+    ///
+    /// Separate from `idle_inhibitors`, which is the Wayland protocol's list
+    /// of surfaces, because these are not surfaces and do not die with one: a
+    /// browser inhibiting over `org.freedesktop.ScreenSaver` has a connection
+    /// and a cookie. Both lists answer the same question and
+    /// `refresh_idle_inhibit` asks both. See `crate::inhibit`.
+    pub bus_inhibitors: crate::inhibit::Registry,
     /// Whether Ctrl+Alt+F1..F12 may switch VT. A kiosk turns this off.
     pub vt_switching: bool,
     /// Whether clients are asked to let the compositor own the window frame.
@@ -1248,6 +1259,8 @@ impl ViewportState {
             status: crate::status::Status::default(),
             idle: crate::idle::Idle::default(),
             idle_settings: crate::idle::Settings::default(),
+            screensaver: None,
+            bus_inhibitors: crate::inhibit::Registry::default(),
             vt_switching: true,
             server_decorations: true,
             dark_mode: true,
@@ -5201,7 +5214,10 @@ impl ViewportState {
     pub fn refresh_idle_inhibit(&mut self) {
         use smithay::utils::IsAlive as _;
         self.idle_inhibitors.retain(|surface| surface.alive());
-        let inhibited = !self.idle_inhibitors.is_empty();
+        // Either list is enough. A film inhibits over the bus and a full-screen
+        // game over Wayland, and a session that honoured only the protocol
+        // would blank under the first of those — which is most of them.
+        let inhibited = !self.idle_inhibitors.is_empty() || self.bus_inhibitors.inhibited();
         self.idle.set_inhibited(inhibited);
         self.idle_notifier_state.set_is_inhibited(inhibited);
     }

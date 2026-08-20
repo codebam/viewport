@@ -51,6 +51,12 @@ Actions are `exec COMMAND`, `close`, `exit`, `reload`, `focus DIRECTION`,
 `mode NAME`, `appearance toggle`, `lock`, `blank`, `background` and
 `shell COMMAND ARGS…`. `background` is the wallpaper terminal's only way in —
 see below.
+Neither deadline fires while something is holding the screen awake, and
+holding it is not only Wayland's `idle-inhibit`: `org.freedesktop.ScreenSaver`
+and the inhibit portal are answered too, which between them is what a browser
+playing video, a video player and a presentation actually use. Nothing to
+configure — see [Idle](protocols.md#idle) for what a hold is and when it ends.
+
 `lock` runs the same `idle.lock_command` the idle timer would, so there is one
 place to configure what locking means; `blank` turns the outputs off until the
 next input, exactly as the idle timer does. `lid` is what the laptop hinge
