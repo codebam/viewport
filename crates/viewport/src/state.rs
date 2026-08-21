@@ -2485,33 +2485,7 @@ impl ViewportState {
 
         // Into the client's own memory. The shm path is the only one a client
         // can read without having allocated the buffer itself.
-        smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
-            let want = (region.size.w * region.size.h * 4) as usize;
-            if len < want || data.width < region.size.w || data.height < region.size.h {
-                return Err(format!(
-                    "the client's buffer is {}x{} and the copy is {}x{}",
-                    data.width, data.height, region.size.w, region.size.h
-                ));
-            }
-            // Row by row, because the client's stride need not be the packed
-            // width — and writing as though it were shears the image.
-            let stride = data.stride as usize;
-            let row = (region.size.w * 4) as usize;
-            for y in 0..region.size.h as usize {
-                let from = &pixels[y * row..(y + 1) * row];
-                // SAFETY: the length was checked above, and shm guarantees the
-                // mapping is valid for the duration of this closure.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        from.as_ptr(),
-                        ptr.add(data.offset as usize + y * stride),
-                        row,
-                    );
-                }
-            }
-            Ok(())
-        })
-        .map_err(|e| format!("the client did not give shared memory: {e}"))??;
+        blit_shm(buffer, &pixels, region.size, "the copy")?;
 
         Ok(())
     }
@@ -4050,33 +4024,7 @@ impl ViewportState {
     {
         let (pixels, size) = self.read_window_pixels::<R, B>(id, renderer)?;
 
-        smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
-            let want = (size.w * size.h * 4) as usize;
-            if len < want || data.width < size.w || data.height < size.h {
-                return Err(format!(
-                    "the client's buffer is {}x{} and the window is {}x{}",
-                    data.width, data.height, size.w, size.h
-                ));
-            }
-            // Row by row: the client's stride need not be the packed width,
-            // and writing as though it were shears the image.
-            let stride = data.stride as usize;
-            let row = (size.w * 4) as usize;
-            for y in 0..size.h as usize {
-                let from = &pixels[y * row..(y + 1) * row];
-                // SAFETY: the length was checked above, and shm guarantees the
-                // mapping is valid for the duration of this closure.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        from.as_ptr(),
-                        ptr.add(data.offset as usize + y * stride),
-                        row,
-                    );
-                }
-            }
-            Ok(())
-        })
-        .map_err(|e| format!("the client did not give shared memory: {e}"))??;
+        blit_shm(buffer, &pixels, size, "the window")?;
 
         Ok(())
     }
@@ -4300,9 +4248,6 @@ impl ViewportState {
                         window_id: None,
                         reply,
                     });
-                for output in self.space.outputs() {
-                    output.user_data().insert_if_missing(|| ());
-                }
             }
         }
     }
@@ -6271,7 +6216,11 @@ impl ViewportState {
                     states
                         .data_map
                         .get::<std::sync::Mutex<smithay::input::pointer::CursorImageAttributes>>()
-                        .map(|attrs| attrs.lock().unwrap().hotspot)
+                        // Read, not obeyed: a panic in whichever client thread
+                        // held this last says nothing about the hotspot, and
+                        // this runs every frame — a poisoned lock here would be
+                        // a permanent cursor, not a diagnosis.
+                        .map(|attrs| attrs.lock().unwrap_or_else(|e| e.into_inner()).hotspot)
                         .unwrap_or_default()
                 });
                 // The surface is drawn at the pointer minus its hotspot, and
@@ -7103,7 +7052,10 @@ impl ViewportState {
             if let Some(mut timer) = states
                 .data_map
                 .get::<CommitTimerBarrierStateUserData>()
-                .map(|timer| timer.lock().unwrap())
+                // Read, not obeyed: this runs every barrier round, and a lock
+                // poisoned once by some other thread's panic would pace no
+                // client ever again.
+                .map(|timer| timer.lock().unwrap_or_else(|e| e.into_inner()))
             {
                 if timer.signal_until(target) {
                     tracing::trace!("commit-timing: a deadline reached");
@@ -9245,6 +9197,48 @@ impl ViewportState {
             page.desktop = plan.desktop;
         }
     }
+}
+
+/// One composited picture into a client's shared memory buffer, row by row.
+///
+/// Both shm copies — an output's and a window's — were this same body
+/// verbatim, size check to `copy_nonoverlapping`, each with its own SAFETY
+/// note saying the same thing. One body now; `what` is only the word the size
+/// mismatch names in the error, "the copy" or "the window".
+fn blit_shm(
+    buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+    pixels: &[u8],
+    size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    what: &str,
+) -> Result<(), String> {
+    smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
+        let want = (size.w * size.h * 4) as usize;
+        if len < want || data.width < size.w || data.height < size.h {
+            return Err(format!(
+                "the client's buffer is {}x{} and {what} is {}x{}",
+                data.width, data.height, size.w, size.h
+            ));
+        }
+        // Row by row, because the client's stride need not be the packed
+        // width — and writing as though it were shears the image.
+        let stride = data.stride as usize;
+        let row = (size.w * 4) as usize;
+        for y in 0..size.h as usize {
+            let from = &pixels[y * row..(y + 1) * row];
+            // SAFETY: the length was checked above, and shm guarantees the
+            // mapping is valid for the duration of this closure.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    from.as_ptr(),
+                    ptr.add(data.offset as usize + y * stride),
+                    row,
+                );
+            }
+        }
+        Ok(())
+    })
+    .map_err(|e| format!("the client did not give shared memory: {e}"))??;
+    Ok(())
 }
 
 /// A transform by the name the config file uses, which is sway's.
