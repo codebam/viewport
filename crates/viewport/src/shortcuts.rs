@@ -169,6 +169,10 @@ pub enum Message {
 /// thread when a chord fires. Shared rather than passed because the compositor
 /// is not the side that built the connection — see `appearance::start`, where
 /// every portal interface on this bus name is served from one.
+///
+/// The mutex guards the slot, nothing more. Anything reading the connection
+/// clones it out and lets the lock go first: an emit is socket I/O, and this
+/// runs on the event loop.
 #[derive(Clone, Default)]
 pub struct Signals(Arc<Mutex<Option<zbus::blocking::Connection>>>);
 
@@ -184,8 +188,15 @@ impl Signals {
     /// push-to-talk key is still held wants when the key moved, not when a
     /// D-Bus message happened to be written.
     pub fn emit(&self, activated: bool, session: &OwnedObjectPath, id: &str, timestamp: u64) {
-        let held = self.0.lock().unwrap();
-        let Some(connection) = held.as_ref() else {
+        // Clone the connection out and drop the lock before writing to the
+        // socket. This runs on the event loop, for the press *and* the release
+        // of every granted chord; an emit that held the mutex across its
+        // blocking write would let a slow or wedged session bus stall input
+        // and rendering together, and a wedged bus would hold the lock away
+        // from `set_connection` besides. The lock is worth microseconds, not
+        // round trips.
+        let connection = self.0.lock().unwrap().clone();
+        let Some(connection) = connection else {
             return;
         };
         let member = if activated {
