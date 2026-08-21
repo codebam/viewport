@@ -216,22 +216,23 @@ pub struct ViewportState {
     /// be on its way, and an `id` from the old list is almost always in range
     /// of the new one — the wrong application is worse than nothing.
     pub launcher_generation: u64,
-    /// The icons the launcher has resolved, keyed by the theme and name they
-    /// were resolved under, `None` where the themes have no such icon or the
-    /// file is too large to send.
+    /// The launcher's scanner: the thread that walks the applications
+    /// directories and resolves the icons, and the mailbox to reach it on.
     ///
-    /// `icon::lookup` walks the theme directories and `data_url` reads and
-    /// encodes the file, and a query resolves up to a hundred of them on the
-    /// event loop's thread — a keystroke that takes a hundred milliseconds
-    /// while the list is being typed. The names repeat across every query, so
-    /// each is resolved once and the answer kept. The tray keeps its own copy
-    /// for its worker thread; this one is the event loop's.
-    pub launcher_icons: std::collections::HashMap<String, Option<String>>,
+    /// A query used to do both on this thread — a directory walk and up to a
+    /// hundred icon reads per keystroke, with frames waiting behind them. Now
+    /// the keystroke posts and the answer comes back through a calloop
+    /// channel the way a notification does; see `crate::launcher::Scanner`,
+    /// which keeps the icon cache on the thread that fills it. Absent where
+    /// the thread would not start, and the query answered here as it always
+    /// was.
+    pub launcher_scan: crate::launcher::Scanner,
     /// The icon theme the launcher's icons are looked up in.
     ///
-    /// The tray keeps its own copy for its worker thread; the launcher looks
-    /// icons up on the event loop's thread, where this one is. Both are set
-    /// from the same key, in the same place.
+    /// The tray keeps its own copy for its worker thread; this one travels
+    /// with each query the launcher's scanner is sent, so an answer is always
+    /// drawn from the theme it was asked under. Both are set from the same
+    /// key, in the same place.
     pub icon_theme: String,
     /// Whether the configuration wants a tray at all. Kept because the
     /// configuration is read before the event loop has anywhere to send one,
@@ -1316,7 +1317,7 @@ impl ViewportState {
             clipboard: crate::clipboard::Clipboard::default(),
             launcher_list: Vec::new(),
             launcher_generation: 0,
-            launcher_icons: std::collections::HashMap::new(),
+            launcher_scan: crate::launcher::Scanner::default(),
             // The tray's own default, which the first config load may replace.
             icon_theme: "hicolor".to_owned(),
             // On unless a file says otherwise: a desktop with no tray is a
@@ -2027,23 +2028,46 @@ impl ViewportState {
             let region = smithay::utils::Rectangle::new((0, 0).into(), mode.size);
             match self.read_output_pixels::<R, B>(output, region, true, renderer) {
                 Ok(pixels) => {
-                    let png_bytes =
-                        crate::icon::encode_png(mode.size.w as u32, mode.size.h as u32, &pixels);
-                    let filename = format!(
-                        "viewport-screenshot-{}-{}.png",
-                        std::process::id(),
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis()
-                    );
-                    let path = std::env::temp_dir().join(filename);
-                    if let Err(e) = std::fs::write(&path, png_bytes) {
-                        let _ =
-                            reply.try_send(Err(format!("could not write screenshot file: {e}")));
-                    } else {
-                        let uri = format!("file://{}", path.display());
-                        let _ = reply.try_send(Ok(uri));
+                    // The encoding and the writing belong to nobody's frame:
+                    // PNG over a full screen is tens of milliseconds at 1080p
+                    // and hundreds at 4K, and this runs between frames. A
+                    // short-lived thread does both and answers the portal from
+                    // there — once, whichever way it goes, because exactly one
+                    // `try_send` sits on each path out of it.
+                    let size = mode.size;
+                    let unspawned = reply.clone();
+                    let spawned = std::thread::Builder::new()
+                        .name("viewport-screenshot".to_owned())
+                        .spawn(move || {
+                            let png_bytes =
+                                crate::icon::encode_png(size.w as u32, size.h as u32, &pixels);
+                            let filename = format!(
+                                "viewport-screenshot-{}-{}.png",
+                                std::process::id(),
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                            );
+                            let path = std::env::temp_dir().join(filename);
+                            match std::fs::write(&path, png_bytes) {
+                                Ok(()) => {
+                                    let uri = format!("file://{}", path.display());
+                                    let _ = reply.try_send(Ok(uri));
+                                }
+                                Err(e) => {
+                                    let _ = reply.try_send(Err(format!(
+                                        "could not write screenshot file: {e}"
+                                    )));
+                                }
+                            }
+                        });
+                    // A thread that would not start still leaves a request to
+                    // answer, so the portal hears the failure rather than
+                    // waiting on nothing.
+                    if let Err(e) = spawned {
+                        let _ = unspawned
+                            .try_send(Err(format!("could not spawn the screenshot writer: {e}")));
                     }
                 }
                 Err(e) => {
@@ -2485,33 +2509,7 @@ impl ViewportState {
 
         // Into the client's own memory. The shm path is the only one a client
         // can read without having allocated the buffer itself.
-        smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
-            let want = (region.size.w * region.size.h * 4) as usize;
-            if len < want || data.width < region.size.w || data.height < region.size.h {
-                return Err(format!(
-                    "the client's buffer is {}x{} and the copy is {}x{}",
-                    data.width, data.height, region.size.w, region.size.h
-                ));
-            }
-            // Row by row, because the client's stride need not be the packed
-            // width — and writing as though it were shears the image.
-            let stride = data.stride as usize;
-            let row = (region.size.w * 4) as usize;
-            for y in 0..region.size.h as usize {
-                let from = &pixels[y * row..(y + 1) * row];
-                // SAFETY: the length was checked above, and shm guarantees the
-                // mapping is valid for the duration of this closure.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        from.as_ptr(),
-                        ptr.add(data.offset as usize + y * stride),
-                        row,
-                    );
-                }
-            }
-            Ok(())
-        })
-        .map_err(|e| format!("the client did not give shared memory: {e}"))??;
+        blit_shm(buffer, &pixels, region.size, "the copy")?;
 
         Ok(())
     }
@@ -4050,33 +4048,7 @@ impl ViewportState {
     {
         let (pixels, size) = self.read_window_pixels::<R, B>(id, renderer)?;
 
-        smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
-            let want = (size.w * size.h * 4) as usize;
-            if len < want || data.width < size.w || data.height < size.h {
-                return Err(format!(
-                    "the client's buffer is {}x{} and the window is {}x{}",
-                    data.width, data.height, size.w, size.h
-                ));
-            }
-            // Row by row: the client's stride need not be the packed width,
-            // and writing as though it were shears the image.
-            let stride = data.stride as usize;
-            let row = (size.w * 4) as usize;
-            for y in 0..size.h as usize {
-                let from = &pixels[y * row..(y + 1) * row];
-                // SAFETY: the length was checked above, and shm guarantees the
-                // mapping is valid for the duration of this closure.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        from.as_ptr(),
-                        ptr.add(data.offset as usize + y * stride),
-                        row,
-                    );
-                }
-            }
-            Ok(())
-        })
-        .map_err(|e| format!("the client did not give shared memory: {e}"))??;
+        blit_shm(buffer, &pixels, size, "the window")?;
 
         Ok(())
     }
@@ -4300,9 +4272,6 @@ impl ViewportState {
                         window_id: None,
                         reply,
                     });
-                for output in self.space.outputs() {
-                    output.user_data().insert_if_missing(|| ());
-                }
             }
         }
     }
@@ -6271,7 +6240,11 @@ impl ViewportState {
                     states
                         .data_map
                         .get::<std::sync::Mutex<smithay::input::pointer::CursorImageAttributes>>()
-                        .map(|attrs| attrs.lock().unwrap().hotspot)
+                        // Read, not obeyed: a panic in whichever client thread
+                        // held this last says nothing about the hotspot, and
+                        // this runs every frame — a poisoned lock here would be
+                        // a permanent cursor, not a diagnosis.
+                        .map(|attrs| attrs.lock().unwrap_or_else(|e| e.into_inner()).hotspot)
                         .unwrap_or_default()
                 });
                 // The surface is drawn at the pointer minus its hotspot, and
@@ -6574,24 +6547,8 @@ impl ViewportState {
         // The status sampler is told the same what-to-read as the shell lists:
         // which mounts to stat and whether to ask wpctl for the sink, so a bar
         // that draws neither spawns nothing.
-        let bar_widgets: Vec<viewport_ipc::event::BarWidget> = file
-            .bar_widgets
-            .iter()
-            .map(|w| match w {
-                crate::config::BarWidgetConfig::Disk { path } => {
-                    viewport_ipc::event::BarWidget::Disk { path: path.clone() }
-                }
-                crate::config::BarWidgetConfig::Weather { location } => {
-                    viewport_ipc::event::BarWidget::Weather {
-                        location: location.clone(),
-                    }
-                }
-                crate::config::BarWidgetConfig::Volume => viewport_ipc::event::BarWidget::Volume,
-                crate::config::BarWidgetConfig::Mic => viewport_ipc::event::BarWidget::Mic,
-                crate::config::BarWidgetConfig::Mpris => viewport_ipc::event::BarWidget::Mpris,
-                crate::config::BarWidgetConfig::Battery => viewport_ipc::event::BarWidget::Battery,
-            })
-            .collect();
+        let bar_widgets: Vec<viewport_ipc::event::BarWidget> =
+            file.bar_widgets.iter().map(bar_widget_ipc).collect();
 
         // The bar_items list, mapped to the IPC form. Bare strings are
         // modules; objects are widgets.
@@ -6603,34 +6560,13 @@ impl ViewportState {
                         viewport_ipc::event::BarItem::Module(name.clone())
                     }
                     crate::config::BarItemConfig::Widget(w) => {
-                        viewport_ipc::event::BarItem::Widget(match w {
-                            crate::config::BarWidgetConfig::Disk { path } => {
-                                viewport_ipc::event::BarWidget::Disk { path: path.clone() }
-                            }
-                            crate::config::BarWidgetConfig::Weather { location } => {
-                                viewport_ipc::event::BarWidget::Weather {
-                                    location: location.clone(),
-                                }
-                            }
-                            crate::config::BarWidgetConfig::Volume => {
-                                viewport_ipc::event::BarWidget::Volume
-                            }
-                            crate::config::BarWidgetConfig::Mic => {
-                                viewport_ipc::event::BarWidget::Mic
-                            }
-                            crate::config::BarWidgetConfig::Mpris => {
-                                viewport_ipc::event::BarWidget::Mpris
-                            }
-                            crate::config::BarWidgetConfig::Battery => {
-                                viewport_ipc::event::BarWidget::Battery
-                            }
-                        })
+                        viewport_ipc::event::BarItem::Widget(bar_widget_ipc(w))
                     }
                 })
                 .collect()
         });
 
-        // Which widgets actually get drawn: the override's own widgets when
+        // Which of those actually get drawn: the override's own widgets when
         // present, else the bar_widgets additions. The sampler only pays for
         // what will be on screen.
         let drawn_widgets: Vec<&crate::config::BarWidgetConfig> =
@@ -6656,35 +6592,24 @@ impl ViewportState {
             Some(bar_widgets)
         };
         self.config.bar_items = bar_items;
-        self.status.configure(
-            drawn_widgets
-                .iter()
-                .filter_map(|w| match w {
-                    crate::config::BarWidgetConfig::Disk { path } => {
-                        Some(path.clone().unwrap_or_else(|| "/".to_owned()))
-                    }
-                    _ => None,
-                })
-                .collect(),
-            drawn_widgets
-                .iter()
-                .any(|w| matches!(w, crate::config::BarWidgetConfig::Volume)),
-            drawn_widgets
-                .iter()
-                .any(|w| matches!(w, crate::config::BarWidgetConfig::Mic)),
-        );
+        // One fold over what is drawn, and every sampler knows its job.
+        let mut sampled = Sampling::default();
+        for widget in &drawn_widgets {
+            let costs = widget.sampling();
+            sampled.mounts.extend(costs.mounts);
+            sampled.volume |= costs.volume;
+            sampled.mic |= costs.mic;
+            sampled.players |= costs.players;
+            sampled.battery |= costs.battery;
+        }
+        self.status
+            .configure(sampled.mounts, sampled.volume, sampled.mic);
         // Following every media player on the session is worth doing only for
         // a bar that draws one, which is the same rule the audio sampling
-        // above follows.
-        self.mpris.set_enabled(
-            drawn_widgets
-                .iter()
-                .any(|w| matches!(w, crate::config::BarWidgetConfig::Mpris)),
-        );
-        let want_battery = drawn_widgets
-            .iter()
-            .any(|w| matches!(w, crate::config::BarWidgetConfig::Battery));
-        self.power.set_widget(want_battery);
+        // above follows. The battery likewise, on the power worker's own
+        // switch.
+        self.mpris.set_enabled(sampled.players);
+        self.power.set_widget(sampled.battery);
         if let Some(url) = file.url {
             self.shell_url = Some(url);
         }
@@ -6804,8 +6729,9 @@ impl ViewportState {
                 .clone()
                 .unwrap_or_else(|| "hicolor".to_owned()),
         );
-        // The same key, for the icons the launcher looks up on this thread.
-        // The tray's copy is for its worker; this one is for the event loop.
+        // The same key, for the icons the launcher resolves. The tray keeps
+        // its own copy for its worker; this one travels with every query sent
+        // to the launcher's scanner.
         self.icon_theme = file
             .icon_theme
             .clone()
@@ -6813,8 +6739,9 @@ impl ViewportState {
         // Applied on every load, so a reload that changes the theme empties
         // the cache then and there rather than at the next restart — the same
         // property the tray cache has, and the thing the user reaches for when
-        // they install icons and want to see them.
-        self.launcher_icons.clear();
+        // they install icons and want to see them. The cache is the scanner's
+        // now, so the emptying is a message rather than a method.
+        self.launcher_scan.clear_icons();
 
         if file.idle != crate::config::IdleConfig::default() {
             self.idle_settings = crate::idle::Settings {
@@ -6840,19 +6767,36 @@ impl ViewportState {
         self.power
             .set_enabled(self.power.widget() || self.lid != crate::power::LidAction::Ignore);
 
-        // The cursor theme. The xcursor loader reads the environment, which is
-        // also how every toolkit resolves it — so setting it here is what makes
-        // the compositor's pointer and a GTK application's agree.
-        if let Some(theme) = file.cursor.theme.as_deref() {
-            unsafe { std::env::set_var("XCURSOR_THEME", theme) };
-        }
-        if let Some(size) = file.cursor.size {
-            unsafe { std::env::set_var("XCURSOR_SIZE", size.to_string()) };
-        }
-        // Only when one of those two moved. Rebuilding on any change to the
-        // block would throw the loaded images away because a reload touched
-        // the hide deadline, which has nothing to do with what they look like.
-        if file.cursor.theme.is_some() || file.cursor.size.is_some() {
+        // The cursor theme, resolved against what is already loaded rather
+        // than round-tripped through the process environment. Writing environ
+        // on a process whose tray, status and notification threads are live
+        // and reading it is undefined — glibc may free or rehash it under a
+        // concurrent getenv — and every reload used to do exactly that, twice,
+        // whether anything had changed or not.
+        let theme = file
+            .cursor
+            .theme
+            .clone()
+            .unwrap_or_else(|| self.cursor_theme.name().to_owned());
+        let size = file.cursor.size.unwrap_or(self.cursor_theme.size());
+        // Only when one of those two moved, and only then: rebuilding on any
+        // change to the block would throw the loaded images away because a
+        // reload touched the hide deadline, which has nothing to do with what
+        // they look like.
+        if theme != self.cursor_theme.name() || size != self.cursor_theme.size() {
+            // The loader is constructed from the environment — `Theme` has no
+            // other door — so the values are written back for it to read, and
+            // this is the one setenv left on a live process. It survives
+            // because nothing else in-process consumes these variables at
+            // runtime: outputs added after this draw from `self.cursor_theme`,
+            // which is rebuilt here, and children this process starts are told
+            // the pair explicitly (`launcher_launch`). A named constructor on
+            // `cursor::Theme` is what finally deletes these two lines and the
+            // race they carry.
+            unsafe {
+                std::env::set_var("XCURSOR_THEME", &theme);
+                std::env::set_var("XCURSOR_SIZE", size.to_string());
+            }
             self.cursor_theme = crate::cursor::Theme::new();
             // And what the portal answers, or a toolkit keeps sizing its own
             // cursors from the value it was told when it started — which is a
@@ -6863,14 +6807,6 @@ impl ViewportState {
             // The pointer on screen is still the old image, and the compositor
             // draws on damage: nothing else here is damage.
             self.needs_render = true;
-        }
-        // Both variables, whether or not the file named them: a session started
-        // without them in the environment has nothing to hand to the clients
-        // that are launched by systemd rather than from here, and the resolved
-        // values are what the compositor is drawing either way.
-        unsafe {
-            std::env::set_var("XCURSOR_THEME", self.cursor_theme.name());
-            std::env::set_var("XCURSOR_SIZE", self.cursor_theme.size().to_string());
         }
         if self.cursor_hide.set_after_ms(file.cursor.hide_after_ms) {
             // The deadline that hid it has just been taken away, so nothing
@@ -7103,7 +7039,10 @@ impl ViewportState {
             if let Some(mut timer) = states
                 .data_map
                 .get::<CommitTimerBarrierStateUserData>()
-                .map(|timer| timer.lock().unwrap())
+                // Read, not obeyed: this runs every barrier round, and a lock
+                // poisoned once by some other thread's panic would pace no
+                // client ever again.
+                .map(|timer| timer.lock().unwrap_or_else(|e| e.into_inner()))
             {
                 if timer.signal_until(target) {
                     tracing::trace!("commit-timing: a deadline reached");
@@ -7646,13 +7585,16 @@ impl ViewportState {
     /// The applications the launcher can start, filtered, as the shell draws
     /// them.
     ///
-    /// Re-scanned on every query rather than cached: a package installing a
-    /// new entry is the moment a launcher most wants to show it, and the scan
-    /// is a directory walk the compositor is already doing for its icons.
-    /// The filter is the shell's text, matched case-insensitively against the
-    /// name, what the entry says it is for, and the command it runs — a
-    /// binary name typed into the field finds its entry — and against the
-    /// app_id a token is minted under; absent is the whole list.
+    /// Re-scanned on every query rather than cached — a package installing a
+    /// new entry is the moment a launcher most wants to show it — but scanned
+    /// off this thread. What happens here is the posting of the question: the
+    /// walk, the parse and the icon reads are the scanner's, and the answer
+    /// comes back through the loop like any other message, to
+    /// `launcher_apply`. The filter is the shell's text, matched
+    /// case-insensitively against the name, what the entry says it is for,
+    /// and the command it runs — a binary name typed into the field finds its
+    /// entry — and against the app_id a token is minted under; absent is the
+    /// whole list.
     ///
     /// The query answers with a generation, the number of queries the
     /// compositor has answered, and `launcher.launch` carries it back: a
@@ -7660,51 +7602,57 @@ impl ViewportState {
     /// a list the query that replaced it has not answered yet.
     pub fn launcher_query(&mut self, filter: Option<String>) {
         self.launcher_generation += 1;
-        let desktop = crate::launcher::current_desktop();
-        let desktop: Vec<&str> = desktop.iter().map(String::as_str).collect();
-        let apps = crate::launcher::scan(&crate::launcher::directories(), &desktop);
-        let filter = filter.map(|f| f.to_lowercase());
-        let matched: Vec<&crate::launcher::App> = apps
-            .iter()
-            .filter(|app| match filter.as_deref() {
-                Some(filter) if !filter.is_empty() => {
-                    app.name.to_lowercase().contains(filter)
-                        || app.detail.to_lowercase().contains(filter)
-                        || app.exec.to_lowercase().contains(filter)
-                        || app.app_id.to_lowercase().contains(filter)
-                }
-                _ => true,
-            })
-            .take(Self::LAUNCHER_LIMIT)
-            .collect();
+        let query = crate::launcher::Query {
+            generation: self.launcher_generation,
+            filter,
+            theme: self.icon_theme.clone(),
+            limit: Self::LAUNCHER_LIMIT,
+        };
+        if self.launcher_scan.online() {
+            self.launcher_scan.ask(query);
+        } else {
+            // No thread to ask. Answered here, then: the blocking path this
+            // used to be always, kept for the session where the thread would
+            // not start. Its icon resolutions are thrown away when the query
+            // ends, which a working scanner never throws away — but a session
+            // without the thread is already the degraded one.
+            let dirs = crate::launcher::directories();
+            let desktop = crate::launcher::current_desktop();
+            let desktop: Vec<&str> = desktop.iter().map(String::as_str).collect();
+            let mut icons = std::collections::HashMap::new();
+            let answer = crate::launcher::answer(&query, &dirs, &desktop, &mut icons);
+            self.launcher_apply(answer);
+        }
+    }
 
-        let mut rows = Vec::with_capacity(matched.len());
-        for (id, app) in matched.iter().enumerate() {
-            // The icon, resolved once and kept: the themes walk and the file
-            // read are the ninety-eight milliseconds a query used to take on
-            // the event loop's thread, and the names repeat across every
-            // keystroke.
-            let key = format!("{}\u{1}{}", self.icon_theme, app.icon);
-            let icon = match self.launcher_icons.get(&key) {
-                Some(url) => url.clone().unwrap_or_default(),
-                None => {
-                    let url = crate::launcher::icon_url(&app.icon, &self.icon_theme);
-                    self.launcher_icons.insert(key, url.clone());
-                    url.unwrap_or_default()
-                }
-            };
-            rows.push(viewport_ipc::event::LauncherApp {
-                id: id as u32,
-                name: app.name.clone(),
-                icon,
-                detail: app.detail.clone(),
-            });
+    /// Apply a finished scan: the list a launch will be naming into, and the
+    /// rows the shell draws.
+    ///
+    /// Arrives on the loop from the scanner thread. An answer older than the
+    /// newest query is dropped rather than drawn — the keystrokes kept coming
+    /// while it was being built, and the shell wants the last word, not the
+    /// first. They are answered in order, so this only ever passes over a
+    /// list a later query has already superseded.
+    pub fn launcher_apply(&mut self, answer: crate::launcher::Answer) {
+        if answer.generation != self.launcher_generation {
+            return;
         }
         // What `launcher.launch` will be naming an index into.
-        self.launcher_list = matched.into_iter().cloned().collect();
+        self.launcher_list = answer.rows.iter().map(|row| row.app.clone()).collect();
+        let apps = answer
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(id, row)| viewport_ipc::event::LauncherApp {
+                id: id as u32,
+                name: row.app.name.clone(),
+                icon: row.icon.clone(),
+                detail: row.app.detail.clone(),
+            })
+            .collect();
         self.notify(&viewport_ipc::Event::LauncherList {
             generation: self.launcher_generation,
-            apps: rows,
+            apps,
         });
     }
 
@@ -7763,7 +7711,24 @@ impl ViewportState {
         } else {
             app.exec
         };
-        crate::input::spawn_with_env(&command, &[("XDG_ACTIVATION_TOKEN".to_owned(), token)]);
+        // The cursor pair goes with it, as this session draws it now rather
+        // than as the environment said when the compositor started: a reload
+        // that changed the theme no longer writes environ behind the worker
+        // threads' backs, so the child is told here instead of inheriting.
+        crate::input::spawn_with_env(
+            &command,
+            &[
+                ("XDG_ACTIVATION_TOKEN".to_owned(), token),
+                (
+                    "XCURSOR_THEME".to_owned(),
+                    self.cursor_theme.name().to_owned(),
+                ),
+                (
+                    "XCURSOR_SIZE".to_owned(),
+                    self.cursor_theme.size().to_string(),
+                ),
+            ],
+        );
     }
 
     pub fn notify_output_layout(&mut self) {
@@ -9243,6 +9208,124 @@ impl ViewportState {
             }
             page.region = plan.region;
             page.desktop = plan.desktop;
+        }
+    }
+}
+
+/// One composited picture into a client's shared memory buffer, row by row.
+///
+/// Both shm copies — an output's and a window's — were this same body
+/// verbatim, size check to `copy_nonoverlapping`, each with its own SAFETY
+/// note saying the same thing. One body now; `what` is only the word the size
+/// mismatch names in the error, "the copy" or "the window".
+fn blit_shm(
+    buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+    pixels: &[u8],
+    size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    what: &str,
+) -> Result<(), String> {
+    smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
+        let want = (size.w * size.h * 4) as usize;
+        if len < want || data.width < size.w || data.height < size.h {
+            return Err(format!(
+                "the client's buffer is {}x{} and {what} is {}x{}",
+                data.width, data.height, size.w, size.h
+            ));
+        }
+        // Row by row, because the client's stride need not be the packed
+        // width — and writing as though it were shears the image.
+        let stride = data.stride as usize;
+        let row = (size.w * 4) as usize;
+        for y in 0..size.h as usize {
+            let from = &pixels[y * row..(y + 1) * row];
+            // SAFETY: the length was checked above, and shm guarantees the
+            // mapping is valid for the duration of this closure.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    from.as_ptr(),
+                    ptr.add(data.offset as usize + y * stride),
+                    row,
+                );
+            }
+        }
+        Ok(())
+    })
+    .map_err(|e| format!("the client did not give shared memory: {e}"))??;
+    Ok(())
+}
+
+/// One configured widget as the shell draws it.
+///
+/// Written once. The `bar_widgets` additions and the `bar_items` override
+/// name the same six widgets, and this mapping used to be spelled out under
+/// each — twice that had to agree, on the promise that nothing else would
+/// ever add a seventh kind to only one of them.
+fn bar_widget_ipc(widget: &crate::config::BarWidgetConfig) -> viewport_ipc::event::BarWidget {
+    match widget {
+        crate::config::BarWidgetConfig::Disk { path } => {
+            viewport_ipc::event::BarWidget::Disk { path: path.clone() }
+        }
+        crate::config::BarWidgetConfig::Weather { location } => {
+            viewport_ipc::event::BarWidget::Weather {
+                location: location.clone(),
+            }
+        }
+        crate::config::BarWidgetConfig::Volume => viewport_ipc::event::BarWidget::Volume,
+        crate::config::BarWidgetConfig::Mic => viewport_ipc::event::BarWidget::Mic,
+        crate::config::BarWidgetConfig::Mpris => viewport_ipc::event::BarWidget::Mpris,
+        crate::config::BarWidgetConfig::Battery => viewport_ipc::event::BarWidget::Battery,
+    }
+}
+
+/// What the background samplers owe one drawn widget.
+///
+/// The wiring under the bar config re-matched the enum once per consumer —
+/// mounts here, volume there, players further down — which was a match per
+/// question and a chance each to forget a kind. One capability record
+/// instead: a widget says here what it costs to draw, and every sampler
+/// folds the same answer.
+#[derive(Default)]
+struct Sampling {
+    /// Mounts to stat. A disk widget's own; several disks, several mounts.
+    mounts: Vec<String>,
+    /// The default sink, over `wpctl`.
+    volume: bool,
+    /// The default source, over the same.
+    mic: bool,
+    /// Every media player on the session, for the mpris widget.
+    players: bool,
+    /// The battery, from the power worker.
+    battery: bool,
+}
+
+impl crate::config::BarWidgetConfig {
+    /// What has to be sampled for this widget to have numbers to draw.
+    ///
+    /// Nothing for the weather: the shell fetches that itself, which is why
+    /// it is the one widget whose absence costs no worker anything.
+    fn sampling(&self) -> Sampling {
+        match self {
+            crate::config::BarWidgetConfig::Disk { path } => Sampling {
+                mounts: vec![path.clone().unwrap_or_else(|| "/".to_owned())],
+                ..Sampling::default()
+            },
+            crate::config::BarWidgetConfig::Weather { .. } => Sampling::default(),
+            crate::config::BarWidgetConfig::Volume => Sampling {
+                volume: true,
+                ..Sampling::default()
+            },
+            crate::config::BarWidgetConfig::Mic => Sampling {
+                mic: true,
+                ..Sampling::default()
+            },
+            crate::config::BarWidgetConfig::Mpris => Sampling {
+                players: true,
+                ..Sampling::default()
+            },
+            crate::config::BarWidgetConfig::Battery => Sampling {
+                battery: true,
+                ..Sampling::default()
+            },
         }
     }
 }
