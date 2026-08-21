@@ -422,7 +422,7 @@ impl Pipewire {
         size: Size<i32, Physical>,
         targets: Vec<Dmabuf>,
     ) -> anyhow::Result<Stream> {
-        let mut guard = self.thread_loop.lock();
+        let guard = self.thread_loop.lock();
         // The node id is what the portal hands back, and it does not exist
         // until the server has answered — `node_id()` before that is
         // 0xffffffff, which a client cannot connect to.
@@ -591,22 +591,88 @@ impl Pipewire {
             )
             .map_err(|e| anyhow::anyhow!("connecting a pipewire stream: {e}"))?;
 
-        // Wait for it, briefly. The loop's own thread is what answers, so
-        // this releases the lock between looks rather than iterating.
-        let mut node_id = stream.node_id();
-        for _ in 0..100 {
-            if node_id != INVALID_NODE {
-                break;
-            }
-            drop(guard);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            guard = self.thread_loop.lock();
-            node_id = stream.node_id();
+        // Wait for the daemon to answer, without spinning.
+        //
+        // The node id does not exist until the server has created it —
+        // `node_id()` before that is 0xffffffff, which no client can connect
+        // to — and the answer is dispatched on the thread loop's thread. This
+        // used to be waited out by sleeping in five-millisecond slices on the
+        // compositor's main thread, taking and releasing the loop's lock each
+        // turn: up to half a second of frozen desktop per share started, most
+        // of it spent in lock traffic against the very thread that was trying
+        // to deliver the answer.
+        //
+        // Instead the round trip itself says when it is done. `sync` asks the
+        // daemon for a `done` event once everything sent before it — the
+        // stream's creation and connection included — has been processed, and
+        // by then the node exists: proxy events are answered in order, so the
+        // bound id is set before the done that follows it. The listener below
+        // fires on the thread loop's thread, where the answer already is, and
+        // the main thread sleeps on a condition variable until then — holding
+        // nothing, woken the moment the node exists rather than at the next
+        // tick of a poll.
+        /// How long the daemon gets to name the node before this gives up.
+        ///
+        /// A ceiling rather than a delay: an ordinary share arrives in single
+        /// milliseconds, and the ceiling is only reached when PipeWire is not
+        /// going to answer at all.
+        const NODE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+        /// What one side waits on and the other fills in.
+        ///
+        /// `None` until the round trip completes; `Some` carries whatever the
+        /// node id says at that point, which after a completed round trip is
+        /// final.
+        struct NodeArrival {
+            node: Mutex<Option<u32>>,
+            arrived: std::sync::Condvar,
         }
+        let arrival = Arc::new(NodeArrival {
+            node: Mutex::new(None),
+            arrived: std::sync::Condvar::new(),
+        });
+
+        let seq = self
+            .core
+            .sync(0)
+            .map_err(|e| anyhow::anyhow!("asking pipewire for a round trip: {e}"))?;
+        let named = stream.clone();
+        let signalled = arrival.clone();
+        let done_listener = self
+            .core
+            .add_listener_local()
+            .done(move |id, done_seq| {
+                if id != pw::core::PW_ID_CORE || done_seq.seq() != seq.seq() {
+                    return;
+                }
+                *signalled.node.lock().unwrap() = Some(named.node_id());
+                signalled.arrived.notify_all();
+            })
+            .register();
+
+        // The lock is what the thread loop's thread needs to dispatch the
+        // answer, so the wait happens without it.
         drop(guard);
-        if node_id == INVALID_NODE {
-            anyhow::bail!("pipewire did not give the stream a node");
-        }
+        let deadline = std::time::Instant::now() + NODE_TIMEOUT;
+        let mut seen = arrival.node.lock().unwrap();
+        let node_id = loop {
+            match *seen {
+                Some(node) => break (node != INVALID_NODE).then_some(node),
+                None => {
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
+                        break None;
+                    }
+                    let (next, _) = arrival.arrived.wait_timeout(seen, deadline - now).unwrap();
+                    seen = next;
+                }
+            }
+        };
+        // Kept until the answer is in: dropping the listener takes its hook
+        // back out, and it must not go early or the wake-up could be missed.
+        drop(done_listener);
+        let node_id =
+            node_id.ok_or_else(|| anyhow::anyhow!("pipewire did not give the stream a node"))?;
 
         Ok(Stream {
             node_id,
