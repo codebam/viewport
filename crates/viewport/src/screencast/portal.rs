@@ -337,6 +337,33 @@ pub fn called_by_frontend(
     }
 }
 
+/// Stop what a session was holding, once its row has left the table.
+///
+/// Every way a row goes — [`SessionObject::close`], [`watch_frontend`]
+/// noticing a frontend that died, a CreateSession that reuses a handle, and a
+/// Start whose chooser outlived its session — ends here, because they all owe
+/// the same two messages and the one that forgets either leaks: a stream the
+/// compositor goes on compositing into for a session nobody holds, or a libei
+/// socket that keeps carrying input after the grant was taken back.
+pub(super) fn release_session(
+    closed: &Session,
+    path: &OwnedObjectPath,
+    sender: &smithay::reexports::calloop::channel::Sender<Message>,
+) {
+    if let Some(node) = closed.node {
+        let _ = sender.send(Message::Close { node });
+    }
+    // The libei socket, if this session was given one. Taking the row out of
+    // the table is what revokes a Notify grant and it is not enough here: the
+    // application is holding a socket, which goes on working after the table
+    // has forgotten about it. See [`Message::RevokeEis`].
+    if closed.eis {
+        let _ = sender.send(Message::RevokeEis {
+            session: path.clone(),
+        });
+    }
+}
+
 /// The object on the bus.
 pub struct ScreenCast {
     sender: smithay::reexports::calloop::channel::Sender<Message>,
@@ -440,11 +467,31 @@ impl ScreenCast {
         let path = OwnedObjectPath::from(session_handle);
         let owner = header.sender().map(|name| name.to_string());
         tracing::debug!("screencast: create session {path} for {app_id:?}");
-        self.sessions
+        // A handle coming back is a conversation being replaced, not resumed.
+        // The displaced row dies here rather than silently: `insert` alone
+        // would drop it with its stream still running — the compositor would
+        // composite into a PipeWire stream no session holds — and its EI
+        // socket still live. See [`release_session`].
+        //
+        // Out of the lock before anything is awaited: the guard is not Send,
+        // and holding it across the bus call below would make this whole
+        // future one that cannot be polled from the connection's executor.
+        let displaced = self
+            .sessions
             .lock()
             .unwrap()
             .sessions
             .insert(path.clone(), Session::new(app_id, owner, false));
+        if let Some(displaced) = displaced {
+            release_session(&displaced, &path, &self.sender);
+            // And the old object off the bus, so the new one can take the
+            // path: publishing over an interface that is already there is
+            // quietly refused, and a Close from the frontend would then be
+            // answered by the previous conversation's object.
+            if let Err(e) = server.remove::<SessionObject, _>(&path).await {
+                tracing::warn!("could not take a replaced session off the bus: {e}");
+            }
+        }
 
         // The session object the frontend closes when the application is
         // done. Without it a share runs until the compositor exits: nothing
@@ -623,8 +670,29 @@ impl ScreenCast {
             }
         };
 
-        if let Some(session) = self.sessions.lock().unwrap().sessions.get_mut(&path) {
-            session.node = Some(started.node);
+        // The chooser can outlive the session: the frontend may have died, or
+        // the application hung up, while the user was deciding, and the
+        // watcher takes the row out when that happens. What the watcher
+        // cannot stop is a stream created *after* it did — which is this one,
+        // known to nobody but this call. Recorded only if the row is still
+        // there; if it is not, the stream is torn down and the answer is a
+        // cancellation. Success would hand the application a node for a
+        // conversation that is over and leave the compositor compositing into
+        // an orphaned stream forever.
+        let recorded = {
+            let mut shared = self.sessions.lock().unwrap();
+            match shared.sessions.get_mut(&path) {
+                Some(session) => {
+                    session.node = Some(started.node);
+                    true
+                }
+                None => false,
+            }
+        };
+        if !recorded {
+            tracing::warn!("screencast: {path} was closed while its source was being chosen");
+            let _ = self.sender.send(Message::Close { node: started.node });
+            return (RESPONSE_CANCELLED, HashMap::new());
         }
 
         // One stream, described the way the interface wants it: the node to
@@ -795,17 +863,10 @@ impl SessionObject {
     async fn close(&self, #[zbus(object_server)] server: &zbus::ObjectServer) {
         tracing::debug!("portal: the frontend closed session {}", self.path);
         let closed = self.sessions.lock().unwrap().sessions.remove(&self.path);
-        if let Some(node) = closed.as_ref().and_then(|session| session.node) {
-            let _ = self.sender.send(Message::Close { node });
-        }
-        // And the libei socket, if this session was given one. Taking the row
-        // out of the table is what revokes a Notify grant and it is not enough
-        // here: the application is holding a socket, which goes on carrying
-        // input until somebody closes it. See [`Message::RevokeEis`].
-        if closed.as_ref().is_some_and(|session| session.eis) {
-            let _ = self.sender.send(Message::RevokeEis {
-                session: self.path.clone(),
-            });
+        // Both things a row can hold die with it — the stream and, for a
+        // remote-desktop session, the libei socket. See [`release_session`].
+        if let Some(closed) = &closed {
+            release_session(closed, &self.path, &self.sender);
         }
 
         // And off the bus. Every share published one of these and none of them
@@ -899,32 +960,28 @@ pub fn watch_frontend(
                 let gone = args.name().to_string();
 
                 let mut held = sessions.lock().unwrap();
-                let closed: Vec<_> = held
+                let dead: Vec<_> = held
                     .sessions
                     .iter()
                     .filter(|(_, session)| session.owner.as_deref() == Some(gone.as_str()))
-                    .map(|(path, session)| (path.clone(), session.node, session.eis))
+                    .map(|(path, _)| path.clone())
                     .collect();
-                for (path, _, _) in &closed {
-                    held.sessions.remove(path);
-                }
+                let closed: Vec<_> = dead
+                    .into_iter()
+                    .filter_map(|path| held.sessions.remove(&path).map(|row| (path, row)))
+                    .collect();
                 drop(held);
 
-                for (path, node, eis) in closed {
+                for (path, session) in closed {
                     tracing::info!("the portal frontend went away, closing session {path}");
-                    if let Some(node) = node {
-                        let _ = sender.send(Message::Close { node });
-                    }
+                    // The stream and the libei socket, if there were either.
                     // A frontend that crashed is the case this whole watcher
-                    // exists for, and it is the case where a libei socket
-                    // matters most: nothing else will ever call Close, so a
-                    // remote session left holding one would go on driving this
-                    // machine with no portal left to stop it.
-                    if eis {
-                        let _ = sender.send(Message::RevokeEis {
-                            session: path.clone(),
-                        });
-                    }
+                    // exists for, and it is the case where the socket matters
+                    // most: nothing else will ever call Close, so a remote
+                    // session left holding one would go on driving this
+                    // machine with no portal left to stop it. See
+                    // [`release_session`].
+                    release_session(&session, &path, &sender);
                     if let Err(e) = connection.object_server().remove::<SessionObject, _>(&path) {
                         tracing::warn!("could not take an abandoned session off the bus: {e}");
                     }

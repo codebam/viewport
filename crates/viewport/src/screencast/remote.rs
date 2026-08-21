@@ -47,7 +47,7 @@ use std::collections::HashMap;
 
 use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
-use super::portal::{Message, SessionObject, Sessions, Started as CastStarted};
+use super::portal::{release_session, Message, SessionObject, Sessions, Started as CastStarted};
 
 /// The devices the interface knows about, as it numbers them.
 pub const DEVICE_KEYBOARD: u32 = 1;
@@ -367,10 +367,28 @@ impl RemoteDesktop {
         let path = OwnedObjectPath::from(session_handle);
         let owner = header.sender().map(|name| name.to_string());
         tracing::debug!("remote desktop: create session {path} for {app_id:?}");
-        self.sessions.lock().unwrap().sessions.insert(
+        // A handle coming back is a conversation being replaced, not resumed,
+        // and a displaced remote-desktop row is the worst kind to drop
+        // silently: its grant dies with the row, but its stream — if it had
+        // one — keeps being composited, and its EI socket keeps carrying
+        // input. Both are stopped here. See [`release_session`].
+        //
+        // Out of the lock before anything is awaited, for the same reason as
+        // on the screen-share side.
+        let displaced = self.sessions.lock().unwrap().sessions.insert(
             path.clone(),
             super::portal::Session::new(app_id, owner, true),
         );
+        if let Some(displaced) = displaced {
+            release_session(&displaced, &path, &self.sender);
+            // And the old object off the bus, so the new one can take the
+            // path: publishing over an interface that is already there is
+            // quietly refused, and a Close from the frontend would then be
+            // answered by the previous conversation's object.
+            if let Err(e) = server.remove::<SessionObject, _>(&path).await {
+                tracing::warn!("could not take a replaced session off the bus: {e}");
+            }
+        }
 
         // The same session object the screen-share path publishes, because it
         // has the same job: the frontend closes it when the application is
@@ -490,10 +508,17 @@ impl RemoteDesktop {
         {
             let mut shared = self.sessions.lock().unwrap();
             let Some(session) = shared.sessions.get_mut(&path) else {
-                // The frontend went away while the chooser was up. Nothing to
-                // grant to, and nothing to stop either — the watcher has
-                // already taken the row out.
+                // The frontend went away while the chooser was up, and the
+                // watcher has already taken the row out. Nothing to grant to —
+                // and, unlike the screen-share side, something to stop: the
+                // chooser may have been granted a stream along with the
+                // devices, started after the watcher looked, and nobody else
+                // knows it exists. Left alone it is a compositor compositing
+                // into a stream whose session is gone, forever.
                 tracing::warn!("remote desktop: {path} was closed while it was being chosen");
+                if let Some(cast) = started.cast {
+                    let _ = self.sender.send(Message::Close { node: cast.node });
+                }
                 return (RESPONSE_CANCELLED, HashMap::new());
             };
             session.granted_devices = started.devices;
