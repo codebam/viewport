@@ -19,6 +19,7 @@
 // — or a dependency carrying one — is a great deal of machinery to save a
 // couple of kilobytes on a message sent when an application starts.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// The largest file that will be turned into a data URL.
@@ -56,6 +57,64 @@ pub fn data_url(path: &Path) -> Option<String> {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
+    Some(format!("data:{mime};base64,{}", base64(&bytes)))
+}
+
+/// The largest cover-art file that will be turned into a data URL.
+///
+/// Eight megabytes, against an icon's [`MAX_FILE`], because the two are not
+/// the same job. An icon is re-encoded for every menu row and a theme holds
+/// hundreds of them; cover art arrives once per track, players ship it as
+/// compressed JPEG or PNG, and artwork ripped at any real resolution reaches
+/// several megabytes. The cap exists to bound what one bus message can make
+/// this read — the path is chosen by whoever published the player, and not
+/// every publisher is the player it says it is — rather than to second-guess
+/// what a music library keeps.
+pub(crate) const MAX_ART: u64 = 8 << 20;
+
+/// Cover art as a `data:` URL, under the looser limits art needs.
+///
+/// The formats a music library actually keeps covers in, a cap sized for
+/// album artwork rather than tray icons, and — because the path arrives off
+/// the bus rather than out of a theme walk — a refusal to open anything that
+/// is not a regular file. A device, a FIFO or a directory named `cover.png`
+/// would otherwise hang or outgrow the reader: `/dev/zero` reports no size
+/// at all, so a length check alone never fires on it, and a FIFO with no
+/// writer blocks forever. The metadata comes from the open file rather than
+/// the name, so what is checked is the inode that would be read.
+///
+/// SVG is deliberately absent, unlike in [`data_url`]. That one reads paths
+/// found in installed themes; this one reads paths published by whatever
+/// felt like speaking on the session bus, and a format that can carry
+/// markup has no business arriving that way.
+pub fn art_data_url(path: &Path) -> Option<String> {
+    let mime = match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        _ => return None,
+    };
+    let file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() {
+        tracing::debug!("{}: cover art that is not a file", path.display());
+        return None;
+    }
+    if meta.len() > MAX_ART {
+        tracing::debug!(
+            "{}: {} bytes is too large for cover art",
+            path.display(),
+            meta.len()
+        );
+        return None;
+    }
+    // Bounded by the take even where the size above was measured against a
+    // file that has since grown.
+    let mut bytes = Vec::new();
+    (&file).take(MAX_ART).read_to_end(&mut bytes).ok()?;
     Some(format!("data:{mime};base64,{}", base64(&bytes)))
 }
 
