@@ -6523,24 +6523,8 @@ impl ViewportState {
         // The status sampler is told the same what-to-read as the shell lists:
         // which mounts to stat and whether to ask wpctl for the sink, so a bar
         // that draws neither spawns nothing.
-        let bar_widgets: Vec<viewport_ipc::event::BarWidget> = file
-            .bar_widgets
-            .iter()
-            .map(|w| match w {
-                crate::config::BarWidgetConfig::Disk { path } => {
-                    viewport_ipc::event::BarWidget::Disk { path: path.clone() }
-                }
-                crate::config::BarWidgetConfig::Weather { location } => {
-                    viewport_ipc::event::BarWidget::Weather {
-                        location: location.clone(),
-                    }
-                }
-                crate::config::BarWidgetConfig::Volume => viewport_ipc::event::BarWidget::Volume,
-                crate::config::BarWidgetConfig::Mic => viewport_ipc::event::BarWidget::Mic,
-                crate::config::BarWidgetConfig::Mpris => viewport_ipc::event::BarWidget::Mpris,
-                crate::config::BarWidgetConfig::Battery => viewport_ipc::event::BarWidget::Battery,
-            })
-            .collect();
+        let bar_widgets: Vec<viewport_ipc::event::BarWidget> =
+            file.bar_widgets.iter().map(bar_widget_ipc).collect();
 
         // The bar_items list, mapped to the IPC form. Bare strings are
         // modules; objects are widgets.
@@ -6552,34 +6536,13 @@ impl ViewportState {
                         viewport_ipc::event::BarItem::Module(name.clone())
                     }
                     crate::config::BarItemConfig::Widget(w) => {
-                        viewport_ipc::event::BarItem::Widget(match w {
-                            crate::config::BarWidgetConfig::Disk { path } => {
-                                viewport_ipc::event::BarWidget::Disk { path: path.clone() }
-                            }
-                            crate::config::BarWidgetConfig::Weather { location } => {
-                                viewport_ipc::event::BarWidget::Weather {
-                                    location: location.clone(),
-                                }
-                            }
-                            crate::config::BarWidgetConfig::Volume => {
-                                viewport_ipc::event::BarWidget::Volume
-                            }
-                            crate::config::BarWidgetConfig::Mic => {
-                                viewport_ipc::event::BarWidget::Mic
-                            }
-                            crate::config::BarWidgetConfig::Mpris => {
-                                viewport_ipc::event::BarWidget::Mpris
-                            }
-                            crate::config::BarWidgetConfig::Battery => {
-                                viewport_ipc::event::BarWidget::Battery
-                            }
-                        })
+                        viewport_ipc::event::BarItem::Widget(bar_widget_ipc(w))
                     }
                 })
                 .collect()
         });
 
-        // Which widgets actually get drawn: the override's own widgets when
+        // Which of those actually get drawn: the override's own widgets when
         // present, else the bar_widgets additions. The sampler only pays for
         // what will be on screen.
         let drawn_widgets: Vec<&crate::config::BarWidgetConfig> =
@@ -6605,35 +6568,24 @@ impl ViewportState {
             Some(bar_widgets)
         };
         self.config.bar_items = bar_items;
-        self.status.configure(
-            drawn_widgets
-                .iter()
-                .filter_map(|w| match w {
-                    crate::config::BarWidgetConfig::Disk { path } => {
-                        Some(path.clone().unwrap_or_else(|| "/".to_owned()))
-                    }
-                    _ => None,
-                })
-                .collect(),
-            drawn_widgets
-                .iter()
-                .any(|w| matches!(w, crate::config::BarWidgetConfig::Volume)),
-            drawn_widgets
-                .iter()
-                .any(|w| matches!(w, crate::config::BarWidgetConfig::Mic)),
-        );
+        // One fold over what is drawn, and every sampler knows its job.
+        let mut sampled = Sampling::default();
+        for widget in &drawn_widgets {
+            let costs = widget.sampling();
+            sampled.mounts.extend(costs.mounts);
+            sampled.volume |= costs.volume;
+            sampled.mic |= costs.mic;
+            sampled.players |= costs.players;
+            sampled.battery |= costs.battery;
+        }
+        self.status
+            .configure(sampled.mounts, sampled.volume, sampled.mic);
         // Following every media player on the session is worth doing only for
         // a bar that draws one, which is the same rule the audio sampling
-        // above follows.
-        self.mpris.set_enabled(
-            drawn_widgets
-                .iter()
-                .any(|w| matches!(w, crate::config::BarWidgetConfig::Mpris)),
-        );
-        let want_battery = drawn_widgets
-            .iter()
-            .any(|w| matches!(w, crate::config::BarWidgetConfig::Battery));
-        self.power.set_widget(want_battery);
+        // above follows. The battery likewise, on the power worker's own
+        // switch.
+        self.mpris.set_enabled(sampled.players);
+        self.power.set_widget(sampled.battery);
         if let Some(url) = file.url {
             self.shell_url = Some(url);
         }
@@ -9239,6 +9191,82 @@ fn blit_shm(
     })
     .map_err(|e| format!("the client did not give shared memory: {e}"))??;
     Ok(())
+}
+
+/// One configured widget as the shell draws it.
+///
+/// Written once. The `bar_widgets` additions and the `bar_items` override
+/// name the same six widgets, and this mapping used to be spelled out under
+/// each — twice that had to agree, on the promise that nothing else would
+/// ever add a seventh kind to only one of them.
+fn bar_widget_ipc(widget: &crate::config::BarWidgetConfig) -> viewport_ipc::event::BarWidget {
+    match widget {
+        crate::config::BarWidgetConfig::Disk { path } => {
+            viewport_ipc::event::BarWidget::Disk { path: path.clone() }
+        }
+        crate::config::BarWidgetConfig::Weather { location } => {
+            viewport_ipc::event::BarWidget::Weather {
+                location: location.clone(),
+            }
+        }
+        crate::config::BarWidgetConfig::Volume => viewport_ipc::event::BarWidget::Volume,
+        crate::config::BarWidgetConfig::Mic => viewport_ipc::event::BarWidget::Mic,
+        crate::config::BarWidgetConfig::Mpris => viewport_ipc::event::BarWidget::Mpris,
+        crate::config::BarWidgetConfig::Battery => viewport_ipc::event::BarWidget::Battery,
+    }
+}
+
+/// What the background samplers owe one drawn widget.
+///
+/// The wiring under the bar config re-matched the enum once per consumer —
+/// mounts here, volume there, players further down — which was a match per
+/// question and a chance each to forget a kind. One capability record
+/// instead: a widget says here what it costs to draw, and every sampler
+/// folds the same answer.
+#[derive(Default)]
+struct Sampling {
+    /// Mounts to stat. A disk widget's own; several disks, several mounts.
+    mounts: Vec<String>,
+    /// The default sink, over `wpctl`.
+    volume: bool,
+    /// The default source, over the same.
+    mic: bool,
+    /// Every media player on the session, for the mpris widget.
+    players: bool,
+    /// The battery, from the power worker.
+    battery: bool,
+}
+
+impl crate::config::BarWidgetConfig {
+    /// What has to be sampled for this widget to have numbers to draw.
+    ///
+    /// Nothing for the weather: the shell fetches that itself, which is why
+    /// it is the one widget whose absence costs no worker anything.
+    fn sampling(&self) -> Sampling {
+        match self {
+            crate::config::BarWidgetConfig::Disk { path } => Sampling {
+                mounts: vec![path.clone().unwrap_or_else(|| "/".to_owned())],
+                ..Sampling::default()
+            },
+            crate::config::BarWidgetConfig::Weather { .. } => Sampling::default(),
+            crate::config::BarWidgetConfig::Volume => Sampling {
+                volume: true,
+                ..Sampling::default()
+            },
+            crate::config::BarWidgetConfig::Mic => Sampling {
+                mic: true,
+                ..Sampling::default()
+            },
+            crate::config::BarWidgetConfig::Mpris => Sampling {
+                players: true,
+                ..Sampling::default()
+            },
+            crate::config::BarWidgetConfig::Battery => Sampling {
+                battery: true,
+                ..Sampling::default()
+            },
+        }
+    }
 }
 
 /// A transform by the name the config file uses, which is sway's.
