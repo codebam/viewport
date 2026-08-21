@@ -1967,8 +1967,22 @@ impl ViewportState {
                 continue;
             }
 
-            // Already up, from an earlier pass.
-            if udev.surfaces().any(|s| s.connector == connector.handle()) {
+            // Already up, from an earlier pass — on this device. Scoped like
+            // the CRTC set above, for the same reason: a connector handle
+            // answers for one card only, and handles are small integers handed
+            // out per device, so two cards almost always overlap. Comparing
+            // against every GPU's surfaces made a handle collision look like
+            // "already up", and the second card's monitor stayed dark with no
+            // word of why.
+            //
+            // A multi-GPU unit test would need two DRM devices to open, which
+            // no CI machine is promised; the reasoning lives here instead,
+            // next to its CRTC twin.
+            if udev.devices[index]
+                .surfaces
+                .values()
+                .any(|s| s.connector == connector.handle())
+            {
                 continue;
             }
 
