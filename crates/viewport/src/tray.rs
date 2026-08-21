@@ -26,7 +26,10 @@
 // three schedulers agreeing is worse than one channel. Every D-Bus call an item
 // answers — fetching thirteen properties, activating it — happens on the worker
 // thread, because an application that has stopped answering the bus must not
-// take the desktop's frame loop with it.
+// take the desktop's frame loop with it. And the calls that wait for an answer
+// run under a deadline of their own, because a worker that can be parked for
+// minutes by one wedged application is only a smaller version of the same
+// problem.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -69,6 +72,24 @@ const DEFAULT_PATH: &str = "/StatusNotifierItem";
 /// whatever it is given, so this only decides which of the sizes an
 /// application offers is the one worth sending.
 const ICON_SIZE: u32 = 22;
+
+/// How long one item gets to answer before the tray stops waiting.
+///
+/// Longer than any honest item needs and short enough that a wedged one is a
+/// hiccup rather than a hang: the worker has clicks, scrolls and refreshes for
+/// every *other* item queued behind it.
+const ITEM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// How long any single call on the connection may run.
+///
+/// This is what collects the threads [`with_deadline`] walks away from: the
+/// worker gives up at `ITEM_TIMEOUT`, but the thread it handed the proxy to
+/// keeps trying until zbus itself gives up. Without this bound an abandoned
+/// thread is abandoned forever, and a session that accumulates wedged items
+/// accumulates threads to match. Generous next to `ITEM_TIMEOUT` on purpose —
+/// the deadline that matters is the worker's, and this one must never be what
+/// an honest item trips over.
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The half of the tray the compositor keeps.
 #[derive(Default)]
@@ -227,6 +248,7 @@ fn start(
     // records nothing, and hands every registration to the worker, which is
     // the one place the item list lives.
     let connection = zbus::blocking::connection::Builder::session()?
+        .method_timeout(CALL_TIMEOUT)
         .serve_at(
             WATCHER_PATH,
             Watcher {
@@ -416,7 +438,54 @@ struct Entry {
     /// one whose menu could not be read — both mean the same thing here:
     /// asking for the menu is the application's job.
     menu: Option<String>,
+    /// Whether the item has stopped answering outright. A property that is
+    /// merely missing is ordinary — items in the wild leave out half the
+    /// specification — but a fetch that ran past [`ITEM_TIMEOUT`] means the
+    /// application behind it is wedged, and asking it again on every signal
+    /// would be paying its timeout over and over. It keeps whatever it last
+    /// published until it speaks (`Register`) or dies (`NameLost`).
+    unresponsive: bool,
     item: TrayItem,
+}
+
+/// What one item said about itself, in its own words.
+///
+/// The raw answers, before the desktop resolves icons and picks defaults.
+/// Kept as a value rather than applied in place so that the fetching of it can
+/// happen somewhere with a deadline: nothing here touches worker state.
+struct Fetched {
+    status: String,
+    title: String,
+    theme_path: String,
+    icon_name: String,
+    pixmap: Option<zvariant::OwnedValue>,
+    /// The plain icon of an item in attention, which is what it falls back to
+    /// when it publishes no attention icon of its own. Empty when it is not
+    /// in attention at all.
+    plain_icon_name: String,
+    plain_pixmap: Option<zvariant::OwnedValue>,
+    tooltip: Option<zvariant::OwnedValue>,
+    is_menu: bool,
+    menu: Option<String>,
+}
+
+/// Run one piece of item I/O on a throwaway thread, and wait with a stopwatch.
+///
+/// zbus's blocking calls take no deadline, so the deadline is taken around
+/// them. `None` means the item outlasted its welcome; the thread it was handed
+/// to goes on trying in the background and is collected by the connection's
+/// method timeout, while this one gets on with the rest of the tray. That
+/// makes the loser of the race a bounded leak rather than an unbounded one,
+/// which is the best a blocking API offers.
+fn with_deadline<T: Send + 'static>(io: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (done, answered) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("tray-item".to_owned())
+        .spawn(move || {
+            let _ = done.send(io());
+        })
+        .ok()?;
+    answered.recv_timeout(ITEM_TIMEOUT).ok()
 }
 
 /// The thread that owns the item list and does every call an item answers.
@@ -461,7 +530,7 @@ impl Worker {
                         self.theme = theme;
                         self.icons.clear();
                         for index in 0..self.entries.len() {
-                            self.refresh_at(index);
+                            self.refresh_at(index, false);
                         }
                         self.publish();
                     }
@@ -474,7 +543,12 @@ impl Worker {
                 Command::Register { service, path } => self.register(service, path),
                 Command::Refresh { key } => {
                     if let Some(index) = self.index_of(&key) {
-                        self.refresh_at(index);
+                        // Not forced: a signal from an item is not evidence it
+                        // has recovered, and an unresponsive one would be
+                        // re-asked on every signal it fails to send — which
+                        // is to say, never. Recovery goes through
+                        // `Register`, as a restart does.
+                        self.refresh_at(index, false);
                         self.publish();
                     }
                 }
@@ -596,13 +670,16 @@ impl Worker {
         if let Some(index) = self.index_of(&key) {
             // A re-registration, which is what an application that restarted
             // its own item sends. Fetch what it looks like now rather than
-            // adding it twice.
-            self.refresh_at(index);
+            // adding it twice — and force it, because a fresh registration is
+            // also the one piece of evidence that an item marked unresponsive
+            // has come back.
+            self.refresh_at(index, true);
         } else {
             self.entries.push(Entry {
                 service,
                 path,
                 menu: None,
+                unresponsive: false,
                 item: TrayItem {
                     id: key,
                     title: String::new(),
@@ -614,7 +691,7 @@ impl Worker {
                 },
             });
             let index = self.entries.len() - 1;
-            self.refresh_at(index);
+            self.refresh_at(index, true);
         }
         self.publish();
     }
@@ -640,93 +717,139 @@ impl Worker {
     /// `ItemIsMenu`, and answer errors for properties they do not implement; a
     /// fetch that gave up on the first error would drop icons that are
     /// perfectly well published.
-    fn refresh_at(&mut self, index: usize) {
-        let (service, path) = {
-            let entry = &self.entries[index];
-            (entry.service.clone(), entry.path.clone())
-        };
-        let Some(proxy) = self.proxy(&service, &path) else {
+    ///
+    /// `force` is for re-registration: it is the one event that says an item
+    /// marked unresponsive deserves another chance. Everything else — a
+    /// signal, a theme change — leaves a wedged item alone rather than paying
+    /// its timeout again.
+    fn refresh_at(&mut self, index: usize, force: bool) {
+        if !force && self.entries[index].unresponsive {
             return;
-        };
-
-        let get = |name: &str| -> Option<zvariant::OwnedValue> { proxy.get_property(name).ok() };
-        let text =
-            |name: &str| -> String { proxy.get_property::<String>(name).unwrap_or_default() };
-
-        let status = text("Status").to_lowercase();
-        let status = match status.as_str() {
-            "passive" => "passive".to_owned(),
-            "needsattention" | "needs-attention" => "needs-attention".to_owned(),
-            // Anything else, including an item that answers nothing at all,
-            // is shown. An icon nobody asked to hide is better than a program
-            // with no way to be reached.
-            _ => "active".to_owned(),
-        };
-
-        let id = text("Id");
-        let title = {
-            let title = text("Title");
-            if title.is_empty() {
-                id
-            } else {
-                title
-            }
+        }
+        let key = self.entries[index].item.id.clone();
+        let Some(fetched) = self.fetch(index) else {
+            // Outlasted its welcome. What it published last is what the bar
+            // keeps — an icon that may be stale is still an icon, and a
+            // program with no way to be reached has not earned being hidden
+            // — but it is not asked again until it registers anew.
+            self.entries[index].unresponsive = true;
+            tracing::warn!(
+                "tray item {key} stopped answering; leaving it be until it registers again"
+            );
+            return;
         };
 
         // An item asking for attention says so with a second icon, and the
         // whole point of the status is that this one is drawn instead.
-        let attention = status == "needs-attention";
-        let name_property = if attention {
-            "AttentionIconName"
-        } else {
-            "IconName"
-        };
-        let pixmap_property = if attention {
-            "AttentionIconPixmap"
-        } else {
-            "IconPixmap"
-        };
-
-        let theme_path = text("IconThemePath");
+        let attention = fetched.status == "needs-attention";
         let icon = self
-            .icon_by_name(&text(name_property), &theme_path)
-            .or_else(|| get(pixmap_property).and_then(|value| pixmap_url(&value)))
+            .icon_by_name(&fetched.icon_name, &fetched.theme_path)
+            .or_else(|| fetched.pixmap.as_ref().and_then(pixmap_url))
             // An item in attention that publishes no attention icon keeps the
             // one it had, rather than losing its icon at the moment it most
             // wants to be seen.
             .or_else(|| {
                 attention
                     .then(|| {
-                        self.icon_by_name(&text("IconName"), &theme_path)
-                            .or_else(|| get("IconPixmap").and_then(|value| pixmap_url(&value)))
+                        self.icon_by_name(&fetched.plain_icon_name, &fetched.theme_path)
+                            .or_else(|| fetched.plain_pixmap.as_ref().and_then(pixmap_url))
                     })
                     .flatten()
             })
             .unwrap_or_default();
-
-        let tooltip = get("ToolTip")
+        let tooltip = fetched
+            .tooltip
             .map(|value| tooltip(&value))
             .unwrap_or_default();
-        let is_menu = proxy.get_property::<bool>("ItemIsMenu").unwrap_or(false);
-
-        // Where the item keeps its menu, if it keeps one here at all. The
-        // property is an object path and "/" is what an item with no menu
-        // publishes — a valid path pointing at nothing, which every toolkit
-        // sends rather than leaving the property out.
-        let menu = proxy
-            .get_property::<zvariant::OwnedObjectPath>("Menu")
-            .ok()
-            .map(|path| path.as_str().to_owned())
-            .filter(|path| path != "/");
 
         let entry = &mut self.entries[index];
-        entry.item.title = title;
-        entry.item.status = status;
+        // It answered, which is all the evidence of recovery needed.
+        entry.unresponsive = false;
+        entry.item.title = fetched.title;
+        entry.item.status = fetched.status;
         entry.item.icon = icon;
         entry.item.tooltip = tooltip;
-        entry.item.is_menu = is_menu;
-        entry.item.has_menu = menu.is_some();
-        entry.menu = menu;
+        entry.item.is_menu = fetched.is_menu;
+        entry.item.has_menu = fetched.menu.is_some();
+        entry.menu = fetched.menu;
+    }
+
+    /// Read one item's properties, off the worker's critical path.
+    ///
+    /// The asking happens on a throwaway thread under [`with_deadline`]; this
+    /// thread only decides what to do with the answer. Thirteen sequential
+    /// round trips with the daemon's default patience each would otherwise let
+    /// one hung application park every click and scroll on the tray for
+    /// minutes at a stretch.
+    fn fetch(&self, index: usize) -> Option<Fetched> {
+        let (service, path) = {
+            let entry = &self.entries[index];
+            (entry.service.clone(), entry.path.clone())
+        };
+        let proxy = self.proxy(&service, &path)?;
+        with_deadline(move || {
+            let get =
+                |name: &str| -> Option<zvariant::OwnedValue> { proxy.get_property(name).ok() };
+            let text =
+                |name: &str| -> String { proxy.get_property::<String>(name).unwrap_or_default() };
+
+            let status = match text("Status").to_lowercase().as_str() {
+                "passive" => "passive".to_owned(),
+                "needsattention" | "needs-attention" => "needs-attention".to_owned(),
+                // Anything else, including an item that answers nothing at
+                // all, is shown. An icon nobody asked to hide is better than
+                // a program with no way to be reached.
+                _ => "active".to_owned(),
+            };
+            let attention = status == "needs-attention";
+
+            let title = {
+                let title = text("Title");
+                if title.is_empty() {
+                    text("Id")
+                } else {
+                    title
+                }
+            };
+
+            // Which icon is wanted depends on the status: the attention one
+            // when there is attention, the plain one otherwise. The plain one
+            // is fetched *as well* only for an item in attention, where it is
+            // the fallback.
+            let (icon_name, pixmap, plain_icon_name, plain_pixmap) = if attention {
+                (
+                    text("AttentionIconName"),
+                    get("AttentionIconPixmap"),
+                    text("IconName"),
+                    get("IconPixmap"),
+                )
+            } else {
+                (text("IconName"), get("IconPixmap"), String::new(), None)
+            };
+
+            // Where the item keeps its menu, if it keeps one here at all. The
+            // property is an object path and "/" is what an item with no menu
+            // publishes — a valid path pointing at nothing, which every
+            // toolkit sends rather than leaving the property out.
+            let menu = proxy
+                .get_property::<zvariant::OwnedObjectPath>("Menu")
+                .ok()
+                .map(|path| path.as_str().to_owned())
+                .filter(|path| path != "/");
+
+            Fetched {
+                status,
+                title,
+                theme_path: text("IconThemePath"),
+                icon_name,
+                pixmap,
+                plain_icon_name,
+                plain_pixmap,
+                tooltip: get("ToolTip"),
+                is_menu: proxy.get_property::<bool>("ItemIsMenu").unwrap_or(false),
+                menu,
+            }
+        })
     }
 
     /// Fetch one item's menu and hand it to the shell.
@@ -742,11 +865,23 @@ impl Worker {
     /// The whole tree comes back in one call. A menu is small, the shell draws
     /// it in one pass, and a round trip per submenu would be a menu that opens
     /// in stages while the compositor is trying to hold a frame.
+    ///
+    /// Both calls run under one [`with_deadline`]: a click is the one thing a
+    /// hung item is most able to park, and a menu that takes longer than an
+    /// honest one falls back to letting the application draw its own window,
+    /// exactly as a menu that answered an error does.
     fn open_menu(&mut self, id: &str, x: i32, y: i32) {
         let Some(index) = self.index_of(id) else {
             return_missing(id);
             return;
         };
+        if self.entries[index].unresponsive {
+            // The menu object lives in the same wedged process as the
+            // properties that stopped answering; asking it for a layout is
+            // four seconds of waiting for a known answer.
+            self.call(id, "ContextMenu", &(x, y));
+            return;
+        }
         let (service, menu) = {
             let entry = &self.entries[index];
             (entry.service.clone(), entry.menu.clone())
@@ -756,16 +891,21 @@ impl Worker {
             return;
         };
 
-        let _ = proxy.call::<_, _, bool>("AboutToShow", &(0i32));
+        // One deadline over both calls: AboutToShow is answered by the same
+        // process GetLayout is, so two stopwatches would only double the
+        // worst case.
+        let (fetching, announcing) = (proxy.clone(), proxy);
+        let layout: Option<zbus::Result<(u32, MenuNode)>> = with_deadline(move || {
+            let _ = fetching.call::<_, _, bool>("AboutToShow", &(0i32));
 
-        // Depth -1 is the whole tree, and the empty list of property names
-        // means every property rather than none — both are the specification's
-        // spelling, and both read backwards.
-        let layout: zbus::Result<(u32, MenuNode)> =
-            proxy.call("GetLayout", &(0i32, -1i32, Vec::<&str>::new()));
+            // Depth -1 is the whole tree, and the empty list of property
+            // names means every property rather than none — both are the
+            // specification's spelling, and both read backwards.
+            fetching.call("GetLayout", &(0i32, -1i32, Vec::<&str>::new()))
+        });
         let items = match layout {
-            Ok((_revision, root)) => self.menu_items(&root.2),
-            Err(e) => {
+            Some(Ok((_revision, root))) => self.menu_items(&root.2),
+            Some(Err(e)) => {
                 // Falling back rather than showing nothing: an item whose menu
                 // object does not answer may still draw its own window, which
                 // is what every tray does with an item like that.
@@ -773,11 +913,19 @@ impl Worker {
                 self.call(id, "ContextMenu", &(x, y));
                 return;
             }
+            None => {
+                tracing::warn!(
+                    "{id} took longer than {}s to build a menu; leaving it to its own window",
+                    ITEM_TIMEOUT.as_secs()
+                );
+                self.call(id, "ContextMenu", &(x, y));
+                return;
+            }
         };
 
         // Told it is open, as the specification asks, so an application that
         // tracks its own menu knows one is on screen.
-        let _ = proxy.call_noreply(
+        let _ = announcing.call_noreply(
             "Event",
             &(0i32, "opened", zvariant::Value::from(0i32), 0u32),
         );
