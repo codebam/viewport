@@ -71,6 +71,12 @@ const ARRAY_FIELDS: &[&str] = &["args", "rects", "workspaces"];
 /// Without this, `--args 2` is the number 2 and the message is refused, and
 /// `--state {}` — a saved session, which is a document inside a string — is an
 /// object. Both are things somebody types on the first attempt.
+///
+/// This table must track what `viewport_ipc`'s request types say: a field
+/// typed String there and missing here goes on the wire as whatever JSON the
+/// text happens to parse as, and comes back as a refusal. The tray messages'
+/// string-typed `id` is deliberately not in it — see [`Type::strings`] for
+/// why one name could not be.
 const STRING_FIELDS: &[&str] = &[
     "args",
     "state",
@@ -101,6 +107,12 @@ const STRING_FIELDS: &[&str] = &[
     "passphrase",
     // A Bluetooth address, which is hexadecimal separated by colons.
     "address",
+    // The launcher's filter, which is whatever is currently typed — and
+    // somebody filtering for the application called "3000" is not sending a
+    // number.
+    "filter",
+    // A power profile, whose names are words with hyphens in them.
+    "profile",
 ];
 
 struct Type {
@@ -108,6 +120,15 @@ struct Type {
     /// Every field this message takes. A parent of nested fields is written
     /// `mode.*`, and matches `--mode.width`.
     fields: &'static [&'static str],
+    /// Fields of this one message that are strings despite sharing their
+    /// leaf name with numbers elsewhere.
+    ///
+    /// The tray's ids are a bus name and an object path joined, but `id` is
+    /// also the name of the window number half the other messages carry — so
+    /// the global [`STRING_FIELDS`] cannot hold it. Putting it there turned
+    /// every `--id 12` into the string `"12"`, and the compositor refused
+    /// the most common message on the socket.
+    strings: &'static [&'static str],
     hint: &'static str,
 }
 
@@ -123,96 +144,115 @@ const TYPES: &[Type] = &[
         fields: &[
             "id", "x", "y", "width", "height", "scale", "clip.*", "frame.*", "floating", "square",
         ],
+        strings: &[],
         hint: "--id N [--x N --y N --width N --height N] [--scale F] [--floating]",
     },
     Type {
         name: "view.visible",
         fields: &["id", "visible"],
+        strings: &[],
         hint: "--id N [--visible BOOL]",
     },
     Type {
         name: "view.fullscreen",
         fields: &["id", "fullscreen"],
+        strings: &[],
         hint: "--id N [--fullscreen BOOL]",
     },
     Type {
         name: "view.focus",
         fields: &["id"],
+        strings: &[],
         hint: "--id N",
     },
     Type {
         name: "view.close",
         fields: &["id"],
+        strings: &[],
         hint: "--id N",
     },
     Type {
         name: "view.opacity",
         fields: &["id", "opacity"],
+        strings: &[],
         hint: "--id N [--opacity 0..1]",
     },
     Type {
         name: "view.query",
         fields: &[],
+        strings: &[],
         hint: "(replies with config and every window)",
     },
     Type {
         name: "background.focus",
         fields: &[],
+        strings: &[],
         hint: "(toggles focus of the wallpaper terminal)",
     },
     Type {
         name: "shell.focus",
         fields: &[],
+        strings: &[],
         hint: "",
     },
     Type {
         name: "shell.overview",
         fields: &["active"],
+        strings: &[],
         hint: "[--active BOOL]",
     },
     Type {
         name: "shell.overlay",
         fields: &["rects"],
+        strings: &[],
         hint: "--rects JSON",
     },
     Type {
         name: "screencast.rect",
         fields: &["x", "y", "width", "height"],
+        strings: &[],
         hint: "--x N --y N --width N --height N",
     },
     Type {
         name: "session.save",
         fields: &["state"],
+        strings: &[],
         hint: "--state TEXT",
     },
     Type {
         name: "session.query",
         fields: &[],
+        strings: &[],
         hint: "(replies with the saved session)",
     },
     Type {
         name: "notification.action",
         fields: &["id", "action"],
+        strings: &[],
         hint: "--id N [--action KEY]",
     },
     Type {
         name: "notification.dismiss",
         fields: &["id"],
+        strings: &[],
         hint: "--id N",
     },
     Type {
         name: "notification.expire",
         fields: &["id"],
+        strings: &[],
         hint: "--id N",
     },
     Type {
         name: "notification.list",
         fields: &[],
+        strings: &[],
         hint: "(the history, as the shell's centre asks for it)",
     },
     Type {
         name: "notification.forget",
         fields: &["id"],
+        strings: &[],
         hint: "[--id N] (no id forgets everything)",
     },
     Type {
@@ -220,106 +260,127 @@ const TYPES: &[Type] = &[
         // rather than the numbers every other `--id` here takes.
         name: "tray.activate",
         fields: &["id", "button", "x", "y"],
+        strings: &["id"],
         hint: "--id KEY [--button primary|secondary|menu] [--x N --y N]",
     },
     Type {
         name: "clipboard.query",
         fields: &[],
+        strings: &[],
         hint: "(the history, as the shell's picker asks for it)",
     },
     Type {
         name: "clipboard.paste",
         fields: &["id"],
+        strings: &[],
         hint: "--id N",
     },
     Type {
         name: "clipboard.forget",
         fields: &["id"],
+        strings: &[],
         hint: "[--id N] (no id forgets everything)",
     },
     Type {
         name: "launcher.query",
         fields: &["filter"],
+        strings: &[],
         hint: "[--filter TEXT]   (the applications, as the shell's launcher asks for them)",
     },
     Type {
         name: "launcher.launch",
         fields: &["id", "generation"],
+        strings: &[],
         hint: "--id N --generation N   (an id and its generation from the last launcher.list)",
     },
     Type {
         name: "mpris.control",
         fields: &["action"],
+        strings: &[],
         hint: "--action play-pause|next|previous|stop",
     },
     Type {
         name: "power.profile",
         fields: &["profile"],
+        strings: &[],
         hint: "--profile power-saver|balanced|performance",
     },
     Type {
         name: "power.action",
         fields: &["action"],
+        strings: &[],
         hint: "--action suspend|reboot|poweroff   (quit is its own message)",
     },
     Type {
         name: "osk.key",
         fields: &["keysym", "pressed"],
+        strings: &[],
         hint: "--keysym N --pressed BOOL   (an X11/XKB keysym, e.g. 65288 for Backspace)",
     },
     Type {
         name: "network.scan",
         fields: &["enabled"],
+        strings: &[],
         hint: "[--enabled BOOL]   (absent means yes; false closes the picker)",
     },
     Type {
         name: "network.connect",
         fields: &["ssid", "passphrase"],
+        strings: &[],
         hint: "--ssid NAME [--passphrase SECRET]   (no passphrase joins a known network)",
     },
     Type {
         name: "network.disconnect",
         fields: &[],
+        strings: &[],
         hint: "(leave the wireless network in use)",
     },
     Type {
         name: "network.radio",
         fields: &["enabled"],
+        strings: &[],
         hint: "[--enabled BOOL]   (absent toggles)",
     },
     Type {
         name: "bluetooth.power",
         fields: &["enabled"],
+        strings: &[],
         hint: "[--enabled BOOL]   (absent toggles)",
     },
     Type {
         name: "bluetooth.scan",
         fields: &["enabled"],
+        strings: &[],
         hint: "[--enabled BOOL]   (absent means yes; false closes the picker)",
     },
     Type {
         name: "bluetooth.device",
         fields: &["address", "action"],
+        strings: &[],
         hint: "--address AA:BB:CC:DD:EE:FF --action pair|connect|disconnect|trust|untrust|forget",
     },
     Type {
         name: "tray.menu.click",
         fields: &["id", "item"],
+        strings: &["id"],
         hint: "--id KEY --item N",
     },
     Type {
         name: "tray.menu.closed",
         fields: &["id"],
+        strings: &["id"],
         hint: "--id KEY",
     },
     Type {
         name: "tray.scroll",
         fields: &["id", "delta", "orientation"],
+        strings: &["id"],
         hint: "--id KEY --delta N [--orientation vertical|horizontal]",
     },
     Type {
         name: "workspace.list",
         fields: &["workspaces"],
+        strings: &[],
         hint: "--workspaces JSON",
     },
     Type {
@@ -334,96 +395,115 @@ const TYPES: &[Type] = &[
             "x",
             "y",
         ],
+        strings: &[],
         hint: "--name NAME [--enabled BOOL] [--mode.width N --mode.height N --mode.refresh N] [--scale F] [--transform T] [--x N --y N]",
     },
     Type {
         name: "output.hdr",
         fields: &["name", "enabled"],
+        strings: &[],
         hint: "[--name NAME] [--enabled BOOL]   (absent --enabled toggles)",
     },
     Type {
         name: "output.confirm",
         fields: &[],
+        strings: &[],
         hint: "",
     },
     Type {
         name: "output.active",
         fields: &["name"],
+        strings: &[],
         hint: "--name NAME",
     },
     Type {
         name: "output.query",
         fields: &[],
+        strings: &[],
         hint: "(replies with the output layout)",
     },
     Type {
         name: "output.test_add",
         fields: &[],
+        strings: &[],
         hint: "(headless only)",
     },
     Type {
         name: "output.test_remove",
         fields: &["name"],
+        strings: &[],
         hint: "[--name NAME]   (headless only)",
     },
     Type {
         name: "bind.add",
         fields: &["chord", "action"],
+        strings: &[],
         hint: "--chord Mod4+a --action focus.parent",
     },
     Type {
         name: "config.gaps",
         fields: &["inner", "outer", "smart"],
+        strings: &[],
         hint: "[--inner N --outer N --smart BOOL]   (set window gaps; each is optional)",
     },
     Type {
         name: "config.border",
         fields: &["radius", "width", "smart"],
+        strings: &[],
         hint: "[--radius N --width N --smart BOOL]   (set the window border; each is optional)",
     },
     Type {
         name: "config.wallpaper",
         fields: &["path", "mode"],
+        strings: &[],
         hint: "[--path FILE] [--mode fill|fit|stretch|center|tile]   (--path '' removes it)",
     },
     Type {
         name: "shell.command",
         fields: &["command", "args"],
+        strings: &[],
         hint: "--command VERB [--args ARG]...",
     },
     Type {
         name: "shell.exec",
         fields: &["command"],
+        strings: &[],
         hint: "--command LINE   (run a shell command on the host)",
     },
     Type {
         name: "status.refresh",
         fields: &[],
+        strings: &[],
         hint: "(re-sample the status bar now, not on the next tick)",
     },
     Type {
         name: "status.volume",
         fields: &["target", "delta", "mute"],
+        strings: &[],
         hint: "--target sink|source [--delta 5] [--mute]   (changes it, then re-samples)",
     },
     Type {
         name: "input.pointer",
         fields: &["x", "y"],
+        strings: &[],
         hint: "--x F --y F",
     },
     Type {
         name: "input.button",
         fields: &["button", "pressed"],
+        strings: &[],
         hint: "--button 272 [--pressed BOOL]",
     },
     Type {
         name: "input.key",
         fields: &["keycode", "pressed"],
+        strings: &[],
         hint: "--keycode 34 [--pressed BOOL]",
     },
     Type {
         name: "quit",
         fields: &[],
+        strings: &[],
         hint: "(stops the compositor)",
     },
 ];
@@ -677,6 +757,25 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
             "unknown message type `{kind}`. `viewport msg --help` lists them"
         ));
     };
+
+    // The type's own string fields, applied after the fact. `literal` runs
+    // while `-t` may still be ahead of the field, so it cannot know which
+    // message a leaf belongs to and the global table has to stay name-only.
+    // What arrived here as JSON and belongs to a string field goes back to
+    // text: `--id 42` on a tray message names the item called "42", and the
+    // compositor refuses item 42 because there is no such thing.
+    let given: Vec<(String, Value)> = given
+        .into_iter()
+        .map(|(field, value)| {
+            let leaf = field.rsplit('.').next().unwrap_or_default();
+            let wants_text = entry.strings.contains(&leaf);
+            if wants_text && !value.is_string() {
+                (field, Value::String(value.to_string()))
+            } else {
+                (field, value)
+            }
+        })
+        .collect();
 
     // Against the names as they were typed, not against the object they build:
     // `--mode.width` is a field of this message and `mode` is not a name
@@ -1308,6 +1407,54 @@ mod tests {
             .expect_err("should be refused");
         assert!(complaint.contains("has no field `visable`"), "{complaint}");
         assert!(complaint.contains("visible"), "{complaint}");
+    }
+
+    #[test]
+    fn a_launcher_filter_is_text_even_when_it_looks_like_a_number() {
+        // Somebody filtering for the application called "3000" is not
+        // sending a number, and the compositor refused one that arrived as
+        // JSON.
+        assert_eq!(
+            value(&["-t", "launcher.query", "--filter", "3000"]),
+            serde_json::json!({"type": "launcher.query", "filter": "3000"})
+        );
+        // The power profile's names are words, which never parsed as JSON to
+        // begin with — this one only guards the table.
+        assert_eq!(
+            value(&["-t", "power.profile", "--profile", "balanced"]),
+            serde_json::json!({"type": "power.profile", "profile": "balanced"})
+        );
+    }
+
+    #[test]
+    fn a_tray_id_is_text_even_when_it_looks_like_a_number() {
+        // Every other `--id` on this socket is a window number, so the
+        // global table cannot say this — putting it there turned
+        // `view.focus --id 12` into a string and refused the most common
+        // message there is. The tray's own entries carry it, and `--id 42`
+        // names the item called "42".
+        assert_eq!(
+            value(&["-t", "tray.activate", "--id", "42"]),
+            serde_json::json!({"type": "tray.activate", "id": "42"})
+        );
+        assert_eq!(
+            value(&["-t", "tray.menu.click", "--id", "42", "--item", "3"]),
+            serde_json::json!({"type": "tray.menu.click", "id": "42", "item": 3})
+        );
+        assert_eq!(
+            value(&["-t", "tray.menu.closed", "--id", "42"]),
+            serde_json::json!({"type": "tray.menu.closed", "id": "42"})
+        );
+        assert_eq!(
+            value(&["-t", "tray.scroll", "--id", "42", "--delta", "1"]),
+            serde_json::json!({"type": "tray.scroll", "id": "42", "delta": 1})
+        );
+        // And the numeric ids are still numbers, which is the property the
+        // global list would have broken.
+        assert_eq!(
+            value(&["-t", "view.focus", "--id", "42"]),
+            serde_json::json!({"type": "view.focus", "id": 42})
+        );
     }
 
     #[test]
