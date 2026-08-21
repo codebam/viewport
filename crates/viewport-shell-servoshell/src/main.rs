@@ -88,6 +88,31 @@ const TERM_GRACE: Duration = Duration::from_millis(1500);
 /// How often a stopping child is looked at within that grace.
 const TERM_POLL: Duration = Duration::from_millis(20);
 
+/// The largest request body this server will allocate for.
+///
+/// One megabyte, matching the compositor's own framing cap
+/// (`crates/viewport/src/framing.rs`, `MAX_PENDING`): everything crossing
+/// this bridge is a JSON line the compositor refuses past that size anyway,
+/// so a larger body would not be a bigger message, only memory. The bound is
+/// checked before anything is allocated, because a Content-Length header is a
+/// number the client chose, and `vec![0u8; n]` used to believe it.
+const MAX_BODY: usize = 1 << 20;
+
+/// How many header lines one request may carry.
+///
+/// The loop that reads headers runs until it sees a blank line, so a client
+/// that never sends one owns the thread and the heap for as long as it keeps
+/// talking. A hundred lines is orders of magnitude past anything the page
+/// sends; its largest request carries two headers.
+const MAX_HEADER_LINES: usize = 100;
+
+/// How many header bytes one request may carry, across all its lines.
+///
+/// Enforced with `Read::take`, so the bytes are never read past the bound
+/// rather than read and then counted: a single header line claiming no
+/// newline is otherwise a line that grows until it has one.
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+
 /// Set from a signal handler when this process is asked to stop.
 ///
 /// The compositor closing the control socket is the ordinary end of a session
@@ -546,31 +571,54 @@ fn serve_one(
     // for the connection back. Both are honoured: a socket held open against a
     // client that has stopped listening on it is a thread that never returns.
     let mut keep = !request_line.contains("HTTP/1.0");
+
+    // The head, under both bounds. `take` is what makes the byte bound real:
+    // it turns the reader off at the limit, so a line with no newline in it
+    // ends as a short read rather than a String that grows until the client
+    // runs out of patience or this process runs out of memory.
     let mut length = 0usize;
-    loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header).context("reading a header")? == 0 {
-            break;
-        }
-        if header.trim().is_empty() {
-            break;
-        }
-        if let Some(value) = header_value(&header, "content-length") {
-            length = value.trim().parse().unwrap_or(0);
-        }
-        if let Some(value) = header_value(&header, "connection") {
-            let value = value.trim().to_ascii_lowercase();
-            if value.contains("close") {
-                keep = false;
-            } else if value.contains("keep-alive") {
-                keep = true;
+    {
+        let mut limited = (&mut *reader).take(MAX_HEADER_BYTES as u64);
+        let mut lines = 0usize;
+        loop {
+            if lines == MAX_HEADER_LINES {
+                respond(stream, 400, "text/plain", "too many headers", false)?;
+                return Ok(Flow::Close);
+            }
+            let mut header = String::new();
+            if limited.read_line(&mut header).context("reading a header")? == 0 {
+                break;
+            }
+            if !header.ends_with('\n') {
+                // The byte bound ran out mid-line, which is the same fault as
+                // a header that never ends: there is no reading this request.
+                respond(stream, 400, "text/plain", "header too long", false)?;
+                return Ok(Flow::Close);
+            }
+            if header.trim().is_empty() {
+                break;
+            }
+            lines += 1;
+            if let Some(value) = header_value(&header, "content-length") {
+                length = value.trim().parse().unwrap_or(0);
+            }
+            if let Some(value) = header_value(&header, "connection") {
+                let value = value.trim().to_ascii_lowercase();
+                if value.contains("close") {
+                    keep = false;
+                } else if value.contains("keep-alive") {
+                    keep = true;
+                }
             }
         }
     }
 
-    let mut body = vec![0u8; length];
-    if length > 0 {
-        reader.read_exact(&mut body).context("reading a body")?;
+    // The body is bounded before anything is allocated for it. A declared
+    // length past the cap is refused on the spot, body unread: closing the
+    // connection is all the draining a refused body needs.
+    if length > MAX_BODY {
+        respond(stream, 413, "text/plain", "body too large", false)?;
+        return Ok(Flow::Close);
     }
 
     let path = target.split('?').next().unwrap_or("").to_owned();
@@ -579,7 +627,12 @@ fn serve_one(
     // loaded from — `file://` sends `Origin: null`. Answered for every route
     // so that a mistyped one fails as a 404 rather than as a CORS error, which
     // is the difference between a debuggable shell and a silent one.
+    //
+    // A preflight carries no body in practice; one that declares one is not
+    // kept alive, since the unread body would be read as the next request's
+    // head.
     if method == "OPTIONS" {
+        let keep = keep && length == 0;
         respond(stream, 204, "", "", keep)?;
         return Ok(if keep { Flow::Keep } else { Flow::Close });
     }
@@ -588,8 +641,24 @@ fn serve_one(
         tracing::warn!("a request to {path} arrived without this session's token");
         // Not kept: whatever is on the other end is not the page, and it does
         // not get a socket to try the next guess down.
+        //
+        // Nor does it get its body read. The body used to be drained before
+        // this check, which handed anything that could open a loopback socket
+        // — or any cross-origin POST the page's own scripts were tricked into
+        // — a way to make this process allocate and read whatever
+        // Content-Length claimed, before anyone had established who was
+        // talking. Closing is the drain here: nothing unread matters on a
+        // connection that is about to be dropped, and the answer is written
+        // first.
         respond(stream, 403, "text/plain", "no", false)?;
         return Ok(Flow::Close);
+    }
+
+    // Past the handshake and past the cap, so the allocation is safe: at most
+    // [`MAX_BODY`], whatever the headers said.
+    let mut body = vec![0u8; length];
+    if length > 0 {
+        reader.read_exact(&mut body).context("reading a body")?;
     }
 
     match (method.as_str(), path.as_str()) {
@@ -645,7 +714,9 @@ fn respond(
     let reason = match status {
         200 => "OK",
         204 => "No Content",
+        400 => "Bad Request",
         403 => "Forbidden",
+        413 => "Content Too Large",
         _ => "Not Found",
     };
     let mut head = format!(
@@ -1029,6 +1100,127 @@ mod tests {
             "a message with no token reached the compositor"
         );
 
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    /// The bridge alone, for the requests below: they talk HTTP and expect
+    /// refusals, so none of them needs a compositor on the other end.
+    fn lone_bridge() -> (u16, PathBuf) {
+        let (socket, _from_page) = fake_compositor();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port");
+        let port = listener.local_addr().expect("the port").port();
+        let out = viewport_shell_bridge::connect(&socket, |_| {}).expect("connecting");
+        serve(
+            listener,
+            Arc::new(Bridge {
+                queue: Arc::new(Queue::new()),
+                token: "secret".to_owned(),
+                out,
+            }),
+        )
+        .expect("the bridge starts");
+        (port, socket)
+    }
+
+    /// One hand-written request head, sent exactly as given and with no body
+    /// after it, answered on a connection the server closes.
+    ///
+    /// These tests are about what the server does while a body it was promised
+    /// never arrives, which is why the head is written raw rather than through
+    /// [`request`]. The write side is shut down after the head — the server
+    /// has to see the end of what was sent rather than wait for more of it —
+    /// and the read timeout is what turns "the server is still in there
+    /// waiting for the body" into a failed assertion instead of a hung test.
+    fn raw_request(port: u16, head: &str) -> String {
+        use std::net::{Shutdown, TcpStream};
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("the bridge");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a read timeout");
+        stream
+            .write_all(head.as_bytes())
+            .expect("writing a request");
+        stream.shutdown(Shutdown::Write).expect("half-closing");
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).expect("an answer");
+        answer
+    }
+
+    /// A Content-Length is a claim about memory this process should make on a
+    /// stranger's behalf. It used to be believed before anyone checked who was
+    /// making it; now anything over the cap is refused unread, and this is
+    /// only provable because no body ever follows the head — a server that
+    /// tried to drain first would still be sitting in `read_exact`.
+    #[test]
+    fn a_body_over_the_cap_is_refused_without_being_read() {
+        let (port, socket) = lone_bridge();
+        let answer = raw_request(
+            port,
+            &format!(
+                "POST /send?t=secret HTTP/1.1\r\n\
+                 Connection: close\r\n\
+                 Content-Length: {}\r\n\
+                 \r\n",
+                MAX_BODY + 1
+            ),
+        );
+        assert!(answer.starts_with("HTTP/1.1 413"), "{answer}");
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    /// The handshake comes before the body. A tokenless peer declaring a body
+    /// the cap allows — this one never sends a byte of it — gets its 403
+    /// without the server first sitting in `read_exact` for whatever the
+    /// headers promised.
+    #[test]
+    fn the_body_is_not_read_before_the_token_says_who_you_are() {
+        let (port, socket) = lone_bridge();
+        let answer = raw_request(
+            port,
+            "POST /send?t=wrong HTTP/1.1\r\n\
+             Connection: close\r\n\
+             Content-Length: 65536\r\n\
+             \r\n",
+        );
+        assert!(answer.starts_with("HTTP/1.1 403"), "{answer}");
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    /// More header lines than any client of this server has a use for.
+    ///
+    /// Exactly [`MAX_HEADER_LINES`] of them, and nothing after: the server
+    /// refuses at the count and closes, and a refusal answered onto a socket
+    /// still holding unread bytes dies as a TCP reset before the answer is
+    /// read. These tests send only what the server will have consumed by the
+    /// time it answers, which is also why they can assert on the status at
+    /// all.
+    #[test]
+    fn too_many_headers_are_a_bad_request() {
+        let (port, socket) = lone_bridge();
+        let mut head = String::from("GET /events?t=secret HTTP/1.1\r\nConnection: close\r\n");
+        for i in 0..MAX_HEADER_LINES {
+            head.push_str(&format!("X-Filler-{i}: a\r\n"));
+        }
+        let answer = raw_request(port, &head);
+        assert!(answer.starts_with("HTTP/1.1 400"), "{answer}");
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    /// One line past the byte bound. This is the case `take` exists for: the
+    /// line has no newline in it, and a reader without a bound would keep the
+    /// connection's thread appending to a String until the sender tired of
+    /// the joke. Truncated to exactly the bound, so the server consumes every
+    /// byte sent before answering — see the note on the test above.
+    #[test]
+    fn a_header_over_the_byte_bound_is_a_bad_request() {
+        let (port, socket) = lone_bridge();
+        let mut head = format!(
+            "GET /events?t=secret HTTP/1.1\r\nX-Big: {}",
+            "a".repeat(MAX_HEADER_BYTES * 2)
+        );
+        head.truncate(MAX_HEADER_BYTES);
+        let answer = raw_request(port, &head);
+        assert!(answer.starts_with("HTTP/1.1 400"), "{answer}");
         let _ = std::fs::remove_file(&socket);
     }
 
