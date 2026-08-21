@@ -63,6 +63,44 @@ const WEB_PROCESS_CRASH_LIMIT: u32 = 3;
 /// side; the number is arbitrary and only has to be one nothing else uses.
 const RETRY_WITHOUT_DMABUF: i32 = 87;
 
+/// How many more reloads a degraded shell gets once the crash limit is past.
+///
+/// Degraded is the end of the line — there is no further mode to fall back to
+/// — so these are the last tries, spent slowly rather than all at once: a web
+/// process that dies the moment it is given a page will die again however
+/// often it is handed one, and reloading in a tight loop is a
+/// WebKitWebProcess spawn storm wearing a shell as a coat.
+const DEGRADED_RELOAD_LIMIT: u32 = 5;
+
+/// The first degraded reload's wait, doubled for each one after it.
+///
+/// The same shape as the compositor's own restart backoff
+/// (`shell_client::restart_backoff`), for the same reason: repeated fast
+/// failures are a fault that trying again *right now* will not fix.
+const DEGRADED_RELOAD_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// And as far apart as the compositor spreads its own restarts.
+const DEGRADED_RELOAD_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The exit status of a shell that has used up every try it had.
+///
+/// Nothing on the compositor side reads this yet — every exit is restarted
+/// there, under its own slow backoff — and that is the point of exiting
+/// rather than reloading forever: handing the loop over to a process that
+/// waits thirty seconds between attempts is what turns an unbounded
+/// crash-and-reload storm into five crashes a minute. Distinct from
+/// [`RETRY_WITHOUT_DMABUF`] so the two decisions can be told apart in a log
+/// or a wait status; the number is arbitrary beyond that.
+const DEGRADED_EXHAUSTED: i32 = 88;
+
+/// How many events may wait for a page that has not committed yet.
+///
+/// A few hundred covers any ordinary load with room to spare — the queue
+/// exists for the second or two before Committed — and a ceiling is what
+/// keeps it from being a second, unbounded copy of everything the desktop
+/// does when the page never arrives at all.
+const QUEUE_LIMIT: usize = 512;
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -164,8 +202,16 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
     // fail — the page renders through shared memory inside WebKit after that,
     // one copy more, and the window's own buffer is still a DMA-BUF, so the
     // handoff to the compositor stays zero-copy either way.
+    //
+    // Degraded is not a licence to reload forever, which is how it used to be
+    // read: past the crash limit a degraded shell reloaded on every
+    // termination without end, so one broken GPU meant WebKitWebProcesses
+    // spawned back to back for as long as the session lived. There the tries
+    // are counted and spread out, and when they run out the process says so
+    // loudly and exits — see `DEGRADED_RELOAD_LIMIT` and `DEGRADED_EXHAUSTED`.
     {
         let crashes = std::cell::Cell::new(0u32);
+        let degraded_reloads = std::cell::Cell::new(0u32);
         let degraded = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some();
         view.connect_web_process_terminated(move |view, reason| {
             let count = crashes.get() + 1;
@@ -175,19 +221,43 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
                 view.reload();
                 return;
             }
-            if degraded {
+            if !degraded {
                 tracing::error!(
-                    "it has died {count} times with WebKit's DMA-BUF renderer already off; \
+                    "it has died {count} times; asking to be started again with WebKit's \
+                     DMA-BUF renderer off"
+                );
+                std::process::exit(RETRY_WITHOUT_DMABUF);
+            }
+
+            // The last resort, spent slowly. Each wait doubles, so five tries
+            // stretch over about a minute instead of one busy loop.
+            let attempt = degraded_reloads.get() + 1;
+            degraded_reloads.set(attempt);
+            if attempt > DEGRADED_RELOAD_LIMIT {
+                tracing::error!(
+                    "it has died {count} times with WebKit's DMA-BUF renderer already off, \
+                     and {DEGRADED_RELOAD_LIMIT} slow reloads since have each died too; \
                      there is nothing further to try from here"
                 );
-                view.reload();
-                return;
+                std::process::exit(DEGRADED_EXHAUSTED);
             }
+            let delay = DEGRADED_RELOAD_BACKOFF
+                .checked_mul(1u32 << (attempt - 1))
+                .unwrap_or(DEGRADED_RELOAD_CAP)
+                .min(DEGRADED_RELOAD_CAP);
             tracing::error!(
-                "it has died {count} times; asking to be started again with WebKit's \
-                 DMA-BUF renderer off"
+                "it has died {count} times with WebKit's DMA-BUF renderer already off; \
+                 reloading in {}s (degraded reload {attempt}/{DEGRADED_RELOAD_LIMIT})",
+                delay.as_secs()
             );
-            std::process::exit(RETRY_WITHOUT_DMABUF);
+            // Waited out on the main loop rather than slept through: this
+            // handler runs on the GTK thread, and a process that cannot render
+            // still owns the window everyone can see.
+            let view = view.clone();
+            gtk::glib::timeout_add_seconds_local(delay.as_secs().max(1) as u32, move || {
+                view.reload();
+                gtk::glib::ControlFlow::Break
+            });
         });
     }
 
@@ -274,20 +344,38 @@ fn bridge(
     // deliberately, so nothing that happens during the load is missed. A
     // script evaluated against a document that does not exist yet is dropped
     // on the floor, so they wait here instead.
-    let queue: Rc<std::cell::RefCell<Vec<String>>> = Rc::new(Default::default());
+    //
+    // Bounded, because "before the page has finished loading" has no natural
+    // end: a page that never reaches Committed — a load failure, a web
+    // process dying before it got there — would otherwise queue everything
+    // the desktop did for as long as the shell was up. Past the limit the
+    // oldest event goes, which is the one the page would make least of.
+    let queue: Rc<std::cell::RefCell<std::collections::VecDeque<String>>> =
+        Rc::new(Default::default());
     let loaded = Rc::new(std::cell::Cell::new(false));
+    let dropped = Rc::new(std::cell::Cell::new(0usize));
 
     {
         let queue = queue.clone();
         let loaded = loaded.clone();
+        let dropped = dropped.clone();
         view.connect_load_changed(move |view, event| match event {
             webkit6::LoadEvent::Committed => {
                 // Committed, not Finished: the document and its scripts exist
                 // here, and waiting for every subresource would hold the
                 // desktop's state back behind a slow image.
                 loaded.set(true);
+                let dropped = dropped.replace(0);
                 for json in queue.borrow_mut().drain(..) {
                     post(view, &json);
+                }
+                // Said here rather than per drop: a busy desktop behind a page
+                // that never commits sheds hundreds of events a second, and
+                // each line would be the same line.
+                if dropped > 0 {
+                    tracing::warn!(
+                        "the page committed after {dropped} queued event(s) had been dropped"
+                    );
                 }
             }
             webkit6::LoadEvent::Started => {
@@ -319,7 +407,12 @@ fn bridge(
                         if loaded.get() {
                             post(&view, &json);
                         } else {
-                            queue.borrow_mut().push(json);
+                            let mut queue = queue.borrow_mut();
+                            if queue.len() >= QUEUE_LIMIT {
+                                queue.pop_front();
+                                dropped.set(dropped.get() + 1);
+                            }
+                            queue.push_back(json);
                         }
                     }
                     Line::Closed => {

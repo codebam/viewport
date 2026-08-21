@@ -85,8 +85,10 @@ pub struct Dmabuf {
 /// test at the bottom of this file proves it by rendering on one and reading
 /// back on another.
 pub struct Gpu {
-    egl: Arc<khronos_egl::DynamicInstance<khronos_egl::EGL1_5>>,
-    display: khronos_egl::Display,
+    /// Shared with every [`Texture`] made from this display, and owned by
+    /// none of them alone: see [`EglDisplay`] for why it must be neither the
+    /// first to die nor the last to be used.
+    display: Arc<EglDisplay>,
     context: khronos_egl::Context,
     gl: Arc<glow::Context>,
 
@@ -100,6 +102,26 @@ pub struct Gpu {
 
     // Dropped last: the buffer objects borrow it.
     gbm: GbmDevice<std::fs::File>,
+}
+
+/// The EGL display, and what it costs to keep alive.
+///
+/// Reference-counted rather than borrowed because a [`Texture`] can outlive
+/// the `Gpu` that made it — only the glow context is shared today, and the
+/// borrow checker cannot see through that to the raw display pointer a
+/// texture also needs. An `EGLImage` belongs to its display, so destroying
+/// one after `eglTerminate` is use-after-free by way of the driver; sharing
+/// one handle means the display is terminated strictly last, whenever the
+/// last texture goes, with no ordering discipline for anyone to remember.
+struct EglDisplay {
+    egl: Arc<khronos_egl::DynamicInstance<khronos_egl::EGL1_5>>,
+    raw: khronos_egl::Display,
+}
+
+impl Drop for EglDisplay {
+    fn drop(&mut self) {
+        let _ = self.egl.terminate(self.raw);
+    }
 }
 
 impl Gpu {
@@ -143,13 +165,21 @@ impl Gpu {
         if display_ptr.is_null() {
             return Err(anyhow!("eglGetPlatformDisplay returned no display"));
         }
-        let display = unsafe { khronos_egl::Display::from_ptr(display_ptr) };
+        // Arc rather than Rc because the textures that share it may be handed
+        // across threads by an engine that renders off the main one, and the
+        // atomics cost nothing worth measuring. Nothing here makes the type
+        // Send — the display handle inside is not — hence the allowance.
+        #[allow(clippy::arc_with_non_send_sync)]
+        let display = Arc::new(EglDisplay {
+            egl: egl.clone(),
+            raw: unsafe { khronos_egl::Display::from_ptr(display_ptr) },
+        });
 
-        let (major, minor) = egl.initialize(display).context("eglInitialize")?;
+        let (major, minor) = egl.initialize(display.raw).context("eglInitialize")?;
         tracing::debug!("EGL {major}.{minor} on {}", path.display());
 
         let extensions = egl
-            .query_string(Some(display), khronos_egl::EXTENSIONS)
+            .query_string(Some(display.raw), khronos_egl::EXTENSIONS)
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         for required in [
@@ -176,7 +206,7 @@ impl Gpu {
         // actually needs is to be ES3-renderable and nothing else.
         let config = match egl
             .choose_first_config(
-                display,
+                display.raw,
                 &[
                     khronos_egl::RENDERABLE_TYPE,
                     khronos_egl::OPENGL_ES3_BIT,
@@ -201,7 +231,7 @@ impl Gpu {
 
         let context = egl
             .create_context(
-                display,
+                display.raw,
                 config,
                 None,
                 &[khronos_egl::CONTEXT_MAJOR_VERSION, 3, khronos_egl::NONE],
@@ -209,7 +239,7 @@ impl Gpu {
             .context("eglCreateContext")?;
 
         // Surfaceless: everything is rendered to a framebuffer object.
-        egl.make_current(display, None, None, Some(context))
+        egl.make_current(display.raw, None, None, Some(context))
             .context("eglMakeCurrent")?;
 
         let gl = Arc::new(unsafe {
@@ -275,7 +305,6 @@ impl Gpu {
         );
 
         Ok(Self {
-            egl,
             display,
             context,
             gl,
@@ -309,7 +338,7 @@ impl Gpu {
 
         let sync = unsafe {
             (functions.create_sync)(
-                self.display.as_ptr(),
+                self.display.raw.as_ptr(),
                 SYNC_NATIVE_FENCE,
                 [EGL_NONE_ATTRIB].as_ptr(),
             )
@@ -325,9 +354,9 @@ impl Gpu {
             self.gl.flush();
         }
 
-        let raw = unsafe { (functions.dup_fd)(self.display.as_ptr(), sync) };
+        let raw = unsafe { (functions.dup_fd)(self.display.raw.as_ptr(), sync) };
         unsafe {
-            (functions.destroy_sync)(self.display.as_ptr(), sync);
+            (functions.destroy_sync)(self.display.raw.as_ptr(), sync);
         }
 
         if raw == NO_NATIVE_FENCE_FD {
@@ -341,8 +370,9 @@ impl Gpu {
     }
 
     pub fn make_current(&self) -> Result<()> {
-        self.egl
-            .make_current(self.display, None, None, Some(self.context))
+        self.display
+            .egl
+            .make_current(self.display.raw, None, None, Some(self.context))
             .context("eglMakeCurrent")
     }
 
@@ -412,7 +442,7 @@ impl Gpu {
         // one context, which is exactly why it can be shared.
         let image = unsafe {
             (self.create_image)(
-                self.display.as_ptr(),
+                self.display.raw.as_ptr(),
                 khronos_egl::NO_CONTEXT,
                 LINUX_DMA_BUF,
                 std::ptr::null_mut(),
@@ -454,7 +484,10 @@ impl Gpu {
             image,
             texture,
             gl: self.gl.clone(),
-            display: self.display.as_ptr(),
+            // Held, not copied: the image is destroyed in this texture's Drop,
+            // which may run after the Gpu is gone, and the display has to be
+            // there when it does. See [`EglDisplay`].
+            display: self.display.clone(),
             destroy_image: self.destroy_image,
         })
     }
@@ -496,9 +529,18 @@ impl Gpu {
 
 impl Drop for Gpu {
     fn drop(&mut self) {
-        let _ = self.egl.make_current(self.display, None, None, None);
-        let _ = self.egl.destroy_context(self.display, self.context);
-        let _ = self.egl.terminate(self.display);
+        // The context, only: the display is shared with textures that may
+        // still be alive, and it is terminated in [`EglDisplay::drop`] when
+        // the last of them is gone. Terminating it here instead would leave
+        // every surviving texture holding an image on a dead display.
+        let _ = self
+            .display
+            .egl
+            .make_current(self.display.raw, None, None, None);
+        let _ = self
+            .display
+            .egl
+            .destroy_context(self.display.raw, self.context);
     }
 }
 
@@ -513,7 +555,9 @@ pub struct Texture {
     image: *mut c_void,
     texture: glow::Texture,
     gl: Arc<glow::Context>,
-    display: khronos_egl::EGLDisplay,
+    /// A reference to the display the image lives on, so this Drop can run
+    /// after the `Gpu` that made it without touching a terminated display.
+    display: Arc<EglDisplay>,
     destroy_image: EglDestroyImageKhr,
 }
 
@@ -528,7 +572,7 @@ impl Drop for Texture {
         use glow::HasContext;
         unsafe {
             self.gl.delete_texture(self.texture);
-            (self.destroy_image)(self.display, self.image);
+            (self.destroy_image)(self.display.raw.as_ptr(), self.image);
         }
     }
 }
