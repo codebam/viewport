@@ -6741,19 +6741,36 @@ impl ViewportState {
         self.power
             .set_enabled(self.power.widget() || self.lid != crate::power::LidAction::Ignore);
 
-        // The cursor theme. The xcursor loader reads the environment, which is
-        // also how every toolkit resolves it — so setting it here is what makes
-        // the compositor's pointer and a GTK application's agree.
-        if let Some(theme) = file.cursor.theme.as_deref() {
-            unsafe { std::env::set_var("XCURSOR_THEME", theme) };
-        }
-        if let Some(size) = file.cursor.size {
-            unsafe { std::env::set_var("XCURSOR_SIZE", size.to_string()) };
-        }
-        // Only when one of those two moved. Rebuilding on any change to the
-        // block would throw the loaded images away because a reload touched
-        // the hide deadline, which has nothing to do with what they look like.
-        if file.cursor.theme.is_some() || file.cursor.size.is_some() {
+        // The cursor theme, resolved against what is already loaded rather
+        // than round-tripped through the process environment. Writing environ
+        // on a process whose tray, status and notification threads are live
+        // and reading it is undefined — glibc may free or rehash it under a
+        // concurrent getenv — and every reload used to do exactly that, twice,
+        // whether anything had changed or not.
+        let theme = file
+            .cursor
+            .theme
+            .clone()
+            .unwrap_or_else(|| self.cursor_theme.name().to_owned());
+        let size = file.cursor.size.unwrap_or(self.cursor_theme.size());
+        // Only when one of those two moved, and only then: rebuilding on any
+        // change to the block would throw the loaded images away because a
+        // reload touched the hide deadline, which has nothing to do with what
+        // they look like.
+        if theme != self.cursor_theme.name() || size != self.cursor_theme.size() {
+            // The loader is constructed from the environment — `Theme` has no
+            // other door — so the values are written back for it to read, and
+            // this is the one setenv left on a live process. It survives
+            // because nothing else in-process consumes these variables at
+            // runtime: outputs added after this draw from `self.cursor_theme`,
+            // which is rebuilt here, and children this process starts are told
+            // the pair explicitly (`launcher_launch`). A named constructor on
+            // `cursor::Theme` is what finally deletes these two lines and the
+            // race they carry.
+            unsafe {
+                std::env::set_var("XCURSOR_THEME", &theme);
+                std::env::set_var("XCURSOR_SIZE", size.to_string());
+            }
             self.cursor_theme = crate::cursor::Theme::new();
             // And what the portal answers, or a toolkit keeps sizing its own
             // cursors from the value it was told when it started — which is a
@@ -6764,14 +6781,6 @@ impl ViewportState {
             // The pointer on screen is still the old image, and the compositor
             // draws on damage: nothing else here is damage.
             self.needs_render = true;
-        }
-        // Both variables, whether or not the file named them: a session started
-        // without them in the environment has nothing to hand to the clients
-        // that are launched by systemd rather than from here, and the resolved
-        // values are what the compositor is drawing either way.
-        unsafe {
-            std::env::set_var("XCURSOR_THEME", self.cursor_theme.name());
-            std::env::set_var("XCURSOR_SIZE", self.cursor_theme.size().to_string());
         }
         if self.cursor_hide.set_after_ms(file.cursor.hide_after_ms) {
             // The deadline that hid it has just been taken away, so nothing
@@ -7667,7 +7676,24 @@ impl ViewportState {
         } else {
             app.exec
         };
-        crate::input::spawn_with_env(&command, &[("XDG_ACTIVATION_TOKEN".to_owned(), token)]);
+        // The cursor pair goes with it, as this session draws it now rather
+        // than as the environment said when the compositor started: a reload
+        // that changed the theme no longer writes environ behind the worker
+        // threads' backs, so the child is told here instead of inheriting.
+        crate::input::spawn_with_env(
+            &command,
+            &[
+                ("XDG_ACTIVATION_TOKEN".to_owned(), token),
+                (
+                    "XCURSOR_THEME".to_owned(),
+                    self.cursor_theme.name().to_owned(),
+                ),
+                (
+                    "XCURSOR_SIZE".to_owned(),
+                    self.cursor_theme.size().to_string(),
+                ),
+            ],
+        );
     }
 
     pub fn notify_output_layout(&mut self) {
