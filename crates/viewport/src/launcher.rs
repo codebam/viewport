@@ -10,6 +10,10 @@
 // the shell's; starting what is chosen is the state's, with an activation
 // token minted for the process it spawns.
 //
+// The scan is also the one piece of this that runs on a thread of its own:
+// answering a keystroke means walking directories and reading files, and
+// neither belongs between two frames. See `Scanner`.
+//
 // The parse is the freedesktop Desktop Entry specification, as much of it as
 // a launcher needs: the `[Desktop Entry]` section, the fields a row can show
 // and a launch can use, and the field codes in `Exec` dropped the way the
@@ -465,6 +469,183 @@ pub fn icon_url(name: &str, theme: &str) -> Option<String> {
     let path = crate::icon::lookup(name, None, theme, ICON_SIZE)?;
     let url = crate::icon::data_url(&path)?;
     (url.len() <= MAX_ICON_URL).then_some(url)
+}
+
+/// One row of an answer: the application, and its icon as the page draws it.
+///
+/// The icon is a `data:` URL, or empty where the themes have nothing — the
+/// row falls back to a letter for that, which is what the tray does too.
+pub struct Row {
+    pub app: App,
+    pub icon: String,
+}
+
+/// One query, as the event loop asks it.
+///
+/// `generation` is the compositor's count of queries and travels back with
+/// the answer, so a list that has been superseded while it was being built
+/// can be recognised and dropped. `limit` is the compositor's cap on rows:
+/// the shell scrolls, but a desktop with four hundred applications is a
+/// filter box waiting to be typed into either way.
+pub struct Query {
+    pub generation: u64,
+    pub filter: Option<String>,
+    pub theme: String,
+    pub limit: usize,
+}
+
+/// The answer to one query, sent back to the event loop.
+pub struct Answer {
+    pub generation: u64,
+    pub rows: Vec<Row>,
+}
+
+/// What one query answers, scanning and all.
+///
+/// This is the whole cost of a keystroke — `read_dir` over every
+/// applications directory, `read_to_string` over every surviving `.desktop`
+/// file, and for each row shown an icon found in the theme directories and
+/// base64-encoded out of the file it lives in. It runs on the scanner's
+/// thread; the event loop calls this directly only where no thread could be
+/// started for it.
+pub fn answer(
+    query: &Query,
+    dirs: &[PathBuf],
+    desktop: &[&str],
+    icons: &mut HashMap<String, Option<String>>,
+) -> Answer {
+    let apps = scan(dirs, desktop);
+    let filter = query.filter.as_deref().map(str::to_lowercase);
+    let matched: Vec<&App> = apps
+        .iter()
+        .filter(|app| match filter.as_deref() {
+            Some(filter) if !filter.is_empty() => {
+                app.name.to_lowercase().contains(filter)
+                    || app.detail.to_lowercase().contains(filter)
+                    || app.exec.to_lowercase().contains(filter)
+                    || app.app_id.to_lowercase().contains(filter)
+            }
+            _ => true,
+        })
+        .take(query.limit)
+        .collect();
+
+    let mut rows = Vec::with_capacity(matched.len());
+    for app in matched {
+        // The icon, resolved once and kept: the themes walk and the file read
+        // are the ninety-eight milliseconds a query used to take on the event
+        // loop's thread, and the names repeat across every keystroke. Keyed by
+        // the theme too, because a reload that changes it must not serve the
+        // old files' encodings under the new theme's name.
+        let key = format!("{}\u{1}{}", query.theme, app.icon);
+        let icon = match icons.get(&key) {
+            Some(url) => url.clone().unwrap_or_default(),
+            None => {
+                let url = icon_url(&app.icon, &query.theme);
+                icons.insert(key, url.clone());
+                url.unwrap_or_default()
+            }
+        };
+        rows.push(Row {
+            app: app.clone(),
+            icon,
+        });
+    }
+    Answer {
+        generation: query.generation,
+        rows,
+    }
+}
+
+/// The half of the launcher the event loop talks to.
+///
+/// A keystroke posts a [`Query`] here; a thread scans, resolves the icons and
+/// sends the list back through a calloop channel, exactly the arrangement the
+/// status sampler uses. All of it used to run on the event loop's thread,
+/// which made every keystroke in the picker cost a directory walk and up to a
+/// hundred icon files read and encoded while frames waited behind them.
+///
+/// The icon cache lives here rather than in the state, because this thread is
+/// now the only thing resolving icons: a reload that changes the theme says
+/// so through [`Scanner::clear_icons`], and the cache empties then and there,
+/// which is the property it had when it lived on the other side of the
+/// channel.
+#[derive(Default)]
+pub struct Scanner {
+    /// The worker's mailbox, once there is a worker. Absent in a test and in
+    /// anything running where the thread would not start, where the query is
+    /// answered in line as it always was.
+    mailbox: Option<std::sync::mpsc::Sender<Job>>,
+}
+
+/// One unit of work for the scanner's thread.
+enum Job {
+    Query(Query),
+    /// The icon theme changed under the cache; empty it.
+    IconsChanged,
+}
+
+impl Scanner {
+    /// Start the thread, delivering its answers through `sink`.
+    ///
+    /// Failing to start is not fatal: [`Scanner::online`] then says so, and
+    /// the query is answered in line, which is what the launcher did before
+    /// there was a thread.
+    pub fn start(
+        &mut self,
+        sink: smithay::reexports::calloop::channel::Sender<Answer>,
+    ) -> std::io::Result<()> {
+        let (sender, jobs) = std::sync::mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("viewport-launcher".to_owned())
+            .spawn(move || {
+                // Read once, at birth: the directories and the desktop are
+                // session constants, and reading them here keeps the thread
+                // off the environment for the rest of its life.
+                let dirs = directories();
+                let desktop = current_desktop();
+                let mut icons: HashMap<String, Option<String>> = HashMap::new();
+                for job in jobs {
+                    match job {
+                        Job::IconsChanged => icons.clear(),
+                        Job::Query(query) => {
+                            let desktop: Vec<&str> = desktop.iter().map(String::as_str).collect();
+                            if sink
+                                .send(answer(&query, &dirs, &desktop, &mut icons))
+                                .is_err()
+                            {
+                                // A closed channel is the compositor going away.
+                                return;
+                            }
+                        }
+                    }
+                }
+            })?;
+        self.mailbox = Some(sender);
+        Ok(())
+    }
+
+    /// Whether a scanner thread is there to ask.
+    ///
+    /// False means the caller scans in line rather than posting, because a
+    /// query handed to nobody is a picker that waits for ever.
+    pub fn online(&self) -> bool {
+        self.mailbox.is_some()
+    }
+
+    /// Hand a query to the thread.
+    pub fn ask(&self, query: Query) {
+        if let Some(mailbox) = self.mailbox.as_ref() {
+            let _ = mailbox.send(Job::Query(query));
+        }
+    }
+
+    /// Empty the icon cache, because the theme changed under it.
+    pub fn clear_icons(&self) {
+        if let Some(mailbox) = self.mailbox.as_ref() {
+            let _ = mailbox.send(Job::IconsChanged);
+        }
+    }
 }
 
 #[cfg(test)]

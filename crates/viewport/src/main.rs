@@ -947,6 +947,35 @@ fn run() -> Result<()> {
         }
     }
 
+    // The launcher's scan, on the status sampler's pattern. Every keystroke
+    // in the shell's picker asks for the applications list, and answering one
+    // is read_dir over every applications directory, read_to_string over
+    // every `.desktop` file that survives it, and an icon found in the theme
+    // and base64-encoded out of its file per row shown — a hundred milliseconds
+    // of that per keystroke, right here between two frames, before the scan
+    // moved to a thread of its own. The query is posted and the answer comes
+    // back through a calloop channel like anything else the loop hears.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(answer) = event else {
+                    return;
+                };
+                state.launcher_apply(answer);
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the launcher source: {e}"))?;
+
+        // Not fatal, on the same terms as the status worker: a compositor that
+        // cannot spawn the thread answers the picker in line, which is what it
+        // did before there was a thread.
+        if let Err(e) = state.launcher_scan.start(sender) {
+            tracing::warn!("the launcher worker could not start: {e}");
+        }
+    }
+
     // Whatever the config file asked to be run, once everything it needs is
     // in the environment: WAYLAND_DISPLAY, DISPLAY, and the outputs.
     if let Some(command) = state.startup.clone() {

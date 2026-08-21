@@ -216,22 +216,23 @@ pub struct ViewportState {
     /// be on its way, and an `id` from the old list is almost always in range
     /// of the new one — the wrong application is worse than nothing.
     pub launcher_generation: u64,
-    /// The icons the launcher has resolved, keyed by the theme and name they
-    /// were resolved under, `None` where the themes have no such icon or the
-    /// file is too large to send.
+    /// The launcher's scanner: the thread that walks the applications
+    /// directories and resolves the icons, and the mailbox to reach it on.
     ///
-    /// `icon::lookup` walks the theme directories and `data_url` reads and
-    /// encodes the file, and a query resolves up to a hundred of them on the
-    /// event loop's thread — a keystroke that takes a hundred milliseconds
-    /// while the list is being typed. The names repeat across every query, so
-    /// each is resolved once and the answer kept. The tray keeps its own copy
-    /// for its worker thread; this one is the event loop's.
-    pub launcher_icons: std::collections::HashMap<String, Option<String>>,
+    /// A query used to do both on this thread — a directory walk and up to a
+    /// hundred icon reads per keystroke, with frames waiting behind them. Now
+    /// the keystroke posts and the answer comes back through a calloop
+    /// channel the way a notification does; see `crate::launcher::Scanner`,
+    /// which keeps the icon cache on the thread that fills it. Absent where
+    /// the thread would not start, and the query answered here as it always
+    /// was.
+    pub launcher_scan: crate::launcher::Scanner,
     /// The icon theme the launcher's icons are looked up in.
     ///
-    /// The tray keeps its own copy for its worker thread; the launcher looks
-    /// icons up on the event loop's thread, where this one is. Both are set
-    /// from the same key, in the same place.
+    /// The tray keeps its own copy for its worker thread; this one travels
+    /// with each query the launcher's scanner is sent, so an answer is always
+    /// drawn from the theme it was asked under. Both are set from the same
+    /// key, in the same place.
     pub icon_theme: String,
     /// Whether the configuration wants a tray at all. Kept because the
     /// configuration is read before the event loop has anywhere to send one,
@@ -1316,7 +1317,7 @@ impl ViewportState {
             clipboard: crate::clipboard::Clipboard::default(),
             launcher_list: Vec::new(),
             launcher_generation: 0,
-            launcher_icons: std::collections::HashMap::new(),
+            launcher_scan: crate::launcher::Scanner::default(),
             // The tray's own default, which the first config load may replace.
             icon_theme: "hicolor".to_owned(),
             // On unless a file says otherwise: a desktop with no tray is a
@@ -6728,8 +6729,9 @@ impl ViewportState {
                 .clone()
                 .unwrap_or_else(|| "hicolor".to_owned()),
         );
-        // The same key, for the icons the launcher looks up on this thread.
-        // The tray's copy is for its worker; this one is for the event loop.
+        // The same key, for the icons the launcher resolves. The tray keeps
+        // its own copy for its worker; this one travels with every query sent
+        // to the launcher's scanner.
         self.icon_theme = file
             .icon_theme
             .clone()
@@ -6737,8 +6739,9 @@ impl ViewportState {
         // Applied on every load, so a reload that changes the theme empties
         // the cache then and there rather than at the next restart — the same
         // property the tray cache has, and the thing the user reaches for when
-        // they install icons and want to see them.
-        self.launcher_icons.clear();
+        // they install icons and want to see them. The cache is the scanner's
+        // now, so the emptying is a message rather than a method.
+        self.launcher_scan.clear_icons();
 
         if file.idle != crate::config::IdleConfig::default() {
             self.idle_settings = crate::idle::Settings {
@@ -7582,13 +7585,16 @@ impl ViewportState {
     /// The applications the launcher can start, filtered, as the shell draws
     /// them.
     ///
-    /// Re-scanned on every query rather than cached: a package installing a
-    /// new entry is the moment a launcher most wants to show it, and the scan
-    /// is a directory walk the compositor is already doing for its icons.
-    /// The filter is the shell's text, matched case-insensitively against the
-    /// name, what the entry says it is for, and the command it runs — a
-    /// binary name typed into the field finds its entry — and against the
-    /// app_id a token is minted under; absent is the whole list.
+    /// Re-scanned on every query rather than cached — a package installing a
+    /// new entry is the moment a launcher most wants to show it — but scanned
+    /// off this thread. What happens here is the posting of the question: the
+    /// walk, the parse and the icon reads are the scanner's, and the answer
+    /// comes back through the loop like any other message, to
+    /// `launcher_apply`. The filter is the shell's text, matched
+    /// case-insensitively against the name, what the entry says it is for,
+    /// and the command it runs — a binary name typed into the field finds its
+    /// entry — and against the app_id a token is minted under; absent is the
+    /// whole list.
     ///
     /// The query answers with a generation, the number of queries the
     /// compositor has answered, and `launcher.launch` carries it back: a
@@ -7596,51 +7602,57 @@ impl ViewportState {
     /// a list the query that replaced it has not answered yet.
     pub fn launcher_query(&mut self, filter: Option<String>) {
         self.launcher_generation += 1;
-        let desktop = crate::launcher::current_desktop();
-        let desktop: Vec<&str> = desktop.iter().map(String::as_str).collect();
-        let apps = crate::launcher::scan(&crate::launcher::directories(), &desktop);
-        let filter = filter.map(|f| f.to_lowercase());
-        let matched: Vec<&crate::launcher::App> = apps
-            .iter()
-            .filter(|app| match filter.as_deref() {
-                Some(filter) if !filter.is_empty() => {
-                    app.name.to_lowercase().contains(filter)
-                        || app.detail.to_lowercase().contains(filter)
-                        || app.exec.to_lowercase().contains(filter)
-                        || app.app_id.to_lowercase().contains(filter)
-                }
-                _ => true,
-            })
-            .take(Self::LAUNCHER_LIMIT)
-            .collect();
+        let query = crate::launcher::Query {
+            generation: self.launcher_generation,
+            filter,
+            theme: self.icon_theme.clone(),
+            limit: Self::LAUNCHER_LIMIT,
+        };
+        if self.launcher_scan.online() {
+            self.launcher_scan.ask(query);
+        } else {
+            // No thread to ask. Answered here, then: the blocking path this
+            // used to be always, kept for the session where the thread would
+            // not start. Its icon resolutions are thrown away when the query
+            // ends, which a working scanner never throws away — but a session
+            // without the thread is already the degraded one.
+            let dirs = crate::launcher::directories();
+            let desktop = crate::launcher::current_desktop();
+            let desktop: Vec<&str> = desktop.iter().map(String::as_str).collect();
+            let mut icons = std::collections::HashMap::new();
+            let answer = crate::launcher::answer(&query, &dirs, &desktop, &mut icons);
+            self.launcher_apply(answer);
+        }
+    }
 
-        let mut rows = Vec::with_capacity(matched.len());
-        for (id, app) in matched.iter().enumerate() {
-            // The icon, resolved once and kept: the themes walk and the file
-            // read are the ninety-eight milliseconds a query used to take on
-            // the event loop's thread, and the names repeat across every
-            // keystroke.
-            let key = format!("{}\u{1}{}", self.icon_theme, app.icon);
-            let icon = match self.launcher_icons.get(&key) {
-                Some(url) => url.clone().unwrap_or_default(),
-                None => {
-                    let url = crate::launcher::icon_url(&app.icon, &self.icon_theme);
-                    self.launcher_icons.insert(key, url.clone());
-                    url.unwrap_or_default()
-                }
-            };
-            rows.push(viewport_ipc::event::LauncherApp {
-                id: id as u32,
-                name: app.name.clone(),
-                icon,
-                detail: app.detail.clone(),
-            });
+    /// Apply a finished scan: the list a launch will be naming into, and the
+    /// rows the shell draws.
+    ///
+    /// Arrives on the loop from the scanner thread. An answer older than the
+    /// newest query is dropped rather than drawn — the keystrokes kept coming
+    /// while it was being built, and the shell wants the last word, not the
+    /// first. They are answered in order, so this only ever passes over a
+    /// list a later query has already superseded.
+    pub fn launcher_apply(&mut self, answer: crate::launcher::Answer) {
+        if answer.generation != self.launcher_generation {
+            return;
         }
         // What `launcher.launch` will be naming an index into.
-        self.launcher_list = matched.into_iter().cloned().collect();
+        self.launcher_list = answer.rows.iter().map(|row| row.app.clone()).collect();
+        let apps = answer
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(id, row)| viewport_ipc::event::LauncherApp {
+                id: id as u32,
+                name: row.app.name.clone(),
+                icon: row.icon.clone(),
+                detail: row.app.detail.clone(),
+            })
+            .collect();
         self.notify(&viewport_ipc::Event::LauncherList {
             generation: self.launcher_generation,
-            apps: rows,
+            apps,
         });
     }
 
