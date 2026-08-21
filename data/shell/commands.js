@@ -124,6 +124,12 @@ function handleShellCommand(command, args) {
     case 'clipboard':
       toggleClipboard();
       break;
+    /* The launcher. Bound to Mod4+d by default — the shell verb rather than
+       an exec, for the reason the clipboard picker is one: the compositor
+       keeps the list and the page draws it. */
+    case 'launcher':
+      toggleLauncher();
+      break;
     /* The notification centre — what was notified while nobody was looking.
        A shell verb rather than a compositor action for the same reason the
        clipboard picker is one: the compositor keeps the list, the page draws
@@ -584,6 +590,12 @@ window.addEventListener('viewport', (event) => {
       applyClipboard(message.entries ?? []);
       break;
 
+    case 'launcher.list':
+      /* Sent in answer to launcher.query — on open and on every keystroke of
+         the filter. Drawn only while the picker is open; see applyLauncher. */
+      applyLauncher(message.apps ?? []);
+      break;
+
     case 'notification.history':
       /* Sent whenever the compositor's record changes and in answer to
          notification.list. Drawn only while the centre is open; see
@@ -695,6 +707,11 @@ document.addEventListener('click', () => {
   /* And the clipboard picker, which is a menu in every way that matters: rows
      stop the event themselves, so this only sees the clicks that missed. */
   closeClipboard();
+  /* And the launcher, on the same terms: the dialog stops the clicks that act
+     — a row chosen, the field clicked for the caret — so what reaches here is
+     a click on the desktop beyond it. Closing it also gives the keyboard back
+     to the window that had it. */
+  closeLauncher();
   /* And the notification centre, on the same terms. Its rows stop the clicks
      that act — forget, and an action button — so what reaches here is a click
      on the list's own background or beyond it. */

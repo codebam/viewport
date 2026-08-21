@@ -362,14 +362,23 @@ fn wheel_from_name(name: &str) -> Option<Wheel> {
 /// `"scrolling"`, `"solar"`, `"matrix"` or `"canvas"` — because a few chords
 /// only mean anything in one of them. It is a name rather than a flag per
 /// model: a boolean each would admit combinations that cannot exist.
-pub fn defaults(terminal: &str, menu: &str, layout: &str) -> Vec<Binding> {
+///
+/// `menu` is the external menu command, when one is named. `None` — the key
+/// left out of the config file and the variable unset — is the built-in
+/// launcher, which the shell draws and the compositor feeds: `Mod4+d` goes to
+/// the shell as a verb rather than to a process with its own theme and no
+/// idea which monitor asked for it.
+pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding> {
     let scrolling = layout == "scrolling";
     let solar = layout == "solar";
     let canvas = layout == "canvas";
 
     let mut specs: Vec<String> = vec![
         format!("Mod4+Return=exec {terminal}"),
-        format!("Mod4+d=exec {menu}"),
+        match menu {
+            Some(menu) => format!("Mod4+d=exec {menu}"),
+            None => "Mod4+d=shell launcher".to_owned(),
+        },
         "Mod4+Shift+q=close".to_owned(),
         "Mod4+Shift+e=exit".to_owned(),
         "Mod4+Shift+c=reload".to_owned(),
@@ -784,7 +793,7 @@ mod tests {
     fn the_default_lock_and_blank_chords_are_bound_to_something_real() {
         // `defaults` has always listed both. What it produced was two entries
         // whose action was a shell verb that does not exist.
-        let bindings = defaults("foot", "wmenu-run", "tiling");
+        let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         assert!(
             bindings.iter().any(|b| b.action == Action::Lock),
             "no binding produces Action::Lock"
@@ -804,7 +813,7 @@ mod tests {
     /// like a player that would not answer.
     #[test]
     fn the_play_key_is_bound_to_the_keysym_it_sends() {
-        let bindings = defaults("foot", "wmenu-run", "tiling");
+        let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         let action = |keysym| {
             bindings
                 .iter()
@@ -992,7 +1001,7 @@ mod tests {
         // And nothing in the default keymap claims a plain or a modified
         // left/right click, which is what leaves the shell's own widgets
         // clickable.
-        let bindings = defaults("foot", "fuzzel", "scrolling");
+        let bindings = defaults("foot", Some("fuzzel"), "scrolling");
         let held = ModifiersState {
             logo: true,
             ..Default::default()
@@ -1140,7 +1149,7 @@ mod tests {
         // without this a typo would just remove a binding.
         // 39 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
-        let bindings = defaults("foot", "wmenu-run", "tiling");
+        let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         assert_eq!(
             bindings.len(),
             39 + 16 + 18 + 11 + 1,
@@ -1149,20 +1158,20 @@ mod tests {
 
         // Scrolling has no resize mode to enter — a column does not share
         // space with its neighbours — and six column bindings instead.
-        let scrolling = defaults("foot", "wmenu-run", "scrolling");
+        let scrolling = defaults("foot", Some("wmenu-run"), "scrolling");
         assert_eq!(scrolling.len(), bindings.len() - 1 + 6);
 
         // Solar has no resize mode either, for the same kind of reason: a
         // satellite's size is a function of the middle window's, so the only
         // thing to resize is that one. Six of its own in place of it.
-        let solar = defaults("foot", "wmenu-run", "solar");
+        let solar = defaults("foot", Some("wmenu-run"), "solar");
         assert_eq!(solar.len(), bindings.len() - 1 + 6);
 
         // The canvas has no resize mode either — a window on a plane is sized
         // by dragging it, not by taking space from a neighbour it does not
         // share any with — and nine of its own in place of it, one of which
         // takes over `Mod4+r` from the mode.
-        let canvas = defaults("foot", "wmenu-run", "canvas");
+        let canvas = defaults("foot", Some("wmenu-run"), "canvas");
         assert_eq!(canvas.len(), bindings.len() - 1 + 9);
 
         // And every one of those nine is really there, by name. The count
@@ -1194,7 +1203,7 @@ mod tests {
         // holes in it: the name reaches here unvalidated, because the
         // compositor has no layout and cannot judge one.
         assert_eq!(
-            defaults("foot", "wmenu-run", "orbital").len(),
+            defaults("foot", Some("wmenu-run"), "orbital").len(),
             bindings.len()
         );
     }
@@ -1209,7 +1218,7 @@ mod tests {
     /// failure is one anybody would notice without pressing the key.
     #[test]
     fn the_radio_pickers_are_bound_to_shell_verbs() {
-        let bindings = defaults("foot", "wmenu-run", "tiling");
+        let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         for (chord, verb) in [("Mod4+Shift+n", "network"), ("Mod4+Shift+t", "bluetooth")] {
             let wanted = parse_chord(chord).expect("the test's own chord parses");
             let found = bindings.iter().find(|binding| {
@@ -1231,7 +1240,7 @@ mod tests {
     /// rather than owning any state of its own.
     #[test]
     fn the_on_screen_keyboard_is_bound_to_a_shell_verb() {
-        let bindings = defaults("foot", "wmenu-run", "tiling");
+        let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         let wanted = parse_chord("Mod4+Shift+k").expect("the test's own chord parses");
         let found = bindings.iter().find(|binding| {
             binding.mode.is_empty()
@@ -1245,6 +1254,38 @@ mod tests {
         );
     }
 
+    /// `Mod4+d` opens the built-in launcher unless an external menu is named.
+    ///
+    /// The launcher is the shell's to draw and the compositor's to feed, so
+    /// the default is a shell verb on the same terms as the pickers above —
+    /// and a `menu` in the config file is how somebody keeps the external one,
+    /// which is why the chord goes back to `exec` when one is named.
+    #[test]
+    fn the_menu_chord_is_the_launcher_unless_a_menu_is_named() {
+        let chord = parse_chord("Mod4+d").expect("the test's own chord parses");
+        let action = |bindings: &[Binding]| {
+            bindings
+                .iter()
+                .find(|binding| {
+                    binding.mode.is_empty()
+                        && binding.keysym == chord.keysym
+                        && binding.modifiers == chord.modifiers
+                })
+                .map(|binding| binding.action.clone())
+        };
+
+        assert_eq!(
+            action(&defaults("foot", None, "tiling")),
+            Some(Action::Shell("launcher".to_owned())),
+            "no menu named: the built-in launcher"
+        );
+        assert_eq!(
+            action(&defaults("foot", Some("wmenu-run -i"), "tiling")),
+            Some(Action::Exec("wmenu-run -i".to_owned())),
+            "a menu named: the external one"
+        );
+    }
+
     /// Every chord the shell is shown can be typed back into a config file.
     ///
     /// That is the property worth having: the listing exists for someone who
@@ -1255,7 +1296,7 @@ mod tests {
     #[test]
     fn every_chord_reads_back_the_way_it_was_written() {
         for layout in ["tiling", "scrolling", "solar", "matrix", "canvas"] {
-            for binding in defaults("foot", "wmenu-run", layout) {
+            for binding in defaults("foot", Some("wmenu-run"), layout) {
                 let text = binding.chord();
                 let parsed = parse_chord(&text)
                     .unwrap_or_else(|| panic!("{layout}: {text:?} does not parse"));
@@ -1293,8 +1334,8 @@ mod tests {
 
     #[test]
     fn scrolling_sends_focus_to_the_shell_differently() {
-        let tiling = defaults("foot", "wmenu-run", "tiling");
-        let scrolling = defaults("foot", "wmenu-run", "scrolling");
+        let tiling = defaults("foot", Some("wmenu-run"), "tiling");
+        let scrolling = defaults("foot", Some("wmenu-run"), "scrolling");
         let find = |bindings: &[Binding]| {
             bindings
                 .iter()
@@ -1316,7 +1357,7 @@ mod tests {
         // a strip nor a rectangle comparison — the shell casts a ray from the
         // middle window — so reusing either spelling would send it to code
         // that would answer the wrong question convincingly.
-        let solar = defaults("foot", "wmenu-run", "solar");
+        let solar = defaults("foot", Some("wmenu-run"), "solar");
         assert_eq!(
             find(&solar),
             Some(Action::Shell("solar.ray left".to_owned()))
@@ -1332,7 +1373,7 @@ mod tests {
     #[test]
     fn tab_cycles_through_the_windows_the_layout_can_see() {
         let tab = |layout: &str, shift: bool| {
-            defaults("foot", "wmenu-run", layout)
+            defaults("foot", Some("wmenu-run"), layout)
                 .iter()
                 .find(|b| {
                     b.mode.is_empty() && b.keysym == keysyms::KEY_Tab && b.modifiers.shift == shift
@@ -1406,7 +1447,7 @@ mod exit_tests {
 
     #[test]
     fn the_defaults_already_leave() {
-        let mut bindings = defaults("foot", "wmenu-run", "tiling");
+        let mut bindings = defaults("foot", Some("wmenu-run"), "tiling");
         let before = bindings.len();
         guarantee_an_exit(&mut bindings);
         assert_eq!(bindings.len(), before, "nothing was needed");

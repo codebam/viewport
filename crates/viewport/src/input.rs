@@ -47,6 +47,15 @@ fn inject_touch_slot(slot: u32) -> smithay::backend::input::TouchSlot {
 /// Double-forked through a shell so the compositor does not accumulate
 /// zombies and a launched application outlives the key that started it.
 pub fn spawn(command: &str) {
+    spawn_with_env(command, &[])
+}
+
+/// The same, with variables added to the environment the command is run in.
+///
+/// The launcher's use of it: an xdg-activation token minted for the process,
+/// which the application presents when its window appears and the compositor
+/// honours as "focus this, a token says it was asked for".
+pub fn spawn_with_env(command: &str, extra: &[(String, String)]) {
     use std::process::{Command, Stdio};
 
     tracing::info!("exec: {command}");
@@ -66,12 +75,15 @@ pub fn spawn(command: &str) {
     // The variable is how someone *asks* for an engine, and that ask belongs
     // to the shell they typed it in, not to a compositor three processes up.
     child.env_remove("VIEWPORT_SHELL_BACKEND");
+    for (key, value) in extra {
+        child.env(key, value);
+    }
     let result = child
         .arg("-c")
         .arg(command)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        // Kept rather than discarded. A binding that fails used to leave the
+        // Kept rather than discarded. A binding that failed used to leave the
         // log saying only that it had been started: a screenshot script that
         // died on a missing tool, a bad argument or a `set -e` was
         // indistinguishable from one that worked, from anywhere.

@@ -63,6 +63,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | `windows.js` | The window lifecycle: added, focused, closed, floated, fullscreened. |
 | `bar.js` | The status bar, its widgets, the system tray and its menus. |
 | `clipboard.js` | The clipboard history picker. |
+| `launcher.js` | The launcher, opened from `Mod4+d`. The list is the compositor's — the page cannot read `XDG_DATA_DIRS` — so this draws the rows it is sent and sends the filter back on every keystroke; launching names an `id`, and the compositor starts what it scanned with an activation token. Like the network picker's passphrase box, the filter field is real typed text: it asks for the keyboard with `shell.focus` and gives it back. |
 | `notifications.js` | The notification centre, opened from `Mod4+Shift+m`: what has been notified, after the popups have gone. The list itself is the compositor's — this draws it and sends back forget-one and forget-all. The popups are `session.js`, which is the same notifications and a different job. |
 | `power.js` | The power-profile picker, opened from the battery widget. |
 | `network.js` | The Wi-Fi and Bluetooth pickers, opened from `Mod4+Shift+n`, `Mod4+Shift+t` and the bar's network module. Clicked rather than steered, like the clipboard picker — and the one place in the shell that receives real typed text, because a passphrase field does: it asks for the keyboard with `shell.focus` and gives it back. |

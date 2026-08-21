@@ -331,6 +331,7 @@ function dropOverlaysForOutput(name) {
 const screencastEl = document.getElementById('screencast');
 const trayMenuEl = document.getElementById('tray-menu');
 const clipboardEl = document.getElementById('clipboard');
+const launcherEl = document.getElementById('launcher');
 const notificationCentreEl = document.getElementById('notification-centre');
 const powerEl = document.getElementById('power-picker');
 const networkEl = document.getElementById('network-picker');

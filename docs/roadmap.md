@@ -8,11 +8,16 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-The notification centre was the last entry taken off it —
+The launcher was the last entry taken off it —
+`crates/viewport/src/launcher.rs` for the scan and the parse,
+`data/shell/launcher.js` for the list and the filter, `launcher.query` and
+`launcher.launch` in `docs/ipc.md`, and `menu` in `docs/configuration.md`
+for the external menu that keeps `Mod4+d` when one is named. Before it, the
+notification centre —
 `crates/viewport/src/notification.rs`'s `History` for what is kept and what
 leaves it, `data/shell/notifications.js` for the list, `notification.list` and
 `notification.forget` in `docs/ipc.md`, and `notifications.history` in
-`docs/configuration.md`. Before it, global shortcuts —
+`docs/configuration.md`. Before that, global shortcuts —
 `crates/viewport/src/shortcuts.rs`, `docs/protocols.md`'s section of that name
 for what is remembered and why, and `shortcuts.pick` in `docs/ipc.md` for the
 dialogue. Before that, modifier feedback to a libei client
@@ -24,19 +29,6 @@ inhibit interfaces:
 `docs/configuration.md`'s default bindings.
 
 ## The desktop this does not draw yet
-
-**There is no launcher of its own.** `Mod4+d` is `exec wmenu-run -i`
-(`crates/viewport/src/binding.rs`, the `menu` config key), and what that opens
-is a layer-shell client with its own theme, its own configuration file and no
-idea what the layout is — it cannot open on the monitor that asked for it, or
-know which workspace what it launches is going to land on. The shell already
-draws pickers steered from the compositor for the clipboard, the two radios
-and the screen-share chooser, and `crate::icon::lookup` already walks the
-installed icon themes for the tray, so the drawing and the icons are both
-solved. What is missing is the `.desktop` scan, which has to be the
-compositor's — the page cannot read `XDG_DATA_DIRS` any more than it can read
-`/proc` — and an activation token handed to what is started, so a launcher
-that knows where the window is going can say so.
 
 **There is no way to turn the machine off.** logind is already on the bus and
 already being called: `crates/viewport/src/power.rs` invokes `Suspend` for the

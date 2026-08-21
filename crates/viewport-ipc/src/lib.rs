@@ -139,6 +139,8 @@ fn is_known_type(name: &str) -> bool {
             | "clipboard.query"
             | "clipboard.paste"
             | "clipboard.forget"
+            | "launcher.query"
+            | "launcher.launch"
             | "mpris.control"
             | "power.profile"
             | "osk.key"

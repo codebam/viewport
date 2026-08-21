@@ -29,7 +29,7 @@ a TTY.
   "wallpaper": "~/Pictures/wall.png",  // the desktop background; see below
   "wallpaper_mode": "fill",            // or "fit" / "stretch" / "center" / "tile"
   "terminal": "rio",
-  "menu": "wmenu-run -i",
+  "menu": "wmenu-run -i",   // an external menu; absent is the built-in launcher
   "binds": {
     "Mod4+Return":  "exec rio",
     "Mod4+d":       "exec wmenu-run -i",
@@ -149,6 +149,12 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+Shift+m` | the notification centre |
 | `Mod4+Shift+n` / `Mod4+Shift+t` | the Wi-Fi picker / the Bluetooth picker |
 | `Mod4+Shift+k` | the on-screen keyboard, which otherwise comes up on its own |
+
+`Mod4+d` opens the built-in launcher: the shell draws it, and the compositor
+feeds it from the `.desktop` directories, filtering on what is typed and
+starting what is chosen with an activation token, so the window that appears
+opens focused. `menu` (or `VIEWPORT_MENU`) names an external menu instead —
+`wmenu-run`, `fuzzel`, whatever — and `Mod4+d` runs it when one is named.
 
 ## The pointer
 
@@ -943,6 +949,7 @@ programs.viewport = {
   enable = true;
   url = "http://localhost:3000";
   terminal = "${pkgs.ghostty}/bin/ghostty";
+  # An external menu; absent is the built-in launcher.
   menu = "${pkgs.wmenu}/bin/wmenu-run -i";
   bindsOverride."Mod4+Shift+e" = "exit";
 };

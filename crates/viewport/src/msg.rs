@@ -238,6 +238,16 @@ const TYPES: &[Type] = &[
         hint: "[--id N] (no id forgets everything)",
     },
     Type {
+        name: "launcher.query",
+        fields: &["filter"],
+        hint: "[--filter TEXT]   (the applications, as the shell's launcher asks for them)",
+    },
+    Type {
+        name: "launcher.launch",
+        fields: &["id"],
+        hint: "--id N   (an id from the last launcher.list)",
+    },
+    Type {
         name: "mpris.control",
         fields: &["action"],
         hint: "--action play-pause|next|previous|stop",
@@ -499,6 +509,7 @@ fn reply_for(kind: &str) -> Reply {
         "output.query" => Reply::First("output.layout"),
         "session.query" => Reply::First("session.restore"),
         "view.query" => Reply::Until(&["config", "view.added"]),
+        "launcher.query" => Reply::First("launcher.list"),
         _ => Reply::None,
     }
 }
@@ -1358,10 +1369,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 56 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 58 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 56);
+        assert_eq!(TYPES.len(), 58);
     }
 
     #[test]

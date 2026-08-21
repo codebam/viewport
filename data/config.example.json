@@ -344,6 +344,13 @@
   },
 
   "terminal": "rio",
+  "_menu": [
+    "The external menu command, when one is named. Absent is the built-in",
+    "launcher: the shell draws it, and the compositor feeds it from the",
+    ".desktop directories, filtering on what is typed and starting what is",
+    "chosen with an activation token, so the window that appears opens",
+    "focused. A binds entry for Mod4+d wins over both."
+  ],
   "menu": "wmenu-run -f 'Fira Code NerdFont 11' -i",
 
   "binds": {

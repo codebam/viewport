@@ -176,6 +176,9 @@ const notificationsEl = new El('div');
 const trayMenuEl = new El('div');
 /* And the clipboard picker. */
 const clipboardEl = new El('div');
+/* And the launcher, on the same terms: what a launch leaves behind is only
+   visible if the element the shell drew into is the one the test reads back. */
+const launcherEl = new El('div');
 /* And the notification centre, for the same reason: what a forget leaves
    behind is only visible if the element the shell drew into is the one the
    test reads back. */
@@ -218,6 +221,7 @@ global.document = {
     screencast: screencastEl,
     'tray-menu': trayMenuEl,
     clipboard: clipboardEl,
+    launcher: launcherEl,
     'notification-centre': notificationCentreEl,
     'power-picker': powerEl,
     'network-picker': networkEl,
@@ -422,6 +426,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      see what was drawn and fire the click that missed it. */
   + ' get trayMenuEl() { return trayMenuEl; },'
   + ' get clipboardEl() { return clipboardEl; },'
+  + ' get launcherEl() { return launcherEl; },'
   + ' get notificationCentreEl() { return notificationCentreEl; },'
   /* The age formatter, which is the one piece of the centre with an
      answer a test can state exactly: everything else it draws is text
@@ -890,6 +895,122 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   emit({ type: 'shell.command', command: 'clipboard', args: [] });
   check('and the binding closes it again when it is already open',
     picker().hidden === true);
+}
+
+/* The launcher. The compositor scans the .desktop directories — the page
+ * cannot read XDG_DATA_DIRS — and sends back the rows to draw; this file
+ * draws them, sends the filter on every keystroke, and sends back the id of
+ * the row that was chosen. What is checked here is that the page asks for the
+ * keyboard when it opens, draws the list it is given, and gives the keyboard
+ * back when it goes away. */
+{
+  const picker = () => globalThis.__shell.launcherEl;
+  const dialog = () => picker().children[0];
+  const input = () => dialog()?.children[0];
+  const list = () => dialog()?.children[1];
+  const rows = () => (list()?.children ?? [])
+    .filter((el) => el._classes.has('launcher-row'));
+  const click = (el, event = {}) => (el.listeners.click ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {}, ...event }));
+  const fire = (type) => (documentListeners[type] ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+  const key = (el, k) => (el.listeners.keydown ?? [])
+    .forEach((fn) => fn({ key: k, preventDefault() {}, stopPropagation() {} }));
+  const apps = [
+    { id: 0, name: 'Firefox', icon: 'data:image/png;base64,x', detail: 'web, browser' },
+    { id: 1, name: 'Terminal' },
+    { id: 2, name: 'htop', detail: 'console' },
+  ];
+
+  /* The window that has the keyboard before the picker takes it. */
+  emit({ type: 'view.added', id: 7, title: 'Work', app_id: 'work',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  emit({ type: 'view.focused', id: 7 });
+
+  emit({ type: 'launcher.list', apps });
+  /* Kept, but nothing drawn: the message arrives on every keystroke, and
+     drawing a picker nobody opened would be a composited frame of the whole
+     desktop per keystroke. */
+  check('the list is kept but not drawn until it is asked for',
+    picker().children.length === 0);
+
+  let before = sent.length;
+  emit({ type: 'shell.command', command: 'launcher', args: [] });
+  check('the binding opens the picker', picker().hidden === false);
+  check('and it asks the compositor for the list',
+    sent.slice(before).some((m) => m.type === 'launcher.query' &&
+      m.filter === undefined));
+  check('and it takes the keyboard, remembering who had it',
+    sent.slice(before).some((m) => m.type === 'shell.focus'));
+
+  before = sent.length;
+  emit({ type: 'launcher.list', apps });
+  check('every application is a row, in the order the compositor sent it',
+    rows().length === 3 &&
+    rows()[0].children[1].children[0].textContent === 'Firefox');
+  check('a row with no icon draws a letter',
+    rows()[1].children[0].textContent === 'T');
+  check('a row with no detail is one line',
+    rows()[1].children[1].children.length === 1);
+
+  /* Typing in the field is a filter for the compositor, not for the page:
+     the list it holds may already be stale, and only the scan knows. */
+  const field = input();
+  field.value = 'fi';
+  before = sent.length;
+  (field.listeners.input ?? []).forEach((fn) => fn());
+  check('a keystroke sends the filter to the compositor',
+    sent.slice(before).some((m) => m.type === 'launcher.query' &&
+      m.filter === 'fi'));
+
+  before = sent.length;
+  key(field, 'ArrowDown');
+  check('the highlight steps without a round trip',
+    rows()[1]._classes.has('selected'));
+  key(field, 'ArrowDown');
+  key(field, 'ArrowDown');
+  check('and it wraps at the end', rows()[0]._classes.has('selected'));
+
+  before = sent.length;
+  key(field, 'Enter');
+  check('launching asks the compositor to start the highlighted row',
+    sent.slice(before).some((m) => m.type === 'launcher.launch' && m.id === 0));
+  check('and the picker goes', picker().hidden === true);
+  check('giving the keyboard back to the window that had it',
+    sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 7));
+  check('so nothing of it is drawn over the windows any more',
+    !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
+      ?.rects ?? []).some((r) => r.name === 'launcher'));
+
+  emit({ type: 'shell.command', command: 'launcher', args: [] });
+  check('reopening re-shows the last list rather than a blank',
+    rows().length === 3);
+  before = sent.length;
+  click(rows()[2]);
+  check('a click on a row launches that row, whichever is highlighted',
+    sent.slice(before).some((m) => m.type === 'launcher.launch' && m.id === 2));
+  check('and the picker goes', picker().hidden === true);
+
+  emit({ type: 'shell.command', command: 'launcher', args: [] });
+  before = sent.length;
+  key(input(), 'Escape');
+  check('Escape takes the picker down without launching',
+    picker().hidden === true &&
+    !sent.slice(before).some((m) => m.type === 'launcher.launch'));
+
+  emit({ type: 'shell.command', command: 'launcher', args: [] });
+  before = sent.length;
+  fire('click');
+  check('a click that missed takes the picker down', picker().hidden === true);
+  emit({ type: 'shell.command', command: 'launcher', args: [] });
+  emit({ type: 'shell.command', command: 'launcher', args: [] });
+  check('and the binding closes it again when it is already open',
+    picker().hidden === true);
+
+  /* The window the test focused goes away with the test: a view left in the
+     tree is a window the next section's counts do not expect. */
+  emit({ type: 'view.removed', id: 7 });
 }
 
 /* The notification centre. A popup is a moment; this is the record of it, kept

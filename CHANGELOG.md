@@ -33,6 +33,27 @@ to summarise rather than to duplicate.
   and answering with another is worse than announcing nothing.
 
 ### Added
+- A launcher of its own. `Mod4+d` used to be `exec wmenu-run` — a
+  layer-shell client with its own theme, its own configuration file and no
+  idea what the layout is: it could not open on the monitor that asked for it,
+  or know which workspace what it launches would land on. The shell now draws
+  the picker, on the same terms as the clipboard and the two radios, and the
+  compositor feeds it: the `.desktop` scan is the compositor's, because the
+  page cannot read `XDG_DATA_DIRS` any more than it can read `/proc`, and the
+  filter is answered by a re-scan rather than applied to a cached list, so a
+  package that installs a new entry shows the moment the field is next typed
+  in. What a row starts is the entry's `Exec`, field codes dropped the way the
+  Desktop Entry specification says a launcher with no files and no URLs must
+  drop them, and `Terminal=true` entries run in the configured terminal. The
+  process is handed an xdg-activation token minted for it, so the window that
+  appears opens focused rather than behind whatever the user moved on to —
+  the launcher knows where the window is going, because it is the thing that
+  asked for it, and the token is how it says so. Icons are looked up in the
+  installed themes the same walk the tray uses and sent as `data:` URLs, with
+  a letter where there is none or the file is too large to send. Two new
+  messages, `launcher.query` and `launcher.launch`, and a `launcher.list` in
+  answer; `menu` in the config file names an external menu — `wmenu-run`,
+  `fuzzel`, whatever — and `Mod4+d` runs it when one is named.
 - A notification centre. A notification was a popup and then it was nothing:
   one that arrived over a fullscreen window, or while the screens were
   blanked, was never seen and could not be gone back to — which is what every

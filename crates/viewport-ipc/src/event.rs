@@ -176,6 +176,19 @@ pub enum Event {
     #[serde(rename = "clipboard.history")]
     ClipboardHistory { entries: Vec<ClipboardEntry> },
 
+    /// The applications the launcher can start, in answer to
+    /// `launcher.query` — the whole filtered list, since that is what the
+    /// shell draws and nothing else keeps it.
+    ///
+    /// The scan is the compositor's: the shell is a web page and a web page
+    /// cannot read `XDG_DATA_DIRS` any more than it can read `/proc`. What the
+    /// shell receives is the row's name, its icon already resolved to a
+    /// `data:` URL, and what the entry says it is for — the command line
+    /// itself never crosses the wire, because `launcher.launch` names an `id`
+    /// and the compositor starts what it scanned.
+    #[serde(rename = "launcher.list")]
+    LauncherList { apps: Vec<LauncherApp> },
+
     /// What is playing, for the bar's media widget.
     ///
     /// Sent when it changes rather than on the status tick: a track lasts
@@ -795,6 +808,27 @@ pub struct ClipboardEntry {
     /// a long entry is a styling question, and a shell that was handed one
     /// line could not offer to paste the rest.
     pub text: String,
+}
+
+/// One application the launcher can start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LauncherApp {
+    /// What `launcher.launch` names. An index into the list it arrived in,
+    /// not a stable identity: the list is re-scanned on every query, and an
+    /// `id` from an older one is refused rather than guessed at.
+    pub id: u32,
+    /// What the row draws.
+    pub name: String,
+    /// The icon, already resolved to a `data:` URL — the themes are walked by
+    /// the compositor, for the reason the event's own comment gives — or
+    /// absent, in which case the row draws a letter.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+    /// What the entry says it is for: its keywords, or the main category
+    /// where it has none. Absent where the entry says nothing, and a row
+    /// with nothing to say is a row with one line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
 }
 
 /// The media player the bar is showing.

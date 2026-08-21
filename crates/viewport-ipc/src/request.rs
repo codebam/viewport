@@ -199,6 +199,33 @@ pub enum Request {
         id: Option<u32>,
     },
 
+    /// The applications the launcher can start, please — what the picker asks
+    /// when it opens, and again on every keystroke of its filter.
+    ///
+    /// The scan and the filtering are the compositor's: the shell is a web
+    /// page and cannot read `XDG_DATA_DIRS`, and a filter the page applied to
+    /// a list it had cached would be filtering a list that went stale the
+    /// moment a package installed a new entry. The answer is a
+    /// `launcher.list`, whole, with the icons already resolved.
+    #[serde(rename = "launcher.query")]
+    LauncherQuery {
+        /// The text in the filter field, lowercased or not — the match is
+        /// case-insensitive either way. Absent is the unfiltered list, which
+        /// is what the picker sends when it opens.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+    },
+
+    /// Start the application the picker's highlighted row names.
+    ///
+    /// An `id` from the last `launcher.list`, not a name: the list is
+    /// re-scanned on every query, and a name would be a second spelling of
+    /// the same thing the compositor already has. The launch carries an
+    /// xdg-activation token minted for it, so the window that appears opens
+    /// focused rather than behind whatever the user moved on to.
+    #[serde(rename = "launcher.launch")]
+    LauncherLaunch { id: u32 },
+
     /// A button on the bar's media widget.
     ///
     /// Goes to whichever player the compositor last reported, which is the one

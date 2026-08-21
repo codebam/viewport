@@ -583,6 +583,113 @@ html.behind body { background: transparent; }
 }
 .clipboard-clear:hover { color: var(--urgent); }
 
+/* The launcher.
+ *
+ * The same box-and-dialog shape as the clipboard picker above, and positioned
+ * the same way for the same reason. What differs is where the dialog sits in
+ * the box: a launcher is looked for at the top of the screen, not the middle
+ * of it — the eye goes to the field, and the list grows down from there. The
+ * field is the one element in the shell that receives real typed text besides
+ * the network picker's passphrase box, and it holds the keyboard while the
+ * picker is up; see launcher.js for the terms on which it takes and gives it.
+ */
+#launcher {
+  position: fixed;
+  /* Above the notifications, below the share chooser: it was asked for, and a
+     question that has to be answered outranks it. */
+  z-index: 160;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  /* The box spans the whole output so the dialog can be placed in it, but the
+     box itself draws nothing — only the dialog does. A click on the part of
+     the output the dialog is not covering must reach whatever is under it
+     rather than being eaten by an invisible pane the size of a monitor. */
+  pointer-events: none;
+}
+#launcher[hidden] { display: none; }
+
+.launcher-dialog {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  width: 32rem;
+  /* Relative to the box, which JS has already sized to the active output —
+     not to the viewport, which is the whole multi-monitor canvas. A `vw` here
+     would let the dialog grow wider than the very monitor it is placed over,
+     onto whichever neighbour happens to be laid out to one side of it. */
+  max-width: 80%;
+  max-height: 70%;
+  margin-top: 15%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  font-size: .85rem;
+  overflow: hidden;
+}
+
+.launcher-input {
+  margin: .6rem .7rem .3rem;
+  padding: .5rem .7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--fill);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+.launcher-input:focus { border-color: var(--border-focus); }
+.launcher-input::placeholder { color: var(--muted); }
+
+.launcher-list { overflow-y: auto; padding: .25rem .35rem; }
+.launcher-row {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  width: 100%;
+  padding: .45rem .55rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.launcher-row:hover { background: var(--fill-hover); }
+.launcher-row.selected { background: var(--fill-active); }
+.launcher-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  flex: none;
+  font-size: .95rem;
+  color: var(--muted);
+}
+.launcher-icon img { width: 100%; height: 100%; object-fit: contain; }
+/* One name and one line of what it is for, each on one line: a name can be
+   as long as the author allowed, and a row as tall as the screen is a launcher
+   with one thing in it. */
+.launcher-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.launcher-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.launcher-detail {
+  color: var(--muted);
+  font-size: .75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.launcher-empty { padding: 1rem; color: var(--muted); text-align: center; }
+.launcher-hint {
+  padding: .35rem .7rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: .75rem;
+}
+
 /* The notification centre — what was notified, after the popups have gone.
  *
  * The same box-and-dialog shape as the clipboard picker above, and positioned

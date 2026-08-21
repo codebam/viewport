@@ -201,6 +201,19 @@ pub struct ViewportState {
     /// The last few things copied, so a selection outlives the client that
     /// offered it.
     pub clipboard: crate::clipboard::Clipboard,
+    /// The applications the last `launcher.query` answered with, in the order
+    /// the `launcher.list` named them.
+    ///
+    /// Kept because `launcher.launch` names an index into that list rather
+    /// than a name: the list is re-scanned on every query, and an `id` from a
+    /// list that is no longer on screen is refused rather than guessed at.
+    pub launcher_list: Vec<crate::launcher::App>,
+    /// The icon theme the launcher's icons are looked up in.
+    ///
+    /// The tray keeps its own copy for its worker thread; the launcher looks
+    /// icons up on the event loop's thread, where this one is. Both are set
+    /// from the same key, in the same place.
+    pub icon_theme: String,
     /// Whether the configuration wants a tray at all. Kept because the
     /// configuration is read before the event loop has anywhere to send one,
     /// and `Tray::attach` acts on it once it does.
@@ -1282,6 +1295,9 @@ impl ViewportState {
             lid: crate::power::LidAction::default(),
             last_lid_closed: None,
             clipboard: crate::clipboard::Clipboard::default(),
+            launcher_list: Vec::new(),
+            // The tray's own default, which the first config load may replace.
+            icon_theme: "hicolor".to_owned(),
             // On unless a file says otherwise: a desktop with no tray is a
             // desktop where several ordinary applications have nowhere to put
             // themselves, and nothing about that is discoverable.
@@ -1316,7 +1332,7 @@ impl ViewportState {
             suppressed_keys: Vec::new(),
             bindings: crate::binding::defaults(
                 &std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
-                &std::env::var("VIEWPORT_MENU").unwrap_or_else(|_| "wmenu-run".to_owned()),
+                std::env::var("VIEWPORT_MENU").ok().as_deref(),
                 // The starting keymap, before a config file has been read. The
                 // layout it is built for is the one `self.config.layout` also
                 // starts at; reload_bindings() rebuilds it against whatever the
@@ -6767,6 +6783,12 @@ impl ViewportState {
                 .clone()
                 .unwrap_or_else(|| "hicolor".to_owned()),
         );
+        // The same key, for the icons the launcher looks up on this thread.
+        // The tray's copy is for its worker; this one is for the event loop.
+        self.icon_theme = file
+            .icon_theme
+            .clone()
+            .unwrap_or_else(|| "hicolor".to_owned());
 
         if file.idle != crate::config::IdleConfig::default() {
             self.idle_settings = crate::idle::Settings {
@@ -6884,10 +6906,10 @@ impl ViewportState {
             .terminal
             .or_else(|| std::env::var("VIEWPORT_TERMINAL").ok())
             .unwrap_or_else(|| "foot".to_owned());
-        let menu = file
-            .menu
-            .or_else(|| std::env::var("VIEWPORT_MENU").ok())
-            .unwrap_or_else(|| "wmenu-run".to_owned());
+        // The external menu command, when one is named. Absent — the key left
+        // out and the variable unset — is the built-in launcher, which is
+        // what `Mod4+d` opens by default now that the shell draws one.
+        let menu = file.menu.or_else(|| std::env::var("VIEWPORT_MENU").ok());
         let layout = self.config.layout.clone();
 
         // Which terminal the wallpaper is, resolved against the same
@@ -6924,7 +6946,11 @@ impl ViewportState {
                     .iter()
                     .filter_map(|spec| crate::binding::parse(spec)),
             ),
-            None => bindings.extend(crate::binding::defaults(&terminal, &menu, &layout)),
+            None => bindings.extend(crate::binding::defaults(
+                &terminal,
+                menu.as_deref(),
+                &layout,
+            )),
         }
         crate::binding::guarantee_an_exit(&mut bindings);
         self.bindings = bindings;
@@ -7582,6 +7608,96 @@ impl ViewportState {
             crate::clipboard::offered_mimes(),
             crate::clipboard::Owner::History,
         );
+    }
+
+    /// The applications the launcher can start, filtered, as the shell draws
+    /// them.
+    ///
+    /// Re-scanned on every query rather than cached: a package installing a
+    /// new entry is the moment a launcher most wants to show it, and the scan
+    /// is a directory walk the compositor is already doing for its icons.
+    /// The filter is the shell's text, matched case-insensitively against the
+    /// name and what the entry says it is for; absent is the whole list.
+    ///
+    /// The list is capped: a row is a name and an icon, and a desktop with
+    /// four hundred applications is not a list somebody scrolls — it is a
+    /// filter waiting to be typed.
+    const LAUNCHER_LIMIT: usize = 96;
+
+    pub fn launcher_query(&mut self, filter: Option<String>) {
+        let desktop = crate::launcher::current_desktop();
+        let desktop: Vec<&str> = desktop.iter().map(String::as_str).collect();
+        let apps = crate::launcher::scan(&crate::launcher::directories(), &desktop);
+        let filter = filter.map(|f| f.to_lowercase());
+        let matched: Vec<&crate::launcher::App> = apps
+            .iter()
+            .filter(|app| match filter.as_deref() {
+                Some(filter) if !filter.is_empty() => {
+                    app.name.to_lowercase().contains(filter)
+                        || app.detail.to_lowercase().contains(filter)
+                }
+                _ => true,
+            })
+            .take(Self::LAUNCHER_LIMIT)
+            .collect();
+
+        let mut rows = Vec::with_capacity(matched.len());
+        for (id, app) in matched.iter().enumerate() {
+            rows.push(viewport_ipc::event::LauncherApp {
+                id: id as u32,
+                name: app.name.clone(),
+                icon: crate::launcher::icon_url(&app.icon, &self.icon_theme).unwrap_or_default(),
+                detail: app.detail.clone(),
+            });
+        }
+        // What `launcher.launch` will be naming an index into.
+        self.launcher_list = matched.into_iter().cloned().collect();
+        self.notify(&viewport_ipc::Event::LauncherList { apps: rows });
+    }
+
+    /// Start the application the picker's highlighted row named.
+    ///
+    /// The process is handed an xdg-activation token minted for it, so the
+    /// window that appears opens focused rather than behind whatever the user
+    /// moved on to — the launcher knows where the window is going, because it
+    /// is the thing that asked for it, and the token is how it says so.
+    pub fn launcher_launch(&mut self, id: u32) {
+        let Some(app) = self.launcher_list.get(id as usize).cloned() else {
+            // An `id` from a list the next query replaced. The picker is
+            // closing either way; the error is for the log and for a script.
+            self.notify(&viewport_ipc::Event::Error {
+                context: "launcher.launch".to_owned(),
+                message: format!("no such application {id}"),
+            });
+            return;
+        };
+
+        // A token nobody presented in a minute is not one an application is
+        // still coming back with. Pruned here, on the way out, rather than on
+        // a timer the event loop would have to run.
+        self.xdg_activation_state
+            .retain_tokens(|_, data| data.timestamp.elapsed() < std::time::Duration::from_secs(60));
+        let (token, _) = self.xdg_activation_state.create_external_token(Some(
+            smithay::wayland::xdg_activation::XdgActivationTokenData {
+                app_id: Some(app.app_id.clone()),
+                ..Default::default()
+            },
+        ));
+        let token = token.as_str().to_owned();
+
+        // `Terminal=true` is run in the terminal `Mod4+Return` opens, the way
+        // an external menu does it: the entry names the program, the session
+        // names the window it runs in.
+        let command = if app.terminal {
+            format!(
+                "{} -e {}",
+                crate::launcher::sh_quote(&self.terminal),
+                app.exec
+            )
+        } else {
+            app.exec
+        };
+        crate::input::spawn_with_env(&command, &[("XDG_ACTIVATION_TOKEN".to_owned(), token)]);
     }
 
     pub fn notify_output_layout(&mut self) {

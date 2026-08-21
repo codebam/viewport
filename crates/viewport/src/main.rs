@@ -33,6 +33,7 @@ mod inhibit;
 mod input;
 mod ipc;
 mod keyboard_focus;
+mod launcher;
 mod libei;
 mod mpris;
 mod msg;
