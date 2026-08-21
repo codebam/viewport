@@ -2027,23 +2027,46 @@ impl ViewportState {
             let region = smithay::utils::Rectangle::new((0, 0).into(), mode.size);
             match self.read_output_pixels::<R, B>(output, region, true, renderer) {
                 Ok(pixels) => {
-                    let png_bytes =
-                        crate::icon::encode_png(mode.size.w as u32, mode.size.h as u32, &pixels);
-                    let filename = format!(
-                        "viewport-screenshot-{}-{}.png",
-                        std::process::id(),
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis()
-                    );
-                    let path = std::env::temp_dir().join(filename);
-                    if let Err(e) = std::fs::write(&path, png_bytes) {
-                        let _ =
-                            reply.try_send(Err(format!("could not write screenshot file: {e}")));
-                    } else {
-                        let uri = format!("file://{}", path.display());
-                        let _ = reply.try_send(Ok(uri));
+                    // The encoding and the writing belong to nobody's frame:
+                    // PNG over a full screen is tens of milliseconds at 1080p
+                    // and hundreds at 4K, and this runs between frames. A
+                    // short-lived thread does both and answers the portal from
+                    // there — once, whichever way it goes, because exactly one
+                    // `try_send` sits on each path out of it.
+                    let size = mode.size;
+                    let unspawned = reply.clone();
+                    let spawned = std::thread::Builder::new()
+                        .name("viewport-screenshot".to_owned())
+                        .spawn(move || {
+                            let png_bytes =
+                                crate::icon::encode_png(size.w as u32, size.h as u32, &pixels);
+                            let filename = format!(
+                                "viewport-screenshot-{}-{}.png",
+                                std::process::id(),
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                            );
+                            let path = std::env::temp_dir().join(filename);
+                            match std::fs::write(&path, png_bytes) {
+                                Ok(()) => {
+                                    let uri = format!("file://{}", path.display());
+                                    let _ = reply.try_send(Ok(uri));
+                                }
+                                Err(e) => {
+                                    let _ = reply.try_send(Err(format!(
+                                        "could not write screenshot file: {e}"
+                                    )));
+                                }
+                            }
+                        });
+                    // A thread that would not start still leaves a request to
+                    // answer, so the portal hears the failure rather than
+                    // waiting on nothing.
+                    if let Err(e) = spawned {
+                        let _ = unspawned
+                            .try_send(Err(format!("could not spawn the screenshot writer: {e}")));
                     }
                 }
                 Err(e) => {
