@@ -545,16 +545,8 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         Request::BindAdd { chord, action } => {
             // Runtime binds from the shell are additive and expendable; the
             // ones that must survive a broken shell are the defaults.
-            match crate::binding::parse(&format!("{chord}={action}")) {
-                Some(binding) => {
-                    // Replaced rather than appended, so re-registering a chord
-                    // does not leave the older one shadowing it.
-                    state.bindings.retain(|existing| {
-                        existing.modifiers != binding.modifiers || existing.keysym != binding.keysym
-                    });
-                    state.bindings.push(binding);
-                }
-                None => reject(state, "bind.add", &format!("{chord}={action}")),
+            if !install_binding(&mut state.bindings, &chord, &action) {
+                reject(state, "bind.add", &format!("{chord}={action}"));
             }
         }
 
@@ -1068,6 +1060,46 @@ fn reject(state: &mut ViewportState, context: &str, message: &str) {
     state.notify(&event);
 }
 
+/// Whether two bindings are drawn on the same chord, in the same mode — and
+/// so the thing a runtime bind replaces.
+///
+/// The whole identity, every field of it. A wheel binding and a mouse-button
+/// binding both carry keysym 0, because each is drawn on no key at all, so
+/// matched on modifiers and keysym alone they are indistinguishable from
+/// each other and from every chord those modifiers leave unmapped — which is
+/// how registering `Mod4+WheelUp` used to delete `Mod4+WheelDown` and
+/// `Mod4+Mouse4` with it. And the mode is part of what a chord *is*: a plain
+/// `h` shares its keysym with the resize mode's `h`, and replacing one is
+/// not replacing the other.
+///
+/// (`binding::shadows` looks close and is not: it asks whether an earlier
+/// key binding swallows a later one, which is a question about
+/// reachability, not identity.)
+fn same_chord(a: &crate::binding::Binding, b: &crate::binding::Binding) -> bool {
+    a.mode == b.mode
+        && a.modifiers == b.modifiers
+        && a.keysym == b.keysym
+        && a.button == b.button
+        && a.wheel == b.wheel
+}
+
+/// Register a runtime binding from a `bind.add` message.
+///
+/// Replaced rather than appended when the chord is already taken, so
+/// re-registering one does not leave the older binding shadowing it — but
+/// only *its own* chord goes, by the full identity [`same_chord`]
+/// matches on.
+fn install_binding(bindings: &mut Vec<crate::binding::Binding>, chord: &str, action: &str) -> bool {
+    match crate::binding::parse(&format!("{chord}={action}")) {
+        Some(binding) => {
+            bindings.retain(|existing| !same_chord(existing, &binding));
+            bindings.push(binding);
+            true
+        }
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,5 +1127,72 @@ mod tests {
 
         let resized = configure_size((1270, 1390), (6, 39));
         assert_ne!(first, resized, "a real resize must still be seen");
+    }
+
+    #[test]
+    fn bind_add_replaces_the_same_chord_and_nothing_else() {
+        use crate::binding::{Action, Wheel};
+        use smithay::input::keyboard::{keysyms, ModifiersState};
+
+        let mut bindings = crate::binding::defaults("foot", Some("wmenu-run"), "tiling");
+
+        // A plain `h` shares its modifiers and its keysym with the resize
+        // mode's `h`. Replaced on those two alone, adding the first deleted
+        // the second — and resize mode lost half its keymap to a bind that
+        // never mentioned it.
+        assert!(install_binding(
+            &mut bindings,
+            "h",
+            "shell layout.focus left"
+        ));
+        let free = ModifiersState::default();
+        assert!(
+            crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "resize").is_some(),
+            "the resize-mode binding for h is gone"
+        );
+        assert!(crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "").is_some());
+
+        // Wheel and button bindings carry keysym 0, because each is drawn on
+        // no key at all. Replaced on the keysym alone, registering one wheel
+        // direction deleted the other direction and the side button with it.
+        assert!(install_binding(&mut bindings, "Mod4+Mouse4", "close"));
+        assert!(install_binding(
+            &mut bindings,
+            "Mod4+WheelUp",
+            "shell workspace.next"
+        ));
+        assert!(install_binding(
+            &mut bindings,
+            "Mod4+WheelDown",
+            "shell workspace.prev"
+        ));
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert!(
+            crate::binding::match_button(&bindings, &held, 0x113, "").is_some(),
+            "the Mouse4 binding is gone"
+        );
+        assert_eq!(
+            crate::binding::match_wheel(&bindings, &held, Wheel::Down, ""),
+            Some(&Action::Shell("workspace.prev".to_owned())),
+            "the WheelDown binding is gone"
+        );
+
+        // And the chord that *was* named is replaced rather than appended
+        // to, so re-registering one does not leave the older binding
+        // shadowing it.
+        let before = bindings.len();
+        assert!(install_binding(
+            &mut bindings,
+            "Mod4+WheelUp",
+            "shell workspace.switch 2"
+        ));
+        assert_eq!(bindings.len(), before);
+        assert_eq!(
+            crate::binding::match_wheel(&bindings, &held, Wheel::Up, ""),
+            Some(&Action::Shell("workspace.switch 2".to_owned()))
+        );
     }
 }
