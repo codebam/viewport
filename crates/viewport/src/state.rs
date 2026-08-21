@@ -6810,6 +6810,11 @@ impl ViewportState {
             .icon_theme
             .clone()
             .unwrap_or_else(|| "hicolor".to_owned());
+        // Applied on every load, so a reload that changes the theme empties
+        // the cache then and there rather than at the next restart — the same
+        // property the tray cache has, and the thing the user reaches for when
+        // they install icons and want to see them.
+        self.launcher_icons.clear();
 
         if file.idle != crate::config::IdleConfig::default() {
             self.idle_settings = crate::idle::Settings {
