@@ -473,6 +473,17 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         // here, where the list of methods lives.
         Request::MprisControl { action } => state.mpris.control(action),
         Request::PowerProfile { profile } => state.power.set_profile(profile),
+        // The bar's power picker. Three go to logind through the UPower
+        // worker — the call the lid policy makes when a hinge closes, and its
+        // two siblings — and the one this compositor owns outright is not in
+        // the group: quitting is a `Request::Quit`, and routing it here would
+        // leave two ways to do one thing.
+        Request::PowerAction { action } => match action.as_str() {
+            "suspend" => state.power.suspend(),
+            "reboot" => state.power.reboot(),
+            "poweroff" => state.power.poweroff(),
+            other => reject(state, "power.action", &format!("no such action {other:?}")),
+        },
 
         // The on-screen keyboard, and the only place it touches this file:
         // everything else it needs — the layout to draw, when to show

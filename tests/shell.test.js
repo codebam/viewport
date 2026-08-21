@@ -4666,6 +4666,69 @@ if (mode === 'scrolling') {
     emit({ type: 'config', layout: mode });
   }
 
+  /* The power rows. The four that sit below any profiles — suspend, power
+     off, reboot, quit — and the two of them this compositor is the session
+     for. Drawn with no profiles on offer, because that is the desk that has
+     nothing to choose but a verb: a lid set to off and no battery daemon is
+     still a machine. */
+  {
+    emit({ type: 'config', layout: mode, bar_widgets: [{ type: 'battery' }] });
+    emit({ type: 'power.update', batteries: [], on_battery: false,
+      lid_closed: false, profiles: [] });
+
+    /* From a shell command, the verb the battery module click sends — so a
+       desk that has no touch screen can bring the picker up the same way. */
+    emit({ type: 'shell.command', command: 'power', args: [] });
+    check('a "power" shell command opens the picker',
+      globalThis.__shell.powerEl.hidden === false);
+
+    /* The profile rows (when any) live inside the `.power-list` the dialog
+       holds; the action rows are the dialog's own `.power-row` children,
+       drawn after the divider. */
+    const dialog = globalThis.__shell.powerEl.children[0];
+    const actions = dialog.children.filter((el) => el._classes.has('power-row'));
+    check('below the profiles it always draws the four power rows',
+      actions.length === 4 &&
+        actions.map((r) => r.textContent).join(' ') ===
+          'Suspend Power Off Reboot Quit');
+    check('the ones that end the machine wear their colour, and only those',
+      actions.filter((r) => r._classes.has('danger'))
+        .map((r) => r.textContent).join(' ') ===
+        'Power Off Reboot Quit' &&
+        !actions[0]._classes.has('danger'));
+
+    let before = sent.length;
+    (actions[0].listeners.click ?? []).forEach((fn) =>
+      fn({ preventDefault() {}, stopPropagation() {} }));
+    check('suspend hands its verb to the compositor',
+      sent.slice(before).some((m) => m.type === 'power.action' &&
+        m.action === 'suspend'));
+    check('and it takes the picker down',
+      globalThis.__shell.powerEl.hidden === true);
+
+    before = sent.length;
+    (actions[1].listeners.click ?? []).forEach((fn) =>
+      fn({ preventDefault() {}, stopPropagation() {} }));
+    check('power off is the same row, second word',
+      sent.slice(before).some((m) => m.type === 'power.action' &&
+        m.action === 'poweroff'));
+
+    before = sent.length;
+    (actions[2].listeners.click ?? []).forEach((fn) =>
+      fn({ preventDefault() {}, stopPropagation() {} }));
+    check('reboot goes out the same way',
+      sent.slice(before).some((m) => m.type === 'power.action' &&
+        m.action === 'reboot'));
+
+    before = sent.length;
+    (actions[3].listeners.click ?? []).forEach((fn) =>
+      fn({ preventDefault() {}, stopPropagation() {} }));
+    check('quit is a message of its own, not a fourth power verb',
+      sent.slice(before).some((m) => m.type === 'quit') &&
+        !sent.slice(before).some((m) => m.type === 'power.action'));
+    emit({ type: 'config', layout: mode });
+  }
+
   /* A full bar override, `bar_items`: modules and widgets listed together in
      whatever order the config wants them drawn. Unlike bar_widgets, this
      replaces the whole right side — the built-in modules that are not listed

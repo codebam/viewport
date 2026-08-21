@@ -254,6 +254,26 @@ pub enum Request {
     #[serde(rename = "power.profile")]
     PowerProfile { profile: String },
 
+    /// Suspend, reboot or power off, from the bar's power picker.
+    ///
+    /// All three go to logind: a non-interactive bus call the shell is not in
+    /// a position to make itself, so it is routed through the compositor that
+    /// already owns the connection the UPower worker keeps open. One message
+    /// with a verb rather than three, the way `mpris.control` does it — the
+    /// rows differ by one word each. Anything not a name in the list below is
+    /// refused, because this is a string from a page and
+    /// `org.freedesktop.login1.Manager` has methods a picker has no business
+    /// calling.
+    ///
+    /// Quitting is not one of the verbs. This compositor *is* the session, and
+    /// leaving it is a `Request::Quit`, not a word handed to logind — a row
+    /// that did both would mean two different things.
+    #[serde(rename = "power.action")]
+    PowerAction {
+        /// `"suspend"`, `"reboot"` or `"poweroff"`.
+        action: String,
+    },
+
     /// One key of the on-screen keyboard, pressed or released.
     ///
     /// `keysym` rather than a raw keycode, for the reason `inject_keysym`
@@ -1182,6 +1202,22 @@ mod tests {
         assert_eq!(table.len(), 23, "the C dispatch table has 23 rows");
         for json in table {
             serde_json::from_str::<Request>(json).unwrap_or_else(|e| panic!("{json}: {e}"));
+        }
+    }
+
+    /// The power picker's verbs, one word apart: each named action parses to
+    /// itself, so a rename fails here rather than as a row that does nothing
+    /// at runtime. Quit is not one of them — it is its own message, the reason
+    /// the variant's comment says so.
+    #[test]
+    fn a_power_action_is_a_named_verb() {
+        for action in ["suspend", "reboot", "poweroff"] {
+            assert_eq!(
+                parse(&format!(r#"{{"type":"power.action","action":"{action}"}}"#)),
+                Request::PowerAction {
+                    action: action.to_owned()
+                }
+            );
         }
     }
 

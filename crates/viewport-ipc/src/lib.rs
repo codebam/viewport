@@ -143,6 +143,7 @@ fn is_known_type(name: &str) -> bool {
             | "launcher.launch"
             | "mpris.control"
             | "power.profile"
+            | "power.action"
             | "osk.key"
             | "network.scan"
             | "network.connect"

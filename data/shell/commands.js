@@ -146,6 +146,13 @@ function handleShellCommand(command, args) {
     case 'bluetooth':
       toggleBluetoothPicker();
       break;
+    /* The power picker: the profiles the daemon offers, then the rows that
+       are always there — suspend, power off, reboot, quit. A shell verb for
+       the same reason the clipboard and the network radios are: the
+       compositor keeps the list and the page draws it. */
+    case 'power':
+      togglePowerPicker();
+      break;
     /* The on-screen keyboard. Bound to Mod4+Shift+k for a desk that has a
        real keyboard and wants to raise it anyway; a touch-only desk never
        needs the chord, because `osk.wanted` already brings it up. See
@@ -724,6 +731,11 @@ document.addEventListener('click', () => {
      network module — stops itself for exactly this reason. */
   closeNetworkPicker();
   closeBluetoothPicker();
+  /* And the power picker, on the same terms. Its rows stop the clicks that
+     act — a profile chosen, or suspend / power off / reboot / quit — so what
+     reaches here is a click that missed, and the battery widget that opens
+     it stops itself the same way the network module does. */
+  closePowerPicker();
 });
 
 send({ type: 'output.query' });

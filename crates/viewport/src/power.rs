@@ -122,10 +122,50 @@ impl Power {
         self.send(Command::SetProfile(profile));
     }
 
-    /// Ask logind to suspend. The worker talks to the bus; this thread does
-    /// not wait.
-    pub fn suspend(&self) {
+    /// Ask logind to suspend, reboot or power off. The worker talks to the bus;
+    /// this thread does not wait.
+    ///
+    /// `&mut self` for one reason and only one: any of the three may land on a
+    /// machine with no battery widget and a lid policy of ignore, which is the
+    /// one combination that keeps the worker from ever starting — the state that
+    /// still wants to be able to turn off. `ensure_worker` closes that gap
+    /// without changing what `enabled` means.
+    pub fn suspend(&mut self) {
+        self.ensure_worker();
         self.send(Command::Suspend);
+    }
+
+    pub fn reboot(&mut self) {
+        self.ensure_worker();
+        self.send(Command::Reboot);
+    }
+
+    pub fn poweroff(&mut self) {
+        self.ensure_worker();
+        self.send(Command::Poweroff);
+    }
+
+    /// Start the worker if it is not already running, so a one-shot power action
+    /// has a bus to talk logind through. Returns whether a worker exists
+    /// afterwards. Deliberately does not flip `enabled`: a menu row is one call,
+    /// not a request to start drawing a battery the user did not ask for.
+    fn ensure_worker(&mut self) -> bool {
+        if self.worker.is_some() {
+            return true;
+        }
+        let Some(events) = self.events.clone() else {
+            return false;
+        };
+        match start(events) {
+            Ok(worker) => {
+                self.worker = Some(worker);
+                true
+            }
+            Err(e) => {
+                tracing::warn!("power: UPower is unavailable: {e:#}");
+                false
+            }
+        }
     }
 
     fn send(&self, command: Command) {
@@ -140,6 +180,8 @@ enum Command {
     Enable(bool),
     SetProfile(String),
     Suspend,
+    Reboot,
+    Poweroff,
 }
 
 fn start(
@@ -232,10 +274,17 @@ impl Worker {
                             .send(Message::Snapshot(PowerSnapshot::default()));
                     }
                 }
+                // One-shot power actions are answered whether or not the periodic
+                // snapshot is wanted: the setup that would otherwise keep the
+                // worker off — no battery widget and a lid policy of ignore — is
+                // exactly the one that still has to be able to turn the machine
+                // off.
+                Command::Suspend => self.suspend(),
+                Command::Reboot => self.reboot(),
+                Command::Poweroff => self.poweroff(),
                 _ if !self.enabled => {}
                 Command::Refresh => self.refresh(),
                 Command::SetProfile(profile) => self.set_profile(&profile),
-                Command::Suspend => self.suspend(),
             }
         }
     }
@@ -362,19 +411,32 @@ impl Worker {
         }
     }
 
-    fn suspend(&self) {
+    /// `Suspend`, `Reboot` or `PowerOff`. `false` is "not interactive": a lid
+    /// close and a menu row are both not a prompt.
+    fn logind(&self, method: &str, verb: &str) {
         let Some(proxy) = self.proxy(
             "org.freedesktop.login1",
             "/org/freedesktop/login1",
             "org.freedesktop.login1.Manager",
         ) else {
-            tracing::warn!("power: logind is unavailable; cannot suspend");
+            tracing::warn!("power: logind is unavailable; cannot {verb}");
             return;
         };
-        // `false` is "not interactive": a lid close is not a prompt.
-        if let Err(e) = proxy.call::<&str, (bool,), ()>("Suspend", &(false,)) {
-            tracing::warn!("power: suspend failed: {e}");
+        if let Err(e) = proxy.call::<&str, (bool,), ()>(method, &(false,)) {
+            tracing::warn!("power: {verb} failed: {e}");
         }
+    }
+
+    fn suspend(&self) {
+        self.logind("Suspend", "suspend");
+    }
+
+    fn reboot(&self) {
+        self.logind("Reboot", "reboot");
+    }
+
+    fn poweroff(&self) {
+        self.logind("PowerOff", "power off");
     }
 
     fn proxy(

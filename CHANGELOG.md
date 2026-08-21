@@ -33,6 +33,19 @@ to summarise rather than to duplicate.
   and answering with another is worse than announcing nothing.
 
 ### Added
+- A power menu. Until now, leaving meant `Mod4+Shift+e` and a TTY, and a desk
+  with no keyboard — a touch screen, a kiosk — had neither. The battery
+  widget's picker, which already lists the power profiles, ends with the four
+  rows that are on whether or not a daemon offered a profile: suspend, power
+  off, reboot and quit. The first three go to logind through the UPower
+  worker — `Suspend` is the call the lid policy makes on a hinge close, and
+  `Reboot` and `PowerOff` its siblings — and they are answered whether or not
+  a battery widget is on the bar, because a lid set to off and no daemon is
+  still a machine that can be told to lie down, to go away, or to come back.
+  Quit is not a fourth verb handed to logind: this compositor is the session,
+  so it goes out as its own `quit`, and two ways to leave does not mean two
+  different things. Opened by the battery widget or the `power` shell
+  command. One new message, `power.action`.
 - A launcher of its own. `Mod4+d` used to be `exec wmenu-run` — a
   layer-shell client with its own theme, its own configuration file and no
   idea what the layout is: it could not open on the monitor that asked for it,

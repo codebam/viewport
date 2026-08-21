@@ -8,11 +8,14 @@ Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-The launcher was the last entry taken off it —
+The power menu was the last entry taken off it —
+`crates/viewport/src/power.rs` for `Suspend`, `Reboot` and `PowerOff` over
+logind, `data/shell/power.js` for the rows, `power.action` in `docs/ipc.md`, and
+the battery note in `docs/configuration.md`. Before it, the launcher —
 `crates/viewport/src/launcher.rs` for the scan and the parse,
 `data/shell/launcher.js` for the list and the filter, `launcher.query` and
 `launcher.launch` in `docs/ipc.md`, and `menu` in `docs/configuration.md`
-for the external menu that keeps `Mod4+d` when one is named. Before it, the
+for the external menu that keeps `Mod4+d` when one is named. Before that, the
 notification centre —
 `crates/viewport/src/notification.rs`'s `History` for what is kept and what
 leaves it, `data/shell/notifications.js` for the list, `notification.list` and
@@ -29,16 +32,6 @@ inhibit interfaces:
 `docs/configuration.md`'s default bindings.
 
 ## The desktop this does not draw yet
-
-**There is no way to turn the machine off.** logind is already on the bus and
-already being called: `crates/viewport/src/power.rs` invokes `Suspend` for the
-lid policy. `PowerOff`, `Reboot` and suspend-because-somebody-asked have no way
-in at all, so leaving this session means `exit` and a TTY. The picker to draw
-is the one `data/shell/power.js` draws for power profiles, with three more
-rows on it. What the entry has to settle before it is written is what "log
-out" means when the compositor *is* the session — quitting is already `exit`,
-and a menu offering both without a difference between them is a menu that
-lies.
 
 **Nothing can say "not now".** Do-not-disturb is missing, and the two moments
 that most want it are moments this compositor can already see without being

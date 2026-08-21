@@ -544,6 +544,11 @@ html.behind body { background: transparent; }
 .power-row:hover { background: var(--fill-hover); }
 .power-row.active { color: var(--accent); }
 .power-empty { padding: 1rem; color: var(--muted); text-align: center; }
+.power-sep { height: 1px; margin: .3rem 0; background: var(--border); }
+/* The rows that end the machine — power off, reboot, quit — not the one that
+   merely lies it down. Their colour is on at rest, not on hover: a touch
+   desk never points, and what it cannot point at it should still tell apart. */
+.power-row.danger { color: var(--urgent); }
 .clipboard-list { overflow-y: auto; padding: .35rem; }
 .clipboard-row {
   display: flex;

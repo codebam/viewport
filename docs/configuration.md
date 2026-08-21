@@ -830,9 +830,13 @@ compositor opens no connection for it, starts no thread and follows no player.
 
 `battery` shows the charge, from UPower's DisplayDevice. The compositor reads
 it — the page has no bus — and only while this widget is on the bar. Clicking
-it opens a picker of power profiles (`power-saver`, `balanced`, `performance`)
-from the power-profiles daemon, the same way the clipboard picker lists
-history. No battery, or no UPower, draws nothing at all. Lid policy can still
+it opens the power picker: the power profiles the daemon offers
+(`power-saver`, `balanced`, `performance`), the same way the clipboard picker
+lists history, and below them the rows that are on whether or not it offered a
+profile — suspend, power off, reboot and quit. The first three go to logind
+(`Suspend`, `Reboot`, `PowerOff`), answered even with no widget on the bar;
+`quit` is `Request::Quit`, this compositor itself, not a fourth word handed to
+logind. No battery, or no UPower, draws nothing at all. Lid policy can still
 talk to UPower with no widget on the bar; see `lid` below.
 
 ## Overriding the whole bar

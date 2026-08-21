@@ -258,6 +258,11 @@ const TYPES: &[Type] = &[
         hint: "--profile power-saver|balanced|performance",
     },
     Type {
+        name: "power.action",
+        fields: &["action"],
+        hint: "--action suspend|reboot|poweroff   (quit is its own message)",
+    },
+    Type {
         name: "osk.key",
         fields: &["keysym", "pressed"],
         hint: "--keysym N --pressed BOOL   (an X11/XKB keysym, e.g. 65288 for Backspace)",
@@ -1369,10 +1374,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 58 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 59 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 58);
+        assert_eq!(TYPES.len(), 59);
     }
 
     #[test]

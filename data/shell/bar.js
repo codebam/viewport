@@ -579,6 +579,10 @@ function wireWidget(el) {
          same as pressing play. */
       send({ type: 'mpris.control', action: 'play-pause' });
     } else if (w.type === 'battery') {
+      /* Stopped for the same reason the network module above is: without it
+         the document's listener — the one that closes every picker — would
+         close the one this click just opened. */
+      e.stopPropagation?.();
       togglePowerPicker();
     } else if (w.type === 'disk') {
       /* Open the mount in the default file manager — for this user that is
