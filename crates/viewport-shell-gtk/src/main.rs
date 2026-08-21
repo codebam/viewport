@@ -84,13 +84,13 @@ const DEGRADED_RELOAD_CAP: std::time::Duration = std::time::Duration::from_secs(
 
 /// The exit status of a shell that has used up every try it had.
 ///
-/// Nothing on the compositor side reads this yet — every exit is restarted
-/// there, under its own slow backoff — and that is the point of exiting
-/// rather than reloading forever: handing the loop over to a process that
-/// waits thirty seconds between attempts is what turns an unbounded
-/// crash-and-reload storm into five crashes a minute. Distinct from
-/// [`RETRY_WITHOUT_DMABUF`] so the two decisions can be told apart in a log
-/// or a wait status; the number is arbitrary beyond that.
+/// The compositor reads this and takes the slot down rather than restarting
+/// it — see `gave_up` in shell_client — which is the point of exiting rather
+/// than reloading forever: handing the decision over to a supervisor that
+/// knows what the code means is what turns an unbounded crash-and-reload
+/// storm into a shell that stays down until a human changes something.
+/// Distinct from [`RETRY_WITHOUT_DMABUF`] so the two decisions can be told
+/// apart in a log or a wait status; the number is arbitrary beyond that.
 const DEGRADED_EXHAUSTED: i32 = 88;
 
 /// How many events may wait for a page that has not committed yet.
