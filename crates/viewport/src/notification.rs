@@ -164,6 +164,11 @@ struct Server {
 impl Server {
     /// The one method that matters. Returns the id the sender should use to
     /// replace or close this notification later.
+    ///
+    /// The id is only returned for a notification that was actually handed
+    /// over. A sender told `Ok` when the compositor side had gone would spend
+    /// the rest of its life waiting for an action or a close that can never
+    /// come; an error reply is how it learns to try again or give up.
     #[allow(clippy::too_many_arguments)]
     fn notify(
         &self,
@@ -175,7 +180,7 @@ impl Server {
         actions: Vec<String>,
         hints: HashMap<String, zvariant::OwnedValue>,
         expire_timeout: i32,
-    ) -> u32 {
+    ) -> Result<u32, zbus::fdo::Error> {
         // A sender replacing its own notification keeps the id, so it updates
         // in place rather than stacking a duplicate.
         let id = if replaces_id != 0 {
@@ -217,12 +222,28 @@ impl Server {
             actions: parse_actions(&actions),
             at: now(),
         };
-        let _ = self.sender.send(Message::Add(Box::new(notification)));
-        id
+        if let Err(e) = self.sender.send(Message::Add(Box::new(notification))) {
+            // The compositor side dropped the channel: the shell is gone or
+            // going. The sender is told, and the log says why a notification
+            // that was accepted never appeared.
+            tracing::error!("notification {id} could not be delivered: {e}");
+            return Err(zbus::fdo::Error::Failed(format!(
+                "the notification could not be delivered to the compositor: {e}"
+            )));
+        }
+        Ok(id)
     }
 
-    fn close_notification(&self, id: u32) {
-        let _ = self.sender.send(Message::Close(id));
+    fn close_notification(&self, id: u32) -> Result<(), zbus::fdo::Error> {
+        // Same story as `notify`: a close request that vanishes into a dead
+        // channel leaves the sender believing its notification is gone when
+        // it is still on screen.
+        self.sender.send(Message::Close(id)).map_err(|e| {
+            tracing::error!("close of notification {id} could not be delivered: {e}");
+            zbus::fdo::Error::Failed(format!(
+                "the close request could not be delivered to the compositor: {e}"
+            ))
+        })
     }
 
     /// What this implementation supports. A sender checks these before using
@@ -597,16 +618,20 @@ mod tests {
     }
 
     fn notify(server: &Server, replaces_id: u32) -> u32 {
-        server.notify(
-            "test".to_owned(),
-            replaces_id,
-            String::new(),
-            "summary".to_owned(),
-            String::new(),
-            Vec::new(),
-            HashMap::new(),
-            -1,
-        )
+        server
+            .notify(
+                "test".to_owned(),
+                replaces_id,
+                String::new(),
+                "summary".to_owned(),
+                String::new(),
+                Vec::new(),
+                HashMap::new(),
+                -1,
+            )
+            // The channel is alive under a test runner; delivery is what the
+            // error return is for, and id allocation is what these cover.
+            .expect("the compositor side of the channel is alive")
     }
 
     #[test]
