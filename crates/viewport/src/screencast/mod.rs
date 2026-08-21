@@ -228,7 +228,12 @@ pub struct Picker {
 /// because there is one keyboard and one person. Making `Picker` generic over
 /// the answer would put a type parameter on the compositor's single chooser
 /// slot for the sake of two variants.
-#[derive(Debug)]
+///
+/// Cloned rather than moved when a share is started, because starting one no
+/// longer answers it: the reply has to be in two places at once — with the
+/// promise that answers success, and here where the deadline can reach it to
+/// answer failure — and each half needs its own sender.
+#[derive(Debug, Clone)]
 pub enum Reply {
     Cast(async_channel::Sender<Result<portal::Started, String>>),
     Remote(async_channel::Sender<Result<remote::Started, String>>),
@@ -257,6 +262,29 @@ impl Reply {
             Self::Shortcuts(reply) => {
                 let _ = reply.try_send(Err(why.to_owned()));
             }
+        }
+    }
+
+    /// Hand a finished share to whoever is waiting for it.
+    ///
+    /// Sent from wherever the news arrives — the PipeWire thread, the moment
+    /// the daemon names the node — which is why everything the answer needs
+    /// travels in owned data and senders, and nothing here reaches back into
+    /// the compositor. The remote-desktop shape wraps the same stream, plus
+    /// the devices granted alongside it; a shortcuts chooser never started a
+    /// share, so there is nothing it could be handed.
+    pub fn share(self, cast: portal::Started, devices: u32) {
+        match self {
+            Self::Cast(reply) => {
+                let _ = reply.try_send(Ok(cast));
+            }
+            Self::Remote(reply) => {
+                let _ = reply.try_send(Ok(remote::Started {
+                    devices,
+                    cast: Some(cast),
+                }));
+            }
+            Self::Shortcuts(_) => {}
         }
     }
 }

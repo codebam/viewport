@@ -121,6 +121,43 @@ pub struct PendingCopy {
     pub with_damage: bool,
 }
 
+/// What starting a share put in motion, and what its answer is made of.
+///
+/// The stream itself is already in `casts`; this carries everything else the
+/// portal reply needs, which cannot be read back later — most of it because
+/// it described the source before the source was taken, and the node because
+/// it does not exist yet at all. See [`ViewportState::start_cast`].
+struct BegunCast {
+    /// Where the naming stands, and who to tell when it moves.
+    arrival: crate::screencast::stream::Arrival,
+    /// Which stream in `casts` this is, for taking it back out if the node
+    /// never arrives: until then every stream answers the same placeholder
+    /// node number, and the wrong teardown would take somebody else's share.
+    stream_id: u64,
+    size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    /// What it is called, for the log line and for saying what was lost.
+    name: String,
+}
+
+/// A share begun and not yet answered: the stream exists, but PipeWire has
+/// not named its node yet, so the portal reply that carries the number is
+/// still owed.
+///
+/// Everything the *success* needs travels with the promise instead, because
+/// that is where the success leaves from; what waits here is exactly what a
+/// failure needs, since giving up is done from the compositor's timer and
+/// that is the only place allowed to tear a half-made stream back out. See
+/// [`ViewportState::finish_share`].
+struct PendingShare {
+    /// Which deadline this is. Rising per share, like the chooser's id, so a
+    /// timer firing late cannot settle somebody else's share.
+    id: u64,
+    arrival: crate::screencast::stream::Arrival,
+    stream_id: u64,
+    name: String,
+    reply: crate::screencast::Reply,
+}
+
 /// Where a monitor was and how it was turned, so that unplugging it is not the
 /// same as never having configured it.
 ///
@@ -780,6 +817,14 @@ pub struct ViewportState {
     /// stale answer — a timer that fired while the user was still deciding —
     /// cannot be applied to the chooser that replaced it.
     next_pick: u32,
+    /// Shares begun and not yet answered, each with the deadline that refuses
+    /// it if PipeWire never names its node. The stream is already in `casts`;
+    /// what waits here is the reply, and the right to tear down what would
+    /// otherwise be a stream nobody can reach.
+    pending_shares: Vec<PendingShare>,
+    /// Which deadline the next share gets. Rising for the same reason as
+    /// `next_pick`: an answer must never land on the share that replaced it.
+    next_share: u64,
     /// wlr-output-power-management: what wlopm and a lid-close script speak.
     pub output_power_state: crate::output_power::OutputPowerState,
     /// wlr-gamma-control: what wlsunset and gammastep speak. Smithay
@@ -1447,6 +1492,8 @@ impl ViewportState {
             pointer_grabbed_by_shell: false,
             picker: None,
             next_pick: 1,
+            pending_shares: Vec::new(),
+            next_share: 1,
             foreign_management_state,
             image_capture_source_state,
             output_capture_source_state,
@@ -3394,10 +3441,14 @@ impl ViewportState {
     /// The connection is made on the first request rather than at startup: a
     /// desktop nobody is sharing has no reason to hold one open, and a session
     /// without PipeWire should still be a working desktop.
-    pub fn start_cast(
-        &mut self,
-        source: crate::screencast::Source,
-    ) -> anyhow::Result<(u32, smithay::utils::Size<i32, smithay::utils::Physical>)> {
+    ///
+    /// What comes back is everything the portal's answer is made of, minus
+    /// the answer itself: the node does not exist yet — the daemon names the
+    /// stream on its own clock, usually within a couple of milliseconds — so
+    /// nothing here waits for it. The caller arms the promise that answers
+    /// the reply when the name arrives and the deadline that refuses the
+    /// share if it never does; see `begin_cast` and `finish_share`.
+    fn start_cast(&mut self, source: crate::screencast::Source) -> anyhow::Result<BegunCast> {
         if self.pipewire.is_none() {
             self.pipewire = Some(crate::screencast::stream::Pipewire::new()?);
         }
@@ -3419,10 +3470,15 @@ impl ViewportState {
         let targets = self.cast_targets(size);
         let pipewire = self.pipewire.as_ref().expect("just connected");
         let stream = pipewire.create_stream(&name, size, targets)?;
-        let node = stream.node_id;
+        let arrival = stream.arrival();
+        let stream_id = stream.id;
         self.casts.push(crate::screencast::Cast { source, stream });
-        tracing::info!("sharing {name} as pipewire node {node}");
-        Ok((node, size))
+        Ok(BegunCast {
+            arrival,
+            stream_id,
+            size,
+            name,
+        })
     }
 
     /// Allocate the buffers a stream will hand out.
@@ -4320,7 +4376,7 @@ impl ViewportState {
                     // prints its every mode and instance, and a line nobody
                     // can read in a log is a line that is not there.
                     tracing::info!("sharing {remembered:?} again, as the application asked");
-                    let _ = reply.try_send(self.begin_cast(source));
+                    self.begin_cast(source, 0, crate::screencast::Reply::Cast(reply));
                     return;
                 }
                 // Not a failure. The monitor is unplugged or the window is
@@ -4356,8 +4412,7 @@ impl ViewportState {
                 "no desktop page is drawing, so sharing {} without asking",
                 source.describe()
             );
-            let answer = self.begin_cast(source);
-            let _ = reply.try_send(answer);
+            self.begin_cast(source, 0, crate::screencast::Reply::Cast(reply));
             return;
         }
 
@@ -4876,6 +4931,13 @@ impl ViewportState {
     /// to leave out — and starts a stream as well if the application asked to
     /// watch as well as drive.
     ///
+    /// Neither answer leaves from here when a stream was asked for: starting
+    /// one no longer produces its node on the spot, so the reply is owed
+    /// until PipeWire names it — `begin_cast` takes the reply and settles it
+    /// from there. What still happens here is everything the chooser owes:
+    /// the dialogue comes down, the keyboard goes back, and the shell is told
+    /// the question was answered.
+    ///
     /// Granting exactly what was asked for rather than less is worth being
     /// explicit about: the interface lets an implementation grant a subset,
     /// and a chooser that offered the devices one at a time would be a better
@@ -4897,9 +4959,7 @@ impl ViewportState {
 
         match picker.reply {
             crate::screencast::Reply::Cast(reply) => match selected {
-                Some(source) => {
-                    let _ = reply.try_send(self.begin_cast(source));
-                }
+                Some(source) => self.begin_cast(source, 0, crate::screencast::Reply::Cast(reply)),
                 // A share with nothing selected is a chooser that had no rows,
                 // which the screen-share path refuses before it ever gets
                 // here. Answered rather than dropped all the same.
@@ -4907,26 +4967,19 @@ impl ViewportState {
                     let _ = reply.try_send(Err("nothing was chosen".to_owned()));
                 }
             },
-            crate::screencast::Reply::Remote(reply) => {
-                let cast = match selected {
-                    Some(source) => match self.begin_cast(source) {
-                        Ok(cast) => Some(cast),
-                        // The window closed while the chooser was up, or
-                        // PipeWire is not there. The application asked to see
-                        // the desk and to drive it, so half of it is not the
-                        // thing it agreed to: the whole session is refused.
-                        Err(e) => {
-                            tracing::warn!("remote desktop: {e}");
-                            let _ = reply.try_send(Err(e));
-                            self.notify(&Event::ScreencastPickDone { id });
-                            self.restore_focus(picker.restore);
-                            return;
-                        }
-                    },
-                    None => None,
-                };
-                let _ = reply.try_send(Ok(crate::screencast::remote::Started { devices, cast }));
-            }
+            crate::screencast::Reply::Remote(reply) => match selected {
+                Some(source) => {
+                    self.begin_cast(source, devices, crate::screencast::Reply::Remote(reply))
+                }
+                None => {
+                    // A session that drives without watching: the grant is
+                    // the whole answer, and nothing waits on PipeWire for it.
+                    let _ = reply.try_send(Ok(crate::screencast::remote::Started {
+                        devices,
+                        cast: None,
+                    }));
+                }
+            },
             crate::screencast::Reply::Shortcuts(reply) => {
                 shortcuts_answered = true;
                 match self.pending_shortcuts.take() {
@@ -4985,25 +5038,135 @@ impl ViewportState {
         }
     }
 
-    /// Start sharing one source, described the way the portal wants it.
+    /// Start sharing one source, and owe the chooser its answer.
+    ///
+    /// The answer no longer leaves from here. The stream is started — which
+    /// returns before PipeWire has named it, usually by a couple of
+    /// milliseconds — so the reply waits on the name: the success goes out
+    /// the moment it arrives, from the promise armed with
+    /// [`crate::screencast::stream::Arrival::when_named`], and
+    /// `finish_share` refuses it at the deadline if it never does. What this
+    /// used to cost was the desktop itself: answering inline meant blocking
+    /// the compositor's thread on the daemon, half a second at the ceiling,
+    /// for a number that travels perfectly well on its own.
+    ///
+    /// `devices` rides along because a remote-desktop reply wraps the stream
+    /// together with the grant, and both halves of that answer are known at
+    /// different times; a plain screen share passes zero.
     fn begin_cast(
         &mut self,
         source: crate::screencast::Source,
-    ) -> Result<crate::screencast::portal::Started, String> {
+        devices: u32,
+        reply: crate::screencast::Reply,
+    ) {
         let source_type = source.kind();
         // Written down before the share starts, because starting it takes the
         // source, and what a window is called has to be read while there is
         // still a window to ask.
         let remembered = self.remember_cast(&source);
-        self.start_cast(source)
-            .map(|(node, size)| crate::screencast::portal::Started {
-                node,
-                width: size.w,
-                height: size.h,
-                source_type,
-                remembered,
-            })
-            .map_err(|e| e.to_string())
+        let begun = match self.start_cast(source) {
+            Ok(begun) => begun,
+            Err(e) => {
+                reply.refuse(&e.to_string());
+                return;
+            }
+        };
+        let id = self.next_share;
+        self.next_share += 1;
+
+        // The success leaves from wherever the news arrives, which is the
+        // PipeWire thread: everything it needs is owned data and a sender,
+        // none of it the compositor's, so there is nothing to route back
+        // through the event loop. The failure cannot leave from there —
+        // refusing means tearing the stream back out of `casts`, and that
+        // wants `&mut self` — which is what the deadline below is for.
+        let (width, height) = (begun.size.w, begun.size.h);
+        let success = reply.clone();
+        // Both halves of the answer carry what was shared — the reply so the
+        // application can ask again, and this record because the deadline
+        // answers with it gone just as surely as the promise does with it
+        // kept.
+        let remembered_for_the_reply = remembered.clone();
+        let name_for_the_log = begun.name.clone();
+        begun.arrival.when_named(move |node| {
+            tracing::info!("sharing {name_for_the_log} as pipewire node {node}");
+            success.share(
+                crate::screencast::portal::Started {
+                    node,
+                    width,
+                    height,
+                    source_type,
+                    remembered: remembered_for_the_reply,
+                },
+                devices,
+            );
+        });
+
+        // Armed either way, because the two ends of this meet nowhere: the
+        // success announces itself from another thread, and only this thread
+        // may clear what is recorded about the share. At the deadline it
+        // settles the question one way or the other — refusal and teardown
+        // if the node never came, the record swept up if it did.
+        let _ = self.loop_handle.insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(
+                crate::screencast::stream::NODE_TIMEOUT,
+            ),
+            move |_, _, state| {
+                state.finish_share(id);
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            },
+        );
+
+        self.pending_shares.push(PendingShare {
+            id,
+            arrival: begun.arrival,
+            stream_id: begun.stream_id,
+            name: begun.name,
+            reply,
+        });
+    }
+
+    /// Settle a share whose node was being waited on.
+    ///
+    /// Run once per share, at its deadline, whichever way it went. A named
+    /// stream left only this record behind — its reply went out from the
+    /// PipeWire thread the moment the node appeared — and the record goes
+    /// now. Anything else is a share PipeWire never finished making: the
+    /// refusal goes out from here, and the stream comes back out of
+    /// `casts`, because a stream with no node is one no consumer can ever
+    /// reach, and nobody but this deadline knows it exists.
+    fn finish_share(&mut self, id: u64) {
+        let Some(at) = self.pending_shares.iter().position(|share| share.id == id) else {
+            return;
+        };
+        let share = self.pending_shares.remove(at);
+
+        // Claiming the failure is what keeps the two answers from ever both
+        // going out. It succeeds unless the node arrived first — in which
+        // case the Ok reply is already gone, the stream is a working one,
+        // and there is nothing here left to do but throw the record away.
+        if !share.arrival.fail() {
+            return;
+        }
+        tracing::warn!(
+            "pipewire never named the stream for {}, refusing the share",
+            share.name
+        );
+        share
+            .reply
+            .refuse("pipewire did not give the stream a node");
+
+        let before = self.casts.len();
+        self.casts.retain(|cast| cast.stream.id != share.stream_id);
+        if self.casts.len() != before {
+            tracing::info!("took the unnamed stream for {} back", share.name);
+        }
+        if self.casts.is_empty() && self.pending_shares.is_empty() {
+            // As in `stop_cast`: nothing is being shared, so the connection
+            // is not worth holding. The pending shares count alongside the
+            // casts — each of them still holds a live stream of its own.
+            self.pipewire = None;
+        }
     }
 
     /// Say what is being shared in terms that outlive it.

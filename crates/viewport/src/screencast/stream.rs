@@ -33,6 +33,20 @@ use smithay::utils::{Physical, Size};
 /// screen.
 pub const BUFFERS: usize = 3;
 
+/// What PipeWire calls a stream that has not been given a node yet.
+const INVALID_NODE: u32 = u32::MAX;
+
+/// Where stream identities come from.
+///
+/// A counter rather than anything derived from the stream, because the point
+/// is to tell two half-made streams apart before either has a node — and
+/// until the daemon answers, every one of them looks like every other.
+static NEXT_STREAM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_stream_id() -> u64 {
+    NEXT_STREAM.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// What the stream has agreed to produce, which a renegotiation replaces.
 ///
 /// Shared rather than captured: the callbacks are registered once and live as
@@ -118,9 +132,25 @@ pub struct Stream {
     /// When the last frame went out, so a share does not ask the renderer for
     /// more than it can use.
     last: Option<std::time::Instant>,
-    /// The node a client connects to, which is what the portal hands back over
-    /// D-Bus.
+    /// The node a client connects to, which is what the portal hands back
+    /// over D-Bus. `u32::MAX` until the daemon names the stream, which it
+    /// does on its own clock; anything that needs the truth asks
+    /// [`Stream::arrival`] rather than reading this. The comparisons made
+    /// against it — matching a `Close` to its stream — are only ever made
+    /// with real node numbers, so the placeholder never matches by accident.
     pub node_id: u32,
+    /// An identity for the stream while it is the only one of its kind.
+    ///
+    /// The node cannot stand in: until it arrives, every unfinished stream
+    /// answers the same 0xffffffff, and taking the wrong one back out would
+    /// be a teardown of somebody else's share. Minted here so a stream and
+    /// the record of the reply it owes are recognisably a pair from birth.
+    pub id: u64,
+    /// What became of the node, shared with whoever answers for the stream.
+    arrival: Arrival,
+    /// Kept until the answer is in: dropping the listener takes its hook
+    /// back out, and it must not go early or the answer could be missed.
+    _done_listener: pw::core::Listener,
     /// What the callbacks answer with, which changes when the source resizes.
     agreed: Arc<Mutex<Agreed>>,
     /// The buffers waiting to be handed out, refilled on a renegotiation.
@@ -140,6 +170,11 @@ pub struct Stream {
 }
 
 impl Stream {
+    /// The story of this stream being named, to wait on or answer from.
+    pub fn arrival(&self) -> Arrival {
+        self.arrival.clone()
+    }
+
     /// Hand one frame to whoever is watching.
     ///
     /// A frame is dropped rather than queued when the consumer has not
@@ -356,6 +391,156 @@ impl Stream {
     }
 }
 
+/// How long the daemon gets to name a node before the share is refused.
+///
+/// A ceiling rather than a delay: an ordinary share arrives in single
+/// milliseconds, and the ceiling is only reached when PipeWire is not going
+/// to answer at all. Enforced from the compositor's timers rather than in
+/// here, because giving up means tearing a half-made stream back out of the
+/// compositor, and that wants the compositor's thread — see
+/// [`Arrival::when_named`] for why the failure cannot be reported from the
+/// thread the answer arrives on.
+pub const NODE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether a stream has been given its node yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrived {
+    /// The daemon has not answered yet.
+    Yet,
+    /// It has, and this is the node.
+    Now(u32),
+    /// Nothing is coming: the deadline passed, or the daemon answered
+    /// without a node, which is the same refusal in different clothes.
+    Never,
+}
+
+/// The one-way story of a stream being named, told from both sides.
+///
+/// The daemon's answer is dispatched on the thread loop's thread; whoever
+/// answers the portal for this stream waits on the same little cell, and
+/// [`when_named`](Arrival::when_named) is how the answer reaches them. The
+/// success crosses threads freely — it is a number and a channel send — so
+/// it leaves from wherever the news breaks. The failure does not: refusing a
+/// share means tearing a half-made stream out of the compositor's hands, and
+/// that wants `&mut` on the compositor, so it can only ever be reported by
+/// the deadline armed against [`NODE_TIMEOUT`], and here it is only recorded.
+#[derive(Clone)]
+pub struct Arrival {
+    inner: Arc<std::sync::Mutex<ArrivalInner>>,
+}
+
+/// What one side fills in and the other reads.
+///
+/// One lock rather than two so that whether an answer is still owed cannot
+/// depend on the order two threads happened to take their locks in: the
+/// `done` event, the promise made while it was in flight and the deadline
+/// claiming the refusal all meet here, and exactly one of them gets to say
+/// anything.
+struct ArrivalInner {
+    /// `None` until the round trip completes; `Some` carries whatever the
+    /// node id says at that point. A claim by the deadline writes the
+    /// invalid node into it, which closes the cell behind itself: a `done`
+    /// event landing afterwards finds it answered and stays quiet.
+    node: Option<u32>,
+    /// Promises to answer with the node, taken and fired the moment it
+    /// exists. Usually one, always drained together — a second answer must
+    /// not reach anybody however it arrives.
+    waiting: Vec<Box<dyn FnOnce(u32) + Send>>,
+}
+
+impl Arrival {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(ArrivalInner {
+                node: None,
+                waiting: Vec::new(),
+            })),
+        }
+    }
+
+    /// Promise to answer with the node, the moment there is one.
+    ///
+    /// Kept on whichever thread the news arrives on — the thread loop's,
+    /// normally, with the loop held — so what is promised must not call back
+    /// into it. Sending the portal's reply is a channel write, which touches
+    /// nothing of PipeWire's; that is exactly why the success can leave from
+    /// here at all.
+    ///
+    /// Made after the stream exists but possibly before it is named, and
+    /// once per stream: a promise made of an answer already in hand is kept
+    /// on the spot, and one made of a failed share is quietly dropped, since
+    /// the deadline owes that refusal and has already claimed it.
+    pub fn when_named(&self, then: impl FnOnce(u32) + Send + 'static) {
+        let node = {
+            let mut inner = self.inner.lock().unwrap();
+            match inner.node {
+                Some(node) if node != INVALID_NODE => node,
+                // Answered badly: the refusal belongs to the deadline.
+                Some(_) => return,
+                None => {
+                    inner.waiting.push(Box::new(then));
+                    return;
+                }
+            }
+        };
+        // Kept outside the lock, on principle: whoever asked may answer back
+        // into this arrival, and a callback run holding the cell would turn
+        // that into a deadlock.
+        then(node)
+    }
+
+    /// How things stand.
+    pub fn status(&self) -> Arrived {
+        match self.inner.lock().unwrap().node {
+            None => Arrived::Yet,
+            Some(INVALID_NODE) => Arrived::Never,
+            Some(node) => Arrived::Now(node),
+        }
+    }
+
+    /// Take the refusal on, unless the stream has already succeeded.
+    ///
+    /// True when the Ok reply is still owed and nobody else will ever send
+    /// it — the deadline's cue to refuse and tear the stream down. False when
+    /// the node arrived first and the answer is already gone. Claiming marks
+    /// the arrival failed as it goes, which is what keeps a `done` event
+    /// arriving late from answering anybody twice.
+    pub(crate) fn fail(&self) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        match inner.node {
+            Some(node) if node != INVALID_NODE => false,
+            _ => {
+                inner.node = Some(INVALID_NODE);
+                true
+            }
+        }
+    }
+
+    /// The daemon's answer, from the `done` listener.
+    ///
+    /// Answers once. A second `done` for the same round trip cannot happen,
+    /// and neither can a first one after the deadline gave up: both find the
+    /// cell filled and the audience gone.
+    fn announced(&self, node: u32) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.node.is_some() {
+            return;
+        }
+        inner.node = Some(node);
+        let waiting = std::mem::take(&mut inner.waiting);
+        drop(inner);
+        if node != INVALID_NODE {
+            for then in waiting {
+                then(node);
+            }
+        }
+        // A daemon that answered without a node has refused the share in its
+        // own way. The promises were success-only and die here; saying so to
+        // the application falls to the deadline, which is where the teardown
+        // lives anyway.
+    }
+}
+
 /// The compositor's connection to PipeWire.
 ///
 /// On a thread of its own rather than inside the compositor's event loop.
@@ -416,17 +601,21 @@ impl Pipewire {
     /// BGRx rather than anything with alpha: what is captured is a screen,
     /// which is opaque, and a consumer that takes the fourth byte for alpha
     /// shows a transparent picture.
+    ///
+    /// Returns before the daemon has named it: what the stream is called is
+    /// on [`Stream::arrival`], and whoever answers the portal for it waits
+    /// there rather than here. Nothing in this function waits at all — a
+    /// share used to stop the desktop dead for as long as that took.
     pub fn create_stream(
         &self,
         name: &str,
         size: Size<i32, Physical>,
         targets: Vec<Dmabuf>,
     ) -> anyhow::Result<Stream> {
-        let guard = self.thread_loop.lock();
-        // The node id is what the portal hands back, and it does not exist
-        // until the server has answered — `node_id()` before that is
-        // 0xffffffff, which a client cannot connect to.
-        const INVALID_NODE: u32 = u32::MAX;
+        // Everything below runs with the loop held. It has to: the stream is
+        // registered, connected and given its round trip here, all against
+        // objects the thread loop's thread is dispatching on its own.
+        let _guard = self.thread_loop.lock();
         let stream = pw::stream::StreamRc::new(
             self.core.clone(),
             name,
@@ -591,53 +780,40 @@ impl Pipewire {
             )
             .map_err(|e| anyhow::anyhow!("connecting a pipewire stream: {e}"))?;
 
-        // Wait for the daemon to answer, without spinning.
+        // Ask the daemon to say when, and listen for it.
         //
         // The node id does not exist until the server has created it —
         // `node_id()` before that is 0xffffffff, which no client can connect
         // to — and the answer is dispatched on the thread loop's thread. This
-        // used to be waited out by sleeping in five-millisecond slices on the
-        // compositor's main thread, taking and releasing the loop's lock each
-        // turn: up to half a second of frozen desktop per share started, most
-        // of it spent in lock traffic against the very thread that was trying
-        // to deliver the answer.
+        // used to be waited out on the compositor's own thread: first by
+        // sleeping in five-millisecond slices, then by sleeping on a
+        // condition variable woken by the answer itself. Either way the
+        // desktop froze for the length of the wait, which is ordinarily a
+        // millisecond and was allowed half a second — and the wait bought
+        // nothing, because the only thing that needed the number, the portal
+        // reply, can be sent from anywhere.
         //
         // Instead the round trip itself says when it is done. `sync` asks the
         // daemon for a `done` event once everything sent before it — the
         // stream's creation and connection included — has been processed, and
         // by then the node exists: proxy events are answered in order, so the
         // bound id is set before the done that follows it. The listener below
-        // fires on the thread loop's thread, where the answer already is, and
-        // the main thread sleeps on a condition variable until then — holding
-        // nothing, woken the moment the node exists rather than at the next
-        // tick of a poll.
-        /// How long the daemon gets to name the node before this gives up.
-        ///
-        /// A ceiling rather than a delay: an ordinary share arrives in single
-        /// milliseconds, and the ceiling is only reached when PipeWire is not
-        /// going to answer at all.
-        const NODE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
-
-        /// What one side waits on and the other fills in.
-        ///
-        /// `None` until the round trip completes; `Some` carries whatever the
-        /// node id says at that point, which after a completed round trip is
-        /// final.
-        struct NodeArrival {
-            node: Mutex<Option<u32>>,
-            arrived: std::sync::Condvar,
-        }
-        let arrival = Arc::new(NodeArrival {
-            node: Mutex::new(None),
-            arrived: std::sync::Condvar::new(),
-        });
-
+        // fills in the [`Arrival`] and keeps whatever promises were made on
+        // it, and the portal reply leaves with them. The deadline that gives
+        // up on a daemon which never answers lives with the rest of the
+        // compositor's timers, in `state.rs`: refusing a share means taking
+        // the stream back out, and that is the compositor's thread's job.
+        //
+        // The lock is held across the whole of this, which is what makes the
+        // ordering safe: the answer is dispatched on the thread loop's
+        // thread, which cannot touch anything until this returns.
         let seq = self
             .core
             .sync(0)
             .map_err(|e| anyhow::anyhow!("asking pipewire for a round trip: {e}"))?;
         let named = stream.clone();
-        let signalled = arrival.clone();
+        let arrival = Arrival::new();
+        let announced_from = arrival.clone();
         let done_listener = self
             .core
             .add_listener_local()
@@ -645,37 +821,15 @@ impl Pipewire {
                 if id != pw::core::PW_ID_CORE || done_seq.seq() != seq.seq() {
                     return;
                 }
-                *signalled.node.lock().unwrap() = Some(named.node_id());
-                signalled.arrived.notify_all();
+                announced_from.announced(named.node_id());
             })
             .register();
 
-        // The lock is what the thread loop's thread needs to dispatch the
-        // answer, so the wait happens without it.
-        drop(guard);
-        let deadline = std::time::Instant::now() + NODE_TIMEOUT;
-        let mut seen = arrival.node.lock().unwrap();
-        let node_id = loop {
-            match *seen {
-                Some(node) => break (node != INVALID_NODE).then_some(node),
-                None => {
-                    let now = std::time::Instant::now();
-                    if now >= deadline {
-                        break None;
-                    }
-                    let (next, _) = arrival.arrived.wait_timeout(seen, deadline - now).unwrap();
-                    seen = next;
-                }
-            }
-        };
-        // Kept until the answer is in: dropping the listener takes its hook
-        // back out, and it must not go early or the wake-up could be missed.
-        drop(done_listener);
-        let node_id =
-            node_id.ok_or_else(|| anyhow::anyhow!("pipewire did not give the stream a node"))?;
-
         Ok(Stream {
-            node_id,
+            node_id: INVALID_NODE,
+            id: next_stream_id(),
+            arrival,
+            _done_listener: done_listener,
             stream,
             _listener: listener,
             size,
@@ -1002,6 +1156,14 @@ mod tests {
         (1920, 1080).into()
     }
 
+    /// A promise to hear the answer, and where it landed.
+    fn promised(arrival: &Arrival) -> Arc<std::sync::Mutex<Vec<u32>>> {
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let taken = heard.clone();
+        arrival.when_named(move |node| taken.lock().unwrap().push(node));
+        heard
+    }
+
     fn properties(bytes: &[u8]) -> Vec<spa::pod::Property> {
         let pod = spa::pod::Pod::from_bytes(bytes).expect("a pod");
         match spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()) {
@@ -1143,5 +1305,81 @@ mod tests {
             property(&copied, spa::sys::SPA_PARAM_BUFFERS_stride),
             Some(spa::pod::Value::Int(1920 * 4))
         );
+    }
+
+    /// The promise is kept once the node arrives, and only ever once: a
+    /// second `done` for the same round trip cannot happen, but the code
+    /// that would ignore one is what keeps a duplicate answer from reaching
+    /// an application that has already been told.
+    #[test]
+    fn the_node_is_announced_once_to_whoever_asked() {
+        let arrival = Arrival::new();
+        let heard = promised(&arrival);
+        assert_eq!(arrival.status(), Arrived::Yet);
+
+        arrival.announced(41);
+        arrival.announced(42);
+
+        assert_eq!(*heard.lock().unwrap(), vec![41]);
+        assert_eq!(arrival.status(), Arrived::Now(41));
+    }
+
+    /// A promise made of an answer already in hand is kept on the spot,
+    /// which is what lets the caller arm its reply without caring whether
+    /// the daemon got there first.
+    #[test]
+    fn a_promise_made_after_the_answer_is_kept_at_once() {
+        let arrival = Arrival::new();
+        arrival.announced(7);
+
+        let heard = promised(&arrival);
+
+        assert_eq!(*heard.lock().unwrap(), vec![7]);
+    }
+
+    /// The deadline claiming the refusal silences everything else: a `done`
+    /// event landing after it finds the cell filled with failure and says
+    /// nothing, and the application gets one answer — the refusal — rather
+    /// than a refusal followed by a node nobody can use.
+    #[test]
+    fn a_claimed_deadline_leaves_nothing_for_the_daemon_to_say() {
+        let arrival = Arrival::new();
+        assert!(arrival.fail());
+
+        let heard = promised(&arrival);
+        arrival.announced(9);
+
+        assert!(heard.lock().unwrap().is_empty());
+        assert_eq!(arrival.status(), Arrived::Never);
+        // And the refusal is still owed: the success never left, so the
+        // deadline that claimed it is the one that has to send it.
+        assert!(arrival.fail());
+    }
+
+    /// A daemon that answers without a node has failed the share in its own
+    /// way. Nobody is told from here — the promises are success-only — and
+    /// the refusal stays the deadline's to deliver.
+    #[test]
+    fn a_daemon_that_answers_without_a_node_says_nothing_here() {
+        let arrival = Arrival::new();
+        let heard = promised(&arrival);
+
+        arrival.announced(INVALID_NODE);
+
+        assert!(heard.lock().unwrap().is_empty());
+        assert_eq!(arrival.status(), Arrived::Never);
+        assert!(arrival.fail());
+    }
+
+    /// But a stream that succeeded first owes nothing to the deadline: its
+    /// claim comes back empty, and the teardown it would have done never
+    /// happens to a stream somebody is about to watch.
+    #[test]
+    fn a_node_that_arrived_first_cannot_be_claimed() {
+        let arrival = Arrival::new();
+        arrival.announced(5);
+
+        assert!(!arrival.fail());
+        assert_eq!(arrival.status(), Arrived::Now(5));
     }
 }
