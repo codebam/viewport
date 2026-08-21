@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -121,6 +121,50 @@ pub struct Ipc {
     loop_handle: LoopHandle<'static, ViewportState>,
 }
 
+/// A fresh 0700 directory beside the socket's final home, for it to be born in.
+///
+/// Named after the pid and the clock, mkdtemp style, and created
+/// fail-if-exists so a directory somebody else planted at a guessed name is
+/// an error to retry around rather than a place to bind. The name only has to
+/// avoid collisions, not keep secrets — the mode is the boundary.
+fn staging_dir(parent: &std::path::Path) -> Result<PathBuf> {
+    let mut last = None;
+    for _ in 0..8 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let dir = parent.join(format!(".viewport-{}-{nanos:x}", std::process::id()));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) => last = Some((dir, e)),
+        }
+    }
+    let (dir, e) = last.expect("the loop ran at least once");
+    Err(e).with_context(|| format!("creating {}", dir.display()))
+}
+
+/// Bind the listener at `staged`, close it to the world there, and move it
+/// onto `final_path`.
+///
+/// Everything between "a socket exists" and "the socket is announced" happens
+/// inside the 0700 directory `staged` lives in, which is what makes the order
+/// safe: while the node may still be world-accessible, nobody else can walk
+/// to it. The rename is what announces it, already 0600 — rename(2) moves the
+/// inode with its permissions and replaces whatever sits at the destination,
+/// which also covers a stale socket that appeared after the cleanup above.
+fn listen_at(staged: &std::path::Path, final_path: &std::path::Path) -> Result<UnixListener> {
+    let listener =
+        UnixListener::bind(staged).with_context(|| format!("bind {}", staged.display()))?;
+
+    std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod {}", staged.display()))?;
+
+    std::fs::rename(staged, final_path)
+        .with_context(|| format!("rename {} to {}", staged.display(), final_path.display()))?;
+    Ok(listener)
+}
+
 impl Ipc {
     /// Where it is listening.
     ///
@@ -158,15 +202,65 @@ impl Ipc {
         // otherwise make bind() fail with EADDRINUSE forever.
         let _ = std::fs::remove_file(&path);
 
-        let listener =
-            UnixListener::bind(&path).with_context(|| format!("bind {}", path.display()))?;
-        listener.set_nonblocking(true)?;
+        // bind() creates the node world-accessible and a chmod narrows it only
+        // afterwards, so binding straight onto the final name leaves a window
+        // — however short — in which anyone can connect, and what sits behind
+        // this socket includes running `/bin/sh -c` on client text.
+        // XDG_RUNTIME_DIR is 0700 and hides the window; the /tmp fallback this
+        // keeps for parity with the C build (`src/ipc.c:1660`) is world-walkable
+        // and does not.
+        //
+        // So the listener is born somewhere private instead. A fresh 0700
+        // directory is made beside the final path, the socket binds inside it,
+        // and it is chmod 0600 while it is still in there — unreachable by
+        // anybody else whatever its mode, because nobody else can walk the
+        // directory to reach it. Only then is it renamed onto the well-known
+        // name. rename(2) moves the inode with its permissions, so the socket
+        // clients look for appears already closed to the world: there is no
+        // window left to narrow after the fact.
+        //
+        // The advertised path deliberately stays the well-known
+        // `$XDG_RUNTIME_DIR/viewport-<display>.sock` rather than moving inside
+        // the private directory. Every client derives that shape
+        // independently — msg.rs's discovery, the scripts, the documentation,
+        // and the C build this ports — and a per-session directory would have
+        // to be taught to all of them for a property, predictability, they
+        // depend on. Renaming within the same parent keeps the well-known name
+        // exactly as it was and closes the race all the same; being under the
+        // same parent also keeps the rename on one filesystem, which is the
+        // only way it can work.
+        let filename = path
+            .file_name()
+            .with_context(|| format!("control socket path has no file name: {}", path.display()))?
+            .to_owned();
+        let parent = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        let staged = staging_dir(&parent)?.join(&filename);
+        // The staging path is longer than the final one and has to fit
+        // sun_path too, or bind() fails where clients would have been fine.
+        let staged_len = staged.as_os_str().as_encoded_bytes().len();
+        anyhow::ensure!(
+            staged_len <= SUN_LEN,
+            "control socket path too long ({staged_len} > {SUN_LEN} bytes): {}",
+            staged.display()
+        );
 
-        // bind() creates the node world-accessible and the chmod only narrows
-        // it afterwards, so there is a window in which anyone can connect.
-        // XDG_RUNTIME_DIR is 0700 and hides it, but the /tmp fallback is not.
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("chmod {}", path.display()))?;
+        let listener = match listen_at(&staged, &path) {
+            Ok(listener) => listener,
+            Err(e) => {
+                // Nothing at the well-known name was touched: whatever failed
+                // failed inside the private directory, which is now litter.
+                let _ = std::fs::remove_dir_all(staged.parent().expect("the staging dir"));
+                return Err(e);
+            }
+        };
+        // Emptied by the rename, so this takes the directory and nothing else.
+        if let Some(dir) = staged.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
+        listener.set_nonblocking(true)?;
 
         loop_handle
             .insert_source(
@@ -699,5 +793,63 @@ impl ViewportState {
     /// without a socket.
     pub fn handle_request(&mut self, request: Request) {
         crate::apply::apply(self, request);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch directory of this test's own, for the paths below to sit in.
+    fn scratch() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "viewport-ipc-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    /// The whole point: from the instant the socket exists at the name
+    /// clients use, it is already closed to the world. There is no moment at
+    /// which a wider mode could be observed, which is what bind-then-chmod
+    /// could not say.
+    #[test]
+    fn a_socket_arrives_at_its_name_already_private() {
+        let dir = scratch();
+        let staging = staging_dir(&dir).expect("a staging directory");
+        let final_path = dir.join("viewport-test.sock");
+        let listener =
+            listen_at(&staging.join("viewport-test.sock"), &final_path).expect("a socket");
+
+        let mode = std::fs::metadata(&final_path)
+            .expect("the socket at its well-known name")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the socket was ever connectable");
+
+        drop(listener);
+        let _ = std::fs::remove_file(&final_path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The staging directory is owner-only and is not reused: a name that is
+    /// taken — by whoever got there first — is an error to retry around, not
+    /// a place to bind.
+    #[test]
+    fn the_staging_directory_is_private_and_fresh() {
+        let dir = scratch();
+        let first = staging_dir(&dir).expect("a staging directory");
+        let mode = std::fs::metadata(&first)
+            .expect("the directory")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+
+        let second = staging_dir(&dir).expect("another staging directory");
+        assert_ne!(first, second);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
