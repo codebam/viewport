@@ -6794,20 +6794,14 @@ impl ViewportState {
         // reload touched the hide deadline, which has nothing to do with what
         // they look like.
         if theme != self.cursor_theme.name() || size != self.cursor_theme.size() {
-            // The loader is constructed from the environment — `Theme` has no
-            // other door — so the values are written back for it to read, and
-            // this is the one setenv left on a live process. It survives
-            // because nothing else in-process consumes these variables at
-            // runtime: outputs added after this draw from `self.cursor_theme`,
-            // which is rebuilt here, and children this process starts are told
-            // the pair explicitly (`launcher_launch`). A named constructor on
-            // `cursor::Theme` is what finally deletes these two lines and the
-            // race they carry.
-            unsafe {
-                std::env::set_var("XCURSOR_THEME", &theme);
-                std::env::set_var("XCURSOR_SIZE", size.to_string());
-            }
-            self.cursor_theme = crate::cursor::Theme::new();
+            // Built straight from the pair above: `Theme::named` takes the
+            // values itself, so the loader never needs environ as a go-between.
+            // There was a time this wrote `XCURSOR_THEME` and `XCURSOR_SIZE`
+            // into the process environment for the old constructor to read
+            // straight back — a setenv on a live process, undefined against
+            // every thread that might be mid-getenv, run on every reload that
+            // touched the cursor block.
+            self.cursor_theme = crate::cursor::Theme::named(theme, size);
             // And what the portal answers, or a toolkit keeps sizing its own
             // cursors from the value it was told when it started — which is a
             // pointer that changes size as it crosses into a window, and a
