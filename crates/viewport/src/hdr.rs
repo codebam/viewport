@@ -113,7 +113,14 @@ fn find_property(
         let Ok(info) = device.get_property(*handle) else {
             continue;
         };
-        if info.name().to_str().ok()? == name {
+        // Compared only when the name reads as UTF-8, and the scan carries on
+        // when it does not: a driver may put whatever bytes it likes in a
+        // property name, and letting one unreadable name return from this
+        // whole function hid every property listed after it — including
+        // Colorspace and HDR_OUTPUT_METADATA, so a capable display reported
+        // no HDR at all. Same rule `non_desktop` in udev.rs is written by:
+        // a property that cannot be read is skipped, not fatal.
+        if info.name().to_str().is_ok_and(|n| n == name) {
             return Some((*handle, info.value_type(), *value));
         }
     }
