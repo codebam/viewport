@@ -17,8 +17,9 @@
 // shift that only lands when something moves.
 
 use std::collections::HashMap;
-use std::os::fd::{AsFd, OwnedFd};
-use std::sync::{Arc, Mutex};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols_wlr::gamma_control::v1::server::{
@@ -121,7 +122,12 @@ pub struct ControlData {
     pub output: Output,
     /// Whether this control has been failed already, so a destroy does not
     /// clear a ramp that belongs to whoever took over.
-    failed: Arc<Mutex<bool>>,
+    ///
+    /// An `AtomicBool` rather than a `Mutex` because there is nothing to
+    /// protect — every touch happens on the event loop's own thread, between
+    /// dispatches — and a poisoned lock here would turn one panic anywhere
+    /// into every later SetGamma and destroy panicking in its place.
+    failed: Arc<AtomicBool>,
 }
 
 impl<D> GlobalDispatch<ZwlrGammaControlManagerV1, (), D> for GammaControlState
@@ -181,7 +187,7 @@ where
                             serial_number: String::new(),
                         },
                     ),
-                    failed: Arc::new(Mutex::new(true)),
+                    failed: Arc::new(AtomicBool::new(true)),
                 },
             );
             control.failed();
@@ -194,7 +200,7 @@ where
             id,
             ControlData {
                 output,
-                failed: Arc::new(Mutex::new(size.is_none())),
+                failed: Arc::new(AtomicBool::new(size.is_none())),
             },
         );
 
@@ -218,7 +224,7 @@ where
             .insert(name, control.clone())
         {
             if let Some(data) = previous.data::<ControlData>() {
-                *data.failed.lock().unwrap() = true;
+                data.failed.store(true, Ordering::Relaxed);
             }
             previous.failed();
         }
@@ -242,7 +248,7 @@ where
             return;
         };
 
-        if *data.failed.lock().unwrap() {
+        if data.failed.load(Ordering::Relaxed) {
             // Someone else owns this output now. Silently ignoring is right:
             // the client has already been told, and a second failed event on
             // an object it is about to destroy is noise.
@@ -283,7 +289,7 @@ where
         control: &ZwlrGammaControlV1,
         data: &ControlData,
     ) {
-        if *data.failed.lock().unwrap() {
+        if data.failed.load(Ordering::Relaxed) {
             // Superseded: the ramp on screen belongs to whoever took over, and
             // clearing it here would undo their work.
             return;
@@ -305,12 +311,53 @@ where
 /// short read is a client that miscounted rather than a stream that will have
 /// more later — but read(2) is still allowed to return less than asked for, so
 /// this loops rather than trusting one call.
+///
+/// The duplicate is made nonblocking first. The descriptor arrives over the
+/// wire from an untrusted client, and nothing on the wire enforces the memfd:
+/// a hostile one may send a pipe with no writer, and a blocking read on that
+/// would hold the single-threaded event loop still — every output frozen — for
+/// as long as the silence lasted. Nonblocking turns the silence into an error
+/// this side survives. For the memfd the protocol actually expects it changes
+/// nothing: O_NONBLOCK has no effect on reads from a regular file.
 fn read_exactly(fd: &OwnedFd, len: usize) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
 
     let mut file = std::fs::File::from(fd.as_fd().try_clone_to_owned()?);
+
+    // The flag lives on the open file description, which a dup shares with the
+    // client's own descriptor — so strictly speaking the client's copy turns
+    // nonblocking too. That is harmless: a memfd ignores it, and a pipe the
+    // client kept open was not going to be written again once the ramp was
+    // sent. If the flags cannot even be read, carrying on as before is better
+    // than failing a ramp that would have worked.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    if flags != -1 {
+        unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    }
+
+    // Loop only while progress is being made. On a regular file every read
+    // returns everything left, so this runs once; on anything else, a read
+    // that comes back empty or WouldBlock means the rest is not coming.
     let mut bytes = vec![0u8; len];
-    file.read_exact(&mut bytes)?;
+    let mut filled = 0;
+    while filled < len {
+        match file.read(&mut bytes[filled..]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the ramp did not arrive",
+                ));
+            }
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the ramp did not arrive",
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 
     // Nothing may follow. A descriptor holding more than the ramp is a client
     // that has miscounted, and taking the first part of it would program a
@@ -318,6 +365,12 @@ fn read_exactly(fd: &OwnedFd, len: usize) -> std::io::Result<Vec<u8>> {
     let mut extra = [0u8; 1];
     match file.read(&mut extra) {
         Ok(0) => Ok(bytes),
+        // A pipe whose writer is still open but has said everything it had to
+        // say reports WouldBlock here rather than end of file. That is
+        // "nothing more arrived", which for a ramp of exactly the right length
+        // is success; refusing it would punish a client for holding its own
+        // descriptor open.
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(bytes),
         Ok(_) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "the ramp is longer than this output's gamma size",
