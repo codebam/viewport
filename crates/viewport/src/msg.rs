@@ -578,7 +578,12 @@ fn parse_args(args: &[String]) -> Result<Option<Invocation>, String> {
                 timeout = given
                     .parse::<f64>()
                     .map_err(|_| format!("--timeout is not a number: {given}"))?;
-                if timeout < 0.0 || !timeout.is_finite() {
+                // The upper bound is not pedantry: `Duration::from_secs_f64`
+                // panics past `Duration::MAX`, and `1e30` parses as happily
+                // as `2` does. Same complaint as the other two, because it
+                // is the same mistake — a number that is not a length of
+                // time.
+                if timeout < 0.0 || !timeout.is_finite() || timeout > Duration::MAX.as_secs_f64() {
                     return Err(format!("--timeout is not a length of time: {given}"));
                 }
             }
@@ -806,7 +811,13 @@ fn run(invocation: Invocation) -> Result<(), String> {
             .map_err(|e| format!("could not send to {}: {e}", path.display()))?;
     }
 
-    let deadline = invocation.timeout.map(|timeout| Instant::now() + timeout);
+    // A duration the clock cannot hold is no deadline at all: `Instant` has a
+    // range of its own, and adding a timeout past it panicked where the
+    // validation above never reaches. A wait that long is a way of saying
+    // "forever", and forever already has a spelling here.
+    let deadline = invocation
+        .timeout
+        .and_then(|timeout| Instant::now().checked_add(timeout));
     let pretty = invocation.pretty;
     // The line being read, which outlives any one read: a timeout can land in
     // the middle of one. See `read_event`.
@@ -1294,6 +1305,18 @@ mod tests {
             .expect_err("should be refused");
         assert!(complaint.contains("has no field `visable`"), "{complaint}");
         assert!(complaint.contains("visible"), "{complaint}");
+    }
+
+    #[test]
+    fn a_timeout_past_what_a_duration_holds_is_refused_not_a_panic() {
+        // `Duration::from_secs_f64` panics above `Duration::MAX`, and `1e30`
+        // parses as happily as `2` does.
+        let complaint = build(&["-t", "quit", "--timeout", "1e30"]).expect_err("should refuse");
+        assert!(complaint.contains("not a length of time"), "{complaint}");
+        // One the duration holds but the clock may not is still accepted
+        // here; `run` treats a deadline the clock cannot represent as no
+        // deadline at all, which is what a wait that long means.
+        assert!(build(&["-t", "quit", "--timeout", "1000000000000000000"]).is_ok());
     }
 
     #[test]
