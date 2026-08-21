@@ -75,7 +75,27 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// The theme asked for by name and size, the environment left alone.
+    ///
+    /// The honest constructor, and the one everything past start-up uses: a
+    /// reload already knows the pair it wants, and the alternative used to be
+    /// writing `XCURSOR_THEME` and `XCURSOR_SIZE` into environ for
+    /// [`Theme::new`] to read straight back — a setenv on a live process,
+    /// undefined against every thread that might be mid-getenv.
+    pub fn named(name: impl Into<String>, size: u32) -> Self {
+        Self {
+            name: name.into(),
+            size,
+            loaded: HashMap::new(),
+        }
+    }
+
     /// The theme named by the environment, as every toolkit resolves it.
+    ///
+    /// For start-up only, where the environment *is* the configuration: the
+    /// values are written once in `main`, before any thread exists to race
+    /// the read, and never written again afterwards. A reload comes through
+    /// [`Theme::named`] instead.
     pub fn new() -> Self {
         let name = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".to_owned());
         let size = std::env::var("XCURSOR_SIZE")
@@ -442,6 +462,19 @@ mod tests {
             Rectangle::new((0, 0).into(), (2560, 1440).into()),
             Rectangle::new((2560, 0).into(), (2560, 1440).into()),
         ]
+    }
+
+    #[test]
+    fn a_theme_can_be_asked_for_by_name_without_the_environment() {
+        // The named constructor exists so a reload can rebuild the loader
+        // without writing XCURSOR_* into environ for it to read straight back.
+        // It records what it was given verbatim — no defaults, no env reads —
+        // which is the whole of its contract and all that can be asserted
+        // without depending on which themes this machine happens to have
+        // installed.
+        let theme = Theme::named("Bibata Modern Classic", 48);
+        assert_eq!(theme.name(), "Bibata Modern Classic");
+        assert_eq!(theme.size(), 48);
     }
 
     #[test]
