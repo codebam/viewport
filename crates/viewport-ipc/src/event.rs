@@ -186,8 +186,18 @@ pub enum Event {
     /// `data:` URL, and what the entry says it is for — the command line
     /// itself never crosses the wire, because `launcher.launch` names an `id`
     /// and the compositor starts what it scanned.
+    ///
+    /// `generation` is the number of queries the compositor has answered,
+    /// and `launcher.launch` carries it back: the picker sends a query on
+    /// every keystroke and does not wait for the answer before it lets the
+    /// user press Enter, so a launch that names a generation the compositor
+    /// has moved past is a row from a list that is no longer the one on
+    /// screen, and it is refused rather than guessed at.
     #[serde(rename = "launcher.list")]
-    LauncherList { apps: Vec<LauncherApp> },
+    LauncherList {
+        generation: u64,
+        apps: Vec<LauncherApp>,
+    },
 
     /// What is playing, for the bar's media widget.
     ///
@@ -813,9 +823,10 @@ pub struct ClipboardEntry {
 /// One application the launcher can start.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LauncherApp {
-    /// What `launcher.launch` names. An index into the list it arrived in,
-    /// not a stable identity: the list is re-scanned on every query, and an
-    /// `id` from an older one is refused rather than guessed at.
+    /// What `launcher.launch` names, with the list's `generation`. An index
+    /// into the list it arrived in, not a stable identity: the list is
+    /// re-scanned on every query, and an `id` from an older one is refused
+    /// rather than guessed at.
     pub id: u32,
     /// What the row draws.
     pub name: String,

@@ -928,7 +928,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     width: 800, height: 600 });
   emit({ type: 'view.focused', id: 7 });
 
-  emit({ type: 'launcher.list', apps });
+  emit({ type: 'launcher.list', apps, generation: 1 });
   /* Kept, but nothing drawn: the message arrives on every keystroke, and
      drawing a picker nobody opened would be a composited frame of the whole
      desktop per keystroke. */
@@ -945,7 +945,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     sent.slice(before).some((m) => m.type === 'shell.focus'));
 
   before = sent.length;
-  emit({ type: 'launcher.list', apps });
+  emit({ type: 'launcher.list', apps, generation: 2 });
   check('every application is a row, in the order the compositor sent it',
     rows().length === 3 &&
     rows()[0].children[1].children[0].textContent === 'Firefox');
@@ -976,6 +976,9 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   key(field, 'Enter');
   check('launching asks the compositor to start the highlighted row',
     sent.slice(before).some((m) => m.type === 'launcher.launch' && m.id === 0));
+  check('with the generation of the list the row was drawn from',
+    sent.slice(before).some((m) => m.type === 'launcher.launch' &&
+      m.id === 0 && m.generation === 2));
   check('and the picker goes', picker().hidden === true);
   check('giving the keyboard back to the window that had it',
     sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 7));
@@ -989,7 +992,8 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   before = sent.length;
   click(rows()[2]);
   check('a click on a row launches that row, whichever is highlighted',
-    sent.slice(before).some((m) => m.type === 'launcher.launch' && m.id === 2));
+    sent.slice(before).some((m) => m.type === 'launcher.launch' && m.id === 2 &&
+      m.generation === 2));
   check('and the picker goes', picker().hidden === true);
 
   emit({ type: 'shell.command', command: 'launcher', args: [] });

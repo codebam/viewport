@@ -244,8 +244,8 @@ const TYPES: &[Type] = &[
     },
     Type {
         name: "launcher.launch",
-        fields: &["id"],
-        hint: "--id N   (an id from the last launcher.list)",
+        fields: &["id", "generation"],
+        hint: "--id N --generation N   (an id and its generation from the last launcher.list)",
     },
     Type {
         name: "mpris.control",

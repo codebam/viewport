@@ -208,6 +208,25 @@ pub struct ViewportState {
     /// than a name: the list is re-scanned on every query, and an `id` from a
     /// list that is no longer on screen is refused rather than guessed at.
     pub launcher_list: Vec<crate::launcher::App>,
+    /// The list `launcher_list` is, counted in queries.
+    ///
+    /// A `launcher.launch` carries the generation of the list its row came
+    /// from, and one that names a generation the compositor has moved past is
+    /// refused: the keystroke that asked for the list the row is in may still
+    /// be on its way, and an `id` from the old list is almost always in range
+    /// of the new one — the wrong application is worse than nothing.
+    pub launcher_generation: u64,
+    /// The icons the launcher has resolved, keyed by the theme and name they
+    /// were resolved under, `None` where the themes have no such icon or the
+    /// file is too large to send.
+    ///
+    /// `icon::lookup` walks the theme directories and `data_url` reads and
+    /// encodes the file, and a query resolves up to a hundred of them on the
+    /// event loop's thread — a keystroke that takes a hundred milliseconds
+    /// while the list is being typed. The names repeat across every query, so
+    /// each is resolved once and the answer kept. The tray keeps its own copy
+    /// for its worker thread; this one is the event loop's.
+    pub launcher_icons: std::collections::HashMap<String, Option<String>>,
     /// The icon theme the launcher's icons are looked up in.
     ///
     /// The tray keeps its own copy for its worker thread; the launcher looks
@@ -1296,6 +1315,8 @@ impl ViewportState {
             last_lid_closed: None,
             clipboard: crate::clipboard::Clipboard::default(),
             launcher_list: Vec::new(),
+            launcher_generation: 0,
+            launcher_icons: std::collections::HashMap::new(),
             // The tray's own default, which the first config load may replace.
             icon_theme: "hicolor".to_owned(),
             // On unless a file says otherwise: a desktop with no tray is a
@@ -7610,6 +7631,13 @@ impl ViewportState {
         );
     }
 
+    /// The largest list the launcher answers with.
+    ///
+    /// A row is a name and an icon, and a desktop with four hundred
+    /// applications is not a list somebody scrolls — it is a filter waiting to
+    /// be typed.
+    const LAUNCHER_LIMIT: usize = 96;
+
     /// The applications the launcher can start, filtered, as the shell draws
     /// them.
     ///
@@ -7617,14 +7645,16 @@ impl ViewportState {
     /// new entry is the moment a launcher most wants to show it, and the scan
     /// is a directory walk the compositor is already doing for its icons.
     /// The filter is the shell's text, matched case-insensitively against the
-    /// name and what the entry says it is for; absent is the whole list.
+    /// name, what the entry says it is for, and the command it runs — a
+    /// binary name typed into the field finds its entry — and against the
+    /// app_id a token is minted under; absent is the whole list.
     ///
-    /// The list is capped: a row is a name and an icon, and a desktop with
-    /// four hundred applications is not a list somebody scrolls — it is a
-    /// filter waiting to be typed.
-    const LAUNCHER_LIMIT: usize = 96;
-
+    /// The query answers with a generation, the number of queries the
+    /// compositor has answered, and `launcher.launch` carries it back: a
+    /// launch naming a generation the compositor has moved past is a row from
+    /// a list the query that replaced it has not answered yet.
     pub fn launcher_query(&mut self, filter: Option<String>) {
+        self.launcher_generation += 1;
         let desktop = crate::launcher::current_desktop();
         let desktop: Vec<&str> = desktop.iter().map(String::as_str).collect();
         let apps = crate::launcher::scan(&crate::launcher::directories(), &desktop);
@@ -7635,6 +7665,8 @@ impl ViewportState {
                 Some(filter) if !filter.is_empty() => {
                     app.name.to_lowercase().contains(filter)
                         || app.detail.to_lowercase().contains(filter)
+                        || app.exec.to_lowercase().contains(filter)
+                        || app.app_id.to_lowercase().contains(filter)
                 }
                 _ => true,
             })
@@ -7643,16 +7675,32 @@ impl ViewportState {
 
         let mut rows = Vec::with_capacity(matched.len());
         for (id, app) in matched.iter().enumerate() {
+            // The icon, resolved once and kept: the themes walk and the file
+            // read are the ninety-eight milliseconds a query used to take on
+            // the event loop's thread, and the names repeat across every
+            // keystroke.
+            let key = format!("{}\u{1}{}", self.icon_theme, app.icon);
+            let icon = match self.launcher_icons.get(&key) {
+                Some(url) => url.clone().unwrap_or_default(),
+                None => {
+                    let url = crate::launcher::icon_url(&app.icon, &self.icon_theme);
+                    self.launcher_icons.insert(key, url.clone());
+                    url.unwrap_or_default()
+                }
+            };
             rows.push(viewport_ipc::event::LauncherApp {
                 id: id as u32,
                 name: app.name.clone(),
-                icon: crate::launcher::icon_url(&app.icon, &self.icon_theme).unwrap_or_default(),
+                icon,
                 detail: app.detail.clone(),
             });
         }
         // What `launcher.launch` will be naming an index into.
         self.launcher_list = matched.into_iter().cloned().collect();
-        self.notify(&viewport_ipc::Event::LauncherList { apps: rows });
+        self.notify(&viewport_ipc::Event::LauncherList {
+            generation: self.launcher_generation,
+            apps: rows,
+        });
     }
 
     /// Start the application the picker's highlighted row named.
@@ -7661,7 +7709,22 @@ impl ViewportState {
     /// window that appears opens focused rather than behind whatever the user
     /// moved on to — the launcher knows where the window is going, because it
     /// is the thing that asked for it, and the token is how it says so.
-    pub fn launcher_launch(&mut self, id: u32) {
+    ///
+    /// `generation` is the list the row came from. The picker sends a query
+    /// on every keystroke and does not wait for the answer before it lets the
+    /// user press Enter, so the list a row is drawn from may already have
+    /// been replaced by the time the launch lands: an `id` from the old list
+    /// is almost always in range of the new one, and that is how the wrong
+    /// application starts. A launch that names a generation the compositor
+    /// has moved past is refused.
+    pub fn launcher_launch(&mut self, id: u32, generation: u64) {
+        if generation != self.launcher_generation {
+            self.notify(&viewport_ipc::Event::Error {
+                context: "launcher.launch".to_owned(),
+                message: format!("the list {generation} is no longer the one on screen"),
+            });
+            return;
+        }
         let Some(app) = self.launcher_list.get(id as usize).cloned() else {
             // An `id` from a list the next query replaced. The picker is
             // closing either way; the error is for the log and for a script.
@@ -7687,13 +7750,11 @@ impl ViewportState {
 
         // `Terminal=true` is run in the terminal `Mod4+Return` opens, the way
         // an external menu does it: the entry names the program, the session
-        // names the window it runs in.
+        // names the window it runs in. The terminal is the session's command
+        // line, bare — it may be more than one word, and a quote is what
+        // makes the shell look for a binary of the whole line's literal name.
         let command = if app.terminal {
-            format!(
-                "{} -e {}",
-                crate::launcher::sh_quote(&self.terminal),
-                app.exec
-            )
+            format!("{} -e {}", self.terminal, app.exec)
         } else {
             app.exec
         };

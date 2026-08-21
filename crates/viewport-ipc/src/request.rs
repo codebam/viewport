@@ -223,8 +223,15 @@ pub enum Request {
     /// the same thing the compositor already has. The launch carries an
     /// xdg-activation token minted for it, so the window that appears opens
     /// focused rather than behind whatever the user moved on to.
+    ///
+    /// `generation` is the list the row came from, echoed back from the
+    /// `launcher.list` that drew it. The picker sends a query on every
+    /// keystroke and does not wait for the answer before it lets the user
+    /// press Enter, so a launch that names a generation the compositor has
+    /// moved past is a row from a list that is no longer the one on screen,
+    /// and it is refused rather than started.
     #[serde(rename = "launcher.launch")]
-    LauncherLaunch { id: u32 },
+    LauncherLaunch { id: u32, generation: u64 },
 
     /// A button on the bar's media widget.
     ///

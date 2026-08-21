@@ -426,9 +426,9 @@ fn expand_tilde(token: &str) -> String {
 /// One word, quoted for `/bin/sh`.
 ///
 /// The same rule `sh_line` applies to its tokens: bare where it could not be
-/// read as anything but itself, single-quoted otherwise. For a command the
-/// session names — the terminal a `Terminal=true` entry is run in — which may
-/// be more than one word.
+/// read as anything but itself, single-quoted otherwise. For one word only:
+/// a command line that is more than one word is not a word, and a quote is
+/// what makes the shell look for a binary of the whole line's literal name.
 pub fn sh_quote(word: &str) -> String {
     if word.chars().all(|c| {
         c.is_ascii_alphanumeric()

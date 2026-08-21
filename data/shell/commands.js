@@ -592,8 +592,9 @@ window.addEventListener('viewport', (event) => {
 
     case 'launcher.list':
       /* Sent in answer to launcher.query — on open and on every keystroke of
-         the filter. Drawn only while the picker is open; see applyLauncher. */
-      applyLauncher(message.apps ?? []);
+         the filter. The generation is the list's, and a launch carries it
+         back. Drawn only while the picker is open; see applyLauncher. */
+      applyLauncher(message.apps ?? [], message.generation);
       break;
 
     case 'notification.history':

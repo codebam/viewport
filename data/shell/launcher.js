@@ -27,6 +27,11 @@ let launcherApps = [];
 let launcherFilter = '';
 let launcherSelected = 0;
 let launcherRestoreId = null;
+/* The list the rows are drawn from, counted in queries. A launch carries it
+   back: a query is sent on every keystroke and not waited for, so the list a
+   row is drawn from may be replaced before the Enter that chose it lands —
+   and a launch the compositor has moved past is refused rather than started. */
+let launcherGeneration = 0;
 /* The list container of the open dialog. The dialog is built once when the
  * picker opens and the list rebuilt on every answer, so the field being typed
  * into survives its own keystrokes. */
@@ -41,6 +46,11 @@ function toggleLauncher() {
     return;
   }
   launcherOpen = true;
+  /* The other pickers go, the way a menu does: two dialogs over the same
+     windows is two answers to one question, and the clipboard picker's rows
+     and the centre's are drawn in the same place this list is. */
+  closeClipboard();
+  closeNotificationCentre();
   /* The last list and the last filter are kept, not reset: the picker opens
      on what it last showed, and the query it sends — with the filter it still
      holds — answers with the same list a moment later. Resetting would be a
@@ -79,8 +89,9 @@ function closeLauncher() {
  * the dialog around it, and the filter field inside it, must not be: a
  * rebuild on every keystroke would throw away the field that is being typed
  * into, halfway through a word. */
-function applyLauncher(apps) {
+function applyLauncher(apps, generation) {
   launcherApps = Array.isArray(apps) ? apps : [];
+  if (typeof generation === 'number') launcherGeneration = generation;
   if (!launcherOpen) return;
   if (launcherSelected >= launcherApps.length) {
     launcherSelected = Math.max(0, launcherApps.length - 1);
@@ -235,6 +246,9 @@ function launchSelected() {
 }
 
 function launchApp(id) {
-  send({ type: 'launcher.launch', id });
+  /* The generation the row was drawn from, so the compositor can tell a
+     launch for the list on screen from one for the list a query that has not
+     been answered yet replaced. */
+  send({ type: 'launcher.launch', id, generation: launcherGeneration });
   closeLauncher();
 }

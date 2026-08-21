@@ -466,7 +466,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         // the token are the state's; this is only the routing, which is what
         // this file is.
         Request::LauncherQuery { filter } => state.launcher_query(filter),
-        Request::LauncherLaunch { id } => state.launcher_launch(id),
+        Request::LauncherLaunch { id, generation } => state.launcher_launch(id, generation),
 
         // A button on the bar's media widget, sent to whichever player the
         // compositor last reported. The action is checked there rather than
