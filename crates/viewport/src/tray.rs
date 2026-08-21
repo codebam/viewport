@@ -244,6 +244,14 @@ fn start(
 ) -> anyhow::Result<mpsc::Sender<Command>> {
     let (commands, inbox) = mpsc::channel();
 
+    // The registry of registered items, shared between the watcher and the
+    // worker. The watcher needs it because `RegisteredStatusNotifierItems` is
+    // a property an application may read at any moment; the worker needs it
+    // because it is the one that learns when a name has died, and an answer
+    // that lists the dead forever is worse than none. One list, two readers,
+    // and the worker does the pruning.
+    let items: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+
     // The watcher object answers on zbus's own executor and does no work: it
     // records nothing, and hands every registration to the worker, which is
     // the one place the item list lives.
@@ -253,7 +261,7 @@ fn start(
             WATCHER_PATH,
             Watcher {
                 commands: commands.clone(),
-                items: std::sync::Arc::default(),
+                items: items.clone(),
             },
         )?
         .build()?;
@@ -299,7 +307,7 @@ fn start(
 
     std::thread::Builder::new()
         .name("tray".to_owned())
-        .spawn(move || Worker::new(connection, events).run(&inbox))?;
+        .spawn(move || Worker::new(connection, events, items).run(&inbox))?;
 
     Ok(commands)
 }
@@ -340,7 +348,9 @@ struct Watcher {
     /// What `RegisteredStatusNotifierItems` answers with. Kept here rather
     /// than read back from the worker because it is a property an application
     /// may ask for at any moment, and the worker may be waiting on one that
-    /// has stopped answering.
+    /// has stopped answering. Shared with the worker — one list, not two — so
+    /// that a name the worker watches die is pruned from it instead of being
+    /// reported until the session ends.
     items: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
@@ -493,6 +503,10 @@ struct Worker {
     connection: zbus::blocking::Connection,
     events: smithay::reexports::calloop::channel::Sender<Message>,
     entries: Vec<Entry>,
+    /// The watcher's half of the registry, shared so that a name the worker
+    /// watches die can be taken out of `RegisteredStatusNotifierItems` the
+    /// moment it dies, rather than reported to the end of the session.
+    registry: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// Icon names already resolved to a data URL, because resolving one walks
     /// the icon theme directories and an item that says its icon changed
     /// usually means its *status* changed and the icon with it — between two
@@ -507,11 +521,13 @@ impl Worker {
     fn new(
         connection: zbus::blocking::Connection,
         events: smithay::reexports::calloop::channel::Sender<Message>,
+        registry: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     ) -> Self {
         Self {
             connection,
             events,
             entries: Vec::new(),
+            registry,
             icons: HashMap::new(),
             // What the configuration has not overridden. hicolor is searched
             // in either case; this is the theme searched before it.
@@ -654,6 +670,13 @@ impl Worker {
         self.enabled = false;
         self.entries.clear();
         self.icons.clear();
+        // The registry goes with them. The names are released, so whatever is
+        // on the bus will re-register when the tray comes back; answering
+        // `RegisteredStatusNotifierItems` with a list from the previous
+        // incarnation is a tray full of ghosts.
+        if let Ok(mut items) = self.registry.lock() {
+            items.clear();
+        }
         // An empty tray rather than a stale one: the shell draws what it was
         // last told, so a tray switched off in the configuration has to be
         // told it is empty or the icons stay on the bar until the shell
@@ -702,9 +725,25 @@ impl Worker {
     /// registered by path and whatever the application asked for otherwise —
     /// so a well-known name being released removes the item registered under
     /// it, and the unique name vanishing removes the rest.
+    ///
+    /// The watcher's registry is pruned with the same rule. Its keys are the
+    /// service and path joined, and the path half always starts with `/` while
+    /// a bus name never contains one, so the service is whatever stands before
+    /// the first slash — the same field `entries` is matched on, which is what
+    /// keeps the property an application reads and the tray the shell draws
+    /// in agreement.
     fn drop_owner(&mut self, name: &str) {
         let before = self.entries.len();
         self.entries.retain(|entry| entry.service != name);
+        if let Ok(mut items) = self.registry.lock() {
+            items.retain(|key| match key.split_once('/') {
+                Some((service, _)) => service != name,
+                // A key with no path half cannot have come from `register`,
+                // which always appends one. Nobody to match it against, so it
+                // stays — pruning on a guess is how live items get lost.
+                None => true,
+            });
+        }
         if self.entries.len() != before {
             self.publish();
         }
