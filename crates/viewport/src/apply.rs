@@ -158,7 +158,13 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             let rects = if width > 0 && height > 0 {
                 {
                     vec![smithay::utils::Rectangle::new(
-                        (x + origin.x, y + origin.y).into(),
+                        // Saturating, as every translation of a wire
+                        // coordinate below: serde accepts up to i32::MAX, an
+                        // origin for a second monitor is real pixels, and
+                        // the sum of the two overflowing is a window on the
+                        // wrong screen — the very fault the origin exists to
+                        // prevent — or a panic, depending on the build.
+                        (x.saturating_add(origin.x), y.saturating_add(origin.y)).into(),
                         (width, height).into(),
                     )]
                 }
@@ -181,7 +187,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 .map(|rect| {
                     (
                         smithay::utils::Rectangle::new(
-                            (rect.x + origin.x, rect.y + origin.y).into(),
+                            // Saturating, as in `screencast.rect` above.
+                            (
+                                rect.x.saturating_add(origin.x),
+                                rect.y.saturating_add(origin.y),
+                            )
+                                .into(),
                             (rect.width, rect.height).into(),
                         ),
                         rect.passthrough,
@@ -719,15 +730,24 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     let origin = state.dispatch_origin;
     let asked = (layout.box_.x, layout.box_.y);
     if origin.x != 0 || origin.y != 0 {
-        layout.box_.x = layout.box_.x.map(|x| x + origin.x);
-        layout.box_.y = layout.box_.y.map(|y| y + origin.y);
+        // Saturating rather than wrapping: these numbers come off the socket,
+        // where serde takes an i32, and the origin is the real position of
+        // the monitor the shell lives on. A page coordinate near i32::MAX is
+        // nonsense but arrives without complaint, and adding to it used to
+        // wrap in a release build — putting the window back on the first
+        // monitor, the exact bug this translation is here to prevent — and
+        // panic in a debug one. Clamped to the edge of the coordinate space,
+        // a nonsense rectangle stays nonsense without taking the desktop
+        // with it.
+        layout.box_.x = layout.box_.x.map(|x| x.saturating_add(origin.x));
+        layout.box_.y = layout.box_.y.map(|y| y.saturating_add(origin.y));
         if let Some(clip) = layout.clip.as_mut() {
-            clip.x = clip.x.map(|x| x + origin.x);
-            clip.y = clip.y.map(|y| y + origin.y);
+            clip.x = clip.x.map(|x| x.saturating_add(origin.x));
+            clip.y = clip.y.map(|y| y.saturating_add(origin.y));
         }
         if let Some(frame) = layout.frame.as_mut() {
-            frame.x += origin.x;
-            frame.y += origin.y;
+            frame.x = frame.x.saturating_add(origin.x);
+            frame.y = frame.y.saturating_add(origin.y);
         }
     }
 
