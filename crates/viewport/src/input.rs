@@ -790,7 +790,17 @@ impl ViewportState {
 
         let at = pointer.current_location();
         if self.surface_under(at).is_none() && self.shell_is_up() {
-            self.shell_pointer_axis(at, horizontal, vertical, source == AxisSource::Finger, time);
+            // The shell reads this as "precise": a scroll worth animating
+            // rather than one to step a page at a time. That is a property of
+            // being continuous, not of being a finger — a remote touchpad
+            // scroll was reaching the page claiming every tick was a detent.
+            self.shell_pointer_axis(
+                at,
+                horizontal,
+                vertical,
+                source == AxisSource::Continuous,
+                time,
+            );
         }
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -2331,24 +2341,27 @@ impl ViewportState {
         if !on_shell && !self.pointer_on_shell {
             return;
         }
-        let (x, y) = if on_shell { (at.x, at.y) } else { (-1.0, -1.0) };
         self.pointer_on_shell = on_shell;
-        let modifiers = self.shell_modifiers();
-        // Every page, and each in its own coordinates: a page that has the
-        // pointer is told where, and one that does not is told it left. A
-        // second page still showing a hover from the last time the pointer was
-        // over it is what leaving out the second half looks like.
+        // The modifiers are read only by a page, so they are only worth
+        // computing when there is one.
         #[cfg(feature = "wpe")]
-        for page in &self.shells {
-            let local = if on_shell && page.contains(at) {
-                page.local(at)
-            } else {
-                (-1.0, -1.0).into()
-            };
-            page.engine
-                .pointer_motion(time, local.x, local.y, modifiers);
+        {
+            let modifiers = self.shell_modifiers();
+            // Every page, and each in its own coordinates: a page that has the
+            // pointer is told where, and one that does not is told it left. A
+            // second page still showing a hover from the last time the pointer was
+            // over it is what leaving out the second half looks like.
+            for page in &self.shells {
+                let local = if on_shell && page.contains(at) {
+                    page.local(at)
+                } else {
+                    (-1.0, -1.0).into()
+                };
+                page.engine
+                    .pointer_motion(time, local.x, local.y, modifiers);
+            }
         }
-        let _ = (x, y, time, modifiers);
+        let _ = (at, time);
     }
 
     fn shell_pointer_button(
