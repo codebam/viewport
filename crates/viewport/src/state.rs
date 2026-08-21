@@ -394,6 +394,15 @@ pub struct ViewportState {
     /// `ipc_dispatch`, which sets this, and `apply::view_layout`, which is the
     /// reason it exists. Zero for anything that is not a shell.
     pub dispatch_origin: smithay::utils::Point<i32, Logical>,
+    /// The socket client whose message is being applied, or 0 for nobody in
+    /// particular.
+    ///
+    /// Set by `ipc_dispatch_at` around a dispatch, exactly as
+    /// `dispatch_origin` is, so `apply::reject` can answer the client that
+    /// sent the message instead of every client listening. Zero outside a
+    /// dispatch, which is what makes the config file's own rejections —
+    /// which nobody in particular asked for — broadcasts.
+    pub dispatch_client: u64,
     /// Whether a page named by `--url` spans every monitor rather than taking
     /// the first one and leaving the rest to the desktop.
     ///
@@ -1370,6 +1379,7 @@ impl ViewportState {
             next_shell_id: 0,
             shell_url_spans: false,
             dispatch_origin: (0, 0).into(),
+            dispatch_client: 0,
             background_terminals: Vec::new(),
             background_command: None,
             background_backend_warned: false,

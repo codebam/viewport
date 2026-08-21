@@ -1051,13 +1051,18 @@ fn to_smithay_transform(transform: Transform) -> SmithayTransform {
     }
 }
 
-/// Report a refusal on the broadcast channel.
+/// Report a refusal to the client that earned it.
 fn reject(state: &mut ViewportState, context: &str, message: &str) {
     let event = Event::Error {
         context: context.to_owned(),
         message: message.to_owned(),
     };
-    state.notify(&event);
+    let client = state.dispatch_client;
+    if client == 0 {
+        state.notify(&event);
+    } else {
+        state.ipc.send_to(client, &event);
+    }
 }
 
 /// Whether two bindings are drawn on the same chord, in the same mode — and

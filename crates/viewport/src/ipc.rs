@@ -666,6 +666,12 @@ impl ViewportState {
         // layout coordinates, because it has no page to speak in.
         self.dispatch_origin = origin;
 
+        // And whose rejections are theirs: the handler path answers the
+        // client that sent the message, exactly as the parse path below
+        // does. Zero would broadcast, which is what a compositor-internal
+        // apply (a config file, the watchdog) wants and no socket dispatch.
+        self.dispatch_client = client_id;
+
         match viewport_ipc::parse(bytes) {
             Ok(request) => self.handle_request(request),
             Err(error) => {
@@ -680,6 +686,7 @@ impl ViewportState {
         // are already in layout coordinates, and on a multi-monitor `--url`
         // session they landed a screen's width off the desk.
         self.dispatch_origin = (0, 0).into();
+        self.dispatch_client = 0;
     }
 
     fn ipc_reject(&mut self, client_id: u64, error: &ParseError) {

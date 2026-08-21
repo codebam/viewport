@@ -867,10 +867,13 @@ fn run(invocation: Invocation) -> Result<(), String> {
                         "error" => return Err(complaint(&event)),
                         _ => continue,
                     },
-                    // The compositor going away is what `quit` asked for, and
-                    // an unreadable line here belongs to somebody else's
-                    // conversation.
-                    Ok(Incoming::Eof) | Ok(Incoming::Timeout) | Err(_) => return Ok(()),
+                    // The compositor going away is what `quit` asked for,
+                    // and a silence after it is not a failure either. A read
+                    // error is: the conversation ended mid-word, and
+                    // reporting success for it would be the one lie this
+                    // tool cannot tell.
+                    Ok(Incoming::Eof) | Ok(Incoming::Timeout) => return Ok(()),
+                    Err(e) => return Err(e),
                 }
             }
         }
