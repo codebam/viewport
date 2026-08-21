@@ -118,7 +118,10 @@ impl Power {
     }
 
     /// Switch the power profile.
-    pub fn set_profile(&self, profile: String) {
+    ///
+    /// `&mut self` for the same reason `suspend` is: a dead worker has to be
+    /// let go of before the request can be given to a new one.
+    pub fn set_profile(&mut self, profile: String) {
         self.send(Command::SetProfile(profile));
     }
 
@@ -149,6 +152,10 @@ impl Power {
     /// has a bus to talk logind through. Returns whether a worker exists
     /// afterwards. Deliberately does not flip `enabled`: a menu row is one call,
     /// not a request to start drawing a battery the user did not ask for.
+    ///
+    /// Starting is cheap here by design — a thread and a channel, with the bus
+    /// connection made on the worker's own time — so this can be called from
+    /// the shutdown path without anyone waiting on dbus-daemon.
     fn ensure_worker(&mut self) -> bool {
         if self.worker.is_some() {
             return true;
@@ -168,9 +175,17 @@ impl Power {
         }
     }
 
-    fn send(&self, command: Command) {
-        if let Some(worker) = self.worker.as_ref() {
-            let _ = worker.send(command);
+    fn send(&mut self, command: Command) {
+        let Some(worker) = self.worker.as_ref() else {
+            return;
+        };
+        // A failed send means the worker thread is gone — the system bus never
+        // answered, most likely. Dropping the handle here is what makes the
+        // next action respawn one, rather than every suspend for the rest of
+        // the session vanishing into a channel nobody reads.
+        if let Err(e) = worker.send(command) {
+            tracing::warn!("power: the power worker is gone ({e}); the next action restarts it");
+            self.worker = None;
         }
     }
 }
@@ -188,49 +203,87 @@ fn start(
     events: smithay::reexports::calloop::channel::Sender<Message>,
 ) -> anyhow::Result<mpsc::Sender<Command>> {
     let (commands, inbox) = mpsc::channel();
-    let connection = zbus::blocking::Connection::system()?;
-
-    // UPower's properties, the DisplayDevice's, and the profiles daemon's,
-    // all through the same signal. Over-receiving is a refresh; missing one
-    // is a lid that never blanks.
-    pump(
-        connection.clone(),
-        commands.clone(),
-        "type='signal',interface='org.freedesktop.DBus.Properties',\
-         sender='org.freedesktop.UPower'"
-            .to_owned(),
-    )?;
-    pump(
-        connection.clone(),
-        commands.clone(),
-        "type='signal',interface='org.freedesktop.DBus.Properties',\
-         path='/org/freedesktop/UPower/PowerProfiles'"
-            .to_owned(),
-    )?;
-    pump(
-        connection.clone(),
-        commands.clone(),
-        "type='signal',interface='org.freedesktop.DBus.Properties',\
-         path='/net/hadess/PowerProfiles'"
-            .to_owned(),
-    )?;
-
+    // The thread comes up first and the bus is met inside it. `start` runs on
+    // the compositor's thread, reached from the control-socket dispatch for
+    // suspend, reboot and power off, and a synchronous connect to a wedged
+    // dbus-daemon would freeze the desktop at the very moment somebody asked
+    // it to go away. Commands queue while the connection is being made; a
+    // failure is logged by the one thread that cares, and the next action
+    // respawns the worker.
     std::thread::Builder::new()
         .name("power".to_owned())
-        .spawn(move || Worker::new(connection, events).run(&inbox))?;
+        .spawn({
+            let commands = commands.clone();
+            move || {
+                let connection = match zbus::blocking::Connection::system() {
+                    Ok(connection) => connection,
+                    Err(e) => {
+                        tracing::warn!("power: the system bus is unavailable: {e:#}");
+                        return;
+                    }
+                };
+
+                // UPower's properties, the DisplayDevice's, and the profiles
+                // daemon's, all through the same signal. Over-receiving is a
+                // refresh; missing one is a lid that never blanks. A feed that
+                // cannot be set up costs its signals only — suspend and profile
+                // switches are answered without any of them.
+                for (rule, what) in [
+                    (
+                        "type='signal',interface='org.freedesktop.DBus.Properties',\
+                     sender='org.freedesktop.UPower'",
+                        "UPower",
+                    ),
+                    (
+                        "type='signal',interface='org.freedesktop.DBus.Properties',\
+                     path='/org/freedesktop/UPower/PowerProfiles'",
+                        "the power-profiles daemon",
+                    ),
+                    (
+                        "type='signal',interface='org.freedesktop.DBus.Properties',\
+                     path='/net/hadess/PowerProfiles'",
+                        "the legacy power-profiles name",
+                    ),
+                ] {
+                    if let Err(e) = pump(connection.clone(), commands.clone(), rule.to_owned()) {
+                        tracing::warn!("power: no signal feed from {what}: {e}");
+                    }
+                }
+
+                Worker::new(connection, events).run(&inbox);
+            }
+        })?;
     Ok(commands)
 }
 
+/// One thread reading one match rule, turning messages into commands.
+///
+/// The subscription is made on the reader thread rather than before spawning
+/// it: registering a match rule is another blocking round trip to the bus
+/// daemon, and the worker has suspend requests waiting behind it.
 fn pump(
     connection: zbus::blocking::Connection,
     commands: mpsc::Sender<Command>,
     rule: String,
 ) -> anyhow::Result<()> {
-    let rule = zbus::MatchRule::try_from(rule.as_str())?;
-    let messages = zbus::blocking::MessageIterator::for_match_rule(rule, &connection, None)?;
     std::thread::Builder::new()
         .name("power-signals".to_owned())
         .spawn(move || {
+            let parsed = match zbus::MatchRule::try_from(rule.as_str()) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    tracing::warn!("power: unreadable match rule {rule:?}: {e}");
+                    return;
+                }
+            };
+            let messages =
+                match zbus::blocking::MessageIterator::for_match_rule(parsed, &connection, None) {
+                    Ok(messages) => messages,
+                    Err(e) => {
+                        tracing::warn!("power: could not subscribe to {rule:?}: {e}");
+                        return;
+                    }
+                };
             for _ in messages.flatten() {
                 if commands.send(Command::Refresh).is_err() {
                     return;
@@ -282,9 +335,13 @@ impl Worker {
                 Command::Suspend => self.suspend(),
                 Command::Reboot => self.reboot(),
                 Command::Poweroff => self.poweroff(),
+                // A profile switch is in the same company: it arrives from the
+                // bar's menu, which exists without a battery widget, and a
+                // request that fell into the disabled arm below would be
+                // swallowed without a word.
+                Command::SetProfile(profile) => self.set_profile(&profile),
                 _ if !self.enabled => {}
                 Command::Refresh => self.refresh(),
-                Command::SetProfile(profile) => self.set_profile(&profile),
             }
         }
     }
