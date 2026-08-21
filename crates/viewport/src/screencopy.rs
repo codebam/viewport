@@ -119,12 +119,24 @@ where
                 let Some(output) = Output::from_resource(&output) else {
                     // An output that has gone since the client looked it up.
                     // Initialising and failing is the only way to tell it:
-                    // there is no error on the manager for this.
+                    // there is no error on the manager for this. The output is
+                    // a placeholder for the same reason gamma's is — the frame
+                    // needs one to exist, and nothing will ever be copied into
+                    // it, because `copied` starts set and a second request on
+                    // the frame is refused.
                     let frame = data_init.init(
                         frame,
                         FrameState {
-                            output: Output::from_resource(&output)
-                                .unwrap_or_else(|| unreachable!("checked above")),
+                            output: Output::new(
+                                "gone".to_owned(),
+                                smithay::output::PhysicalProperties {
+                                    size: (0, 0).into(),
+                                    subpixel: smithay::output::Subpixel::Unknown,
+                                    make: String::new(),
+                                    model: String::new(),
+                                    serial_number: String::new(),
+                                },
+                            ),
                             region: Rectangle::default(),
                             overlay_cursor: false,
                             copied: Mutex::new(true),

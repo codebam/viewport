@@ -24,7 +24,7 @@ use smithay::input::pointer::{
 };
 use smithay::input::tablet::{TabletDescriptor, TabletSeatTrait as _};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, Serial, SERIAL_COUNTER};
 
 /// The two buttons a drag can start with, as libinput numbers them.
 const BTN_LEFT: u32 = 0x110;
@@ -624,16 +624,7 @@ impl ViewportState {
         let position = (x, y).into();
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(position);
-        if let Some((surface, _)) = under.as_ref() {
-            if let Some(keyboard) = self.seat.get_keyboard() {
-                let focus = self
-                    .views
-                    .find_by_surface(surface)
-                    .and_then(|view| crate::keyboard_focus::KeyboardFocus::for_window(&view.window))
-                    .unwrap_or_else(|| surface.clone().into());
-                keyboard.set_focus(self, Some(focus), serial);
-            }
-        }
+        self.focus_touch_target(under.as_ref(), serial);
         touch.down(
             self,
             under,
@@ -713,6 +704,7 @@ impl ViewportState {
         let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
 
         let delta = (dx, dy).into();
+        self.note_pointer_motion(from, delta, locked, confine_to.as_ref(), under.is_some());
         let time = self.start_time.elapsed().as_millis() as u32;
         pointer.relative_motion(
             self,
@@ -735,35 +727,7 @@ impl ViewportState {
             return;
         }
 
-        let outputs: Vec<_> = self
-            .space
-            .outputs()
-            .filter_map(|o| self.space.output_geometry(o))
-            .collect();
-        let mut pos = crate::cursor::clamp(&outputs, from, from + delta);
-        if let Some((region, origin)) = confine_to {
-            let local = pos - origin.to_f64();
-            if let Some(snapped) = crate::pointer::confine(&region, local) {
-                pos = snapped + origin.to_f64();
-            }
-        }
-
-        let serial = SERIAL_COUNTER.next_serial();
-        let under = self.surface_under(pos);
-        let on_shell = under.is_none();
-        pointer.motion(
-            self,
-            under,
-            &smithay::input::pointer::MotionEvent {
-                location: pos,
-                serial,
-                time,
-            },
-        );
-        pointer.frame(self);
-        self.drag_to(pos);
-        self.shell_pointer_motion(pos, on_shell, time);
-        self.needs_render = true;
+        self.move_pointer(from, delta, confine_to.as_ref(), time);
         self.cursor_activity();
     }
 
@@ -826,7 +790,17 @@ impl ViewportState {
 
         let at = pointer.current_location();
         if self.surface_under(at).is_none() && self.shell_is_up() {
-            self.shell_pointer_axis(at, horizontal, vertical, source == AxisSource::Finger, time);
+            // The shell reads this as "precise": a scroll worth animating
+            // rather than one to step a page at a time. That is a property of
+            // being continuous, not of being a finger — a remote touchpad
+            // scroll was reaching the page claiming every tick was a detent.
+            self.shell_pointer_axis(
+                at,
+                horizontal,
+                vertical,
+                source == AxisSource::Continuous,
+                time,
+            );
         }
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -1339,52 +1313,13 @@ impl ViewportState {
                 // anything. Read before the pointer moves, because a
                 // constraint applies to where it is now.
                 let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
-
-                {
-                    // What the compositor believes about capture right now,
-                    // which is the one thing the symptom cannot tell you.
-                    //
-                    // Every change of state unconditionally — there are a
-                    // handful in a session and each one matters. The running
-                    // commentary only when asked, because a gaming mouse sends
-                    // thousands of these a second.
-                    self.pointer_motions += 1;
-                    // The state as a constant, so the comparison costs nothing:
-                    // this runs for every motion event a gaming mouse sends and
-                    // a string built to be thrown away is a string built
-                    // thousands of times a second. How many rectangles the
-                    // confinement has is worth having in the line and is
-                    // therefore formatted where the line is, not here.
-                    let state: &'static str = if locked {
-                        "locked"
-                    } else if confine_to.is_some() {
-                        "confined"
-                    } else {
-                        "free"
-                    };
-                    let changed = self.pointer_capture.as_deref() != Some(state);
-                    if changed {
-                        self.pointer_capture = Some(state.to_owned());
-                    }
-                    if changed || (crate::pointer::debug() && self.pointer_motions % 100 == 1) {
-                        let over = if under.is_some() {
-                            "a surface"
-                        } else {
-                            "the shell"
-                        };
-                        match confine_to.as_ref().filter(|_| !locked) {
-                            Some((region, _)) => tracing::info!(
-                                "pointer: delta {:?} at {from:?}, confined to {} rect(s), over {over}",
-                                event.delta(),
-                                region.len()
-                            ),
-                            None => tracing::info!(
-                                "pointer: delta {:?} at {from:?}, {state}, over {over}",
-                                event.delta()
-                            ),
-                        }
-                    }
-                }
+                self.note_pointer_motion(
+                    from,
+                    event.delta(),
+                    locked,
+                    confine_to.as_ref(),
+                    under.is_some(),
+                );
 
                 // Relative motion first, and always. It is what a game reads,
                 // and a locked pointer has nothing else to go on — an absolute
@@ -1408,39 +1343,7 @@ impl ViewportState {
                     return;
                 }
 
-                let outputs: Vec<_> = self
-                    .space
-                    .outputs()
-                    .filter_map(|o| self.space.output_geometry(o))
-                    .collect();
-                let mut pos = crate::cursor::clamp(&outputs, from, from + event.delta());
-
-                // Confinement: still moves, but may not leave the region the
-                // client nominated — a windowed game, or a map widget.
-                if let Some((region, origin)) = confine_to {
-                    let local = pos - origin.to_f64();
-                    if let Some(snapped) = crate::pointer::confine(&region, local) {
-                        pos = snapped + origin.to_f64();
-                    }
-                }
-
-                let serial = SERIAL_COUNTER.next_serial();
-                let under = self.surface_under(pos);
-                let on_shell = under.is_none();
-                pointer.motion(
-                    self,
-                    under,
-                    &MotionEvent {
-                        location: pos,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
-                self.drag_to(pos);
-                self.shell_pointer_motion(pos, on_shell, event.time_msec());
-                // The cursor moved, and nothing else would draw it.
-                self.needs_render = true;
+                self.move_pointer(from, event.delta(), confine_to.as_ref(), event.time_msec());
             }
 
             InputEvent::PointerMotionAbsolute { event, .. } => {
@@ -1961,29 +1864,15 @@ impl ViewportState {
                             self,
                             &smithay::input::tablet::tool::DownEvent { serial, time },
                         );
+                        // The tip landing is the click; the keyboard comes
+                        // with it, by the same route a finger's does.
                         let at = self
                             .seat
                             .get_pointer()
                             .map(|pointer| pointer.current_location());
-                        if let (Some(at), Some(keyboard)) = (at, self.seat.get_keyboard()) {
-                            if let Some((surface, _)) = self.surface_under(at) {
-                                // Through the view rather than the surface, as
-                                // the click path does: an X11 window focused as
-                                // a bare surface gets `wl_keyboard.enter` and no
-                                // `SetInputFocus`, so the X server stays at
-                                // `PointerRoot` and the window is never told it
-                                // has the keyboard.
-                                let focus = self
-                                    .views
-                                    .find_by_surface(&surface)
-                                    .and_then(|view| {
-                                        crate::keyboard_focus::KeyboardFocus::for_window(
-                                            &view.window,
-                                        )
-                                    })
-                                    .unwrap_or_else(|| surface.into());
-                                keyboard.set_focus(self, Some(focus), serial);
-                            }
+                        if let Some(at) = at {
+                            let under = self.surface_under(at);
+                            self.focus_touch_target(under.as_ref(), serial);
                         }
                     }
                     smithay::backend::input::TabletToolTipState::Up => tool.up(
@@ -2197,9 +2086,8 @@ impl ViewportState {
     /// fraction of the screen it is glued to, which `touch_position` scales;
     /// a libei client is told the layout's coordinates and sends those.
     ///
-    /// Distinct from `inject_touch_down`, which is deliberately the bare
-    /// `wl_touch.down` a script asks for: this is the whole of what a finger
-    /// does, focus included.
+    /// Focus rides along in both, through `focus_touch_target`: whichever
+    /// hand put the finger down, the window under it took the keyboard.
     pub fn touch_down_at(
         &mut self,
         slot: smithay::backend::input::TouchSlot,
@@ -2215,20 +2103,7 @@ impl ViewportState {
         // The window under the finger takes the keyboard too. There is
         // no other way to focus something on a touchscreen: there is no
         // pointer to click with and no way to reach a chord.
-        if let Some((surface, _)) = under.as_ref() {
-            if let Some(keyboard) = self.seat.get_keyboard() {
-                // By window where there is one, for the reason the click
-                // path gives: an X11 window focused as a bare surface
-                // leaves the X server at `PointerRoot`, so nothing under
-                // Xwayland is ever told a finger gave it the keyboard.
-                let focus = self
-                    .views
-                    .find_by_surface(surface)
-                    .and_then(|view| crate::keyboard_focus::KeyboardFocus::for_window(&view.window))
-                    .unwrap_or_else(|| surface.clone().into());
-                keyboard.set_focus(self, Some(focus), serial);
-            }
-        }
+        self.focus_touch_target(under.as_ref(), serial);
 
         touch.down(
             self,
@@ -2287,7 +2162,7 @@ impl ViewportState {
     /// the millisecond stamp `wl_pointer` carries. Both are passed rather than
     /// one derived from the other because the device supplies both and a
     /// derived one is a rounded one.
-    pub fn pointer_absolute_to(&mut self, mut pos: Point<f64, Logical>, utime: u64, time: u32) {
+    pub fn pointer_absolute_to(&mut self, pos: Point<f64, Logical>, utime: u64, time: u32) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -2303,11 +2178,16 @@ impl ViewportState {
         // same question of the same point twice costs that twice.
         let under = self.surface_under(from);
         let (locked, confine_to) = self.pointer_constraint(&pointer, under.as_ref());
+        // Whether the pointer started over a surface, kept out of the hit
+        // test: the relative event below consumes it, and the tail only
+        // wants the answer.
+        let over_surface = under.is_some();
 
         // The delta this absolute position implies. It is what a
         // captured client is driven by, and the only thing it gets:
         // the position itself is exactly what a lock withholds.
         let delta = pos - from;
+        self.note_pointer_motion(from, delta, locked, confine_to.as_ref(), over_surface);
         pointer.relative_motion(
             self,
             under,
@@ -2323,30 +2203,7 @@ impl ViewportState {
             pointer.frame(self);
             return;
         }
-        if let Some((region, origin)) = confine_to {
-            let local = pos - origin.to_f64();
-            if let Some(snapped) = crate::pointer::confine(&region, local) {
-                pos = snapped + origin.to_f64();
-            }
-        }
-
-        let serial = SERIAL_COUNTER.next_serial();
-        let under = self.surface_under(pos);
-        let on_shell = under.is_none();
-
-        pointer.motion(
-            self,
-            under,
-            &MotionEvent {
-                location: pos,
-                serial,
-                time,
-            },
-        );
-        pointer.frame(self);
-        self.drag_to(pos);
-        self.shell_pointer_motion(pos, on_shell, time);
-        self.needs_render = true;
+        self.move_pointer(from, delta, confine_to.as_ref(), time);
     }
 
     /// Carry out one of the compositor's own chords.
@@ -2484,24 +2341,27 @@ impl ViewportState {
         if !on_shell && !self.pointer_on_shell {
             return;
         }
-        let (x, y) = if on_shell { (at.x, at.y) } else { (-1.0, -1.0) };
         self.pointer_on_shell = on_shell;
-        let modifiers = self.shell_modifiers();
-        // Every page, and each in its own coordinates: a page that has the
-        // pointer is told where, and one that does not is told it left. A
-        // second page still showing a hover from the last time the pointer was
-        // over it is what leaving out the second half looks like.
+        // The modifiers are read only by a page, so they are only worth
+        // computing when there is one.
         #[cfg(feature = "wpe")]
-        for page in &self.shells {
-            let local = if on_shell && page.contains(at) {
-                page.local(at)
-            } else {
-                (-1.0, -1.0).into()
-            };
-            page.engine
-                .pointer_motion(time, local.x, local.y, modifiers);
+        {
+            let modifiers = self.shell_modifiers();
+            // Every page, and each in its own coordinates: a page that has the
+            // pointer is told where, and one that does not is told it left. A
+            // second page still showing a hover from the last time the pointer was
+            // over it is what leaving out the second half looks like.
+            for page in &self.shells {
+                let local = if on_shell && page.contains(at) {
+                    page.local(at)
+                } else {
+                    (-1.0, -1.0).into()
+                };
+                page.engine
+                    .pointer_motion(time, local.x, local.y, modifiers);
+            }
         }
-        let _ = (x, y, time, modifiers);
+        let _ = (at, time);
     }
 
     fn shell_pointer_button(
@@ -2757,6 +2617,166 @@ type Confinement = (
 );
 
 impl ViewportState {
+    /// Note a pointer motion in the capture narration, whatever moved it.
+    ///
+    /// What the compositor believes about capture right now is the one thing
+    /// the symptom cannot tell you, and this is where that belief is kept.
+    /// It runs before the lock check in every caller — a locked pointer is
+    /// itself a state worth narrating — and it counts every motion, not only
+    /// a mouse's: the injected and absolute paths once skipped all of this,
+    /// and a remote session could move the cursor for hours while the debug
+    /// story claimed nothing was moving at all.
+    ///
+    /// `from` and `delta` are where the pointer was and what it was told to
+    /// move by, both in layout coordinates; the log line wants them as they
+    /// arrived rather than after clamping, because the interesting case is
+    /// the one at the edge. `over_surface` is whether that starting position
+    /// hit a client, and is passed as the bool it is consumed as: the hit
+    /// test itself belongs to the caller, which needs it for the relative
+    /// event and should not pay for it twice.
+    ///
+    /// Every change of state unconditionally — there are a handful in a
+    /// session and each one matters. The running commentary only when asked,
+    /// because a gaming mouse sends thousands of these a second.
+    fn note_pointer_motion(
+        &mut self,
+        from: Point<f64, Logical>,
+        delta: Point<f64, Logical>,
+        locked: bool,
+        confine_to: Option<&Confinement>,
+        over_surface: bool,
+    ) {
+        self.pointer_motions += 1;
+        // The state as a constant, so the comparison costs nothing: this runs
+        // for every motion event a gaming mouse sends and a string built to
+        // be thrown away is a string built thousands of times a second. How
+        // many rectangles the confinement has is worth having in the line and
+        // is therefore formatted where the line is, not here.
+        let state: &'static str = if locked {
+            "locked"
+        } else if confine_to.is_some() {
+            "confined"
+        } else {
+            "free"
+        };
+        let changed = self.pointer_capture.as_deref() != Some(state);
+        if changed {
+            self.pointer_capture = Some(state.to_owned());
+        }
+        if changed || (crate::pointer::debug() && self.pointer_motions % 100 == 1) {
+            let over = if over_surface {
+                "a surface"
+            } else {
+                "the shell"
+            };
+            match confine_to.as_ref().filter(|_| !locked) {
+                Some((region, _)) => tracing::info!(
+                    "pointer: delta {delta:?} at {from:?}, confined to {} rect(s), over {over}",
+                    region.len()
+                ),
+                None => {
+                    tracing::info!("pointer: delta {delta:?} at {from:?}, {state}, over {over}")
+                }
+            }
+        }
+    }
+
+    /// The one tail every relative pointer motion shares: clamp to the
+    /// monitors, hold the confinement, land the pointer, drag what is being
+    /// dragged, tell the shell.
+    ///
+    /// The caller has already sent the relative event, noted the event with
+    /// [`ViewportState::note_pointer_motion`], and given up when the pointer
+    /// is locked — those differ per device and stay above. What is below the
+    /// lock check was the same three times over, copy-pasted, and drifting
+    /// apart is exactly the fate copies meet; here is the one place it
+    /// cannot.
+    ///
+    /// `from` and `delta` are where the pointer was and what it was told to
+    /// move by, both in layout coordinates; the clamp wants them as they
+    /// arrived, because the interesting case is the one at the edge.
+    ///
+    /// `utime`-style microsecond precision is not carried here — by the time
+    /// a cursor lands, `wl_pointer` is the only one listening, and it takes
+    /// milliseconds.
+    fn move_pointer(
+        &mut self,
+        from: Point<f64, Logical>,
+        delta: Point<f64, Logical>,
+        confine_to: Option<&Confinement>,
+        time: u32,
+    ) {
+        // The caller has a pointer by definition — every one of them gave up
+        // already when there was none — so this cannot fail.
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+
+        let outputs: Vec<_> = self
+            .space
+            .outputs()
+            .filter_map(|o| self.space.output_geometry(o))
+            .collect();
+        let mut pos = crate::cursor::clamp(&outputs, from, from + delta);
+
+        // Confinement: still moves, but may not leave the region the client
+        // nominated — a windowed game, or a map widget.
+        if let Some((region, origin)) = confine_to {
+            let local = pos - origin.to_f64();
+            if let Some(snapped) = crate::pointer::confine(region, local) {
+                pos = snapped + origin.to_f64();
+            }
+        }
+
+        let serial = SERIAL_COUNTER.next_serial();
+        let under = self.surface_under(pos);
+        let on_shell = under.is_none();
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: pos,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        self.drag_to(pos);
+        self.shell_pointer_motion(pos, on_shell, time);
+        // The cursor moved, and nothing else would draw it.
+        self.needs_render = true;
+    }
+
+    /// Give the keyboard to whatever window a finger or a pen tip landed on.
+    ///
+    /// The three ways something touches this compositor — a scripted touch, a
+    /// real touchscreen, a tablet tool's tip — all want the same thing to
+    /// happen next, because from the window's side there is no difference:
+    /// input arrived, and it is the one it went to. One opinion, then, not
+    /// three that can drift.
+    fn focus_touch_target(
+        &mut self,
+        under: Option<&(WlSurface, Point<f64, Logical>)>,
+        serial: Serial,
+    ) {
+        let Some((surface, _)) = under else {
+            return;
+        };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        // Through the view rather than the surface, as the click path does:
+        // an X11 window focused as a bare surface gets `wl_keyboard.enter`
+        // and no `SetInputFocus`, so the X server stays at `PointerRoot` and
+        // the window is never told it has the keyboard.
+        let focus = self
+            .views
+            .find_by_surface(surface)
+            .and_then(|view| crate::keyboard_focus::KeyboardFocus::for_window(&view.window))
+            .unwrap_or_else(|| surface.clone().into());
+        keyboard.set_focus(self, Some(focus), serial);
+    }
+
     /// Whether the surface under the pointer has captured it, and to what.
     ///
     /// Returns whether the pointer is locked, and the region it is confined to
