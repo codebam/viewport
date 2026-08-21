@@ -697,6 +697,16 @@ pub fn hdr_description() -> Description {
     }
 }
 
+/// How many distinct descriptions the identity table remembers.
+///
+/// The parametric creator lets a client mint a description around any
+/// reference luminance it likes, so the table cannot be allowed to grow with
+/// the requests: an unbounded one is a client-controlled allocation that never
+/// shrinks. 1024 is far above what a real session produces — SDR, HDR, and a
+/// handful of descriptions a video player pins — while making eviction
+/// something a malicious client can do to itself and nobody else.
+const KNOWN_DESCRIPTIONS: usize = 1024;
+
 /// The identity for a description, allocated once per distinct description.
 ///
 /// The protocol requires a given identity to always mean the same description,
@@ -705,6 +715,18 @@ pub fn hdr_description() -> Description {
 /// fresh number for every request would make two identical descriptions look
 /// different, and would make the identity in `preferred_changed` disagree with
 /// the one the client then gets back from `get_preferred`.
+///
+/// The table is capped at `KNOWN_DESCRIPTIONS` and evicts the *oldest* entry,
+/// which is safe precisely because of what identities are used for. Nothing on
+/// this side maps an identity back to a description — `Feedback.last` holds
+/// one only to notice that the answer is unchanged — and the protocol's
+/// requirement runs identity → description, not description → identity. So
+/// when an evicted description is asked about again it simply gets a new
+/// number, and the worst a client sees is one spurious `preferred_changed`
+/// telling it to look again: an event that is merely unnecessary, never a
+/// description that changed meaning under a client. The descriptions real
+/// sessions live on are asked about constantly, so they re-enter the table
+/// immediately and eviction lands on the mints of a hostile client instead.
 fn identity_for(description: &Description) -> u32 {
     static KNOWN: Mutex<Vec<(Description, u32)>> = Mutex::new(Vec::new());
     let Ok(mut known) = KNOWN.lock() else {
@@ -714,6 +736,9 @@ fn identity_for(description: &Description) -> u32 {
         return *identity;
     }
     let identity = next_identity();
+    if known.len() >= KNOWN_DESCRIPTIONS {
+        known.remove(0);
+    }
     known.push((*description, identity));
     identity
 }
