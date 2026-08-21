@@ -158,7 +158,13 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             let rects = if width > 0 && height > 0 {
                 {
                     vec![smithay::utils::Rectangle::new(
-                        (x + origin.x, y + origin.y).into(),
+                        // Saturating, as every translation of a wire
+                        // coordinate below: serde accepts up to i32::MAX, an
+                        // origin for a second monitor is real pixels, and
+                        // the sum of the two overflowing is a window on the
+                        // wrong screen — the very fault the origin exists to
+                        // prevent — or a panic, depending on the build.
+                        (x.saturating_add(origin.x), y.saturating_add(origin.y)).into(),
                         (width, height).into(),
                     )]
                 }
@@ -181,7 +187,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 .map(|rect| {
                     (
                         smithay::utils::Rectangle::new(
-                            (rect.x + origin.x, rect.y + origin.y).into(),
+                            // Saturating, as in `screencast.rect` above.
+                            (
+                                rect.x.saturating_add(origin.x),
+                                rect.y.saturating_add(origin.y),
+                            )
+                                .into(),
                             (rect.width, rect.height).into(),
                         ),
                         rect.passthrough,
@@ -534,16 +545,8 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         Request::BindAdd { chord, action } => {
             // Runtime binds from the shell are additive and expendable; the
             // ones that must survive a broken shell are the defaults.
-            match crate::binding::parse(&format!("{chord}={action}")) {
-                Some(binding) => {
-                    // Replaced rather than appended, so re-registering a chord
-                    // does not leave the older one shadowing it.
-                    state.bindings.retain(|existing| {
-                        existing.modifiers != binding.modifiers || existing.keysym != binding.keysym
-                    });
-                    state.bindings.push(binding);
-                }
-                None => reject(state, "bind.add", &format!("{chord}={action}")),
+            if !install_binding(&mut state.bindings, &chord, &action) {
+                reject(state, "bind.add", &format!("{chord}={action}"));
             }
         }
 
@@ -719,15 +722,24 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     let origin = state.dispatch_origin;
     let asked = (layout.box_.x, layout.box_.y);
     if origin.x != 0 || origin.y != 0 {
-        layout.box_.x = layout.box_.x.map(|x| x + origin.x);
-        layout.box_.y = layout.box_.y.map(|y| y + origin.y);
+        // Saturating rather than wrapping: these numbers come off the socket,
+        // where serde takes an i32, and the origin is the real position of
+        // the monitor the shell lives on. A page coordinate near i32::MAX is
+        // nonsense but arrives without complaint, and adding to it used to
+        // wrap in a release build — putting the window back on the first
+        // monitor, the exact bug this translation is here to prevent — and
+        // panic in a debug one. Clamped to the edge of the coordinate space,
+        // a nonsense rectangle stays nonsense without taking the desktop
+        // with it.
+        layout.box_.x = layout.box_.x.map(|x| x.saturating_add(origin.x));
+        layout.box_.y = layout.box_.y.map(|y| y.saturating_add(origin.y));
         if let Some(clip) = layout.clip.as_mut() {
-            clip.x = clip.x.map(|x| x + origin.x);
-            clip.y = clip.y.map(|y| y + origin.y);
+            clip.x = clip.x.map(|x| x.saturating_add(origin.x));
+            clip.y = clip.y.map(|y| y.saturating_add(origin.y));
         }
         if let Some(frame) = layout.frame.as_mut() {
-            frame.x += origin.x;
-            frame.y += origin.y;
+            frame.x = frame.x.saturating_add(origin.x);
+            frame.y = frame.y.saturating_add(origin.y);
         }
     }
 
@@ -1039,13 +1051,58 @@ fn to_smithay_transform(transform: Transform) -> SmithayTransform {
     }
 }
 
-/// Report a refusal on the broadcast channel.
+/// Report a refusal to the client that earned it.
 fn reject(state: &mut ViewportState, context: &str, message: &str) {
     let event = Event::Error {
         context: context.to_owned(),
         message: message.to_owned(),
     };
-    state.notify(&event);
+    let client = state.dispatch_client;
+    if client == 0 {
+        state.notify(&event);
+    } else {
+        state.ipc.send_to(client, &event);
+    }
+}
+
+/// Whether two bindings are drawn on the same chord, in the same mode — and
+/// so the thing a runtime bind replaces.
+///
+/// The whole identity, every field of it. A wheel binding and a mouse-button
+/// binding both carry keysym 0, because each is drawn on no key at all, so
+/// matched on modifiers and keysym alone they are indistinguishable from
+/// each other and from every chord those modifiers leave unmapped — which is
+/// how registering `Mod4+WheelUp` used to delete `Mod4+WheelDown` and
+/// `Mod4+Mouse4` with it. And the mode is part of what a chord *is*: a plain
+/// `h` shares its keysym with the resize mode's `h`, and replacing one is
+/// not replacing the other.
+///
+/// (`binding::shadows` looks close and is not: it asks whether an earlier
+/// key binding swallows a later one, which is a question about
+/// reachability, not identity.)
+fn same_chord(a: &crate::binding::Binding, b: &crate::binding::Binding) -> bool {
+    a.mode == b.mode
+        && a.modifiers == b.modifiers
+        && a.keysym == b.keysym
+        && a.button == b.button
+        && a.wheel == b.wheel
+}
+
+/// Register a runtime binding from a `bind.add` message.
+///
+/// Replaced rather than appended when the chord is already taken, so
+/// re-registering one does not leave the older binding shadowing it — but
+/// only *its own* chord goes, by the full identity [`same_chord`]
+/// matches on.
+fn install_binding(bindings: &mut Vec<crate::binding::Binding>, chord: &str, action: &str) -> bool {
+    match crate::binding::parse(&format!("{chord}={action}")) {
+        Some(binding) => {
+            bindings.retain(|existing| !same_chord(existing, &binding));
+            bindings.push(binding);
+            true
+        }
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -1075,5 +1132,72 @@ mod tests {
 
         let resized = configure_size((1270, 1390), (6, 39));
         assert_ne!(first, resized, "a real resize must still be seen");
+    }
+
+    #[test]
+    fn bind_add_replaces_the_same_chord_and_nothing_else() {
+        use crate::binding::{Action, Wheel};
+        use smithay::input::keyboard::{keysyms, ModifiersState};
+
+        let mut bindings = crate::binding::defaults("foot", Some("wmenu-run"), "tiling");
+
+        // A plain `h` shares its modifiers and its keysym with the resize
+        // mode's `h`. Replaced on those two alone, adding the first deleted
+        // the second — and resize mode lost half its keymap to a bind that
+        // never mentioned it.
+        assert!(install_binding(
+            &mut bindings,
+            "h",
+            "shell layout.focus left"
+        ));
+        let free = ModifiersState::default();
+        assert!(
+            crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "resize").is_some(),
+            "the resize-mode binding for h is gone"
+        );
+        assert!(crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "").is_some());
+
+        // Wheel and button bindings carry keysym 0, because each is drawn on
+        // no key at all. Replaced on the keysym alone, registering one wheel
+        // direction deleted the other direction and the side button with it.
+        assert!(install_binding(&mut bindings, "Mod4+Mouse4", "close"));
+        assert!(install_binding(
+            &mut bindings,
+            "Mod4+WheelUp",
+            "shell workspace.next"
+        ));
+        assert!(install_binding(
+            &mut bindings,
+            "Mod4+WheelDown",
+            "shell workspace.prev"
+        ));
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert!(
+            crate::binding::match_button(&bindings, &held, 0x113, "").is_some(),
+            "the Mouse4 binding is gone"
+        );
+        assert_eq!(
+            crate::binding::match_wheel(&bindings, &held, Wheel::Down, ""),
+            Some(&Action::Shell("workspace.prev".to_owned())),
+            "the WheelDown binding is gone"
+        );
+
+        // And the chord that *was* named is replaced rather than appended
+        // to, so re-registering one does not leave the older binding
+        // shadowing it.
+        let before = bindings.len();
+        assert!(install_binding(
+            &mut bindings,
+            "Mod4+WheelUp",
+            "shell workspace.switch 2"
+        ));
+        assert_eq!(bindings.len(), before);
+        assert_eq!(
+            crate::binding::match_wheel(&bindings, &held, Wheel::Up, ""),
+            Some(&Action::Shell("workspace.switch 2".to_owned()))
+        );
     }
 }

@@ -1501,6 +1501,11 @@ mod tests {
                 app_id: String::new(),
                 icon: None,
             }),
+            json(&Event::ViewConfigured {
+                id: 1,
+                width: 0,
+                height: 0,
+            }),
             json(&Event::ViewFocused { id: 1 }),
             json(&Event::Config(Config {
                 layout: "tiling".into(),
@@ -1521,6 +1526,12 @@ mod tests {
                 wallpaper_mode: None,
                 osk: "auto".to_owned(),
             })),
+            json(&Event::WorkspaceRequest {
+                action: String::new(),
+                id: None,
+                name: None,
+                output: None,
+            }),
             json(&Event::Modifiers { logo: true }),
             json(&Event::SessionRestore {
                 state: String::new(),
@@ -1542,6 +1553,10 @@ mod tests {
             }),
             json(&Event::ClipboardHistory {
                 entries: Vec::new(),
+            }),
+            json(&Event::LauncherList {
+                generation: 0,
+                apps: Vec::new(),
             }),
             json(&Event::MprisUpdate { player: None }),
             json(&Event::PowerUpdate(PowerSnapshot::default())),
@@ -1588,14 +1603,17 @@ mod tests {
                 "view.added",
                 "view.removed",
                 "view.props",
+                "view.configured",
                 "view.focused",
                 "config",
+                "workspace.request",
                 "modifiers",
                 "session.restore",
                 "notification.add",
                 "notification.close",
                 "notification.history",
                 "clipboard.history",
+                "launcher.list",
                 "mpris.update",
                 "power.update",
                 "osk.wanted",

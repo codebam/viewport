@@ -94,7 +94,15 @@ pub fn parse(bytes: &[u8]) -> Result<Request, ParseError> {
         .ok_or(ParseError::MissingType)?
         .to_owned();
 
-    serde_json::from_value(value.clone()).map_err(|e| {
+    // From the bytes again rather than from the parsed value. `from_value`
+    // would deep-clone the whole document per dispatch — up to the framing
+    // cap, sixty times a second, for a shell that lays everything out on
+    // every frame — purely so the staged checks above could keep it alive
+    // long enough to name the type in an error. They only need the name, and
+    // that is already owned. Nothing is lost by reading the bytes a second
+    // time: `from_slice` reports the line and column of a bad body where
+    // `from_value`, which has no positions to point at, reports neither.
+    serde_json::from_slice(bytes).map_err(|e| {
         // serde cannot tell "no such variant" from "that variant, malformed",
         // so the dispatch-table membership check has to be its own step.
         if is_known_type(&name) {
@@ -286,6 +294,20 @@ mod tests {
         let error = parse(br#"{"type":"view.focus","id":"seven"}"#).unwrap_err();
         assert_eq!(error.context(), "view.focus");
         assert!(matches!(error, ParseError::BadBody { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_bad_body_still_says_what_was_wrong_with_it() {
+        // Parsed from the original bytes rather than a cloned value, and the
+        // complaint keeps the field, the type and the position either way —
+        // which is what makes it usable at a prompt.
+        let error = parse(br#"{"type":"view.focus","id":"seven"}"#).unwrap_err();
+        let ParseError::BadBody { name, message } = &error else {
+            panic!("should be a bad body, not {error:?}");
+        };
+        assert_eq!(name, "view.focus");
+        assert!(message.contains("invalid type"), "{message}");
+        assert!(message.contains("seven"), "{message}");
     }
 
     #[test]
