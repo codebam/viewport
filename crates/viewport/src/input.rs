@@ -495,7 +495,13 @@ impl ViewportState {
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.start_time.elapsed().as_millis() as u32;
         let to_shell = keyboard.current_focus().is_none() && self.shell_is_up();
+        // The modifiers are read only by a page, so they are only worth
+        // computing when there is one; without the web engine they go
+        // nowhere, and the placeholder only keeps the key's shape.
+        #[cfg(feature = "wpe")]
         let modifiers_now = self.shell_modifiers();
+        #[cfg(not(feature = "wpe"))]
+        let modifiers_now = 0;
         let mods_before = keyboard.modifier_state();
 
         let action = keyboard.input::<Option<Action>, _>(
@@ -1063,7 +1069,13 @@ impl ViewportState {
                 // page instead, leaving the launcher unable to type
                 // (`src/input.c:1052`).
                 let to_shell = keyboard.current_focus().is_none() && self.shell_is_up();
+                // The modifiers are read only by a page, so they are only worth
+                // computing when there is one; without the web engine they go
+                // nowhere, and the placeholder only keeps the key's shape.
+                #[cfg(feature = "wpe")]
                 let modifiers_now = self.shell_modifiers();
+                #[cfg(not(feature = "wpe"))]
+                let modifiers_now = 0;
 
                 // What the focused client currently believes is held. Compared
                 // against the state after the event, below.
@@ -2371,16 +2383,20 @@ impl ViewportState {
         pressed: bool,
         time: u32,
     ) {
-        let modifiers = self.shell_modifiers();
-        // Only the page under the pointer. A click is not an event every page
-        // should see.
+        // The modifiers are read only by a page, so they are only worth
+        // computing when there is one.
         #[cfg(feature = "wpe")]
-        if let Some(page) = self.shells.iter().find(|page| page.contains(at)) {
-            let local = page.local(at);
-            page.engine
-                .pointer_button(time, local.x, local.y, button, pressed, modifiers);
+        {
+            let modifiers = self.shell_modifiers();
+            // Only the page under the pointer. A click is not an event every page
+            // should see.
+            if let Some(page) = self.shells.iter().find(|page| page.contains(at)) {
+                let local = page.local(at);
+                page.engine
+                    .pointer_button(time, local.x, local.y, button, pressed, modifiers);
+            }
         }
-        let _ = (at, button, pressed, time, modifiers);
+        let _ = (at, button, pressed, time);
     }
 
     fn shell_pointer_axis(
@@ -2391,14 +2407,18 @@ impl ViewportState {
         precise: bool,
         time: u32,
     ) {
-        let modifiers = self.shell_modifiers();
+        // The modifiers are read only by a page, so they are only worth
+        // computing when there is one.
         #[cfg(feature = "wpe")]
-        if let Some(page) = self.shells.iter().find(|page| page.contains(at)) {
-            let local = page.local(at);
-            page.engine
-                .pointer_axis(time, local.x, local.y, dx, dy, precise, modifiers);
+        {
+            let modifiers = self.shell_modifiers();
+            if let Some(page) = self.shells.iter().find(|page| page.contains(at)) {
+                let local = page.local(at);
+                page.engine
+                    .pointer_axis(time, local.x, local.y, dx, dy, precise, modifiers);
+            }
         }
-        let _ = (at, dx, dy, precise, time, modifiers);
+        let _ = (at, dx, dy, precise, time);
     }
 
     fn shell_keyboard_key(&mut self, key: WebKey) {
@@ -2424,6 +2444,9 @@ impl ViewportState {
     }
 
     /// The modifiers as WPE numbers them.
+    ///
+    /// Only a page reads them, so without the web engine nobody calls this.
+    #[cfg_attr(not(feature = "wpe"), allow(dead_code))]
     fn shell_modifiers(&self) -> u32 {
         // WPEModifiers, from WPEEvent.h. Named rather than computed, because
         // the bit order is not the one Wayland uses and a mistake here is a
