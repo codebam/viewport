@@ -32,7 +32,9 @@
 //    backend tells them apart — a desktop that has crashed five times over a
 //    week is healthy, one that crashes five times in five seconds is not — but
 //    what a run earns here is a growing wait rather than a shell that is left
-//    down for good. See `restart_backoff`.
+//    down for good. See `restart_backoff`. The one exception is a shell that
+//    declares it has run out of tries: exit code 88 is believed, and that slot
+//    stays down. See `DEGRADED_EXHAUSTED`.
 //
 // Drawing the client's own buffer rather than compositing its surface is what
 // makes the rest free. `frame.shell` already draws one buffer under
@@ -72,6 +74,23 @@ const RESTART_LIMIT: u32 = 5;
 /// WebKit's DMA-BUF renderer off. Defined on both sides of the fork; see
 /// `RETRY_WITHOUT_DMABUF` there.
 const RETRY_WITHOUT_DMABUF: i32 = 87;
+
+/// The status `viewport-shell-gtk` exits with when it has used up every try it
+/// had. Its budget is per process — three web-process crashes ask to be started
+/// degraded, five slow reloads are spent there, and when those have died too it
+/// quits rather than reload for ever. Defined on both sides of the fork; see
+/// `DEGRADED_EXHAUSTED` there, whose comment this number answers.
+///
+/// It is the one exit this supervisor does not answer with another turn on the
+/// restart treadmill. [`restart_backoff`] never gives up, on purpose and for
+/// reasons of its own; but a shell exiting 88 has been through those waits
+/// already and come out the far side of degraded mode having spent everything
+/// it had against the same GPU it would be started on again. Starting it once
+/// more retries nothing new — it rebuilds, at whatever pace, exactly the storm
+/// the shell's cap exists to end. So the code means what the shell meant by it:
+/// log it loudly, take that slot down, and leave the rest of the session alone.
+/// See `check_client_shell`, where the verdict is carried out.
+const DEGRADED_EXHAUSTED: i32 = 88;
 
 /// A shell that has run this long since the last crash is a healthy one, and
 /// the next crash begins a new run.
@@ -137,6 +156,11 @@ pub struct Restart {
 /// every [`RESTART_SLOW`]; a transient system-wide fault costs the desktop
 /// until the session is restarted. The second is much the worse of the two, so
 /// the run slows to a crawl rather than stopping.
+///
+/// (One exit does stop the supervisor outright, and it is not decided in this
+/// function: a shell that exits 88 has declared it has nothing left to try,
+/// and is believed before the arithmetic here is ever reached. See
+/// [`DEGRADED_EXHAUSTED`].)
 pub fn restart_backoff(
     restarts: &mut u32,
     window: &mut Option<std::time::Instant>,
@@ -158,6 +182,18 @@ pub fn restart_backoff(
         _ => (RESTART_BACKOFF * (1 << (attempt - 2))).min(RESTART_SLOW),
     };
     Restart { attempt, delay }
+}
+
+/// Whether an exit status is the shell giving up rather than asking for
+/// another go.
+///
+/// Eighty-eight is the whole of the vocabulary for it: the shell exits with it
+/// only after its crash limit and every slow reload beyond that have failed,
+/// so the code arrives carrying the whole argument with it, and the caller
+/// need not count anything. Kept apart from [`RETRY_WITHOUT_DMABUF`], which
+/// asks for one specific second chance and gets it.
+fn gave_up(status: &std::process::ExitStatus) -> bool {
+    status.code() == Some(DEGRADED_EXHAUSTED)
 }
 
 /// A shell that has died and is waiting out its backoff before starting again.
@@ -916,7 +952,6 @@ impl ViewportState {
         let now = std::time::Instant::now();
         let mut restarts = shell.restarts;
         let mut window = shell.restart_window;
-        let Restart { attempt, delay } = restart_backoff(&mut restarts, &mut window, now);
 
         // Whatever it painted belonged to the process that has gone. Leaving
         // it up would be a desktop that is a photograph: it still shows
@@ -924,6 +959,33 @@ impl ViewportState {
         self.shell_clients.remove(at);
         self.shell_frames = 0;
         self.needs_render = true;
+
+        // A shell that has given up gets neither a restart nor the arithmetic
+        // that schedules one; the run's counters above are simply dropped,
+        // because there is no process after this one to carry them into.
+        if gave_up(&status) {
+            tracing::error!(
+                "shell {at}: exited with {status}; it has given up — the web-process crash \
+                 limit passed, every slow degraded reload died too, and there is nothing left \
+                 for it to try against this GPU. It will not be restarted; the session goes \
+                 on around it"
+            );
+            // Not queued, and nothing else starts shells on a clock: the slow
+            // tick brings back only what sits in `pending_shells`, and this was
+            // deliberately kept out of it. What can revive the page from here
+            // is a person rather than a timer — `sync_shell_processes` re-runs
+            // when the screens change while some other page is still up, and
+            // starts any planned page that is not running, fresh process and
+            // fresh budget. That is the same courtesy a config reload earns
+            // once somebody has fixed their setup, and it is not the storm
+            // this exit exists to stop, because nothing automatic fires
+            // between human events. If this was the only page, nobody is left
+            // to run even that scan, and the desktop stays down until the
+            // session ends: the shell's own verdict, accepted.
+            return;
+        }
+
+        let Restart { attempt, delay } = restart_backoff(&mut restarts, &mut window, now);
 
         if attempt > RESTART_LIMIT {
             tracing::warn!(
@@ -1374,6 +1436,28 @@ mod tests {
             outcome.iter().map(|r| r.attempt).collect::<Vec<_>>(),
             vec![1, 2, 3, 4, 1, 2, 3, 4]
         );
+    }
+
+    #[test]
+    fn eighty_eight_is_taken_as_the_shell_giving_up() {
+        // The GTK shell exits 88 only once its counted, slow reloads have all
+        // died too, so the code carries the whole argument with it: the slot
+        // is left down rather than fed back into the restart loop. The
+        // predicate is the whole decision — `check_client_shell` returns on it
+        // before the backoff is even computed.
+        use std::os::unix::process::ExitStatusExt as _;
+        let exhausted = std::process::ExitStatus::from_raw(DEGRADED_EXHAUSTED << 8);
+        assert!(gave_up(&exhausted));
+        // Eighty-seven is a different request — come back degraded — and
+        // still earns a restart.
+        let degraded = std::process::ExitStatus::from_raw(RETRY_WITHOUT_DMABUF << 8);
+        assert!(!gave_up(&degraded));
+        // So does every ordinary death, a signal included: `code()` is `None`
+        // for one, and the treadmill is the answer to those by design.
+        let clean = std::process::ExitStatus::from_raw(0);
+        assert!(!gave_up(&clean));
+        let killed = std::process::ExitStatus::from_raw(6);
+        assert!(!gave_up(&killed));
     }
 
     #[test]

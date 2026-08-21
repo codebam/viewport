@@ -131,6 +131,15 @@ capture, a model loaded on the same card — has gone away. So the shell keeps
 knocking, slowly. A page that genuinely cannot load costs a blank desktop and
 one line in the log every thirty seconds.
 
+There is one exit that is believed instead of answered. A degraded shell
+reloads slowly and counts its tries, and when they have run out it exits with
+status 88 rather than reload for ever. The compositor takes that at its word:
+it logs the surrender and leaves that page down. Starting it again would put
+the same page back on the same GPU and rebuild, at whatever pace, the storm
+the cap exists to stop. The rest of the session keeps running, and the page
+comes back only through something human — a monitor arriving while another
+page is still running starts every planned page afresh — or a session restart.
+
 ## chromium — the engine in a browser, driven
 
 `crates/viewport/src/shell_client.rs`, `crates/viewport-shell-chromium/`. The
