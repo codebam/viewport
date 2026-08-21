@@ -21,10 +21,11 @@
 // notification id, so anything slower would be every notifying application
 // stalled for the length of a bark.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use pipewire as pw;
 use pw::spa;
@@ -84,6 +85,90 @@ impl Pcm {
     fn stride(&self) -> usize {
         self.channels as usize * std::mem::size_of::<f32>()
     }
+
+    /// What this occupies once decoded: the samples, which is everything the
+    /// cache holds a reference to.
+    fn bytes(&self) -> usize {
+        self.samples.len() * std::mem::size_of::<f32>()
+    }
+}
+
+/// Most the decoded cache may hold in total, across every entry.
+///
+/// The sounds a theme ships are a second or two of stereo, which decodes to
+/// under a megabyte of `f32` each, so 64 MiB holds every sound a theme
+/// plausibly carries several times over and the cache keeps doing its job —
+/// one decode per sound for the life of the session. The bound exists for the
+/// pathological case rather than the typical one: the hints come off the bus,
+/// where any sender may name any readable file, and an insert-only cache would
+/// keep a decoded copy of each such name forever, which is a memory-exhaustion
+/// DoS with a notification as the trigger.
+const DECODED_BUDGET: usize = 64 * 1024 * 1024;
+
+/// The decoded cache proper.
+///
+/// A map for the lookup and a queue recording the order entries were last
+/// used in, so that when the budget runs out the entry least recently played
+/// is the one evicted rather than an arbitrary one.
+struct Cache {
+    map: HashMap<PathBuf, Arc<Pcm>>,
+    order: VecDeque<PathBuf>,
+    bytes: usize,
+}
+
+impl Cache {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            bytes: 0,
+        }
+    }
+
+    /// The decoded sound for a path, remembering that it was wanted.
+    fn get(&mut self, path: &Path) -> Option<Arc<Pcm>> {
+        let pcm = self.map.get(path)?.clone();
+        self.touch(path);
+        Some(pcm)
+    }
+
+    /// Move a path to the most recently used end of the queue.
+    fn touch(&mut self, path: &Path) {
+        if let Some(at) = self.order.iter().position(|held| held == path) {
+            self.order.remove(at);
+            self.order.push_back(path.to_owned());
+        }
+    }
+
+    /// Put a decoded sound in, evicting least recently used entries until the
+    /// total is back under the budget.
+    ///
+    /// A single sound larger than the whole budget is still cached — evicting
+    /// everything else and stopping at an empty cache is the most the rule can
+    /// take from it, and one oversized entry is a bound of its own.
+    fn insert(&mut self, path: PathBuf, pcm: Arc<Pcm>) {
+        let bytes = pcm.bytes();
+        while self.bytes + bytes > DECODED_BUDGET {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(gone) = self.map.remove(&oldest) {
+                self.bytes -= gone.bytes();
+            }
+        }
+
+        // Replacing an entry that was already there — a decode that raced
+        // another thread's — takes the old size off the books and its place
+        // out of the queue before the fresh one goes in at the back.
+        if let Some(gone) = self.map.insert(path.clone(), pcm) {
+            self.bytes -= gone.bytes();
+            if let Some(at) = self.order.iter().position(|held| *held == path) {
+                self.order.remove(at);
+            }
+        }
+        self.order.push_back(path);
+        self.bytes += bytes;
+    }
 }
 
 /// Plays sounds, and remembers the ones it has played.
@@ -97,7 +182,12 @@ struct Shared {
     /// The same short sound plays on every notification for the life of the
     /// session; without this each one is a file read and a Vorbis decode. This
     /// is what `canberra.cache-control` would have asked for.
-    decoded: Mutex<HashMap<PathBuf, Arc<Pcm>>>,
+    ///
+    /// Bounded: entries are evicted least-recently-used once the decoded total
+    /// passes `DECODED_BUDGET`, because the paths come from sound hints any
+    /// bus sender chose, and a cache that grew with each of them would be a
+    /// memory-exhaustion DoS wearing the costume of an optimisation.
+    decoded: Mutex<Cache>,
 }
 
 impl Player {
@@ -116,7 +206,7 @@ impl Player {
         }
         Some(Self {
             shared: Arc::new(Shared {
-                decoded: Mutex::new(HashMap::new()),
+                decoded: Mutex::new(Cache::new()),
             }),
         })
     }
@@ -151,19 +241,19 @@ impl Shared {
         // Under the lock only to look and to record, never across the decode:
         // two notifications at once would otherwise be one of them waiting for
         // the other's file to be read.
-        let cached = self.decoded.lock().ok().and_then(|d| d.get(&path).cloned());
+        let cached = self.decoded.lock().ok().and_then(|mut d| d.get(&path));
         let pcm = match cached {
             Some(pcm) => pcm,
             None => {
                 let pcm = Arc::new(decode(&path)?);
                 if let Ok(mut decoded) = self.decoded.lock() {
-                    decoded.insert(path, pcm.clone());
+                    decoded.insert(path.clone(), pcm.clone());
                 }
                 pcm
             }
         };
 
-        stream(&pcm)
+        stream(&path, &pcm)
     }
 }
 
@@ -182,12 +272,25 @@ fn connect() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// How long a stream may sit unrouted before the loop is shut down under it.
+///
+/// A notification sound is a second or two; the drain that normally ends the
+/// loop fires within moments of the last buffer, so thirty seconds is an order
+/// of magnitude past anything real. The point of the bound is the case where
+/// the drain never comes at all — a headset yanked mid-play, a session manager
+/// restarted out from under the stream leaves AUTOCONNECT pending forever,
+/// and without this each such notification would leave a thread and a
+/// PipeWire connection behind it for the rest of the session.
+const ROUTING_GRACE: Duration = Duration::from_secs(30);
+
 /// Play decoded audio through, and return when it has finished.
 ///
 /// The stream is described in the file's own rate and channel count rather
 /// than resampled to the graph's. PipeWire converts, and it is better at it
 /// than anything worth writing here.
-fn stream(pcm: &Arc<Pcm>) -> anyhow::Result<()> {
+///
+/// `path` names the file only so the timeout below can say what went unheard.
+fn stream(path: &Path, pcm: &Arc<Pcm>) -> anyhow::Result<()> {
     let main_loop = pw::main_loop::MainLoopRc::new(None)
         .map_err(|e| anyhow::anyhow!("creating a pipewire loop: {e}"))?;
     let context = pw::context::ContextRc::new(&main_loop, None)
@@ -296,8 +399,32 @@ fn stream(pcm: &Arc<Pcm>) -> anyhow::Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("connecting a pipewire stream: {e}"))?;
 
-    // Runs until the drain above quits it. The thread this is on exists for
-    // exactly this, and everything opened here is dropped when it returns.
+    // A deadline inside the loop, so that a stream nothing ever routes ends
+    // the thread it is on rather than parking it forever. The drain above
+    // stays the way this normally finishes; the timer only fires if the drain
+    // never does, and quitting from inside the loop is exactly what the drain
+    // handler itself does.
+    let timing_out = main_loop.downgrade();
+    // Owned, because a source outlives this call: the callback has to carry
+    // its own copy of the name.
+    let unrouted = path.to_owned();
+    let grace = main_loop.loop_().add_timer(move |_| {
+        if let Some(main_loop) = timing_out.upgrade() {
+            tracing::warn!(
+                "nothing routed {} within {ROUTING_GRACE:?}; giving up on it",
+                unrouted.display()
+            );
+            main_loop.quit();
+        }
+    });
+    grace
+        .update_timer(Some(ROUTING_GRACE), None)
+        .into_result()
+        .map_err(|e| anyhow::anyhow!("arming the sound timeout: {e}"))?;
+
+    // Runs until the drain above quits it, or the timer does if no graph ever
+    // takes an interest. The thread this is on exists for exactly this, and
+    // everything opened here is dropped when it returns.
     main_loop.run();
     Ok(())
 }
@@ -683,10 +810,10 @@ mod tests {
         // — and would pass whether or not a single sample was ever consumed.
         // `stream` returns when the drain fires, and the drain fires only
         // after the graph has taken every buffer, so returning at all is the
-        // assertion. A stream nothing routed leaves the loop running and this
-        // hangs, which is the answer being reported rather than hidden.
+        // assertion. A stream nothing routed is ended by the routing timeout
+        // instead, and the elapsed-time assertion below is what reports it.
         let started = std::time::Instant::now();
-        stream(&Arc::new(decoded)).expect("the sound should play");
+        stream(Path::new(&path), &Arc::new(decoded)).expect("the sound should play");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
             "the drain took implausibly long"
