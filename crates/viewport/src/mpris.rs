@@ -350,6 +350,15 @@ impl Worker {
 /// `file://` image is refused — and the second is passed through, because the
 /// page can fetch it and this compositor has no business making outbound
 /// requests on a desktop's behalf.
+///
+/// A `file://` path is an instruction to open a file, published by whoever
+/// could speak on the session bus, and what comes back is base64ed straight
+/// into a page that may have been loaded over plain http. So the instruction
+/// is taken only within narrow limits: not out of the pseudo-filesystems,
+/// and only for names that claim to be pictures — which is also what keeps
+/// the legitimate case working, since cover caches live under `~/.cache` and
+/// `~/.local/share` and hold files called `folder.jpg`. [`icon::art_data_url`]
+/// applies the rest of the discipline: regular files only, and a size cap.
 fn art_url(url: &str) -> String {
     if url.is_empty() || url.starts_with("data:") || url.starts_with("https://") {
         return url.to_owned();
@@ -359,7 +368,28 @@ fn art_url(url: &str) -> String {
         // reach the page is an image element that cannot load.
         return String::new();
     };
-    crate::icon::data_url(std::path::Path::new(path)).unwrap_or_default()
+    let path = std::path::Path::new(path);
+    if in_pseudo_filesystem(path) {
+        tracing::debug!("cover art from {} refused", path.display());
+        return String::new();
+    }
+    crate::icon::art_data_url(path).unwrap_or_default()
+}
+
+/// Whether a path lives somewhere the kernel synthesises rather than stores.
+///
+/// `/proc`, `/sys` and `/dev` hold files whose contents are whatever the
+/// kernel makes them — endless zeros, other processes' memory, device
+/// streams. Nothing there is a picture, the extension on the name proves
+/// nothing about what a read of it returns, and several of them never end.
+/// Checked before the extension for exactly that reason: `zero.png` is still
+/// `/dev/zero`.
+fn in_pseudo_filesystem(path: &std::path::Path) -> bool {
+    use std::path::Component;
+    matches!(
+        path.components().nth(1),
+        Some(Component::Normal(name)) if name == "proc" || name == "sys" || name == "dev"
+    )
 }
 
 #[cfg(test)]
@@ -379,5 +409,68 @@ mod tests {
         assert_eq!(art_url("ftp://host/x.png"), "");
         // A file that is not there reads as no art, not as a broken image.
         assert_eq!(art_url("file:///nonexistent/cover.png"), "");
+    }
+
+    /// A private key is not a picture, whatever a player claims. The
+    /// extension is the whole gate here — which is also why it holds without
+    /// a path allowlist: cover caches are full of `folder.jpg` under
+    /// `~/.cache`, and nothing anyone legitimately ships as art is called
+    /// `id_rsa`.
+    #[test]
+    fn art_is_not_a_window_onto_the_filesystem() {
+        assert_eq!(art_url("file:///home/user/.ssh/id_rsa"), "");
+        assert_eq!(art_url("file:///etc/passwd"), "");
+    }
+
+    /// The pseudo-filesystems are refused by name, ahead of any other check,
+    /// because their files lie about what they are: `/dev/zero` reports no
+    /// size at all and never stops being read.
+    #[test]
+    fn the_pseudo_filesystems_are_refused_by_name() {
+        use std::path::Path;
+        assert!(in_pseudo_filesystem(Path::new("/proc/self/environ")));
+        assert!(in_pseudo_filesystem(Path::new("/sys/class/../zero.png")));
+        assert!(in_pseudo_filesystem(Path::new("/dev/shm/cover.png")));
+        assert!(!in_pseudo_filesystem(Path::new(
+            "/home/user/.cache/covers/folder.jpg"
+        )));
+        assert!(!in_pseudo_filesystem(Path::new("/protection/cover.png")));
+    }
+
+    /// A scratch directory for the two tests that need real files.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("viewport-mpris-test-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    /// A file over the cap is refused rather than read — this one is sparse,
+    /// so the refusal happens on its reported size and nothing reads nine
+    /// megabytes of anything.
+    #[test]
+    fn an_oversized_cover_is_refused_rather_than_read() {
+        let dir = scratch("oversized");
+        let path = dir.join("cover.png");
+        let file = std::fs::File::create(&path).expect("a big empty file");
+        file.set_len(crate::icon::MAX_ART + 1).expect("its size");
+        drop(file);
+        assert_eq!(art_url(&format!("file://{}", path.display())), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// And the ordinary case still works: a JPEG in an album folder reaches
+    /// the page as something it can draw.
+    #[test]
+    fn a_local_cover_still_reaches_the_page() {
+        let dir = scratch("local");
+        let path = dir.join("folder.jpg");
+        std::fs::write(&path, b"\xff\xd8\xff\xe0not really a jpeg").expect("a cover");
+        let url = art_url(&format!("file://{}", path.display()));
+        assert!(
+            url.starts_with("data:image/jpeg;base64,"),
+            "the cover did not survive: {url}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
