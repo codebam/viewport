@@ -369,8 +369,16 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::OutputQuery => state.notify_output_layout(),
 
-        // Nothing arms a revert yet, so there is nothing to cancel.
-        Request::OutputConfirm => {}
+        // Somebody can see the screen they just changed, so the countdown
+        // `output_configure` started can lapse. See
+        // `ViewportState::arm_output_revert`.
+        Request::OutputConfirm => state.confirm_output_revert(),
+
+        // And the other answer: put it back now rather than in what is left of
+        // the twelve seconds. Nothing pending is not a refusal — the deadline
+        // may have fired a moment before the click, and the desk is then in
+        // exactly the state the click asked for.
+        Request::OutputRevert => state.output_revert_tick(),
 
         Request::OutputHdr { name, enabled } => {
             let name = name
@@ -725,7 +733,128 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ConfigDarkMode { enabled } => {
+            // Absent toggles, on the same terms as `output.hdr`: that is what
+            // the `appearance toggle` keybinding wants, and a panel drawing a
+            // switch sends the state it wants so that two clicks in a row do
+            // not land on whichever value the desk happened to be on.
+            //
+            // Read back off `appearance` rather than off `state.dark_mode`,
+            // because the portal is where the answer actually lives: a client
+            // that set the scheme over the bus moved it, and toggling from a
+            // stale copy would flip to the value it already has.
+            let want = enabled.unwrap_or_else(|| !state.appearance.is_dark());
+            state.dark_mode = want;
+            state.appearance.set_dark(want);
+            // The shell has to be able to draw the switch in the position it
+            // is really in, which means the config event has to carry it. Sent
+            // even when nothing changed: a panel that asked for the value it
+            // already had is a panel waiting for an answer, and silence is
+            // indistinguishable from a message that was dropped.
+            state.config.dark_mode = want;
+            state.notify_config();
+        }
+
+        Request::ConfigSave => config_save(state),
+
         Request::Quit => state.shutdown(),
+    }
+}
+
+/// Write the runtime settings out so they survive the next start.
+///
+/// The reasoning for the overlay file — and for why this is one explicit
+/// request rather than something each setter does — is in `crate::settings`.
+/// What is decided here is only *what* goes into it: the settings a panel can
+/// reach, read back off the compositor's own copy rather than remembered as
+/// they were set, so that a value the compositor adjusted or refused is saved
+/// as what is actually on screen.
+fn config_save(state: &mut ViewportState) {
+    let Some(config_path) = state.config_file_path.clone() else {
+        // No config file path means no home directory to hang one off, which
+        // is a session started by a test harness or an init script with the
+        // environment stripped. Refusing is honest; inventing a path under
+        // `/` and failing to write it would be the same refusal with a worse
+        // message.
+        reject(
+            state,
+            "config.save",
+            "there is no configuration file path to save beside",
+        );
+        return;
+    };
+    let path = crate::settings::path(&config_path);
+
+    let mut overlay = crate::settings::Overlay {
+        dark_mode: Some(state.dark_mode),
+        wallpaper: state.config.wallpaper.clone(),
+        wallpaper_mode: state.config.wallpaper_mode.clone(),
+        gaps: state.config.gaps.clone(),
+        border: state.config.border.clone(),
+        outputs: Default::default(),
+    };
+
+    // Only the monitors somebody actually configured this session.
+    //
+    // Writing every head would be the easy version and the wrong one: it would
+    // freeze whatever mode the backend happened to pick for a screen nobody
+    // has an opinion about, and it would put a hand-written `outputs` block in
+    // the config file permanently behind an overlay that merely restates it.
+    // A monitor arrives here because a message named it — see
+    // `ViewportState::output_settings_touched`.
+    let touched = state.output_settings_touched.clone();
+    for head in state.heads() {
+        let name = head.output.name();
+        if !touched.contains(&name) {
+            continue;
+        }
+        let mode = head.output.current_mode().map(|mode| {
+            // Hertz, because that is what `config::parse_mode` reads and what
+            // a person writes; the kernel counts in millihertz and the third
+            // decimal is load-bearing — 143.998 is a real refresh rate and
+            // rounding it to 144 is a mode the connector does not have.
+            format!(
+                "{}x{}@{}",
+                mode.size.w,
+                mode.size.h,
+                f64::from(mode.refresh) / 1000.0
+            )
+        });
+        // Through serde rather than a match of its own: the strings are
+        // `Transform`'s `#[serde(rename)]`s, the shell compares against them
+        // literally, and a second table here is a second thing to keep in
+        // step with the first.
+        let transform =
+            serde_json::to_value(from_smithay_transform(head.output.current_transform()))
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned));
+        overlay.outputs.insert(
+            name,
+            crate::settings::OutputOverlay {
+                enabled: Some(head.enabled),
+                mode,
+                scale: Some(head.output.current_scale().fractional_scale()),
+                transform,
+                x: Some(head.position.x),
+                y: Some(head.position.y),
+            },
+        );
+    }
+
+    match crate::settings::save(&path, &overlay) {
+        Ok(()) => {
+            tracing::info!("saved the runtime settings to {}", path.display());
+            let event = Event::ConfigSaved {
+                path: path.to_string_lossy().into_owned(),
+            };
+            let client = state.dispatch_client;
+            if client == 0 {
+                state.notify(&event);
+            } else {
+                state.ipc.send_to(client, &event);
+            }
+        }
+        Err(e) => reject(state, "config.save", &format!("{e:#}")),
     }
 }
 
@@ -980,6 +1109,47 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         }
     }
 
+    // The last refusal, hoisted out of the `enabled` branch below so that
+    // every `return` meaning "nothing happened" is above the point where the
+    // change becomes provisional. A refused configuration that had already
+    // armed a countdown would spend twelve seconds waiting to put back a
+    // desktop nothing had moved.
+    //
+    // A desk with every output disabled is not a state anything can be
+    // recovered from by pointing at a screen, which is why this is refused at
+    // all — the same rule `apply_output_configuration` follows.
+    if config.enabled == Some(false) && state.space.outputs().count() <= 1 {
+        reject(
+            state,
+            "output.configure",
+            "refusing to turn off the only output left on",
+        );
+        return;
+    }
+
+    // Everything above this point refuses; everything below it changes the
+    // hardware. So this is where the change becomes provisional and where the
+    // monitor is written down as one somebody has an opinion about — after the
+    // last `return` that means "nothing happened", and before the first line
+    // that means something did.
+    //
+    // Which fields count: a mode, a scale, a rotation or the power. Those are
+    // the four that can leave a person looking at a screen they can no longer
+    // read the undo button on. A position cannot — a monitor moved in the
+    // layout is still showing what it showed — so moving one does not start a
+    // countdown, and a panel dragging a monitor about does not have to answer
+    // a dialog for every pixel of it.
+    let risky = config.mode.is_some()
+        || config.scale.is_some()
+        || config.transform.is_some()
+        || config.enabled.is_some();
+    if !state.output_config_replay {
+        state.output_settings_touched.insert(config.name.clone());
+        if risky {
+            state.arm_output_revert();
+        }
+    }
+
     // Turning a screen off, which this request has documented since it was
     // written and never did.
     //
@@ -991,18 +1161,10 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     // uses that protocol, and the one place the compositor offers the same
     // thing itself quietly ignored it.
     //
-    // The last one on is refused, matching `apply_output_configuration`. A
-    // desktop with every output disabled is not a state anything can be
-    // recovered from by pointing at a screen.
+    // The last one on is refused, matching `apply_output_configuration` — that
+    // check is a few lines above rather than here, so that a refusal cannot
+    // leave a revert armed behind it.
     if let Some(enabled) = config.enabled {
-        if !enabled && state.space.outputs().count() <= 1 {
-            reject(
-                state,
-                "output.configure",
-                "refusing to turn off the only output left on",
-            );
-            return;
-        }
         if !enabled {
             // Written down before the unmap, not after: `remember_output`
             // reads the position out of the space, and once the output is

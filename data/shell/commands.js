@@ -164,6 +164,9 @@ function handleShellCommand(command, args) {
        real keyboard and wants to raise it anyway; a touch-only desk never
        needs the chord, because `osk.wanted` already brings it up. See
        osk.js. */
+    case 'settings':
+      toggleSettings();
+      break;
     case 'osk':
       toggleOsk();
       break;
@@ -338,6 +341,10 @@ window.addEventListener('viewport', (event) => {
 
   switch (message.type) {
     case 'config':
+      /* The whole message, kept as it arrived, for the settings panel to draw
+         its switches from. Before anything below unpacks it: what the panel
+         needs is what the compositor *said*, not what the page did with it. */
+      shellConfig = message;
       /* Which layout model to run. Sent on connect and on reload, so switching
          it in the config file and reloading takes effect without a restart —
          the tree survives, it is only presented differently. */
@@ -471,6 +478,10 @@ window.addEventListener('viewport', (event) => {
        * socket — so doing this unconditionally costs nothing anybody can
        * measure. */
       relayoutAll();
+      /* And the panel, if it is open: a config file reloaded from an editor,
+         or another client on the socket changing the wallpaper, both land here
+         and both have to reach the switches. */
+      settingsChanged();
       break;
 
     case 'modifiers':
@@ -484,6 +495,15 @@ window.addEventListener('viewport', (event) => {
     case 'output.layout':
       syncOutputs(message.outputs);
       send({ type: 'view.query' });
+      /* The panel's Displays section is drawn from these, so a monitor
+         unplugged — or a mode that has just been applied — redraws it. */
+      settingsChanged();
+      break;
+
+    /* The runtime settings were written down. Only the panel cares, and only
+       so it can say so on the line along its bottom. */
+    case 'config.saved':
+      settingsWasSaved(message.path);
       break;
 
     case 'view.added':
@@ -755,6 +775,32 @@ document.addEventListener('click', () => {
      click past it — and the click on the clock that opens it stops itself, the
      way the network module's does. */
   closeCalendar();
+  /* And the settings panel. Its dialog stops the clicks that act — a switch,
+     a field clicked for the caret, Save — so what reaches here is a click on
+     the desktop beyond it. Closing it gives the keyboard back, and leaves any
+     unconfirmed display change to the compositor's own deadline, which is the
+     safe way for it to end. */
+  closeSettings();
+});
+
+/* Escape closes the settings panel.
+ *
+ * The only global key handler in the shell, and it is here rather than in
+ * settings.js for the reason the click above is here: it is a rule about the
+ * document, not about one dialog, and a keydown that lands on the body reaches
+ * no element's own listener. The panel is the one surface with several fields
+ * in it, so "get me out of this" has to work from wherever the caret ended up
+ * — the fields' own Escape handlers stop the event when they have something to
+ * undo, so the first press puts a half-typed number back and the second closes
+ * the panel.
+ *
+ * Every other picker is dismissed by pressing its own chord again, which works
+ * because the compositor routes bound chords before the page sees them. */
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (!settingsOpen) return;
+  event.preventDefault?.();
+  closeSettings();
 });
 
 send({ type: 'output.query' });

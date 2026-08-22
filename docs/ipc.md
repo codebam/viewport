@@ -58,7 +58,8 @@ of what was asked.
 
 | Message | Payload |
 | --- | --- |
-| `config` | `layout` (`"tiling"`, `"scrolling"`, `"solar"`, `"matrix"` or `"canvas"`), `logo`, `tutorial`, `binds[]` of `chord`, `action` and optional `mode` — the keymap as the compositor will really act on it, in the order it matches; optional `bar`, optional `rules[]`, optional `theme{}`, optional `wallpaper` (the desktop background: a URL, already resolved and encoded, or a CSS value such as `#1a1b26` or a gradient) and `wallpaper_mode` (`fill`, `fit`, `stretch`, `center` or `tile`; absent is `fill`), optional `clock{locale,hour12,format}` (how the bar writes the clock and the calendar under it — a BCP 47 tag, a twelve/twenty-four-hour choice, and a strftime-style template; absent means the shell uses the locale its engine runs under, which is the one thing the compositor cannot name for it), and `osk` (`"auto"`, `"manual"` or `"off"` — whether the on-screen keyboard may raise itself, and whether `Mod4+Shift+k` still works if not; always present, unlike most of this message, since the compositor always has some answer for it) |
+| `config` | `layout` (`"tiling"`, `"scrolling"`, `"solar"`, `"matrix"` or `"canvas"`), `logo`, `tutorial`, `binds[]` of `chord`, `action` and optional `mode` — the keymap as the compositor will really act on it, in the order it matches; optional `bar`, optional `rules[]`, optional `theme{}`, optional `wallpaper` (the desktop background: a URL, already resolved and encoded, or a CSS value such as `#1a1b26` or a gradient) and `wallpaper_mode` (`fill`, `fit`, `stretch`, `center` or `tile`; absent is `fill`), optional `clock{locale,hour12,format}` (how the bar writes the clock and the calendar under it — a BCP 47 tag, a twelve/twenty-four-hour choice, and a strftime-style template; absent means the shell uses the locale its engine runs under, which is the one thing the compositor cannot name for it), `osk` (`"auto"`, `"manual"` or `"off"` — whether the on-screen keyboard may raise itself, and whether `Mod4+Shift+k` still works if not; always present, unlike most of this message, since the compositor always has some answer for it), and `dark_mode` (whether applications are being told to draw themselves dark; always present, for the same reason `osk` is, and painted by nothing in the shell — it is the settings panel's switch reading its own position) |
+| `config.saved` | `path` — the runtime settings were written down, in answer to `config.save`. The path is in it because the overlay file is a thing to go and look at, or to delete when the config file should be in charge again |
 | `modifiers` | `logo` (whether Mod4 is held; only sent while `bar` is `"auto"`) |
 | `view.added` | `id`, `title`, `app_id`, `output` (name of the output it opened on), `replay`, `floating`, `width`, `height`, `min_width`, `min_height`, and `parent` when this window is a dialog of another — the same link `floating` is partly inferred from, named rather than reduced to a boolean, and omitted entirely when there is none |
 | `view.props` | `id`, `title`, `app_id` |
@@ -161,7 +162,8 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `tray.menu.closed` | `id` — the menu was dismissed without a choice |
 | `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |
 | `workspace.list` | `workspaces[]` with `id`, `name`, optional `output`, `active`, `urgent`, `hidden` — the whole list, whenever it changes. See [Workspaces](#workspaces) |
-| `output.confirm` | — cancels the pending revert; see below |
+| `output.confirm` | — the screen came back and somebody can read it: cancel the pending revert. See below |
+| `output.revert` | — and the other answer: put the monitors back now rather than waiting out the deadline. Nothing pending is not a refusal, because the deadline may have fired a moment earlier |
 | `output.hdr` | optional `name` (default: active output), optional `enabled` (absent toggles) |
 | `output.active` | `name` — which output the shell considers active |
 | `output.query` | — |
@@ -175,6 +177,8 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `config.gaps` | optional `inner`, optional `outer`, optional `smart` — set the window gaps at runtime, as the `gaps` block in the config file. Only the fields given change; the file is not touched. Zero is accepted, a negative value is refused |
 | `config.border` | optional `radius`, optional `width`, optional `smart` — the same for the `border` block. Read by the compositor as well as the shell, since the client is cropped to the corner the shell draws. Zero is accepted, a negative value is refused |
 | `config.wallpaper` | optional `path` (a file or a URL; the empty string removes the wallpaper), optional `mode` — set the desktop background at runtime, as `wallpaper` and `wallpaper_mode` in the config file. Only the fields given change; a path that is not there, or an unknown mode, comes back as an `error` and nothing is applied |
+| `config.dark_mode` | optional `enabled` (absent toggles) — what applications are told to draw themselves in, as `dark_mode` in the config file. Not a setting the shell paints: it goes out on the bus as `org.freedesktop.appearance`'s `color-scheme` and the GNOME theme name beside it, and what follows it is every toolkit application on the desk. The same `set_dark` the `appearance toggle` keybinding reaches, with the state named rather than flipped — which is what a switch on a panel needs and a key does not. The current value is in the `config` event's `dark_mode` |
+| `config.save` | — write the runtime settings down so they survive a restart. Answers with `config.saved`, or an `error`. See below |
 | `shell.command` | `command`, optional `args[]` — re-emitted as the `shell.command` *event*; see below |
 | `quit` | — |
 
@@ -229,11 +233,54 @@ null. An unknown message type, or one whose `type` is missing or not a string,
 is answered with an `error` — to the socket client that sent it, or to the page
 when it came from there.
 
-`output.configure` runs `wlr_output_test_state` before committing, so a mode the
-hardware cannot drive is reported back as an `error` instead of blanking the
-screen you are configuring from. A configuration that *does* commit is still
-provisional: it reverts after twelve seconds unless an `output.confirm` arrives,
-because a wrong mode blanks the very screen you would need in order to undo it.
+`output.configure` checks what it can before it commits: a scale of zero or
+less is refused, the last output left on cannot be turned off, and a mode is
+matched against the ones the connector advertised before a custom modeline is
+programmed. That is not the same as knowing the picture will come back, and
+nothing is — so a configuration that commits is provisional: it reverts after
+twelve seconds unless an `output.confirm` arrives, because a wrong mode blanks
+the very screen you would need in order to undo it. `output.revert` is the same
+undo asked for early, for the case where the screen did come back and can be
+seen to be wrong.
+
+Provisional means the four fields that can leave you unable to read the screen
+— `mode`, `scale`, `transform` and `enabled` — and not `x`/`y`: a monitor moved
+in the layout is still showing what it was showing, so dragging one about does
+not raise a question. Two changes inside the same window are one change as far
+as undoing goes, and what they go back to is the state from before the first of
+them — which is what a panel setting a mode and then a scale means by it.
+
+The config file's own `outputs` block is exempt: it is replayed through the
+same path at startup and on reload, and nobody is sitting in front of a
+confirmation dialog then, so a countdown there would simply undo the file
+twelve seconds in.
+
+### Saving the runtime settings
+
+`config.gaps`, `config.border`, `config.wallpaper` and `config.dark_mode`
+deliberately do not touch the disk — that is what makes them safe for a
+wallpaper cycler and for trying a value out. `config.save` is the other half:
+it writes what is currently set into `settings.json` beside the config file,
+and that file is applied *over* the config file at the next start and at every
+reload.
+
+```console
+$ viewport msg -t config.gaps --inner 16
+$ viewport msg -t config.save
+{"type":"config.saved","path":"/home/me/.config/viewport/settings.json"}
+```
+
+The config file itself is never rewritten, which is the whole reason the
+overlay exists: it is hand-written JSONC and no round trip through a JSON
+parser keeps its comments or its formatting. Delete `settings.json`, or a line
+out of it, to put the config file back in charge of that key.
+
+What is written: `dark_mode`, `wallpaper`, `wallpaper_mode`, `gaps`, `border`,
+and an `outputs` entry for each monitor that an `output.configure` has named
+this session. Only those monitors — saving every head would freeze whatever
+mode the backend happened to pick for a screen nobody has an opinion about.
+See `docs/configuration.md` for the file and the ordering, and
+`crates/viewport/src/settings.rs` for the reasoning.
 
 ### Drawing in front of the windows
 

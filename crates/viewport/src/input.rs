@@ -2326,6 +2326,12 @@ impl ViewportState {
             Bound::Appearance => {
                 self.dark_mode = !self.appearance.is_dark();
                 self.appearance.set_dark(self.dark_mode);
+                // The shell draws this as a switch on the settings panel, so
+                // the chord and the switch have to agree: a panel left open
+                // while somebody presses Mod4+Shift+D would otherwise go on
+                // showing the scheme the desk was in when it opened.
+                self.config.dark_mode = self.dark_mode;
+                self.notify_config();
             }
             Bound::Lock => {
                 tracing::info!("lock binding");

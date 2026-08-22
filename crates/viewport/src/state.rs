@@ -83,6 +83,15 @@ const KEPT_CAPTURE_TARGETS: usize = 4;
 /// socket and is walked on every frame; see `set_shell_overlays`.
 const MAX_SHELL_OVERLAYS: usize = 4096;
 
+/// How long a monitor change stands before it is undone unconditionally.
+///
+/// Twelve seconds, which is what `docs/ipc.md` has promised since before
+/// anything armed the deadline. Long enough to find the button on a screen
+/// that came back looking wrong, short enough that a screen that did not come
+/// back at all is not a session somebody has to reboot out of. See
+/// [`ViewportState::arm_output_revert`].
+pub const OUTPUT_REVERT_AFTER: std::time::Duration = std::time::Duration::from_secs(12);
+
 /// Take back a capture buffer of this exact shape, if one is held.
 fn take_scratch<B: 'static>(
     held: &mut Vec<Box<dyn std::any::Any>>,
@@ -1024,6 +1033,44 @@ pub struct ViewportState {
     pub gpu_watch: bool,
     /// The path to the active configuration file, if any.
     pub config_file_path: Option<std::path::PathBuf>,
+    /// Which monitors have been configured by a message this session.
+    ///
+    /// What `config.save` writes down, and nothing else. Saving every head
+    /// would freeze whatever mode the backend happened to pick for a screen
+    /// nobody has an opinion about, and would leave a hand-written `outputs`
+    /// block in the config file permanently shadowed by an overlay that only
+    /// restates it. A monitor is in here because somebody asked for something
+    /// about it.
+    pub output_settings_touched: std::collections::HashSet<String>,
+    /// Whether the configuration being applied is the config file's own,
+    /// replayed.
+    ///
+    /// [`Self::apply_output_config`] goes through `output.configure` — which
+    /// is the right thing, because the file and the socket should reach the
+    /// hardware the same way — and that makes the two indistinguishable from
+    /// inside the handler. They differ in exactly two places and this is what
+    /// tells them apart: a replay must not count as somebody having an opinion
+    /// (or the first reload would copy the whole file into the overlay), and a
+    /// replay must not arm a revert (nobody is sitting in front of a
+    /// confirmation dialog during startup, so the countdown would simply undo
+    /// the file twelve seconds in).
+    pub output_config_replay: bool,
+    /// The monitors as they were before the change now on screen, held until
+    /// somebody says they can see it.
+    ///
+    /// `None` is "nothing to undo". See
+    /// [`ViewportState::arm_output_revert`] for why a monitor change is
+    /// provisional at all.
+    pub output_revert: Option<Vec<crate::output_management::HeadChange>>,
+    /// The timer that undoes it. A timerfd for the reason every other deadline
+    /// here is one: this one has to fire on a desktop where nothing is
+    /// happening, and on a desktop whose screen has just gone black nothing is
+    /// happening by definition.
+    pub output_revert_timer: Option<std::os::fd::OwnedFd>,
+    /// Which arming the pending tick belongs to, so the fallback loop timer —
+    /// which cannot be re-armed, only added to — does not fire a deadline that
+    /// was superseded by a second configuration.
+    pub output_revert_generation: u64,
     /// The timer the config's live reload settles on, when watched.
     pub config_reload_timer: Option<std::os::fd::OwnedFd>,
     /// Whether a config reload is already waiting on the timer.
@@ -1404,6 +1451,11 @@ impl ViewportState {
                 // they are the only things there are to draw.
                 logo: true,
                 tutorial: true,
+                // Dark unless a config file, an overlay or the chord says
+                // otherwise, which is what `ViewportState::dark_mode` starts
+                // on a few lines further down. The two are one setting and
+                // this is the copy the shell is told about.
+                dark_mode: true,
                 // Filled in on the way out, from the keymap as it stands by
                 // then: this struct is built before a config file has been
                 // read and there is nothing yet to describe.
@@ -1638,6 +1690,11 @@ impl ViewportState {
             gpu_timer: None,
             gpu_watch: false,
             config_file_path: None,
+            output_settings_touched: std::collections::HashSet::new(),
+            output_config_replay: false,
+            output_revert: None,
+            output_revert_timer: None,
+            output_revert_generation: 0,
             config_reload_timer: None,
             config_reload_pending: false,
             shell_reload_timer: None,
@@ -6086,6 +6143,124 @@ impl ViewportState {
         }
     }
 
+    /// Snapshot the monitors and start the clock on putting them back.
+    ///
+    /// A monitor change is the one setting that can take away the thing you
+    /// would need in order to undo it. A mode the panel will drive but the
+    /// display will not, a scale that puts the dialog off the edge, a rotation
+    /// on the wrong screen, the wrong monitor switched off — every one of
+    /// those ends with a person looking at a black rectangle and no way back
+    /// except a TTY. Every desktop that lets a screen be reconfigured answers
+    /// this the same way, and so does `docs/ipc.md`, which has described the
+    /// countdown since before there was one: the change applies, and it comes
+    /// back off in twelve seconds unless somebody says they can see it.
+    ///
+    /// That promise was documented and not implemented — `output.confirm` was
+    /// a handler with an empty body and a comment saying nothing arms a
+    /// revert. Anything that read the documentation and skipped the
+    /// confirmation therefore kept a mode that had blanked the screen, which
+    /// is the exact failure the sentence was written to rule out.
+    ///
+    /// The snapshot is taken *before* the change, and only when there is not
+    /// one already: two configurations inside the window are one change as far
+    /// as undoing goes, and the state worth going back to is the one from
+    /// before the first of them. A panel setting a mode and a scale as two
+    /// messages is the ordinary case of that, not a corner.
+    pub fn arm_output_revert(&mut self) {
+        if self.output_revert.is_none() {
+            let before: Vec<crate::output_management::HeadChange> = self
+                .heads()
+                .into_iter()
+                .map(|head| {
+                    let mode = head.output.current_mode();
+                    crate::output_management::HeadChange {
+                        name: head.output.name(),
+                        enabled: head.enabled,
+                        mode,
+                        // Whether going back would mean programming a modeline
+                        // the connector never offered. It cannot, for a mode
+                        // the connector is driving right now — but the field is
+                        // what `apply_output_configuration` uses to tell a mode
+                        // that may not work from one that is known to, and
+                        // answering it from the list rather than assuming keeps
+                        // the restore honest on a nested backend, where custom
+                        // modes are real.
+                        custom_mode: mode.is_some_and(|mode| !head.output.modes().contains(&mode)),
+                        position: Some(head.position),
+                        transform: Some(head.output.current_transform()),
+                        scale: Some(head.output.current_scale().fractional_scale()),
+                        adaptive_sync: Some(head.adaptive_sync),
+                    }
+                })
+                .collect();
+            self.output_revert = Some(before);
+        }
+
+        self.output_revert_generation = self.output_revert_generation.wrapping_add(1);
+        let generation = self.output_revert_generation;
+
+        if self.output_revert_timer.is_none() {
+            self.output_revert_timer = self.create_tick("output revert", Self::output_revert_tick);
+        }
+        if Self::arm_tick(
+            "output revert",
+            self.output_revert_timer.as_ref(),
+            OUTPUT_REVERT_AFTER,
+        ) {
+            return;
+        }
+
+        // No timerfd. A loop timer still fires wherever calloop is the one
+        // waiting, which is every backend but the web engine's — and a
+        // countdown that does not run is only ever a countdown that does not
+        // save you, so it is worth having the weaker version of.
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(OUTPUT_REVERT_AFTER);
+        if let Err(e) = self
+            .loop_handle
+            .insert_source(timer, move |_, _, state: &mut Self| {
+                if state.output_revert_generation == generation {
+                    state.output_revert_tick();
+                }
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            })
+        {
+            tracing::warn!("output revert: {e}");
+        }
+    }
+
+    /// Nobody said they could see it. Put the monitors back.
+    pub(crate) fn output_revert_tick(&mut self) {
+        let Some(before) = self.output_revert.take() else {
+            return;
+        };
+        tracing::warn!(
+            "no output.confirm within {OUTPUT_REVERT_AFTER:?}; \
+             putting the monitors back where they were"
+        );
+        // Through the same path wlr-output-management applies a configuration
+        // rather than a restore written twice: it revalidates, it refuses to
+        // leave the desk with every screen off, and it runs the tail — the
+        // windows remapped, the clients told, the frame asked for — that a
+        // half-written undo would forget.
+        if !self.apply_output_configuration(&before, false) {
+            tracing::error!("could not put the monitors back; leaving them as they are");
+        }
+        self.advertise_outputs();
+        self.notify_output_layout();
+        self.needs_render = true;
+    }
+
+    /// Somebody can see it: drop the snapshot and let the deadline lapse.
+    ///
+    /// The timer is not disarmed, only orphaned. Its tick finds no snapshot
+    /// and does nothing, which is one branch rather than two syscalls and two
+    /// ways for the two to disagree.
+    pub fn confirm_output_revert(&mut self) {
+        if self.output_revert.take().is_some() {
+            tracing::info!("the output configuration was confirmed");
+        }
+    }
+
     /// Write down where an output is and how it is turned.
     ///
     /// Every deliberate arrangement goes through here: the config file, the
@@ -6188,6 +6363,9 @@ impl ViewportState {
     /// this again.
     pub fn apply_output_config(&mut self) {
         let outputs = std::mem::take(&mut self.output_config);
+        // See `output_config_replay`: what follows is the file being put back
+        // into effect, not somebody at a panel changing their mind.
+        let was_replay = std::mem::replace(&mut self.output_config_replay, true);
         for (name, want) in &outputs {
             if self.output_by_name(name).is_none() {
                 // Not plugged in. Kept, because it may be later.
@@ -6202,7 +6380,7 @@ impl ViewportState {
             });
             let request = viewport_ipc::request::OutputConfigure {
                 name: name.clone(),
-                enabled: None,
+                enabled: want.enabled,
                 mode: mode.map(
                     |(width, height, refresh)| viewport_ipc::request::ModeRequest {
                         width,
@@ -6245,6 +6423,7 @@ impl ViewportState {
                 );
             }
         }
+        self.output_config_replay = was_replay;
         self.output_config = outputs;
     }
 
@@ -7410,6 +7589,11 @@ impl ViewportState {
             // Running applications change on the portal's signal; without this
             // a reload would move the setting and nothing on screen with it.
             self.appearance.set_dark(dark);
+            // And the shell, which draws the switch: the config event carries
+            // the scheme so a settings panel can show what it is rather than
+            // guess. Set here as well as at startup because a reload is the
+            // other way the value moves without anybody pressing the chord.
+            self.config.dark_mode = dark;
         }
         if let Some(vrr) = file.adaptive_sync {
             self.adaptive_sync = vrr;

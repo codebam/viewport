@@ -431,6 +431,16 @@ pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding
         // test it or to type into something that never asked. `k` for
         // keyboard, which nothing else on this modifier has claimed.
         "Mod4+Shift+k=shell osk".to_owned(),
+        // The settings panel, on the same terms as the pickers above: the
+        // compositor holds the settings and the page draws the switches, so
+        // this is a shell verb rather than a compositor action.
+        //
+        // Comma because a comma is what a settings shortcut is nearly
+        // everywhere else, and because the letters are gone: every one that
+        // means anything here is already a split, a layout or a picker.
+        // `Mod4+comma` itself is the scrolling layout's consume, so the panel
+        // sits beside it under Shift, where nothing else is.
+        "Mod4+Shift+comma=shell settings".to_owned(),
         // Tab is filled in below: two layouts have windows the compositor
         // cannot cycle through, so the chord goes to the shell there.
         "Mod4+f=shell window.fullscreen".to_owned(),
@@ -1233,12 +1243,12 @@ mod tests {
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
-        // 42 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // 43 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         assert_eq!(
             bindings.len(),
-            42 + 16 + 18 + 11 + 1,
+            43 + 16 + 18 + 11 + 1,
             "a default failed to parse"
         );
 

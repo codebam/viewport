@@ -162,6 +162,28 @@ let networkOpen = false;
 let networkAsking = null;
 let bluetoothState = null;
 let bluetoothOpen = false;
+/* The settings panel: whether it is on screen, which window had the keyboard
+ * before it took it, whether a display change is waiting to be confirmed, and
+ * where the last save went (null when there has not been one this opening).
+ *
+ * The panel keeps no copy of any setting. Everything it draws comes out of
+ * `shellConfig` and the outputs map below, so a value it has just sent is not
+ * shown until the compositor has echoed it back — see settings.js for why. */
+let settingsOpen = false;
+let settingsRestoreId = null;
+let settingsConfirming = false;
+let settingsSaved = null;
+/* The last `config` event, whole.
+ *
+ * Every other consumer of that message pulls out the one field it cares about
+ * and lands it somewhere — a CSS custom property, a class on the document, a
+ * variable here — which is right for the things that are *applied*. The
+ * settings panel needs the opposite: the values as the compositor last stated
+ * them, so it can draw a switch in the position it is really in rather than in
+ * the position the page happens to have rendered. Reading them back out of the
+ * stylesheet would be a parser nobody needs, and would answer with the
+ * shell's fallback where the compositor said nothing. */
+let shellConfig = {};
 /* The clipboard history, as the compositor last sent it, and whether the
  * picker is on screen. The entries are kept whether or not it is open, because
  * they arrive on every copy and the picker opens without waiting for one. */
@@ -352,6 +374,7 @@ const powerEl = document.getElementById('power-picker');
 const networkEl = document.getElementById('network-picker');
 const bluetoothEl = document.getElementById('bluetooth-picker');
 const calendarEl = document.getElementById('calendar');
+const settingsEl = document.getElementById('settings');
 const oskEl = document.getElementById('osk');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');

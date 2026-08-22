@@ -405,6 +405,12 @@ const TYPES: &[Type] = &[
         hint: "[--name NAME] [--enabled BOOL]   (absent --enabled toggles)",
     },
     Type {
+        name: "output.revert",
+        fields: &[],
+        strings: &[],
+        hint: "(undo an unconfirmed output change now)",
+    },
+    Type {
         name: "output.confirm",
         fields: &[],
         strings: &[],
@@ -457,6 +463,18 @@ const TYPES: &[Type] = &[
         fields: &["path", "mode"],
         strings: &[],
         hint: "[--path FILE] [--mode fill|fit|stretch|center|tile]   (--path '' removes it)",
+    },
+    Type {
+        name: "config.dark_mode",
+        fields: &["enabled"],
+        strings: &[],
+        hint: "[--enabled BOOL]   (absent toggles)",
+    },
+    Type {
+        name: "config.save",
+        fields: &[],
+        strings: &[],
+        hint: "(write the runtime settings to settings.json beside the config file)",
     },
     Type {
         name: "shell.command",
@@ -592,6 +610,10 @@ enum Reply {
 fn reply_for(kind: &str) -> Reply {
     match kind {
         "output.query" => Reply::First("output.layout"),
+        // The one config setter that answers. The others change something the
+        // shell then draws; this one writes a file, and "did it work" is a
+        // question with two answers rather than a thing that becomes visible.
+        "config.save" => Reply::First("config.saved"),
         "session.query" => Reply::First("session.restore"),
         "view.query" => Reply::Until(&["config", "view.added"]),
         "launcher.query" => Reply::First("launcher.list"),
@@ -1547,10 +1569,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 59 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 62 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 59);
+        assert_eq!(TYPES.len(), 62);
     }
 
     #[test]

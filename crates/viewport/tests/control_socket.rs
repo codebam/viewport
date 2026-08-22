@@ -99,6 +99,170 @@ fn a_config_file_reaches_the_shell() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// The colour scheme, both ways: the shell has to be able to read it before it
+/// can draw a switch for it.
+///
+/// It was set-only — `appearance toggle` on a chord and nothing in the `config`
+/// event — so a settings panel could move the setting and had no way to show
+/// where it was. A switch drawn from a guess is one that shows the wrong state
+/// until somebody presses it twice.
+#[test]
+fn the_colour_scheme_is_announced_as_well_as_set() {
+    let compositor = Compositor::start("dark-mode");
+    let mut client = compositor.connect();
+
+    client.send(r#"{"type":"view.query"}"#);
+    // Dark unless something says otherwise, which is what the session starts
+    // on and what `docs/configuration.md` says absence means.
+    assert_eq!(client.wait_for("config")["dark_mode"], true);
+
+    // A panel sends the state it wants rather than a toggle, so that two
+    // clicks on a switch do not depend on which value the desk was on.
+    client.send(r#"{"type":"config.dark_mode","enabled":false}"#);
+    assert_eq!(client.wait_for("config")["dark_mode"], false);
+    client.send(r#"{"type":"config.dark_mode","enabled":false}"#);
+    assert_eq!(client.wait_for("config")["dark_mode"], false);
+
+    // And absent toggles, which is what the keybinding wants.
+    client.send(r#"{"type":"config.dark_mode"}"#);
+    assert_eq!(client.wait_for("config")["dark_mode"], true);
+}
+
+/// The whole of the persistence answer, end to end: set something at runtime,
+/// save, restart, and find it still there.
+///
+/// This is the property the settings panel is built on and the one nothing
+/// else in the tree checks — the runtime setters deliberately do not touch the
+/// disk, so before `config.save` existed the answer to "does a change stick"
+/// was no. The overlay goes *beside* the config file rather than into it; the
+/// config file here has a value of its own for one of the same keys, and the
+/// overlay has to win.
+#[test]
+fn saved_settings_come_back_after_a_restart() {
+    let dir = std::env::temp_dir().join("viewport-settings-integration");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("viewport")).expect("mkdir");
+    let config = dir.join("viewport/config.json");
+    let overlay = dir.join("viewport/settings.json");
+    std::fs::write(&config, r#"{"gaps":{"inner":3},"dark_mode":true}"#).expect("write");
+
+    {
+        let compositor = Compositor::builder("settings-save")
+            .env("XDG_CONFIG_HOME", &dir)
+            .start();
+        let mut client = compositor.connect();
+
+        client.send(r#"{"type":"config.gaps","inner":21,"outer":7}"#);
+        client.send(r#"{"type":"config.dark_mode","enabled":false}"#);
+        client.send(r#"{"type":"config.save"}"#);
+        let saved = client.wait_for("config.saved");
+        assert_eq!(saved["path"], overlay.to_string_lossy().as_ref());
+    }
+
+    // Written, and written as the config file's own vocabulary — this is the
+    // check that stops the overlay from drifting into a private format the
+    // reader would silently ignore every key of.
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&overlay).expect("read the overlay"))
+            .expect("the overlay is JSON");
+    assert_eq!(written["gaps"]["inner"], 21);
+    assert_eq!(written["gaps"]["outer"], 7);
+    assert_eq!(written["dark_mode"], false);
+    // Nothing configured a monitor, so nothing was saved about one. Saving
+    // every head would freeze whatever mode the backend picked for a screen
+    // nobody has an opinion about.
+    assert!(written.get("outputs").is_none());
+
+    // And the config file is untouched, comments, formatting and all — the
+    // entire argument for the overlay existing.
+    assert_eq!(
+        std::fs::read_to_string(&config).expect("read the config"),
+        r#"{"gaps":{"inner":3},"dark_mode":true}"#
+    );
+
+    {
+        let compositor = Compositor::builder("settings-restart")
+            .env("XDG_CONFIG_HOME", &dir)
+            .start();
+        let mut client = compositor.connect();
+        client.send(r#"{"type":"view.query"}"#);
+        let config_event = client.wait_for("config");
+        assert_eq!(
+            config_event["gaps"]["inner"], 21,
+            "the overlay lost to the file"
+        );
+        assert_eq!(config_event["gaps"]["outer"], 7);
+        assert_eq!(config_event["dark_mode"], false);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A monitor change is provisional until somebody says they can see it.
+///
+/// `docs/ipc.md` has described this countdown since before anything armed one:
+/// `output.confirm` was a handler with an empty body. Anything that read the
+/// documentation and skipped the confirmation therefore kept a mode that had
+/// blanked the screen, which is the exact failure the sentence rules out.
+///
+/// Driven with `output.revert` rather than by waiting out the twelve seconds —
+/// the deadline is the same code path, and a test that sleeps for twelve
+/// seconds to prove it is a test nobody runs.
+#[test]
+fn an_output_change_can_be_taken_back() {
+    let compositor = Compositor::start("output-revert");
+    let mut client = compositor.connect();
+
+    client.send(r#"{"type":"output.query"}"#);
+    let before = client.wait_for("output.layout")["outputs"][0]["scale"]
+        .as_f64()
+        .expect("a scale");
+    assert_eq!(before, 1.0);
+
+    client.send(r#"{"type":"output.configure","name":"HEADLESS-1","scale":2.0}"#);
+    client.send(r#"{"type":"output.query"}"#);
+    // Two layouts go out — the configure's own and the query's — and both say
+    // the same thing, so reading either is reading the change.
+    let mut applied = client.wait_for("output.layout");
+    while applied["outputs"][0]["scale"].as_f64() != Some(2.0) {
+        applied = client.wait_for("output.layout");
+    }
+
+    client.send(r#"{"type":"output.revert"}"#);
+    client.send(r#"{"type":"output.query"}"#);
+    let mut back = client.wait_for("output.layout");
+    while back["outputs"][0]["scale"].as_f64() != Some(1.0) {
+        back = client.wait_for("output.layout");
+    }
+    assert_eq!(back["outputs"][0]["scale"], 1.0);
+}
+
+/// And a confirmed one stays.
+///
+/// The other half, and the one worth a test of its own: a revert that fires
+/// after the confirmation would undo a change somebody explicitly kept, which
+/// is worse than never having offered the countdown.
+#[test]
+fn a_confirmed_output_change_is_not_taken_back() {
+    let compositor = Compositor::start("output-confirm");
+    let mut client = compositor.connect();
+
+    client.send(r#"{"type":"output.configure","name":"HEADLESS-1","scale":2.0}"#);
+    client.send(r#"{"type":"output.confirm"}"#);
+    // A revert after the confirmation has nothing to go back to, and says so
+    // by doing nothing rather than by refusing — the deadline may have fired a
+    // moment before the click, and the desk is then in the state the click
+    // asked for.
+    client.send(r#"{"type":"output.revert"}"#);
+    client.send(r#"{"type":"output.query"}"#);
+
+    let mut layout = client.wait_for("output.layout");
+    while layout["outputs"][0]["scale"].as_f64() != Some(2.0) {
+        layout = client.wait_for("output.layout");
+    }
+    assert_eq!(layout["outputs"][0]["scale"], 2.0);
+}
+
 /// A real layer-shell client, run against a real compositor.
 ///
 /// wmenu is the reason layer-shell was ported and it exercises the whole path:

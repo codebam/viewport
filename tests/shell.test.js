@@ -231,6 +231,10 @@ const powerEl = new El('div');
    drew into is the one the test reads back. */
 const networkEl = new El('div');
 const bluetoothEl = new El('div');
+/* And the settings panel, on the same terms: what a switch was drawn in — and
+   what a click on it sent — is only visible if the element the shell drew into
+   is the one the test reads back. */
+const settingsEl = new El('div');
 /* And the on-screen keyboard, on the same terms: what a tap leaves behind is
    only visible if the element the shell drew into is the one read back. */
 const oskEl = new El('div');
@@ -272,6 +276,7 @@ global.document = {
     'power-picker': powerEl,
     'network-picker': networkEl,
     'bluetooth-picker': bluetoothEl,
+    settings: settingsEl,
     osk: oskEl,
     calendar: calendarEl,
     'desktop-template': desktopTemplate,
@@ -482,6 +487,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' get powerEl() { return powerEl; },'
   + ' get networkEl() { return networkEl; },'
   + ' get bluetoothEl() { return bluetoothEl; },'
+  + ' get settingsEl() { return settingsEl; },'
   + ' get oskEl() { return oskEl; },'
   /* The calendar's element, and the two pure functions under the clock: what
      the module says for a given moment, and which day the locale starts its
@@ -5409,6 +5415,221 @@ if (mode === 'scrolling') {
 
   emit({ type: 'view.removed', id: 90 });
   emit({ type: 'view.removed', id: 91 });
+}
+
+/* --- the settings panel ------------------------------------------------
+ *
+ * The panel is drawn entirely out of the last `config` event and the last
+ * `output.layout`, and every control it draws sends a message. So what there
+ * is to check is exactly those two halves: that a value the compositor stated
+ * is the value on the switch, and that pressing the switch sends the message
+ * the compositor would act on.
+ *
+ * The display half is worth more than the rest put together, because it is the
+ * one that can leave somebody looking at a screen they cannot read: a change
+ * has to raise the confirm bar, and the bar's two buttons have to send the two
+ * messages that end the compositor's countdown.
+ * --------------------------------------------------------------------- */
+
+{
+  /* Everything under `root` with this class, which is what a test needs and
+     the stub's querySelector — one element, first match — does not give. */
+  const all = (root, cls) => {
+    const found = [];
+    const stack = [...root.children];
+    while (stack.length) {
+      const el = stack.shift();
+      if (el._classes.has(cls)) found.push(el);
+      stack.push(...el.children);
+    }
+    return found;
+  };
+  const click = (el) => (el.listeners.click ?? []).forEach((fn) =>
+    fn({ preventDefault() {}, stopPropagation() {} }));
+  const dialog = () => globalThis.__shell.settingsEl.children[0];
+  /* The row whose label reads this, as the controls in it. */
+  const controls = (label) => all(dialog(), 'settings-row')
+    .find((row) => row.children[0]?.textContent === label)
+    ?.children[1]?.children ?? [];
+
+  /* A desktop with an opinion about every one of these, so the panel is being
+     read rather than guessed at: an absent field would leave the shell's own
+     default on the switch and the assertion would pass against nothing. */
+  emit({ type: 'config',
+    layout: mode,
+    rules: HARNESS_RULES,
+    gaps: { inner: 12, outer: 3, smart: true },
+    border: { radius: 9, width: 4, smart: false },
+    wallpaper: 'file:///pic/w.png',
+    wallpaper_mode: 'tile',
+    dark_mode: false });
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', make: '', model: 'Screen', serial: '',
+      x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', enabled: true,
+      modes: [
+        { width: 1920, height: 1080, refresh: 60000,
+          preferred: true, current: true },
+        { width: 1920, height: 1080, refresh: 143998,
+          preferred: false, current: false },
+      ] },
+  ] });
+
+  let before = sent.length;
+  emit({ type: 'shell.command', command: 'settings', args: [] });
+  check('a "settings" shell command opens the panel',
+    globalThis.__shell.settingsEl.hidden === false);
+  check('and takes the keyboard, because its fields are real text boxes',
+    sent.slice(before).some((m) => m.type === 'shell.focus'));
+  check('and asks what the monitors are now rather than trusting an old layout',
+    sent.slice(before).some((m) => m.type === 'output.query'));
+
+  /* Read, not guessed: every one of these is a number the compositor stated
+     and none of them is the shell's own default. */
+  check('the gaps are drawn from what the compositor last said',
+    controls('Between windows')[0]?.value === '12' &&
+      controls('Around the edge')[0]?.value === '3');
+  check('and so is the border',
+    controls('Corner radius')[0]?.value === '9' &&
+      controls('Thickness')[0]?.value === '4');
+  check('a boolean is drawn as what it is, not as what it would become',
+    controls('Drop for a lone window')[0]?.textContent === 'On' &&
+      controls('Square a lone window')[0]?.textContent === 'Off');
+  check('the wallpaper is the URL the compositor resolved',
+    controls('Picture')[0]?.value === 'file:///pic/w.png');
+  check('and the fitting it is really using is the one marked',
+    all(dialog(), 'settings-option')
+      .filter((o) => o._classes.has('active'))
+      .some((o) => o.textContent === 'tile'));
+  check('dark mode is off, because the compositor said so',
+    controls('Dark applications')[0]?.textContent === 'Off');
+
+  before = sent.length;
+  click(controls('Dark applications')[0]);
+  check('the switch sends the state it wants rather than a toggle',
+    sent.slice(before).some((m) => m.type === 'config.dark_mode' &&
+      m.enabled === true));
+
+  /* Committed on change rather than on every keystroke: typing 20 over 12
+     passes through 2, and a two-pixel gap applied for as long as it takes to
+     type the second digit is a desktop that jumps while being configured. */
+  before = sent.length;
+  const inner = controls('Between windows')[0];
+  inner.value = '20';
+  (inner.listeners.change ?? []).forEach((fn) => fn({}));
+  check('a committed number goes out as the setter it belongs to',
+    sent.slice(before).some((m) => m.type === 'config.gaps' && m.inner === 20));
+
+  before = sent.length;
+  const negative = controls('Corner radius')[0];
+  negative.value = '-4';
+  (negative.listeners.change ?? []).forEach((fn) => fn({}));
+  check('a negative one is refused in the box rather than by the compositor',
+    !sent.slice(before).some((m) => m.type === 'config.border') &&
+      negative.value === '9');
+
+  before = sent.length;
+  click(all(dialog(), 'settings-option').find((o) => o.textContent === 'fit'));
+  check('a fitting is sent without naming the picture again',
+    sent.slice(before).some((m) => m.type === 'config.wallpaper' &&
+      m.mode === 'fit' && m.path === undefined));
+
+  /* The displays. A mode list the compositor sent, drawn as a list of modes
+     rather than a list of pixel sizes: 60 Hz and 143.998 Hz at the same size
+     are two different modes and a panel that shows one row for them is a
+     panel that cannot select the other. */
+  const select = all(dialog(), 'settings-select')[0];
+  check('every mode the display offers is on the list',
+    select?.children.length === 2 &&
+      select.children[0].textContent === '1920×1080 @ 60.0 Hz (preferred)' &&
+      select.children[1].textContent === '1920×1080 @ 144.0 Hz');
+  check('and the one it is in is the one selected',
+    select.value === '1920x1080@60000');
+
+  before = sent.length;
+  select.value = '1920x1080@143998';
+  (select.listeners.change ?? []).forEach((fn) => fn({ stopPropagation() {} }));
+  check('choosing one sends the three numbers, not an index into the list',
+    sent.slice(before).some((m) => m.type === 'output.configure' &&
+      m.name === 'DP-1' && m.mode?.width === 1920 &&
+      m.mode?.refresh === 143998));
+  check('and the panel asks whether the screen came back',
+    all(dialog(), 'settings-confirm').length === 1);
+
+  before = sent.length;
+  click(all(dialog(), 'settings-button').find((b) => b.textContent === 'Keep'));
+  check('Keep is what ends the compositor\'s countdown',
+    sent.slice(before).some((m) => m.type === 'output.confirm'));
+  check('and the question goes away with it',
+    all(dialog(), 'settings-confirm').length === 0);
+
+  before = sent.length;
+  click(all(dialog(), 'settings-option').find((o) => o.textContent === '90°'));
+  check('a rotation is the same provisional change',
+    sent.slice(before).some((m) => m.type === 'output.configure' &&
+      m.transform === '90') &&
+      all(dialog(), 'settings-confirm').length === 1);
+
+  before = sent.length;
+  click(all(dialog(), 'settings-button')
+    .find((b) => b.textContent === 'Revert'));
+  check('and Revert takes it back without waiting out the deadline',
+    sent.slice(before).some((m) => m.type === 'output.revert'));
+
+  /* Saving. The panel says where, because the overlay file is a thing
+     somebody may want to go and look at — or delete, which is how the config
+     file is put back in charge. */
+  before = sent.length;
+  click(dialog().querySelector('.settings-save'));
+  check('Save asks the compositor to write the settings down',
+    sent.slice(before).some((m) => m.type === 'config.save'));
+  emit({ type: 'config.saved', path: '/home/me/.config/viewport/settings.json' });
+  check('and says where they went',
+    dialog().querySelector('.settings-hint').textContent ===
+      'Saved to /home/me/.config/viewport/settings.json');
+
+  /* And a config message from anywhere — an editor saving the config file,
+     another client on the socket — redraws the switches under the hand. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    gaps: { inner: 40, outer: 3, smart: true }, dark_mode: true });
+  check('a change from outside the panel reaches the panel',
+    controls('Between windows')[0]?.value === '40' &&
+      controls('Dark applications')[0]?.textContent === 'On');
+
+  /* Escape closes it, from wherever the caret ended up. The only global key
+     handler in the shell, and the panel is the only surface it is for. */
+  (documentListeners.keydown ?? []).forEach((fn) =>
+    fn({ key: 'Escape', preventDefault() {} }));
+  check('Escape closes the panel',
+    globalThis.__shell.settingsEl.hidden === true);
+
+  (documentListeners.keydown ?? []).forEach((fn) =>
+    fn({ key: 'Escape', preventDefault() {} }));
+  check('and pressing it again with nothing open does nothing at all',
+    globalThis.__shell.settingsEl.hidden === true);
+
+  /* Put the desktop back the way the sections after this one expect it.
+     This block replaced the window rules and the monitor's mode list, and a
+     config message replaces the rules wholesale.
+
+     The four custom properties are removed by hand rather than sent as a
+     config message, because there is no message that removes one: a config
+     that omits `gaps` leaves whatever the last one set — deliberately, so a
+     reload cannot silently reset a value — and the stylesheet section further
+     down checks what `shell.css` itself declares, which is only visible with
+     nothing overriding it. */
+  for (const property of ['--gap', '--gap-outer', '--window-radius',
+    '--window-border']) {
+    document.documentElement.style.removeProperty(property);
+  }
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    gaps: { smart: false }, border: { smart: false } });
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
 }
 
 /* --- the screen-share chooser ------------------------------------------
