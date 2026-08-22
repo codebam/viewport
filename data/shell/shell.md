@@ -51,6 +51,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | --- | --- |
 | `state.js` | The bridge to the compositor, and every piece of shell state. Loaded first because the rest is declarations and these are the values they act on. |
 | `motion.js` | The animations that cannot be written as CSS — an element leaving, a stagger, an opacity that is an IPC message. Nothing else in the shell starts a tween. |
+| `keys.js` | The keyboard, for every surface that can be opened: arrow navigation, Enter, Delete, Escape, and the pair that takes the keyboard from the focused window and hands it back. Loaded here with `motion.js` because it is shared behaviour the surfaces further down reach for rather than anything they own. |
 | `tiling.js` | The i3-style tree, and rendering it to nested flexboxes. |
 | `scrolling.js` | niri's endless strip of columns, and the overview. |
 | `solar.js` | one window in the middle, the rest in orbit. Layout arithmetic rather than flexbox; see [docs/solar.md](../../docs/solar.md). |
@@ -62,16 +63,57 @@ rather than keeping its own list, so the two cannot drift apart.
 | `outputs.js` | Outputs, workspaces, and moving between them. |
 | `windows.js` | The window lifecycle: added, focused, closed, floated, fullscreened. |
 | `bar.js` | The status bar, its widgets, the system tray and its menus. |
-| `clipboard.js` | The clipboard history picker. |
-| `launcher.js` | The launcher, opened from `Mod4+d`. The list is the compositor's — the page cannot read `XDG_DATA_DIRS` — so this draws the rows it is sent and sends the filter back on every keystroke; launching names an `id`, and the compositor starts what it scanned with an activation token. Like the network picker's passphrase box, the filter field is real typed text: it asks for the keyboard with `shell.focus` and gives it back. |
-| `notifications.js` | The notification centre, opened from `Mod4+Shift+m`: what has been notified, after the popups have gone. The list itself is the compositor's — this draws it and sends back forget-one and forget-all. The popups are `session.js`, which is the same notifications and a different job. |
-| `power.js` | The power-profile picker, opened from the battery widget. |
-| `network.js` | The Wi-Fi and Bluetooth pickers, opened from `Mod4+Shift+n`, `Mod4+Shift+t` and the bar's network module. Clicked rather than steered, like the clipboard picker — and the one place in the shell that receives real typed text, because a passphrase field does: it asks for the keyboard with `shell.focus` and gives it back. |
+| `clipboard.js` | The clipboard history picker. Arrows to choose, Enter to paste, Delete to forget a row. |
+| `launcher.js` | The launcher, opened from `Mod4+d`. The list is the compositor's — the page cannot read `XDG_DATA_DIRS` — so this draws the rows it is sent and sends the filter back on every keystroke; launching names an `id`, and the compositor starts what it scanned with an activation token. Like the network picker's passphrase box, the filter field is real typed text: it asks for the keyboard with `shell.focus` and gives it back — through `keys.js`, which every surface below now shares. |
+| `notifications.js` | The notification centre, opened from `Mod4+Shift+m`: what has been notified, after the popups have gone. The list itself is the compositor's — this draws it and sends back forget-one and forget-all. Arrows to choose, Enter for a row's default action, Delete to forget it. The popups are `session.js`, which is the same notifications and a different job. |
+| `power.js` | The power-profile picker, opened from the battery widget. Opened by a click and still steerable: whoever opens it that way is not the only person who has to be able to finish it. |
+| `network.js` | The Wi-Fi and Bluetooth pickers, opened from `Mod4+Shift+n`, `Mod4+Shift+t` and the bar's network module. Steered as well as clicked: both take the keyboard when they open, so the rows and the radio switch can be reached with the arrows. The passphrase field inside the first is the one place in the shell that receives real typed text, and it keeps its own keys from reaching the list behind it. |
 | `screencast.js` | The screen-share chooser, the remote-control one, and the shortcut one. Drawn here, steered from the compositor: the shell receives no input of its own, so the highlight arrives in the message. A `screencast.pick` carrying `devices` is the RemoteDesktop portal rather than ScreenCast, and the dialog asks that question instead. A `shortcuts.pick` is the third question — which keys an application may hear while something else has focus — and has no highlight at all, because the answer is yes or no to the whole list. |
 | `osk.js` | The on-screen keyboard. Docked to the bottom of an output rather than centred like the pickers above it, and the one part of the shell whose taps are not clicks on the DOM but instructions to the compositor: every key sends an `osk.key` keysym, pressed and released like a real one, and the seat's own keyboard repeat does the rest. Comes up on its own when the focused client's text-input is enabled (`osk.wanted`), or by hand with `Mod4+Shift+k`. |
 | `commands.js` | Commands from the compositor and the inbound message loop. Loaded last: its bottom asks for the state the shell starts from, so everything handling the answer must already exist. |
 
 `shell.css` styles all of it, and `index.html` is the document.
+
+## The keyboard
+
+Every surface the shell can put on screen can be finished without a pointer.
+That takes two things, and only the second is obvious.
+
+**The shell has to be given the keyboard.** The out-of-process shell is a
+Wayland client, and on a desktop with a window open that window has the
+keyboard — so a surface that has not sent `shell.focus` receives no key events
+at all, however many `keydown` handlers it has. `keyNavOpen` sends it and
+remembers which view had it; `keyNavClose` gives it back. Every surface that
+can be opened calls both. The screen-share chooser is the one exception and
+deliberately: it is steered from the compositor, receives no input of its own,
+and taking focus for it would move focus on a desktop nobody touched.
+
+**The rows are rebuilt under the selection.** Each of these lists is redrawn
+whole whenever a snapshot arrives — a copy lands in the clipboard, an access
+point comes into range — so the selected element is destroyed repeatedly while
+somebody is steering. The selection is therefore an index kept in `keys.js`
+against a named surface, painted back on by `keyNavRefresh` after each
+rebuild, and not a property of any element.
+
+A surface marks its rows with `keyNavRowEl` and binds the keys with
+`bindKeyNav`. Enter activates a row by clicking it, so the pointer and the
+keyboard travel one handler and a row whose click grows a condition cannot
+acquire a keyboard path that skips it. The ring is `.kbd-here`, declared last
+in `shell.css` so that no row's own background can be painted over it.
+
+## Accessibility
+
+The desktop is a web page, so the engine builds a real accessibility tree out
+of this markup for nothing — and whether anything at the other end can read it
+is a question about the backend, answered per backend in
+[docs/shell-backends.md](../../docs/shell-backends.md). What is this
+directory's job either way is that the tree be *correct*: roles on the
+surfaces (`dialog`, `listbox`, `menu`), an accessible name on anything drawn
+out of a glyph, `aria-selected` following the keyboard, and `aria-live` on the
+two things that change without being asked — the clock and the notification
+strip. Several rows here are icon fonts in the private use area, where the
+visible text read aloud is a nonsense syllable, so those carry an explicit
+`aria-label` built from words.
 
 Editing any of them takes effect without restarting the compositor:
 `Mod4+Shift+c` reloads the page, and starting the compositor with

@@ -160,10 +160,6 @@ let networkOpen = false;
  * time — it is a box under one row, not a dialog — and the name is what the
  * answer is sent back with. */
 let networkAsking = null;
-/* Which window had the keyboard before the passphrase box took it, so it can
- * be given back. Null when nothing did, which is a box opened on an empty
- * desktop. */
-let networkRestoreId = null;
 let bluetoothState = null;
 let bluetoothOpen = false;
 /* The clipboard history, as the compositor last sent it, and whether the

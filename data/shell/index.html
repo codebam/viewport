@@ -24,7 +24,7 @@
   notifications: it belongs to the session rather than to one desktop, and it
   is drawn over whichever one is being looked at.
 -->
-<div id="screencast" hidden></div>
+<div id="screencast" role="dialog" aria-label="Screen sharing" hidden></div>
 
 <!--
   An open tray menu. Page level for the same reason again: it belongs to the
@@ -78,30 +78,52 @@
   one desktop. It comes up on its own when a text field asks for it, or with
   Mod4+Shift+k.
 -->
-<div id="osk" hidden></div>
+<div id="osk" role="group" aria-label="On-screen keyboard" hidden></div>
 
 <template id="desktop-template">
   <main class="desktop">
-    <nav class="bar">
+    <!--
+      Roles and labels rather than shape alone. The desktop is a web page, so
+      the engine builds a real accessibility tree out of this markup and hands
+      it to whatever is reading — see docs/shell-backends.md on which backends
+      currently manage that last step. What is here has to be right first: a
+      bar full of unlabelled `<span>`s is a tree with nothing in it whether or
+      not the bus is ever connected, and the labels are the half that costs
+      nothing now and cannot be inferred later.
+
+      Every module carries its `title` twice, as `title` and as `aria-label`.
+      They are not the same thing: a `title` is a tooltip, which is a hover,
+      which is a pointer — and a reader is told the accessible name, which a
+      `title` supplies only when nothing better exists. Saying it outright is
+      one attribute and removes the guess. `aria-live="polite"` on the ones
+      that change on their own is what makes a clock or a battery readable
+      without the reader having to be asked again; `off` everywhere else,
+      because a bar that announced every CPU sample would be unusable.
+    -->
+    <nav class="bar" aria-label="Status bar">
       <div class="bar-left">
-        <div class="workspaces"></div>
-        <div class="taskbar"></div>
+        <div class="workspaces" role="group" aria-label="Workspaces"></div>
+        <div class="taskbar" role="group" aria-label="Open windows"></div>
       </div>
       <div class="bar-right">
-        <span class="mode" hidden></span>
-        <span class="module tray"></span>
-        <span class="module net" title="network"></span>
-        <span class="module disk" title="free on /"></span>
-        <span class="module cpu" title="cpu"></span>
-        <span class="module load" title="load average"></span>
-        <span class="module memory" title="memory"></span>
-        <span class="module clock"></span>
+        <span class="mode" aria-live="polite" hidden></span>
+        <span class="module tray" role="group" aria-label="System tray"></span>
+        <span class="module net" title="network" aria-label="network"></span>
+        <span class="module disk" title="free on /" aria-label="free on /"></span>
+        <span class="module cpu" title="cpu" aria-label="cpu"></span>
+        <span class="module load" title="load average" aria-label="load average"></span>
+        <span class="module memory" title="memory" aria-label="memory"></span>
+        <span class="module clock" aria-live="polite" aria-label="clock"></span>
       </div>
     </nav>
 
     <div class="windows"></div>
 
-    <div class="notifications"></div>
+    <!-- Something arrived and said so out loud. `polite` and not `assertive`:
+         a notification interrupts what is on screen, not what is being read
+         aloud, and the record of it is a keystroke away in the centre. -->
+    <div class="notifications" role="log" aria-live="polite"
+         aria-label="Notifications"></div>
 
     <div class="empty">
       <!--
@@ -162,6 +184,7 @@ Mod4+d       launcher</pre>
      a second list that could drift. See shell.md. -->
 <script src="state.js"></script>
 <script src="motion.js"></script>
+<script src="keys.js"></script>
 <script src="tiling.js"></script>
 <script src="scrolling.js"></script>
 <script src="dynamic.js"></script>

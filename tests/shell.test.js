@@ -34,6 +34,9 @@ const fs = require('fs');
 const css = require('./css.js');
 
 let idSeq = 0;
+/* The element the shell last asked to focus. One global because a real
+   document has one focus, and the pickers hand it back and forth. */
+let focusedEl = null;
 
 class El {
   constructor(tag) {
@@ -56,6 +59,37 @@ class El {
     this.textContent = '';
     this._id = ++idSeq;
     this.listeners = {};
+    /* Attributes, which until the shell started writing ARIA onto its rows
+       nothing here needed: a class list and a `hidden` flag were the whole of
+       what the shell set. They are a plain object rather than a Map because
+       the assertions read them by name and `attrs['aria-selected']` is what a
+       test wants to write. */
+    this.attrs = {};
+    /* Where the keyboard is. `focus()` records it rather than moving anything,
+       because there is no engine here to move it in — what a test needs to
+       know is which element the shell *asked* for, which is exactly the
+       question a lost focus ring turns into. */
+    this._focused = false;
+  }
+  setAttribute(name, value) { this.attrs[name] = String(value); }
+  getAttribute(name) { return this.attrs[name] ?? null; }
+  removeAttribute(name) { delete this.attrs[name]; }
+  focus() {
+    if (focusedEl && focusedEl !== this) focusedEl._focused = false;
+    focusedEl = this;
+    this._focused = true;
+  }
+  blur() { this._focused = false; if (focusedEl === this) focusedEl = null; }
+  /* A real click, invented. The shell's keyboard navigation activates a row by
+     clicking it — one path from "chosen" to "sent", whether a pointer or an
+     arrow key chose it — so a stub with no `click()` would make every keyboard
+     test silently assert nothing at all. */
+  click() { this.dispatch('click', {}); }
+  scrollIntoView() {}
+  dispatch(type, event = {}) {
+    for (const fn of this.listeners[type] ?? []) {
+      fn({ target: this, preventDefault() {}, stopPropagation() {}, ...event });
+    }
   }
   get className() { return [...this._classes].join(' '); }
   set className(v) { this._classes = new Set(String(v).split(/\s+/).filter(Boolean)); }
@@ -84,6 +118,14 @@ class El {
   }
   remove() { if (this.parentElement) this.parentElement.remove_child(this); }
   addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }
+  /* Taken off again, which until the shell started rebinding a surface's keys
+     on a page-level element nothing here needed. A stub that accepted the
+     removal and did not perform it would let exactly the bug this exists to
+     catch — a handler per opening, on an element that outlives them all —
+     pass silently. */
+  removeEventListener(type, fn) {
+    this.listeners[type] = (this.listeners[type] ?? []).filter((f) => f !== fn);
+  }
   querySelector(sel) {
     const want = sel.replace(/^\./, '');
     const hit = (el) => el._classes.has(want) || el.tagName === want;
@@ -502,10 +544,22 @@ const src = order.map((f) => fs.readFileSync(`${shellDir}/${f}`, 'utf8')).join('
 (0, eval)(src);
 
 function emit(message) {
+  /* Before the message and again after it. The compositor answers a
+     view.focus before it sends whatever happens next, so a round trip the
+     shell asked for outside an emit — a picker closing on a click, which
+     hands the keyboard back — has to have completed by the time the next
+     message is delivered. Draining only afterwards made that answer arrive
+     *after* the next event instead of before it, which showed up as a tray
+     menu that opened and was immediately closed again by the view.focused
+     belonging to the picker that closed before it. */
+  drainFocus();
   for (const fn of windowListeners.viewport ?? []) fn({ detail: message });
+  drainFocus();
+}
 
-  /* Bounded, because a shell bug that focuses in a loop should fail the test
-     rather than hang it. */
+/* Bounded, because a shell bug that focuses in a loop should fail the test
+   rather than hang it. */
+function drainFocus() {
   for (let guard = 0; pendingFocus.length > 0 && guard < 20; guard++) {
     const id = pendingFocus.shift();
     for (const fn of windowListeners.viewport ?? []) {
@@ -967,10 +1021,20 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   before = sent.length;
   key(field, 'ArrowDown');
   check('the highlight steps without a round trip',
-    rows()[1]._classes.has('selected'));
+    rows()[1]._classes.has('kbd-here'));
+  /* Said as well as painted. A class is not in the accessibility tree, so a
+     reader following the field's own list has nothing to follow unless the
+     row is marked. */
+  check('and the row the keyboard is on says so to a reader',
+    rows()[1].getAttribute('aria-selected') === 'true' &&
+    rows()[0].getAttribute('aria-selected') === 'false');
   key(field, 'ArrowDown');
   key(field, 'ArrowDown');
-  check('and it wraps at the end', rows()[0]._classes.has('selected'));
+  check('and it wraps at the end', rows()[0]._classes.has('kbd-here'));
+  key(field, 'End');
+  check('End goes to the last row', rows()[2]._classes.has('kbd-here'));
+  key(field, 'Home');
+  check('and Home back to the first', rows()[0]._classes.has('kbd-here'));
 
   before = sent.length;
   key(field, 'Enter');
@@ -1255,8 +1319,6 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   click(rows()[2]);
   check('an unknown secured network asks for a passphrase rather than joining',
     !sent.slice(before).some((m) => m.type === 'network.connect'));
-  check('and takes the keyboard, or the box could be clicked and not typed in',
-    sent.slice(before).some((m) => m.type === 'shell.focus'));
 
   const box = () => dialog().children[1].children[2].children[1];
   check('the box is under the row it belongs to',
@@ -1289,18 +1351,21 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
      it. */
   check('and the picker stays up to show what came of it',
     picker().hidden === false);
-  check('and gives the keyboard back to the window that had it',
-    sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 3));
+  /* The keyboard stays with it. It used to go back to the window here, which
+     was right when the box was the only part of this picker a keyboard could
+     reach; now the rows can be steered, and handing the keyboard away while
+     the list is still on screen would put it back out of reach. */
+  check('and keeps the keyboard, because the list is still there to steer',
+    !sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 3));
 
-  emit({ type: 'view.focused', id: 3 });
   click(rows()[2]);
   before = sent.length;
   key(input(), 'Escape');
   check('Escape abandons the box without joining anything',
     !sent.slice(before).some((m) => m.type === 'network.connect') &&
     dialog().children[1].children[2].children.length === 1);
-  check('and hands the keyboard back the same way',
-    sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 3));
+  check('and leaves the picker up rather than taking it down with the box',
+    picker().hidden === false);
 
   before = sent.length;
   click(dialog().children[0].children[1]);
@@ -5221,6 +5286,315 @@ if (mode === 'scrolling') {
   emit({ type: 'shortcuts.pick.done', id: 10 });
 }
 
+/* --- the keyboard, on every surface that can be opened -----------------
+ *
+ * The launcher and the passphrase box grew their own `keydown` because each
+ * has a text field. Everything else here — the tray menu, the clipboard
+ * history, the notification centre, the power menu, the two radio pickers —
+ * was opened by a chord and then had to be finished with the pointer, which
+ * is the same gap as a power menu a touch screen could not open.
+ *
+ * What is checked is the whole of what "has a keyboard" means for one of
+ * these: that opening it asks the compositor for the keys at all (nothing
+ * else can make an arrow key arrive), that the arrows move a highlight the
+ * page can see, that Enter travels the row's own click handler rather than a
+ * second path of its own, that Escape takes the surface down, and that going
+ * down hands the keyboard back to the window that had it. See keys.js.
+ * --------------------------------------------------------------------- */
+{
+  const key = (el, k) => (el.listeners.keydown ?? [])
+    .forEach((fn) => fn({ key: k, preventDefault() {}, stopPropagation() {} }));
+  const fire = (type) => (documentListeners[type] ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+  const here = (list) => list.findIndex((el) => el._classes.has('kbd-here'));
+  /* Every stop the arrows make, wherever the surface happened to hang it. The
+     power menu puts its verbs beside the list rather than in it and the radio
+     pickers put the switch in a header, so a walk of the dialog is the only
+     reading of "what can the keyboard reach" that is not a restatement of the
+     markup it is checking. */
+  const stops = (root) => {
+    const out = [];
+    const walk = (el) => {
+      for (const c of el.children) {
+        if (c.hidden) continue;
+        if (c._classes.has('kbd-row') && !c._classes.has('disabled')) out.push(c);
+        walk(c);
+      }
+    };
+    if (root) walk(root);
+    return out;
+  };
+
+  /* Something for the surfaces to hand the keyboard back to. */
+  emit({ type: 'view.added', id: 90, title: 'Work', app_id: 'work',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  emit({ type: 'view.focused', id: 90 });
+
+  /* --- the clipboard history --- */
+  {
+    const dialog = () => globalThis.__shell.clipboardEl.children[0];
+    const rows = () => stops(dialog());
+
+    emit({ type: 'clipboard.history', entries: [
+      { id: 3, text: 'newest' }, { id: 2, text: 'middle' },
+      { id: 1, text: 'oldest' },
+    ] });
+    let before = sent.length;
+    emit({ type: 'shell.command', command: 'clipboard', args: [] });
+    /* The one thing that has to happen first: the shell is a Wayland client
+       and the window under the picker has the keyboard until this is sent. */
+    check('opening the clipboard picker asks for the keyboard',
+      sent.slice(before).some((m) => m.type === 'shell.focus'));
+    /* Three entries and "forget everything", which is a stop too — a footer a
+       keyboard could not reach is a button that only exists for a pointer. */
+    check('every row and the footer are stops', rows().length === 4);
+    check('and it opens on the first row', here(rows()) === 0);
+
+    key(dialog(), 'ArrowDown');
+    key(dialog(), 'ArrowDown');
+    check('the arrows move the highlight', here(rows()) === 2);
+    key(dialog(), 'ArrowUp');
+    check('and back', here(rows()) === 1);
+
+    before = sent.length;
+    key(dialog(), 'Delete');
+    /* The row under the keyboard, not the whole history: a Delete that
+       cleared the clipboard would be a keystroke away from losing what
+       somebody opened the picker to find. */
+    check('Delete forgets the row the keyboard is on and nothing else',
+      sent.slice(before).some((m) => m.type === 'clipboard.forget' &&
+        m.id === 2));
+
+    before = sent.length;
+    key(dialog(), 'Enter');
+    check('Enter pastes it, by the same click a pointer would have made',
+      sent.slice(before).some((m) => m.type === 'clipboard.paste' && m.id === 2));
+    check('and the picker goes',
+      globalThis.__shell.clipboardEl.hidden === true);
+    check('handing the keyboard back to the window that had it',
+      sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 90));
+
+    emit({ type: 'shell.command', command: 'clipboard', args: [] });
+    check('and it opens on the first row again rather than where it was left',
+      here(rows()) === 0);
+    before = sent.length;
+    key(dialog(), 'Escape');
+    check('Escape takes it down without pasting anything',
+      globalThis.__shell.clipboardEl.hidden === true &&
+      !sent.slice(before).some((m) => m.type === 'clipboard.paste'));
+    check('and hands the keyboard back the same way',
+      sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 90));
+  }
+
+  /* --- the power menu --- */
+  {
+    const dialog = () => globalThis.__shell.powerEl.children[0];
+    const rows = () => stops(dialog());
+
+    emit({ type: 'power.update', profiles: ['power-saver', 'balanced',
+      'performance'], profile: 'balanced', percentage: 80 });
+    let before = sent.length;
+    emit({ type: 'shell.command', command: 'power', args: [] });
+    check('opening the power menu asks for the keyboard',
+      sent.slice(before).some((m) => m.type === 'shell.focus'));
+    /* Three profiles and four verbs, in the order they are drawn: a keyboard
+       that could reach the profiles and not Suspend would be a power menu a
+       keyboard could not use for the thing it is mostly used for. */
+    check('every profile and every verb is a stop', rows().length === 7);
+    check('and it opens on the first', here(rows()) === 0);
+
+    key(dialog(), 'ArrowDown');
+    before = sent.length;
+    key(dialog(), 'Enter');
+    check('Enter on a profile row asks for that profile',
+      sent.slice(before).some((m) => m.type === 'power.profile' &&
+        m.profile === 'balanced'));
+    check('and the menu goes', globalThis.__shell.powerEl.hidden === true);
+
+    emit({ type: 'shell.command', command: 'power', args: [] });
+    key(dialog(), 'End');
+    before = sent.length;
+    key(dialog(), 'Enter');
+    /* The last row is Quit, which goes out as its own message rather than as
+       a fourth power verb — see power.js. Reaching it from the keyboard is
+       the point: it is the row furthest from where the highlight starts. */
+    check('End reaches the last row and Enter takes it',
+      sent.slice(before).some((m) => m.type === 'quit'));
+
+    emit({ type: 'shell.command', command: 'power', args: [] });
+    before = sent.length;
+    key(dialog(), 'Escape');
+    check('Escape takes the power menu down without doing anything',
+      globalThis.__shell.powerEl.hidden === true &&
+      !sent.slice(before).some((m) => m.type === 'power.action'));
+  }
+
+  /* --- the notification centre --- */
+  {
+    const dialog = () => globalThis.__shell.notificationCentreEl.children[0];
+    const rows = () => (dialog()?.children[0]?.children ?? [])
+      .filter((el) => el._classes.has('notification-centre-row'));
+    const now = Math.floor(Date.now() / 1000);
+
+    emit({ type: 'notification.history', entries: [
+      { id: 30, app_name: 'chat', summary: 'newest', body: 'a message',
+        urgency: 1, timeout: -1, actions: [], at: now - 30 },
+      { id: 20, app_name: 'mail', summary: 'middle', body: '', urgency: 1,
+        timeout: -1, actions: [{ key: 'default', label: 'Open' }], at: now - 60 },
+    ] });
+    let before = sent.length;
+    emit({ type: 'shell.command', command: 'notifications', args: [] });
+    check('opening the notification centre asks for the keyboard',
+      sent.slice(before).some((m) => m.type === 'shell.focus'));
+    check('and it opens on the newest', here(rows()) === 0);
+    /* Read out as one sentence starting with the part that says whether the
+       rest is worth hearing. Four fragments in visual order would make a
+       reader say "chat, just now, newest, a message". */
+    check('a row is named for a reader, summary first',
+      rows()[0].getAttribute('aria-label').startsWith('newest, a message'));
+
+    before = sent.length;
+    key(dialog(), 'Delete');
+    check('Delete forgets the row the keyboard is on',
+      sent.slice(before).some((m) => m.type === 'notification.forget' &&
+        m.id === 30));
+    /* And not the whole list, which is what an id-less forget means. */
+    check('and not the whole record',
+      !sent.slice(before).some((m) => m.type === 'notification.forget' &&
+        m.id === undefined));
+
+    key(dialog(), 'ArrowDown');
+    before = sent.length;
+    key(dialog(), 'Enter');
+    check('Enter invokes the row default action where there is one',
+      sent.slice(before).some((m) => m.type === 'notification.action' &&
+        m.id === 20 && m.action === 'default'));
+
+    before = sent.length;
+    key(dialog(), 'Escape');
+    check('Escape closes the centre and gives the keyboard back',
+      globalThis.__shell.notificationCentreEl.hidden === true &&
+      sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 90));
+  }
+
+  /* --- a tray item's menu --- */
+  {
+    const menu = () => globalThis.__shell.trayMenuEl;
+    const rows = () => stops(menu());
+
+    let before = sent.length;
+    emit({ type: 'tray.menu', id: ':1.9/StatusNotifierItem', x: 100, y: 30,
+      items: [
+        { id: 1, label: 'Open', kind: 'standard', enabled: true },
+        { id: 2, label: '', kind: 'separator', enabled: true },
+        { id: 3, label: 'Sync now', kind: 'standard', enabled: false },
+        { id: 4, label: 'Recent', kind: 'standard', enabled: true, children: [
+          { id: 5, label: 'notes.md', kind: 'standard', enabled: true },
+        ] },
+      ] });
+    check('opening a tray menu asks for the keyboard',
+      sent.slice(before).some((m) => m.type === 'shell.focus'));
+    /* Open and Recent. The separator is not a row at all, the disabled one is
+       a dead end the keyboard would have to press past, and the submenu's own
+       row is hidden until Recent is opened. */
+    check('the arrows stop only at rows that can be chosen',
+      rows().length === 2);
+
+    key(menu(), 'ArrowDown');
+    before = sent.length;
+    key(menu(), 'Enter');
+    check('Enter on a row with children opens it rather than choosing it',
+      !sent.slice(before).some((m) => m.type === 'tray.menu.click'));
+    check('and its rows join the ones the arrows stop at',
+      rows().length === 3);
+    /* The highlight stays on the row that was opened rather than following
+       the rows that appeared under it: opening a submenu is not choosing
+       something in it. */
+    check('with the keyboard still on the row that was opened',
+      here(rows()) === 1);
+
+    key(menu(), 'ArrowDown');
+    before = sent.length;
+    key(menu(), 'Enter');
+    check('and Enter in the submenu names the row to the application',
+      sent.slice(before).some((m) => m.type === 'tray.menu.click' &&
+        m.item === 5 && m.id === ':1.9/StatusNotifierItem'));
+    check('and the menu goes', menu().hidden === true);
+
+    emit({ type: 'tray.menu', id: ':1.9/StatusNotifierItem', x: 100, y: 30,
+      items: [{ id: 1, label: 'Open', kind: 'standard', enabled: true }] });
+    before = sent.length;
+    key(menu(), 'Escape');
+    check('Escape takes the menu down and tells the application it went',
+      menu().hidden === true &&
+      sent.slice(before).some((m) => m.type === 'tray.menu.closed'));
+  }
+
+  /* --- the wireless picker --- */
+  {
+    const dialog = () => globalThis.__shell.networkEl.children[0];
+    const rows = () => stops(dialog());
+
+    emit({ type: 'network.update', available: true, wireless: true,
+      enabled: true, state: 'connected', ssid: 'kitchen', access_points: [
+        { ssid: 'kitchen', strength: 88, security: 'wpa2', known: true, active: true },
+        { ssid: 'office', strength: 70, security: 'wpa2', known: true, active: false },
+      ] });
+    let before = sent.length;
+    emit({ type: 'shell.command', command: 'network', args: [] });
+    /* The list used to be readable and not steerable: only the passphrase box
+       asked for the keyboard, and the box is under a row somebody had to
+       click to get. */
+    check('opening the wireless picker asks for the keyboard',
+      sent.slice(before).some((m) => m.type === 'shell.focus'));
+    /* The radio switch and two networks. The switch is a stop because it is
+       the only control on a picker whose radio is off — a keyboard that could
+       not reach it could not turn the radio back on. */
+    check('the switch is a stop as well as the networks', rows().length === 3);
+    check('and it opens on the switch', here(rows()) === 0);
+
+    key(dialog(), 'ArrowDown');
+    key(dialog(), 'ArrowDown');
+    before = sent.length;
+    key(dialog(), 'Enter');
+    check('Enter on a saved network joins it',
+      sent.slice(before).some((m) => m.type === 'network.connect' &&
+        m.ssid === 'office'));
+
+    /* Named for a reader rather than left to the row's own text: the strength
+       is four bars in a private-use codepoint and the lock is another one. */
+    check('a network row is named in words',
+      rows()[1].getAttribute('aria-label') ===
+        'kitchen, connected, secured, signal 3 of 4');
+
+    before = sent.length;
+    key(dialog(), 'Escape');
+    check('Escape closes the picker and gives the keyboard back',
+      globalThis.__shell.networkEl.hidden === true &&
+      sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 90));
+  }
+
+  /* A surface that never took the keyboard must not hand one back: the
+     screen-share chooser is steered from the compositor and receives no input
+     of its own, and a view.focus from it would move focus on a desktop nobody
+     touched. */
+  {
+    const before = sent.length;
+    emit({ type: 'screencast.pick', id: 40, app: 'obs', outputs: [
+      { name: 'DP-1', description: 'a monitor' },
+    ], windows: [] });
+    emit({ type: 'screencast.pick.done', id: 40 });
+    check('the screen-share chooser neither takes the keyboard nor returns it',
+      !sent.slice(before).some((m) => m.type === 'shell.focus' ||
+        m.type === 'view.focus'));
+  }
+
+  fire('click');
+  emit({ type: 'view.removed', id: 90 });
+  check('teardown clean', process.exitCode !== 1);
+}
+
 /* --- the stylesheet ----------------------------------------------------
  *
  * A window is a border and a hole, and both of them are CSS. Nothing above
@@ -5334,6 +5708,47 @@ if (mode === 'scrolling') {
     check('and takes the wheel, which the empty state around it does not',
       sheet.value(keys, 'pointer-events') === 'auto'
       && sheet.value(empty, 'pointer-events') === 'none');
+
+    /* The focus ring.
+     *
+     * `kbd-here` is where the keyboard is on whichever surface has it, and it
+     * has to be visible on top of every background the pickers already paint
+     * for hover and for state. Being last in the file is what settles that
+     * without an `!important`, and being an outline is what stops a
+     * background painted by a row's own rule from covering it — so both are
+     * asserted here rather than trusted to stay that way. A rename in
+     * shell.css alone would leave every keyboard assertion above still
+     * passing against a highlight nobody could see.
+     *
+     * The clipboard row is the harder of the two: `.clipboard-row` sets no
+     * background of its own, and `.launcher-row` did until the rule that did
+     * it was folded into this one. */
+    for (const [what, cls] of [['a clipboard row', 'clipboard-row'],
+      ['a launcher row', 'launcher-row'], ['a power row', 'power-row'],
+      ['a tray menu row', 'tray-menu-row'], ['a network row', 'radio-row']]) {
+      const row = new El('button');
+      row.className = cls;
+      const plain = sheet.value(row, 'outline-style');
+      row.className = `${cls} kbd-here`;
+      check(`${what} the keyboard is on draws a ring, and does not otherwise`,
+        plain !== 'solid' && sheet.value(row, 'outline-style') === 'solid'
+        && sheet.value(row, 'outline-color') === '#7aa2f7');
+      /* Inside the row's own box: the lists clip, and a ring drawn outside
+         the first row would be cut in half by the list it is in. */
+      check(`and the ring on ${what} is drawn inside it`,
+        sheet.value(row, 'outline-offset') === '-2px');
+    }
+
+    /* Nothing about the ring is animated. Everything else in this file that
+       changes on a state change fades; a ring that arrives over 120ms is not
+       there yet when a held arrow key has already moved on, and somebody
+       steering by keyboard is reading their position from it. */
+    {
+      const row = new El('button');
+      row.className = 'launcher-row kbd-here';
+      check('and it appears at once rather than fading in',
+        !/outline/.test(sheet.value(row, 'transition-property')));
+    }
 
     const grids = text.split('\n')
       /* The `@supports` condition names the property it is testing for and is

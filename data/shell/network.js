@@ -71,6 +71,10 @@ function toggleNetworkPicker() {
     return;
   }
   networkOpen = true;
+  /* The keyboard, so the arrow keys reach the rows. The passphrase box used
+     to be the only thing here that asked, which meant a list of networks
+     could be read and not steered — see keys.js. */
+  keyNavOpen('network');
   /* Asked for on open and stopped on close, which is the whole of why this is
      a message rather than something the compositor decides: a scan is the
      radio transmitting, and the only thing that knows whether anybody is
@@ -82,10 +86,11 @@ function toggleNetworkPicker() {
 function closeNetworkPicker() {
   if (!networkOpen) return;
   networkOpen = false;
-  /* Before the element is emptied: the box may hold the keyboard, and a
-     picker that vanished with it would leave the keys pointing at a page with
-     nothing on it. */
+  /* Before the element is emptied: the box may be up, and a picker that
+     vanished around it would leave a field on screen with nothing behind
+     it. */
   endPassphrase();
+  keyNavClose('network');
   send({ type: 'network.scan', enabled: false });
   networkEl.replaceChildren();
   networkEl.hidden = true;
@@ -132,6 +137,9 @@ function renderNetworkPicker() {
 
   const dialog = document.createElement('div');
   dialog.className = 'radio-dialog';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-label', 'Wi-Fi');
 
   const state = networkState;
   dialog.append(pickerHeader('Wi-Fi', state?.available && state?.wireless
@@ -173,6 +181,11 @@ function renderNetworkPicker() {
   if (state?.error) dialog.append(radioError(state.error));
 
   networkEl.append(dialog);
+
+  /* Arrows to choose, Enter to join or leave, Escape to go. Bound before the
+     passphrase box is focused below, because binding puts the keyboard on the
+     dialog and the box has to win that. */
+  bindKeyNav('network', dialog, { dismiss: closeNetworkPicker });
 
   /* The passphrase box is focused here rather than where it is built, because
      `focus()` on an element that is not in the document does nothing and the
@@ -229,6 +242,15 @@ function networkRow(point) {
     lock.textContent = '󰌾';
     row.append(lock);
   }
+
+  /* Named rather than left to the row's own text. Strength is four bars in a
+     private-use codepoint and the lock is another, so a reader given the text
+     would say two nonsense syllables around the part that matters. */
+  keyNavRowEl(row, [point.ssid,
+    point.active ? 'connected' : point.known ? 'saved' : null,
+    point.security ? 'secured' : 'open',
+    `signal ${Math.min(4, Math.floor((point.strength ?? 0) / 25))} of 4`,
+  ].filter(Boolean).join(', '));
 
   row.addEventListener('click', (e) => {
     e.stopPropagation?.();
@@ -288,6 +310,11 @@ function passphraseBox(ssid) {
   };
 
   input.addEventListener('keydown', (e) => {
+    /* Every press, not only the two handled below: the picker's own arrow
+       navigation is bound on the dialog this box is inside, and a Down
+       pressed while typing a passphrase must move the caret rather than the
+       highlight three rows away. */
+    e.stopPropagation?.();
     if (e.key === 'Enter') {
       e.preventDefault?.();
       submit();
@@ -313,33 +340,27 @@ function passphraseBox(ssid) {
   return box;
 }
 
-/* Open the box for one network, and take the keyboard.
+/* Open the box for one network.
  *
- * What had focus is remembered first, because taking it is what loses it: the
- * compositor answers `shell.focus` with a `view.focused` naming nothing, which
- * sets `focusedId` to null on the way through. */
+ * No `shell.focus` of its own any more: the picker took the keyboard when it
+ * opened, because the list of networks has to be steerable and not only the
+ * field under one row of it. This used to be the only place that asked, which
+ * is exactly why the rows could be read and not chosen between. */
 function beginPassphrase(ssid) {
-  if (networkAsking === null) networkRestoreId = focusedId;
   networkAsking = ssid;
-  send({ type: 'shell.focus' });
   renderNetworkPicker();
 }
 
-/* Close the box and give the keyboard back to whatever had it.
+/* Close the box.
  *
- * Back to the window rather than left on the shell: a picker that quietly kept
- * the keyboard would leave the next keystroke going nowhere, and the window
- * that was being worked in looks focused while receiving nothing. A window
- * that closed in the meantime is not chased — the compositor refuses a
- * `view.focus` for an id that is gone, and focus stays where it is, which is
- * where it would have been anyway. */
+ * The keyboard stays on the picker rather than going back to the window: the
+ * picker is still up, and abandoning a passphrase should leave the arrow keys
+ * able to pick a different network rather than dropping the whole surface out
+ * of reach of the keyboard that was steering it. It goes back when the picker
+ * closes, which is keyNavClose's job — see closeNetworkPicker. */
 function endPassphrase() {
   if (networkAsking === null) return;
   networkAsking = null;
-  if (networkRestoreId !== null && views.has(networkRestoreId)) {
-    send({ type: 'view.focus', id: networkRestoreId });
-  }
-  networkRestoreId = null;
 }
 
 /* ------------------------------------------------------------------------
@@ -352,6 +373,7 @@ function toggleBluetoothPicker() {
     return;
   }
   bluetoothOpen = true;
+  keyNavOpen('bluetooth');
   /* Discovery starts with the picker and stops with it. Nothing else in this
      shell turns a radio on, and it is why the close below is not optional. */
   send({ type: 'bluetooth.scan' });
@@ -361,6 +383,7 @@ function toggleBluetoothPicker() {
 function closeBluetoothPicker() {
   if (!bluetoothOpen) return;
   bluetoothOpen = false;
+  keyNavClose('bluetooth');
   send({ type: 'bluetooth.scan', enabled: false });
   bluetoothEl.replaceChildren();
   bluetoothEl.hidden = true;
@@ -390,6 +413,9 @@ function renderBluetoothPicker() {
 
   const dialog = document.createElement('div');
   dialog.className = 'radio-dialog';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-label', 'Bluetooth');
 
   const state = bluetoothState;
   dialog.append(pickerHeader('Bluetooth', state?.available
@@ -419,6 +445,8 @@ function renderBluetoothPicker() {
   if (state?.error) dialog.append(radioError(state.error));
 
   bluetoothEl.append(dialog);
+
+  bindKeyNav('bluetooth', dialog, { dismiss: closeBluetoothPicker });
 
   /* Named to the compositor for the same reason the network picker is: the
      shell is one buffer under the windows, and a list nobody can see is not a
@@ -466,6 +494,10 @@ function bluetoothRow(device) {
     row.append(forget);
   }
 
+  keyNavRowEl(row, [device.name || device.address,
+    device.connected ? 'connected' : device.paired ? 'paired' : null,
+  ].filter(Boolean).join(', '));
+
   row.addEventListener('click', (e) => {
     e.stopPropagation?.();
     /* One listener, because the target says which part was hit — the same
@@ -503,6 +535,12 @@ function pickerHeader(title, toggle) {
     button.className = 'radio-toggle';
     if (toggle.on) button.classList.add('on');
     button.textContent = toggle.label;
+    /* The switch is a stop of its own. It is the first thing in the dialog and
+       the only control on a picker whose radio is off — a keyboard that could
+       reach the rows and not the switch could not turn the radio back on. */
+    keyNavRowEl(button, `${title}, ${toggle.on ? 'on' : 'off'}`);
+    button.setAttribute('role', 'switch');
+    button.setAttribute('aria-checked', toggle.on ? 'true' : 'false');
     button.addEventListener('click', (e) => {
       e.stopPropagation?.();
       toggle.click();

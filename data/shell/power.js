@@ -18,12 +18,18 @@ function togglePowerPicker() {
     return;
   }
   powerOpen = true;
+  /* The keyboard, so the arrow keys reach the rows rather than the window
+     under the dialog. The battery widget opens this with the pointer, which
+     is exactly why it needed asking for: a surface opened by a click has no
+     reason to have the keyboard and every reason to need it. See keys.js. */
+  keyNavOpen('power');
   renderPowerPicker();
 }
 
 function closePowerPicker() {
   if (!powerOpen) return;
   powerOpen = false;
+  keyNavClose('power');
   powerEl.replaceChildren();
   powerEl.hidden = true;
   setOverlay('power', null);
@@ -56,9 +62,20 @@ function renderPowerPicker() {
 
   const dialog = document.createElement('div');
   dialog.className = 'power-dialog';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-label', 'Power');
+  /* A click inside the dialog must not reach the document listener that
+     closes pickers. The rows already stop their own, but the dialog now has
+     gaps between them that a click can land in — a separator, the padding
+     around the list — and closing on those would be a surface that dismissed
+     itself when somebody clicked next to the row they were aiming at. */
+  dialog.addEventListener('click', (e) => e.stopPropagation?.());
 
   const list = document.createElement('div');
   list.className = 'power-list';
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'Power profiles');
 
   const profiles = powerState?.profiles ?? [];
   if (profiles.length === 0) {
@@ -73,6 +90,10 @@ function renderPowerPicker() {
     row.className = 'power-row';
     if (name === powerState?.profile) row.classList.add('active');
     row.textContent = name;
+    keyNavRowEl(row);
+    /* Which profile is in force, said rather than only coloured: `.active`
+       paints a row and nothing in the accessibility tree carries a class. */
+    row.setAttribute('aria-checked', name === powerState?.profile ? 'true' : 'false');
     row.addEventListener('click', (e) => {
       e.stopPropagation?.();
       send({ type: 'power.profile', profile: name });
@@ -103,6 +124,7 @@ function renderPowerPicker() {
     const row = document.createElement('button');
     row.className = 'power-row' + (danger ? ' danger' : '');
     row.textContent = label;
+    keyNavRowEl(row);
     row.addEventListener('click', (e) => {
       e?.stopPropagation?.();
       if (verb === 'quit') {
@@ -116,6 +138,11 @@ function renderPowerPicker() {
   }
 
   powerEl.append(dialog);
+
+  /* Arrows to choose, Enter to do it, Escape to change your mind. No Delete
+     verb: nothing in this list can be forgotten, and three of the four rows
+     end the session. */
+  bindKeyNav('power', dialog, { dismiss: closePowerPicker });
 
   /* Tell the compositor where the dialog is, so it draws that piece of the
      shell above the windows — see setOverlay's own comment in state.js. The

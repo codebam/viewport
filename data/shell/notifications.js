@@ -22,14 +22,17 @@
  */
 
 /* Open it, or take it down. Bound to Mod4+Shift+m by default, which arrives
- * here as a shell command — the compositor routes the keys, so this is never a
- * key handler. */
+ * here as a shell command — the compositor routes the chord, so opening is
+ * never a key handler. Steering inside it is: the centre takes the keyboard
+ * on the way up so that the arrow keys reach the rows rather than the window
+ * underneath, and hands it back on the way down. See keys.js. */
 function toggleNotificationCentre() {
   if (notificationCentreOpen) {
     closeNotificationCentre();
     return;
   }
   notificationCentreOpen = true;
+  keyNavOpen('notifications-centre');
   /* Asked for on open rather than kept up to date: the compositor sends the
      history whenever it changes anyway, and a centre that is not on screen has
      no use for it. */
@@ -40,6 +43,7 @@ function toggleNotificationCentre() {
 function closeNotificationCentre() {
   if (!notificationCentreOpen) return;
   notificationCentreOpen = false;
+  keyNavClose('notifications-centre');
   notificationCentreEl.replaceChildren();
   notificationCentreEl.hidden = true;
   setOverlay('notifications-centre', null);
@@ -100,6 +104,9 @@ function renderNotificationCentre() {
 
   const dialog = document.createElement('div');
   dialog.className = 'notification-centre-dialog';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-label', 'Notifications');
   /* A click inside the dialog stays inside it. The clipboard picker leaves
      this to its rows, because every row there is a button and a click that
      missed one is a click that meant to close it; a centre is mostly text, so
@@ -110,6 +117,13 @@ function renderNotificationCentre() {
 
   const list = document.createElement('div');
   list.className = 'notification-centre-list';
+  list.setAttribute('role', 'listbox');
+  /* Announced as it changes, because it does so on its own: a notification
+     arriving while the centre is open adds a row nobody asked for, and a
+     reader that is not told about it goes on reading a list that has moved
+     under it. `polite` and not `assertive` — the popup is the interruption,
+     this is the record of one. */
+  list.setAttribute('aria-live', 'polite');
 
   if (notificationHistory.length === 0) {
     const empty = document.createElement('div');
@@ -131,6 +145,7 @@ function renderNotificationCentre() {
   const clear = document.createElement('button');
   clear.className = 'notification-centre-clear';
   clear.textContent = 'Clear all';
+  keyNavRowEl(clear);
   clear.addEventListener('click', (e) => {
     e.stopPropagation?.();
     /* No id is "forget everything", the same shape `clipboard.forget` has.
@@ -143,6 +158,17 @@ function renderNotificationCentre() {
 
   notificationCentreEl.append(dialog);
 
+  /* Arrows to choose, Enter for the row's default action where it has one,
+     Delete to forget the row, Escape to go. A row's own action buttons are
+     not stops of their own: they are a second axis, and a list where Down
+     sometimes moves to the next notification and sometimes to the second
+     button of this one is a list nobody can predict. Enter takes the default
+     action, which is what clicking the row does. */
+  bindKeyNav('notifications-centre', dialog, {
+    dismiss: closeNotificationCentre,
+    remove: (row) => row._keyRemove?.(),
+  });
+
   /* Tell the compositor where the dialog is, so it draws that piece of the
      shell above the windows — see setOverlay's own comment in state.js. The
      dialog alone, not the docking box that spans the output. */
@@ -152,6 +178,15 @@ function renderNotificationCentre() {
 function notificationRow(entry) {
   const row = document.createElement('div');
   row.className = 'notification-centre-row urgency-' + (entry.urgency ?? 1);
+  /* Read out as one thing rather than as four fragments. The visible row is
+     an application name, an age, a summary and a body in that order, which is
+     the order somebody scanning wants; read aloud, the summary is the part
+     that says whether the rest is worth hearing, so it comes first. */
+  keyNavRowEl(row, [entry.summary, entry.body, entry.app_name,
+    notificationAge(entry.at)].filter(Boolean).join(', '));
+  /* What Delete does here, written on the element for the reason the
+     clipboard's rows give: the list is rebuilt on every message. */
+  row._keyRemove = () => send({ type: 'notification.forget', id: entry.id });
 
   const head = document.createElement('div');
   head.className = 'notification-centre-head';

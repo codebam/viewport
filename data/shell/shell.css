@@ -663,7 +663,6 @@ html.behind body { background: transparent; }
   cursor: pointer;
 }
 .launcher-row:hover { background: var(--fill-hover); }
-.launcher-row.selected { background: var(--fill-active); }
 .launcher-icon {
   display: flex;
   align-items: center;
@@ -2196,3 +2195,59 @@ html.no-tutorial .empty .tutorial { display: none; }
 .osk-row-nav { justify-content: flex-end; }
 .osk-row-nav .osk-key { flex: 0 0 2.6rem; }
 .osk-row-nav .osk-key-hide { flex: 1; }
+
+/* ------------------------------------------------------------------------
+ * Where the keyboard is
+ *
+ * `kbd-here` is put on exactly one row of whichever surface has the keyboard,
+ * by keys.js. It is deliberately not any of the classes the pickers already
+ * had: `.launcher-row.selected` meant the same thing only in the launcher,
+ * `.power-row.active` means "this is the profile in force" and
+ * `.radio-row.active` means "this is the network you are on" — a ring that
+ * followed those would sit on the wrong row on two surfaces out of three.
+ *
+ * Last in the file on purpose. Every rule above sets a background on its own
+ * rows for hover and for state, and this has to be visible on top of all of
+ * them; an outline occupies no space, so it cannot be overpainted by a
+ * background the way an inset box-shadow or a border colour can, and being
+ * last settles any tie on source order without an `!important` that a later
+ * rule would then have to fight. `outline-offset` is negative so the ring is
+ * drawn inside the row's own box: the pickers' lists clip, and a ring one
+ * pixel outside the first row would be cut in half by the list it is in.
+ *
+ * Two rings and not one: `.kbd-here` is where the arrow keys are, and
+ * `:focus-visible` is the browser's own answer for anything reached by Tab —
+ * a text field, a notification's action button — which the arrow keys do not
+ * own and which would otherwise have no ring at all, several of these
+ * surfaces having styled it off.
+ * --------------------------------------------------------------------- */
+.kbd-here {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+  background: var(--fill-active);
+}
+.launcher-dialog :focus-visible,
+.clipboard-dialog :focus-visible,
+.notification-centre-dialog :focus-visible,
+.power-dialog :focus-visible,
+.radio-dialog :focus-visible,
+#tray-menu :focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+/* The dialog itself takes the keyboard when a surface opens — it has to, or
+   there is nowhere for a keydown to be delivered — and it is not a control,
+   so it draws no ring of its own. The row inside it does. */
+.launcher-dialog:focus,
+.clipboard-dialog:focus,
+.notification-centre-dialog:focus,
+.power-dialog:focus,
+.radio-dialog:focus,
+#tray-menu:focus { outline: none; }
+
+/* The ring does not animate. Everything else in this file that changes on a
+   state change fades, and this must not: a ring that arrives over 120ms is a
+   ring that is not there yet when a held arrow key has already moved on, and
+   somebody steering by keyboard is reading the position from it. It is also
+   the one indicator whose whole job is to be found instantly, which is what
+   `prefers-reduced-motion` asks of everything and this asks of itself. */

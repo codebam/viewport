@@ -13,14 +13,17 @@
  */
 
 /* Open it, or take it down. Bound to Mod4+Shift+v by default, which arrives
- * here as a shell command — the compositor routes the keys, so this is never a
- * key handler. */
+ * here as a shell command — the compositor routes the chord, so opening is
+ * never a key handler. Steering inside it is: the picker takes the keyboard
+ * on the way up so that the arrow keys reach the rows rather than the window
+ * underneath, and hands it back on the way down. See keys.js. */
 function toggleClipboard() {
   if (clipboardOpen) {
     closeClipboard();
     return;
   }
   clipboardOpen = true;
+  keyNavOpen('clipboard');
   /* Asked for on open rather than kept up to date: the compositor sends the
      history whenever it changes anyway, and a picker that is not on screen has
      no use for it. */
@@ -31,6 +34,7 @@ function toggleClipboard() {
 function closeClipboard() {
   if (!clipboardOpen) return;
   clipboardOpen = false;
+  keyNavClose('clipboard');
   clipboardEl.replaceChildren();
   clipboardEl.hidden = true;
   setOverlay('clipboard', null);
@@ -70,9 +74,18 @@ function renderClipboard() {
 
   const dialog = document.createElement('div');
   dialog.className = 'clipboard-dialog';
+  /* A dialog says so, and says what it is for. Nothing in the shell is a
+     document landmark an assistive client can arrive at by wandering — every
+     one of these surfaces appears in answer to a chord — so the label is the
+     only thing that will be read when it does. */
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-label', 'Clipboard history');
 
   const list = document.createElement('div');
   list.className = 'clipboard-list';
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'Copied items');
 
   if (clipboardEntries.length === 0) {
     const empty = document.createElement('div');
@@ -86,6 +99,7 @@ function renderClipboard() {
   for (const entry of clipboardEntries) {
     const row = document.createElement('button');
     row.className = 'clipboard-row';
+    keyNavRowEl(row);
 
     const text = document.createElement('span');
     text.className = 'clipboard-text';
@@ -99,6 +113,11 @@ function renderClipboard() {
     forget.className = 'clipboard-forget';
     forget.textContent = '✕';
     row.append(forget);
+
+    /* What Delete does on this row. Written on the element rather than kept
+       beside the list, because the list is rebuilt on every copy and a
+       parallel array would have to be rebuilt with it. */
+    row._keyRemove = () => send({ type: 'clipboard.forget', id: entry.id });
 
     row.addEventListener('click', (e) => {
       e.stopPropagation?.();
@@ -122,6 +141,7 @@ function renderClipboard() {
   const clear = document.createElement('button');
   clear.className = 'clipboard-clear';
   clear.textContent = 'Forget everything';
+  keyNavRowEl(clear);
   clear.addEventListener('click', (e) => {
     e.stopPropagation?.();
     /* What somebody asks for after copying a password. The selection itself is
@@ -133,6 +153,14 @@ function renderClipboard() {
   dialog.append(footer);
 
   clipboardEl.append(dialog);
+
+  /* Arrows to choose, Enter to paste, Delete to forget the row under the
+     keyboard, Escape to go. Bound after the rows exist because the binding
+     paints the selection on as it goes. */
+  bindKeyNav('clipboard', dialog, {
+    dismiss: closeClipboard,
+    remove: (row) => row._keyRemove?.(),
+  });
 
   /* Tell the compositor where the dialog is, so it draws that piece of the
      shell above the windows — see setOverlay's own comment in state.js. The
