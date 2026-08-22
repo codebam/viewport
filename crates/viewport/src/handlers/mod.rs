@@ -698,10 +698,14 @@ impl smithay::wayland::fractional_scale::FractionalScaleHandler for ViewportStat
         use smithay::wayland::compositor::with_states;
         use smithay::wayland::fractional_scale::with_fractional_scale;
 
+        // The scale of the screen this window is on, not the first one there
+        // is: a client bound while its window sat on another monitor was told
+        // 1.0 for ever, because this request is the only time the answer is
+        // given. Before the window has been placed anywhere there is no
+        // better answer than the first output's.
         let scale = self
-            .space
-            .outputs()
-            .next()
+            .output_for_surface(&surface)
+            .or_else(|| self.space.outputs().next().cloned())
             .map(|output| output.current_scale().fractional_scale())
             .unwrap_or(1.0);
         with_states(&surface, |states| {
@@ -709,6 +713,38 @@ impl smithay::wayland::fractional_scale::FractionalScaleHandler for ViewportStat
                 fractional.set_preferred_scale(scale);
             });
         });
+    }
+}
+
+impl ViewportState {
+    /// The output a surface's window is being shown on, if it has been
+    /// placed at all.
+    ///
+    /// Walks to the root, as `mark_dirty_for_surface` does: a client asks
+    /// about the subsurface it draws video into, and only the toplevel above
+    /// it has been put somewhere. Of the outputs that window touches, the one
+    /// it covers most of wins — "whichever came first" answered differently
+    /// depending on the order monitors were plugged in, and a window nine
+    /// tenths onto the second screen was told it lived on the first.
+    fn output_for_surface(&self, surface: &WlSurface) -> Option<smithay::output::Output> {
+        let mut root = surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+        let view = self.views.find_by_surface(&root)?;
+        let geometry = self.space.element_geometry(&view.window)?;
+        self.space
+            .outputs_for_element(&view.window)
+            .into_iter()
+            .max_by_key(|output| {
+                self.space
+                    .output_geometry(output)
+                    .and_then(|area| area.intersection(geometry))
+                    // i64, because two 4K dimensions multiplied overflow the
+                    // i32 these are measured in.
+                    .map(|shared| shared.size.w as i64 * shared.size.h as i64)
+                    .unwrap_or(0)
+            })
     }
 }
 
@@ -1065,13 +1101,18 @@ impl smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for ViewportSta
         _toplevel: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel,
         wl_surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     ) {
-        // The icon is in the surface's *cached* state, which is where it lands
-        // on commit — the protocol says the request is pending until then.
+        // The icon is in the surface's *pending* state when this request
+        // arrives: Smithay promotes it into the current state on the icon
+        // surface's commit, which is after this returns. Reading `current()`
+        // here saw only what an earlier icon had left behind — so a window's
+        // first icon was read as none and never looked at again. The request
+        // is applied on that commit either way, so reading it early costs
+        // nothing and gets the fresh name.
         let icon = smithay::wayland::compositor::with_states(&wl_surface, |states| {
             states
                 .cached_state
                 .get::<smithay::wayland::xdg_toplevel_icon::ToplevelIconCachedState>()
-                .current()
+                .pending()
                 .icon_name()
                 .map(|name| name.to_owned())
         });
@@ -1221,14 +1262,44 @@ impl crate::workspace::WorkspaceOutputs for ViewportState {
 impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
     fn drm_lease_state(
         &mut self,
-        _node: smithay::backend::drm::DrmNode,
+        node: smithay::backend::drm::DrmNode,
     ) -> &mut smithay::wayland::drm_lease::DrmLeaseState {
         // One device, so one state — and this is only reached for a node that
         // has a global, which only the device that made one has.
-        self.udev
+        if let Some(lease_state) = self
+            .udev
             .as_mut()
             .and_then(|udev| udev.lease_state.as_mut())
-            .expect("a lease request for a node with no lease state")
+        {
+            return lease_state;
+        }
+
+        // The device that owned this node has gone (GPU unplugged, session
+        // ending) while clients still hold objects of its global: dropping
+        // the state did not withdraw the global, so requests for it keep
+        // arriving. Aborting here would let one of them take down the whole
+        // session. An empty state answers instead — nothing in it to lease,
+        // and a submit falls through to `lease_request`, which refuses what
+        // it cannot hand out. Leaked rather than stored, because this file
+        // may not add a field to keep it in, and leaked per dispatch rather
+        // than once, because there is no safe way to hand the same `&mut` out
+        // of storage twice; only a client talking to hardware that no longer
+        // exists can get here, and each state is a few empty vecs.
+        match smithay::wayland::drm_lease::DrmLeaseState::new_with_filter::<ViewportState, _>(
+            &self.display_handle,
+            &node,
+            // Hidden from binds: it offers nothing, and must not look like a
+            // second device.
+            |_| false,
+        ) {
+            Ok(state) => Box::leak(Box::new(state)),
+            Err(e) => {
+                // The one case nothing can answer: even the device path is
+                // gone, so no state can be made for the node at all.
+                tracing::error!("a lease request arrived after its device went entirely: {e}");
+                panic!("no lease state for {node:?} and none could be made")
+            }
+        }
     }
 
     fn lease_request(

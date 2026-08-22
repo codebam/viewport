@@ -22,16 +22,12 @@ impl CompositorHandler for ViewportState {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        // Xwayland's own connection is inserted by Smithay with its own data
-        // type, not this compositor's. Assuming otherwise aborts the whole
-        // session the moment Xwayland connects, which is at startup.
-        if let Some(state) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
-            return &state.compositor_state;
-        }
-        if let Some(state) = client.get_data::<ClientState>() {
-            return &state.compositor_state;
-        }
-        panic!("a client with neither this compositor's data nor Xwayland's")
+        // Reached through protocol dispatch, where a client with neither
+        // kind of data could not have sent anything to arrive here. The one
+        // path that can fire without a live client — the dmabuf blocker's
+        // timer below — goes through `try_client_compositor_state` instead.
+        self.try_client_compositor_state(client)
+            .expect("a client with neither this compositor's data nor Xwayland's")
     }
 
     /// Hold a commit back until the client's drawing has actually finished.
@@ -114,10 +110,17 @@ impl CompositorHandler for ViewportState {
                 dmabuf.generate_blocker(smithay::reexports::calloop::Interest::READ)
             {
                 let inserted = state.loop_handle.insert_source(source, move |_, _, state| {
+                    // The client may have disconnected between its commit
+                    // and this fence firing. Its surfaces died with it, so
+                    // there is no commit left to release — and panicking
+                    // here would take the whole session down through
+                    // calloop for a client that is already gone.
+                    let Some(compositor_state) = state.try_client_compositor_state(&client) else {
+                        tracing::debug!("a dmabuf fence fired for a client that has gone");
+                        return Ok(());
+                    };
                     let dh = state.display_handle.clone();
-                    state
-                        .client_compositor_state(&client)
-                        .blocker_cleared(state, &dh);
+                    compositor_state.blocker_cleared(state, &dh);
                     Ok(())
                 });
                 if inserted.is_ok() {
@@ -151,6 +154,27 @@ impl CompositorHandler for ViewportState {
 }
 
 impl ViewportState {
+    /// [`CompositorHandler::client_compositor_state`] for a client that may
+    /// already be gone.
+    ///
+    /// A dmabuf blocker is armed at pre-commit and fires when the buffer's
+    /// fence signals, which can be after the client has disconnected. There
+    /// is then no commit of theirs left to release, and nothing to tell.
+    fn try_client_compositor_state<'a>(
+        &self,
+        client: &'a Client,
+    ) -> Option<&'a CompositorClientState> {
+        // Xwayland's own connection is inserted by Smithay with its own data
+        // type, not this compositor's. Assuming otherwise aborts the whole
+        // session the moment Xwayland connects, which is at startup.
+        if let Some(state) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return Some(&state.compositor_state);
+        }
+        client
+            .get_data::<ClientState>()
+            .map(|state| &state.compositor_state)
+    }
+
     /// The body of [`CompositorHandler::commit`], split out only so the whole
     /// of it can be timed from one place.
     fn commit_inner(&mut self, surface: &WlSurface) {
