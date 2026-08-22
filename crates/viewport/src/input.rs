@@ -1366,6 +1366,12 @@ impl ViewportState {
                     return;
                 };
                 let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
+                // A tablet in absolute mode names a place on the glass, and
+                // under the magnifier the glass is showing a blown-up piece of
+                // the layout. A relative mouse does not come through here and
+                // must not be put through this — see
+                // `ViewportState::glass_to_content`.
+                let pos = self.glass_to_content(pos);
                 self.pointer_absolute_to(pos, event.time(), event.time_msec());
             }
 
@@ -2086,7 +2092,13 @@ impl ViewportState {
     ) -> Option<Point<f64, Logical>> {
         let output = self.space.outputs().next()?;
         let geometry = self.space.output_geometry(output)?;
-        Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
+        let at = event.position_transformed(geometry.size) + geometry.loc.to_f64();
+        // Through the magnifier, because a finger is aimed at what is on the
+        // screen. This is the one input path that needs the transform at all:
+        // a mouse reports a movement, and the compositor's cursor is at a
+        // real place whatever the screen is doing with the picture. See
+        // `ViewportState::glass_to_content`.
+        Some(self.glass_to_content(at))
     }
 
     /// A finger put down at a place in the layout.
@@ -2322,6 +2334,16 @@ impl ViewportState {
             Bound::Blank => {
                 tracing::info!("blank binding");
                 self.blank_screens();
+            }
+            Bound::Magnify(step) => {
+                if self.magnifier.apply(step) {
+                    tracing::info!("magnifier at {:.2}x", self.magnifier.zoom());
+                    // Nothing else is damage: no surface committed, no window
+                    // moved, and the pointer is exactly where it was. What
+                    // changed is the transform every element is drawn through,
+                    // which only this knows about.
+                    self.needs_render = true;
+                }
             }
             Bound::Shell(command) => {
                 // Split on whitespace so the shell gets a verb and arguments

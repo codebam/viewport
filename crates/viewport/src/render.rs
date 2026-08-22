@@ -18,7 +18,9 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::texture::TextureRenderElement;
-use smithay::backend::renderer::element::utils::{CropRenderElement, RescaleRenderElement};
+use smithay::backend::renderer::element::utils::{
+    CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
+};
 use smithay::backend::renderer::element::{AsRenderElements as _, Id, Kind};
 use smithay::backend::renderer::utils::DamageSnapshot;
 use smithay::backend::renderer::{ImportAll, ImportDma, ImportMem, Renderer, RendererSuper};
@@ -58,6 +60,28 @@ smithay::backend::renderer::element::render_elements! {
     /// above.
     RoundedShell=RoundedRenderElement<CropRenderElement<TextureRenderElement<<R as RendererSuper>::TextureId>>>,
     Cursor=MemoryRenderBufferRenderElement<R>,
+}
+
+smithay::backend::renderer::element::render_elements! {
+    /// What actually reaches the screen: an [`OutputElement`], possibly with
+    /// the magnifier's transform on top of it.
+    ///
+    /// A second enum rather than another variant of the first, and it has to
+    /// be: a variant holding `RescaleRenderElement<OutputElement<R>>` would
+    /// make `OutputElement` contain itself, which is a type of infinite size.
+    /// Wrapping the finished list once is also the only place the transform
+    /// can honestly go — the magnifier magnifies *the screen*, which means
+    /// every element of it, in the order they were already going to be drawn,
+    /// including the pointer. A magnifier that left the pointer out would draw
+    /// a cursor somewhere other than over the thing it is pointing at, which
+    /// is the one thing this feature exists to get right.
+    pub ScreenElement<R> where R: ImportAll + ImportMem;
+    Plain=OutputElement<R>,
+    /// Scaled about the output's corner and then pushed back, which together
+    /// are "show this region, filling the screen". Two elements because the
+    /// single-element version needs an origin of `origin * zoom / (zoom - 1)`
+    /// — a division by zero at exactly the zoom where the magnifier turns off.
+    Magnified=RelocateRenderElement<RescaleRenderElement<OutputElement<R>>>,
 }
 
 /// The pointer image, resolved but not yet imported.
@@ -193,6 +217,10 @@ pub struct Frame {
     /// at the same time, which is why it is a list.
     pub overlay: Vec<(Id, Rectangle<i32, Physical>)>,
     pub cursor: Cursor,
+    /// The magnified region, when the magnifier is on and the pointer is on
+    /// this output. See [`crate::magnify`] — the short version is that this
+    /// changes what is drawn and changes nothing about where the pointer is.
+    pub magnify: Option<crate::magnify::View>,
     pub scale: f64,
     /// The lock screen for this output, if the session is locked.
     ///
@@ -213,7 +241,42 @@ pub struct Frame {
 /// then the shell behind all of it. Hit-testing follows the same order, which
 /// is what makes "the click went to what you can see" fall out rather than
 /// being computed separately.
-pub fn build<R>(frame: &Frame, renderer: &mut R) -> Vec<OutputElement<R>>
+pub fn build<R>(frame: &Frame, renderer: &mut R) -> Vec<ScreenElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem + ImportDma,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    let elements = layers(frame, renderer);
+    // The magnifier, applied to the finished list rather than woven through
+    // the assembly above. Two reasons: the transform is the same for every
+    // element, including the ones the lock screen path returns early with —
+    // somebody has to be able to read the password prompt — and doing it here
+    // means nothing in the six hundred lines that build the desktop has to
+    // know the feature exists. See `crate::magnify`.
+    let Some(view) = frame.magnify.filter(|view| view.zoom > 1.0) else {
+        return elements.into_iter().map(ScreenElement::from).collect();
+    };
+    let offset = view.offset_physical(frame.scale);
+    elements
+        .into_iter()
+        .map(|element| {
+            // Scaled about the output's own corner, so the arithmetic is a
+            // multiplication and the pushback below is a constant. Scaling
+            // about the region's origin instead would leave that origin
+            // fixed, which is the one point that must *move* — to the corner.
+            let scaled =
+                RescaleRenderElement::from_element(element, Point::from((0, 0)), view.zoom);
+            ScreenElement::from(RelocateRenderElement::from_element(
+                scaled,
+                offset,
+                Relocate::Relative,
+            ))
+        })
+        .collect()
+}
+
+/// The desktop, front to back, before the magnifier.
+fn layers<R>(frame: &Frame, renderer: &mut R) -> Vec<OutputElement<R>>
 where
     R: Renderer + ImportAll + ImportMem + ImportDma,
     // MemoryRenderBufferRenderElement keeps per-renderer textures in a shared
