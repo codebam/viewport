@@ -73,6 +73,19 @@ function syncButtons(container, items, activate) {
     if (button.dataset.key !== item.key) button.dataset.key = item.key;
     if (button.textContent !== item.text) button.textContent = item.text;
     if (button.className !== item.className) button.className = item.className;
+    /* Named and stated for a reader, guarded the same way. A workspace button
+       is the digit and nothing else — "3" read aloud says nothing about what
+       it is or whether you are on it — and the taskbar's `focused` class is
+       the only thing that says which window has the keyboard. */
+    if (item.label && button.getAttribute?.('aria-label') !== item.label) {
+      button.setAttribute?.('aria-label', item.label);
+    }
+    if (item.current !== undefined) {
+      const current = item.current ? 'true' : 'false';
+      if (button.getAttribute?.('aria-current') !== current) {
+        button.setAttribute?.('aria-current', current);
+      }
+    }
   }
 
   /* Whatever the last render needed and this one does not. */
@@ -100,7 +113,11 @@ function renderBarChrome(name) {
       const classes = [];
       if (n === output.workspace) classes.push('active');
       if (host !== null && host !== name) classes.push('elsewhere');
-      return { key: String(n), text: String(n), className: classes.join(' ') };
+      return {
+        key: String(n), text: String(n), className: classes.join(' '),
+        label: `Workspace ${n}`,
+        current: n === output.workspace,
+      };
     }),
     (key) => switchWorkspace(name, Number(key)));
 
@@ -110,10 +127,13 @@ function renderBarChrome(name) {
       const classes = [];
       if (id === focusedId) classes.push('focused');
       if (isFloating(id)) classes.push('floating');
+      const text = view.title || view.app_id || `view ${id}`;
       return {
         key: String(id),
-        text: view.title || view.app_id || `view ${id}`,
+        text,
         className: classes.join(' '),
+        label: isFloating(id) ? `${text}, floating` : text,
+        current: id === focusedId,
       };
     }),
     (key) => send({ type: 'view.focus', id: Number(key) }));
@@ -290,14 +310,18 @@ function syncTray(output) {
  * accordion has one rectangle by construction.
  */
 function showTrayMenu(message) {
+  const reopening = trayMenuOpen === message.id;
   trayMenuOpen = message.id;
   trayMenuEl.replaceChildren();
   trayMenuEl.hidden = false;
 
   const list = document.createElement('div');
   list.className = 'tray-menu-list';
+  list.setAttribute('role', 'menu');
   buildTrayMenuRows(list, message.items ?? [], 0);
   trayMenuEl.append(list);
+  trayMenuEl.setAttribute('role', 'dialog');
+  trayMenuEl.setAttribute('aria-label', 'Tray menu');
 
   /* Under the icon that was clicked, and inside the screen: a menu opened by
      the rightmost icon on the bar would otherwise run off the edge, and the
@@ -310,6 +334,17 @@ function showTrayMenu(message) {
   trayMenuEl.style.top = `${Math.round(message.y)}px`;
   trayMenuEl.style.width = `${width}px`;
   trayMenuEl.style.maxHeight = `${Math.max(120, bounds.bottom - message.y - 8)}px`;
+
+  /* The keyboard, and the arrows to steer with it. A menu is the one surface
+     here that is nothing but rows, and it was the one with no way to choose
+     one without a pointer: it is opened by a click on a tray icon, which was
+     taken to mean whoever opened it has a pointer to finish it with. That is
+     only true of the person who opened it that way. `reopening` is a menu
+     redrawn in place — a submenu the application answered with more rows —
+     and it must not reset the keyboard to the top of a list somebody has
+     already steered down. */
+  if (!reopening) keyNavOpen('tray-menu');
+  bindKeyNav('tray-menu', trayMenuEl, { dismiss: closeTrayMenu });
 
   setOverlay('tray-menu', trayMenuEl);
 }
@@ -345,7 +380,17 @@ function buildTrayMenuRows(list, items, depth) {
 
     const row = document.createElement('button');
     row.className = 'tray-menu-row';
+    keyNavRowEl(row, item.label);
+    /* A menu's rows are menu items, not list options — the difference matters
+       to a reader, which announces "menu item 3 of 9" for one and "option" for
+       the other. keyNavRowEl sets the list-shaped role every other surface
+       here wants; this is the one that wants the other. */
+    row.setAttribute('role', item.toggle === 'radio' ? 'menuitemradio'
+      : item.toggle ? 'menuitemcheckbox' : 'menuitem');
+    if (item.toggle) row.setAttribute('aria-checked', item.checked ? 'true' : 'false');
+    if (item.children?.length) row.setAttribute('aria-haspopup', 'true');
     if (!item.enabled) row.classList.add('disabled');
+    if (!item.enabled) row.setAttribute('aria-disabled', 'true');
     if (item.checked) row.classList.add('checked');
     if (item.children?.length) row.classList.add('parent');
     if (depth > 0) row.style.paddingLeft = `${8 + depth * 14}px`;
@@ -385,6 +430,11 @@ function buildTrayMenuRows(list, items, depth) {
         for (const child of [...list.children]) {
           if (child._parentRow === row) child.hidden = open;
         }
+        row.setAttribute('aria-expanded', open ? 'false' : 'true');
+        /* The rows the keyboard can stop at just changed — a run of them
+           appeared or went — so the highlight is clamped back onto the list
+           that now exists. */
+        keyNavRefresh('tray-menu');
         setOverlay('tray-menu', trayMenuEl);
         return;
       }
@@ -414,6 +464,7 @@ function closeTrayMenu(notify = true) {
   if (trayMenuOpen === null) return;
   if (notify) send({ type: 'tray.menu.closed', id: trayMenuOpen });
   trayMenuOpen = null;
+  keyNavClose('tray-menu');
   trayMenuEl.replaceChildren();
   trayMenuEl.hidden = true;
   setOverlay('tray-menu', null);

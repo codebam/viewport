@@ -28,6 +28,7 @@ a TTY.
   "lid": "lock",            // or "blank" / "suspend" / "ignore"; see below
   "cursor": { "theme": "Bibata-Modern-Classic", "size": 24,
               "hide_after_ms": 3000 },   // see below; absent is never
+  "magnify": { "step": 0.5, "max": 8.0 },  // the screen magnifier; see below
   "wallpaper": "~/Pictures/wall.png",  // the desktop background; see below
   "wallpaper_mode": "fill",            // or "fit" / "stretch" / "center" / "tile"
   "terminal": "rio",
@@ -153,6 +154,8 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+Shift+x` | lock, via `idle.lock_command` |
 | `Mod4+Shift+b` | blank the screens until the next input |
 | `Mod4+Shift+p` | HDR on the monitor you are looking at |
+| `Mod4+Alt+equal` / `Mod4+Alt+minus` | magnify the screen in / out |
+| `Mod4+Alt+0` | the magnifier off, straight back to 1:1 |
 | `XF86AudioPlay` / `XF86AudioPause` / `XF86AudioNext` / `XF86AudioPrev` / `XF86AudioStop` | playerctl play-pause / pause / next / previous / stop |
 | `XF86AudioRaiseVolume` / `XF86AudioLowerVolume` / `XF86AudioMute` | wpctl on the default sink, five percent a press |
 | `XF86AudioMicMute` | mute the microphone source |
@@ -194,6 +197,63 @@ for this, and a cursor that came back on every keystroke would never leave.
 Only the drawn image goes. The pointer has not moved, keeps its focus, and
 clients are told nothing, so a hidden cursor cannot make a page think the mouse
 left it.
+
+## The magnifier
+
+`Mod4+Alt+equal` blows up the part of the screen under the pointer, one step at
+a time; `Mod4+Alt+minus` comes back down, and `Mod4+Alt+0` goes straight to
+1:1. The region follows the pointer and is held to the monitor it is on, so
+moving toward an edge slides it along rather than showing a strip of the
+neighbouring screen. Only the monitor the pointer is on is magnified: the
+region follows the pointer, and the pointer is on one screen at a time.
+
+```jsonc
+"magnify": { "step": 0.5, "max": 8.0 }
+```
+
+`step` is what one press adds and `max` is as far as the chords will go.
+Absent is 0.5 and 8.0. Both are clamped rather than refused — a `max` below
+1.0 is a magnifier that cannot magnify, and a `step` that is negative is a
+zoom-in chord that zooms out — and lowering `max` in a reload brings the
+picture down to meet it rather than leaving the screen somewhere the config
+file says is not allowed.
+
+**Everything still works where it looks like it does.** The pointer is not
+magnified; the picture is. The compositor's cursor stays at the real place it
+was, and the cursor is drawn through the same transform as everything else, so
+a click, a drag, a resize edge and focus-follows-mouse all land on the thing
+under the drawn cursor. A touchscreen and a tablet in absolute mode are the
+one exception in the other direction: those name a place on the glass, so they
+are mapped back through the magnification before anything sees them, which is
+what makes a finger land on what it was put on.
+
+This is not `canvas.zoom`, which is a layout the shell draws at a scale and
+where input only lands where it is aimed at 1.0. The two are unrelated and can
+be used together, though there is little reason to.
+
+A screen capture — a screenshot, a share, a recording — shows the magnified
+picture, because it is a capture of what is on the screen.
+
+## A screen reader
+
+The desktop is a web page, so the engine drawing it has already built a real
+accessibility tree; whether that tree reaches AT-SPI depends on which engine it
+is, and the default is the one that cannot. A desk that needs Orca wants
+
+```jsonc
+"shell_backend": "webkitgtk"
+```
+
+and an accessibility bus in the session — which the NixOS module in `flake.nix`
+turns on by default and other distributions spell as installing
+`at-spi2-core`. [`shell-backends.md`](shell-backends.md) has the per-backend
+detail and the evidence behind each verdict.
+
+Every surface the shell can put on screen — the launcher, the clipboard
+history, the notification centre, the power menu, a tray item's menu, the two
+radio pickers — can be steered and finished with the keyboard alone: arrows to
+choose, Enter to act, Delete where a row can be forgotten, Escape to dismiss.
+See [`data/shell/shell.md`](../data/shell/shell.md).
 
 ## The keyboard
 

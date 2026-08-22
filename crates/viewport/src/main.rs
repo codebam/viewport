@@ -36,6 +36,7 @@ mod ipc;
 mod keyboard_focus;
 mod launcher;
 mod libei;
+mod magnify;
 mod mpris;
 mod msg;
 mod multigpu;

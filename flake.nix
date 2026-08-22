@@ -1403,6 +1403,26 @@
             services.seatd.enable = true;
             security.polkit.enable = true;
             hardware.graphics.enable = true;
+
+            # The accessibility bus.
+            #
+            # The desktop is a web page, so the engine has already built a real
+            # accessibility tree out of it — and GTK4 and WebKitGTK both speak
+            # AT-SPI themselves rather than through a bridge library, so with
+            # the `webkitgtk` backend the whole of that tree is one bus away
+            # from Orca. The bus is the part a session has to supply, and a
+            # compositor started from a TTY has no desktop environment behind
+            # it to have supplied one: without this, `org.a11y.Bus` is not even
+            # activatable, every backend's tree goes nowhere, and nothing
+            # anywhere says why.
+            #
+            # `mkDefault` and not a hard set, so a system that wants it off can
+            # say so. It costs nothing to leave on: `at-spi-bus-launcher` is
+            # D-Bus activated, so nothing starts until a screen reader asks for
+            # it. See docs/shell-backends.md for what each backend does once it
+            # is there — the short version is that `webkitgtk` is the backend
+            # to name, and that the default one cannot use this at all.
+            services.gnome.at-spi2-core.enable = lib.mkDefault true;
             # Screen sharing needs interfaces routed to a backend, not merely
             # a portal frontend running.
             programs.viewport.portals.enable = lib.mkDefault true;

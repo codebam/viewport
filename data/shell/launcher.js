@@ -25,8 +25,6 @@
 let launcherOpen = false;
 let launcherApps = [];
 let launcherFilter = '';
-let launcherSelected = 0;
-let launcherRestoreId = null;
 /* The list the rows are drawn from, counted in queries. A launch carries it
    back: a query is sent on every keystroke and not waited for, so the list a
    row is drawn from may be replaced before the Enter that chose it lands —
@@ -56,11 +54,10 @@ function toggleLauncher() {
      holds — answers with the same list a moment later. Resetting would be a
      blank flash on the way to the same rows, or a filtered list under an
      emptied field until the answer came back. */
-  /* Remembered before the keyboard is taken, because taking it is what loses
-     it: the compositor answers shell.focus with a view.focused naming
-     nothing, which sets focusedId to null on the way through. */
-  launcherRestoreId = focusedId;
-  send({ type: 'shell.focus' });
+  /* Take the keyboard, remembering who had it. Both halves are keys.js's
+     now, on the same terms every other surface gets them — this file had the
+     only copy of that dance and the network picker had the second. */
+  keyNavOpen('launcher');
   send({ type: 'launcher.query', filter: launcherFilter || undefined });
   renderLauncher();
 }
@@ -68,17 +65,8 @@ function toggleLauncher() {
 function closeLauncher() {
   if (!launcherOpen) return;
   launcherOpen = false;
-  /* Give the keyboard back to whatever had it, for the reason the passphrase
-     box's close does: a picker that quietly kept the keyboard would leave the
-     next keystroke going nowhere, and the window that was being worked in
-     looks focused while receiving nothing. A window that closed in the
-     meantime is not chased — the compositor refuses a view.focus for an id
-     that is gone, and focus stays where it is, which is where it would have
-     been anyway. */
-  if (launcherRestoreId !== null && views.has(launcherRestoreId)) {
-    send({ type: 'view.focus', id: launcherRestoreId });
-  }
-  launcherRestoreId = null;
+  /* Gives the keyboard back to whatever had it — see keyNavClose. */
+  keyNavClose('launcher');
   launcherListEl = null;
   launcherEl.replaceChildren();
   launcherEl.hidden = true;
@@ -93,9 +81,6 @@ function applyLauncher(apps, generation) {
   launcherApps = Array.isArray(apps) ? apps : [];
   if (typeof generation === 'number') launcherGeneration = generation;
   if (!launcherOpen) return;
-  if (launcherSelected >= launcherApps.length) {
-    launcherSelected = Math.max(0, launcherApps.length - 1);
-  }
   renderLauncherList();
 }
 
@@ -120,6 +105,9 @@ function renderLauncher() {
 
   const dialog = document.createElement('div');
   dialog.className = 'launcher-dialog';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-label', 'Launcher');
 
   /* A click inside the dialog must not reach the document listener that
      closes pickers — including a click on the field itself, which is how
@@ -131,32 +119,25 @@ function renderLauncher() {
   input.className = 'launcher-input';
   input.placeholder = 'Type to filter';
   input.value = launcherFilter;
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-label', 'Filter applications');
+  input.setAttribute('aria-expanded', 'true');
   input.addEventListener('input', () => {
     const filter = String(input.value ?? '');
     if (filter === launcherFilter) return;
     launcherFilter = filter;
-    launcherSelected = 0;
+    /* Back to the top: the list about to arrive is a different list, and
+       leaving the highlight on row four of the old one would start whatever
+       happened to land there. */
+    keyNavSelect('launcher', 0);
     send({ type: 'launcher.query', filter });
-  });
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault?.();
-      launchSelected();
-    } else if (e.key === 'Escape') {
-      e.preventDefault?.();
-      closeLauncher();
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault?.();
-      stepLauncher(1);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault?.();
-      stepLauncher(-1);
-    }
   });
   dialog.append(input);
 
   const list = document.createElement('div');
   list.className = 'launcher-list';
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'Applications');
   launcherListEl = list;
   dialog.append(list);
 
@@ -166,6 +147,20 @@ function renderLauncher() {
   dialog.append(hint);
 
   launcherEl.append(dialog);
+
+  /* The keys go on the field rather than on the dialog, and the rows are
+     named rather than found under it: this is the one surface whose dialog
+     outlives its own list. The field is where the keyboard is — it is real
+     typed text — and a second listener on the dialog would see every press
+     again as it bubbled up out of the field. */
+  bindKeyNav('launcher', dialog, {
+    keysOn: input,
+    focus: input,
+    rows: () => keyNavRows(launcherListEl),
+    dismiss: closeLauncher,
+    activate: () => launchSelected(),
+  });
+
   renderLauncherList();
   /* Tell the compositor where the dialog is, so it draws that piece of the
      shell above the windows — see setOverlay's own comment in state.js. The
@@ -191,9 +186,13 @@ function renderLauncherList() {
     return;
   }
 
-  launcherApps.forEach((app, index) => {
+  launcherApps.forEach((app) => {
     const row = document.createElement('button');
-    row.className = 'launcher-row' + (index === launcherSelected ? ' selected' : '');
+    row.className = 'launcher-row';
+    /* Named for the reader rather than left to the row's own text: the icon
+       is a letter where the entry had no picture, and "F Firefox web,
+       browser" is what a reader would otherwise say. */
+    keyNavRowEl(row, app.detail ? `${app.name}, ${app.detail}` : app.name);
 
     const icon = document.createElement('span');
     icon.className = 'launcher-icon';
@@ -229,20 +228,16 @@ function renderLauncherList() {
     list.append(row);
   });
 
-  /* The selected row in view, wherever the list has scrolled to. */
-  const selected = list.children[launcherSelected];
-  selected?.scrollIntoView?.({ block: 'nearest' });
-}
-
-function stepLauncher(delta) {
-  if (launcherApps.length === 0) return;
-  launcherSelected = (launcherSelected + delta + launcherApps.length) % launcherApps.length;
-  renderLauncherList();
+  /* The highlight painted back on, and the row it lands on scrolled into
+     view. The list was just replaced, so nothing on the old elements survives
+     — see keys.js on why the index is kept out here rather than on them. */
+  keyNavRefresh('launcher');
 }
 
 function launchSelected() {
   if (launcherApps.length === 0) return;
-  launchApp(launcherApps[launcherSelected].id);
+  const app = launcherApps[Math.min(keyNavIndex('launcher'), launcherApps.length - 1)];
+  launchApp(app.id);
 }
 
 function launchApp(id) {

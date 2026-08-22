@@ -584,6 +584,11 @@ pub struct ViewportState {
     /// Taking the pointer image away once it has been still for long enough.
     /// Off unless `cursor.hide_after_ms` asks for it.
     pub cursor_hide: crate::cursor::Hide,
+    /// The screen magnifier. Off until a chord turns it on, and off is what
+    /// `Default` gives, so a session that never presses one pays nothing —
+    /// `is_on()` is the only thing the render path asks. See
+    /// [`crate::magnify`].
+    pub magnifier: crate::magnify::Magnifier,
     /// Whether that deadline is already armed, so a thousand motion events do
     /// not arm a thousand timers.
     pub cursor_hide_armed: bool,
@@ -1123,7 +1128,7 @@ type WindowElements<R> = (
 type DeskElement<R> = smithay::backend::renderer::element::utils::RelocateRenderElement<
     smithay::backend::renderer::element::utils::CropRenderElement<
         smithay::backend::renderer::element::utils::RescaleRenderElement<
-            crate::render::OutputElement<R>,
+            crate::render::ScreenElement<R>,
         >,
     >,
 >;
@@ -1533,6 +1538,7 @@ impl ViewportState {
             cursor_theme: crate::cursor::Theme::new(),
             cursor_warned: false,
             cursor_hide: crate::cursor::Hide::default(),
+            magnifier: crate::magnify::Magnifier::default(),
             cursor_hide_armed: false,
             cursor_hide_timer: None,
             last_layout: None,
@@ -6248,6 +6254,59 @@ impl ViewportState {
     /// for while its renderer is borrowed. The two backends share it, which is
     /// what stops the nested one drifting into showing something different
     /// from the real thing.
+    /// The region one output is showing while the magnifier is on.
+    ///
+    /// `None` for every output but the one the pointer is on, and for all of
+    /// them when the magnifier is off. Only one output is magnified because
+    /// the region follows the pointer and the pointer is on one screen at a
+    /// time — see the header of [`crate::magnify`] for why the alternatives
+    /// are each wrong in their own way.
+    ///
+    /// One definition, consulted by both halves: the renderer asks it what to
+    /// draw and the touch path asks it what a spot on the glass is over, and
+    /// if those two ever answered differently a finger would land somewhere
+    /// other than where it was put.
+    pub fn magnified_view(&self, output: Rectangle<i32, Logical>) -> Option<crate::magnify::View> {
+        if !self.magnifier.is_on() {
+            return None;
+        }
+        let at = self.seat.get_pointer()?.current_location();
+        if !output.to_f64().contains(at) {
+            return None;
+        }
+        Some(crate::magnify::View::new(output, self.magnifier.zoom(), at))
+    }
+
+    /// What is under a place on the glass.
+    ///
+    /// For input that names a *position on the panel* rather than a movement:
+    /// a touchscreen, and a tablet in absolute mode. Under magnification the
+    /// panel is showing a blown-up piece of the layout, so the layout point a
+    /// finger is on is not the one the fraction it reported scales to.
+    ///
+    /// Nothing else calls this, and nothing else should. A mouse reports how
+    /// far it moved, and how far the cursor moves is not affected by what the
+    /// screen is doing with the picture — putting a mouse through this would
+    /// divide its every movement by the zoom, which is a pointer that crawls.
+    /// See the header of [`crate::magnify`].
+    pub fn glass_to_content(&self, at: Point<f64, Logical>) -> Point<f64, Logical> {
+        if !self.magnifier.is_on() {
+            return at;
+        }
+        let Some(output) = self.space.outputs().find_map(|output| {
+            let geometry = self.space.output_geometry(output)?;
+            geometry.to_f64().contains(at).then_some(geometry)
+        }) else {
+            return at;
+        };
+        match self.magnified_view(output) {
+            Some(view) => view.to_content(at),
+            // The touch landed on a screen that is not the magnified one, so
+            // what is on it is what it looks like.
+            None => at,
+        }
+    }
+
     pub fn frame_for(&mut self, output: &Output) -> crate::render::Frame {
         use smithay::wayland::seat::WaylandFocus as _;
         use smithay::wayland::shell::wlr_layer::Layer;
@@ -6608,6 +6667,13 @@ impl ViewportState {
             background,
             overlay,
             cursor,
+            // The magnified region, on the output the pointer is on and no
+            // other. `output_geometry` rather than the output's own mode: the
+            // magnifier works in the layout's logical coordinates, which is
+            // what the pointer is in and what the hit test is in, and being
+            // in the same space as those is the whole reason nothing else has
+            // to be told about it.
+            magnify: self.magnified_view(output_geometry),
             scale,
             // Nothing is locked on nearly every frame this compositor ever
             // draws, and `output.name()` allocates a `String` to ask — so the
@@ -7479,6 +7545,15 @@ impl ViewportState {
                 .set_cursor(self.cursor_theme.name(), self.cursor_theme.size() as i32);
             // The pointer on screen is still the old image, and the compositor
             // draws on damage: nothing else here is damage.
+            self.needs_render = true;
+        }
+        // The magnifier's step and its ceiling. A reload that lowers the
+        // ceiling below where the screen is brings the picture back down to
+        // meet it, which is a repaint nothing else here would ask for.
+        if self
+            .magnifier
+            .configure(file.magnify.step, file.magnify.max)
+        {
             self.needs_render = true;
         }
         if self.cursor_hide.set_after_ms(file.cursor.hide_after_ms) {

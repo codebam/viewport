@@ -131,6 +131,26 @@ function expand(prop, value) {
     ]);
   }
 
+  /* `outline` is `border`'s shape with one box instead of four. Expanded for
+   * the same reason: the shell declares the focus ring as a shorthand and
+   * asserts against `outline-style`, and a resolver that answered the empty
+   * string for that would satisfy an assertion phrased as "there is no ring"
+   * on a page that has one. `outline: none` is the style keyword alone, which
+   * the loop below already reads as a style. */
+  if (prop === 'outline') {
+    let width = 'medium';
+    let style = 'none';
+    let color = 'currentcolor';
+    for (const token of splitTop(value, ' ')) {
+      const lower = token.toLowerCase();
+      if (BORDER_STYLES.has(lower)) style = lower;
+      else if (BORDER_WIDTHS.has(lower) || /^[\d.]/.test(token)) width = token;
+      else color = token;
+    }
+    return [['outline-width', width], ['outline-style', style],
+      ['outline-color', color]];
+  }
+
   if (prop === 'border-width' || prop === 'border-style' ||
       prop === 'border-color') {
     const part = prop.slice('border-'.length);

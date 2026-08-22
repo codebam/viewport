@@ -333,6 +333,11 @@ Five things had to be right, none of which says so when it is wrong:
   minimum and maximum are both 800x600, and the desktop is drawn 800x600 in
   the corner of the screen whatever the layout is.
 
+`VIEWPORT_CEF_ARGS` adds switches to the browser process's command line, the
+way `VIEWPORT_CHROMIUM_ARGS` does for the other Blink backend. The switch it
+was added for is `--force-renderer-accessibility`; see *The accessibility
+tree* below.
+
 The crate is outside the workspace: it does not build without `CEF_PATH`, and
 `cargo test --workspace` is what the pre-commit hook and CI run. It carries its
 own lock file and its own `[workspace]` table for the same reason.
@@ -343,6 +348,102 @@ DMA-BUF planes, a modifier and a format, which is very nearly
 `viewport_web::Frame` — so CEF is the route to running Blink *in* the
 compositor the way `wpe` runs WebKit. Today it is a Wayland client like the
 others.
+
+## The accessibility tree
+
+The desktop is a web page, which means the engine has already built a real
+accessibility tree out of it and there is no bespoke work to do on the page's
+side beyond getting the markup right — which
+[`data/shell/shell.md`](../data/shell/shell.md) covers and
+[`data/shell/keys.js`](../data/shell/keys.js) is most of. What is left is the
+last hop: whether the engine drawing the shell hands that tree to AT-SPI, where
+Orca and everything like it will find it. The answer differs per backend, and
+this is what it is.
+
+**A session has to have an accessibility bus at all, and a compositor started
+from a TTY has nothing behind it that would have supplied one.** `org.a11y.Bus`
+is `at-spi2-core`'s, D-Bus activated, and on a machine with no desktop
+environment installed it is not merely stopped — it is not activatable, so
+every backend's tree goes nowhere and nothing in any log says why. The NixOS
+module in `flake.nix` therefore sets `services.gnome.at-spi2-core.enable` by
+default; anything else wants the distribution's equivalent. It costs nothing
+until a screen reader asks, because the launcher is activated rather than run.
+Check with `busctl --user list --activatable | grep a11y` before believing
+anything below is broken.
+
+**`webkitgtk` is the backend to name, and it needs no code at all.** The
+`WebKitWebView` is the child of a real `gtk::ApplicationWindow` that is
+`present()`ed inside a live GTK main loop
+(`crates/viewport-shell-gtk/src/main.rs`), which is the one structural
+condition everybody assumes is missing here — GTK4 publishes AT-SPI directly
+for widgets in a realized, mapped root, and a view in no window has no
+accessible to publish. Both halves speak the protocol themselves rather than
+through a bridge library: `libgtk-4.so` carries the `org.a11y.atspi.*`
+interfaces and the `Socket` the web content is embedded through, and
+`libwebkitgtk-6.0.so` carries the same set plus `WEBKIT_A11Y_BUS_ADDRESS` for
+pointing the web process at a bus it would not otherwise find. The compositor
+builds the shell's environment with `.env()` and never clears it
+(`crates/viewport/src/shell_client.rs`), so `DBUS_SESSION_BUS_ADDRESS` reaches
+the shell process untouched. Nothing in this tree was in the way; the bus was.
+
+**`chromium` and `cef` are the same engine and the same answer.** Blink builds
+its accessibility tree lazily and publishes it once it notices a screen reader
+on the bus, which is the behaviour to want — a tree built for a session nobody
+is reading costs memory in every renderer for nothing. Both are ordinary
+Wayland clients with a real toplevel, so there is nothing structural to fix.
+Where the negotiation does not happen, `--force-renderer-accessibility` is the
+lever: `VIEWPORT_CHROMIUM_ARGS` has always carried it, and `VIEWPORT_CEF_ARGS`
+now exists for the same reason. Neither is passed by default. The one thing
+worth writing down before it is forgotten: the offscreen `OnAcceleratedPaint`
+mode described above would take the toplevel away, and with it Chromium's
+ability to publish anything — that route needs `CefAccessibilityHandler`, which
+serialises the tree to the embedder and leaves this tree to speak AT-SPI on its
+behalf. That is a component, not a switch, and it should be costed before the
+offscreen work starts rather than discovered by it.
+
+**`wpe` cannot do this, and it is the backend furthest from being able to.**
+There is no toolkit anywhere in its path. The `WebKitWebView` lives on a
+`WPEDisplay` this project invented (`crates/viewport-web/shim/viewport-shim.c`)
+whose only output is a DMA-BUF handed to the compositor, driven from a bare
+`GMainContext` (`crates/viewport/src/shell.rs`) — a GLib main context, which is
+enough for D-Bus and is not a toolkit. So there is no `GtkWidget`, no `GtkRoot`
+and no window-system window, and therefore no accessible object on the
+UI-process side for the web process's tree to be embedded under. WPE's web
+process will publish its own tree perfectly happily; an AT walking the bus
+finds an orphan with no application to hang it from. Making this work means
+writing that root by hand against `org.a11y.atspi.Socket` — a new component in
+the compositor, not a flag on an existing one. It has not been done because
+the same effort spent anywhere else buys more, and because `webkitgtk` is one
+`--shell-backend` away and is the same engine. Should an in-process accessible
+root ever be written — most plausibly alongside the CEF offscreen work above,
+which needs the identical thing — this paragraph should be replaced by it.
+
+**`servo` and `servoshell` are blocked on a missing adapter rather than on
+anything here.** Servo builds an AccessKit tree: `accesskit` is a dependency of
+six Servo crates in `crates/viewport-shell-servo/Cargo.lock`. What is absent
+from that lockfile is `accesskit_unix`, the platform adapter that turns an
+AccessKit `TreeUpdate` into AT-SPI, and `accesskit_winit`, which would hang one
+off the window. Nothing in this tree converts them either, so the updates are
+built and dropped. The embedded backend could be unblocked with bounded work —
+take the a11y updates off the embedder API and feed an `accesskit_unix::Adapter`
+keyed on the winit window — behind a build that already costs hours. The driven
+`servoshell` backend has no lever at all: its only channels to the browser are
+its own loopback bridge and `--devtools`, and there is no upstream flag to pass
+through `VIEWPORT_SERVOSHELL_ARGS`.
+
+**Which means the default backend is the least accessible of the six**, and
+that is the sentence to act on rather than the six paragraphs above it. A desk
+that needs a screen reader wants:
+
+```nix
+programs.viewport.shellBackend = "webkitgtk";
+```
+
+or `--shell-backend=webkitgtk`. This is not a defect in `servoshell` — it is
+the default for good reasons measured in
+[`benchmarks.md`](benchmarks.md) — but a default chosen on CPU and memory is
+not a default chosen on whether the desktop can be read aloud, and until Servo
+grows an AT-SPI adapter those two answers are different.
 
 ## Building and installing
 

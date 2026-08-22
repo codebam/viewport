@@ -55,6 +55,17 @@ pub enum Action {
     /// deliberate exception, which is why it is a chord someone has to press
     /// rather than a click on the desktop. See `crate::background`.
     Background,
+    /// Zoom the screen in, out, or straight back to 1:1.
+    ///
+    /// The screen magnifier, and not `canvas.zoom`: that one is a layout the
+    /// shell draws at a scale, and its own header records that input only
+    /// lands where it is aimed at 1.0 — which is the opposite of what
+    /// magnifying a screen is for. This is a compositor action because it is a
+    /// property of the real output: the region is composited larger and the
+    /// pointer is not moved at all, so nothing about it is expressible as a
+    /// message to a page that is itself one of the things being magnified.
+    /// See [`crate::magnify`].
+    Magnify(crate::magnify::Step),
     /// Hand the rest to the shell as a `shell.command`.
     ///
     /// The default for anything this does not implement itself, because the
@@ -153,6 +164,9 @@ impl Binding {
             Action::Lock => "lock".to_owned(),
             Action::Blank => "blank".to_owned(),
             Action::Background => "background".to_owned(),
+            Action::Magnify(crate::magnify::Step::In) => "magnify in".to_owned(),
+            Action::Magnify(crate::magnify::Step::Out) => "magnify out".to_owned(),
+            Action::Magnify(crate::magnify::Step::Off) => "magnify off".to_owned(),
             Action::Shell(command) => format!("shell {command}"),
         }
     }
@@ -282,6 +296,13 @@ fn parse_action(action: &str) -> Action {
             "lock" => Action::Lock,
             "blank" => Action::Blank,
             "background" => Action::Background,
+            // Spelled out rather than parsed as a verb with an argument, so
+            // that a typo — `magnify up` — falls through to the shell and is
+            // one ignored message, instead of matching here and silently
+            // becoming one of the three.
+            "magnify in" => Action::Magnify(crate::magnify::Step::In),
+            "magnify out" => Action::Magnify(crate::magnify::Step::Out),
+            "magnify off" => Action::Magnify(crate::magnify::Step::Off),
             // Everything else is the shell's, including `focus left` and the
             // layout verbs.
             other => Action::Shell(other.to_owned()),
@@ -429,6 +450,19 @@ pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding
         "Mod4+Shift+Return=background".to_owned(),
         "Mod4+Shift+x=lock".to_owned(),
         "Mod4+Shift+b=blank".to_owned(),
+        // The screen magnifier. On Alt rather than on Shift because the two
+        // obvious keys are already spoken for twice over: `Mod4+equal` and
+        // `Mod4+minus` grow a solar system's middle window under one layout
+        // and zoom the canvas under another, and a chord whose meaning
+        // depended on the layout would be the one chord that has to work when
+        // somebody cannot read the screen well enough to know which layout is
+        // up. `Mod4+Alt+0` is the way back to 1:1, and it is worth a key of
+        // its own for the reason `canvas.home` is: at 8x, finding the
+        // zoom-out key means finding it through the part of the screen that
+        // is on it.
+        "Mod4+Alt+equal=magnify in".to_owned(),
+        "Mod4+Alt+minus=magnify out".to_owned(),
+        "Mod4+Alt+0=magnify off".to_owned(),
         // HDR on the monitor you are looking at rather than all of them: a
         // display that can do it usually sits next to one that cannot.
         "Mod4+Shift+p=shell output.hdr".to_owned(),
@@ -804,6 +838,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_magnifier_chords_are_the_compositors_own() {
+        use crate::magnify::Step;
+        // Not the shell's: the shell is a page that is itself being
+        // magnified, and it has no way to composite the output it is drawn
+        // into. Falling through to `Action::Shell` would be three chords that
+        // send a message nothing recognises — which is not a dead key in any
+        // visible way, which is exactly how `lock` and `blank` were broken.
+        assert_eq!(parse_action("magnify in"), Action::Magnify(Step::In));
+        assert_eq!(parse_action("magnify out"), Action::Magnify(Step::Out));
+        assert_eq!(parse_action("magnify off"), Action::Magnify(Step::Off));
+        // And a fourth verb is not quietly one of the three.
+        assert_eq!(
+            parse_action("magnify up"),
+            Action::Shell("magnify up".to_owned())
+        );
+
+        for layout in ["tiling", "scrolling", "solar", "matrix", "canvas"] {
+            let bindings = defaults("foot", Some("wmenu-run"), layout);
+            for step in [Step::In, Step::Out, Step::Off] {
+                assert!(
+                    bindings.iter().any(|b| b.action == Action::Magnify(step)),
+                    "no binding produces Action::Magnify({step:?}) under {layout}"
+                );
+            }
+        }
+    }
+
+    /// Every default chord round-trips through the text a config file writes.
+    ///
+    /// The magnifier is the reason this is worth restating: its action_text is
+    /// three separate strings rather than one format, so a fourth step added
+    /// without a fourth arm would spell as something `parse_action` sends to
+    /// the shell — a chord the keymap on an empty desktop shows and pressing
+    /// which does nothing.
+    #[test]
+    fn a_magnifier_binding_spells_back_to_itself() {
+        use crate::magnify::Step;
+        for step in [Step::In, Step::Out, Step::Off] {
+            let action = Action::Magnify(step);
+            let binding = Binding {
+                modifiers: Modifiers::default(),
+                keysym: 0,
+                button: None,
+                wheel: None,
+                action: action.clone(),
+                mode: String::new(),
+            };
+            assert_eq!(parse_action(&binding.action_text()), action);
+        }
+    }
+
     /// The play/pause key is bound to the keysym that key actually sends.
     ///
     /// `KEY_PLAYPAUSE` is `[XF86AudioPlay, XF86AudioPause]` in xkb's evdev
@@ -1147,12 +1233,12 @@ mod tests {
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
-        // 39 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // 42 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         assert_eq!(
             bindings.len(),
-            39 + 16 + 18 + 11 + 1,
+            42 + 16 + 18 + 11 + 1,
             "a default failed to parse"
         );
 

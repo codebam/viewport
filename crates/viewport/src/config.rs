@@ -60,6 +60,20 @@ pub struct CursorConfig {
     pub hide_after_ms: Option<i64>,
 }
 
+/// The `magnify` block: the screen magnifier's step and its ceiling.
+///
+/// Only the two numbers, because everything else about the magnifier is a
+/// chord rather than a setting — it is off until somebody presses zoom-in,
+/// and where it looks is wherever the pointer is. Absent is a step of 0.5 and
+/// a maximum of 8.0; see [`crate::magnify`] for why those, and for what
+/// happens to a file that asks for something impossible.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct MagnifyConfig {
+    pub step: Option<f64>,
+    pub max: Option<f64>,
+}
+
 /// The idle block.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -445,6 +459,7 @@ pub struct File {
     pub outputs: std::collections::HashMap<String, OutputConfig>,
     pub keyboard: KeyboardConfig,
     pub cursor: CursorConfig,
+    pub magnify: MagnifyConfig,
     pub idle: IdleConfig,
 
     /// What to do when the laptop lid closes: `"ignore"`, `"lock"`, `"blank"`
@@ -1278,6 +1293,7 @@ mod tests {
                 "keyboard": {"layout":"us","repeat_rate":25},
                 "cursor": {"theme":"Adwaita","size":32,"hide_after_ms":1500},
                 "idle": {"lock_after":300,"lock_command":"swaylock"},
+                "magnify": {"step":0.25,"max":6.0},
                 "outputs": {"DP-1":{"mode":"2560x1440@120","x":0,"hdr":true}}
             }"#,
         )
@@ -1287,6 +1303,8 @@ mod tests {
         assert_eq!(file.cursor.size, Some(32));
         assert_eq!(file.cursor.hide_after_ms, Some(1500));
         assert_eq!(file.idle.lock_after, Some(300));
+        assert_eq!(file.magnify.step, Some(0.25));
+        assert_eq!(file.magnify.max, Some(6.0));
         let dp1 = file.outputs.get("DP-1").expect("DP-1");
         assert_eq!(dp1.mode.as_deref(), Some("2560x1440@120"));
         assert_eq!(dp1.hdr, Some(true));
