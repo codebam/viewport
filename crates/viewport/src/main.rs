@@ -151,6 +151,32 @@ fn run() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     warn_about_unknown_options(&args);
+    // A valued option followed by another option took that option as its
+    // value: `--drm --width --height 800` parsed `--width`'s value as
+    // "--height", failed to parse it as a number, and quietly started at the
+    // default — with the 800 the user asked for landing nowhere. The same
+    // refusal the `viewport msg` parser makes (`msg.rs`): a value that looks
+    // like another flag is no value at all.
+    for option in OPTIONS {
+        // Switches take nothing, and a value in brackets may be left off —
+        // `--background-terminal --drm` is the bare form, not a mistake.
+        if option.value.is_empty() || option.value.starts_with('[') {
+            continue;
+        }
+        let Some(at) = args.iter().position(|argument| argument == option.flag) else {
+            continue;
+        };
+        match args.get(at + 1) {
+            None => anyhow::bail!("{0} needs a value ({1})", option.flag, option.value),
+            Some(next) if next.starts_with("--") => anyhow::bail!(
+                "{0} needs a value ({1}); {2} looks like another option",
+                option.flag,
+                option.value,
+                next
+            ),
+            Some(_) => {}
+        }
+    }
     let socket_path = flag(&args, "--socket").map(std::path::PathBuf::from);
     // No renderer and no window: everything but drawing, for tests and CI.
     let headless = args.iter().any(|a| a == "--headless");
@@ -434,7 +460,10 @@ fn run() -> Result<()> {
     }
 
     // Before anything is spawned, so an X program started from a menu finds a
-    // DISPLAY. It arrives asynchronously; the variable is set when it does.
+    // DISPLAY. It arrives asynchronously; the number is recorded on the state
+    // when it does, and every child this compositor spawns from then on is
+    // told it outright rather than finding it in an environment that is never
+    // written again once the workers are up.
     state.start_xwayland(&event_loop.handle());
 
     // `WAYLAND_DISPLAY=<name>` spelled out, not just the name: the socket is
@@ -585,6 +614,12 @@ fn run() -> Result<()> {
                 state.start_due_shells();
                 // And the wallpaper terminal, on the same terms.
                 state.check_background_terminal();
+                // And the things whose owner is gone but which nothing else
+                // notices: screencopy requests for outputs that stopped being
+                // drawn, screenshot files the portal has long since handed
+                // out. Both hold memory or disk until someone lets go.
+                state.reap_pending_copies();
+                state.reap_screenshot_temps();
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
                     std::time::Duration::from_secs(1),
                 )
@@ -977,10 +1012,11 @@ fn run() -> Result<()> {
     }
 
     // Whatever the config file asked to be run, once everything it needs is
-    // in the environment: WAYLAND_DISPLAY, DISPLAY, and the outputs.
+    // in the environment: WAYLAND_DISPLAY (inherited), DISPLAY (told to it
+    // outright — Xwayland may not even be up yet), and the outputs.
     if let Some(command) = state.startup.clone() {
         tracing::info!("startup: {command}");
-        input::spawn(&command);
+        input::spawn_with_env(&command, &state.child_display_env());
     }
 
     // calloop owns the loop, with or without the web engine.
@@ -1076,6 +1112,10 @@ fn run() -> Result<()> {
 /// Both forms, because both are what people type and the second used to be
 /// accepted silently and ignored — `--url=/path` set nothing, started the
 /// default shell, and said nothing about why.
+///
+/// A following argument that is itself a flag is not a value here; that case
+/// is refused outright before any of this runs, so what `--width --height`
+/// gets is an error and not a width of "--height".
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     if let Some(joined) = args
         .iter()
