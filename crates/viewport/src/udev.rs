@@ -9,9 +9,28 @@
 // the compositor allocates its own scanout buffers through GBM and binds them
 // as dmabufs, which is the path `Bind<Dmabuf>` was written for.
 //
-// What is deliberately not here yet: multi-GPU, and hotplug of whole devices.
-// Connector hotplug within the primary device is handled, because plugging a
-// monitor in is ordinary and unplugging a GPU is not.
+// Every card on the seat is opened, not only the one the seat calls primary.
+// Each gets its own renderer, its own output manager and its own lease global,
+// and each drives the connectors wired to it — a monitor on the discrete card
+// is a monitor, and a headset on it is leasable. `devices[0]` is the primary:
+// where the shell allocates, what the default dmabuf advertisement names, and
+// on the single-GPU machine every current user is on, the only one there is.
+// An output is named by an [`OutputId`], which carries the device index,
+// because a crtc handle is only unique within the card that issued it.
+//
+// Where the cards meet — a screen name two cards both want, a client buffer
+// only one of them can read, what clients are told to allocate against — the
+// reasoning is in [`crate::multigpu`], which is written so those rules can be
+// checked without a graphics card in the machine. What happens to a buffer the
+// scanout card cannot import, and why the copy through the primary that most
+// compositors do is not implemented here, is written down there too.
+//
+// Hotplug is handled at both scales. A connector coming and going is ordinary
+// and is a re-scan of the card it is on. A whole card coming and going is
+// [`crate::recovery`]'s: it was built for a GPU that a bus reset unregistered,
+// which from userspace is indistinguishable from one being unplugged, and it
+// covers a card that leaves and comes back, a card that leaves and does not,
+// and a card that arrives having never been here.
 
 use std::collections::HashMap;
 

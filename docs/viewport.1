@@ -59,6 +59,28 @@ or
 over $VIEWPORT_PIXEL_FORMAT and the config file's
 .BR pixel_format .
 .TP
+.BI \-\-gpu " PATH"
+Which graphics card renders and, on a machine with one card, scans out.
+Matched as a substring of a device path, so
+.BR card1 ", " renderD129
+and a whole
+.I /dev/dri/by-path/...
+all work. Over $VIEWPORT_GPU and the config file's
+.BR gpu .
+Every card on the seat is opened either way; this names the primary\(emthe one
+the shell draws on and the one clients are told about by default.
+.TP
+.BI \-\-cross-gpu " MODE"
+With more than one card, what clients are told they may allocate by default:
+.B native
+for everything the primary can read, or
+.B portable
+for only what every card can read. Over $VIEWPORT_CROSS_GPU and the config
+file's
+.BR cross_gpu .
+Nothing on a machine with one card. See
+.IR docs/configuration.md .
+.TP
 .BI \-\-shell-backend " NAME"
 Which engine draws the desktop; see
 .IR docs/shell-backends.md .
@@ -122,6 +144,17 @@ The renderer to use (vulkan or gles); overridden by
 .B VIEWPORT_PIXEL_FORMAT
 Scanout bits per channel (8, 10 or auto); overridden by
 .BR \-\-pixel-format ,
+and itself overriding the config file.
+.TP
+.B VIEWPORT_GPU
+Which card is primary, as part of a device path; overridden by
+.BR \-\-gpu ,
+and itself overriding the config file.
+.TP
+.B VIEWPORT_CROSS_GPU
+What clients may allocate by default with more than one card (native or
+portable); overridden by
+.BR \-\-cross-gpu ,
 and itself overriding the config file.
 .TP
 .B VIEWPORT_SHELL_BACKEND

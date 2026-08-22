@@ -261,6 +261,48 @@ fn run() -> Result<()> {
         }
     }
 
+    // Which card, and what clients are told to allocate against when there is
+    // more than one. Both take the same route as the bit depth above and for
+    // the same reason: the cards are opened and their formats advertised
+    // before there is any state to read a setting out of.
+    //
+    // `--gpu` is not validated here. What it names is matched against the
+    // cards the seat actually has, which cannot be known until the backend
+    // enumerates them, and the backend already says so out loud when the value
+    // matches nothing — naming what there was to choose from, which is the
+    // message that is actually useful. See `gpu_named` in `udev.rs`.
+    {
+        let asked = flag(&args, "--gpu")
+            .map(str::to_owned)
+            .or_else(|| std::env::var("VIEWPORT_GPU").ok())
+            .or_else(|| config.gpu.clone());
+        if let Some(asked) = asked.filter(|value| !value.trim().is_empty()) {
+            tracing::info!("gpu: {asked}");
+            // SAFETY: single-threaded still, the same window `--pixel-format`
+            // uses a few lines above.
+            unsafe { std::env::set_var("VIEWPORT_GPU", &asked) };
+        }
+    }
+    {
+        let asked = flag(&args, "--cross-gpu")
+            .map(str::to_owned)
+            .or_else(|| std::env::var("VIEWPORT_CROSS_GPU").ok())
+            .or_else(|| config.cross_gpu.clone());
+        if let Some(asked) = asked {
+            // Validated here, unlike `--gpu`: this one has a closed set of
+            // values that needs no hardware to check against, and a typo that
+            // silently means the default is exactly what leaves somebody
+            // certain the setting does nothing.
+            multigpu::parse_cross_gpu(&asked).map_err(|e| {
+                anyhow::anyhow!(
+                    "{e}; --cross-gpu, $VIEWPORT_CROSS_GPU or the config file's \"cross_gpu\""
+                )
+            })?;
+            // SAFETY: as above.
+            unsafe { std::env::set_var("VIEWPORT_CROSS_GPU", &asked) };
+        }
+    }
+
     let mut event_loop: EventLoop<ViewportState> = EventLoop::try_new()?;
     let display: Display<ViewportState> = Display::new()?;
 
@@ -1181,6 +1223,16 @@ const OPTIONS: &[Opt] = &[
         flag: "--pixel-format",
         value: "N",
         what: "scanout bits per channel: 8, 10 or auto, over $VIEWPORT_PIXEL_FORMAT",
+    },
+    Opt {
+        flag: "--gpu",
+        value: "PATH",
+        what: "which card renders: part of a device path, over $VIEWPORT_GPU",
+    },
+    Opt {
+        flag: "--cross-gpu",
+        value: "MODE",
+        what: "with two cards, what clients may allocate: native or portable",
     },
     Opt {
         flag: "--shell-backend",

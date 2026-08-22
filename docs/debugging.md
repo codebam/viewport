@@ -230,6 +230,62 @@ carries on. A GPU that cannot be opened at all is skipped with a warning, on the
 same reasoning: one card failing is a monitor that stays dark, and refusing to
 start is every monitor dark.
 
+### A window missing from one monitor and not the other
+
+That is what a buffer the scanout card cannot read looks like from the desk, and
+it is the one multi-GPU symptom nobody would connect to a buffer modifier. The
+compositor says it out loud, once per format, modifier and card:
+
+```
+a client buffer (Argb8888, modifier 0x100000000000006) imports on gpu [0] and not on
+gpu [1]; a window showing it will be missing from the screens on the cards that
+refused it. Set cross_gpu = "portable" to advertise only what every card can read
+```
+
+Once per case, not once per frame — one line like that is a condition that will
+hold for as long as the client keeps allocating that way, not one bad frame.
+
+`cross_gpu = "portable"` in the config file (or `--cross-gpu portable`) narrows
+the *default* advertisement to the formats every card can import, which fixes
+the client that ignores per-surface feedback and costs every other client the
+modifiers only one card understands. See
+[Graphics cards](configuration.md#graphics-cards). The copy through the primary
+renderer that would make the question go away entirely is deliberately not
+implemented; `crates/viewport/src/multigpu.rs` says why.
+
+A buffer that *no* card can import is refused instead, which over
+`linux-dmabuf` disconnects the client. That is the honest answer: the
+alternative is a window that never appears anywhere, with nothing in the log.
+Note the direction this used to fail in — the buffer was judged by the primary's
+renderer alone, so a client that had been told by its per-surface feedback to
+allocate for the second card was disconnected for doing exactly that. Every
+online card is asked now, and one "yes" is enough.
+
+### Two screens with the same name
+
+Connector names are handed out per card, so an integrated display controller and
+a discrete card beside it both have a `DP-1`. The first card to claim a name
+keeps it and the second gets the card index appended:
+
+```
+gpu 1: another card already has a screen called DP-1; this one is DP-1-gpu1
+```
+
+Nothing on a single-GPU machine is renamed. If a config file's `outputs` block
+has stopped matching a screen on a two-card machine, this line is why, and the
+name it prints is the one to use.
+
+### Leases
+
+`wp-drm-lease-v1` is per card: one global each, advertising that card's node, so
+a headset on the discrete card is leasable. A lease request names a node, and
+the card is looked up by it — the CRTC and plane handles in a lease only mean
+anything on the device that issued them, and CRTC handles are small integers
+handed out per device, so answering the wrong card's request would hand out a
+handle that on that card is very likely a monitor.
+
+### Everything else
+
 Outputs are addressed by `OutputId { device, crtc }` rather than by CRTC alone.
 A `crtc::Handle` is only unique within the device that issued it, and two GPUs
 routinely hand out the same value — keyed on the handle by itself, a vblank from
@@ -263,9 +319,15 @@ overlaps that surface it has to be composited, and a buffer that cannot be
 sampled has nowhere to go. Advertising it would trade a rare zero-copy frame for
 a window that vanishes when a notification appears over it.
 
-Still missing: any sharing of a rendered frame between devices. **Untested on
-real multi-GPU hardware** — it was written on a machine with one GPU, where
-every secondary path is unreachable.
+Still missing: any sharing of a rendered frame between devices — a client
+buffer one card cannot read is a surface missing from that card's screens, and
+there is no copy through the primary to rescue it. **Untested on real
+multi-GPU hardware.** Every part of this was written on a machine with one GPU,
+where every secondary path is unreachable: what can be checked without a second
+card is checked by unit tests (`crates/viewport/src/multigpu.rs`), and the rest
+is reasoning. Read it that way, and if you have two cards, the first thing to
+look at is the startup log — it names every card, which is primary, and how many
+outputs each brought up.
 
 Which GPU is primary — the one clients and the shell allocate against — is the
 part that bites on a hybrid laptop. The candidates are ranked by whether a Vulkan device actually
@@ -276,6 +338,9 @@ That is a preference (battery or frames), not something the hardware answers.
 ```
 VIEWPORT_GPU=card1 viewport
 ```
+
+— or `--gpu card1`, or `"gpu": "card1"` in the config file, with the flag
+winning over the variable and the variable over the file —
 
 names one. Matched as a substring of the device path, so `card1`, `renderD129`
 or a whole `/dev/dri/by-path/pci-0000:01:00.0-card` all work — the by-path names
