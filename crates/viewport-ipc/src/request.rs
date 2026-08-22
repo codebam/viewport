@@ -461,7 +461,7 @@ pub enum Request {
     /// halves of one is how they drift apart.
     #[serde(rename = "workspace.list")]
     WorkspaceList {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "workspaces")]
         workspaces: Vec<Workspace>,
     },
 
@@ -899,6 +899,50 @@ pub struct ModeRequest {
     pub refresh: i32,
 }
 
+/// How many workspaces one `workspace.list` may carry.
+///
+/// The shell sends a handful; a desk with a workspace per project on two
+/// monitors is still two of them. The bound is what keeps a broken or hostile
+/// sender from making the compositor build, relay and log a list of any size
+/// it likes — the same shape of bound the framing layer puts on a message.
+pub const MAX_WORKSPACES: usize = 512;
+
+/// Deserialize `workspace.list`'s list, bounded.
+///
+/// Counted as it is built rather than checked afterwards, so a message
+/// claiming a million workspaces is cut off at [`MAX_WORKSPACES`] instead of
+/// being parsed whole before anyone looks at it. Over the cap is a parse
+/// error, which comes back to the sender as an `error` against
+/// `workspace.list` — the same answer any other bad body earns.
+fn workspaces<'de, D>(deserializer: D) -> Result<Vec<Workspace>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Bounded;
+    impl<'de> serde::de::Visitor<'de> for Bounded {
+        type Value = Vec<Workspace>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "at most {MAX_WORKSPACES} workspaces")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::new();
+            while let Some(workspace) = seq.next_element::<Workspace>()? {
+                if out.len() == MAX_WORKSPACES {
+                    return Err(<A::Error as serde::de::Error>::custom(format!(
+                        "more than {MAX_WORKSPACES} workspaces"
+                    )));
+                }
+                out.push(workspace);
+            }
+            Ok(out)
+        }
+    }
+    deserializer.deserialize_seq(Bounded)
+}
+
 /// A view id the way C reads one: `(uint32_t)object_int(object, "id", 0)`.
 ///
 /// The shell sends -1 for "no view" — `session.js` passes on whatever
@@ -1168,6 +1212,38 @@ mod tests {
         assert_eq!(config.transform, Some(Transform::Flipped90));
         assert_eq!(config.enabled, None);
         assert_eq!(config.x, None);
+    }
+
+    #[test]
+    fn a_workspace_list_over_the_cap_is_a_parse_error() {
+        // The shell sends a dozen at most; the cap exists for senders that are
+        // broken or hostile, and the answer is the one any bad body gets.
+        let list = format!(
+            r#"{{"type":"workspace.list","workspaces":[{}]}}"#,
+            (0..MAX_WORKSPACES + 1)
+                .map(|n| format!(r#"{{"id":"{n}"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let error = crate::parse(list.as_bytes()).unwrap_err();
+        let crate::ParseError::BadBody { name, message } = error else {
+            panic!("should be a bad body, not {error:?}");
+        };
+        assert_eq!(name, "workspace.list");
+        assert!(message.contains("512"), "{message}");
+
+        // At the cap, not over it, parses — the bound is inclusive.
+        let at_cap = format!(
+            r#"{{"type":"workspace.list","workspaces":[{}]}}"#,
+            (0..MAX_WORKSPACES)
+                .map(|n| format!(r#"{{"id":"{n}"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let Request::WorkspaceList { workspaces } = parse(at_cap.as_str()) else {
+            panic!("a list at the cap should parse");
+        };
+        assert_eq!(workspaces.len(), MAX_WORKSPACES);
     }
 
     #[test]
