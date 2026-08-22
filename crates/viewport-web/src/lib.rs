@@ -12,8 +12,7 @@
 // changes.
 
 use std::os::unix::io::OwnedFd;
-
-pub mod dmabuf;
+use std::path::Path;
 
 #[cfg(feature = "wpe")]
 pub mod webkit;
@@ -106,3 +105,69 @@ pub trait WebEngine {
 /// could not take this crate's dependency on GBM and EGL to get it. Re-exported
 /// because it is part of this crate's published surface.
 pub use viewport_ipc::js::BRIDGE_SHIM;
+
+/// Characters that must be percent-encoded when a filesystem path is embedded
+/// in a `file://` URL.
+///
+/// WebKit parses the URI before loading it, so URL syntax characters — the
+/// fragment `#`, the query `?`, and `%` itself — would be read as structure
+/// rather than path, and the characters RFC 3986 calls unsafe in a path
+/// component would not survive the trip either. Control characters and every
+/// non-ASCII byte are encoded on top of this set.
+const FILE_PATH: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'%')
+    .add(b'{')
+    .add(b'}')
+    .add(b'|')
+    .add(b'\\')
+    .add(b'^')
+    .add(b'`');
+
+/// Build a `file://` URL for a filesystem path, percent-encoding it.
+///
+/// A path is arbitrary bytes as far as the shell is concerned, but a URI is
+/// not: a space or a `#` left raw would truncate the path WebKit sees, and a
+/// shell installed under such a path would come up blank.
+pub fn file_url(path: &Path) -> String {
+    format!(
+        "file://{}",
+        percent_encoding::utf8_percent_encode(&path.to_string_lossy(), FILE_PATH)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_plain_path_is_left_alone() {
+        assert_eq!(
+            file_url(Path::new("/usr/share/viewport/index.html")),
+            "file:///usr/share/viewport/index.html"
+        );
+    }
+
+    #[test]
+    fn url_syntax_characters_are_escaped() {
+        assert_eq!(
+            file_url(Path::new("/opt/my shell/v1?page=2#top")),
+            "file:///opt/my%20shell/v1%3Fpage=2%23top"
+        );
+    }
+
+    #[test]
+    fn a_percent_sign_is_escaped_itself() {
+        assert_eq!(file_url(Path::new("/tmp/100%/x")), "file:///tmp/100%25/x");
+    }
+
+    #[test]
+    fn non_ascii_is_utf8_percent_encoded() {
+        assert_eq!(file_url(Path::new("/tmp/é")), "file:///tmp/%C3%A9");
+    }
+}
