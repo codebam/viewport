@@ -1232,14 +1232,56 @@ impl ViewportState {
     ///
     /// A window that takes focus must keep it: this is the floor under an empty
     /// desktop, not a policy that competes with one.
+    ///
+    /// Empty means empty. A desk with a window on it and no keyboard focus is
+    /// not an empty desk — it is a window that has not been focused *yet*, and
+    /// the floor used to be laid straight over the top of it. The order that
+    /// does it is ordinary: a client mapping before the shell is up. Focusing
+    /// a window is the shell's decision and there was no shell to make it, so
+    /// the window sat unfocused; the shell then started, found the seat idle
+    /// and took the keyboard for itself; and the replay that followed
+    /// announced the window as `replay: true` — not new, restore it where it
+    /// was — which is not a thing the shell focuses, because a shell that
+    /// reloaded must not steal the keyboard from whatever holds it. Three
+    /// correct rules, and between them a window nothing would ever focus.
+    ///
+    /// It is worst for X11. A Wayland client at least gets `wl_keyboard`
+    /// events once something focuses it; an X client's focus is
+    /// `SetInputFocus`, which smithay only sends when an `X11Surface` is the
+    /// seat's focus, so the X server sits at `PointerRoot` and delivers
+    /// keystrokes to whatever the pointer is over. An autostarted X11
+    /// application is the ordinary way to meet this.
+    ///
+    /// So the floor asks whether there is a window first, and focuses the most
+    /// recently added mapped one if there is. That is what the shell would
+    /// have done had it been running when the window arrived.
     pub fn focus_shell_if_idle(&mut self) {
         let idle = self
             .seat
             .get_keyboard()
             .is_some_and(|keyboard| keyboard.current_focus().is_none());
-        if idle {
-            self.focus_shell_at(None);
+        if !idle {
+            return;
         }
+        // Never past a lock screen. A locked session reaches here by one
+        // route — the shell crashed while it held the lock, taking the
+        // keyboard with it, and its replacement's toplevel has just arrived —
+        // and on that route every window on the desk is behind a lock screen.
+        // Focusing one would put the keyboard into it, and the next thing
+        // typed at a lock screen is a password. The shell gets it instead,
+        // which is what `focus_lock_shell` would do a moment later anyway
+        // when the new page asks what it is meant to be drawing.
+        if !self.locked {
+            // Newest rather than oldest: several windows can predate the
+            // shell — a session of autostarted applications — and the last
+            // one to arrive is the one a desk that had been running would
+            // have focused.
+            if let Some(id) = self.views.iter().filter(|v| v.mapped).map(|v| v.id).last() {
+                crate::apply::focus_view(self, id);
+                return;
+            }
+        }
+        self.focus_shell_at(None);
     }
 
     /// Forget a shell's toplevel when it goes.

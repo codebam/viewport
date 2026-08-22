@@ -811,6 +811,20 @@ to summarise rather than to duplicate.
   state is per card now, both handlers look the card up by the node the request
   arrived on, and the free-CRTC search is scoped to that card the way the
   connector scan's already was.
+- A window that opened before the shell did is focused. Focusing a window is
+  the shell's decision, so a client that maps before the shell is running is
+  left unfocused for the moment — and the moment used to be for ever. The
+  shell would start, find the seat idle and take the keyboard for itself
+  under the rule that an empty desktop should still be typable; then the
+  window list it asked for would arrive with the window marked as a replay,
+  which is a thing a shell restores into a slot and deliberately does not
+  steal focus for. Three rules that are each right, and a window between them
+  that nothing would ever focus. The floor under an empty desktop now asks
+  whether the desktop is actually empty, and focuses the newest mapped window
+  if it is not. Worst for X11, which is where it was found: an X client's
+  focus is `SetInputFocus`, which is only sent when an `X11Surface` is the
+  seat's focus, so an autostarted X11 application sat at `PointerRoot` with
+  its keystrokes going to whatever the pointer happened to be over.
 
 ## [0.1.8] - 2026-08-17
 
