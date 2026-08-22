@@ -923,21 +923,95 @@ impl smithay::wayland::dmabuf::DmabufHandler for ViewportState {
         dmabuf: smithay::backend::allocator::dmabuf::Dmabuf,
         notifier: smithay::wayland::dmabuf::ImportNotifier,
     ) {
+        use smithay::backend::allocator::Buffer as _;
         use smithay::backend::renderer::ImportDma as _;
 
+        // Every card on the seat, not only the primary.
+        //
         // Imported now rather than at first use, because the answer the client
         // is waiting for is whether this buffer is usable at all — and a
         // failure discovered mid-frame has nowhere to go.
-        let imported = self.udev.as_mut().map(|udev| {
-            crate::with_gpu!(&mut udev.primary_mut().renderer, |renderer| renderer
-                .import_dmabuf(&dmabuf, None)
-                .is_ok())
+        //
+        // Asking only the primary was right while there was one card and wrong
+        // the moment there are two, in the direction that kills clients: a
+        // window on the second card's monitor is told by its per-surface
+        // feedback to allocate for the second card, and the buffer that comes
+        // back is then handed to the *first* card's renderer to be judged. A
+        // modifier the discrete card understands and the display controller
+        // does not is ordinary, so the import fails, `notifier.failed()` posts
+        // a protocol error, and the client is disconnected for having done
+        // exactly what the compositor asked of it.
+        //
+        // Offline cards are skipped rather than counted as refusals. A card
+        // being reopened after a reset would otherwise turn every buffer into
+        // a "split" and fill the log describing a condition that lasts a
+        // second — see [`crate::recovery`].
+        let reach = self.udev.as_mut().map(|udev| {
+            let mut asked: Vec<(usize, bool)> = Vec::new();
+            for index in 0..udev.devices.len() {
+                if !udev.devices[index].online {
+                    continue;
+                }
+                let ok = crate::with_gpu!(&mut udev.devices[index].renderer, |renderer| {
+                    renderer.import_dmabuf(&dmabuf, None).is_ok()
+                });
+                asked.push((index, ok));
+            }
+            crate::multigpu::Reach::of(asked)
         });
-        match imported {
-            Some(true) | None => {
+
+        // A buffer some cards take and others refuse is usable — the client
+        // keeps it and every screen on a card that took it shows it — but the
+        // window is going to be missing from the rest, which is a symptom
+        // nobody would connect to a buffer modifier without being told. Said
+        // once per format, modifier and card; see `Reported` for why not once
+        // per frame.
+        if let Some(reach) = reach.as_ref().filter(|reach| reach.split()) {
+            let format = dmabuf.format();
+            let code = format.code as u32;
+            let modifier: u64 = format.modifier.into();
+            let first = reach
+                .refused_by
+                .iter()
+                .filter(|device| {
+                    self.udev.as_mut().is_some_and(|udev| {
+                        udev.cross_gpu_reported.first_time(code, modifier, **device)
+                    })
+                })
+                .count()
+                > 0;
+            if first {
+                tracing::warn!(
+                    "a client buffer ({:?}, modifier {modifier:#x}) imports on gpu {:?} and \
+                     not on gpu {:?}; a window showing it will be missing from the screens on \
+                     the cards that refused it. Set cross_gpu = \"portable\" to advertise only \
+                     what every card can read — see docs/configuration.md.",
+                    format.code,
+                    reach.taken_by,
+                    reach.refused_by,
+                );
+            }
+        }
+
+        match reach {
+            // No backend with cards at all: the nested and headless paths,
+            // where there is nothing to judge the buffer against and refusing
+            // it would be inventing a failure.
+            None => {
                 let _ = notifier.successful::<ViewportState>();
             }
-            Some(false) => notifier.failed(),
+            Some(reach) if reach.usable() => {
+                let _ = notifier.successful::<ViewportState>();
+            }
+            // Nothing answered because nothing is online — every card is
+            // mid-recovery. The client is not at fault and its buffer may well
+            // be fine, so it is accepted; the import is tried again per frame
+            // by the render pass, which is where a genuinely bad buffer then
+            // shows up as a surface that does not draw.
+            Some(reach) if reach.refused_by.is_empty() => {
+                let _ = notifier.successful::<ViewportState>();
+            }
+            Some(_) => notifier.failed(),
         }
     }
 }

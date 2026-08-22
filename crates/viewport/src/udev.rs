@@ -180,6 +180,28 @@ fn scanout_formats() -> &'static [Fourcc] {
     }
 }
 
+/// What clients are told to allocate against when there is more than one card.
+///
+/// `$VIEWPORT_CROSS_GPU`, which `--cross-gpu` and the config file's `cross_gpu`
+/// both write before a device is opened — the same route `pixel_format` and
+/// `--renderer` take, and for the same reason: the answer is needed while the
+/// devices are being brought up, before there is any state to read a setting
+/// out of.
+///
+/// An unparseable value is a warning and the default rather than a failure to
+/// start. See `scanout_formats` for why: a compositor that refuses to bring the
+/// screens up over a typo leaves a TTY as the only way to fix it.
+fn cross_gpu_policy() -> crate::multigpu::CrossGpu {
+    let asked = std::env::var("VIEWPORT_CROSS_GPU").unwrap_or_default();
+    match crate::multigpu::parse_cross_gpu(&asked) {
+        Ok(policy) => policy,
+        Err(e) => {
+            tracing::warn!("{e}; advertising each card's own formats");
+            crate::multigpu::CrossGpu::Native
+        }
+    }
+}
+
 // The element list is `crate::render::OutputElement`, generic over the
 // renderer so the DRM path can use either.
 
@@ -566,6 +588,10 @@ pub struct Udev {
     /// newest: a client that commits twice before either is drawn has waited
     /// since the first.
     pub first_commit_at: Option<std::time::Instant>,
+    /// Buffers already reported as unreadable by some card, so a client
+    /// painting at the refresh rate says it once. See
+    /// [`crate::multigpu::Reported`].
+    pub cross_gpu_reported: crate::multigpu::Reported,
     /// Cards that have never opened, waiting to be tried again.
     ///
     /// A GPU this session has not seen has no slot in `devices` to hang the
@@ -1285,6 +1311,7 @@ pub fn init(
         last_vblank_by_output: HashMap::new(),
         committed_since_flip: false,
         first_commit_at: None,
+        cross_gpu_reported: Default::default(),
         pending_adds: Vec::new(),
     });
     if state
@@ -1424,19 +1451,50 @@ pub fn init(
 
     // Now that there is a renderer, clients can be told which formats they may
     // allocate — and on which GPU.
+    //
+    // The default tranche names one device, because that is all the protocol's
+    // default is: a client with no surface yet has nowhere to be shown, so
+    // there is no per-output answer to give it. The primary is that device.
+    //
+    // Which *formats* it carries is the choice `cross_gpu` makes. See
+    // [`crate::multigpu::CrossGpu`]: by default the primary's own, so no
+    // modifier is given up on the machine where windows stay where they were
+    // opened; under `"portable"` only what every card can import, for the desk
+    // where they do not and for the client that ignores the per-surface
+    // feedback that would otherwise have told it to reallocate.
     {
-        let formats = state
+        let policy = cross_gpu_policy();
+        let per_device: Vec<Vec<smithay::backend::allocator::Format>> = state
             .udev
             .as_ref()
             .map(|udev| {
-                udev.primary()
-                    .renderer
-                    .dmabuf_formats()
+                udev.devices
                     .iter()
-                    .copied()
+                    .filter(|device| device.online)
+                    .map(|device| device.renderer.dmabuf_formats().iter().copied().collect())
                     .collect()
             })
             .unwrap_or_default();
+        let formats = crate::multigpu::default_formats(policy, &per_device);
+        // Only when it changed anything, and only when there was a choice: on
+        // a single-GPU machine the intersection is the primary's own list and
+        // saying so would be noise in every log on the only path anyone runs.
+        if per_device.len() > 1 {
+            let primary = per_device.first().map(Vec::len).unwrap_or(0);
+            tracing::info!(
+                "cross_gpu={policy:?}: advertising {} of the primary's {primary} \
+                 format/modifier pairs across {} cards",
+                formats.len(),
+                per_device.len(),
+            );
+            if policy == crate::multigpu::CrossGpu::Portable && formats.len() == primary {
+                tracing::warn!(
+                    "cross_gpu=\"portable\" narrowed nothing — either the cards share \
+                     everything, or one of them imports nothing and the intersection was \
+                     empty and fell back. Check the per-card format counts above this line."
+                );
+            }
+        }
         state.advertise_dmabuf(Some(render.dev_id()), formats);
     }
 
@@ -1972,11 +2030,36 @@ impl ViewportState {
         // tell "every connector failed" from "there were none".
         let attempted = connectors.len();
         for connector in connectors {
-            let name = format!(
+            // What the kernel calls this connector — and what the screen is
+            // called, unless another card has already taken the name.
+            //
+            // Connector names are handed out per card, so an integrated
+            // display controller and the discrete card beside it both have a
+            // `DP-1`. Everything downstream keys on the name and assumes it
+            // names one screen: the config file's per-output rules,
+            // `active_output`, the saved layout, `wl_output`'s name, the
+            // per-output vblank bookkeeping. See
+            // [`crate::multigpu::unique_output_name`] for what the collision
+            // costs and why the suffix is the card index.
+            //
+            // Read from the space, which is every screen currently mapped —
+            // including the ones this pass has already brought up, because the
+            // `Ok` arm below maps each output before the next connector is
+            // looked at.
+            let base = format!(
                 "{}-{}",
                 connector.interface().as_str(),
                 connector.interface_id()
             );
+            let taken_names: std::collections::HashSet<String> =
+                self.space.outputs().map(|o| o.name()).collect();
+            let name = crate::multigpu::unique_output_name(&base, index, &taken_names);
+            if name != base {
+                tracing::info!(
+                    "gpu {index}: another card already has a screen called {base}; \
+                     this one is {name}"
+                );
+            }
 
             // A headset says so with the `non-desktop` property, and the right
             // thing to do with one is nothing: no output, no mode set, no

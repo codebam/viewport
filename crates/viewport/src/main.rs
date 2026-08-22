@@ -38,6 +38,7 @@ mod launcher;
 mod libei;
 mod mpris;
 mod msg;
+mod multigpu;
 mod network;
 mod notification;
 mod output_management;
