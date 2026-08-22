@@ -52,6 +52,10 @@ trap cleanup EXIT
 unset WAYLAND_DISPLAY
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
+# The placement trace is debug-level, and the wait below needs it: without a
+# line to watch there is no telling the fallback tiler has done its work.
+export VIEWPORT_LOG="${VIEWPORT_LOG:-viewport=debug}"
+
 "$VIEWPORT" --headless --timeout 1 >"$LOG" 2>&1 &
 COMPOSITOR_PID=$!
 
@@ -86,9 +90,26 @@ echo "ok   the compositor is up on $WAYLAND_DISPLAY"
 	>"$WORK/paint.log" 2>&1 &
 PAINT_PID=$!
 
-# The fallback tiler waits a couple of seconds before placing an unplaced
-# window, so this cannot be a short sleep.
-sleep 5
+# The fallback tiler gives a silent shell two and a half seconds before
+# placing the window itself; watch for the placement rather than sleeping
+# through the worst case.
+placed=
+for _ in $(seq 100); do
+	if grep -qE 'view .* (boxed|placed at)' "$LOG"; then
+		placed=yes
+		break
+	fi
+	kill -0 "$PAINT_PID" 2>/dev/null || break
+	sleep 0.1
+done
+
+if [ -z "$placed" ]; then
+	echo "FAIL the red window was never placed, so there is nothing on"
+	echo "     screen for the lock to hide and the test would pass anyway"
+	tail -20 "$WORK/paint.log"
+	sed -n '1,60p' "$LOG"
+	exit 2
+fi
 
 if "$CAPTURE_CLIENT" --output 000000 >"$WORK/precheck.log" 2>&1; then
 	echo "FAIL nothing visible on screen before locking, so the test would"

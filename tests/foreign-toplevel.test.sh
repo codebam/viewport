@@ -72,8 +72,25 @@ echo "ok   the compositor is up on $WAYLAND_DISPLAY"
   >"$WORK/paint.log" 2>&1 &
 PAINT_PID=$!
 
-# Let the window map; the compositor publishes the toplevel when it does.
-sleep 5
+# Let the window map; the compositor publishes the toplevel when it does,
+# and says so in the `view <id>` line it logs at the first buffer. Wait for
+# that line rather than guessing at a sleep.
+mapped=
+for _ in $(seq 100); do
+  if grep -qE 'view [0-9]+: ' "$LOG"; then
+    mapped=yes
+    break
+  fi
+  kill -0 "$PAINT_PID" 2>/dev/null || break
+  sleep 0.1
+done
+
+if [ -z "$mapped" ]; then
+  echo "FAIL the window never mapped, so there is no toplevel to manage"
+  tail -20 "$WORK/paint.log"
+  sed -n '1,60p' "$LOG"
+  exit 2
+fi
 
 if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
   echo "FAIL the compositor died"

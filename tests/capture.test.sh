@@ -65,6 +65,11 @@ printf '{ "layout": "%s" }\n' "$layout" >"$workdir/config.json"
 unset WAYLAND_DISPLAY
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
+# The trace that logs placement is debug-level; raise the filter so the waits
+# below can watch for the window really being there instead of guessing at
+# how long a layout takes. A value from the caller wins, as everywhere else.
+export VIEWPORT_LOG="${VIEWPORT_LOG:-viewport=debug}"
+
 "$viewport" --headless -c "$workdir/config.json" \
 	>"$workdir/viewport.log" 2>&1 &
 viewport_pid=$!
@@ -100,7 +105,26 @@ paint_pid=$!
 # frame. A window in that state is what the capture has to survive: it is the
 # state the window was in when sharing it froze the client.
 if [ "$layout" = scrolling ]; then
-	sleep 2
+	# The strip grows to the right of whatever opened first, so the window
+	# under test has to be on screen before the fillers are: wait for the
+	# compositor to announce it (the `view <id>` line it logs at first
+	# buffer) rather than guessing at a sleep.
+	mapped=
+	for _ in $(seq 1 100); do
+		if grep -qE 'view [0-9]+: ' "$workdir/viewport.log" 2>/dev/null; then
+			mapped=yes
+			break
+		fi
+		kill -0 "$paint_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	if [ -z "$mapped" ]; then
+		echo "FAIL the window under test never opened, so there is nothing" >&2
+		echo "     to crowd; the fillers would be laid out in its place" >&2
+		tail -20 "$workdir/viewport.log" >&2
+		tail -10 "$workdir/paint.log" >&2
+		exit 2
+	fi
 	for i in 1 2 3; do
 		pulse=
 		[ "$i" = 1 ] && pulse=pulse
@@ -112,10 +136,11 @@ fi
 
 # Wait for the shell to have placed it rather than guessing at a sleep: until
 # the layout has run, the window has no size and the capture would be of
-# whatever it was before.
+# whatever it was before. The placement line is what screencast-restore waits
+# on too; with the filter raised above it is really there to be seen.
 placed=
 for _ in $(seq 1 100); do
-	if grep -q "view .* boxed" "$workdir/viewport.log" 2>/dev/null; then
+	if grep -qE 'view .* (boxed|placed at)' "$workdir/viewport.log" 2>/dev/null; then
 		placed=yes
 		break
 	fi
@@ -123,9 +148,11 @@ for _ in $(seq 1 100); do
 	sleep 0.1
 done
 if [ -z "$placed" ]; then
-	# Not fatal on its own — the trace that logs placement is off by default,
-	# so its absence means nothing. Give the window a moment either way.
-	sleep 2
+	echo "FAIL the window was never placed, so a capture now would not be" >&2
+	echo "     of it; the compositor's log:" >&2
+	tail -20 "$workdir/viewport.log" >&2
+	tail -10 "$workdir/paint.log" >&2
+	exit 2
 fi
 
 "$capture_client" "$app_id" "$body" "$width" "$height" 2000
