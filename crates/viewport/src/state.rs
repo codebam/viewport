@@ -3,6 +3,7 @@
 // Compositor state. Ports src/server.c.
 
 use std::ffi::OsString;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::sync::Arc;
 
 use smithay::backend::renderer::{Bind, ExportMem, Offscreen, Renderer};
@@ -75,6 +76,13 @@ struct CaptureScratch<B> {
 /// being held for a shape nothing asks for any more.
 const KEPT_CAPTURE_TARGETS: usize = 4;
 
+/// How many shell overlay rectangles one message may carry.
+///
+/// Generous far past what a desktop draws — notifications, a chooser, an
+/// overview's worth — and finite because the list arrives over the control
+/// socket and is walked on every frame; see `set_shell_overlays`.
+const MAX_SHELL_OVERLAYS: usize = 4096;
+
 /// Take back a capture buffer of this exact shape, if one is held.
 fn take_scratch<B: 'static>(
     held: &mut Vec<Box<dyn std::any::Any>>,
@@ -106,6 +114,46 @@ fn keep_scratch<B: 'static>(
     while held.len() > KEPT_CAPTURE_TARGETS {
         held.remove(0);
     }
+}
+
+/// Where a portal screenshot is written on its way to whoever asked.
+///
+/// Under `$XDG_RUNTIME_DIR` — the runtime directory of the user this
+/// compositor is running as, 0700 on every distribution that follows the spec
+/// — rather than `/tmp`: the old name was predictable from the pid and the
+/// clock, and `/tmp` is walkable by everyone, which together made any local
+/// user able to pre-plant or pre-read another's screenshot. Inside the runtime
+/// directory nobody else can walk at all. The file is created fail-if-exists
+/// and born 0600 besides, so even a directory that should not be shared stays
+/// safe; see the writer in `service_portal_screenshots`.
+///
+/// A subdirectory of our own rather than the runtime directory itself, so the
+/// housekeeping tick has one place to sweep and nothing else there can be
+/// mistaken for litter.
+fn screenshot_temp_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("viewport-screenshots");
+    // Reused when it is already ours: an existing directory is not an error
+    // worth reporting, and the files inside it are created private whatever
+    // the directory turned out to be.
+    use std::os::unix::fs::DirBuilderExt as _;
+    let _ = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir);
+    dir.join(format!(
+        "viewport-screenshot-{}-{}.png",
+        std::process::id(),
+        // Nanos, not millis: the file is created fail-if-exists, and two
+        // screenshots asked for within the same millisecond used to be a
+        // collision one of them lost.
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ))
 }
 
 /// A screenshot a client asked for and has not been given yet.
@@ -842,6 +890,13 @@ pub struct ViewportState {
     /// they name is drawn, because that is where its renderer is.
     pub pending_copies: Vec<PendingCopy>,
     pub pending_screenshots: Vec<crate::screenshot::PendingScreenshot>,
+    /// Screenshot files written for the portal and not yet taken back.
+    ///
+    /// The path is paired with when it was written, because the client on the
+    /// other end of the portal reply is the only thing that knows when it has
+    /// finished reading, and it does not say: a grace period is what stands in
+    /// for that. Reaped on the housekeeping tick; see `reap_screenshot_temps`.
+    pub screenshot_temps: Vec<(std::path::PathBuf, std::time::Instant)>,
     /// Buffers a client has destroyed whose images a renderer may still be
     /// holding.
     ///
@@ -966,6 +1021,17 @@ pub struct ViewportState {
     pub shell_reload_pending: bool,
     /// How many ticks in a row have released nothing.
     pub barrier_quiet: u32,
+    /// Whether any surface has ever been seen holding fifo or commit-timing
+    /// state, which is what makes [`Self::barriers_outstanding`] a constant
+    /// answer from then on.
+    ///
+    /// The fifo and commit-timing requests are answered inside Smithay; this
+    /// compositor runs no code when one arrives, so the only place the state
+    /// can be noticed is the walk `barriers_outstanding` exists to avoid. Once
+    /// it has ever been seen, the walk is skipped and the question is answered
+    /// "yes" for the rest of the session — a monotonic flag rather than a
+    /// count, because there is no moment where disarming is visible either.
+    pub barrier_ever_armed: std::cell::Cell<bool>,
     /// The shell's workspaces, mirrored for `ext-workspace-v1`. Empty until
     /// the shell says otherwise, which is the truthful description of a
     /// desktop whose workspaces nobody has published.
@@ -1511,6 +1577,7 @@ impl ViewportState {
             output_management_state,
             pending_copies: Vec::new(),
             pending_screenshots: Vec::new(),
+            screenshot_temps: Vec::new(),
             dead_buffers: Vec::new(),
             capture_scratch: Vec::new(),
             primary_selection_state,
@@ -1554,6 +1621,7 @@ impl ViewportState {
             shell_reload_timer: None,
             shell_reload_pending: false,
             barrier_quiet: 0,
+            barrier_ever_armed: std::cell::Cell::new(false),
             _security_context_state: security_context_state,
             _xdg_toplevel_icon_manager: xdg_toplevel_icon_manager,
             _xwayland_keyboard_grab_state: xwayland_keyboard_grab_state,
@@ -2092,22 +2160,34 @@ impl ViewportState {
                     // there — once, whichever way it goes, because exactly one
                     // `try_send` sits on each path out of it.
                     let size = mode.size;
+                    // Named here rather than in the thread, so the path is
+                    // written down for the housekeeping tick before anything
+                    // can fail: the file is taken back either way. See
+                    // `screenshot_temp_path` for why it lives where it does,
+                    // and `reap_screenshot_temps` for how it leaves.
+                    let path = screenshot_temp_path();
+                    self.screenshot_temps
+                        .push((path.clone(), std::time::Instant::now()));
                     let unspawned = reply.clone();
                     let spawned = std::thread::Builder::new()
                         .name("viewport-screenshot".to_owned())
                         .spawn(move || {
                             let png_bytes =
                                 crate::icon::encode_png(size.w as u32, size.h as u32, &pixels);
-                            let filename = format!(
-                                "viewport-screenshot-{}-{}.png",
-                                std::process::id(),
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis()
-                            );
-                            let path = std::env::temp_dir().join(filename);
-                            match std::fs::write(&path, png_bytes) {
+                            // `create_new`, not write: a name somebody else
+                            // planted — this one is predictable by the pid and
+                            // the clock alone — is an error to dodge rather
+                            // than a symlink to follow, and the 0600 the file
+                            // is born with is one less thing to race.
+                            let written = std::fs::OpenOptions::new()
+                                .write(true)
+                                .create_new(true)
+                                .mode(0o600)
+                                .open(&path)
+                                .and_then(|mut file| {
+                                    std::io::Write::write_all(&mut file, &png_bytes)
+                                });
+                            match written {
                                 Ok(()) => {
                                     let uri = format!("file://{}", path.display());
                                     let _ = reply.try_send(Ok(uri));
@@ -2131,6 +2211,99 @@ impl ViewportState {
                     let _ = reply.try_send(Err(e));
                 }
             }
+        }
+    }
+
+    /// Take back the screenshot files that have been handed out long enough.
+    ///
+    /// The portal reply is a URI, and nothing tells this end when the client
+    /// has finished reading the file it names — so a grace period stands in
+    /// for the answer, and the file goes once it has passed. Without this
+    /// every screenshot ever taken lived for the rest of the session; under
+    /// the runtime directory they are private, but they are still disk.
+    pub fn reap_screenshot_temps(&mut self) {
+        // Long enough for the portal to answer and the application to open
+        // what it was handed, short enough that a session taking screenshots
+        // in a loop does not pile up a minute of them.
+        const GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+        self.screenshot_temps.retain(|(path, written)| {
+            if written.elapsed() < GRACE {
+                return true;
+            }
+            match std::fs::remove_file(path) {
+                Ok(()) => false,
+                // Already gone is gone. Anything else — a directory replaced
+                // by something odd, a filesystem objecting — is said once and
+                // not retried: keeping the entry would mean saying it again
+                // every second for the life of the session.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(e) => {
+                    tracing::warn!(
+                        "could not take back the screenshot at {}: {e}",
+                        path.display()
+                    );
+                    false
+                }
+            }
+        });
+    }
+
+    /// Drop screencopy requests that can no longer be served.
+    ///
+    /// `service_screencopy` runs only while the output each request names is
+    /// being drawn, so an entry whose output has been unplugged or switched
+    /// off since the ask — or whose asking client has died — is never reached
+    /// by it, and sat here holding its `wl_buffer` and whatever shared memory
+    /// is behind it for the rest of the session. This is the same sweep the
+    /// housekeeping tick gives everything else that outlives its owner.
+    pub fn reap_pending_copies(&mut self) {
+        let before = self.pending_copies.len();
+        self.pending_copies.retain(|copy| {
+            if !copy.frame.is_alive() {
+                return false;
+            }
+            // Not in the space any more: unplugged, or switched off through
+            // output management. No frame will come from either.
+            if !self.space.outputs().any(|other| other == &copy.output) {
+                // The frame is still alive, so say why it will not be served:
+                // dropping it in silence leaves the client waiting on `ready`
+                // for ever, which is exactly the state this reaps.
+                copy.frame.failed();
+                return false;
+            }
+            true
+        });
+        if self.pending_copies.len() != before {
+            tracing::debug!(
+                "reaped {} screencopy request(s) whose output or client is gone",
+                before - self.pending_copies.len()
+            );
+        }
+    }
+
+    /// Drop every pending screencopy for one output, telling their clients.
+    ///
+    /// The half of [`Self::reap_pending_copies`] that runs the moment an
+    /// output goes away rather than a second later.
+    fn drop_pending_copies_for(&mut self, output: &Output) {
+        let before = self.pending_copies.len();
+        self.pending_copies.retain(|copy| {
+            if copy.output != *output {
+                return true;
+            }
+            if copy.frame.is_alive() {
+                // Said rather than dropped in silence: a client waiting on
+                // `ready` for ever is the state all of this exists to prevent.
+                copy.frame.failed();
+            }
+            false
+        });
+        if self.pending_copies.len() != before {
+            tracing::debug!(
+                "dropped {} screencopy request(s) for {}, which is off",
+                before - self.pending_copies.len(),
+                output.name()
+            );
         }
     }
 
@@ -3020,6 +3193,12 @@ impl ViewportState {
             self.map_output_at(output, location);
         } else {
             self.space.unmap_output(output);
+            // Nothing will draw this screen while it is off, and screencopy
+            // requests are served from the draw — so the ones waiting on it
+            // are told now rather than left holding their buffers until the
+            // housekeeping tick finds them. The tick still covers this; this
+            // is just not making the client wait a second for the news.
+            self.drop_pending_copies_for(output);
         }
 
         let Some(udev) = self.udev.as_mut() else {
@@ -3674,13 +3853,13 @@ impl ViewportState {
         windows.sort_unstable();
         windows.dedup();
         for id in windows {
+            // Only from the one output that serves it, so a window straddling
+            // two screens is composited once per period and not once for each.
             let on_this_output = self
                 .views
                 .get(id)
                 .and_then(|view| self.space.element_geometry(&view.window))
-                .zip(self.space.output_geometry(output))
-                .map(|(window, screen)| screen.overlaps(window))
-                .unwrap_or(false);
+                .is_some_and(|geometry| self.window_cast_served_by(geometry, output));
             if !on_this_output {
                 continue;
             }
@@ -3896,6 +4075,23 @@ impl ViewportState {
         self.space.outputs().next().cloned()
     }
 
+    /// Whether `output` is the one that serves a window's casts.
+    ///
+    /// A window straddling two screens is on both, and every output's frame
+    /// walks the casts — so an overlap test alone composited it once per
+    /// screen it touched, twice the work for one picture. The rule here is
+    /// one serving output per window, the one it overlaps most, with the
+    /// space's order breaking ties; the same answer on both paths that ask
+    /// (the shared-memory loop and the DMA-BUF arm), which is what makes the
+    /// two agree that a window is drawn once per period.
+    fn window_cast_served_by(&self, geometry: Rectangle<i32, Logical>, output: &Output) -> bool {
+        let names = self
+            .space
+            .outputs()
+            .map(|other| (other.name(), self.space.output_geometry(other)));
+        serving_cast_output(names, geometry).is_some_and(|name| name == output.name())
+    }
+
     /// Agree a new format for anything whose source has resized.
     ///
     /// Called from the backend before it feeds them, because only the backend
@@ -3997,16 +4193,15 @@ impl ViewportState {
                     }
                     Some(crate::screencast::Target::Window(id)) => {
                         let id = *id;
-                        // Only from the output it is on, so a window straddling
-                        // two screens is not composited once for each.
+                        // Only from the output that serves it — the one it
+                        // overlaps most — so a window straddling two screens is
+                        // composited once for the period, not once for each.
                         let geometry = self
                             .views
                             .get(id)
                             .and_then(|view| self.space.element_geometry(&view.window));
                         let on_this_output = geometry
-                            .zip(self.space.output_geometry(output))
-                            .map(|(window, screen)| screen.overlaps(window))
-                            .unwrap_or(false);
+                            .is_some_and(|geometry| self.window_cast_served_by(geometry, output));
                         let Some(geometry) = geometry.filter(|_| on_this_output) else {
                             continue;
                         };
@@ -5752,7 +5947,10 @@ impl ViewportState {
         }
 
         match self.idle_settings.lock_command.clone() {
-            Some(command) => crate::input::spawn(&command),
+            Some(command) => {
+                let display = self.child_display_env();
+                crate::input::spawn_with_env(&command, &display)
+            }
             // Nothing to run. Said rather than silently doing nothing, because
             // a `lock` binding with no `idle.lock_command` looks like it should
             // work — and from the keyboard there is no deadline to blame.
@@ -5973,7 +6171,19 @@ impl ViewportState {
                     },
                 ),
                 scale: want.scale,
-                transform: want.transform.as_deref().and_then(parse_transform),
+                transform: want.transform.as_deref().and_then(|text| {
+                    let parsed = parse_transform(text);
+                    if parsed.is_none() {
+                        // Said like the neighbours say it: a name this does not
+                        // know is warned about with the key it came from, and
+                        // `None` leaves the output's transform as it was.
+                        tracing::warn!(
+                            "outputs.{name}.transform {text:?} is not one of normal, 90, \
+                             180, 270, flipped, flipped-90, flipped-180 or flipped-270"
+                        );
+                    }
+                    parsed
+                }),
                 adaptive_sync: None,
                 x: want.x,
                 y: want.y,
@@ -6456,9 +6666,10 @@ impl ViewportState {
 
     /// Start Xwayland, so X11 applications can connect.
     ///
-    /// Lazily is tempting — a session with no X client never needs it — but
-    /// DISPLAY has to be in the environment before anything is spawned, and
-    /// the whole point is that an X program started from a menu just works.
+    /// Lazily is tempting — a session with no X client never needs it — but an
+    /// X program started from a menu should just work, which it does because
+    /// everything spawned on this compositor's behalf is told `DISPLAY`
+    /// outright; see [`Self::child_display_env`].
     pub fn start_xwayland(&mut self, loop_handle: &LoopHandle<'static, Self>) {
         use smithay::xwayland::{XWayland, XWaylandEvent};
 
@@ -6492,8 +6703,13 @@ impl ViewportState {
                     Ok(wm) => {
                         state.xwm = Some(wm);
                         state.xdisplay = Some(display_number);
-                        // Anything spawned from here on finds an X server.
-                        unsafe { std::env::set_var("DISPLAY", format!(":{display_number}")) };
+                        // Not written into the process environment. This runs
+                        // on the event loop with every worker thread — tray,
+                        // status, notifications, the bus — already live, and
+                        // `setenv` against a concurrent `getenv` is undefined
+                        // (see the cursor block in `apply_config`, which used
+                        // to do exactly that). Children are handed DISPLAY
+                        // explicitly instead: `child_display_env`.
                         tracing::info!("Xwayland ready on :{display_number}");
                     }
                     Err(e) => tracing::error!("could not attach the X11 window manager: {e}"),
@@ -6505,6 +6721,21 @@ impl ViewportState {
         });
         if let Err(e) = inserted {
             tracing::error!("inserting the Xwayland source: {e}");
+        }
+    }
+
+    /// The environment a spawned child needs that it cannot inherit.
+    ///
+    /// DISPLAY, when Xwayland is up. It used to be written into this process's
+    /// environment when Xwayland reported ready — `setenv` on a live process,
+    /// against every worker thread that might be mid-`getenv`, which is the
+    /// hazard the cursor theme reload was stripped of the same way. The child
+    /// is told here instead, the way the launcher's token and cursor pair
+    /// already are.
+    pub fn child_display_env(&self) -> Vec<(String, String)> {
+        match self.xdisplay {
+            Some(number) => vec![("DISPLAY".to_owned(), format!(":{number}"))],
+            None => Vec::new(),
         }
     }
 
@@ -6698,18 +6929,59 @@ impl ViewportState {
             // leaves the shell's own default. A gap of zero is a deliberate
             // request (no spacing at all), so values are forwarded as-is
             // rather than skipped for being small.
-            self.config.gaps = Some(viewport_ipc::event::Gaps {
+            //
+            // Negative is not a size. The runtime message that carries the
+            // same setting refuses one (`config.gaps` in apply.rs), and a
+            // reload that slipped one past here would forward it unchecked to
+            // the shell — so the same refusal happens at the door, naming the
+            // key, with that field keeping whatever it had.
+            let prior = self.config.gaps.clone().unwrap_or_default();
+            let mut gaps = viewport_ipc::event::Gaps {
                 inner: file.gaps.inner,
                 outer: file.gaps.outer,
                 smart: file.gaps.smart,
-            });
+            };
+            if gaps.inner.is_some_and(|v| v < 0) {
+                tracing::warn!(
+                    "config.gaps.inner {} is negative; keeping the current value",
+                    gaps.inner.unwrap()
+                );
+                gaps.inner = prior.inner;
+            }
+            if gaps.outer.is_some_and(|v| v < 0) {
+                tracing::warn!(
+                    "config.gaps.outer {} is negative; keeping the current value",
+                    gaps.outer.unwrap()
+                );
+                gaps.outer = prior.outer;
+            }
+            self.config.gaps = Some(gaps);
         }
         if file.border != crate::config::BorderConfig::default() {
-            self.config.border = Some(viewport_ipc::event::Border {
+            // Checked for the same reason the gaps are: a negative radius or
+            // width is refused by the runtime message, so it is refused here
+            // too, and the field it named keeps what it had.
+            let prior = self.config.border.clone().unwrap_or_default();
+            let mut border = viewport_ipc::event::Border {
                 radius: file.border.radius,
                 width: file.border.width,
                 smart: file.border.smart,
-            });
+            };
+            if border.radius.is_some_and(|v| v < 0) {
+                tracing::warn!(
+                    "config.border.radius {} is negative; keeping the current value",
+                    border.radius.unwrap()
+                );
+                border.radius = prior.radius;
+            }
+            if border.width.is_some_and(|v| v < 0) {
+                tracing::warn!(
+                    "config.border.width {} is negative; keeping the current value",
+                    border.width.unwrap()
+                );
+                border.width = prior.width;
+            }
+            self.config.border = Some(border);
         }
         // The bar. Two ways to ask for it: `bar_widgets` adds widgets to the
         // default module set; `bar_items` overrides the entire right side of
@@ -6799,6 +7071,13 @@ impl ViewportState {
         }
         if !file.outputs.is_empty() {
             self.output_config = file.outputs;
+            // Carried out here too, and not left for the next hotplug: the
+            // block is otherwise applied only where an output arrives, and a
+            // reload has no arrival to borrow. On the first load the outputs
+            // do not exist yet, so this walks the block and keeps it — which
+            // is what the comment on `apply_output_config` describes — and on
+            // a reload it is what makes the file the last word again.
+            self.apply_output_config();
         }
         // Run after the compositor is up, so it reaches whatever it names.
         if let Some(command) = file.startup.as_deref() {
@@ -6997,8 +7276,32 @@ impl ViewportState {
             };
             // C's defaults, which are sway's (`src/main.c`): 25 a second after
             // 200ms.
-            let delay = keyboard.repeat_delay.unwrap_or(200);
-            let rate = keyboard.repeat_rate.unwrap_or(25);
+            //
+            // Zero and below are refused rather than handed to
+            // `seat.add_keyboard`: a rate of zero is a key that repeats never
+            // and a delay of zero is one that never stops, and the runtime
+            // message that sets these is checked the same way. The field keeps
+            // the default the refused value would have displaced.
+            let delay = match keyboard.repeat_delay {
+                Some(delay) if delay <= 0 => {
+                    tracing::warn!(
+                        "keyboard.repeat_delay {delay} is not positive; keeping the default 200"
+                    );
+                    200
+                }
+                Some(delay) => delay,
+                None => 200,
+            };
+            let rate = match keyboard.repeat_rate {
+                Some(rate) if rate <= 0 => {
+                    tracing::warn!(
+                        "keyboard.repeat_rate {rate} is not positive; keeping the default 25"
+                    );
+                    25
+                }
+                Some(rate) => rate,
+                None => 25,
+            };
             match self.seat.add_keyboard(xkb, delay, rate) {
                 Ok(_) => {
                     // Written down for anything that has to be told what this
@@ -7325,6 +7628,18 @@ impl ViewportState {
         use smithay::wayland::commit_timing::CommitTimerBarrierStateUserData;
         use smithay::wayland::fifo::{FifoBarrierCachedState, FifoCachedState};
 
+        // Once any surface has ever been seen holding this state, the answer
+        // is yes without looking: the requests that set it are answered inside
+        // Smithay, so this walk is the only thing that could notice one
+        // arriving, and there is no moment where it leaving is visible either.
+        // A monotonic flag rather than a count, for exactly that reason — the
+        // cost is a tick that keeps running on a desktop whose fifo client is
+        // long gone, against a walk over every window's tree on every commit,
+        // which is what this exists to stop paying. See `barrier_ever_armed`.
+        if self.barrier_ever_armed.get() {
+            return true;
+        }
+
         let mut waiting = false;
         {
             let mut look =
@@ -7377,6 +7692,9 @@ impl ViewportState {
             for surface in self.background_surfaces() {
                 smithay::desktop::utils::with_surfaces_surface_tree(&surface, &mut look);
             }
+        }
+        if waiting {
+            self.barrier_ever_armed.set(true);
         }
         waiting
     }
@@ -7576,7 +7894,9 @@ impl ViewportState {
     ///
     /// Ids are kept by position and only minted when the list grows, because a
     /// render element with a new id every frame tells the damage tracker that
-    /// everything changed.
+    /// everything changed. When the list shrinks the ids beyond it go too:
+    /// kept, they would grow by whatever the largest list ever sent was, for
+    /// the life of the session.
     ///
     /// `hits` is the subset of them that takes the pointer. Everything the
     /// shell floats does, bar one: see `shell_overlay_hits`.
@@ -7585,6 +7905,26 @@ impl ViewportState {
         rects: Vec<smithay::utils::Rectangle<i32, Logical>>,
         hits: Vec<smithay::utils::Rectangle<i32, Logical>>,
     ) {
+        // A cap rather than trust: the list comes over the control socket, and
+        // the render elements it becomes are walked on every frame. A client
+        // that sends millions is refused here rather than allowed to grow the
+        // element list until the desktop cannot draw.
+        if rects.len() > MAX_SHELL_OVERLAYS {
+            tracing::warn!(
+                "shell.overlay sent {} rectangles; more than the {} allowed, refused",
+                rects.len(),
+                MAX_SHELL_OVERLAYS
+            );
+            self.notify(&Event::Error {
+                context: "shell.overlay".to_owned(),
+                message: format!(
+                    "{} rectangles is more than the {} this compositor takes",
+                    rects.len(),
+                    MAX_SHELL_OVERLAYS
+                ),
+            });
+            return;
+        }
         if self.shell_overlays == rects && self.shell_overlay_hits == hits {
             return;
         }
@@ -7609,6 +7949,11 @@ impl ViewportState {
             self.shell_overlay_ids
                 .push(smithay::backend::renderer::element::Id::new());
         }
+        // And the other half of "kept by position": ids past the end of the
+        // list they belong to are not kept by anything. Shrunk rather than
+        // drained-and-reminted, so a list that oscillates in length does not
+        // churn new ids — and new full-frame damage — every time it dips.
+        self.shell_overlay_ids.truncate(rects.len());
         self.shell_overlays = rects;
         // The stack changed without anything committing, and a desktop nobody
         // is touching produces no damage of its own — so without this the
@@ -7882,20 +8227,21 @@ impl ViewportState {
         // than as the environment said when the compositor started: a reload
         // that changed the theme no longer writes environ behind the worker
         // threads' backs, so the child is told here instead of inheriting.
-        crate::input::spawn_with_env(
-            &command,
-            &[
-                ("XDG_ACTIVATION_TOKEN".to_owned(), token),
-                (
-                    "XCURSOR_THEME".to_owned(),
-                    self.cursor_theme.name().to_owned(),
-                ),
-                (
-                    "XCURSOR_SIZE".to_owned(),
-                    self.cursor_theme.size().to_string(),
-                ),
-            ],
-        );
+        // DISPLAY with it, for the same reason: Xwayland reports ready long
+        // after this process started, and environ is not written then either.
+        let mut extra = vec![
+            ("XDG_ACTIVATION_TOKEN".to_owned(), token),
+            (
+                "XCURSOR_THEME".to_owned(),
+                self.cursor_theme.name().to_owned(),
+            ),
+            (
+                "XCURSOR_SIZE".to_owned(),
+                self.cursor_theme.size().to_string(),
+            ),
+        ];
+        extra.extend(self.child_display_env());
+        crate::input::spawn_with_env(&command, &extra);
     }
 
     pub fn notify_output_layout(&mut self) {
@@ -9391,8 +9737,13 @@ fn blit_shm(
     size: smithay::utils::Size<i32, smithay::utils::Physical>,
     what: &str,
 ) -> Result<(), String> {
+    // The byte counts, worked out before anything is touched. A client names
+    // the size it wants copied, and a hostile one names an absurd one; see
+    // `shm_blit_layout`, which refuses it here rather than letting it reach
+    // the copy — or an allocation upstream.
+    let (want, row) = shm_blit_layout(size, pixels.len(), what)?;
+
     smithay::wayland::shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
-        let want = (size.w * size.h * 4) as usize;
         if len < want || data.width < size.w || data.height < size.h {
             return Err(format!(
                 "the client's buffer is {}x{} and {what} is {}x{}",
@@ -9402,7 +9753,6 @@ fn blit_shm(
         // Row by row, because the client's stride need not be the packed
         // width — and writing as though it were shears the image.
         let stride = data.stride as usize;
-        let row = (size.w * 4) as usize;
         for y in 0..size.h as usize {
             let from = &pixels[y * row..(y + 1) * row];
             // SAFETY: the length was checked above, and shm guarantees the
@@ -9419,6 +9769,69 @@ fn blit_shm(
     })
     .map_err(|e| format!("the client did not give shared memory: {e}"))??;
     Ok(())
+}
+
+/// What one shm blit needs of its pixels: the whole frame, and one row.
+///
+/// In i64, because the frame's byte count is a product of three numbers that
+/// each fit an i32 and their product need not — the old `(w * h * 4)` wrapped
+/// in release and panicked in debug, so one client message was the difference
+/// between a wrong-sized copy and a dead compositor. Sizes past what a real
+/// screen asks for are refused outright, as are empty ones, and the pixels on
+/// hand are checked against the count before any indexing could run off the
+/// end.
+fn shm_blit_layout(
+    size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    pixels_len: usize,
+    what: &str,
+) -> Result<(usize, usize), String> {
+    let row = size.w as i64 * 4;
+    let want = row.checked_mul(size.h as i64);
+    if size.w <= 0 || size.h <= 0 || want.is_none_or(|want| want > i32::MAX as i64) {
+        return Err(format!(
+            "{what} is {}x{}, which is not a size that can be copied",
+            size.w, size.h
+        ));
+    }
+    if (pixels_len as i64) < want.unwrap() {
+        return Err(format!(
+            "the {what} frame is {pixels_len} bytes and {}x{} needs {}",
+            size.w,
+            size.h,
+            want.unwrap()
+        ));
+    }
+    Ok((want.unwrap() as usize, row as usize))
+}
+
+/// How much of a window sits on one screen, in square logical pixels.
+///
+/// The measure the serving output is picked by: the screen holding most of the
+/// window is the one that composites it, so a window moved across a boundary
+/// changes hands exactly once, when the majority does.
+fn cast_overlap(screen: Rectangle<i32, Logical>, window: Rectangle<i32, Logical>) -> i64 {
+    screen
+        .intersection(window)
+        .map(|overlap| overlap.size.w as i64 * overlap.size.h as i64)
+        .unwrap_or(0)
+}
+
+/// The name of the output that serves a window's casts: most of the window,
+/// first past the post on ties, and none when it is on no screen.
+fn serving_cast_output<I, S>(outputs: I, window: Rectangle<i32, Logical>) -> Option<String>
+where
+    I: IntoIterator<Item = (S, Option<Rectangle<i32, Logical>>)>,
+    S: AsRef<str>,
+{
+    let mut best: Option<(i64, String)> = None;
+    for (name, screen) in outputs {
+        let Some(screen) = screen else { continue };
+        let area = cast_overlap(screen, window);
+        if area > 0 && best.as_ref().is_none_or(|(top, _)| area > *top) {
+            best = Some((area, name.as_ref().to_owned()));
+        }
+    }
+    best.map(|(_, name)| name)
 }
 
 /// One configured widget as the shell draws it.
@@ -9816,6 +10229,124 @@ mod tests {
         let origin = at(100.0, 50.0);
         for point in [at(0.0, 0.0), at(100.0, 50.0), at(1920.0, 1080.0)] {
             assert_eq!(unscale_about(origin, point, 1.0), point);
+        }
+    }
+
+    fn screen(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    /// The measure the serving output is picked by, and the thing a straddling
+    /// window's share depends on: most of the window wins, so a share drawn on
+    /// one screen is skipped on the other instead of composited twice.
+    #[test]
+    fn a_straddling_window_is_served_by_the_screen_holding_most_of_it() {
+        let left = screen(0, 0, 1920, 1080);
+        let right = screen(1920, 0, 1920, 1080);
+        // Two thirds of it on the left.
+        let window = screen(1000, 100, 1800, 800);
+        let names = [("left", Some(left)), ("right", Some(right))];
+        assert_eq!(serving_cast_output(names, window), Some("left".to_owned()));
+
+        // And when it moves over the boundary far enough, it changes hands —
+        // once, which is the whole point of picking one.
+        let moved = screen(1500, 100, 1800, 800);
+        assert_eq!(serving_cast_output(names, moved), Some("right".to_owned()));
+    }
+
+    /// A tie has to go somewhere deterministic, or a window sitting exactly
+    /// across two equal halves would change hands frame by frame. First past
+    /// the post: the space's order decides, and that order is stable for as
+    /// long as the set of monitors is.
+    #[test]
+    fn an_even_straddle_serves_the_first_screen() {
+        let left = screen(0, 0, 1000, 500);
+        let right = screen(1000, 0, 1000, 500);
+        let window = screen(750, 0, 500, 400); // half on each
+        let names = [("left", Some(left)), ("right", Some(right))];
+        assert_eq!(serving_cast_output(names, window), Some("left".to_owned()));
+        // First past the post, so the same tie in the other order goes the
+        // other way — which is still one answer per window per period.
+        let swapped = [("right", Some(right)), ("left", Some(left))];
+        assert_eq!(
+            serving_cast_output(swapped, window),
+            Some("right".to_owned())
+        );
+    }
+
+    /// A window on no screen serves from nowhere, and one that only touches a
+    /// screen's edge overlaps nothing and is not served from there either.
+    #[test]
+    fn a_window_on_no_screen_is_served_by_nothing() {
+        let left = screen(0, 0, 1920, 1080);
+        let names = [("left", Some(left))];
+        // Off every screen entirely.
+        assert_eq!(
+            serving_cast_output(names, screen(5000, 5000, 100, 100)),
+            None
+        );
+        // Touching the edge is not being on it: zero area, no service.
+        assert_eq!(
+            serving_cast_output(names, screen(1920, 100, 200, 200)),
+            None
+        );
+        // A screen with no geometry yet (mid-arrival) is simply not a candidate.
+        let absent = [("left", None::<Rectangle<i32, Logical>>)];
+        assert_eq!(serving_cast_output(absent, screen(10, 10, 50, 50)), None);
+    }
+
+    fn size(w: i32, h: i32) -> smithay::utils::Size<i32, Physical> {
+        smithay::utils::Size::from((w, h))
+    }
+
+    /// The byte counts a shared-memory copy needs, at an ordinary size.
+    #[test]
+    fn a_blit_of_a_real_frame_names_its_bytes() {
+        let (want, row) = shm_blit_layout(size(1920, 1080), 1920 * 1080 * 4, "the copy")
+            .expect("a normal frame fits");
+        assert_eq!((want, row), (1920 * 1080 * 4, 1920 * 4));
+    }
+
+    /// A client message can name any size at all. One that does not fit an
+    /// i32 in `w * h * 4` used to wrap in release and panic in debug; either
+    /// way it must be refused before anything indexes or allocates.
+    #[test]
+    fn an_absurd_size_is_refused_rather_than_overflowed() {
+        // The largest product there is, which overflowed the old i32 math.
+        assert!(shm_blit_layout(size(i32::MAX, i32::MAX), usize::MAX, "the copy").is_err());
+        // Fits an i64 but not what this compositor will blit.
+        assert!(shm_blit_layout(size(1 << 20, 1 << 20), usize::MAX, "the window").is_err());
+        // Empty is not a size. A negative one cannot even be built — Smithay's
+        // `Size` refuses it at the constructor, which is its own door.
+        assert!(shm_blit_layout(size(0, 100), usize::MAX, "the copy").is_err());
+    }
+
+    /// The pixels on hand are counted against what the size asks for, so the
+    /// row-by-row indexing below cannot run off the end of the frame.
+    #[test]
+    fn a_blit_without_enough_pixels_is_refused() {
+        assert!(shm_blit_layout(size(1920, 1080), 100, "the copy").is_err());
+        // Exactly enough passes, a byte short does not.
+        assert!(shm_blit_layout(size(4, 2), 32, "the copy").is_ok());
+        assert!(shm_blit_layout(size(4, 2), 31, "the copy").is_err());
+    }
+
+    /// Screenshot files are created fail-if-exists, so their names have to be
+    /// unique as they are made — two asked for back to back used to share a
+    /// millisecond and one lost.
+    #[test]
+    fn two_screenshots_in_a_row_name_two_files() {
+        let first = screenshot_temp_path();
+        let second = screenshot_temp_path();
+        assert_ne!(first, second);
+        // Both live under the private sweep directory, not bare /tmp.
+        for path in [&first, &second] {
+            assert!(path.starts_with(
+                std::env::var_os("XDG_RUNTIME_DIR")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("viewport-screenshots")
+            ));
         }
     }
 

@@ -34,6 +34,7 @@
 // between.
 
 use std::collections::HashMap;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -296,13 +297,36 @@ impl Store {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        match serde_json::to_string_pretty(&self.granted) {
-            Ok(text) => {
-                if let Err(e) = std::fs::write(path, text) {
-                    tracing::warn!("shortcuts: could not write {}: {e}", path.display());
-                }
-            }
-            Err(e) => tracing::warn!("shortcuts: could not describe what was granted: {e}"),
+        let text = match serde_json::to_string_pretty(&self.granted) {
+            Ok(text) => text,
+            Err(e) => return tracing::warn!("shortcuts: could not describe what was granted: {e}"),
+        };
+        // Beside the file and renamed over it, the way the control socket is
+        // staged in a private directory before it takes its well-known name:
+        // a bare `fs::write` truncates the live file first, so a crash or a
+        // full disk between that and the last byte destroys the grants it took
+        // dialogues to collect. The temp is born fail-if-exists and 0600, and
+        // synced before the rename — without that the rename can land while
+        // the data is still only in page cache, and a power cut after a
+        // successful save would rename onto nothing.
+        let mut name = path.as_os_str().to_os_string();
+        name.push(".tmp");
+        let temp = std::path::PathBuf::from(name);
+        let _ = std::fs::remove_file(&temp);
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)
+            .and_then(|mut file| {
+                use std::io::Write as _;
+                file.write_all(text.as_bytes())?;
+                file.sync_all()
+            })
+            .and_then(|()| std::fs::rename(&temp, path));
+        if let Err(e) = written {
+            tracing::warn!("shortcuts: could not write {}: {e}", path.display());
+            let _ = std::fs::remove_file(&temp);
         }
     }
 }
@@ -672,5 +696,39 @@ mod tests {
         let shortcuts = [granted("talk", "Mod4+grave")];
         store.remember("", &shortcuts);
         assert!(!store.covers("", &shortcuts));
+    }
+
+    /// The grant is written beside its file and renamed into place, so what is
+    /// on disk is always a whole record — and nothing of the staging is left
+    /// behind to be wondered about.
+    #[test]
+    fn a_save_lands_whole_with_nothing_left_over() {
+        let dir = std::env::temp_dir().join(format!(
+            "viewport-shortcuts-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("shortcuts.json");
+        let mut store = Store::load(Some(path.clone()));
+        store.remember("discord", &[granted("talk", "Mod4+grave")]);
+
+        let text = std::fs::read_to_string(&path).expect("the grant, written");
+        assert!(text.contains("discord"), "what was agreed is in it");
+        // The temp went with the rename.
+        let mut temp = path.clone().into_os_string();
+        temp.push(".tmp");
+        assert!(!std::path::Path::new(&temp).exists(), "no staging left");
+
+        // And a second save replaces rather than collides with the first.
+        store.remember("obs", &[granted("mute", "Mod4+m")]);
+        let text = std::fs::read_to_string(&path).expect("the grants, rewritten");
+        assert!(text.contains("discord") && text.contains("obs"));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }
