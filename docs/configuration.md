@@ -2,8 +2,9 @@
 
 ## Configuration
 
-Two tiers, because a settings UI cannot run on a display that is not working
-yet.
+Three tiers, because a settings UI cannot run on a display that is not working
+yet — and because a settings UI whose every change is forgotten at the next
+restart is not one either.
 
 **Bootstrap** — `~/.config/viewport/config.json` (or `--config PATH`), read
 before any web content loads. This tier must stay in C. The shell is fetched
@@ -51,6 +52,56 @@ Actions are `exec COMMAND`, `close`, `exit`, `reload`, `focus DIRECTION`,
 `mode NAME`, `appearance toggle`, `lock`, `blank`, `background` and
 `shell COMMAND ARGS…`. `background` is the wallpaper terminal's only way in —
 see below.
+
+**Runtime** — the control socket. `config.gaps`, `config.border`,
+`config.wallpaper`, `config.dark_mode` and `output.configure` change the
+compositor's copy of the configuration and re-announce it, without touching
+any file. That is the tier a wallpaper cycler runs on, and the tier the
+settings panel runs on: a value applies the moment it is set and is gone at
+the next restart, which is exactly what "let me try this" means.
+
+**Saved** — `~/.config/viewport/settings.json`, beside the bootstrap file and
+written only by `config.save`. It holds whatever the runtime tier was last
+asked for, and it is applied *over* the bootstrap file at every start and every
+reload. This is what makes a change from the settings panel stick.
+
+The bootstrap file is never rewritten, deliberately. It is hand-written JSONC —
+comments, blank lines, keys grouped the way you think about them — and no round
+trip through a JSON parser keeps any of that; losing your own notes about your
+own desktop as a side effect of dragging a slider is not a trade a settings
+panel gets to make on your behalf. It is also the file the compositor needs in
+order to start on a broken display, which is the whole argument for the
+bootstrap tier, and so the last file that should be rewritten by the part of
+the desktop most likely to be wrong. Two files, one machine-owned, is the price
+of that.
+
+Which means the overlay wins over the file you edited — which is the right way
+round for a panel, because the last thing you did in the UI is what you meant.
+When it is not what you meant, `settings.json` is small, it holds only the keys
+that were set, and deleting it (or one line out of it) puts the config file
+back in charge. The command line still beats both: a flag is the most
+deliberate thing there is.
+
+### The settings panel
+
+`Mod4+Shift+comma` opens it. It covers dark mode, the wallpaper and its
+fitting, the gaps, the window border, and each monitor's mode, scale and
+rotation. Every control sends the runtime setter for what it changes, so the
+desktop is already that shape while you are looking at it; **Save** sends
+`config.save` and writes the lot into `settings.json`.
+
+A display change raises a Keep-or-Revert bar, because the compositor puts the
+monitors back after twelve seconds unless something says the screen came back —
+see [ipc.md](ipc.md). Doing nothing is the same as Revert, which is the point.
+
+What the panel does not do: move monitors around in the layout, turn one off,
+mirror one, or edit keybindings, window rules or bar widgets. Those are the
+config file's, and two of them are the config file's for a reason —
+`output.configure` can turn a screen off and the shell is never told a disabled
+output exists, so a panel offering the switch could not offer the way back.
+
+The panel is `data/shell/settings.js`; a custom shell is free not to have one,
+and everything it sends is on the socket for `viewport msg` to send instead.
 Neither deadline fires while something is holding the screen awake, and
 holding it is not only Wayland's `idle-inhibit`: `org.freedesktop.ScreenSaver`
 and the inhibit portal are answered too, which between them is what a browser
@@ -138,6 +189,7 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+Shift+m` | the notification centre |
 | `Mod4+Shift+n` / `Mod4+Shift+t` | the Wi-Fi picker / the Bluetooth picker |
 | `Mod4+Shift+k` | the on-screen keyboard, which otherwise comes up on its own |
+| `Mod4+Shift+comma` | the settings panel |
 | `Mod4+f` | fullscreen |
 | `Mod4+a` | focus the parent container |
 | `Mod4+Shift+space` | toggle floating on the focused window |
@@ -263,8 +315,9 @@ or on the command line, which wins over the file:
 $ viewport --wallpaper ~/Pictures/wall.png --wallpaper-mode fit
 ```
 
-or at runtime, over the control socket, which is what a wallpaper cycler or a
-settings panel uses — no config reload, nothing written to disk:
+or at runtime, over the control socket, which is what a wallpaper cycler uses
+and what the settings panel's own picture field sends — no config reload,
+nothing written to disk until a `config.save`:
 
 ```console
 $ viewport msg -t config.wallpaper --path ~/Pictures/other.png
@@ -448,8 +501,20 @@ namespace, over D-Bus through xdg-desktop-portal — and with nothing answering
 they all default to light.
 
 `"dark_mode": false` is what the session starts on; absent is dark, which is
-what the shell is drawn for. `Mod4+Shift+d` flips it at runtime, and either way
-the portal signals the change, so applications already running follow it.
+what the shell is drawn for. `Mod4+Shift+d` flips it at runtime, and so does
+the settings panel's switch — over the socket as `config.dark_mode`, which
+names the state rather than flipping it, because a switch pressed twice has to
+end up where it says it is:
+
+```sh
+viewport msg -t config.dark_mode --enabled false
+viewport msg -t config.dark_mode              # absent toggles
+```
+
+All three end in the same call, and the portal signals the change every time,
+so applications already running follow it. It changes nothing the shell draws:
+the desktop's own palette is dark, and this is the answer given to Firefox,
+GTK and Qt.
 
 That answer normally comes from a desktop environment. There isn't one here, so
 the compositor implements `org.freedesktop.impl.portal.Settings` itself. The
@@ -695,8 +760,9 @@ the explicit options and win when both are present. Either way they land on
 change takes effect on the next reload.
 
 **At runtime.** `config.gaps` on the control socket sets the gaps without
-touching the file on disk — for a keybinding, a settings panel, or trying
-values before editing the config:
+touching the file on disk — for a keybinding, for trying values before editing
+the config, and for the settings panel's own two boxes, which send exactly
+this:
 
 ```sh
 viewport msg -t config.gaps --inner 8 --outer 0 --smart false
@@ -1552,6 +1618,7 @@ The `outputs` block is keyed by connector name — `DP-1`, `HDMI-A-1`, what
 | --- | --- |
 | `mode` | `"WIDTHxHEIGHT"` or `"WIDTHxHEIGHT@RATE"`. A string, always: `"mode": 5` reads back as absent rather than being rounded into something |
 | `max_refresh` | The fastest mode at the largest size the display offers |
+| `enabled` | `false` leaves the screen off. Absent leaves it as it is, which is what every block written before this key existed means. The last output on cannot be turned off — a session with every screen dark is not one you can point at anything to fix |
 | `scale`, `transform`, `hdr`, `x`, `y` | As the same names elsewhere |
 
 **A preferred mode is often not the fastest one.** A 240Hz panel commonly
@@ -1578,6 +1645,11 @@ asked for — by this block, by `output.configure`, or by wlr-output-management,
 which is what `wlr-randr` and a settings app's display panel use — and the last
 of those wins, so moving a monitor with any of them is not undone by the next
 unplug. This block is applied after the restore, so a position written here
-still has the final say. A mode is only restored if the display advertises it,
+still has the final say — and `settings.json`'s copy of it is applied after
+*that*, so a monitor arranged from the settings panel and saved is the last
+word of all. A save writes an `outputs` entry only for the monitors something
+has actually configured this session; saving every head would freeze whatever
+mode the backend picked for a screen nobody has an opinion about, and would
+leave this block permanently shadowed by an overlay that only restates it. A mode is only restored if the display advertises it,
 since the connector is the only identity there is and what comes back on a port
 need not be the panel that left it.

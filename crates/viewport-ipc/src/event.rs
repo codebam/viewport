@@ -106,6 +106,18 @@ pub enum Event {
     #[serde(rename = "config")]
     Config(Config),
 
+    /// The runtime settings were written down, and this is where.
+    ///
+    /// The answer to `config.save`, and the reason that request has one at
+    /// all: a settings panel with a Save button has to be able to say whether
+    /// the save happened, and the two outcomes are this and an `error`. The
+    /// path is in it because the overlay file is a thing a person may want to
+    /// go and look at — or delete, which is how the config file is put back in
+    /// charge — and a panel that says "saved" without saying where has told
+    /// them the less useful half.
+    #[serde(rename = "config.saved")]
+    ConfigSaved { path: String },
+
     /// The logo modifier went down or came up, so the shell can show its
     /// overlay while it is held.
     #[serde(rename = "modifiers")]
@@ -614,6 +626,23 @@ pub struct Config {
     /// compositor's rather than agreeing with it.
     #[serde(default = "osk_auto")]
     pub osk: String,
+
+    /// Whether applications are being told to draw themselves dark.
+    ///
+    /// The compositor answers `org.freedesktop.appearance` itself, so it has
+    /// always known this and never said — which left the settings panel with
+    /// a switch it could set and could not read, and a switch drawn from a
+    /// guess is one that shows the wrong state until somebody presses it
+    /// twice. The shell paints nothing from it: the colour scheme is the
+    /// toolkits', not the page's.
+    ///
+    /// Always present rather than optional, for the reason `osk` is: there is
+    /// no config file this can be absent from, since the compositor always
+    /// has an answer, and sending nothing would leave a shell's own default
+    /// arguing with it. Defaulted to true, which is what a session that has
+    /// never been told starts on.
+    #[serde(default = "yes")]
+    pub dark_mode: bool,
 }
 
 fn yes() -> bool {
@@ -1296,6 +1325,7 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
+            dark_mode: true,
         }));
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
@@ -1329,6 +1359,7 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
+            dark_mode: true,
         }));
         assert_eq!(value["border"]["radius"], 12);
         assert_eq!(value["border"]["width"], 3);
@@ -1359,6 +1390,7 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
+            dark_mode: true,
         }));
         assert_eq!(value["gaps"]["inner"], 15);
         assert_eq!(value["gaps"]["outer"], 4);
@@ -1402,6 +1434,7 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
+            dark_mode: true,
         }));
         assert_eq!(value["focus_crosses_outputs"], false);
     }
@@ -1426,6 +1459,7 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
+            dark_mode: true,
         }));
         assert!(value["rules"].is_array(), "rules must not be a string");
         assert_eq!(value["rules"][0]["app_id"], "mpv");
@@ -1525,6 +1559,7 @@ mod tests {
                 wallpaper: None,
                 wallpaper_mode: None,
                 osk: "auto".to_owned(),
+                dark_mode: true,
             })),
             json(&Event::WorkspaceRequest {
                 action: String::new(),

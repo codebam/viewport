@@ -185,6 +185,9 @@ fn is_known_type(name: &str) -> bool {
             | "config.gaps"
             | "config.border"
             | "config.wallpaper"
+            | "config.dark_mode"
+            | "config.save"
+            | "output.revert"
     )
 }
 

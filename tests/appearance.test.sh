@@ -76,6 +76,10 @@ check() {
 # the two ungrab chords, and `appearance toggle` is a *configured* binding —
 # those are matched inside the real input path and nothing on the control
 # socket reaches them. Live config reload ends in the same `set_dark`.
+#
+# `config.dark_mode` is a third way in and is checked further down: it is what
+# the settings panel's switch sends, and it is the only one of the three a
+# person can reach without either editing a file or knowing the chord.
 config="$workdir/config.json"
 echo '{ "dark_mode": true }' >"$config"
 
@@ -141,6 +145,29 @@ scheme=$(dbus-send --session --print-reply --dest=org.freedesktop.impl.portal.de
 	string:org.gnome.desktop.interface string:color-scheme 2>/dev/null |
 	grep -o '"prefer-[a-z]*"')
 check "and a read agrees with what was announced" '"prefer-light"' "$scheme"
+
+# And the settings panel's own way in.
+#
+# The switch on the panel sends `config.dark_mode`, which is the same
+# `set_dark` the chord and the reload reach and has to come out the same way on
+# the bus — a panel that moves the setting without a running application
+# following it is a panel that appears to do nothing. Sent with the state it
+# wants rather than as a toggle, which is the difference between a switch and a
+# key: a switch pressed twice must end up where it says it is.
+"$viewport" msg --socket "$socket" -t config.dark_mode --enabled true \
+	>/dev/null 2>&1
+for _ in $(seq 1 150); do
+	grep -q "color-scheme now dark" "$log" && break
+	sleep 0.1
+done
+check "the settings panel's switch reaches the portal" yes \
+	"$(grep -q "color-scheme now dark" "$log" && echo yes || echo no)"
+
+scheme=$(dbus-send --session --print-reply --dest=org.freedesktop.impl.portal.desktop.viewport \
+	/org/freedesktop/portal/desktop org.freedesktop.impl.portal.Settings.Read \
+	string:org.gnome.desktop.interface string:color-scheme 2>/dev/null |
+	grep -o '"prefer-[a-z]*"')
+check "and a read agrees with the switch too" '"prefer-dark"' "$scheme"
 
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed; the compositor's log:" >&2

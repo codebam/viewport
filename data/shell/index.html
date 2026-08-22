@@ -73,6 +73,14 @@
 <div id="bluetooth-picker" hidden></div>
 
 <!--
+  The settings panel, opened with Mod4+Shift+comma. Page level like the two
+  above: what it changes belongs to the session — the wallpaper, the gaps, the
+  monitors — rather than to one desktop, and its fields hold the keyboard while
+  it is up, which is a session-wide thing to be doing.
+-->
+<div id="settings" hidden></div>
+
+<!--
   The on-screen keyboard. Page level like everything above it, and for the
   same reason: what it types into is whichever client has the keyboard, not
   one desktop. It comes up on its own when a text field asks for it, or with
@@ -180,5 +188,6 @@ Mod4+d       launcher</pre>
 <script src="power.js"></script>
 <script src="network.js"></script>
 <script src="screencast.js"></script>
+<script src="settings.js"></script>
 <script src="osk.js"></script>
 <script src="commands.js"></script>

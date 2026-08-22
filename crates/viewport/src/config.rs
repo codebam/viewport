@@ -20,6 +20,19 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct OutputConfig {
+    /// Whether the monitor is on at all.
+    ///
+    /// Absent leaves it as it is, which is what every config file written
+    /// before this key existed means and what a block that only sets a mode
+    /// means too. `false` turns the screen off — the same thing
+    /// `output.configure` does, refused when it would be the last one left on.
+    ///
+    /// It is here because the settings panel can turn a screen off and had
+    /// nowhere to write that down: everything else in this block persisted and
+    /// the one setting somebody is most likely to want back the same way after
+    /// a restart — a laptop panel left dark while the desk monitor is plugged
+    /// in — came back on at every start.
+    pub enabled: Option<bool>,
     /// Pick the highest refresh rate the mode list offers.
     pub max_refresh: Option<bool>,
     /// `WIDTHxHEIGHT` or `WIDTHxHEIGHT@RATE`.

@@ -521,6 +521,17 @@ impl ViewportState {
             }
         };
         self.apply_config(file);
+        // And the saved settings back over the top, in the order startup
+        // applies them. Without this, editing one line of the config file
+        // would silently drop everything the settings panel had ever set —
+        // the panel's changes would survive a restart and not survive a save
+        // in an editor, which is the more confusing half of the two.
+        let overlay_path = crate::settings::path(&path);
+        match crate::config::load(&overlay_path) {
+            Ok(Some(overlay)) => self.apply_config(overlay),
+            Ok(None) => {}
+            Err(e) => tracing::warn!("{e}; keeping the settings already in effect"),
+        }
         self.notify_config();
     }
 }

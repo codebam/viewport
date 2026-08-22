@@ -112,6 +112,14 @@ function syncOutputs(list) {
       if (activeOutput === null) activeOutput = info.name;
     }
 
+    /* The whole of what the compositor said about this monitor, kept as it
+       arrived. The fields below are the ones the desktop lays out from; this
+       is for the settings panel, which needs the mode list, the scale, the
+       rotation and the model name — none of which the layout has any use for,
+       and all of which would otherwise be dropped on the floor between the
+       message arriving and the desktop being drawn. */
+    output.info = info;
+
     /* Kept as numbers as well as CSS: anything that has to report a position
        back to the compositor needs the layout coordinates, and reading them
        back out of a style string is a parser nobody needs. */

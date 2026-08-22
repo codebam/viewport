@@ -483,6 +483,19 @@ pub enum Request {
     #[serde(rename = "output.confirm")]
     OutputConfirm,
 
+    /// The user did not accept it: put the monitors back now rather than
+    /// waiting out the deadline.
+    ///
+    /// The deadline is the safety net — it is what saves a desk whose screen
+    /// went black and can no longer be pointed at. This is the other half,
+    /// for the desk where the screen came back and the person looking at it
+    /// can see that the mode is wrong: twelve seconds of a squashed picture
+    /// with a dialog on it is a long time to sit through when the answer is
+    /// already known. Nothing pending is not an error, because the deadline
+    /// may have fired a moment before the click.
+    #[serde(rename = "output.revert")]
+    OutputRevert,
+
     #[serde(rename = "output.active")]
     OutputActive { name: String },
 
@@ -710,6 +723,45 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
     },
+
+    /// Set the colour scheme applications are told to draw themselves in, as
+    /// `dark_mode` in the config file.
+    ///
+    /// Not the same kind of setting as its three neighbours above, and worth
+    /// saying why it is spelled like them anyway. The gaps, the border and the
+    /// wallpaper are the shell's to draw; this one is answered on the bus, in
+    /// `org.freedesktop.appearance`'s `color-scheme` and the GNOME theme name
+    /// beside it, and what changes is every toolkit application on the desk
+    /// rather than anything the page paints. It is here because a settings
+    /// panel offering four appearance settings should not have to reach one of
+    /// them through a keybinding — `appearance toggle` was the only way in,
+    /// and a key that flips a switch cannot be asked to set it.
+    ///
+    /// Absent *toggles*, on the same terms as `output.hdr`: that is what a
+    /// keybinding wants, and a panel drawing a switch sends the state it wants
+    /// so that two clicks in a row do not land on whichever value the desk
+    /// happened to be on.
+    #[serde(rename = "config.dark_mode")]
+    ConfigDarkMode {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+
+    /// Write the runtime settings out, so they survive the next start.
+    ///
+    /// Everything above this deliberately does not touch the disk, which is
+    /// right for a wallpaper cycler and wrong for a settings panel: a panel
+    /// whose every change is lost at the next restart is not a settings panel.
+    /// So the durability is one explicit request rather than a side effect of
+    /// each setter, and it writes an overlay of its own —
+    /// `settings.json` beside the config file — rather than editing the
+    /// config file. See `crate::settings` in the compositor for why that
+    /// choice and not the obvious one.
+    ///
+    /// Answered with `config.saved` naming the file, or with an `error` if it
+    /// could not be written.
+    #[serde(rename = "config.save")]
+    ConfigSave,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1646,6 +1698,33 @@ mod tests {
             panic!("not a config.wallpaper message");
         };
         assert_eq!(path.as_deref(), Some(""));
+    }
+
+    /// Absent toggles and present sets, which is the difference between a
+    /// keybinding and a switch drawn on a panel — the same split `output.hdr`
+    /// makes, for the same reason.
+    #[test]
+    fn dark_mode_toggles_when_nobody_said_which_way() {
+        assert_eq!(
+            parse(r#"{"type":"config.dark_mode"}"#),
+            Request::ConfigDarkMode { enabled: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"config.dark_mode","enabled":false}"#),
+            Request::ConfigDarkMode {
+                enabled: Some(false)
+            }
+        );
+    }
+
+    /// The two verbless messages the settings panel needs: one that writes the
+    /// runtime settings down and one that puts the monitors back. Both carry
+    /// nothing, so the whole of what there is to check is that the name
+    /// reaches the variant.
+    #[test]
+    fn saving_and_reverting_are_bodyless() {
+        assert_eq!(parse(r#"{"type":"config.save"}"#), Request::ConfigSave);
+        assert_eq!(parse(r#"{"type":"output.revert"}"#), Request::OutputRevert);
     }
 
     #[test]

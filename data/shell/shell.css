@@ -695,6 +695,195 @@ html.behind body { background: transparent; }
   font-size: .75rem;
 }
 
+/* The settings panel.
+ *
+ * The launcher's box-and-dialog shape above, at the same z-index as every
+ * other dialog on the desk — they are never both up, because opening this one
+ * closes the rest and the document's click closes any of them.
+ *
+ * Wider and taller than the launcher because of what is in it: a row per
+ * monitor with a mode list, under four sections of switches. The height is
+ * capped and the body scrolls rather than the dialog growing, so a machine
+ * with four monitors gets a panel the same size as a machine with one — the
+ * alternative is a dialog taller than the screen it is being used to
+ * configure, which is a special kind of unhelpful.
+ */
+#settings {
+  position: fixed;
+  z-index: 160;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* The box spans the output so the dialog can be centred on it, and draws
+     nothing itself — a click beside the dialog must reach what is under it
+     rather than being eaten by an invisible pane the size of a monitor. */
+  pointer-events: none;
+}
+#settings[hidden] { display: none; }
+
+.settings-dialog {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  width: 34rem;
+  /* Relative to the box, which JS has already sized to the active output —
+     not to the viewport, which is the whole multi-monitor canvas. */
+  max-width: 90%;
+  max-height: 80%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  font-size: .85rem;
+  overflow: hidden;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  padding: .55rem .75rem;
+  border-bottom: 1px solid var(--border);
+}
+.settings-title { font-weight: 600; }
+.settings-save {
+  padding: .2rem .7rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-save:hover { background: var(--fill-hover); }
+
+.settings-body { overflow-y: auto; padding: .35rem .75rem .6rem; }
+
+.settings-section { padding: .5rem 0; }
+.settings-section + .settings-section { border-top: 1px solid var(--border); }
+.settings-heading {
+  color: var(--muted);
+  font-size: .75rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding-bottom: .3rem;
+}
+/* The connector name, which is what the config file and `viewport msg` both
+   call this monitor. Not a heading of its own weight: it is inside the
+   Displays section, and two levels of heading in a panel this size reads as
+   two panels. */
+.settings-display {
+  padding: .45rem 0 .15rem;
+  font-weight: 600;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .25rem 0;
+  min-height: 1.8rem;
+}
+/* The label takes what is left and the controls take what they need: a row of
+   scale buttons is a fixed width and a monitor's name is not, so letting the
+   label shrink is what keeps every row's controls in one column. */
+.settings-label { flex: 1; min-width: 0; }
+.settings-value {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+  flex: none;
+}
+.settings-muted { color: var(--muted); }
+.settings-empty { padding: .6rem 0; color: var(--muted); }
+
+/* Says what the setting *is* rather than what it would become — the network
+   picker's reading, and the only one that survives the state changing under it
+   while somebody is looking at it. */
+.settings-toggle {
+  padding: .15rem .6rem;
+  min-width: 3rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-toggle.on { color: var(--accent); border-color: var(--accent); }
+
+.settings-choice { display: flex; gap: .2rem; }
+.settings-option {
+  padding: .15rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-option:hover { background: var(--fill-hover); }
+.settings-option.active { color: var(--accent); border-color: var(--accent); }
+
+.settings-number,
+.settings-text,
+.settings-select {
+  padding: .2rem .45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+.settings-number { width: 4.5rem; }
+/* The wallpaper is a path and paths are long: this one field gets the whole
+   width the row can spare rather than a box a filename does not fit in. */
+.settings-text { width: 20rem; max-width: 100%; }
+.settings-select { max-width: 20rem; }
+.settings-number:focus,
+.settings-text:focus,
+.settings-select:focus { border-color: var(--border-focus); }
+.settings-text::placeholder { color: var(--muted); }
+
+/* The confirm-or-revert bar, up only while a display change is unanswered.
+ *
+ * Across the bottom of the dialog rather than beside the setting that caused
+ * it: what it is asking about is the whole screen, and the screen is what has
+ * just changed under it. Accented so it is not read as another row. */
+.settings-confirm {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .5rem .75rem;
+  border-top: 1px solid var(--accent);
+  background: var(--fill);
+}
+.settings-confirm-text { flex: 1; min-width: 0; }
+.settings-button {
+  padding: .2rem .7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-button:hover { background: var(--fill-hover); }
+/* Coloured at rest rather than on hover, for the reason the power menu's
+   dangerous rows are: a touch desk never points, and what it cannot point at
+   it should still be able to tell apart. */
+.settings-button.danger { color: var(--urgent); border-color: var(--urgent); }
+
+.settings-hint {
+  padding: .35rem .75rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: .75rem;
+}
+
 /* The notification centre — what was notified, after the popups have gone.
  *
  * The same box-and-dialog shape as the clipboard picker above, and positioned
