@@ -47,12 +47,13 @@ use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{anyhow, Context as _, Result};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::utils::DamageBag;
 use smithay::output::Output;
+use smithay::reexports::wayland_server::backend::DisconnectReason;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::shell::xdg::ToplevelSurface;
@@ -62,12 +63,13 @@ use crate::state::{ClientState, ViewportState};
 /// How many restarts in a run before they are spread out to
 /// [`RESTART_SLOW`] apart.
 ///
-/// The same shape as the WPE backend's budget — see `crate::shell::budget` —
-/// kept separately rather than shared because that module only exists when the
-/// `wpe` feature is on, and this backend is the one that is always compiled.
-/// What happens at the end of the run differs, and deliberately: see
-/// [`restart_backoff`].
-const RESTART_LIMIT: u32 = 5;
+/// The one home for the number: the WPE backend's budget — see
+/// `crate::shell::budget` — reads these rather than keeping its own, so the
+/// two cannot drift. What happens at the end of a run is still each policy's
+/// own, and deliberately: this backend never gives up, that one does. See
+/// [`restart_backoff`]. This module is the home because it is the one that is
+/// always compiled; `shell` only exists under the `wpe` feature.
+pub const RESTART_LIMIT: u32 = 5;
 
 /// The status `viewport-shell-gtk` exits with when WebKit's web process has
 /// crashed enough times to be a fault, and it wants starting again with
@@ -94,7 +96,9 @@ const DEGRADED_EXHAUSTED: i32 = 88;
 
 /// A shell that has run this long since the last crash is a healthy one, and
 /// the next crash begins a new run.
-const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+///
+/// Shared with the WPE budget, for the reason [`RESTART_LIMIT`] gives.
+pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How far apart restarts are once the fast ones have been used up.
 ///
@@ -108,6 +112,30 @@ const RESTART_SLOW: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The first backoff, doubled for each restart after it.
 const RESTART_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Shell children killed on purpose, waiting for the slow tick to reap them.
+///
+/// `sync_shell_processes` used to kill each displaced shell and then block in
+/// a `wait` on it — on the event loop, on every hotplug. A child stuck in
+/// uninterruptible sleep never comes out of that wait, and the desktop stops
+/// with the event loop inside it; a GPU hang puts every process holding its
+/// buffers exactly there, and see `check_client_shell` for how real that case
+/// is. So killing is all that happens here now: the pid goes on this list and
+/// the slow tick asks `try_wait` once a second, which cannot block. One that
+/// never answers stays listed — a zombie is cheaper than a hung compositor,
+/// and the list is bounded by how many pages a session can have.
+static REAPING: LazyLock<Mutex<Vec<Child>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Ask, without blocking, whether any killed shell can be reaped yet.
+///
+/// An error from `try_wait` means there is nothing left of the child to ask
+/// about — reaped elsewhere, or already gone — so it leaves the list too.
+fn reap_killed_shells() {
+    let mut reaping = REAPING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reaping.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+}
 
 /// How long a shell process is given to stop by itself at quit.
 ///
@@ -322,8 +350,10 @@ impl ViewportState {
 
         // The handle is dropped on purpose: what marks the connection is the
         // data behind it, which every surface on it carries and which nothing
-        // outside this function can set.
-        self.display_handle
+        // outside this function can set. The id is kept, because a spawn that
+        // fails below has to take this connection back down with it.
+        let client = self
+            .display_handle
             .insert_client(
                 ours,
                 Arc::new(ClientState {
@@ -394,9 +424,19 @@ impl ViewportState {
             });
         }
 
-        let child = command
-            .spawn()
-            .with_context(|| format!("starting {}", binary.display()))?;
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                // The connection was made before the process existed, so a
+                // failed spawn leaves it behind with nobody ever to connect
+                // on it: a client slot and the fd under it, held for the rest
+                // of the session. Taken back down before the error goes out.
+                self.display_handle
+                    .backend_handle()
+                    .kill_client(client.id(), DisconnectReason::ConnectionClosed);
+                return Err(e).with_context(|| format!("starting {}", binary.display()));
+            }
+        };
         // Ours is now the child's. Holding it open would mean the compositor
         // never sees the connection close when the shell dies.
         drop(theirs);
@@ -709,10 +749,16 @@ impl ViewportState {
                 Some(shell)
             })
             .collect();
-        // Whatever the new plan has no place for.
+        // Whatever the new plan has no place for. Killed here; reaped on the
+        // slow tick, because a blocking `wait` on the event loop would hang
+        // the whole desktop behind one child stuck in uninterruptible sleep.
+        // See `REAPING`.
         for mut shell in running {
             let _ = shell.child.kill();
-            let _ = shell.child.wait();
+            REAPING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(shell.child);
         }
         // And whatever it has a place for that is not running yet, put back at
         // its own index so shell 0 stays the page and shell 1 the desktop.
@@ -930,6 +976,11 @@ impl ViewportState {
     /// handling of its own, and a shell that has been gone for at most a
     /// second is not something anybody can see. Called from the slow tick.
     pub fn check_client_shell(&mut self) {
+        // First, what `sync_shell_processes` killed: reaped here rather than
+        // where they died, because this tick cannot block and that path runs
+        // on the event loop. See `REAPING`.
+        reap_killed_shells();
+
         // One at a time. Both pages dying in the same second is a real case —
         // a GPU reset takes every process using it — and restarting them one
         // tick apart costs nothing anybody can see.

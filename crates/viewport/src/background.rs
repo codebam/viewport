@@ -46,24 +46,24 @@
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{anyhow, Context as _, Result};
 use smithay::output::Output;
-use smithay::reexports::wayland_server::backend::ClientId;
+use smithay::reexports::wayland_server::backend::{ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::state::{ClientState, ViewportState};
 
-/// How many restarts in a window before it is left down.
-///
-/// The shell's policy (`crate::shell_client::RESTART_LIMIT`) applied to
-/// something far less important: a wallpaper that will not stay up is worth a
-/// few attempts and then a line in the log, not a fork bomb behind a desktop
-/// that is otherwise working.
-const RESTART_LIMIT: u32 = 5;
-const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+// How many restarts in a window before it is left down.
+//
+// The shell's policy applied to something far less important: a wallpaper
+// that will not stay up is worth a few attempts and then a line in the log,
+// not a fork bomb behind a desktop that is otherwise working. The numbers are
+// the shell's own — see `crate::shell_client::{RESTART_LIMIT, RESTART_WINDOW}`
+// — so the two cannot drift.
+use crate::shell_client::{RESTART_LIMIT, RESTART_WINDOW};
 
 /// How long a terminal asked to close has before it is killed.
 ///
@@ -72,6 +72,31 @@ const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 /// not still painting a frame a second under an opaque wallpaper a minute
 /// later.
 const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Terminal children killed on purpose, waiting for the slow tick to reap
+/// them.
+///
+/// `prune_background_terminals` used to kill each displaced terminal and then
+/// block in a `wait` on it — on the event loop, on every unplug. A child stuck
+/// in uninterruptible sleep never comes out of that wait, and the desktop
+/// stops with the event loop inside it; a GPU hang puts every process holding
+/// its buffers exactly there. So killing is all that happens here now: the pid
+/// goes on this list and `check_background_terminal` asks `try_wait` once a
+/// second, which cannot block. One that never answers stays listed — a zombie
+/// is cheaper than a hung compositor, and the list is bounded by the number of
+/// monitors.
+static REAPING: LazyLock<Mutex<Vec<Child>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Ask, without blocking, whether any killed terminal can be reaped yet.
+///
+/// An error from `try_wait` means there is nothing left of the child to ask
+/// about — reaped elsewhere, or already gone — so it leaves the list too.
+fn reap_killed_children() {
+    let mut reaping = REAPING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reaping.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+}
 
 pub struct BackgroundTerminal {
     /// The monitor it is the wallpaper of, by name. Outputs come and go and
@@ -186,26 +211,31 @@ impl ViewportState {
     /// rather than an exceptional one.
     pub fn prune_background_terminals(&mut self) {
         let names: Vec<String> = self.space.outputs().map(|output| output.name()).collect();
-        let mut gone = Vec::new();
-        self.background_terminals.retain_mut(|background| {
-            if names.contains(&background.output) {
-                return true;
-            }
-            gone.push(background.output.clone());
+        // Taken apart by value rather than retained, so the child can be
+        // carried out of the entry instead of dropped with it.
+        let (staying, going): (Vec<_>, Vec<_>) = self
+            .background_terminals
+            .drain(..)
+            .partition(|background| names.contains(&background.output));
+        self.background_terminals = staying;
+        for mut background in going {
             // Killed rather than asked: there is no monitor to draw the
             // closing frame on, and the process holds a surface for an output
             // that no longer exists.
             let _ = background.child.kill();
-            // And reaped, as `check_background_terminal` reaps the ones that
-            // exited on their own. Nothing in this compositor handles SIGCHLD,
-            // so a `Child` dropped without being waited for is a zombie for the
-            // rest of the session — one per monitor unplugged, which on a
-            // laptop is one per time it is docked.
-            let _ = background.child.wait();
-            false
-        });
-        for output in gone {
-            tracing::info!("background: {output} went away, so its terminal did too");
+            // Reaped by `check_background_terminal` rather than here: this
+            // runs on the event loop, and a blocking `wait` behind one child
+            // stuck in uninterruptible sleep hangs the whole desktop. Nothing
+            // here handles SIGCHLD, so an unreaped child is a zombie for the
+            // rest of the session — see `REAPING`.
+            REAPING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(background.child);
+            tracing::info!(
+                "background: {} went away, so its terminal did too",
+                background.output
+            );
             self.needs_render = true;
         }
     }
@@ -219,6 +249,8 @@ impl ViewportState {
     pub fn start_background_terminal(&mut self, output: &str, command: &str) -> Result<()> {
         let (ours, theirs) = UnixStream::pair().context("making a socket for the background")?;
 
+        // The id is kept, because a spawn that fails below has to take this
+        // connection back down with it.
         let client = self
             .display_handle
             .insert_client(
@@ -271,9 +303,19 @@ impl ViewportState {
             });
         }
 
-        let child = child
-            .spawn()
-            .with_context(|| format!("starting {command:?}"))?;
+        let child = match child.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                // The connection was made before the process existed, so a
+                // failed spawn leaves it behind with nobody ever to connect on
+                // it: a client slot and the fd under it, held for the rest of
+                // the session. Taken back down before the error goes out.
+                self.display_handle
+                    .backend_handle()
+                    .kill_client(client.id(), DisconnectReason::ConnectionClosed);
+                return Err(e).with_context(|| format!("starting {command:?}"));
+            }
+        };
         // Ours is now the child's. Holding it open would mean the compositor
         // never sees the connection close when it dies.
         drop(theirs);
@@ -724,6 +766,11 @@ impl ViewportState {
     /// reason: there is no signal handling here, and a wallpaper that has been
     /// gone for at most a second is not something anybody can see.
     pub fn check_background_terminal(&mut self) {
+        // First, what `prune_background_terminals` killed: reaped here rather
+        // than where they died, because this tick cannot block and that path
+        // runs on the event loop. See `REAPING`.
+        reap_killed_children();
+
         // Which of them have exited, with the state needed to decide what that
         // means. Collected first because restarting one takes `&mut self`.
         let mut dead: Vec<(
