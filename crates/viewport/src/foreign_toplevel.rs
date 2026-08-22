@@ -85,13 +85,27 @@ impl ForeignToplevelState {
     }
 
     /// A window has appeared.
-    pub fn add<D>(&mut self, dh: &DisplayHandle, id: u32, title: &str, app_id: &str)
-    where
+    ///
+    /// `outputs` is what it is on at the moment of announcing — usually
+    /// nothing, because a window is announced when its client first commits,
+    /// and it is placed only once the shell has answered — and
+    /// [`ForeignToplevelState::set_outputs`] keeps it true afterwards, as the
+    /// shell moves it between screens. Without both halves a taskbar drawn
+    /// per monitor cannot tell which of its lists a window belongs in.
+    pub fn add<D>(
+        &mut self,
+        dh: &DisplayHandle,
+        id: u32,
+        title: &str,
+        app_id: &str,
+        outputs: Vec<Output>,
+    ) where
         D: Dispatch<ZwlrForeignToplevelHandleV1, HandleData> + 'static,
     {
         let toplevel = Toplevel {
             title: title.to_owned(),
             app_id: app_id.to_owned(),
+            outputs,
             ..Default::default()
         };
         self.toplevels.insert(id, toplevel.clone());
@@ -148,6 +162,54 @@ impl ForeignToplevelState {
         self.toplevels.remove(&id);
         for handle in self.handles.remove(&id).into_iter().flatten() {
             handle.closed();
+        }
+    }
+
+    /// Which outputs the window is on now.
+    ///
+    /// The difference goes out per handle — `output_leave` for the screens it
+    /// has left and `output_enter` for the ones it has arrived on, under one
+    /// `done` so no client ever sees half a move. This is the update half of
+    /// [`ForeignToplevelState::add`]: announce says where a window starts,
+    /// this keeps that true as the shell re-layouts.
+    pub fn set_outputs(&mut self, id: u32, outputs: Vec<Output>) {
+        let Some(toplevel) = self.toplevels.get_mut(&id) else {
+            return;
+        };
+        let previous = std::mem::take(&mut toplevel.outputs);
+        if previous == outputs {
+            // Put it back rather than storing the caller's fresh list: equal
+            // or not is all this needs to know about it.
+            toplevel.outputs = previous;
+            return;
+        }
+        let entered: Vec<Output> = outputs
+            .iter()
+            .filter(|o| !previous.contains(o))
+            .cloned()
+            .collect();
+        let left: Vec<Output> = previous
+            .iter()
+            .filter(|o| !outputs.contains(o))
+            .cloned()
+            .collect();
+        toplevel.outputs = outputs;
+
+        for handle in self.handles.get(&id).into_iter().flatten() {
+            let Some(client) = handle.client() else {
+                continue;
+            };
+            for output in &left {
+                for resource in output.client_outputs(&client) {
+                    handle.output_leave(&resource);
+                }
+            }
+            for output in &entered {
+                for resource in output.client_outputs(&client) {
+                    handle.output_enter(&resource);
+                }
+            }
+            handle.done();
         }
     }
 
