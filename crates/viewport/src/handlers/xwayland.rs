@@ -7,6 +7,17 @@
 // draws a frame around a DOM hole and does not need to know which protocol the
 // thing inside it speaks.
 //
+// Nothing here scales, and that is not an omission. Every rectangle in this
+// file is a logical one, the same coordinate space the shell speaks; when
+// `xwayland.scale` is set, the X server's own pixels are a fraction of a
+// logical pixel and the conversion happens on the way through smithay's
+// window manager, in both directions — a geometry read off an X window is
+// divided by the scale before it reaches `configure_request` here, and a
+// rectangle handed to `X11Surface::configure` is multiplied on the way out.
+// Doing the arithmetic again here would square it. See
+// `ViewportState::start_xwayland` for the two halves of the setting and
+// `docs/protocols.md` for what it costs.
+//
 // Where X11 differs is who decides. An X client tells the server where it
 // wants to be and expects that to happen, so `configure_request` has to be
 // answered rather than ignored; the answer is the rectangle the shell gave it,
