@@ -43,6 +43,11 @@ use viewport_web::webkit::{CrashSink, MessageSink, Termination, WebView};
 use viewport_web::wpe::{Display, FrameSink, FrameToken};
 use viewport_web::Frame;
 
+// The numbers live in `shell_client`, which is compiled whether or not this
+// module is; they are re-exported here because `state` reads them through
+// `crate::shell`.
+pub use crate::shell_client::{RESTART_LIMIT, RESTART_WINDOW};
+
 /// A painted frame, waiting to be drawn.
 pub struct Pending {
     pub buffer: Dmabuf,
@@ -140,6 +145,19 @@ enum Command {
 /// thread-safe.
 struct Context(*mut c_void);
 
+impl Drop for Context {
+    fn drop(&mut self) {
+        // The same contract that makes the pointer sendable makes this safe
+        // from wherever the last handle lands: `g_main_context_unref`, like
+        // `g_main_context_wakeup`, is documented thread-safe. Null is checked
+        // because `start` builds one before it knows it is good, and a failed
+        // creation drops it where it stands.
+        if !self.0.is_null() {
+            unsafe { g_main_context_unref(self.0) };
+        }
+    }
+}
+
 // SAFETY: see above. Every other use of this pointer is on the web thread.
 unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
@@ -177,7 +195,8 @@ extern "C" {
 pub struct Shell {
     pub mailbox: Arc<Mutex<Mailbox>>,
     commands: Arc<Commands>,
-    /// Joined on drop, so the thread does not outlive the compositor.
+    /// Joined on drop — bounded, and detached if the thread will not come.
+    /// See `Drop for Shell`.
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -185,9 +204,10 @@ struct Frames(Arc<Mutex<Mailbox>>);
 
 impl FrameSink for Frames {
     fn frame(&mut self, frame: Frame, token: FrameToken) -> bool {
+        // `try_lock`, not a blocking one, and left that way on purpose: a
+        // refused frame is one WebKit repaints, while the messages and
+        // termination below are state nobody else ever sends again.
         let Ok(mut mailbox) = self.0.try_lock() else {
-            // Re-entered, which should not happen on one thread. Refusing is
-            // better than blocking WebKit forever.
             tracing::error!("the frame mailbox was already borrowed");
             return false;
         };
@@ -218,7 +238,12 @@ struct Messages(Arc<Mutex<Mailbox>>);
 
 impl MessageSink for Messages {
     fn message(&mut self, json: &str) {
-        if let Ok(mut mailbox) = self.0.try_lock() {
+        // Blocking, where the frames sink above refuses. This runs on the web
+        // thread, and the compositor holds the mailbox only for the
+        // microseconds a drain takes — but a message dropped here is a
+        // `view.layout` the desktop never applies, so it waits rather than
+        // vanish.
+        if let Ok(mut mailbox) = self.0.lock() {
             mailbox.messages.push(json.to_owned());
             if let Some(ping) = mailbox.ping.as_ref() {
                 ping.ping();
@@ -232,7 +257,9 @@ struct Crashes(Arc<Mutex<Mailbox>>);
 impl CrashSink for Crashes {
     fn terminated(&mut self, reason: Termination) {
         tracing::error!("the shell died: {reason}");
-        if let Ok(mut mailbox) = self.0.try_lock() {
+        // Blocking for the same reason as `Messages`: a termination dropped
+        // here is a web process that is never recovered.
+        if let Ok(mut mailbox) = self.0.lock() {
             // The frames in flight belonged to the process that just died.
             // Handing their tokens back would release buffers into a pool
             // that no longer exists, so they are dropped instead — `FrameToken`
@@ -325,6 +352,19 @@ impl Page {
 /// it has never seen, is not cut off; short enough that a hang is a message in
 /// the log rather than a hung machine.
 const STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long dropping the shell waits for the web thread to go.
+///
+/// Long enough that an engine tearing down cleanly is never cut off; short
+/// enough that a thread wedged inside WebKit cannot hold up quitting. The
+/// startup path refuses to join a wedged thread because waiting would inherit
+/// the hang, and the same reasoning bounds this wait — with less at stake,
+/// because the session is already on its way out.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How often a dropping shell looks to see whether its thread has gone. Short,
+/// because the common case is a thread that exits in a few milliseconds.
+const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
 impl Shell {
     /// Start the shell on `render_node`, showing `url`.
@@ -576,15 +616,32 @@ impl Shell {
 
 impl Drop for Shell {
     fn drop(&mut self) {
-        // Asked to stop, then waited for: the thread owns WebKit, and
-        // returning from here while it is still running would leave a web
-        // process attached to a compositor that has gone.
+        // Asked to stop first: the thread owns WebKit, and returning from here
+        // while it is still running would leave a web process attached to a
+        // compositor that has gone.
         self.commands.send(Command::Quit);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            // Bounded, like `stop_client_shells`: the startup path refuses to
+            // join a thread that is wedged inside WebKit because the wait
+            // would inherit the hang, and a drop must not do exactly that.
+            let deadline = std::time::Instant::now() + SHUTDOWN_GRACE;
+            while std::time::Instant::now() < deadline && !thread.is_finished() {
+                std::thread::sleep(SHUTDOWN_POLL);
+            }
+            if thread.is_finished() {
+                let _ = thread.join();
+            } else {
+                // Detached rather than joined. It holds the other side of
+                // `commands`, so the context and everything else it owns are
+                // dropped when it does eventually wake — which for this
+                // process may be never, and that is the price of quitting at
+                // all behind an engine that will not stop.
+                tracing::warn!(
+                    "the shell's web thread did not stop within {}s; leaving it",
+                    SHUTDOWN_GRACE.as_secs()
+                );
+            }
         }
-        // After the join, so nothing is iterating it.
-        unsafe { g_main_context_unref(self.commands.context.0) };
     }
 }
 
@@ -713,13 +770,12 @@ fn web_thread(
     unsafe { g_main_context_pop_thread_default(context) };
 }
 
-/// How many restarts inside [`RESTART_WINDOW`] before giving up.
-pub const RESTART_LIMIT: u32 = 5;
-
-/// A crash this long after a run of them started begins a new run.
-pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
-
 /// What to do about a web process that has just died.
+///
+/// The numbers are [`crate::shell_client::RESTART_LIMIT`] and
+/// [`crate::shell_client::RESTART_WINDOW`], shared so the two backends cannot
+/// drift apart; what a run earns when it is spent is where the policies part,
+/// and deliberately — see `crate::shell_client::restart_backoff`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recovery {
     /// Restart, and this is which attempt of the current run it is.
