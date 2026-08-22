@@ -105,6 +105,19 @@ function syncOutputs(list) {
           toggleNetworkPicker();
         });
       }
+      /* And the clock answers a click by opening the calendar under itself,
+         wired here for the same reason and on the same terms — a `bar_items`
+         override builds its own clock and wires it through `wireWidget`. The
+         element goes with the call so the panel hangs off this output's clock:
+         the shell is one page across every monitor, and "the clock" is not a
+         single thing on a desk with two of them. */
+      if (output.modules.clock) {
+        output.modules.clock.title = 'calendar';
+        output.modules.clock.addEventListener('click', (e) => {
+          e.stopPropagation?.();
+          toggleCalendar(output.modules.clock);
+        });
+      }
       el.addEventListener('mouseenter', () => setActiveOutput(info.name));
       outputsEl.append(el);
       outputs.set(info.name, output);

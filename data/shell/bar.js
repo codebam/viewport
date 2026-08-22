@@ -527,6 +527,7 @@ function widgetTitle(w) {
 function moduleTitle(name) {
   switch (name) {
     case 'tray': return '';
+    case 'clock': return 'calendar';
     case 'net': return 'network';
     case 'disk': return 'free on /';
     case 'cpu': return 'cpu';
@@ -571,6 +572,15 @@ function wireWidget(el) {
       if (el._module === 'net') {
         e.stopPropagation?.();
         toggleNetworkPicker();
+      } else if (el._module === 'clock') {
+        /* And the clock, which opens the calendar under itself — stopped for
+           the same reason: the document's listener closes every dropdown, and
+           the click that opened this one would be the click that closed it.
+           The element is handed over so the panel hangs off the clock that was
+           pressed, which on a two-monitor desk is not the same as the first
+           one the shell knows about. */
+        e.stopPropagation?.();
+        toggleCalendar(el);
       }
       return;
     }
@@ -1066,16 +1076,11 @@ function renderBarsModules() {
   for (const name of outputs.keys()) renderBarModules(name);
 }
 
-function clockText() {
-  const now = new Date();
-  const date = now.toLocaleDateString('en-US',
-    { weekday: 'short', month: 'short', day: '2-digit' });
-  const time = `${String(now.getHours()).padStart(2, '0')}:` +
-    `${String(now.getMinutes()).padStart(2, '0')}`;
-  return `󰥔 ${date}, ${time}`;
-}
-
-/* The tick redraws the clock and nothing else.
+/* The clock's text is clockText() in calendar.js, with the calendar it opens:
+ * the module and the grid have to agree about the locale, so they are decided
+ * in one place rather than in two that could drift.
+ *
+ * The tick redraws the clock and nothing else.
  *
  * It used to call renderBars(), which is not cheap: the chrome half rebuilds
  * the workspace buttons and the taskbar with replaceChildren(), allocating
@@ -1100,6 +1105,11 @@ function renderClocks() {
     const el = output.modules.clock;
     if (el && el.textContent !== text) el.textContent = text;
   }
+  /* And the calendar under it, if one is open, which almost always does
+     nothing — see refreshCalendarDay in calendar.js for the one second a day
+     it does something. The tick is the only thing in the shell that runs while
+     nothing is happening, so it is where midnight has to be noticed. */
+  refreshCalendarDay();
 }
 
 setInterval(renderClocks, 1000);

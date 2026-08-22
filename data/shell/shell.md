@@ -62,6 +62,7 @@ rather than keeping its own list, so the two cannot drift apart.
 | `outputs.js` | Outputs, workspaces, and moving between them. |
 | `windows.js` | The window lifecycle: added, focused, closed, floated, fullscreened. |
 | `bar.js` | The status bar, its widgets, the system tray and its menus. |
+| `calendar.js` | How the clock is written, and the calendar a click on it opens. One file for the two because they are one decision: the module, the month name, the weekday headings and the day the week starts on all come out of the same locale, and a grid that disagreed with the clock above it would be worse than the hardcoded `en-US` it replaced. Anchored under the clock that was clicked, like the tray menu and unlike the centred pickers. |
 | `clipboard.js` | The clipboard history picker. |
 | `launcher.js` | The launcher, opened from `Mod4+d`. The list is the compositor's — the page cannot read `XDG_DATA_DIRS` — so this draws the rows it is sent and sends the filter back on every keystroke; launching names an `id`, and the compositor starts what it scanned with an activation token. Like the network picker's passphrase box, the filter field is real typed text: it asks for the keyboard with `shell.focus` and gives it back. |
 | `notifications.js` | The notification centre, opened from `Mod4+Shift+m`: what has been notified, after the popups have gone. The list itself is the compositor's — this draws it and sends back forget-one and forget-all. The popups are `session.js`, which is the same notifications and a different job. |

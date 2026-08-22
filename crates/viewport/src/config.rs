@@ -159,6 +159,48 @@ pub struct BorderConfig {
     pub smart: Option<bool>,
 }
 
+/// The `clock` block.
+///
+/// The bar's clock and the calendar under it. The shell had neither of these
+/// as settings: it passed the literal `"en-US"` to `toLocaleDateString` and
+/// assembled the time out of `getHours()`, so every desk in the world read an
+/// American date and a 24-hour clock whether or not that is how it writes one.
+///
+/// Nothing here is validated beyond its type. A language tag the engine has no
+/// data for is the engine's business — it falls back to the system locale and
+/// says so in the shell's console — and a format string is a template the page
+/// expands, not a thing the compositor can be wrong about.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ClockConfig {
+    /// A BCP 47 language tag — `"de-DE"`, `"ja-JP"`, `"en-GB"` — used for the
+    /// month and weekday names, the order the date is written in, and the day
+    /// the calendar's week starts on.
+    ///
+    /// Absent is the locale the engine itself runs under, which is what
+    /// `LANG` and friends already say. That is the answer somebody who has set
+    /// up their system expects, and it is the one this had no way of giving.
+    pub locale: Option<String>,
+    /// True for a twelve-hour clock with an AM/PM after it, false for a
+    /// twenty-four-hour one. Absent is whichever the locale writes, so a desk
+    /// that only wants its own convention sets `locale` and nothing else.
+    pub hour12: Option<bool>,
+    /// A strftime-style template for the whole module — `"%a %d %b  %H:%M"` —
+    /// when the shipped shape is not the wanted one.
+    ///
+    /// A string rather than more booleans because the thing people change is
+    /// the *arrangement*: the seconds, the week number, the date after the
+    /// time rather than before it, no leading glyph. Every flag that could be
+    /// added here would be a worse spelling of one line of `date(1)`, and the
+    /// list would never be finished. The locale-dependent conversions in it —
+    /// `%A`, `%B`, `%p`, `%x` — still go through `locale`, so a template is a
+    /// layout and not a second place to write English.
+    ///
+    /// Absent draws the shipped shape: the clock glyph, then the date and time
+    /// as the locale writes them.
+    pub format: Option<String>,
+}
+
 /// The corner the shell rounds a window to when the config says nothing:
 /// `--radius` in `data/shell/shell.css`, which is what `.window` inherits.
 ///
@@ -392,6 +434,10 @@ pub struct File {
     pub gaps: GapsConfig,
     pub border: BorderConfig,
     pub notifications: NotificationsConfig,
+
+    /// The bar clock's locale and format; see [`ClockConfig`]. Absent leaves
+    /// the shell to the locale the engine runs under.
+    pub clock: ClockConfig,
 
     /// Extra widgets to add to the bar, beyond the modules it draws by default.
     ///
@@ -1112,6 +1158,34 @@ mod tests {
         assert_eq!(file.bar_widgets[3], BarWidgetConfig::Volume);
         assert_eq!(file.bar_widgets[4], BarWidgetConfig::Mic);
         assert_eq!(file.bar_widgets[5], BarWidgetConfig::Battery);
+    }
+
+    #[test]
+    fn clock_block_parses_and_absence_is_the_engine_s_own_locale() {
+        // Every field optional and independent: the common case is naming one
+        // of them. A `clock` block that named a locale and nothing else used
+        // to be the only way to get a German month, and there was no way at
+        // all.
+        let file: File = serde_json::from_str(
+            r#"{"clock":{"locale":"de-DE","hour12":false,"format":"%a %d %b %H:%M"}}"#,
+        )
+        .expect("should parse");
+        assert_eq!(file.clock.locale.as_deref(), Some("de-DE"));
+        assert_eq!(file.clock.hour12, Some(false));
+        assert_eq!(file.clock.format.as_deref(), Some("%a %d %b %H:%M"));
+
+        let file: File =
+            serde_json::from_str(r#"{"clock":{"hour12":true}}"#).expect("should parse");
+        assert_eq!(file.clock.hour12, Some(true));
+        // Not "en-US", and not any other tag this side could invent: an absent
+        // locale is the shell asking the engine what the session's is.
+        assert_eq!(file.clock.locale, None);
+
+        // And an absent block is distinguishable from an empty one only in
+        // that neither says anything, which is what apply_config tests for
+        // before it forwards a thing.
+        let file: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(file.clock, ClockConfig::default());
     }
 
     #[test]

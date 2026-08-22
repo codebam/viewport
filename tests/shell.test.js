@@ -192,6 +192,10 @@ const bluetoothEl = new El('div');
 /* And the on-screen keyboard, on the same terms: what a tap leaves behind is
    only visible if the element the shell drew into is the one read back. */
 const oskEl = new El('div');
+/* And the calendar under the clock, for the same reason again: which month it
+   is showing and which day is marked are only visible if the element the shell
+   drew into is the one the test reads back. */
+const calendarEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -227,6 +231,7 @@ global.document = {
     'network-picker': networkEl,
     'bluetooth-picker': bluetoothEl,
     osk: oskEl,
+    calendar: calendarEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -436,6 +441,14 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' get networkEl() { return networkEl; },'
   + ' get bluetoothEl() { return bluetoothEl; },'
   + ' get oskEl() { return oskEl; },'
+  /* The calendar's element, and the two pure functions under the clock: what
+     the module says for a given moment, and which day the locale starts its
+     week on. Both are answers a test can state exactly, which nothing else the
+     bar draws is — the rest of it is a number the compositor sampled. */
+  + ' get calendarEl() { return calendarEl; },'
+  + ' clockTextForTest: clockText,'
+  + ' applyClockForTest: applyClock,'
+  + ' calendarFirstDayForTest: calendarFirstDay,'
   /* The keyboard's own idea of Shift and which page it is on, which nothing
      drawn on the page says directly — a test reading capitalisation off a
      rendered key would be testing toUpperCase rather than the shell. */
@@ -1117,6 +1130,253 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     !/ago$/.test(age(stamp, stamp * 1000 + 48 * 3600_000)));
   check('an unstamped notification says nothing about when it arrived',
     age(0) === '');
+}
+
+/* The clock's format, and the calendar under it.
+ *
+ * The formatting is the one part of the bar that is a pure function of a
+ * moment and a config: everything else the bar draws is a number the
+ * compositor sampled, and the assertion would be that the test agrees with
+ * itself. So it is checked directly, against several locales — which is the
+ * whole point of the change, since what it replaced passed the literal
+ * 'en-US' and assembled the hour out of getHours().
+ *
+ * A locale-specific assertion is skipped where the engine running the tests
+ * has no data for that locale. Node ships full ICU and does; a trimmed build
+ * would otherwise fail here for a reason that has nothing to do with the
+ * shell, and the shell's own answer in that case — the English fallback — is
+ * checked separately below. */
+{
+  const shell = globalThis.__shell;
+  const clockOf = (config, when) => {
+    shell.applyClockForTest(config);
+    return shell.clockTextForTest(when);
+  };
+  /* A Saturday afternoon, so both halves of the twelve-hour question have an
+     answer worth reading: 14:05 is 2:05 PM. */
+  const when = new Date(2026, 7, 22, 14, 5, 9);
+  const hasGerman = (() => {
+    try {
+      return new Intl.DateTimeFormat('de-DE', { month: 'long' })
+        .format(when).startsWith('Aug');
+    } catch (e) {
+      return false;
+    }
+  })();
+
+  const shipped = clockOf(null, when);
+  check('with no config the clock still draws its glyph and the day',
+    shipped.startsWith('󰥔 ') && shipped.includes('22'));
+  check('and the minute it was given, whichever way the locale writes the hour',
+    /\b05\b/.test(shipped));
+
+  /* The locale decides the order and the separator as well as the names, which
+     is why the date and the time are one Intl call rather than two joined with
+     a comma here. */
+  const german = clockOf({ locale: 'de-DE', hour12: false }, when);
+  if (hasGerman) {
+    check('a locale draws that locale\'s month', german.includes('Aug'));
+  }
+  check('and a 24-hour desk gets 14:05, not 2:05',
+    german.includes('14:05') && !/[AP]M/.test(german));
+
+  const american = clockOf({ locale: 'en-US', hour12: true }, when);
+  check('a 12-hour desk gets the afternoon said as one',
+    /2:05/.test(american) && /PM/i.test(american));
+  check('and the same desk asked for 24 hours gets 14:05',
+    clockOf({ locale: 'en-US', hour12: false }, when).includes('14:05'));
+
+  /* hour12 absent is the locale's own answer, which is the case somebody who
+     sets nothing but a locale is asking for. */
+  check('an hour nobody chose is the hour the locale writes',
+    clockOf({ locale: 'en-GB' }, when).includes('14:05')
+    && /PM/i.test(clockOf({ locale: 'en-US' }, when)));
+
+  /* A tag Intl cannot parse throws a RangeError, and this runs from a timer
+     once a second: unguarded, one bad character in a config file is a clock
+     that stops and takes every output after the first with it. */
+  const nonsense = clockOf({ locale: 'not a tag!' }, when);
+  check('a language tag the engine cannot parse still draws a clock',
+    nonsense.startsWith('󰥔 ') && nonsense.includes('22'));
+
+  /* The format string. A template is the whole module — no glyph is added,
+     because adding one would leave no way to ask for a clock without it. */
+  check('a format string is expanded, and expanded exactly',
+    clockOf({ locale: 'de-DE', format: '%Y-%m-%d %H:%M:%S' }, when)
+      === '2026-08-22 14:05:09');
+  check('and it is the whole module: no glyph nobody asked for',
+    !clockOf({ format: '%H:%M' }, when).includes('󰥔'));
+  check('%I and %p are the twelve-hour pair',
+    /^02:05 PM$/.test(clockOf({ locale: 'en-US', format: '%I:%M %p' }, when)));
+  check('%e and %k pad with spaces where %d and %H pad with zeroes',
+    clockOf({ format: '%e|%d' }, new Date(2026, 7, 3, 4, 5)) === ' 3|03'
+    && clockOf({ format: '%k|%H' }, new Date(2026, 7, 3, 4, 5)) === ' 4|04');
+  check('%F, %T and %j are the compounds they are everywhere else',
+    clockOf({ format: '%F %T %j' }, when) === '2026-08-22 14:05:09 234');
+  if (hasGerman) {
+    check('the named conversions come from the locale, not from a table here',
+      clockOf({ locale: 'de-DE', format: '%A %B' }, when) === 'Samstag August');
+  }
+  check('a percent is a percent and an unknown conversion is left to be seen',
+    clockOf({ format: '100%% %Q' }, when) === '100% %Q');
+
+  /* Which day the week starts on is the locale's, not this file's: en-US and
+     en-GB are the same language and disagree about it, so nothing short of
+     asking about the region can be right. */
+  shell.applyClockForTest({ locale: 'en-US' });
+  check('a US week starts on Sunday', shell.calendarFirstDayForTest() === 0);
+  shell.applyClockForTest({ locale: 'en-GB' });
+  check('and a British one on Monday, in the same language',
+    shell.calendarFirstDayForTest() === 1);
+  shell.applyClockForTest({ locale: 'de-DE' });
+  check('as does a German one', shell.calendarFirstDayForTest() === 1);
+  shell.applyClockForTest({ locale: 'ar-EG' });
+  check('and a week can start on a Saturday, which two answers cannot say',
+    shell.calendarFirstDayForTest() === 6);
+
+  /* The table behind all of that, for the engine with no `Intl.Locale` to ask:
+     three answers, not two, and the language subtag is not a region — "en"
+     uppercased is a two-letter string, and reading it as one is how en-US came
+     back as Monday. */
+  check('the fallback table knows the three answers apart',
+    calendarFirstDayOfRegion('US') === 0
+    && calendarFirstDayOfRegion('EG') === 6
+    && calendarFirstDayOfRegion('FR') === 1
+    && calendarFirstDayOfRegion('EN') === 1);
+
+  /* --- the grid ------------------------------------------------------- */
+
+  /* On a locale whose digits and month names this file can compare with, since
+     what the checks below are about is the grid rather than the names in it —
+     the names are the section above. */
+  shell.applyClockForTest({ locale: 'en-GB' });
+
+  const calendar = () => shell.calendarEl;
+  const panel = () => calendar().children[0];
+  const cells = () => panel()?.children[1]?.children ?? [];
+  const dayCells = () => [...cells()].filter((el) => el._classes.has('calendar-day'));
+  const weekdayCells = () =>
+    [...cells()].filter((el) => el._classes.has('calendar-weekday'));
+  const title = () => panel()?.children[0]?.children[1]?.textContent;
+  const arrow = (i) => panel().children[0].children[i];
+  const todayButton = () => panel().children[2].children[0];
+  const clickEl = (el) => (el.listeners.click ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+  const fire = (type) => (documentListeners[type] ?? [])
+    .forEach((fn) => fn({ preventDefault() {}, stopPropagation() {} }));
+  const overlayRects = (from) => sent.slice(from)
+    .filter((m) => m.type === 'shell.overlay').at(-1)?.rects ?? null;
+
+  const host = shell.outputs.get(shell.activeOutput);
+  const clockEl = host.modules.clock;
+  /* Where a clock really sits: the right-hand end of the bar. The stub answers
+     every measurement with the whole screen otherwise, which would make the
+     clamp below untestable — a panel hanging off a 1920-wide clock is a panel
+     hanging off nothing in particular. */
+  clockEl.__rect = { left: 1700, top: 4, width: 120, height: 24 };
+
+  let before = sent.length;
+  clickEl(clockEl);
+  check('clicking the clock opens the calendar', calendar().hidden === false);
+  check('under the clock that was clicked, not over the middle of the desk',
+    calendar().style.top === '32px' && calendar().style.left === '1641px');
+  check('and the compositor is told where it is, or it is behind the windows',
+    (overlayRects(before) ?? []).length > 0);
+
+  check('a week of headings and six weeks of days, always the same six',
+    weekdayCells().length === 7 && dayCells().length === 42);
+  check('the week starts on the day the locale starts it on',
+    weekdayCells()[0].textContent === calendarWeekdayName(calendarFirstDay()));
+  const today = new Date();
+  const marked = dayCells().filter((el) => el._classes.has('today'));
+  check('exactly one day is marked as today',
+    marked.length === 1 && marked[0].textContent === String(today.getDate()));
+  check('and it is a day of this month rather than a neighbour\'s',
+    !marked[0]._classes.has('adjacent'));
+  check('the days either side of the month are drawn, dimmed',
+    dayCells().some((el) => el._classes.has('adjacent')));
+
+  const thisMonth = title();
+  clickEl(arrow(2));
+  check('the next arrow steps the month', title() !== thisMonth);
+  check('and nothing is marked on a month that does not hold today',
+    dayCells().filter((el) => el._classes.has('today')).length === 0);
+  check('with the panel still where it was: paging must not move it',
+    calendar().style.top === '32px' && calendar().style.left === '1641px');
+
+  clickEl(arrow(0));
+  check('and the previous arrow steps back to it', title() === thisMonth);
+
+  /* Twelve steps forward is a year, which is the arithmetic that goes wrong
+     when a month is stepped by adding one to a number rather than by asking
+     Date for the answer. */
+  for (let i = 0; i < 12; i++) clickEl(arrow(2));
+  check('a year forward is the same month again, in a different year',
+    title() !== thisMonth
+    && title().replace(/\d+/, '') === thisMonth.replace(/\d+/, ''));
+  clickEl(todayButton());
+  check('and today\'s date, which is also the way back, is the way back',
+    title() === thisMonth
+    && dayCells().filter((el) => el._classes.has('today')).length === 1);
+
+  before = sent.length;
+  clickEl(clockEl);
+  check('clicking the clock again takes it down', calendar().hidden === true);
+  check('and the rectangle over the windows goes with it',
+    (overlayRects(before) ?? []).length === 0);
+
+  clickEl(clockEl);
+  fire('click');
+  check('a click that missed the calendar takes it down too',
+    calendar().hidden === true);
+
+  clickEl(clockEl);
+  clickEl(panel());
+  check('but a click on the calendar itself does not: it is mostly text',
+    calendar().hidden === false);
+  fire('click');
+
+  /* Reopening starts on today rather than where it was left, which is the
+     difference between a glance and something that has to be read. */
+  clickEl(clockEl);
+  clickEl(arrow(2));
+  clickEl(clockEl);
+  clickEl(clockEl);
+  check('and it always reopens on this month, not on the one paged to',
+    title() === thisMonth);
+  fire('click');
+
+  /* The keyboard's way in, for a desk with no pointer on the bar — the pair
+     the network and power pickers each have. */
+  emit({ type: 'shell.command', command: 'calendar', args: [] });
+  check('the shell verb opens it as well', calendar().hidden === false);
+  emit({ type: 'shell.command', command: 'calendar', args: [] });
+  check('and closes it again', calendar().hidden === true);
+
+  /* And the bar going away takes it with it. Under `bar: auto` that happens a
+     second after it was opened — the bar is only up while Mod4 is held — and a
+     dropdown pointing at a bar nobody can see is a rectangle the compositor
+     goes on drawing over the windows. Driven here with the per-output toggle,
+     which is the same relayout by a different route. */
+  clickEl(clockEl);
+  emit({ type: 'shell.command', command: 'bar.toggle', args: [] });
+  check('hiding the bar takes the calendar hanging off it down',
+    calendar().hidden === true);
+  emit({ type: 'shell.command', command: 'bar.toggle', args: [] });
+  check('and the bar comes back without it', calendar().hidden === true);
+
+  /* The config path, rather than the exported function: the block has to
+     survive the compositor's own message, and `clock` absent has to be the
+     shipped behaviour rather than an error. */
+  emit({ type: 'config', layout: mode,
+    clock: { locale: 'de-DE', hour12: false, format: '%d.%m.%Y %H:%M' } });
+  check('the config message carries the clock block to the page',
+    shell.clockTextForTest(when) === '22.08.2026 14:05');
+  emit({ type: 'config', layout: mode });
+  check('and a config without one goes back to the shipped shape',
+    shell.clockTextForTest(when).startsWith('󰥔 '));
+
+  delete clockEl.__rect;
 }
 
 /* Placement on a two-monitor desk. The shell is one page spanning the whole
@@ -4867,11 +5127,19 @@ if (mode === 'scrolling') {
     execAfter().slice(beforeDisk).some((m) =>
       m.command.includes('xdg-open') && m.command.includes('/games')));
   const beforeClock = execAfter().length;
-  clockEl.listeners.click.forEach((fn) => fn());
+  clockEl.listeners.click.forEach((fn) =>
+    fn({ preventDefault() {}, stopPropagation() {} }));
   clockEl.listeners.wheel.forEach((fn) =>
     fn({ preventDefault() {}, deltaY: 100 }));
-  check('a module (non-widget) element sends nothing on click or scroll',
+  check('a module (non-widget) element runs no program on click or scroll',
     execAfter().length === beforeClock);
+  /* The clock is the module that does answer a click, in the override path as
+     well as in the shipped markup: it opens the calendar under itself. Nothing
+     is spawned to do it — the date is arithmetic this page can do — which is
+     what the check above still says. */
+  check('but the clock module opens the calendar under it',
+    globalThis.__shell.calendarEl.hidden === false);
+  documentListeners.click.forEach((fn) => fn({ preventDefault() {} }));
 
   emit({ type: 'config', layout: mode });
 
@@ -5781,6 +6049,31 @@ if (mode === 'scrolling') {
     }));
 
   probe.remove();
+
+  /* The calendar hangs off the bar, so it has to be drawn over it — a dropdown
+     under the thing it drops from is a dropdown nobody can read. The other
+     half is the one the marked day depends on: `today` has to change how the
+     cell is drawn, or the one state in the grid is invisible and the whole
+     panel is a table of numbers. */
+  {
+    const dropdown = new El('div');
+    dropdown.id = 'calendar';
+    const layer = new El('div');
+    layer.className = 'bar';
+    check('the calendar is drawn over the bar it hangs from',
+      Number(sheet.value(dropdown, 'z-index'))
+        > Number(sheet.value(layer, 'z-index')));
+
+    const day = new El('span');
+    day.className = 'calendar-day';
+    const plain = snapshot(day);
+    day.className = 'calendar-day today';
+    check('and today is drawn differently from every other day',
+      snapshot(day) !== plain);
+    day.className = 'calendar-day adjacent';
+    check('as is a day belonging to the month next door',
+      snapshot(day) !== plain);
+  }
 
   emit({ type: 'view.removed', id: 80 });
   emit({ type: 'view.removed', id: 81 });

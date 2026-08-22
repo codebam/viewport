@@ -908,8 +908,12 @@ that moved and a bar that did not until the next two-second tick.
   directory.
 - **`weather`** — clicking opens the place in a browser.
 
-- **`net`** — the one built-in module that is not read-only: clicking it opens
-  the Wi-Fi picker, the same one `Mod4+Shift+n` opens. Its tooltip names the
+- **`clock`** — clicking it opens the calendar under it, and clicking it again
+  takes it down; `shell calendar` is the same thing from a key, for a desk
+  with no pointer on the bar. See the next section for what the clock says and
+  how to change it.
+- **`net`** — the other built-in module that is not read-only: clicking it
+  opens the Wi-Fi picker, the same one `Mod4+Shift+n` opens. Its tooltip names the
   network in use once the picker has been opened at least once — before that
   the compositor has not spoken to NetworkManager at all, so there is nothing
   truthful to say.
@@ -924,6 +928,77 @@ Mod4 gestures — move, resize, pan — over anything the shell has drawn in fro
 of the windows, so those clicks reach the bar rather than dragging what is
 behind it. The cost is the few pixels of a window that has been moved under the
 floating bar: grab it anywhere else.
+
+## The clock, and the calendar under it
+
+What the clock module says, and the month grid a click on it opens.
+
+```jsonc
+{
+  "clock": { "locale": "de-DE", "hour12": false }
+}
+```
+
+`clock.locale` is a BCP 47 language tag. It decides the month and weekday
+names, the order the date is written in, and the day the calendar's week
+starts on — which is not a property of the language: `en-US` starts its week
+on Sunday and `en-GB` on Monday. **Absent is the locale the engine is running
+under**, which is what `LANG` and the rest of the locale environment already
+say; there is no `en-US` written into the shell any more.
+
+`clock.hour12` chooses a twelve-hour clock with an AM/PM after it (`true`) or a
+twenty-four-hour one (`false`). Absent is whichever the locale writes, so a
+desk that only wants its own conventions sets `locale` and stops there. Note
+what that means for a session already running in `en_US`: the clock used to be
+twenty-four-hour for everybody and is now twelve-hour there, because that is
+what the locale writes. `"clock": { "hour12": false }` asks for the old one and
+leaves the names alone.
+
+`clock.format` replaces the whole module with a strftime-style template, for
+when the shipped shape is not the wanted one:
+
+```jsonc
+{
+  "clock": { "locale": "ja-JP", "format": "%m月%d日 (%a) %H:%M" }
+}
+```
+
+A template is the whole module, leading glyph included — the shipped clock
+draws one and a template draws exactly what it says, which is how you ask for a
+clock without it. The conversions that name something still go through
+`locale`, so a template is a layout rather than a second place to write English:
+
+| | |
+|---|---|
+| `%a` `%A` | weekday, short and long |
+| `%b` `%B` (`%h`) | month, short and long |
+| `%p` `%P` | AM/PM as the locale writes it, upper and lower case — empty for a locale that writes none |
+| `%c` `%x` `%X` | the locale's own date-and-time, date, and time |
+| `%Z` `%z` | time zone name, and the offset as `+0100` |
+| `%d` `%e` | day of the month, zero- and space-padded |
+| `%m` `%y` `%Y` `%j` | month number, two- and four-digit year, day of the year |
+| `%H` `%k` `%I` `%l` | hour, 24- and 12-hour, zero- and space-padded |
+| `%M` `%S` `%s` | minute, second, and seconds since the epoch |
+| `%F` `%D` `%R` `%T` | `%Y-%m-%d`, `%m/%d/%y`, `%H:%M`, `%H:%M:%S` |
+| `%%` `%n` `%t` | a percent sign, a newline, a tab |
+
+Anything else is left in the string with its percent sign, so a typo shows up
+as `%Q` rather than quietly eating the character after it.
+
+**The calendar.** Clicking the clock opens a month grid under it — on the
+monitor whose clock was clicked, since the shell is one page across all of
+them. The arrows page a month at a time, today is marked, the days either side
+of the month are drawn dimmed so a week that straddles two of them still reads
+as a week, and the date written along the bottom is both a statement of what
+today is and the way back to it. Clicking the clock again, or anywhere outside
+the panel, takes it down; so does the bar going away under `bar: auto`. There
+is nothing to configure and nothing to enable: it inherits `clock.locale` for
+its month, its weekday headings and the day its week starts on.
+
+A shell drawn by an engine with trimmed `Intl` data — a small-ICU build — falls
+back to English names and keeps drawing. A clock that went blank because a
+month name could not be looked up would be worse than one in the wrong
+language.
 
 ## Reloading the shell while it runs
 

@@ -73,6 +73,15 @@
 <div id="bluetooth-picker" hidden></div>
 
 <!--
+  The calendar, opened by clicking the bar's clock or with `shell calendar`.
+  Page level like the pickers above, and positioned in layout coordinates like
+  the tray menu: it hangs off the clock that was clicked rather than being
+  centred on a screen, and the page spans every monitor, so a position on it is
+  a position on the desk.
+-->
+<div id="calendar" hidden></div>
+
+<!--
   The on-screen keyboard. Page level like everything above it, and for the
   same reason: what it types into is whichever client has the keyboard, not
   one desktop. It comes up on its own when a text field asks for it, or with
@@ -174,6 +183,7 @@ Mod4+d       launcher</pre>
 <script src="outputs.js"></script>
 <script src="windows.js"></script>
 <script src="bar.js"></script>
+<script src="calendar.js"></script>
 <script src="clipboard.js"></script>
 <script src="launcher.js"></script>
 <script src="notifications.js"></script>
