@@ -19,8 +19,6 @@
 // Smithay implements neither the protocol nor, until the patch this build
 // carries, the flip itself.
 
-use std::sync::Mutex;
-
 use smithay::reexports::wayland_protocols::wp::tearing_control::v1::server::{
     wp_tearing_control_manager_v1::{self, WpTearingControlManagerV1},
     wp_tearing_control_v1::{self, PresentationHint, WpTearingControlV1},
@@ -33,6 +31,12 @@ use smithay::reexports::wayland_server::{
 /// The global, and which surfaces have asked.
 #[derive(Debug, Default)]
 pub struct TearingControlState {
+    /// The surfaces with a live control object, whatever its hint. The
+    /// protocol allows one control per surface, and the check a second
+    /// `get_tearing_control` must fail is "does one exist", not "does one
+    /// exist with the async hint" — which is what this is for, distinct from
+    /// the list below because a control that never set a hint still exists.
+    bound: Vec<WlSurface>,
     /// The surfaces whose clients asked for asynchronous presentation. Kept
     /// here rather than in surface state because the question asked at flip
     /// time is "does the one surface on this output want it", which is a
@@ -54,6 +58,11 @@ impl TearingControlState {
         self.wants_tearing.iter().any(|other| other == surface)
     }
 
+    /// Whether a control object for this surface is alive.
+    fn bound(&self, surface: &WlSurface) -> bool {
+        self.bound.iter().any(|other| other == surface)
+    }
+
     fn set(&mut self, surface: &WlSurface, wants: bool) {
         let held = self.wants_tearing(surface);
         if wants && !held {
@@ -63,11 +72,18 @@ impl TearingControlState {
         }
     }
 
-    /// Forget a surface. Called when its control object goes, and when the
-    /// surface itself does — a client that died holding the hint must not
-    /// leave the output tearing for whatever takes its place.
-    pub fn forget(&mut self, surface: &WlSurface) {
-        self.wants_tearing.retain(|other| other != surface);
+    /// Record a control object for `surface`, at its creation.
+    fn bind(&mut self, surface: &WlSurface) {
+        if !self.bound(surface) {
+            self.bound.push(surface.clone());
+        }
+    }
+
+    /// Drop the record of one control object for `surface`. Whether the
+    /// surface's hint goes with it is the caller's question: another control
+    /// may still be alive, and destroying one must not clear the other's.
+    fn unbind(&mut self, surface: &WlSurface) {
+        self.bound.retain(|other| other != surface);
     }
 }
 
@@ -75,9 +91,6 @@ impl TearingControlState {
 #[derive(Debug)]
 pub struct ControlData {
     pub surface: WlSurface,
-    /// The hint as it stands, so destroying the object can undo exactly what
-    /// it did.
-    pub wants_tearing: Mutex<bool>,
 }
 
 impl<D> GlobalDispatch<WpTearingControlManagerV1, (), D> for TearingControlState
@@ -126,24 +139,22 @@ where
             return;
         };
 
-        // One per surface. A second is a protocol error rather than a second
-        // opinion: two objects disagreeing about the same surface has no
-        // answer the client could predict.
-        if state.tearing_control_state().wants_tearing(&surface) {
+        // One per surface, whatever the hint on it. The protocol's own words
+        // are "if the given wl_surface already has a wp_tearing_control_v1
+        // object associated" — existence, not an async hint, which is why
+        // this checks the bound set rather than `wants_tearing`: a surface
+        // whose control never set a hint, or set a whole-frame one, used to
+        // accept a second object without a word.
+        if state.tearing_control_state().bound(&surface) {
             manager.post_error(
                 wp_tearing_control_manager_v1::Error::TearingControlExists,
                 "this surface already has a tearing control",
             );
             return;
         }
+        state.tearing_control_state().bind(&surface);
 
-        data_init.init(
-            id,
-            ControlData {
-                surface,
-                wants_tearing: Mutex::new(false),
-            },
-        );
+        data_init.init(id, ControlData { surface });
     }
 }
 
@@ -173,7 +184,6 @@ where
         // second copy of it in the surface tree to be exact costs more than
         // that frame is worth.
         let wants = hint == PresentationHint::Async;
-        *data.wants_tearing.lock().unwrap() = wants;
         state.tearing_control_state().set(&data.surface, wants);
     }
 
@@ -183,10 +193,18 @@ where
         _control: &WpTearingControlV1,
         data: &ControlData,
     ) {
-        // Back to whole frames. The object going away is the client saying it
-        // no longer wants this, and a surface left tearing after its control
-        // is gone would tear for the rest of the session.
-        state.tearing_control_state().forget(&data.surface);
+        let tearing = state.tearing_control_state();
+        tearing.unbind(&data.surface);
+        // Back to whole frames — but only once nothing is left speaking for
+        // the surface. The object going away says this control no longer
+        // wants anything; if another control for the same surface is somehow
+        // still alive, destroying this one must not clear the hint *it* set.
+        if !tearing.bound(&data.surface) {
+            tearing.set(&data.surface, false);
+        }
+        // Either way the record of this object is gone, and when the surface
+        // itself dies its remaining controls are destroyed through here too,
+        // which is what takes the hint with them.
     }
 }
 

@@ -27,7 +27,7 @@ use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
-use smithay::utils::{Physical, Rectangle};
+use smithay::utils::{Physical, Rectangle, Size};
 
 /// What a client asked for.
 #[derive(Debug)]
@@ -168,12 +168,34 @@ where
                 let Some(output) = Output::from_resource(&output) else {
                     return;
                 };
-                (
-                    frame,
-                    output,
-                    Rectangle::new((x, y).into(), (width, height).into()),
-                    overlay_cursor != 0,
-                )
+                // The same transformed size `CaptureOutput` uses: the client
+                // speaks in output pixels, which after a rotation are not the
+                // mode's.
+                let size = output
+                    .current_mode()
+                    .map(|mode| output.current_transform().transform_size(mode.size))
+                    .unwrap_or_default();
+                let region = clamp_region(x, y, width, height, size);
+                if region.size.w == 0 || region.size.h == 0 {
+                    // Nothing of the request lies on the output — negatives,
+                    // an origin past the far edge, or a zero size. The frame
+                    // is initialised and failed rather than dropped, the same
+                    // discipline as a capture of an output that has gone: the
+                    // object exists so the failure can be named on it, and
+                    // `copied` starts set so nothing can be served from it.
+                    let frame = data_init.init(
+                        frame,
+                        FrameState {
+                            output,
+                            region,
+                            overlay_cursor: overlay_cursor != 0,
+                            copied: Mutex::new(true),
+                        },
+                    );
+                    frame.failed();
+                    return;
+                }
+                (frame, output, region, overlay_cursor != 0)
             }
             zwlr_screencopy_manager_v1::Request::Destroy => return,
             _ => return,
@@ -286,6 +308,43 @@ pub fn finish(frame: &ZwlrScreencopyFrameV1, region: Rectangle<i32, Physical>, w
     );
 }
 
+/// The part of the requested rectangle that lies on an output of `size`.
+///
+/// The client's numbers are unvalidated wire values: negatives, an origin
+/// past the far edge, and `i32::MAX` extents are all legal to send. This is
+/// their intersection with the output, computed wide rather than through
+/// `Rectangle::intersection`, which adds size to location in `i32` and so
+/// overflows on exactly the extreme values a client is free to send. An
+/// empty result means nothing of the request is on the output, and the frame
+/// fails rather than being served with a nonsense region — which is what a
+/// negative width used to reach, wrapping the stride event into a value no
+/// buffer could match.
+fn clamp_region(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    size: Size<i32, Physical>,
+) -> Rectangle<i32, Physical> {
+    let x1 = (x as i64).max(0);
+    let y1 = (y as i64).max(0);
+    let x2 = (x as i64).saturating_add(width as i64).min(size.w as i64);
+    let y2 = (y as i64).saturating_add(height as i64).min(size.h as i64);
+    // Both differences are checked before they become sizes, because smithay
+    // refuses to build a negative one — and "nothing of the request lies on
+    // the output" is this function's answer for exactly those.
+    let width = x2 - x1;
+    let height = y2 - y1;
+    if width <= 0 || height <= 0 {
+        return Rectangle::default();
+    }
+    // Bounded by the output's own size, so these always fit back into `i32`.
+    Rectangle::new(
+        (x1 as i32, y1 as i32).into(),
+        (width as u32 as i32, height as u32 as i32).into(),
+    )
+}
+
 /// Wire the dispatch into a compositor state.
 #[macro_export]
 macro_rules! delegate_screencopy {
@@ -300,4 +359,69 @@ macro_rules! delegate_screencopy {
             smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1: $crate::screencopy::FrameState
         ] => $crate::screencopy::ScreencopyState);
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clamp(x: i32, y: i32, width: i32, height: i32) -> Rectangle<i32, Physical> {
+        clamp_region(x, y, width, height, Size::from((1920, 1080)))
+    }
+
+    #[test]
+    fn a_request_inside_the_output_is_untouched() {
+        let region = clamp(10, 20, 800, 600);
+        assert_eq!(region.loc, (10, 20).into());
+        assert_eq!(region.size, (800, 600).into());
+    }
+
+    #[test]
+    fn the_full_output_is_still_the_full_output() {
+        assert_eq!(clamp(0, 0, 1920, 1080).size, (1920, 1080).into());
+    }
+
+    #[test]
+    fn extents_past_the_far_edge_are_cut_to_it() {
+        let region = clamp(1000, 500, 5000, 5000);
+        assert_eq!(region.loc, (1000, 500).into());
+        assert_eq!(region.size, (920, 580).into());
+
+        // Overhanging on the top left as well: the origin moves in and the
+        // size shrinks by as much.
+        let region = clamp(-100, -100, 300, 300);
+        assert_eq!(region.loc, (0, 0).into());
+        assert_eq!(region.size, (200, 200).into());
+    }
+
+    #[test]
+    fn wire_extremes_never_wrap() {
+        // `i32::MAX` everywhere is what a hostile or merely buggy client
+        // sends. The old path handed these straight into a rectangle whose
+        // stride event wrapped a negative width; these must all stay
+        // non-negative and in bounds.
+        let region = clamp(i32::MAX, i32::MAX, i32::MAX, i32::MAX);
+        assert!(region.is_empty());
+
+        let region = clamp(i32::MIN, i32::MIN, i32::MIN, i32::MIN);
+        assert!(region.is_empty());
+
+        // Origin past the far edge with an ordinary extent.
+        assert!(clamp(1920, 1080, 100, 100).is_empty());
+        assert!(clamp(1919, 1079, 2, 2).size == (1, 1).into());
+    }
+
+    #[test]
+    fn zero_and_negative_extents_are_empty_not_inverted() {
+        assert!(clamp(10, 10, 0, 100).is_empty());
+        assert!(clamp(10, 10, 100, 0).is_empty());
+        assert!(clamp(10, 10, -5, 100).is_empty());
+        assert!(clamp(10, 10, 100, -5).is_empty());
+    }
+
+    #[test]
+    fn an_output_with_no_mode_clamps_everything_to_empty() {
+        let region = clamp_region(0, 0, 100, 100, Size::from((0, 0)));
+        assert!(region.is_empty());
+    }
 }
