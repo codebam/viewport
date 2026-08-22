@@ -924,6 +924,12 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     // early for: the answer is an event to a client, and a client cannot see
     // one that has not been flushed yet.
     state.needs_colour_notify = true;
+
+    // And the taskbars: a window that crossed onto another monitor belongs in
+    // a different monitor's list now. Owed like the rest — `settle` diffs the
+    // whole set once per batch of messages, and an unchanged window sends
+    // nothing.
+    state.needs_foreign_outputs = true;
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {

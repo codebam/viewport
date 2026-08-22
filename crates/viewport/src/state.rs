@@ -623,6 +623,11 @@ pub struct ViewportState {
     pub needs_restack: bool,
     pub needs_colour_notify: bool,
 
+    /// Foreign-toplevel output lists are owed for the same reason: the shell
+    /// lays every window out per animation frame, and `sync_foreign_outputs`
+    /// walks all of them. See `settle`.
+    pub needs_foreign_outputs: bool,
+
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
     pub color_management: crate::color_management::ColorManagementState,
@@ -1526,6 +1531,7 @@ impl ViewportState {
             dirty_outputs: std::collections::HashSet::new(),
             needs_restack: false,
             needs_colour_notify: false,
+            needs_foreign_outputs: false,
 
             color_management,
             compositor_state,
@@ -3035,6 +3041,9 @@ impl ViewportState {
             "re-placed {count} view(s); the space holds {}",
             self.space.elements().count()
         );
+        // A re-placement is a move between screens as far as a taskbar is
+        // concerned — an output that went dark took its windows with it.
+        self.sync_foreign_outputs();
     }
 
     /// Put an output at a position, in the layout and in what clients are told.
@@ -3131,13 +3140,18 @@ impl ViewportState {
             )
             .map_err(|e| e.to_string()));
         match result {
-            Ok(()) => tracing::info!(
-                "{}: {}x{}@{}",
-                output.name(),
-                mode.size.w,
-                mode.size.h,
-                mode.refresh
-            ),
+            Ok(()) => {
+                tracing::info!(
+                    "{}: {}x{}@{}",
+                    output.name(),
+                    mode.size.w,
+                    mode.size.h,
+                    mode.refresh
+                );
+                // The mode is half of what a tearing refusal was measured
+                // under, so the answer may have changed with it.
+                surface.clear_tearing_refusal();
+            }
             Err(e) => tracing::warn!("{}: the display refused the mode: {e}", output.name()),
         }
         // A modeset invalidates what was queued for this output.
@@ -3245,12 +3259,18 @@ impl ViewportState {
             .drm_output
             .with_compositor(|compositor| compositor.use_vrr(enabled))
         {
-            Ok(()) => tracing::info!(
-                "adaptive sync {} on {}",
-                if enabled { "on" } else { "off" },
-                output.name()
-            ),
-            // Most panels cannot, and asking is how you find out.
+            Ok(()) => {
+                tracing::info!(
+                    "adaptive sync {} on {}",
+                    if enabled { "on" } else { "off" },
+                    output.name()
+                );
+                // The conditions a tearing refusal was measured under just
+                // changed, so the answer may have changed with it.
+                surface.clear_tearing_refusal();
+            }
+            // Most panels cannot, and asking is how you find out. Nothing
+            // changed, so nothing is cleared.
             Err(e) => tracing::debug!("adaptive sync unavailable on {}: {e}", output.name()),
         }
     }
@@ -5561,13 +5581,19 @@ impl ViewportState {
                 .drm_output
                 .with_compositor(|compositor| compositor.use_vrr(enabled));
             match result {
-                Ok(()) => tracing::info!(
-                    "adaptive sync {} on {}",
-                    if enabled { "on" } else { "off" },
-                    surface.output.name()
-                ),
+                Ok(()) => {
+                    tracing::info!(
+                        "adaptive sync {} on {}",
+                        if enabled { "on" } else { "off" },
+                        surface.output.name()
+                    );
+                    // The conditions a tearing refusal was measured under
+                    // just changed, so the answer may have changed with it.
+                    surface.clear_tearing_refusal();
+                }
                 // Not an error worth stopping for: most panels do not do it,
-                // and asking is how you find out.
+                // and asking is how you find out. Nothing changed, so nothing
+                // is cleared.
                 Err(e) => tracing::debug!(
                     "adaptive sync unavailable on {}: {e}",
                     surface.output.name()
@@ -8422,6 +8448,10 @@ impl ViewportState {
             .filter_map(|shell| shell.pid())
             .collect();
         self.ipc.broadcast_except(&shells, &event);
+        // A screen arriving or leaving moves windows between lists, even where
+        // no rectangle changed: the windows on the monitor that went away are
+        // on no list at all now.
+        self.sync_foreign_outputs();
     }
 
     /// Which view a toplevel object belongs to.
@@ -8989,6 +9019,38 @@ impl ViewportState {
         }
         if std::mem::take(&mut self.needs_colour_notify) {
             self.notify_surface_colour();
+        }
+        if std::mem::take(&mut self.needs_foreign_outputs) {
+            self.sync_foreign_outputs();
+        }
+    }
+
+    /// Which screens each window is on, to every foreign-toplevel client.
+    ///
+    /// A taskbar drawn per monitor can only put a window in its own list if it
+    /// is told which list that is: `output_enter` and `output_leave` are how
+    /// the wlr protocol says a move. Announce-time outputs (see
+    /// `handlers/compositor.rs`) cover the window that mapped onto an
+    /// arrangement that already existed; this covers everything after — the
+    /// shell moving a window between screens, a monitor arriving or leaving,
+    /// a workspace switch unmapping the windows that lived on the one that
+    /// went.
+    ///
+    /// Cheap to run often: `set_outputs` diffs against what it last said, so
+    /// an unchanged pass sends nothing, and the shell resends every rectangle
+    /// on every frame of an animation without the desktop hearing about it
+    /// again.
+    pub fn sync_foreign_outputs(&mut self) {
+        let updates: Vec<(u32, Vec<smithay::output::Output>)> = self
+            .views
+            .iter()
+            .map(|view| {
+                let outputs = self.space.outputs_for_element(&view.window);
+                (view.id, outputs)
+            })
+            .collect();
+        for (id, outputs) in updates {
+            self.foreign_management_state.set_outputs(id, outputs);
         }
     }
 

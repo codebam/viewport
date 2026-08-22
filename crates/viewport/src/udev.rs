@@ -269,6 +269,23 @@ pub struct Surface {
     pub queued_at: Option<std::time::Instant>,
 }
 
+impl Surface {
+    /// A tearing refusal no longer applies: the display state it was measured
+    /// under has changed.
+    ///
+    /// The render pass clears the latch itself when it notices `refused_under`
+    /// disagreeing with the world, but the change that matters — adaptive sync
+    /// toggled, a mode set — is known the moment it happens, and clearing here
+    /// means the next frame is asked rather than the one after. The count goes
+    /// too: it exists to justify the latch, and a display that refused three
+    /// times under one mode has said nothing about the next.
+    pub fn clear_tearing_refusal(&mut self) {
+        self.refuses_tearing = false;
+        self.tearing_failures = 0;
+        self.refused_under = None;
+    }
+}
+
 /// Everything the DRM backend holds.
 /// The renderer the DRM path draws with.
 ///

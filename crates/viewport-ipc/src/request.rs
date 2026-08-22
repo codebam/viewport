@@ -447,7 +447,7 @@ pub enum Request {
     /// form of this and still works.
     #[serde(rename = "shell.overlay")]
     ShellOverlay {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "overlay_rects")]
         rects: Vec<OverlayRect>,
     },
 
@@ -907,6 +907,48 @@ pub struct ModeRequest {
 /// it likes — the same shape of bound the framing layer puts on a message.
 pub const MAX_WORKSPACES: usize = 512;
 
+/// How many rectangles one `shell.overlay` may carry.
+///
+/// The list is hit-tested twice per pointer motion and drawn every frame, so
+/// its length is a cost the compositor pays for as long as the message stands.
+/// The shell sends a handful — one per floating notification and chooser; the
+/// bound is what keeps a broken or hostile sender parking thirty thousand
+/// rectangles on every mouse move. It matches the compositor's own
+/// `MAX_SHELL_OVERLAYS` on the storage side, so a list either side refuses is
+/// refused the same way: a parse error against `shell.overlay`.
+pub const MAX_OVERLAY_RECTS: usize = 4096;
+
+/// Deserialize `shell.overlay`'s rectangles, bounded — the same shape as
+/// [`workspaces`].
+fn overlay_rects<'de, D>(deserializer: D) -> Result<Vec<OverlayRect>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Bounded;
+    impl<'de> serde::de::Visitor<'de> for Bounded {
+        type Value = Vec<OverlayRect>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "at most {MAX_OVERLAY_RECTS} rectangles")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::new();
+            while let Some(rect) = seq.next_element::<OverlayRect>()? {
+                if out.len() == MAX_OVERLAY_RECTS {
+                    return Err(<A::Error as serde::de::Error>::custom(format!(
+                        "more than {MAX_OVERLAY_RECTS} rectangles"
+                    )));
+                }
+                out.push(rect);
+            }
+            Ok(out)
+        }
+    }
+    deserializer.deserialize_seq(Bounded)
+}
+
 /// Deserialize `workspace.list`'s list, bounded.
 ///
 /// Counted as it is built rather than checked afterwards, so a message
@@ -1244,6 +1286,32 @@ mod tests {
             panic!("a list at the cap should parse");
         };
         assert_eq!(workspaces.len(), MAX_WORKSPACES);
+    }
+
+    #[test]
+    fn a_shell_overlay_over_the_cap_is_a_parse_error() {
+        // Same bound as the compositor's own MAX_SHELL_OVERLAYS, at the parse
+        // boundary rather than the storage one.
+        let over = format!(
+            r#"{{"type":"shell.overlay","rects":[{}]}}"#,
+            (0..MAX_OVERLAY_RECTS + 1)
+                .map(|n| format!(r#"{{"x":0,"y":0,"width":1,"height":1,"id":{n}}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let error = crate::parse(over.as_bytes()).unwrap_err();
+        let crate::ParseError::BadBody { name, message } = error else {
+            panic!("should be a bad body, not {error:?}");
+        };
+        assert_eq!(name, "shell.overlay");
+        assert!(message.contains("4096"), "{message}");
+
+        // An absent list is still an empty overlay: the whole-list replace
+        // semantics did not change with the bound.
+        let Request::ShellOverlay { rects } = parse(r#"{"type":"shell.overlay"}"#) else {
+            panic!("a bare shell.overlay should parse");
+        };
+        assert!(rects.is_empty());
     }
 
     #[test]

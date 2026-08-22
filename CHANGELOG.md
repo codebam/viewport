@@ -12,6 +12,29 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- Taskbars drawn per monitor are told which monitor each window is on. The
+  wlr foreign-toplevel protocol carries an `output_enter`/`output_leave` pair
+  for exactly this, and announce time was the only place it was ever sent — a
+  window announced onto an arrangement that already existed named its screen,
+  and then never again: moving a window to the other monitor, plugging one in,
+  or switching workspaces left every taskbar in the session convinced the
+  window was still where it started. The lists are now kept true wherever the
+  space changes under them, and the update diffs against what was last said,
+  so the shell laying every window out on every frame of an animation sends
+  nothing at all.
+- A `shell.overlay` carrying more than 4096 rectangles is refused at parse.
+  The compositor already refused to *store* more than that; refusing there
+  meant the message had still been parsed whole and the sender told nothing
+  until after it had been built. The bound now sits at the same boundary as
+  the workspace-list one, so a hostile list is a parse error against
+  `shell.overlay` rather than a silence.
+- A tearing refusal is forgotten the moment the thing it was measured under
+  changes. Adaptive sync toggled off, or a mode set, were exactly the
+  conditions a display had refused tearing in — the user's own answer to a
+  display that tears badly — and the latch used to outlive both until the
+  render pass happened to notice. The clear is now eager, and takes the
+  failure count with it: three refusals under one mode say nothing about the
+  next.
 - A notification closing no longer shows the desktop background where it was.
   The compositor draws the notification strip over a window by redrawing that
   piece of the page cropped to the rectangle the page reported, and what is
