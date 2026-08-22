@@ -44,7 +44,7 @@ pub fn save(state: &str) {
     name.push(".tmp");
     let temp = path.with_file_name(name);
 
-    let written = std::fs::write(&temp, state).and_then(|()| std::fs::rename(&temp, &path));
+    let written = write_durable(&temp, state).and_then(|()| std::fs::rename(&temp, &path));
     if let Err(e) = written {
         tracing::error!("saving layout to {}: {e}", path.display());
         // Not left behind: the next save writes it again anyway, and a stale
@@ -52,6 +52,35 @@ pub fn save(state: &str) {
         // wonder about later.
         let _ = std::fs::remove_file(&temp);
     }
+}
+
+/// Write `state` to a file that did not exist, all the way out to the disk.
+///
+/// Fail-if-exists rather than truncate: a temp left by a save that died
+/// mid-write is removed and replaced rather than appended into. `sync_all`
+/// before the rename is what makes the rename worth anything — rename(2)
+/// orders the name change against this process's writes, but without the sync
+/// the data can still be in page cache when it lands, so a power cut after a
+/// *successful* save could leave the layout file renaming onto nothing.
+fn write_durable(path: &std::path::Path, state: &str) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    use std::io::Write as _;
+    file.write_all(state.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    // And the directory entry too, best effort: ext4 and its kin journal
+    // metadata on their own schedule, and the parent's entry is the part that
+    // says the new layout exists at all.
+    if let Some(dir) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(dir) {
+            let _ = dir.sync_all();
+        }
+    }
+    Ok(())
 }
 
 /// The stored layout, or an empty string when there is none.
