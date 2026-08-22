@@ -185,7 +185,14 @@ function renderNetworkPicker() {
   /* Arrows to choose, Enter to join or leave, Escape to go. Bound before the
      passphrase box is focused below, because binding puts the keyboard on the
      dialog and the box has to win that. */
-  bindKeyNav('network', dialog, { dismiss: closeNetworkPicker });
+  bindKeyNav('network', dialog, {
+    dismiss: closeNetworkPicker,
+    /* Only while it is asking: the rows hold the keyboard on a picker that is
+       just a list, and the passphrase box takes it the moment there is one to
+       type into. Asked each time rather than fixed at bind, because the box
+       appears and goes while the same picker is up. */
+    field: () => networkAsking !== null,
+  });
 
   /* The passphrase box is focused here rather than where it is built, because
      `focus()` on an element that is not in the document does nothing and the

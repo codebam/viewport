@@ -6195,6 +6195,56 @@ if (mode === 'scrolling') {
       sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 90));
   }
 
+  /* --- the two surfaces whose keyboard is a text field --- */
+  {
+    /* The launcher is a list *and* a field, and the caret belongs in the
+       field. Every other surface here puts the keyboard on the row under the
+       highlight, which is what makes a screen reader read it; doing that to
+       the launcher would take the caret out of the filter, and the list is
+       rebuilt on the answer to every keystroke — so the field would lose the
+       caret a moment after opening and the second character typed would go
+       nowhere. The row is pointed at with `aria-activedescendant` instead,
+       which is what the field's own `role="combobox"` already promised. */
+    const dialog = () => globalThis.__shell.launcherEl.children[0];
+    const field = () => {
+      const find = (el) => {
+        for (const c of el?.children ?? []) {
+          if (c._classes?.has?.('launcher-input')) return c;
+          const r = find(c);
+          if (r) return r;
+        }
+        return null;
+      };
+      return find(dialog());
+    };
+
+    emit({ type: 'shell.command', command: 'launcher', args: [] });
+    emit({ type: 'launcher.list', apps: [
+      { id: 0, name: 'Alpha' }, { id: 1, name: 'Beta' }], generation: 40 });
+
+    check('the launcher leaves the caret in its filter field',
+      field()._focused === true);
+    check('and no row took it', stops(dialog()).every((r) => !r._focused));
+    check('the row under the keyboard is pointed at instead',
+      field().getAttribute('aria-activedescendant') ===
+        stops(dialog())[0].id);
+
+    key(field(), 'ArrowDown');
+    check('an arrow moves what is pointed at, not where the caret is',
+      field()._focused === true &&
+      field().getAttribute('aria-activedescendant') ===
+        stops(dialog())[1].id);
+
+    /* A filter that matches nothing draws a line of text and no rows, and a
+       pointer left naming the row that was there has a reader announcing an
+       application that is not drawn. */
+    emit({ type: 'launcher.list', apps: [], generation: 41 });
+    check('a list with nothing in it points at nothing',
+      field().getAttribute('aria-activedescendant') === null);
+
+    key(field(), 'Escape');
+  }
+
   /* A surface that never took the keyboard must not hand one back: the
      screen-share chooser is steered from the compositor and receives no input
      of its own, and a view.focus from it would move focus on a desktop nobody

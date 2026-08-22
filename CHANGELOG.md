@@ -825,6 +825,19 @@ to summarise rather than to duplicate.
   focus is `SetInputFocus`, which is only sent when an `X11Surface` is the
   seat's focus, so an autostarted X11 application sat at `PointerRoot` with
   its keystrokes going to whatever the pointer happened to be over.
+- The launcher keeps the caret in its filter field. Every surface the shell
+  draws puts the keyboard on the row under the highlight, which is what a
+  screen reader is read from — but the launcher is a list *and* a text field,
+  and the field is where the typing goes. Its list is rebuilt on the answer to
+  every keystroke, and every rebuild moved the caret onto a row, so the field
+  lost it a moment after the picker opened and the characters after the first
+  went nowhere. The row under the keyboard is now pointed at with
+  `aria-activedescendant` rather than focused, which is how a combobox says
+  which option is current without moving the caret — and is what the field's
+  own `role="combobox"` already claimed. A reader gets the same row read to it
+  and the field keeps the keys. The passphrase box in the Wi-Fi picker is the
+  other surface with a field and is fixed with it, but only while it is
+  asking: that picker's rows hold the keyboard the rest of the time.
 
 ## [0.1.8] - 2026-08-17
 

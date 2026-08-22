@@ -164,11 +164,22 @@ function keyNavRows(root) {
  *             keyboard already is and a second listener on the dialog would
  *             see every press a second time as it bubbled past.
  *   focus     the element to put the keyboard in. Defaults to the dialog.
+ *   field     true when the caret is in a text field and has to stay there.
+ *             The launcher and the passphrase box are the two: their rows are
+ *             pointed at rather than focused, because moving the caret out of
+ *             the field is the end of typing into it. A function for a
+ *             surface that is only sometimes one — the network picker has a
+ *             field just while it is asking for a passphrase, and its rows
+ *             take the keyboard the rest of the time.
  */
 function bindKeyNav(name, root, opts = {}) {
   const state = keyNavFor(name);
   state.rows = opts.rows ?? (() => keyNavRows(root));
   state.on = opts;
+  /* Kept because `keyNavRefresh` runs long after this returns — on every
+     rebuild of the list — and needs the element the caret is in to point it
+     at a row. */
+  state.root = root;
   /* The old listener first, where there is one.
    *
    * Most of these surfaces build a fresh dialog on every render, so the
@@ -222,8 +233,14 @@ function keyNavRefresh(name) {
   const state = keyNavState.get(name);
   if (!state?.rows) return;
   const rows = state.rows();
+  const inField = typeof state.on?.field === 'function'
+    ? state.on.field() : !!state.on?.field;
   if (rows.length === 0) {
     state.index = 0;
+    /* Nothing to point at, and a stale id would have a screen reader read a
+       row that is no longer drawn — the launcher filtered down to no match
+       is exactly this. */
+    (state.on?.focus ?? state.root)?.removeAttribute?.('aria-activedescendant');
     return;
   }
   state.index = Math.max(0, Math.min(state.index, rows.length - 1));
@@ -236,9 +253,32 @@ function keyNavRefresh(name) {
        current, and a class name is not in that tree. Cheap to set here and
        impossible to remember at five call sites. */
     row.setAttribute?.('aria-selected', here ? 'true' : 'false');
-    row.tabIndex = here ? 0 : -1;
+    row.tabIndex = inField ? -1 : (here ? 0 : -1);
     if (here) {
-      row.focus?.();
+      /* On a surface whose keyboard lives in a text field, the row is
+         *pointed at* and not focused.
+         .
+         Focusing it would take the caret out of the field, and the field is
+         the whole point of these two surfaces: the launcher's filter and the
+         passphrase box are real typed text. It is not a one-off either — the
+         launcher redraws its list on the answer to every keystroke, and every
+         redraw ran this — so the caret left the field a moment after the
+         surface opened and every character after that went nowhere.
+         .
+         `aria-activedescendant` is the same statement without the caret: it
+         is how a combobox says which option is current while the focus stays
+         in the input, which is what the launcher's own `role="combobox"`
+         already promised. A screen reader reads the pointed-at row and the
+         field keeps the keys. Rows are given an id because the attribute
+         names one; ids are per surface and per index, so they are stable
+         across a redraw. */
+      if (inField) {
+        if (!row.id) row.id = `${name}-row-${i}`;
+        (state.on.focus ?? state.root)?.setAttribute?.(
+          'aria-activedescendant', row.id);
+      } else {
+        row.focus?.();
+      }
       /* `block: 'nearest'` and never `behavior: 'smooth'`: a list scrolling
          under the keyboard is motion, the shell honours
          `prefers-reduced-motion` everywhere else, and an instant scroll is

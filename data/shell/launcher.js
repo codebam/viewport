@@ -156,6 +156,11 @@ function renderLauncher() {
   bindKeyNav('launcher', dialog, {
     keysOn: input,
     focus: input,
+    /* And the caret stays in it. The list is rebuilt on the answer to every
+       keystroke, and a refresh that focused the highlighted row would take
+       the caret out of the field the character after this one was going to
+       land in. */
+    field: true,
     rows: () => keyNavRows(launcherListEl),
     dismiss: closeLauncher,
     activate: () => launchSelected(),
@@ -183,6 +188,11 @@ function renderLauncherList() {
       ? `Nothing matches “${launcherFilter}”.`
       : 'No applications found.';
     list.append(empty);
+    /* And the field stops pointing at a row, because there are none. Skipping
+       this left `aria-activedescendant` naming the row that was under the
+       keyboard before the filter emptied the list, so a screen reader went on
+       reading an application that is no longer drawn. */
+    keyNavRefresh('launcher');
     return;
   }
 
