@@ -6016,10 +6016,12 @@ if (mode === 'scrolling') {
     emit({ type: 'shell.command', command: 'power', args: [] });
     check('opening the power menu asks for the keyboard',
       sent.slice(before).some((m) => m.type === 'shell.focus'));
-    /* Three profiles and four verbs, in the order they are drawn: a keyboard
+    /* Three profiles and five verbs, in the order they are drawn: a keyboard
        that could reach the profiles and not Suspend would be a power menu a
-       keyboard could not use for the thing it is mostly used for. */
-    check('every profile and every verb is a stop', rows().length === 7);
+       keyboard could not use for the thing it is mostly used for. Lock is the
+       fifth, and the one this matters most for — the desk that cannot use a
+       pointer is the desk that cannot use an external locker either. */
+    check('every profile and every verb is a stop', rows().length === 8);
     check('and it opens on the first', here(rows()) === 0);
 
     key(dialog(), 'ArrowDown');

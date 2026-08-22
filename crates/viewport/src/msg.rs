@@ -1591,10 +1591,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 62 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 65 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 62);
+        assert_eq!(TYPES.len(), 65);
     }
 
     #[test]
