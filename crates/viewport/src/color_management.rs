@@ -161,10 +161,44 @@ pub struct CreatorParams {
     pub reference_luminance: Option<f32>,
 }
 
-// Note there is no "already used" flag. The protocol has no destroy request
-// on a parametric creator — `create` consumes it — so a client using one
-// twice is a use-after-destroy that wayland-server rejects before this code
-// is reached.
+// There is deliberately no "already used" flag on a parametric creator. The
+// protocol's `create` request is its own destructor — it consumes the creator
+// — and this version of color-management-v1 defines no `already_used` error
+// for the object, so a client using one twice is a use-after-destroy that
+// wayland-server rejects before this code is reached.
+
+/// The colour state a client has set but whose commit has not landed yet.
+///
+/// Double-buffered like any other surface state: the set/unset requests write
+/// here, and a post-commit hook moves the value into [`SurfaceColor`], so a
+/// description applies with the commit that carried it rather than a frame
+/// early. A client that sets a description and never commits keeps drawing in
+/// whatever it drew in before — which is what "pending" means everywhere else
+/// in the protocol, and what this did not do before.
+#[derive(Debug, Default)]
+pub struct PendingSurfaceColor(pub std::sync::Mutex<Option<Description>>);
+
+/// Move a surface's pending colour into its live colour, if any is parked.
+///
+/// Runs from the post-commit hook; the value stays parked rather than being
+/// taken, so a commit that carries nothing still re-applies the last request,
+/// which is what double-buffered state does when it is committed again.
+fn apply_pending_colour(surface: &WlSurface) {
+    with_states(surface, |states| {
+        let pending = states
+            .data_map
+            .get::<PendingSurfaceColor>()
+            .and_then(|pending| pending.0.lock().ok().and_then(|slot| *slot));
+        states
+            .data_map
+            .insert_if_missing_threadsafe(SurfaceColor::default);
+        if let Some(color) = states.data_map.get::<SurfaceColor>() {
+            if let Ok(mut slot) = color.0.lock() {
+                *slot = pending;
+            }
+        }
+    });
+}
 
 /// A created image description, or the reason it could not be created.
 #[derive(Debug)]
@@ -176,11 +210,34 @@ pub struct ImageDescription {
 /// two descriptions are the same without comparing their contents.
 ///
 /// Monotonic and never reused, because the protocol requires a given identity
-/// to always mean the same description.
+/// to always mean the same description. Identity 0 is reserved by the protocol,
+/// so the counter saturates at `u32::MAX` rather than wrapping onto it — a wrap
+/// would hand 0 out as if it meant something, and reuse any other value's
+/// meaning a second time.
 pub fn next_identity() -> u32 {
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::AtomicU32;
     static NEXT: AtomicU32 = AtomicU32::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
+    next_identity_from(&NEXT)
+}
+
+/// The same, from an explicit counter, so the saturation is testable.
+fn next_identity_from(counter: &std::sync::atomic::AtomicU32) -> u32 {
+    use std::sync::atomic::Ordering;
+    loop {
+        let current = counter.load(Ordering::Relaxed);
+        let Some(next) = current.checked_add(1) else {
+            // At `u32::MAX` there is no unused value left; staying there
+            // reuses one identity, where wrapping would reuse every one of
+            // them and land on the reserved 0 first.
+            return current;
+        };
+        if counter
+            .compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return current;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +294,22 @@ impl Dispatch<WpColorManagerV1, ()> for ViewportState {
             }
 
             wp_color_manager_v1::Request::GetSurface { id, surface } => {
-                data_init.init(id, surface);
+                data_init.init(id, surface.clone());
+                // Colour state is double-buffered: the set/unset requests
+                // below park into `PendingSurfaceColor`, and this hook —
+                // once per surface, on its first colour-management object —
+                // swaps the parked value in when the client commits.
+                let first = with_states(&surface, |states| {
+                    states
+                        .data_map
+                        .insert_if_missing_threadsafe(PendingSurfaceColor::default)
+                });
+                if first {
+                    smithay::wayland::compositor::add_post_commit_hook::<ViewportState, _>(
+                        &surface,
+                        |_, _, surface| apply_pending_colour(surface),
+                    );
+                }
             }
 
             wp_color_manager_v1::Request::CreateIccCreator { obj } => {
@@ -490,12 +562,18 @@ impl Dispatch<WpColorManagementSurfaceV1, WlSurface> for ViewportState {
                 };
                 let held = data.description.lock().ok().and_then(|held| *held);
 
+                // Parked, not applied: the description takes effect when the
+                // client commits, via the post-commit hook registered in
+                // `get_surface`. Applying at request time recoloured the
+                // surface one frame before the buffer carrying it arrived —
+                // a video switching its own colour space flashed with the
+                // previous frame's colours.
                 with_states(surface, |states| {
                     states
                         .data_map
-                        .insert_if_missing_threadsafe(SurfaceColor::default);
-                    if let Some(color) = states.data_map.get::<SurfaceColor>() {
-                        if let Ok(mut slot) = color.0.lock() {
+                        .insert_if_missing_threadsafe(PendingSurfaceColor::default);
+                    if let Some(pending) = states.data_map.get::<PendingSurfaceColor>() {
+                        if let Ok(mut slot) = pending.0.lock() {
                             *slot = held;
                         }
                     }
@@ -503,11 +581,11 @@ impl Dispatch<WpColorManagementSurfaceV1, WlSurface> for ViewportState {
             }
 
             wp_color_management_surface_v1::Request::UnsetImageDescription => {
-                // Back to the sRGB default, which is what "said nothing"
-                // means.
+                // Parked for the same reason as the set above; "said nothing"
+                // still means the sRGB default once the commit lands.
                 with_states(surface, |states| {
-                    if let Some(color) = states.data_map.get::<SurfaceColor>() {
-                        if let Ok(mut slot) = color.0.lock() {
+                    if let Some(pending) = states.data_map.get::<PendingSurfaceColor>() {
+                        if let Ok(mut slot) = pending.0.lock() {
                             *slot = None;
                         }
                     }
@@ -972,6 +1050,33 @@ mod tests {
         let b = next_identity();
         assert_ne!(a, b);
         assert!(b > a);
+    }
+
+    #[test]
+    fn identities_never_touch_the_reserved_zero() {
+        // The protocol reserves identity 0; the counter starts above it and
+        // must never hand it out.
+        for _ in 0..64 {
+            assert_ne!(next_identity(), 0);
+        }
+    }
+
+    #[test]
+    fn identities_saturate_at_the_top_rather_than_wrapping() {
+        // The old counter did `fetch_add` and wrapped: at `u32::MAX` it came
+        // back around onto the reserved 0, handing out an identity the
+        // protocol says can never mean anything, and reusing every value's
+        // meaning after it. Saturating reuses one identity instead — the
+        // smaller failure by far, and unreachable outside four billion
+        // descriptions in one session.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let counter = AtomicU32::new(u32::MAX - 1);
+        assert_eq!(next_identity_from(&counter), u32::MAX - 1);
+        assert_eq!(counter.load(Ordering::Relaxed), u32::MAX);
+        assert_eq!(next_identity_from(&counter), u32::MAX);
+        assert_eq!(next_identity_from(&counter), u32::MAX);
+        assert_eq!(next_identity_from(&counter), u32::MAX);
+        assert_ne!(next_identity(), 0);
     }
 
     #[test]

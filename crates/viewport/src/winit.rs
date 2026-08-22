@@ -259,7 +259,14 @@ pub fn init(
                         // this gets used most, and it is the only way to tell "the
                         // shell painted nothing" from "the shell never reached the
                         // screen".
-                        if let Some(path) = crate::dump::output_target() {
+                        //
+                        // Read once: the environment is fixed before the loop
+                        // starts, and this ran an `env::var_os` on every frame.
+                        static DUMP_TARGET: std::sync::OnceLock<Option<std::path::PathBuf>> =
+                            std::sync::OnceLock::new();
+                        if let Some(path) =
+                            DUMP_TARGET.get_or_init(crate::dump::output_target).clone()
+                        {
                             // Repeatedly, overwriting: whatever is on screen when
                             // someone looks at the file is what it holds. A single
                             // capture has to guess when the interesting thing

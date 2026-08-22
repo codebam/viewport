@@ -222,7 +222,17 @@ pub struct Surface {
     /// this output is in — adaptive sync being the combination that goes wrong
     /// — and asking again every frame would be a screen that stops once per
     /// frame for the rest of the session.
+    ///
+    /// Not forever, though: adaptive sync and modesets are exactly the
+    /// conditions a refusal was measured under, and either changing means the
+    /// answer may have changed with it. See `refused_under`.
     pub refuses_tearing: bool,
+    /// The display state a refusal was recorded under: whether adaptive sync
+    /// was on, and the mode. Cleared — with the count above — the moment
+    /// either differs, because turning VRR off or changing mode are the user's
+    /// own answer to a display that tears badly, and a latch set before it
+    /// would otherwise outlive them for the rest of the session.
+    pub refused_under: Option<(bool, Option<smithay::output::Mode>)>,
     /// Whether this output is switched on.
     ///
     /// A client can turn a monitor off through wlr-output-management — kanshi
@@ -2158,6 +2168,7 @@ impl ViewportState {
                             tearing: false,
                             tearing_failures: 0,
                             refuses_tearing: false,
+                            refused_under: None,
                             enabled: true,
                             pending: false,
                             queued_at: None,
@@ -2295,6 +2306,7 @@ impl ViewportState {
     /// about.
     fn presentation_feedback(
         &self,
+        udev: &Udev,
         output: &smithay::output::Output,
         states: &smithay::backend::renderer::element::RenderElementStates,
     ) -> smithay::desktop::utils::OutputPresentationFeedback {
@@ -2317,7 +2329,11 @@ impl ViewportState {
         // told about none of them, then stopped. Measured 2026-07-30 with
         // WAYLAND_DEBUG on a frozen terminal — nine commits, zero `presented`.
         self.update_scanout_outputs(output, states);
-        self.send_dmabuf_feedback(output);
+        // The backend itself, not `self.udev`: `render` takes the latter out
+        // while the renderer is borrowed, so from inside the render pass —
+        // which is where every frame's feedback is taken — the field reads
+        // `None` and per-output dmabuf feedback was silently never sent.
+        self.send_dmabuf_feedback(udev, output);
 
         let mut feedback = smithay::desktop::utils::OutputPresentationFeedback::new(output);
         for window in self.space.elements() {
@@ -2402,12 +2418,14 @@ impl ViewportState {
     /// Sent per frame, from the same place the scan-out output is recorded,
     /// because `send_dmabuf_feedback` only tells a surface whose primary
     /// scan-out output is this one — which is state written immediately above.
-    fn send_dmabuf_feedback(&self, output: &smithay::output::Output) {
+    ///
+    /// The `Udev` comes in as an argument rather than being read off `self`,
+    /// because the only caller runs inside the render pass, where `render` has
+    /// taken `self.udev` out to lend the renderer: reading the field there
+    /// found `None` every time, and this never sent anything.
+    fn send_dmabuf_feedback(&self, udev: &Udev, output: &smithay::output::Output) {
         use smithay::desktop::utils::surface_primary_scanout_output;
 
-        let Some(udev) = self.udev.as_ref() else {
-            return;
-        };
         // This output's own feedback where there is one, because only that
         // carries the scanout tranche — which formats could reach this
         // monitor's plane rather than being composited. The device's is the
@@ -2555,7 +2573,6 @@ impl ViewportState {
         id: OutputId,
         metadata: &mut Option<smithay::backend::drm::DrmEventMetadata>,
     ) {
-        let _ = metadata;
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
@@ -2640,29 +2657,32 @@ impl ViewportState {
             // by presentation — a browser, most visibly — with no idea when
             // its last frame landed.
             Ok(Some(Some(mut feedback))) => {
-                // A software clock read here, not `metadata.time`, and that is
-                // not an oversight — it was tried.
+                // The DRM metadata's own clock, not a late software read, and
+                // not an oversight this time either — but for the opposite
+                // reason.
                 //
-                // The reasoning for the hardware timestamp is sound on its
-                // face: this reads the clock after the event has been queued,
-                // delivered and dispatched, so it runs late by a varying
-                // amount, and it is sent with `HwClock` set, which tells the
-                // client it came from the display. Clients schedule from it.
+                // A CLOCK_MONOTONIC read *here* runs late by a varying amount:
+                // the event has been queued, delivered and dispatched before
+                // this line runs. It was also sent with `HwClock` set, which
+                // claims the number came from the display — a provenance it
+                // does not have, and clients schedule from what that flag
+                // promises.
                 //
-                // Measured, it makes things worse. Feeding `metadata.time`
-                // through instead moved 240Hz from 198.0fps to 206.9 — and
-                // took 60Hz from a steady 50.4 to 35.9 and then 43.2 across
-                // two runs, with the compositor itself dropping to 42-48
-                // vblanks a second and reporting 6-9 stalls where it had been
-                // flipping on every vblank with none. Unstable, not just
-                // slower, and instability is worse than the constant shortfall
-                // it was meant to fix.
-                //
-                // So this stays until there is an explanation for that, rather
-                // than a second guess at it. The `HwClock` flag below is
-                // wrong — it is claiming a provenance this number does not
-                // have — and that is worth fixing on its own, but it is not
-                // worth fixing blind.
+                // Feeding the metadata through was tried once and abandoned,
+                // but the measurement carried the same lie inside it: the
+                // hardware time went out flagged `Vsync | HwClock |
+                // HwCompletion` on every frame, monotonic or not, and a 60Hz
+                // run falling from 50.4 to 35.9fps is as consistent with
+                // clients scheduling off a mislabelled clock as with the
+                // timestamp itself. What is unambiguous is the provenance: the
+                // kernel's vblank timestamp converted onto the monotonic clock
+                // is exactly what `Monotonic` says it is, so it goes out as
+                // `Vsync | HwCompletion` — synchronized to the display and
+                // measured, without claiming a hardware *clock* reading this
+                // side never took. Where the event carries no usable time —
+                // realtime stamps, which are not on the base presentation is
+                // measured against, or no metadata at all — the software read
+                // stays, flagged `Vsync` alone.
                 let fallback = {
                     let now = smithay::reexports::rustix::time::clock_gettime(
                         smithay::reexports::rustix::time::ClockId::Monotonic,
@@ -2672,12 +2692,12 @@ impl ViewportState {
                 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
                 let (clock, sequence, flags) = match metadata.as_ref() {
                     Some(metadata) => match metadata.time {
-                        smithay::backend::drm::DrmEventTime::Monotonic(_) => (
-                            fallback,
-                            metadata.sequence,
-                            Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
-                        ),
-                        _ => (fallback, metadata.sequence, Kind::Vsync),
+                        smithay::backend::drm::DrmEventTime::Monotonic(time) => {
+                            (time, metadata.sequence, Kind::Vsync | Kind::HwCompletion)
+                        }
+                        smithay::backend::drm::DrmEventTime::Realtime(_) => {
+                            (fallback, metadata.sequence, Kind::Vsync)
+                        }
                     },
                     None => (fallback, 0, Kind::Vsync),
                 };
@@ -2960,6 +2980,29 @@ impl ViewportState {
             return;
         }
 
+        // A refusal only stands while the display state it was measured under
+        // does. Adaptive sync and the mode are the two things that plausibly
+        // change whether an asynchronous flip is taken — turning VRR off being
+        // precisely what a user does about a display that tears badly — so a
+        // change in either clears the latch and the count and gives tearing
+        // another chance. Checked here rather than at the change itself,
+        // because `use_vrr` and `use_mode` are reached from several places and
+        // this reads back what the hardware actually ended up on.
+        if surface.refuses_tearing {
+            let vrr = surface
+                .drm_output
+                .with_compositor(|compositor| compositor.vrr_enabled());
+            if surface.refused_under != Some((vrr, surface.output.current_mode())) {
+                surface.refuses_tearing = false;
+                surface.tearing_failures = 0;
+                tracing::info!(
+                    "{}: the display's mode or adaptive sync changed, so \
+                     tearing will be asked for again",
+                    output.name()
+                );
+            }
+        }
+
         // Tearing, if one window covers this output and asked for it. Set
         // before the frame is built, because it changes how the frame that is
         // about to be queued reaches the screen.
@@ -2990,7 +3033,7 @@ impl ViewportState {
 
         // A composite of exactly this list, for when the screen and the log
         // disagree.
-        if let Some(path) = crate::dump::output_target() {
+        if let Some(path) = output_dump_target() {
             let settled = settled_for
                 .map(|d| d >= std::time::Duration::from_secs(2))
                 .unwrap_or(false);
@@ -3055,9 +3098,10 @@ impl ViewportState {
                 // was scanned out directly is reported as such.
                 // From the `udev` handed in: the caller took it out of `self`
                 // so the renderer could be borrowed, and reaching for
-                // `self.udev` here finds nothing and skips the flip — which is
-                // a screen that never comes up at all.
-                let feedback = self.presentation_feedback(output, &rendered.states);
+                // `self.udev` here finds nothing — which cost the flip once
+                // already, and silenced per-output dmabuf feedback every
+                // frame.
+                let feedback = self.presentation_feedback(udev, output, &rendered.states);
                 let Some(surface) = udev.surface_mut(id) else {
                     return;
                 };
@@ -3093,6 +3137,16 @@ impl ViewportState {
                         // can tear never does.
                         if surface.tearing_failures >= 3 {
                             surface.refuses_tearing = true;
+                            // Recorded so the latch knows when to lift: the
+                            // moment adaptive sync or the mode differs from
+                            // what stood here when the display refused three
+                            // times, the pass above clears it and asks again.
+                            surface.refused_under = Some((
+                                surface
+                                    .drm_output
+                                    .with_compositor(|compositor| compositor.vrr_enabled()),
+                                surface.output.current_mode(),
+                            ));
                             tracing::warn!(
                                 "{}: the display refused a tearing flip three times, so it \
                                  will not be asked again",
@@ -3386,11 +3440,26 @@ impl ViewportState {
 /// VIEWPORT_SCANOUT=0 composites everything, which is slower and always
 /// correct. It is a diagnostic: it tells "the planes are wrong" apart from
 /// "the renderer is wrong" in one run, and those look identical on screen.
+///
+/// Read once. This ran per frame per output, and an environment lookup on
+/// every render pass is a syscall-shaped tax on exactly the path that is
+/// supposed to be cheapest; the environment is fixed before the loop starts.
 fn frame_flags() -> FrameFlags {
-    match std::env::var("VIEWPORT_SCANOUT").as_deref() {
+    static FLAGS: std::sync::OnceLock<FrameFlags> = std::sync::OnceLock::new();
+    *FLAGS.get_or_init(|| match std::env::var("VIEWPORT_SCANOUT").as_deref() {
         Ok("0") => FrameFlags::empty(),
         _ => FrameFlags::DEFAULT,
-    }
+    })
+}
+
+/// The path `VIEWPORT_DUMP_OUTPUT` names, read once.
+///
+/// The environment is fixed before the loop starts, so asking it again for
+/// every output on every pass could only ever repeat the first answer — and
+/// did, at the refresh rate.
+fn output_dump_target() -> Option<std::path::PathBuf> {
+    static TARGET: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    TARGET.get_or_init(crate::dump::output_target).clone()
 }
 
 /// A CRTC this connector can drive that nothing else is using.
