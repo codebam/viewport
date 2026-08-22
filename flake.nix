@@ -1,5 +1,5 @@
 {
-  description = "Viewport — a wlroots compositor whose shell is rendered by WPE WebKit";
+  description = "Viewport — a Wayland compositor whose shell is rendered by a web engine";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -150,8 +150,6 @@
             homepage = "https://wpewebkit.org/";
           };
         }));
-
-        wlroots = pkgs.wlroots_0_20 or pkgs.wlroots;
 
         nativeDeps = with pkgs; [
           meson
@@ -817,7 +815,6 @@
             ]}:/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             echo "viewport devshell"
-            echo "  wlroots     : $(pkg-config --modversion wlroots-0.20 2>/dev/null || echo MISSING)"
             # MISSING here is the ordinary state, not a broken shell: the engine
             # is only in `nix develop .#wpe`. Said this way so that a wpe build
             # failing to find it points at which shell to be in.
@@ -825,7 +822,6 @@
             echo "  wpe-platform: $(pkg-config --modversion wpe-platform-2.0 2>/dev/null || echo 'MISSING (nix develop .#wpe)')"
             echo "  rustc       : $(rustc --version 2>/dev/null || echo MISSING)"
             echo
-            echo "  meson setup build && ninja -C build   # the C compositor"
             echo "  cargo test --workspace                # the Rust rewrite"
             echo "  VIEWPORT_REQUIRE_GPU=1 cargo test -p viewport-web   # dma-buf, for real"
 
@@ -871,17 +867,14 @@
           # system installed one or the other; there is only one now.
           #
           # The default is `servoshell`: Servo, in the browser nixpkgs builds,
-          # started as a child process. It is the lightest desktop measured —
-          # 8.5% of a core under load against cef's 9.9 and the WebKit and
-          # Blink backends' 11.5, 357 MB resident against 449 to 639, and four
-          # processes against nine to twelve. See docs/benchmarks.md.
-          #
-          # What that costs is paint rate, and it is not a small difference:
-          # 14 frames a second under the same load against 43 to 48, which is
-          # 0.607% of a core per frame the shell actually painted against 0.230
-          # to 0.261. A desktop that repaints a third as often is cheaper the
-          # way a slower car uses less fuel, and whether that reads as smooth
-          # depends on what is being done to it.
+          # started as a child process. It is the lightest desktop measured,
+          # and the cheapest engine per painted frame it is not — the trade is
+          # measured rather than asserted, and the numbers live in one place:
+          # docs/benchmarks.md, "servoshell, measured against the other
+          # three", which this comment does not repeat. A desktop that
+          # repaints a third as often is cheaper the way a slower car uses
+          # less fuel, and whether that reads as smooth depends on what is
+          # being done to it.
           #
           # `cef` is the answer for a desktop that should feel quick, and
           # `webkitgtk` for one short of memory but not of CPU. `wpe` beats
