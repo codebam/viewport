@@ -21,6 +21,8 @@ a TTY.
   "layout": "tiling",       // or "scrolling", "solar", "matrix", "canvas"
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
   "pixel_format": "auto",   // or "10" / "8" bits per channel; see below
+  "gpu": "card1",           // which card renders; see below
+  "cross_gpu": "native",    // or "portable", with two cards; see below
   "idle": { "lock_after": 600, "lock_command": "swaylock -f",
             "blank_after": 900 },
   "lid": "lock",            // or "blank" / "suspend" / "ignore"; see below
@@ -1611,6 +1613,99 @@ on a display that only shows eight of the bits that cost buys nothing. HDR
 needs more than eight bits per channel, though, so `"pixel_format": "8"` and an
 output's `hdr` are working against each other.
 
+## Graphics cards
+
+Every card on the seat is opened. Each one drives the monitors wired to it,
+draws them with a renderer of its own, and offers its own non-desktop
+connectors for lease, so a monitor on the discrete card of a hybrid laptop is a
+monitor rather than a connector nothing ever sees. Nothing here needs to be set
+for that to happen.
+
+Two things are a preference rather than something the compositor can read off
+the hardware, and those are the two keys.
+
+### Which card is primary
+
+```json
+"gpu": "card1"
+```
+
+`--gpu card1` and `VIEWPORT_GPU=card1` say the same thing; the flag wins over
+the variable, and the variable over the file. The value is matched as a
+*substring of the device path*, so `card1`, `renderD129` and a whole
+`/dev/dri/by-path/pci-0000:03:00.0-card` all work — nobody remembers which form
+a particular machine calls its cards, and the useful ones are not
+interchangeable between reboots.
+
+The primary is the card the shell draws on, the one the default `linux-dmabuf`
+advertisement names, and — on a machine with one card — everything. It is not
+"the only card that is used": the others are opened regardless and drive their
+own screens.
+
+Absent, the compositor ranks the cards itself: one that a Vulkan device
+actually exposes first, then whatever the seat calls primary. That ranking is
+right on a virtual machine, where the firmware's VGA device has a display and
+no Vulkan, and cannot decide anything on a hybrid laptop — the integrated GPU
+is the battery answer and the discrete one is the frames answer, and only you
+know which you wanted. A value that matches no card is a warning naming every
+card there was to choose from, and the ranking runs as though nothing had been
+asked.
+
+The log says what happened, always, when there was a choice to make:
+
+```
+2 GPUs (/dev/dri/card0, /dev/dri/card1); drawing and scanning out on card1 as VIEWPORT_GPU asked
+driving 2 GPUs — 0: /dev/dri/card1 (render /dev/dri/renderD129), 1: /dev/dri/card0 (render /dev/dri/renderD128)
+```
+
+### What clients may allocate
+
+```json
+"cross_gpu": "portable"
+```
+
+`--cross-gpu portable` and `VIEWPORT_CROSS_GPU=portable` say the same thing,
+with the same precedence. `native` and `portable` are the values, and `native`
+is the default. **On a machine with one card this setting does nothing at all.**
+
+A client is told which card to allocate its buffers for, and which formats and
+modifiers that card can read. There are two answers to give it and the
+protocol has room for both:
+
+* **Per surface**, once a window is on a screen: the card actually displaying
+  it. This is always sent and it is the mechanism that makes two cards work.
+  A client that honours it — everything on Mesa does — reallocates when its
+  window is dragged to a monitor on the other card, and nothing else is needed.
+* **By default**, before a window has been anywhere: one card, because the
+  protocol's default tranche is one device. That card is the primary. What
+  `cross_gpu` chooses is which of its formats are named.
+
+| Value | What is advertised by default |
+| --- | --- |
+| `native` | Every format and modifier the primary's renderer can import. The default, and the fast answer: a window that stays on the card it was opened on keeps the tiled and compressed modifiers that are the whole reason modifiers exist |
+| `portable` | Only the formats **every** card on the seat can import. The window can move to any monitor without reallocating, and every client pays for it whether or not its windows ever move — what survives the intersection is usually linear, so a fullscreen window may lose framebuffer compression |
+
+**What goes wrong without `portable`, and how you would know.** A client that
+ignores per-surface feedback keeps allocating for the primary. Drag its window
+to a monitor on the other card and the buffer arrives at a renderer that cannot
+read its modifier, and the surface is simply missing from that screen — the
+window is still there on its old monitor, and there is a hole where it should
+be on the new one. The compositor says so, once, naming the format and both
+cards:
+
+```
+a client buffer (Argb8888, modifier 0x100000000000006) imports on gpu [0] and not on
+gpu [1]; a window showing it will be missing from the screens on the cards that
+refused it. Set cross_gpu = "portable" to advertise only what every card can read
+```
+
+Once per format, modifier and card, not once per frame — so a line like that
+in the log is one condition and not one frame.
+
+A buffer *no* card can read is a different thing: the client is told the import
+failed, which over `linux-dmabuf` is a protocol error, because the alternative
+is a window that never appears anywhere with nothing said about why.
+
 ## Outputs
 
 The `outputs` block is keyed by connector name — `DP-1`, `HDMI-A-1`, what
@@ -1628,6 +1723,22 @@ The `outputs` block is keyed by connector name — `DP-1`, `HDMI-A-1`, what
 | `mode` | `"WIDTHxHEIGHT"` or `"WIDTHxHEIGHT@RATE"`. A string, always: `"mode": 5` reads back as absent rather than being rounded into something |
 | `max_refresh` | The fastest mode at the largest size the display offers |
 | `scale`, `transform`, `hdr`, `x`, `y` | As the same names elsewhere |
+
+**Two cards can offer the same connector name.** Connector names are handed out
+per card, so a laptop with an integrated display controller and a discrete card
+beside it has two `DP-1`s, and a key in this block would otherwise apply to
+both. The first card to claim a name keeps it — on a machine with one card that
+is every screen, and nothing written for one is affected — and the second gets
+the card index appended: `DP-1-gpu1`. That is the name in this block, in
+`wlr-randr`, and in `output.layout`, and the log says when it happened:
+
+```
+gpu 1: another card already has a screen called DP-1; this one is DP-1-gpu1
+```
+
+The index is the card's position in the list the log prints at startup, and it
+is only as stable as the order the seat enumerates cards in. Where that matters,
+`gpu` above fixes which card is first.
 
 **A preferred mode is often not the fastest one.** A 240Hz panel commonly
 advertises 120Hz as preferred, and a compositor that takes the display's word

@@ -402,6 +402,27 @@ pub struct File {
     /// See [`parse_pixel_format`] for what each one does.
     pub pixel_format: Option<String>,
 
+    /// Which graphics card renders and, on a single-GPU machine, scans out.
+    ///
+    /// Matched as a substring of the device path, so `"card1"`, `"renderD129"`
+    /// and a whole `/dev/dri/by-path/...` all work. Absent lets the compositor
+    /// rank the cards itself, which prefers one that a Vulkan device actually
+    /// exposes and then whatever the seat calls primary.
+    ///
+    /// The setting exists because on a hybrid laptop the ranking cannot decide
+    /// for you: the integrated GPU is the battery answer and the discrete one
+    /// is the frames answer, and that is a preference, not something readable
+    /// off the hardware. Every card is opened either way — this names the one
+    /// clients allocate against and the one the shell draws on.
+    pub gpu: Option<String>,
+
+    /// What clients are told to allocate against when there is more than one
+    /// card: `"native"` or `"portable"`. Absent is `"native"`.
+    ///
+    /// See [`crate::multigpu::CrossGpu`] for what each one costs. Nothing on a
+    /// machine with one card.
+    pub cross_gpu: Option<String>,
+
     pub adaptive_sync: Option<bool>,
     pub vt_switching: Option<bool>,
 

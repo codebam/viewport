@@ -9,9 +9,28 @@
 // the compositor allocates its own scanout buffers through GBM and binds them
 // as dmabufs, which is the path `Bind<Dmabuf>` was written for.
 //
-// What is deliberately not here yet: multi-GPU, and hotplug of whole devices.
-// Connector hotplug within the primary device is handled, because plugging a
-// monitor in is ordinary and unplugging a GPU is not.
+// Every card on the seat is opened, not only the one the seat calls primary.
+// Each gets its own renderer, its own output manager and its own lease global,
+// and each drives the connectors wired to it — a monitor on the discrete card
+// is a monitor, and a headset on it is leasable. `devices[0]` is the primary:
+// where the shell allocates, what the default dmabuf advertisement names, and
+// on the single-GPU machine every current user is on, the only one there is.
+// An output is named by an [`OutputId`], which carries the device index,
+// because a crtc handle is only unique within the card that issued it.
+//
+// Where the cards meet — a screen name two cards both want, a client buffer
+// only one of them can read, what clients are told to allocate against — the
+// reasoning is in [`crate::multigpu`], which is written so those rules can be
+// checked without a graphics card in the machine. What happens to a buffer the
+// scanout card cannot import, and why the copy through the primary that most
+// compositors do is not implemented here, is written down there too.
+//
+// Hotplug is handled at both scales. A connector coming and going is ordinary
+// and is a re-scan of the card it is on. A whole card coming and going is
+// [`crate::recovery`]'s: it was built for a GPU that a bus reset unregistered,
+// which from userspace is indistinguishable from one being unplugged, and it
+// covers a card that leaves and comes back, a card that leaves and does not,
+// and a card that arrives having never been here.
 
 use std::collections::HashMap;
 
@@ -176,6 +195,28 @@ fn scanout_formats() -> &'static [Fourcc] {
         Err(e) => {
             tracing::warn!("{e}; using the default order");
             SCANOUT_FORMATS
+        }
+    }
+}
+
+/// What clients are told to allocate against when there is more than one card.
+///
+/// `$VIEWPORT_CROSS_GPU`, which `--cross-gpu` and the config file's `cross_gpu`
+/// both write before a device is opened — the same route `pixel_format` and
+/// `--renderer` take, and for the same reason: the answer is needed while the
+/// devices are being brought up, before there is any state to read a setting
+/// out of.
+///
+/// An unparseable value is a warning and the default rather than a failure to
+/// start. See `scanout_formats` for why: a compositor that refuses to bring the
+/// screens up over a typo leaves a TTY as the only way to fix it.
+fn cross_gpu_policy() -> crate::multigpu::CrossGpu {
+    let asked = std::env::var("VIEWPORT_CROSS_GPU").unwrap_or_default();
+    match crate::multigpu::parse_cross_gpu(&asked) {
+        Ok(policy) => policy,
+        Err(e) => {
+            tracing::warn!("{e}; advertising each card's own formats");
+            crate::multigpu::CrossGpu::Native
         }
     }
 }
@@ -511,19 +552,29 @@ pub struct Device {
     pub attempts: u32,
     /// When it went, so the backoff has something to count from.
     pub offline_since: Option<std::time::Instant>,
-}
-
-pub struct Udev {
-    /// `wp-drm-lease-v1`: handing a whole connector to a client.
+    /// `wp-drm-lease-v1` for this card: handing one of its connectors to a
+    /// client whole.
     ///
     /// A headset is not a monitor — the compositor cannot composite for it,
     /// because the client is the only thing that knows how to warp for the
     /// lenses and when to submit for the display's own timing. So the
     /// connector is leased out whole and the compositor stops touching it.
     ///
+    /// Per card, because a lease *is* a card: the global carries the DRM node
+    /// a client should open, the CRTC and plane handles in it only mean
+    /// anything on the device that issued them, and the fd handed over is that
+    /// device's. One state for the whole session meant a headset plugged into
+    /// the discrete card was either not offered at all — the scan that offers
+    /// connectors runs per device and had one place to put them — or offered
+    /// under the primary's node, which is a client opening the wrong card and
+    /// leasing a CRTC number that belongs to a monitor.
+    ///
     /// `None` if the global could not be created, which is not fatal: it
-    /// leaves a session where nothing can lease, and everything else works.
+    /// leaves a card nothing can lease, and everything else works.
     pub lease_state: Option<smithay::wayland::drm_lease::DrmLeaseState>,
+}
+
+pub struct Udev {
     /// Leases handed out. Dropping one revokes it, so they are kept here for
     /// as long as the client holds them.
     pub leases: Vec<smithay::wayland::drm_lease::DrmLease>,
@@ -566,6 +617,10 @@ pub struct Udev {
     /// newest: a client that commits twice before either is drawn has waited
     /// since the first.
     pub first_commit_at: Option<std::time::Instant>,
+    /// Buffers already reported as unreadable by some card, so a client
+    /// painting at the refresh rate says it once. See
+    /// [`crate::multigpu::Reported`].
+    pub cross_gpu_reported: crate::multigpu::Reported,
     /// Cards that have never opened, waiting to be tried again.
     ///
     /// A GPU this session has not seen has no slot in `devices` to hang the
@@ -1240,21 +1295,9 @@ pub fn init(
         state.shell_ping = Some(ping);
     }
 
-    // The lease global, one per DRM device. Non-fatal if it cannot be made:
-    // no client can lease, and everything else is unaffected.
-    let lease_state = match smithay::wayland::drm_lease::DrmLeaseState::new::<ViewportState>(
-        &state.display_handle,
-        &card,
-    ) {
-        Ok(lease_state) => Some(lease_state),
-        Err(e) => {
-            tracing::warn!("no drm-lease global on {card:?}: {e}");
-            None
-        }
-    };
+    let lease_state = lease_state_for(&state.display_handle, &card);
 
     state.udev = Some(Udev {
-        lease_state,
         leases: Vec::new(),
         session,
         // The GPU chosen above is device 0: what the shell allocates on, what
@@ -1277,6 +1320,7 @@ pub fn init(
             offline_since: None,
             stepped_at: None,
             settle: 0,
+            lease_state,
         }],
         blanked: false,
         active: true,
@@ -1285,6 +1329,7 @@ pub fn init(
         last_vblank_by_output: HashMap::new(),
         committed_since_flip: false,
         first_commit_at: None,
+        cross_gpu_reported: Default::default(),
         pending_adds: Vec::new(),
     });
     if state
@@ -1305,14 +1350,18 @@ pub fn init(
     // Rendering happens on the GPU that scans out, rather than drawing
     // everything on the primary and copying across: a buffer is only cheap on
     // the device that allocated it. The cost is that a client buffer allocated
-    // on the primary has to be importable by the secondary, which is what the
-    // shared modifiers are for — where it cannot be, that surface does not
-    // appear on that screen rather than the session failing.
+    // on the primary has to be importable by the secondary — see
+    // [`crate::multigpu`] for what is done about that and what happens when it
+    // cannot be: the surface does not appear on that screen rather than the
+    // session failing.
     //
     // A GPU that cannot be opened is skipped with a warning. One card failing
     // is a monitor that stays dark; refusing to start is every monitor dark.
     for other in candidates.iter().filter(|c| **c != card) {
         let other_render = client_render_node(other);
+        // Before the borrow below, which takes all of `state`: this card's
+        // lease global needs the display handle, and its own node.
+        let other_lease = lease_state_for(&state.display_handle, other);
 
         let Some(udev) = state.udev.as_mut() else {
             break;
@@ -1337,6 +1386,7 @@ pub fn init(
                     offline_since: None,
                     stepped_at: None,
                     settle: 0,
+                    lease_state: other_lease,
                 });
                 tracing::info!("gpu {index}: {other:?} also driving outputs");
 
@@ -1424,19 +1474,50 @@ pub fn init(
 
     // Now that there is a renderer, clients can be told which formats they may
     // allocate — and on which GPU.
+    //
+    // The default tranche names one device, because that is all the protocol's
+    // default is: a client with no surface yet has nowhere to be shown, so
+    // there is no per-output answer to give it. The primary is that device.
+    //
+    // Which *formats* it carries is the choice `cross_gpu` makes. See
+    // [`crate::multigpu::CrossGpu`]: by default the primary's own, so no
+    // modifier is given up on the machine where windows stay where they were
+    // opened; under `"portable"` only what every card can import, for the desk
+    // where they do not and for the client that ignores the per-surface
+    // feedback that would otherwise have told it to reallocate.
     {
-        let formats = state
+        let policy = cross_gpu_policy();
+        let per_device: Vec<Vec<smithay::backend::allocator::Format>> = state
             .udev
             .as_ref()
             .map(|udev| {
-                udev.primary()
-                    .renderer
-                    .dmabuf_formats()
+                udev.devices
                     .iter()
-                    .copied()
+                    .filter(|device| device.online)
+                    .map(|device| device.renderer.dmabuf_formats().iter().copied().collect())
                     .collect()
             })
             .unwrap_or_default();
+        let formats = crate::multigpu::default_formats(policy, &per_device);
+        // Only when it changed anything, and only when there was a choice: on
+        // a single-GPU machine the intersection is the primary's own list and
+        // saying so would be noise in every log on the only path anyone runs.
+        if per_device.len() > 1 {
+            let primary = per_device.first().map(Vec::len).unwrap_or(0);
+            tracing::info!(
+                "cross_gpu={policy:?}: advertising {} of the primary's {primary} \
+                 format/modifier pairs across {} cards",
+                formats.len(),
+                per_device.len(),
+            );
+            if policy == crate::multigpu::CrossGpu::Portable && formats.len() == primary {
+                tracing::warn!(
+                    "cross_gpu=\"portable\" narrowed nothing — either the cards share \
+                     everything, or one of them imports nothing and the intersection was \
+                     empty and fell back. Check the per-card format counts above this line."
+                );
+            }
+        }
         state.advertise_dmabuf(Some(render.dev_id()), formats);
     }
 
@@ -1523,6 +1604,30 @@ pub fn init(
     state.start_background_process();
 
     Ok(())
+}
+
+/// The `wp-drm-lease-v1` global for one card.
+///
+/// One per card, not one per session. The global carries the DRM node a client
+/// should open in order to drive what it leases, and the connector, CRTC and
+/// plane handles that travel through it only mean anything on the device that
+/// issued them — so a second card needs a second global, with its own node, or
+/// its non-desktop connectors cannot be offered at all.
+///
+/// Non-fatal if it cannot be made: that card leases nothing and everything
+/// else about it works. Refusing to start over a headset nobody has plugged in
+/// would be the wrong trade on every machine.
+pub fn lease_state_for(
+    display: &smithay::reexports::wayland_server::DisplayHandle,
+    card: &DrmNode,
+) -> Option<smithay::wayland::drm_lease::DrmLeaseState> {
+    match smithay::wayland::drm_lease::DrmLeaseState::new::<ViewportState>(display, card) {
+        Ok(state) => Some(state),
+        Err(e) => {
+            tracing::warn!("no drm-lease global on {card:?}: {e}");
+            None
+        }
+    }
 }
 
 /// Open the DRM device and build everything that hangs off it.
@@ -1972,18 +2077,46 @@ impl ViewportState {
         // tell "every connector failed" from "there were none".
         let attempted = connectors.len();
         for connector in connectors {
-            let name = format!(
+            // What the kernel calls this connector — and what the screen is
+            // called, unless another card has already taken the name.
+            //
+            // Connector names are handed out per card, so an integrated
+            // display controller and the discrete card beside it both have a
+            // `DP-1`. Everything downstream keys on the name and assumes it
+            // names one screen: the config file's per-output rules,
+            // `active_output`, the saved layout, `wl_output`'s name, the
+            // per-output vblank bookkeeping. See
+            // [`crate::multigpu::unique_output_name`] for what the collision
+            // costs and why the suffix is the card index.
+            //
+            // Read from the space, which is every screen currently mapped —
+            // including the ones this pass has already brought up, because the
+            // `Ok` arm below maps each output before the next connector is
+            // looked at.
+            let base = format!(
                 "{}-{}",
                 connector.interface().as_str(),
                 connector.interface_id()
             );
+            let taken_names: std::collections::HashSet<String> =
+                self.space.outputs().map(|o| o.name()).collect();
+            let name = crate::multigpu::unique_output_name(&base, index, &taken_names);
+            if name != base {
+                tracing::info!(
+                    "gpu {index}: another card already has a screen called {base}; \
+                     this one is {name}"
+                );
+            }
 
             // A headset says so with the `non-desktop` property, and the right
             // thing to do with one is nothing: no output, no mode set, no
             // compositing. It is offered for lease instead, and a client that
             // knows how to drive it takes the whole connector.
             if leasable.contains(&connector.handle()) {
-                if let Some(lease) = udev.lease_state.as_mut() {
+                // This card's lease global, not the session's: the handles
+                // being offered belong to this device and a client told to
+                // open the primary's node would find nothing behind them.
+                if let Some(lease) = udev.devices[index].lease_state.as_mut() {
                     tracing::info!("{name}: non-desktop, offered for lease");
                     lease.add_connector::<ViewportState>(
                         connector.handle(),

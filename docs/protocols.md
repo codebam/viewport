@@ -466,6 +466,44 @@ The shipped shell publishes its workspaces from `data/shell/outputs.js`; see
 [Workspaces](ipc.md#workspaces) for the list it sends and for the waybar module
 that reads it, which is `ext/workspaces` and not `sway/workspaces`.
 
+## linux-dmabuf-v1
+
+`ViewportState::advertise_dmabuf` in `state.rs` for the global, `udev.rs` for
+what each device and each output says, and `handlers/mod.rs` for what happens
+when a client hands a buffer over. What a client is told comes in three layers,
+and on a machine with more than one graphics card they do not all say the same
+thing:
+
+| Layer | What it names | Where from |
+| --- | --- | --- |
+| The global's default feedback | the primary card's render node, and a format list | `advertise_dmabuf`, once at startup |
+| Per device | that card's render node and everything its renderer can import | `device_feedback` |
+| Per output | the same, plus a `Scanout` tranche of the formats *this output's primary plane* accepts | `output_feedback`, per surface |
+
+The per-output feedback is the one a mapped window actually gets, and it names
+the card the window is being shown on. That is what makes two cards work: a
+client that honours per-surface feedback — everything on Mesa does —
+reallocates when its window moves to a monitor on the other card. The scanout
+tranche is intersected with what the renderer can import, because a format the
+plane takes and the compositor cannot sample has nowhere to go the moment a
+notification overlaps that window.
+
+The default feedback can only name one device, because the protocol's default
+tranche is one device. Which formats it carries is a preference, and
+`cross_gpu` is it: `native` (the default) advertises everything the primary can
+read, `portable` only what every card can read. See
+[Graphics cards](configuration.md#graphics-cards).
+
+**An import is judged by every card, not by the primary.** A buffer is accepted
+if any online card's renderer can read it, and refused only when none can — a
+refusal over `linux-dmabuf` is a protocol error, so getting this wrong
+disconnects clients. Judging by the primary alone did exactly that on a two-card
+machine: a window on the second card's monitor was told by its per-surface
+feedback to allocate for the second card, and the buffer that came back was
+handed to the first card's renderer to be approved. A buffer that some cards
+read and others do not is accepted, and the window is missing from the screens
+on the cards that refused it; that is logged once per format, modifier and card.
+
 ## wp-drm-lease-v1
 
 `crates/viewport/src/workspace.rs`'s neighbour, `crates/viewport/src/udev.rs`
@@ -473,6 +511,16 @@ plus the handler in `handlers/mod.rs`. A connector with the `non-desktop`
 property is never made into an output: it is offered for lease, and a client
 that takes one is given the connector, a CRTC that is not driving a desktop
 output, and that CRTC's primary plane with a claim on it.
+
+One global per graphics card, not one per session. The global carries the DRM
+node the client should open, and the connector, CRTC and plane handles that
+travel through it only mean anything on the device that issued them — so a
+request is answered from the card whose node it names, and the free-CRTC search
+looks only at that card's CRTCs. Handles are small integers handed out per
+device, so a card mix-up would not fail cleanly: the "free" CRTC found on the
+wrong card is very likely a real one there, possibly one scanning out the
+desktop. A card that goes takes its global with it, and one that comes back gets
+a new one on whichever node it came back as.
 
 Smithay's pre-flight for the global opens the primary node and drops master,
 tolerating EINVAL as "this fd never had master". On kernel 7.1 with amdgpu that

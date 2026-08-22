@@ -923,21 +923,95 @@ impl smithay::wayland::dmabuf::DmabufHandler for ViewportState {
         dmabuf: smithay::backend::allocator::dmabuf::Dmabuf,
         notifier: smithay::wayland::dmabuf::ImportNotifier,
     ) {
+        use smithay::backend::allocator::Buffer as _;
         use smithay::backend::renderer::ImportDma as _;
 
+        // Every card on the seat, not only the primary.
+        //
         // Imported now rather than at first use, because the answer the client
         // is waiting for is whether this buffer is usable at all — and a
         // failure discovered mid-frame has nowhere to go.
-        let imported = self.udev.as_mut().map(|udev| {
-            crate::with_gpu!(&mut udev.primary_mut().renderer, |renderer| renderer
-                .import_dmabuf(&dmabuf, None)
-                .is_ok())
+        //
+        // Asking only the primary was right while there was one card and wrong
+        // the moment there are two, in the direction that kills clients: a
+        // window on the second card's monitor is told by its per-surface
+        // feedback to allocate for the second card, and the buffer that comes
+        // back is then handed to the *first* card's renderer to be judged. A
+        // modifier the discrete card understands and the display controller
+        // does not is ordinary, so the import fails, `notifier.failed()` posts
+        // a protocol error, and the client is disconnected for having done
+        // exactly what the compositor asked of it.
+        //
+        // Offline cards are skipped rather than counted as refusals. A card
+        // being reopened after a reset would otherwise turn every buffer into
+        // a "split" and fill the log describing a condition that lasts a
+        // second — see [`crate::recovery`].
+        let reach = self.udev.as_mut().map(|udev| {
+            let mut asked: Vec<(usize, bool)> = Vec::new();
+            for index in 0..udev.devices.len() {
+                if !udev.devices[index].online {
+                    continue;
+                }
+                let ok = crate::with_gpu!(&mut udev.devices[index].renderer, |renderer| {
+                    renderer.import_dmabuf(&dmabuf, None).is_ok()
+                });
+                asked.push((index, ok));
+            }
+            crate::multigpu::Reach::of(asked)
         });
-        match imported {
-            Some(true) | None => {
+
+        // A buffer some cards take and others refuse is usable — the client
+        // keeps it and every screen on a card that took it shows it — but the
+        // window is going to be missing from the rest, which is a symptom
+        // nobody would connect to a buffer modifier without being told. Said
+        // once per format, modifier and card; see `Reported` for why not once
+        // per frame.
+        if let Some(reach) = reach.as_ref().filter(|reach| reach.split()) {
+            let format = dmabuf.format();
+            let code = format.code as u32;
+            let modifier: u64 = format.modifier.into();
+            let first = reach
+                .refused_by
+                .iter()
+                .filter(|device| {
+                    self.udev.as_mut().is_some_and(|udev| {
+                        udev.cross_gpu_reported.first_time(code, modifier, **device)
+                    })
+                })
+                .count()
+                > 0;
+            if first {
+                tracing::warn!(
+                    "a client buffer ({:?}, modifier {modifier:#x}) imports on gpu {:?} and \
+                     not on gpu {:?}; a window showing it will be missing from the screens on \
+                     the cards that refused it. Set cross_gpu = \"portable\" to advertise only \
+                     what every card can read — see docs/configuration.md.",
+                    format.code,
+                    reach.taken_by,
+                    reach.refused_by,
+                );
+            }
+        }
+
+        match reach {
+            // No backend with cards at all: the nested and headless paths,
+            // where there is nothing to judge the buffer against and refusing
+            // it would be inventing a failure.
+            None => {
                 let _ = notifier.successful::<ViewportState>();
             }
-            Some(false) => notifier.failed(),
+            Some(reach) if reach.usable() => {
+                let _ = notifier.successful::<ViewportState>();
+            }
+            // Nothing answered because nothing is online — every card is
+            // mid-recovery. The client is not at fault and its buffer may well
+            // be fine, so it is accepted; the import is tried again per frame
+            // by the render pass, which is where a genuinely bad buffer then
+            // shows up as a surface that does not draw.
+            Some(reach) if reach.refused_by.is_empty() => {
+                let _ = notifier.successful::<ViewportState>();
+            }
+            Some(_) => notifier.failed(),
         }
     }
 }
@@ -1264,14 +1338,28 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         &mut self,
         node: smithay::backend::drm::DrmNode,
     ) -> &mut smithay::wayland::drm_lease::DrmLeaseState {
-        // One device, so one state — and this is only reached for a node that
-        // has a global, which only the device that made one has.
-        if let Some(lease_state) = self
-            .udev
-            .as_mut()
-            .and_then(|udev| udev.lease_state.as_mut())
-        {
-            return lease_state;
+        // The card this node names, because there is one global per card and
+        // the request arrived through one of them. Matched on the node rather
+        // than answered with the primary's: handing back the wrong card's
+        // state would offer a client connectors that are not on the device it
+        // is about to open.
+        //
+        // By `dev_id` rather than by equality, because the node the protocol
+        // carries is the one the global was made with and the one stored is
+        // the card as udev named it — the same device, and not necessarily the
+        // same `DrmNode` value.
+        if let Some(index) = self.udev.as_ref().and_then(|udev| {
+            udev.devices
+                .iter()
+                .position(|device| device.node.dev_id() == node.dev_id())
+        }) {
+            if let Some(lease_state) = self
+                .udev
+                .as_mut()
+                .and_then(|udev| udev.devices[index].lease_state.as_mut())
+            {
+                return lease_state;
+            }
         }
 
         // The device that owned this node has gone (GPU unplugged, session
@@ -1304,7 +1392,7 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
 
     fn lease_request(
         &mut self,
-        _node: smithay::backend::drm::DrmNode,
+        node: smithay::backend::drm::DrmNode,
         request: smithay::wayland::drm_lease::DrmLeaseRequest,
     ) -> Result<
         smithay::wayland::drm_lease::DrmLeaseBuilder,
@@ -1316,14 +1404,40 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         let Some(udev) = self.udev.as_mut() else {
             return Err(LeaseRejected::default());
         };
-        let device = udev.primary().manager.device();
-        let mut builder = DrmLeaseBuilder::new(device);
+        // The card the request came in on, not the primary. Every handle below
+        // — the connector, the CRTC it is given, that CRTC's plane — is issued
+        // by one DRM device and means nothing on another, and the fd the lease
+        // carries is that device's. Answering from the primary for a headset
+        // wired to the discrete card builds a lease out of the wrong card's
+        // resources, and the numbers collide readily enough that it would not
+        // even fail cleanly: CRTC handles are small integers handed out per
+        // device, so the "free" CRTC found on the primary is very likely a
+        // real CRTC there, and it might be scanning out the desktop.
+        let Some(index) = udev
+            .devices
+            .iter()
+            .position(|device| device.online && device.node.dev_id() == node.dev_id())
+        else {
+            tracing::warn!("a lease was asked for on {node:?}, which is not a card we drive");
+            return Err(LeaseRejected::default());
+        };
 
         // A CRTC that is not already driving one of this compositor's outputs,
         // and is legal for the connector asking. Handing over a CRTC that is
         // scanning out the desktop would take the desktop with it.
-        let taken: std::collections::HashSet<_> =
-            udev.ids().into_iter().map(|id| id.crtc).collect();
+        //
+        // This card's CRTCs only, for the reason above: taking every device's
+        // handles and comparing them by value reserves whichever unrelated
+        // CRTC happens to share a number on this one. The same scoping
+        // `scan_device` applies to its own CRTC search.
+        let taken: std::collections::HashSet<_> = udev
+            .ids()
+            .into_iter()
+            .filter(|id| id.device == index)
+            .map(|id| id.crtc)
+            .collect();
+        let device = udev.devices[index].manager.device();
+        let mut builder = DrmLeaseBuilder::new(device);
         let Ok(resources) = device.resource_handles() else {
             return Err(LeaseRejected::default());
         };
