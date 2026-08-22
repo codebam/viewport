@@ -108,6 +108,26 @@ impl XwmHandler for ViewportState {
 
         self.space.unmap_elem(&element);
         self.views.remove(id);
+
+        // The seat keeps a dead surface as its keyboard focus unless it is
+        // told otherwise, and keystrokes then go nowhere until something is
+        // clicked — which reads as the keyboard being dead.
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            let was_focused = keyboard
+                .current_focus()
+                .zip(crate::keyboard_focus::KeyboardFocus::for_window(&element))
+                .map(|(current, target)| current == target)
+                .unwrap_or(false);
+            if was_focused {
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                keyboard.set_focus(
+                    self,
+                    Option::<crate::keyboard_focus::KeyboardFocus>::None,
+                    serial,
+                );
+            }
+        }
+
         if announced {
             self.notify(&Event::ViewRemoved { id });
         }
@@ -297,13 +317,23 @@ impl XwmHandler for ViewportState {
 
         let dh = self.display_handle.clone();
         match selection {
+            // Only when the selection is still the X side's. The old test was
+            // "any owner at all", and an X client exiting after the user had
+            // pasted from the history — which makes the compositor itself the
+            // owner — wiped a live selection it had never owned.
             SelectionTarget::Clipboard => {
-                if current_data_device_selection_userdata(&self.seat).is_some() {
+                if current_data_device_selection_userdata(&self.seat)
+                    .map(|owner| *owner == crate::clipboard::Owner::Xwayland)
+                    .unwrap_or(false)
+                {
                     clear_data_device_selection(&dh, &self.seat);
                 }
             }
             SelectionTarget::Primary => {
-                if current_primary_selection_userdata(&self.seat).is_some() {
+                if current_primary_selection_userdata(&self.seat)
+                    .map(|owner| *owner == crate::clipboard::Owner::Xwayland)
+                    .unwrap_or(false)
+                {
                     clear_primary_selection(&dh, &self.seat);
                 }
             }

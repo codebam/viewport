@@ -139,6 +139,30 @@ impl XdgShellHandler for ViewportState {
         self.space.unmap_elem(&window);
         self.views.remove(id);
 
+        // The seat keeps a destroyed surface as its keyboard focus unless it
+        // is told otherwise, and keystrokes then go nowhere until something
+        // is clicked — which reads as the keyboard being dead.
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            let was_focused = keyboard
+                .current_focus()
+                .zip(crate::keyboard_focus::KeyboardFocus::for_window(&window))
+                .map(|(current, target)| current == target)
+                .unwrap_or(false);
+            if was_focused {
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                keyboard.set_focus(
+                    self,
+                    Option::<crate::keyboard_focus::KeyboardFocus>::None,
+                    serial,
+                );
+            }
+        }
+
+        // The last frame of the closed window would otherwise stay on screen
+        // until unrelated damage drew over it: vblank stops when nothing is
+        // submitted, and nothing submits for a window that is gone.
+        self.needs_render = true;
+
         // A window the shell was never told about does not need removing.
         if announced {
             self.notify(&Event::ViewRemoved { id });

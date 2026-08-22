@@ -195,6 +195,17 @@ impl ViewportState {
         }
 
         if let Some(keyboard) = self.seat.get_keyboard() {
+            // Already there, and nothing to do: re-setting the focus re-sends
+            // the enter and re-announces it, and with two exclusive layers
+            // committing on the same frame the last one would win for no
+            // reason — the surface that has the keyboard keeps it.
+            let already = keyboard
+                .current_focus()
+                .map(|focus| focus.is_surface(surface))
+                .unwrap_or(false);
+            if already {
+                return;
+            }
             let serial = smithay::utils::SERIAL_COUNTER.next_serial();
             keyboard.set_focus(self, Some(surface.clone().into()), serial);
         }
