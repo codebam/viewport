@@ -132,23 +132,41 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | Chord | Action |
 | --- | --- |
 | `Mod4+Return` / `Mod4+d` | terminal / launcher |
-| `Mod4+h j k l`, arrows | focus, crossing monitors at the edge |
-| `Mod4+Shift+h j k l` | move window, carrying it to the next monitor at the edge |
-| `Mod4+Tab` / `Mod4+Shift+Tab` | step through the windows on this workspace |
-| `Mod4+1‑9` / `+Shift` | switch / move to workspace |
-| `Mod4+b` / `Mod4+v` | next window splits horizontally / vertically |
-| `Mod4+e` | flip the focused container's layout |
-| `Mod4+f` | fullscreen |
-| `Mod4+r` | resize mode; then `hjkl`, `Escape` to leave (scrolling and canvas bind it to something of their own; solar leaves it unbound) |
-| `Mod4` + right-drag | resize, from the corner nearest where the drag started; dragging the gap between windows also works |
-| `Mod4+n` | toggle the bar |
-| `Mod4+Shift+d` | toggle dark mode |
 | `Mod4+Shift+q` / `+e` / `+c` | close / exit / reload the shell |
-| `Mod4+Shift+Return` | give the keyboard to the wallpaper terminal, and take it back |
+| `Mod4+Shift+d` | toggle dark mode |
 | `Mod4+Shift+v` | the clipboard history |
 | `Mod4+Shift+m` | the notification centre |
 | `Mod4+Shift+n` / `Mod4+Shift+t` | the Wi-Fi picker / the Bluetooth picker |
 | `Mod4+Shift+k` | the on-screen keyboard, which otherwise comes up on its own |
+| `Mod4+f` | fullscreen |
+| `Mod4+a` | focus the parent container |
+| `Mod4+Shift+space` | toggle floating on the focused window |
+| `Mod4+b` / `Mod4+v` | next window splits horizontally / vertically |
+| `Mod4+w` / `Mod4+s` | tabbed / stacked containers |
+| `Mod4+e` | flip the focused container's layout |
+| `Mod4+n` | toggle the bar |
+| `Mod4+o` | the overview of open windows |
+| `Mod4+grave` | back to the previous workspace |
+| `Mod4+Shift+Return` | give the keyboard to the wallpaper terminal, and take it back |
+| `Mod4+Shift+x` | lock, via `idle.lock_command` |
+| `Mod4+Shift+b` | blank the screens until the next input |
+| `Mod4+Shift+p` | HDR on the monitor you are looking at |
+| `XF86AudioPlay` / `XF86AudioPause` / `XF86AudioNext` / `XF86AudioPrev` / `XF86AudioStop` | playerctl play-pause / pause / next / previous / stop |
+| `XF86AudioRaiseVolume` / `XF86AudioLowerVolume` / `XF86AudioMute` | wpctl on the default sink, five percent a press |
+| `XF86AudioMicMute` | mute the microphone source |
+| `XF86MonBrightnessUp` / `XF86MonBrightnessDown` | brightnessctl, five percent a press |
+| `Mod4+Tab` / `Mod4+Shift+Tab` | step through the windows on this workspace |
+| `Mod4+h j k l`, arrows | focus, crossing monitors at the edge |
+| `Mod4+Shift+h j k l`, arrows | move window, carrying it to the next monitor at the edge |
+| `Mod4+1‑9` / `+Shift` | switch / move to workspace |
+| `Mod4+r` | resize mode; then `hjkl`, `Escape` to leave (scrolling and canvas bind it to something of their own; solar leaves it unbound) |
+
+The chords each layout adds to these are listed with the layout below. The
+drags are not bindings at all: `Mod4` with the left button held moves the
+window under the pointer and the right one resizes it from the corner nearest
+where the drag started — dragging the gap between windows works as an edge —
+and the compositor handles both itself. A button that *is* bound
+(`Mod4+Mouse4`, say) fires the binding instead of starting a drag.
 
 `Mod4+d` opens the built-in launcher: the shell draws it, and the compositor
 feeds it from the `.desktop` directories, filtering on what is typed and

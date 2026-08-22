@@ -341,6 +341,24 @@ to summarise rather than to duplicate.
 - The `org.freedesktop.impl.portal.Screenshot` portal implementation, letting
   desktop screenshot requests capture whole outputs, windows, or interactive
   regions directly via the compositor.
+- A shell that has given up is believed. `viewport-shell-gtk` counts its tries
+  — three web-process crashes ask to be started degraded, five slow reloads
+  are spent there — and when those have died too it exits with status 88
+  rather than reload for ever. The compositor used to answer every exit with
+  another turn of the restart treadmill, so 88 bought exactly what the cap
+  exists to end: the same page rebuilt on the same GPU, at whatever pace. The
+  code means what the shell meant by it now. Exit 88 is logged loudly and that
+  slot stays down; the rest of the session goes on around it, and the page
+  comes back only through something human — a monitor arriving while another
+  page is still running starts every planned page afresh — or a session
+  restart. Kept apart from exit 87, which asks for one specific second chance
+  and gets it. See `docs/shell-backends.md`.
+
+### Changed
+- Modifier state is computed only when a page can read it. `shell_modifiers`
+  ran on every key, button and axis event whatever the build, and in one
+  without the web engine the answer went nowhere; a build without `wpe` now
+  skips the work outright rather than computing what nothing consumes.
 
 ### Fixed
 - The Wi-Fi, Bluetooth, power-profile and clipboard pickers no longer open
@@ -484,6 +502,25 @@ to summarise rather than to duplicate.
   corner instead of a border. The corners are now copied back as well, behind
   the client rather than in front of it, so the client covers the part of each
   square it fills and the curve is what shows.
+- Reloading the config no longer writes to the process environment. The cursor
+  loader could only be built from `XCURSOR_THEME` and `XCURSOR_SIZE`, so every
+  reload that touched the cursor block wrote the pair into environ with
+  `set_var` for the constructor to read straight back — a setenv on a live
+  multithreaded process, undefined against every thread that might be mid-
+  `getenv`. The theme can be asked for by name now, the environment is read
+  once at start-up as before, and nothing writes it again; children started by
+  the compositor were already told the pair explicitly rather than by
+  inheritance.
+- A screen share is no longer answered before it exists. PipeWire names a
+  stream on its own clock — usually within a couple of milliseconds of being
+  asked — and the portal reply carried that name, so a reply sent before the
+  daemon had answered went out with the placeholder node number,
+  `u32::MAX`, and an application that connected to node 4294967295 connected
+  to nothing. The reply now waits for the real name and leaves the moment it
+  arrives; a 500 ms deadline refuses the share if it never comes, tearing the
+  half-made stream back out of the compositor rather than leaving a stream
+  nobody can reach. A remote-desktop session that drives without watching is
+  still answered straight away, since its grant is the whole answer.
 
 ## [0.1.8] - 2026-08-17
 

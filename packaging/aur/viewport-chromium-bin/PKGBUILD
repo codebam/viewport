@@ -29,7 +29,6 @@ _pkgrel=1
 depends=(
   'wayland'
   'libxkbcommon'
-  'pixman'
   'libdrm'
   'libinput'
   'seatd'
@@ -39,7 +38,6 @@ depends=(
   'vulkan-icd-loader'
   'pipewire'
   'libxcb'
-  'xcb-util-wm'
   'chromium'
 )
 
