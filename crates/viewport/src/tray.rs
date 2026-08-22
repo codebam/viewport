@@ -79,16 +79,15 @@ const ICON_SIZE: u32 = 22;
 /// hiccup rather than a hang: the worker has clicks, scrolls and refreshes for
 /// every *other* item queued behind it.
 const ITEM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
-
 /// How long any single call on the connection may run.
 ///
-/// This is what collects the threads [`with_deadline`] walks away from: the
-/// worker gives up at `ITEM_TIMEOUT`, but the thread it handed the proxy to
-/// keeps trying until zbus itself gives up. Without this bound an abandoned
-/// thread is abandoned forever, and a session that accumulates wedged items
-/// accumulates threads to match. Generous next to `ITEM_TIMEOUT` on purpose —
-/// the deadline that matters is the worker's, and this one must never be what
-/// an honest item trips over.
+/// This is what collects the threads [`crate::dbus_util::with_deadline`]
+/// walks away from: the worker gives up at `ITEM_TIMEOUT`, but the thread it
+/// handed the proxy to keeps trying until zbus itself gives up. Without this
+/// bound an abandoned thread is abandoned forever, and a session that
+/// accumulates wedged items accumulates threads to match. Generous next to
+/// `ITEM_TIMEOUT` on purpose — the deadline that matters is the worker's, and
+/// this one must never be what an honest item trips over.
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The half of the tray the compositor keeps.
@@ -152,13 +151,11 @@ impl Tray {
                 // particular no bus connection to open.
                 return;
             }
-            match start(events) {
-                Ok(commands) => self.worker = Some(commands),
-                Err(e) => {
-                    tracing::warn!("the system tray is unavailable: {e:#}");
-                    return;
-                }
-            }
+            // Starting no longer touches the bus on this thread — the
+            // connection is made inside the worker — so there is nothing to
+            // fail here, and a bus that never answers is reported through the
+            // events channel like any other empty tray.
+            self.worker = Some(start(events));
         }
         self.send(Command::Enable(enabled));
     }
@@ -239,9 +236,14 @@ enum Command {
 }
 
 /// Claim the names, serve the watcher, and start the threads that feed it.
-fn start(
-    events: smithay::reexports::calloop::channel::Sender<Message>,
-) -> anyhow::Result<mpsc::Sender<Command>> {
+///
+/// Connecting happens inside the thread this spawns, not on its caller — which
+/// is the compositor's event loop, on the way out of a configuration reload.
+/// A round trip to a wedged bus daemon must not stall a frame, and a session
+/// with no bus at all is reported through the events channel as an empty tray,
+/// the way an empty answer is. It is also not retried: a machine with no bus
+/// does not grow one because the configuration was reloaded.
+fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc::Sender<Command> {
     let (commands, inbox) = mpsc::channel();
 
     // The registry of registered items, shared between the watcher and the
@@ -252,83 +254,88 @@ fn start(
     // and the worker does the pruning.
     let items: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
 
-    // The watcher object answers on zbus's own executor and does no work: it
-    // records nothing, and hands every registration to the worker, which is
-    // the one place the item list lives.
-    let connection = zbus::blocking::connection::Builder::session()?
-        .method_timeout(CALL_TIMEOUT)
-        .serve_at(
-            WATCHER_PATH,
-            Watcher {
-                commands: commands.clone(),
-                items: items.clone(),
-            },
-        )?
-        .build()?;
-
-    // Signals from every tray item on the bus, on one match rule rather than a
-    // subscription per item: an item that changes its icon does not send it,
-    // it says that it changed, and the answer is the same refresh whichever
-    // item and whichever signal it was.
-    pump(
-        connection.clone(),
-        commands.clone(),
-        format!("type='signal',interface='{ITEM}'"),
-        |message, commands| {
-            let header = message.header();
-            let (Some(sender), Some(path)) = (header.sender(), header.path()) else {
-                return;
-            };
-            let _ = commands.send(Command::Refresh {
-                key: key(sender.as_str(), path.as_str()),
-            });
-        },
-    )?;
-
-    // And the only notice an application that dies gives.
-    pump(
-        connection.clone(),
-        commands.clone(),
-        "type='signal',sender='org.freedesktop.DBus',\
-         interface='org.freedesktop.DBus',member='NameOwnerChanged'"
-            .to_owned(),
-        |message, commands| {
-            let Ok((name, _old, new)) = message.body().deserialize::<(String, String, String)>()
-            else {
-                return;
-            };
-            // An empty new owner is the name being given up, which for a
-            // unique name means the process is gone.
-            if new.is_empty() {
-                let _ = commands.send(Command::NameLost(name));
-            }
-        },
-    )?;
-
-    std::thread::Builder::new()
+    let (worker_events, worker_commands) = (events.clone(), commands.clone());
+    let spawned = std::thread::Builder::new()
         .name("tray".to_owned())
-        .spawn(move || Worker::new(connection, events, items).run(&inbox))?;
-
-    Ok(commands)
-}
-
-/// One thread reading one match rule, turning messages into commands.
-fn pump(
-    connection: zbus::blocking::Connection,
-    commands: mpsc::Sender<Command>,
-    rule: String,
-    handle: fn(&zbus::Message, &mpsc::Sender<Command>),
-) -> anyhow::Result<()> {
-    let rule = zbus::MatchRule::try_from(rule.as_str())?;
-    let messages = zbus::blocking::MessageIterator::for_match_rule(rule, &connection, None)?;
-    std::thread::Builder::new()
-        .name("tray-signals".to_owned())
         .spawn(move || {
-            for message in messages.flatten() {
-                handle(&message, &commands);
+            // The watcher object answers on zbus's own executor and does no
+            // work: it records nothing, and hands every registration to the
+            // worker, which is the one place the item list lives.
+            let connection =
+                match zbus::blocking::connection::Builder::session().and_then(|builder| {
+                    builder
+                        .method_timeout(CALL_TIMEOUT)
+                        .serve_at(
+                            WATCHER_PATH,
+                            Watcher {
+                                commands: worker_commands.clone(),
+                                items: items.clone(),
+                            },
+                        )
+                        .and_then(|builder| builder.build())
+                }) {
+                    Ok(connection) => connection,
+                    Err(e) => {
+                        tracing::warn!("the system tray is unavailable: {e:#}");
+                        let _ = worker_events.send(Message::Items(Vec::new()));
+                        return;
+                    }
+                };
+
+            // Signals from every tray item on the bus, on one match rule rather
+            // than a subscription per item: an item that changes its icon does
+            // not send it, it says that it changed, and the answer is the same
+            // refresh whichever item and whichever signal it was.
+            if let Err(e) = crate::dbus_util::pump(
+                connection.clone(),
+                worker_commands.clone(),
+                "tray-signals",
+                format!("type='signal',interface='{ITEM}'"),
+                |message, commands| {
+                    let header = message.header();
+                    let (Some(sender), Some(path)) = (header.sender(), header.path()) else {
+                        return;
+                    };
+                    let _ = commands.send(Command::Refresh {
+                        key: key(sender.as_str(), path.as_str()),
+                    });
+                },
+            ) {
+                tracing::warn!("the system tray: could not follow tray items: {e:#}");
             }
-        })?;
-    Ok(())
+
+            // And the only notice an application that dies gives.
+            if let Err(e) = crate::dbus_util::pump(
+                connection.clone(),
+                worker_commands.clone(),
+                "tray-signals",
+                "type='signal',sender='org.freedesktop.DBus',\
+                 interface='org.freedesktop.DBus',member='NameOwnerChanged'"
+                    .to_owned(),
+                |message, commands| {
+                    let Ok((name, _old, new)) =
+                        message.body().deserialize::<(String, String, String)>()
+                    else {
+                        return;
+                    };
+                    // An empty new owner is the name being given up, which for
+                    // a unique name means the process is gone.
+                    if new.is_empty() {
+                        let _ = commands.send(Command::NameLost(name));
+                    }
+                },
+            ) {
+                tracing::warn!("the system tray: could not follow the bus: {e:#}");
+            }
+
+            Worker::new(connection, worker_events, items).run(&inbox);
+        });
+
+    if spawned.is_err() {
+        tracing::warn!("the system tray: the worker could not start");
+        let _ = events.send(Message::Items(Vec::new()));
+    }
+    commands
 }
 
 /// How an item is named in a message to the shell, and in the registry.
@@ -482,20 +489,10 @@ struct Fetched {
 /// Run one piece of item I/O on a throwaway thread, and wait with a stopwatch.
 ///
 /// zbus's blocking calls take no deadline, so the deadline is taken around
-/// them. `None` means the item outlasted its welcome; the thread it was handed
-/// to goes on trying in the background and is collected by the connection's
-/// method timeout, while this one gets on with the rest of the tray. That
-/// makes the loser of the race a bounded leak rather than an unbounded one,
-/// which is the best a blocking API offers.
+/// them — see [`crate::dbus_util::with_deadline`], which is this and which the
+/// tray shares with the other bus services.
 fn with_deadline<T: Send + 'static>(io: impl FnOnce() -> T + Send + 'static) -> Option<T> {
-    let (done, answered) = std::sync::mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("tray-item".to_owned())
-        .spawn(move || {
-            let _ = done.send(io());
-        })
-        .ok()?;
-    answered.recv_timeout(ITEM_TIMEOUT).ok()
+    crate::dbus_util::with_deadline(ITEM_TIMEOUT, "tray-item", io)
 }
 
 /// The thread that owns the item list and does every call an item answers.
@@ -515,6 +512,16 @@ struct Worker {
     theme: String,
     /// Whether the names are currently held.
     enabled: bool,
+    /// The items whose menus the shell has open, by item key.
+    ///
+    /// The dbusmenu specification asks for an `Event` with `"closed"` when a
+    /// menu goes away, and the shell normally sends one — but a shell that
+    /// dies or reloads mid-menu never does, and an application never told
+    /// serves the stale menu all session. What is open is tracked so that
+    /// every way a menu can end without the shell saying so — the tray being
+    /// disabled, the application dying, a fresh menu replacing the old one —
+    /// still tells it.
+    open_menus: Vec<String>,
 }
 
 impl Worker {
@@ -533,6 +540,7 @@ impl Worker {
             // in either case; this is the theme searched before it.
             theme: "hicolor".to_owned(),
             enabled: false,
+            open_menus: Vec::new(),
         }
     }
 
@@ -608,6 +616,7 @@ impl Worker {
                     // what was opened. Applications rebuild their menu on
                     // this: one that is never told keeps serving a stale one.
                     self.menu_event(&id, 0, "closed");
+                    self.open_menus.retain(|open| open != &id);
                 }
                 Command::Scroll {
                     id,
@@ -668,6 +677,15 @@ impl Worker {
             }
         }
         self.enabled = false;
+        // Every open menu belongs to an item that is going, and the shell
+        // reload that turned the tray off will never send the `MenuClosed` an
+        // application would otherwise wait for. Told while the entries are
+        // still here, because the entries are where the menu object's
+        // location lives.
+        let open = std::mem::take(&mut self.open_menus);
+        for id in &open {
+            self.menu_event(id, 0, "closed");
+        }
         self.entries.clear();
         self.icons.clear();
         // The registry goes with them. The names are released, so whatever is
@@ -733,6 +751,21 @@ impl Worker {
     /// keeps the property an application reads and the tray the shell draws
     /// in agreement.
     fn drop_owner(&mut self, name: &str) {
+        // An application that dies mid-menu never gets to say its menu is
+        // gone; told now, while the entry can still name the menu object,
+        // rather than leaving it open on the application's books until it
+        // comes back — if it ever does.
+        let gone: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.service == name && self.open_menus.contains(&entry.item.id))
+            .map(|entry| entry.item.id.clone())
+            .collect();
+        for id in &gone {
+            self.menu_event(id, 0, "closed");
+        }
+        self.open_menus.retain(|open| !gone.contains(open));
+
         let before = self.entries.len();
         self.entries.retain(|entry| entry.service != name);
         if let Ok(mut items) = self.registry.lock() {
@@ -963,11 +996,19 @@ impl Worker {
         };
 
         // Told it is open, as the specification asks, so an application that
-        // tracks its own menu knows one is on screen.
+        // tracks its own menu knows one is on screen. A menu already open for
+        // this item is told closed first: a shell that died mid-menu never
+        // said so itself, and an application handed a second "opened" without
+        // the "closed" between them keeps serving a menu nobody is looking at.
+        if self.open_menus.iter().any(|open| open == id) {
+            self.menu_event(id, 0, "closed");
+            self.open_menus.retain(|open| open != id);
+        }
         let _ = announcing.call_noreply(
             "Event",
             &(0i32, "opened", zvariant::Value::from(0i32), 0u32),
         );
+        self.open_menus.push(id.to_owned());
 
         let _ = self.events.send(Message::Menu {
             id: id.to_owned(),

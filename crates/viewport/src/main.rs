@@ -19,6 +19,7 @@ mod color_management;
 mod config;
 mod cursor;
 mod dbus;
+mod dbus_util;
 mod dump;
 mod focus;
 mod foreign_toplevel;

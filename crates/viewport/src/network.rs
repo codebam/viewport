@@ -78,10 +78,6 @@ pub enum Message {
 pub struct Network {
     worker: Option<mpsc::Sender<Command>>,
     events: Option<smithay::reexports::calloop::channel::Sender<Message>>,
-    /// Whether the worker has already been started and failed. Without it, a
-    /// picker opened on a machine with no NetworkManager would try to connect
-    /// to the system bus on every keypress.
-    unavailable: bool,
 }
 
 impl Network {
@@ -125,29 +121,16 @@ impl Network {
     ///
     /// A worker that has gone — the thread ended because the channel closed —
     /// is not restarted. There is one way for that to happen and it is the
-    /// compositor shutting down.
+    /// compositor shutting down; the other way a worker ends, a system bus it
+    /// could not reach, is reported by the worker itself, over the events
+    /// channel, and is not retried — a machine with no NetworkManager does not
+    /// grow one because the picker asked again.
     fn send(&mut self, command: Command) {
         if self.worker.is_none() {
-            if self.unavailable {
-                return;
-            }
             let Some(events) = self.events.clone() else {
                 return;
             };
-            match start(events) {
-                Ok(worker) => self.worker = Some(worker),
-                Err(e) => {
-                    tracing::warn!("network: NetworkManager is unavailable: {e:#}");
-                    self.unavailable = true;
-                    // Said rather than left silent: a picker with no answer at
-                    // all draws an empty list, which reads as "no networks"
-                    // rather than as "nothing to ask".
-                    if let Some(events) = self.events.as_ref() {
-                        let _ = events.send(Message::Snapshot(NetworkSnapshot::default()));
-                    }
-                    return;
-                }
-            }
+            self.worker = Some(start(events));
         }
         if let Some(worker) = self.worker.as_ref() {
             let _ = worker.send(command);
@@ -167,55 +150,56 @@ enum Command {
     Radio(Option<bool>),
 }
 
-fn start(
-    events: smithay::reexports::calloop::channel::Sender<Message>,
-) -> anyhow::Result<mpsc::Sender<Command>> {
+fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc::Sender<Command> {
     let (commands, inbox) = mpsc::channel();
-    let connection = zbus::blocking::Connection::system()?;
 
-    // One match rule for the whole daemon rather than one per object. The
-    // manager's properties, each device's, each access point's and each saved
-    // connection's all arrive on it, and every one of them is a reason to read
-    // again: a strength that moved, a device that associated, a connection
-    // somebody added from nmcli. Over-receiving costs a read that finds
-    // nothing changed and is dropped by the comparison in `refresh`; missing
-    // one is a picker that says a network is still there after the radio was
-    // switched off.
-    pump(
-        connection.clone(),
-        commands.clone(),
-        format!("type='signal',interface='org.freedesktop.DBus.Properties',sender='{NM}'"),
-    )?;
-
-    std::thread::Builder::new()
+    // Connecting happens here and not on the thread that called `start` —
+    // which is the compositor's event loop, on the way out of the first
+    // keystroke in a picker. A round trip to a wedged bus daemon must not
+    // stall a frame, and a session with no bus at all is reported through the
+    // events channel, the way an empty answer is.
+    let (worker_events, worker_commands) = (events.clone(), commands.clone());
+    let spawned = std::thread::Builder::new()
         .name("network".to_owned())
-        .spawn(move || Worker::new(connection, events).run(&inbox))?;
-    Ok(commands)
-}
-
-/// A thread that turns one match rule's traffic into `Refresh`.
-///
-/// Its own thread rather than a dispatch on the worker's, because the worker
-/// spends its time blocked on method calls that can take seconds — associating
-/// with an access point is one — and a signal that arrives during one of those
-/// must not be dropped.
-fn pump(
-    connection: zbus::blocking::Connection,
-    commands: mpsc::Sender<Command>,
-    rule: String,
-) -> anyhow::Result<()> {
-    let rule = zbus::MatchRule::try_from(rule.as_str())?;
-    let messages = zbus::blocking::MessageIterator::for_match_rule(rule, &connection, None)?;
-    std::thread::Builder::new()
-        .name("network-signals".to_owned())
         .spawn(move || {
-            for _ in messages.flatten() {
-                if commands.send(Command::Refresh).is_err() {
+            let connection = match zbus::blocking::Connection::system() {
+                Ok(connection) => connection,
+                Err(e) => {
+                    tracing::warn!("network: NetworkManager is unavailable: {e:#}");
+                    let _ = worker_events.send(Message::Snapshot(NetworkSnapshot::default()));
                     return;
                 }
+            };
+
+            // One match rule for the whole daemon rather than one per object.
+            // The manager's properties, each device's, each access point's and
+            // each saved connection's all arrive on it, and every one of them
+            // is a reason to read again: a strength that moved, a device that
+            // associated, a connection somebody added from nmcli.
+            // Over-receiving costs a read that finds nothing changed and is
+            // dropped by the comparison in `refresh`; missing one is a picker
+            // that says a network is still there after the radio was switched
+            // off.
+            if let Err(e) = crate::dbus_util::pump(
+                connection.clone(),
+                worker_commands.clone(),
+                "network-signals",
+                format!("type='signal',interface='org.freedesktop.DBus.Properties',sender='{NM}'"),
+                |_, commands| {
+                    let _ = commands.send(Command::Refresh);
+                },
+            ) {
+                tracing::warn!("network: could not follow NetworkManager's signals: {e:#}");
             }
-        })?;
-    Ok(())
+
+            Worker::new(connection, worker_events).run(&inbox);
+        });
+
+    if spawned.is_err() {
+        tracing::warn!("network: the worker could not start");
+        let _ = events.send(Message::Snapshot(NetworkSnapshot::default()));
+    }
+    commands
 }
 
 struct Worker {
@@ -225,6 +209,15 @@ struct Worker {
     /// Whether a picker is up. While it is not, a signal is still received —
     /// the match rule stays — but nothing is read and nothing is sent.
     watching: bool,
+    /// How the networks of the last read classify themselves, by SSID.
+    ///
+    /// The picker draws a row per network from the snapshot, and joining one
+    /// has to tell NetworkManager what the access point advertised rather
+    /// than guess: WPA3 wants `sae`, and `wpa-psk` against a WPA3-only
+    /// network is a passphrase rejected without ever being tried. Kept from
+    /// `read` so that the join can say so without the shell having to send
+    /// the answer back.
+    security: HashMap<String, String>,
     /// What the last attempt to join something said, carried on the next
     /// snapshot. Kept here rather than read back off the daemon because
     /// NetworkManager reports a refused passphrase as an activation that
@@ -247,6 +240,7 @@ impl Worker {
             events,
             last: NetworkSnapshot::default(),
             watching: false,
+            security: HashMap::new(),
             error: None,
             scan_asked: None,
         }
@@ -270,6 +264,7 @@ impl Worker {
                         // rather than comparing against a list from an hour
                         // ago and deciding nothing changed.
                         self.last = NetworkSnapshot::default();
+                        self.security.clear();
                         self.error = None;
                         self.scan_asked = None;
                     }
@@ -277,7 +272,8 @@ impl Worker {
                 _ if !self.watching => {}
                 Command::Refresh => self.refresh(),
                 Command::Connect { ssid, passphrase } => {
-                    self.error = self.connect(&ssid, passphrase.as_deref()).err();
+                    let security = self.security.get(&ssid).cloned().unwrap_or_default();
+                    self.error = self.connect(&ssid, passphrase.as_deref(), &security).err();
                     if let Some(e) = self.error.as_ref() {
                         tracing::info!("network: joining {ssid:?} failed: {e}");
                     }
@@ -305,7 +301,7 @@ impl Worker {
         let _ = self.events.send(Message::Snapshot(snapshot));
     }
 
-    fn read(&self) -> NetworkSnapshot {
+    fn read(&mut self) -> NetworkSnapshot {
         let Some(manager) = self.proxy(MANAGER_PATH, NM) else {
             return NetworkSnapshot::default();
         };
@@ -360,7 +356,7 @@ impl Worker {
 
     /// One wireless device: what it can see, and what it is on.
     fn read_wireless(
-        &self,
+        &mut self,
         path: &zvariant::OwnedObjectPath,
         known: &HashMap<String, zvariant::OwnedObjectPath>,
         snapshot: &mut NetworkSnapshot,
@@ -438,6 +434,13 @@ impl Worker {
                 .then(b.strength.cmp(&a.strength))
                 .then(a.ssid.cmp(&b.ssid))
         });
+
+        // Remembered for the join: what each network advertised is what the
+        // connection document has to ask for. See `new_connection`.
+        for row in &merged {
+            self.security
+                .insert(row.ssid.clone(), row.security.to_owned());
+        }
 
         snapshot.ssid = merged
             .iter()
@@ -563,7 +566,12 @@ impl Worker {
     /// secret in the store the rest of the desktop already reads. Nothing here
     /// writes it down — the string arrives in a request, goes out in a method
     /// call and is dropped with the command.
-    fn connect(&self, ssid: &str, passphrase: Option<&str>) -> Result<(), String> {
+    ///
+    /// `security` is what the access point advertised, as `security_of`
+    /// classified it when the list was read — which is how the connection
+    /// document knows to ask for SAE on a WPA3 network rather than trying the
+    /// passphrase against a scheme the network does not speak.
+    fn connect(&self, ssid: &str, passphrase: Option<&str>, security: &str) -> Result<(), String> {
         let manager = self
             .proxy(MANAGER_PATH, NM)
             .ok_or_else(|| "NetworkManager is not answering".to_owned())?;
@@ -581,11 +589,11 @@ impl Worker {
                     &(connection.as_ref(), device.as_ref(), root),
                 )
                 .map(|_| ())
-                .map_err(complaint);
+                .map_err(crate::dbus_util::complaint);
         }
 
         let passphrase = passphrase.unwrap_or_default();
-        let settings = new_connection(ssid, passphrase);
+        let settings = new_connection(ssid, passphrase, security);
         let root = zvariant::ObjectPath::try_from("/").expect("\"/\" is an object path");
         manager
             .call::<&str, _, (zvariant::OwnedObjectPath, zvariant::OwnedObjectPath)>(
@@ -593,7 +601,7 @@ impl Worker {
                 &(settings, device.as_ref(), root),
             )
             .map(|_| ())
-            .map_err(complaint)
+            .map_err(crate::dbus_util::complaint)
     }
 
     /// Leave the network in use.
@@ -611,7 +619,7 @@ impl Worker {
             .ok_or_else(|| "NetworkManager is not answering".to_owned())?;
         proxy
             .call::<&str, (), ()>("Disconnect", &())
-            .map_err(complaint)
+            .map_err(crate::dbus_util::complaint)
     }
 
     /// Switch the radio on or off. `None` is a toggle, read from what the
@@ -630,7 +638,7 @@ impl Worker {
         };
         manager
             .set_property("WirelessEnabled", enabled)
-            .map_err(complaint)
+            .map_err(crate::dbus_util::complaint)
     }
 
     fn proxy(&self, path: &str, interface: &str) -> Option<zbus::blocking::Proxy<'static>> {
@@ -663,10 +671,14 @@ impl Worker {
 /// than guessed, because getting it wrong is a passphrase that is rejected
 /// without ever being tried: WPA3 wants `sae`, WPA and WPA2 want `wpa-psk`,
 /// and WEP is a different key entirely — `none` with the passphrase as
-/// `wep-key0`, which is what "no key management" has meant since 1999.
+/// `wep-key0`, which is what "no key management" has meant since 1999. The
+/// classification comes from `security_of`, by way of the snapshot the picker
+/// drew its rows from; anything it did not see falls through as `wpa-psk`,
+/// which is what the overwhelming majority of networks ask for.
 fn new_connection<'a>(
     ssid: &'a str,
     passphrase: &'a str,
+    security: &str,
 ) -> HashMap<&'a str, HashMap<&'a str, zvariant::Value<'a>>> {
     let mut connection: HashMap<&str, zvariant::Value> = HashMap::new();
     connection.insert("id", zvariant::Value::from(ssid));
@@ -682,10 +694,29 @@ fn new_connection<'a>(
     document.insert("802-11-wireless", wireless);
 
     if !passphrase.is_empty() {
-        let mut security: HashMap<&str, zvariant::Value> = HashMap::new();
-        security.insert("key-mgmt", zvariant::Value::from("wpa-psk"));
-        security.insert("psk", zvariant::Value::from(passphrase));
-        document.insert("802-11-wireless-security", security);
+        let mut security_section: HashMap<&str, zvariant::Value> = HashMap::new();
+        match security {
+            // A WPA3-only network. `wpa-psk` here would be SAE refused at
+            // association — which reads to the user as "wrong passphrase"
+            // when the passphrase is right.
+            "wpa3" => {
+                security_section.insert("key-mgmt", zvariant::Value::from("sae"));
+                security_section.insert("psk", zvariant::Value::from(passphrase));
+            }
+            // WEP predates key management, and NetworkManager spells that
+            // `none`; the secret goes under its own key rather than `psk`,
+            // with the index saying it is the one in use.
+            "wep" => {
+                security_section.insert("key-mgmt", zvariant::Value::from("none"));
+                security_section.insert("wep-key0", zvariant::Value::from(passphrase));
+                security_section.insert("wep-tx-keyidx", zvariant::Value::from(0u32));
+            }
+            _ => {
+                security_section.insert("key-mgmt", zvariant::Value::from("wpa-psk"));
+                security_section.insert("psk", zvariant::Value::from(passphrase));
+            }
+        }
+        document.insert("802-11-wireless-security", security_section);
     }
     document
 }
@@ -717,25 +748,6 @@ pub fn security_of(flags: u32, wpa: u32, rsn: u32) -> &'static str {
         return "wep";
     }
     ""
-}
-
-/// What to put in front of somebody who was refused.
-///
-/// zbus's `Display` for a method error is the bus name of the error followed
-/// by its message — `org.freedesktop.NetworkManager.Error.…: Secrets were
-/// required…` — which is a sentence with a fully qualified Java class in the
-/// middle of it. The message alone is the part written for a person.
-fn complaint<E: Into<zbus::Error>>(error: E) -> String {
-    // Generic over the two error types zbus hands back, which are the same
-    // failure told twice: a method call fails with `zbus::Error` and a
-    // property write with `zbus::fdo::Error`, because setting a property is a
-    // call to `org.freedesktop.DBus.Properties.Set`. One conversion rather
-    // than two spellings of this function.
-    let error: zbus::Error = error.into();
-    match &error {
-        zbus::Error::MethodError(_, Some(message), _) => message.clone(),
-        _ => error.to_string(),
-    }
 }
 
 /// An `ay` out of a settings document, whichever way zvariant happens to have
@@ -792,10 +804,11 @@ mod tests {
 
     /// A network nobody has joined before, as NetworkManager is asked to
     /// create it. The three sections are what `nmcli device wifi connect`
-    /// produces, and the SSID is bytes in both places it appears.
+    /// produces, the SSID is bytes in both places it appears, and a plain
+    /// WPA2-style network asks for `wpa-psk`.
     #[test]
     fn a_new_connection_names_the_network_twice_and_the_secret_once() {
-        let document = new_connection("kitchen", "hunter2");
+        let document = new_connection("kitchen", "hunter2", "wpa2");
         assert_eq!(
             document["connection"]["id"],
             zvariant::Value::from("kitchen")
@@ -808,6 +821,43 @@ mod tests {
             document["802-11-wireless-security"]["psk"],
             zvariant::Value::from("hunter2")
         );
+        assert_eq!(
+            document["802-11-wireless-security"]["key-mgmt"],
+            zvariant::Value::from("wpa-psk")
+        );
+    }
+
+    /// A WPA3-only network wants SAE. `wpa-psk` here is association refused —
+    /// which the person joining reads as "wrong passphrase" when theirs is
+    /// right, which is worse than not offering the join at all.
+    #[test]
+    fn a_wpa3_network_is_joined_with_sae() {
+        let document = new_connection("kitchen", "hunter2", "wpa3");
+        let security = &document["802-11-wireless-security"];
+        assert_eq!(security["key-mgmt"], zvariant::Value::from("sae"));
+        assert_eq!(security["psk"], zvariant::Value::from("hunter2"));
+    }
+
+    /// And an unknown classification falls through to the common case, which
+    /// is what a hidden network joined by name gets too.
+    #[test]
+    fn an_unclassified_network_is_joined_as_wpa2() {
+        let document = new_connection("hidden", "hunter2", "");
+        assert_eq!(
+            document["802-11-wireless-security"]["key-mgmt"],
+            zvariant::Value::from("wpa-psk")
+        );
+    }
+
+    /// WEP predates key management, and NetworkManager spells that `none`,
+    /// with the secret under its own key rather than `psk`.
+    #[test]
+    fn a_wep_network_takes_the_passphrase_as_a_wep_key() {
+        let document = new_connection("ancient", "hunter2", "wep");
+        let security = &document["802-11-wireless-security"];
+        assert_eq!(security["key-mgmt"], zvariant::Value::from("none"));
+        assert_eq!(security["wep-key0"], zvariant::Value::from("hunter2"));
+        assert_eq!(security["wep-tx-keyidx"], zvariant::Value::from(0u32));
     }
 
     /// An open network is joined with no security section at all. With one —
@@ -815,7 +865,7 @@ mod tests {
     /// exist and the activation fails with a prompt nothing can answer.
     #[test]
     fn an_open_network_carries_no_security_section() {
-        let document = new_connection("cafe", "");
+        let document = new_connection("cafe", "", "wpa2");
         assert!(!document.contains_key("802-11-wireless-security"));
     }
 }

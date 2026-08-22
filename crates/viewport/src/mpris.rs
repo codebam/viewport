@@ -18,7 +18,7 @@
 // while they buffer; a compositor that waited on one would drop frames for a
 // track title.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
 use viewport_ipc::event::MprisPlayer;
@@ -27,6 +27,24 @@ use viewport_ipc::event::MprisPlayer;
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
+
+/// How long one player gets to answer before the worker stops waiting.
+///
+/// Longer than any honest player needs and short enough that a wedged one is
+/// a hiccup rather than a hang: media players are ordinary applications and
+/// some of them stop answering while they buffer, and a worker that can be
+/// parked for minutes by one of them is every click and refresh on the bar
+/// parked with it. The same discipline as the tray's `ITEM_TIMEOUT`.
+const PLAYER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// How long any single call on the connection may run.
+///
+/// This is what collects the threads [`crate::dbus_util::with_deadline`]
+/// walks away from: the worker gives up at `PLAYER_TIMEOUT`, but the thread it
+/// handed the proxy to keeps trying until zbus itself gives up. Generous next
+/// to `PLAYER_TIMEOUT` on purpose — the deadline that matters is the worker's,
+/// and this one must never be what an honest player trips over.
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// What the thread sends the compositor: which player the bar should show, or
 /// nothing when none is running.
@@ -71,13 +89,11 @@ impl Mpris {
             if !enabled {
                 return;
             }
-            match start(events) {
-                Ok(worker) => self.worker = Some(worker),
-                Err(e) => {
-                    tracing::warn!("media controls are unavailable: {e:#}");
-                    return;
-                }
-            }
+            // Starting no longer touches the bus on this thread — the
+            // connection is made inside the worker — so there is nothing to
+            // fail here, and a bus that never answers is reported through the
+            // events channel like any other empty answer.
+            self.worker = Some(start(events));
         }
         self.send(Command::Enable(enabled));
     }
@@ -99,58 +115,95 @@ enum Command {
     /// property is not worth tracking: the answer is one round trip either
     /// way, and the bar shows one player.
     Refresh,
+    /// A bus name has appeared or been taken again. This is the one event
+    /// that says a player marked unresponsive deserves another chance, which
+    /// is why it is distinguished from an ordinary refresh.
+    Announce(String),
+    /// A bus name went away.
+    Gone(String),
     Control(String),
     Enable(bool),
 }
 
-fn start(
-    events: smithay::reexports::calloop::channel::Sender<Message>,
-) -> anyhow::Result<mpsc::Sender<Command>> {
+fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc::Sender<Command> {
     let (commands, inbox) = mpsc::channel();
-    let connection = zbus::blocking::Connection::session()?;
 
-    // Everything a player says about itself comes through one signal, and this
-    // takes it for every player at once rather than subscribing per player: a
-    // rule per player would mean adding and removing them as players come and
-    // go, for a message that is cheap to over-receive.
-    pump(
-        connection.clone(),
-        commands.clone(),
-        format!("type='signal',interface='org.freedesktop.DBus.Properties',path='{PATH}'"),
-    )?;
-    // And players appearing or going away, which is not a property of anything.
-    pump(
-        connection.clone(),
-        commands.clone(),
-        "type='signal',sender='org.freedesktop.DBus',\
-         interface='org.freedesktop.DBus',member='NameOwnerChanged'"
-            .to_owned(),
-    )?;
-
-    std::thread::Builder::new()
+    // Connecting happens here and not on the thread that called `start` —
+    // which is the compositor's event loop, on the way out of a configuration
+    // reload or the first keystroke in a picker. A round trip to a wedged bus
+    // daemon must not stall a frame, and a session with no bus at all is
+    // reported through the events channel, the way an empty answer is.
+    let (worker_events, worker_commands) = (events.clone(), commands.clone());
+    let spawned = std::thread::Builder::new()
         .name("mpris".to_owned())
-        .spawn(move || Worker::new(connection, events).run(&inbox))?;
-    Ok(commands)
-}
-
-/// One thread turning a match rule into refreshes.
-fn pump(
-    connection: zbus::blocking::Connection,
-    commands: mpsc::Sender<Command>,
-    rule: String,
-) -> anyhow::Result<()> {
-    let rule = zbus::MatchRule::try_from(rule.as_str())?;
-    let messages = zbus::blocking::MessageIterator::for_match_rule(rule, &connection, None)?;
-    std::thread::Builder::new()
-        .name("mpris-signals".to_owned())
         .spawn(move || {
-            for _ in messages.flatten() {
-                if commands.send(Command::Refresh).is_err() {
+            let connection = match zbus::blocking::connection::Builder::session()
+                .and_then(|builder| builder.method_timeout(CALL_TIMEOUT).build())
+            {
+                Ok(connection) => connection,
+                Err(e) => {
+                    tracing::warn!("media controls are unavailable: {e:#}");
+                    let _ = worker_events.send(Message::Player(None));
                     return;
                 }
+            };
+
+            // Everything a player says about itself comes through one signal,
+            // and this takes it for every player at once rather than
+            // subscribing per player: a rule per player would mean adding and
+            // removing them as players come and go, for a message that is
+            // cheap to over-receive.
+            if let Err(e) = crate::dbus_util::pump(
+                connection.clone(),
+                worker_commands.clone(),
+                "mpris-signals",
+                format!("type='signal',interface='org.freedesktop.DBus.Properties',path='{PATH}'"),
+                |_, commands| {
+                    let _ = commands.send(Command::Refresh);
+                },
+            ) {
+                tracing::warn!("media controls: could not follow players: {e:#}");
             }
-        })?;
-    Ok(())
+            // And players appearing or going away, which is not a property of
+            // anything — and which is also the only notice a wedged player
+            // ever gives that it is back.
+            if let Err(e) = crate::dbus_util::pump(
+                connection.clone(),
+                worker_commands.clone(),
+                "mpris-signals",
+                "type='signal',sender='org.freedesktop.DBus',\
+                 interface='org.freedesktop.DBus',member='NameOwnerChanged'"
+                    .to_owned(),
+                |message, commands| {
+                    let Ok((name, _old, new)) =
+                        message.body().deserialize::<(String, String, String)>()
+                    else {
+                        return;
+                    };
+                    if !name.starts_with(PREFIX) {
+                        return;
+                    }
+                    // An empty new owner is the name being given up, which is
+                    // the player dying; a new one is it announcing itself.
+                    let command = if new.is_empty() {
+                        Command::Gone(name)
+                    } else {
+                        Command::Announce(name)
+                    };
+                    let _ = commands.send(command);
+                },
+            ) {
+                tracing::warn!("media controls: could not follow the bus: {e:#}");
+            }
+
+            Worker::new(connection, worker_events).run(&inbox);
+        });
+
+    if spawned.is_err() {
+        tracing::warn!("media controls: the worker could not start");
+        let _ = events.send(Message::Player(None));
+    }
+    commands
 }
 
 struct Worker {
@@ -161,6 +214,13 @@ struct Worker {
     /// do, every second — would otherwise redraw the desktop on a timer.
     last: Option<MprisPlayer>,
     enabled: bool,
+    /// The players that stopped answering outright, by bus name. A property
+    /// that is merely missing is ordinary; a fetch that ran past
+    /// [`PLAYER_TIMEOUT`] means the process behind the name is wedged, and
+    /// asking it again on every signal would be paying its timeout over and
+    /// over — for as long as it keeps sending signals it cannot answer for.
+    /// Skipped until it re-announces itself through `Announce`.
+    unresponsive: HashSet<String>,
 }
 
 impl Worker {
@@ -173,6 +233,7 @@ impl Worker {
             events,
             last: None,
             enabled: false,
+            unresponsive: HashSet::new(),
         }
     }
 
@@ -192,6 +253,17 @@ impl Worker {
                 }
                 _ if !self.enabled => {}
                 Command::Refresh => self.refresh(),
+                Command::Announce(name) => {
+                    self.unresponsive.remove(&name);
+                    self.refresh();
+                }
+                Command::Gone(name) => {
+                    self.unresponsive.remove(&name);
+                    // Not special-cased beyond the bookkeeping: a name that is
+                    // gone no longer answers `ListNames`, so the refresh below
+                    // shows whatever is left, or nothing.
+                    self.refresh();
+                }
                 Command::Control(action) => self.control(&action),
             }
         }
@@ -213,41 +285,93 @@ impl Worker {
     /// one that is stopped — which is the rule `playerctl` uses and the one a
     /// person would apply looking at the screen. Ties go to the first name the
     /// bus lists, which is stable for as long as those players are running.
-    fn pick(&self) -> Option<String> {
-        let names: Vec<String> = zbus::blocking::fdo::DBusProxy::new(&self.connection)
-            .ok()?
-            .list_names()
-            .ok()?
+    /// A player marked unresponsive is not a candidate at all: asking it would
+    /// be four seconds of waiting for a known answer.
+    fn pick(&mut self) -> Option<String> {
+        let listed = crate::dbus_util::with_deadline(PLAYER_TIMEOUT, "mpris-names", {
+            let connection = self.connection.clone();
+            move || {
+                // `list_names` answers in `fdo::Error`; one conversion puts it
+                // in the same shape every other bus answer takes here.
+                zbus::blocking::fdo::DBusProxy::new(&connection)
+                    .and_then(|proxy| proxy.list_names().map_err(zbus::Error::from))
+            }
+        });
+        let Some(Ok(names)) = listed else {
+            return None;
+        };
+        let names: Vec<String> = names
             .into_iter()
             .map(|name| name.as_str().to_owned())
             .filter(|name| name.starts_with(PREFIX))
             .collect();
 
-        names
-            .into_iter()
-            .map(|name| {
-                let rank = match self.status(&name).as_str() {
-                    "Playing" => 0,
-                    "Paused" => 1,
-                    _ => 2,
-                };
-                (rank, name)
-            })
-            .min()
-            .map(|(_, name)| name)
+        let mut ranked: Vec<(u8, String)> = Vec::new();
+        for name in names {
+            if self.unresponsive.contains(&name) {
+                continue;
+            }
+            let rank = match self.status(&name).as_str() {
+                "Playing" => 0,
+                "Paused" => 1,
+                _ => 2,
+            };
+            ranked.push((rank, name));
+        }
+        ranked.into_iter().min().map(|(_, name)| name)
     }
 
-    fn status(&self, name: &str) -> String {
-        self.proxy(name)
-            .and_then(|proxy| proxy.get_property::<String>("PlaybackStatus").ok())
-            .unwrap_or_default()
+    fn status(&mut self, name: &str) -> String {
+        let Some(proxy) = self.proxy(name) else {
+            return String::new();
+        };
+        match crate::dbus_util::with_deadline(PLAYER_TIMEOUT, "mpris-status", move || {
+            proxy.get_property::<String>("PlaybackStatus")
+        }) {
+            Some(Ok(status)) => status,
+            Some(Err(_)) => String::new(),
+            None => {
+                self.stopped_answering(name);
+                String::new()
+            }
+        }
+    }
+
+    /// Note that a player has stopped answering, once.
+    fn stopped_answering(&mut self, name: &str) {
+        if self.unresponsive.insert(name.to_owned()) {
+            tracing::warn!(
+                "media player {name} stopped answering; skipping it until it re-announces"
+            );
+        }
     }
 
     /// Everything the bar draws, from one player.
-    fn read(&self, name: &str) -> Option<MprisPlayer> {
+    ///
+    /// Every property read runs under one deadline, on a thread of its own:
+    /// this is where a buffering player used to park the whole bar. What comes
+    /// back is turned into the widget's shape here, off the stopwatch.
+    fn read(&mut self, name: &str) -> Option<MprisPlayer> {
         let proxy = self.proxy(name)?;
-        let metadata: HashMap<String, zvariant::OwnedValue> =
-            proxy.get_property("Metadata").unwrap_or_default();
+        let fetched = crate::dbus_util::with_deadline(PLAYER_TIMEOUT, "mpris-read", move || {
+            let metadata: HashMap<String, zvariant::OwnedValue> =
+                proxy.get_property("Metadata").unwrap_or_default();
+            (
+                metadata,
+                proxy
+                    .get_property::<String>("PlaybackStatus")
+                    .unwrap_or_default(),
+                proxy.get_property("CanGoNext").unwrap_or(false),
+                proxy.get_property("CanGoPrevious").unwrap_or(false),
+                proxy.get_property("CanPause").unwrap_or(false),
+                proxy.get_property("CanPlay").unwrap_or(false),
+            )
+        });
+        let Some((metadata, status, can_go_next, can_go_previous, can_pause, can_play)) = fetched
+        else {
+            self.stopped_answering(name);
+            return None;
+        };
 
         let text = |key: &str| -> String {
             metadata
@@ -263,10 +387,6 @@ impl Worker {
             .and_then(|value| <Vec<String>>::try_from(value.clone()).ok())
             .unwrap_or_default()
             .join(", ");
-
-        let status = proxy
-            .get_property::<String>("PlaybackStatus")
-            .unwrap_or_default();
         let title = text("xesam:title");
 
         // A player that is running with nothing loaded — a browser that has
@@ -285,13 +405,13 @@ impl Worker {
             album: text("xesam:album"),
             status: status.to_lowercase(),
             art: art_url(&text("mpris:artUrl")),
-            can_go_next: proxy.get_property("CanGoNext").unwrap_or(false),
-            can_go_previous: proxy.get_property("CanGoPrevious").unwrap_or(false),
+            can_go_next,
+            can_go_previous,
             // Two properties, and a player answers both — `CanPause` is false
             // for a live stream that can only be stopped, and a button that
             // does nothing is worse than no button.
-            can_pause: proxy.get_property("CanPause").unwrap_or(false),
-            can_play: proxy.get_property("CanPlay").unwrap_or(false),
+            can_pause,
+            can_play,
         })
     }
 
