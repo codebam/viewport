@@ -577,6 +577,8 @@ fn serve_one(
     // ends as a short read rather than a String that grows until the client
     // runs out of patience or this process runs out of memory.
     let mut length = 0usize;
+    // Whether a Content-Length was declared at all; see the POST check below.
+    let mut declared = false;
     {
         let mut limited = (&mut *reader).take(MAX_HEADER_BYTES as u64);
         let mut lines = 0usize;
@@ -600,7 +602,19 @@ fn serve_one(
             }
             lines += 1;
             if let Some(value) = header_value(&header, "content-length") {
-                length = value.trim().parse().unwrap_or(0);
+                match value.trim().parse() {
+                    Ok(n) => {
+                        length = n;
+                        declared = true;
+                    }
+                    Err(_) => {
+                        // A body whose size cannot be read cannot be skipped
+                        // past either; answering and closing is all that keeps
+                        // a kept-alive connection honest.
+                        respond(stream, 400, "text/plain", "bad content-length", false)?;
+                        return Ok(Flow::Close);
+                    }
+                }
             }
             if let Some(value) = header_value(&header, "connection") {
                 let value = value.trim().to_ascii_lowercase();
@@ -611,6 +625,20 @@ fn serve_one(
                 }
             }
         }
+    }
+
+    // A POST declares its body. One that arrives without a Content-Length
+    // would be read as zero and its body parsed as the next request's head,
+    // which is the fault this refuses.
+    if method == "POST" && !declared {
+        respond(
+            stream,
+            400,
+            "text/plain",
+            "a post declares its length",
+            false,
+        )?;
+        return Ok(Flow::Close);
     }
 
     // The body is bounded before anything is allocated for it. A declared

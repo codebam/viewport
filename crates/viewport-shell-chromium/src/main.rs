@@ -7,8 +7,8 @@
 // buys two things that matter more than they sound:
 //
 // * There is no engine dependency. This crate compiles in seconds against
-//   serde and a pipe, on a machine with no browser installed, and the engine
-//   comes from whatever `chromium` is on PATH.
+//   serde_json and a pipe, on a machine with no browser installed, and the
+//   engine comes from whatever `chromium` is on PATH.
 //
 // * The bridge needs no engine API. `Runtime.addBinding` puts a function in
 //   the page that calls back out to us, and `Runtime.evaluate` puts a message
@@ -37,6 +37,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::process::{Child, Command};
 use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context as _, Result};
 use serde_json::{json, Value};
@@ -48,6 +49,9 @@ use viewport_shell_bridge::{Line, Options};
 /// `BRIDGE_SHIM` wraps it in `window.webkit.messageHandlers.viewport`, which is
 /// the name the shell was written against.
 const BINDING: &str = "__viewport_send";
+
+/// How many events may wait for a page that never arrives.
+const QUEUE_LIMIT: usize = 512;
 
 /// Where the browser is.
 fn chromium_binary() -> String {
@@ -154,7 +158,12 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                         session,
                         &viewport_ipc::js::dispatch(&json),
                     )?,
-                    _ => queued.push(json),
+                    _ => {
+                        if queued.len() >= QUEUE_LIMIT {
+                            queued.remove(0); // full: drop the oldest
+                        }
+                        queued.push(json);
+                    }
                 }
             }
             Incoming::Cdp(message) => {
@@ -429,8 +438,10 @@ impl Browser {
         );
         pipe.write_all(&bytes)
             .context("writing a devtools command")?;
-        // Or the `File` closes the descriptor it was built from.
-        std::mem::forget(pipe);
+        // Dropping closes the duplicate's own descriptor only; the one in
+        // `self.write` stays open. Forgetting it instead would leak an fd per
+        // command, which a busy session turns into EMFILE.
+        drop(pipe);
         Ok(())
     }
 
@@ -459,9 +470,26 @@ impl Browser {
         )
     }
 
-    fn stop(&mut self) {
-        // Closing the command pipe is how a browser started this way is asked
-        // to exit; killing it is what happens if it will not.
+    /// Ask the browser to go, then make sure it did.
+    ///
+    /// Closing the command pipe is how a browser started this way is asked to
+    /// exit: it sees EOF on fd 3 and shuts down on its own, which is the
+    /// graceful path. Killing it is what happens if it will not.
+    fn stop(mut self) {
+        // Both halves: the write end is the request, and the read end is held
+        // here only when the reader thread never started.
+        drop(self.write);
+        drop(self.read);
+
+        // Three seconds of patience, checked in hundred-millisecond steps,
+        // before reaching for the kill switch. `try_wait` reaps on sight.
+        for _ in 0..30 {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => break,
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

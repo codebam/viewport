@@ -21,6 +21,7 @@
 // returns a code. Everything below that line runs in the browser process only.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::ffi::{c_char, CString};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -45,9 +46,14 @@ static OUT: OnceLock<viewport_shell_bridge::Sender> = OnceLock::new();
 ///
 /// The compositor starts talking the moment it accepts the connection, which
 /// is before CEF has a browser, let alone a document. A script evaluated
-/// against a page that does not exist is dropped on the floor.
-static QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// against a page that does not exist is dropped on the floor. A ceiling is
+/// what keeps that from being a second copy of everything the desktop does
+/// when the page never arrives at all.
+static QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static READY: AtomicBool = AtomicBool::new(false);
+
+/// How many events may wait for a page that never arrives.
+const QUEUE_LIMIT: usize = 512;
 
 /// DevTools command ids. Any monotonic sequence will do; nothing here waits on
 /// a reply, and the ids only have to be distinct.
@@ -436,6 +442,17 @@ fn next_id() -> i64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Park an event until the page can take it, bounded like the gtk shell's
+/// queue: past the limit, the oldest goes.
+fn enqueue(json: String) {
+    if let Ok(mut queue) = QUEUE.lock() {
+        if queue.len() >= QUEUE_LIMIT {
+            queue.pop_front();
+        }
+        queue.push_back(json);
+    }
+}
+
 /// One DevTools message to the page's own agent.
 fn send(browser: &Browser, message: &Value) {
     let Some(host) = browser.host() else { return };
@@ -462,15 +479,26 @@ wrap_dev_tools_message_observer! {
     struct ShellObserver;
 
     impl DevToolsMessageObserver {
-        /// An event from the page's agent. The only one that matters is the
-        /// binding being called, which is the page talking.
+        /// An event from the page's agent. Two matter: a document that has
+        /// finished loading, which lets messages flow again, and the binding
+        /// being called, which is the page talking.
         fn on_dev_tools_event(
             &self,
             _browser: Option<&mut Browser>,
             method: Option<&CefString>,
             params: Option<&[u8]>,
         ) {
-            if method.map(CefString::to_string).as_deref() != Some("Runtime.bindingCalled") {
+            let method = method.map(CefString::to_string);
+            // A document was replaced — a reload, or the shell navigating. The
+            // shim is re-installed by `addScriptToEvaluateOnNewDocument` before
+            // any of its scripts run, so this only has to let messages flow
+            // again: the same signal the chromium backend waits on.
+            if method.as_deref() == Some("Page.loadEventFired") {
+                let present = BROWSER.with(|slot| slot.borrow().is_some());
+                READY.store(present, Ordering::SeqCst);
+                return;
+            }
+            if method.as_deref() != Some("Runtime.bindingCalled") {
                 return;
             }
             let Some(params) = params else { return };
@@ -505,27 +533,27 @@ wrap_task! {
             BROWSER.with(|slot| {
                 let slot = slot.borrow();
                 let Some(browser) = slot.as_ref() else {
-                    QUEUE.lock().map(|mut q| q.push(self.json.clone())).ok();
+                    enqueue(self.json.clone());
                     return;
                 };
                 if viewport_shell_bridge::is_reload(&self.json) {
                     tracing::info!("reloading the shell");
+                    // Held shut until the new document announces itself with
+                    // `Page.loadEventFired`, which the DevTools observer
+                    // watches for: events that arrive meanwhile would land in
+                    // a document that is going away and never be seen again.
                     READY.store(false, Ordering::SeqCst);
                     send(browser, &json!({
                         "id": next_id(),
                         "method": "Page.reload",
                         "params": {"ignoreCache": true},
                     }));
-                    // The shim goes back in with the new document, from
-                    // `addScriptToEvaluateOnNewDocument`; this only has to let
-                    // messages flow again.
-                    READY.store(true, Ordering::SeqCst);
                     return;
                 }
                 if READY.load(Ordering::SeqCst) {
                     evaluate(browser, &viewport_ipc::js::dispatch(&self.json));
                 } else {
-                    QUEUE.lock().map(|mut q| q.push(self.json.clone())).ok();
+                    enqueue(self.json.clone());
                 }
             });
         }
