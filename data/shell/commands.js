@@ -153,6 +153,13 @@ function handleShellCommand(command, args) {
     case 'power':
       togglePowerPicker();
       break;
+    /* The calendar under the clock. A shell verb as well as a click on the
+       module, which is the pair the network picker and the power picker each
+       have: the pointer is the obvious way in, and a desk driven from the
+       keyboard should not have to reach for one to see what the date is. */
+    case 'calendar':
+      toggleCalendar();
+      break;
     /* The on-screen keyboard. Bound to Mod4+Shift+k for a desk that has a
        real keyboard and wants to raise it anyway; a touch-only desk never
        needs the chord, because `osk.wanted` already brings it up. See
@@ -341,6 +348,12 @@ window.addEventListener('viewport', (event) => {
       applyBarMode(message.bar);
       applyBarWidgets(message.bar_widgets);
       applyBarItems(message.bar_items);
+      /* How the clock is written, and with it the calendar under it: the
+         locale, the twelve-or-twenty-four-hour choice and an optional format
+         string. Absent is not en-US and not any other tag written down here —
+         it is the locale the engine is running under, which is what the
+         session already said with LANG. */
+      applyClock(message.clock);
       /* 'auto', 'manual' or 'off' — see applyOskMode in osk.js for what
          changing it does to a keyboard already on screen. */
       applyOskMode(message.osk);
@@ -736,6 +749,12 @@ document.addEventListener('click', () => {
      reaches here is a click that missed, and the battery widget that opens
      it stops itself the same way the network module does. */
   closePowerPicker();
+  /* And the calendar, on the same terms as the notification centre: it is
+     mostly text, so its panel stops the clicks that land on it rather than
+     leaving that to rows that mostly are not buttons. What reaches here is a
+     click past it — and the click on the clock that opens it stops itself, the
+     way the network module's does. */
+  closeCalendar();
 });
 
 send({ type: 'output.query' });

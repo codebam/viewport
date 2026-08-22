@@ -178,6 +178,25 @@ let clipboardOpen = false;
  * copy of what it last said, and a reload asks again. */
 let notificationHistory = [];
 let notificationCentreOpen = false;
+/* How the bar's clock is written, from the config file's `clock` block, and
+ * the calendar hanging under it. See calendar.js, which owns both — the grid
+ * and the module above it have to agree about the locale or the desk is
+ * reading a German month under an American date.
+ *
+ * All three null is the default and the common case: the locale the engine
+ * runs under, the hour that locale writes, and the shape the shell ships. A
+ * locale here has already been checked against `Intl` — a tag nothing can
+ * parse never reaches this. */
+let clockConfig = { locale: null, hour12: null, format: null };
+/* Whether the calendar is on screen, which month it is showing (null is
+ * whichever month today is in, so an opened-and-closed calendar always comes
+ * back on today rather than where it was left three months ago), the element
+ * it hangs from, and the day it was drawn for — a calendar left open overnight
+ * would otherwise go on marking yesterday. */
+let calendarOpen = false;
+let calendarMonth = null;
+let calendarAnchor = null;
+let calendarDrawnDay = '';
 let currentMode = 'default';
 /* The layout models the shell implements. Set by the compositor from the
  * config file, and switched at runtime with `shell layout.model`.
@@ -336,6 +355,7 @@ const notificationCentreEl = document.getElementById('notification-centre');
 const powerEl = document.getElementById('power-picker');
 const networkEl = document.getElementById('network-picker');
 const bluetoothEl = document.getElementById('bluetooth-picker');
+const calendarEl = document.getElementById('calendar');
 const oskEl = document.getElementById('osk');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');

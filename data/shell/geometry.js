@@ -779,6 +779,12 @@ function relayoutAll() {
     output.barShown = onScreen;
     output.el.classList.toggle('bar-hidden', hidden);
     if (revealed) animateBarIn(output);
+    /* A bar going away takes the calendar hanging off its clock with it. Under
+       `bar: auto` that is a second after it was opened — the bar is only up
+       while Mod4 is held — and a dropdown left pointing at a bar nobody can
+       see is a rectangle the compositor goes on drawing over the windows with
+       nothing above it to say what it is. */
+    if (!onScreen) closeCalendarOff(output);
     /* Auto draws the bar over the windows rather than above them, so revealing
        it does not resize anything. */
     output.el.classList.toggle('bar-auto', barMode === 'auto');

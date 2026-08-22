@@ -103,8 +103,16 @@ pub enum Event {
         output: Option<String>,
     },
 
+    /// Boxed, and the only variant that is.
+    ///
+    /// `Config` is far the largest thing this enum carries — a keymap, the
+    /// window rules, a theme, the whole right side of the bar — and it is sent
+    /// twice a session, on connect and on reload. An enum is as big as its
+    /// widest variant, so inline it would make every `view.geometry` in a
+    /// resize gesture carry that much dead space around the event loop. The
+    /// pointer costs one allocation on the rarest message here.
     #[serde(rename = "config")]
-    Config(Config),
+    Config(Box<Config>),
 
     /// The logo modifier went down or came up, so the shell can show its
     /// overlay while it is held.
@@ -525,6 +533,14 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<Border>,
 
+    /// The bar clock's locale and format, carried from the config file to the
+    /// shell, which formats the module and the calendar under it from them.
+    /// Absent means the shell decides for itself, which is the locale the
+    /// engine runs under — the answer `LANG` already gives — so a message from
+    /// a build that predates this key behaves as a desk with no `clock` block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<Clock>,
+
     /// Extra bar widgets, carried from the config file to the shell, which
     /// builds an element for each and fills it from the status sample (disk,
     /// volume) or a fetch of its own (weather). Absent or empty is the default
@@ -655,6 +671,25 @@ pub struct Border {
     /// around, and rounding it after it has been pushed against the screen
     /// edge is what leaves wallpaper showing in the corners of the monitor.
     pub smart: Option<bool>,
+}
+
+/// The bar clock's locale and format, as `clock` in the config file, carried
+/// to the shell.
+///
+/// `locale` is a BCP 47 language tag the shell hands to `Intl`; `hour12`
+/// chooses a twelve- or twenty-four-hour clock, and absent leaves that to the
+/// locale; `format` is a strftime-style template for the whole module. Every
+/// field optional, because the useful case is naming one of them — a desk that
+/// only wants its own month names sends a locale and nothing else.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Clock {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hour12: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
 }
 
 /// One extra bar widget, as `bar_widgets` in the config file, carried to the
@@ -1278,7 +1313,7 @@ mod tests {
 
     #[test]
     fn unset_config_members_are_omitted_not_null() {
-        let value = json(&Event::Config(Config {
+        let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
             logo: true,
             tutorial: false,
@@ -1288,6 +1323,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            clock: None,
             bar_widgets: None,
             bar_items: None,
             focus_crosses_outputs: true,
@@ -1296,7 +1332,7 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
-        }));
+        })));
         assert!(value.get("bar").is_none());
         assert!(value.get("rules").is_none());
         assert!(value.get("theme").is_none());
@@ -1307,7 +1343,7 @@ mod tests {
 
     #[test]
     fn the_border_is_carried_to_the_shell() {
-        let value = json(&Event::Config(Config {
+        let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
             logo: true,
             tutorial: true,
@@ -1321,6 +1357,7 @@ mod tests {
                 width: Some(3),
                 smart: Some(true),
             }),
+            clock: None,
             bar_widgets: None,
             bar_items: None,
             focus_crosses_outputs: true,
@@ -1329,7 +1366,7 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
-        }));
+        })));
         assert_eq!(value["border"]["radius"], 12);
         assert_eq!(value["border"]["width"], 3);
         assert_eq!(value["border"]["smart"], true);
@@ -1337,7 +1374,7 @@ mod tests {
 
     #[test]
     fn gaps_are_carried_to_the_shell_with_all_three_fields() {
-        let value = json(&Event::Config(Config {
+        let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
             logo: true,
             tutorial: true,
@@ -1351,6 +1388,7 @@ mod tests {
                 smart: Some(true),
             }),
             border: None,
+            clock: None,
             bar_widgets: None,
             bar_items: None,
             focus_crosses_outputs: true,
@@ -1359,7 +1397,7 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
-        }));
+        })));
         assert_eq!(value["gaps"]["inner"], 15);
         assert_eq!(value["gaps"]["outer"], 4);
         assert_eq!(value["gaps"]["smart"], true);
@@ -1384,7 +1422,7 @@ mod tests {
         // The scrolling layout decides this in the shell, so `false` has to
         // survive the trip — the compositor honouring it alone would stop
         // tiling from crossing and leave the strip crossing anyway.
-        let value = json(&Event::Config(Config {
+        let value = json(&Event::Config(Box::new(Config {
             layout: "scrolling".into(),
             logo: true,
             tutorial: true,
@@ -1394,6 +1432,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            clock: None,
             bar_widgets: None,
             bar_items: None,
             focus_crosses_outputs: false,
@@ -1402,13 +1441,13 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
-        }));
+        })));
         assert_eq!(value["focus_crosses_outputs"], false);
     }
 
     #[test]
     fn rules_go_over_as_parsed_json() {
-        let value = json(&Event::Config(Config {
+        let value = json(&Event::Config(Box::new(Config {
             layout: "scrolling".into(),
             logo: false,
             tutorial: false,
@@ -1418,6 +1457,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            clock: None,
             bar_widgets: None,
             bar_items: None,
             focus_crosses_outputs: true,
@@ -1426,7 +1466,7 @@ mod tests {
             wallpaper: None,
             wallpaper_mode: None,
             osk: "auto".to_owned(),
-        }));
+        })));
         assert!(value["rules"].is_array(), "rules must not be a string");
         assert_eq!(value["rules"][0]["app_id"], "mpv");
     }
@@ -1507,7 +1547,7 @@ mod tests {
                 height: 0,
             }),
             json(&Event::ViewFocused { id: 1 }),
-            json(&Event::Config(Config {
+            json(&Event::Config(Box::new(Config {
                 layout: "tiling".into(),
                 logo: false,
                 tutorial: false,
@@ -1517,6 +1557,7 @@ mod tests {
                 theme: None,
                 gaps: None,
                 border: None,
+                clock: None,
                 bar_widgets: None,
                 bar_items: None,
                 focus_crosses_outputs: true,
@@ -1525,7 +1566,7 @@ mod tests {
                 wallpaper: None,
                 wallpaper_mode: None,
                 osk: "auto".to_owned(),
-            })),
+            }))),
             json(&Event::WorkspaceRequest {
                 action: String::new(),
                 id: None,

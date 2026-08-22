@@ -1403,6 +1403,10 @@ impl ViewportState {
                 theme: None,
                 gaps: None,
                 border: None,
+                // Nothing said about the clock, which is the shell deciding
+                // for itself: the locale the engine runs under and the hour
+                // that locale writes.
+                clock: None,
                 // No widgets: the default bar, until a config file adds some.
                 bar_widgets: None,
                 // Absent: the default module set until a config file overrides
@@ -6861,7 +6865,7 @@ impl ViewportState {
                 mode: binding.mode.clone(),
             })
             .collect();
-        let event = Event::Config(config);
+        let event = Event::Config(Box::new(config));
         self.notify(&event);
     }
 
@@ -7008,6 +7012,19 @@ impl ViewportState {
                 border.width = prior.width;
             }
             self.config.border = Some(border);
+        }
+        // The clock's locale and format. Forwarded whole rather than field by
+        // field, and only when the file names one of them: the shell's own
+        // answer to an absent block is not a constant this side could write
+        // down — it is whatever locale the engine is running under — so
+        // sending a `clock` with three nulls in it would be the compositor
+        // overruling that with nothing.
+        if file.clock != crate::config::ClockConfig::default() {
+            self.config.clock = Some(viewport_ipc::event::Clock {
+                locale: file.clock.locale.clone(),
+                hour12: file.clock.hour12,
+                format: file.clock.format.clone(),
+            });
         }
         // The bar. Two ways to ask for it: `bar_widgets` adds widgets to the
         // default module set; `bar_items` overrides the entire right side of
