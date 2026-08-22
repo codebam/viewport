@@ -570,3 +570,111 @@ remote session can have devices of its own, and a compositor that can inject
 into the first one has nothing to put on the second. What it costs is that a
 remote pointer and a local one fight over the same cursor, which is what
 somebody sharing control of their machine expects to happen.
+
+## Xwayland and HiDPI
+
+X11 clients are left at 1x unless the config file says otherwise, and the
+setting that says otherwise buys sharpness for some toolkits at the cost of
+size for the rest. Both halves of that are decisions rather than gaps, so both
+are written down here.
+
+**What 1x means, and why it is not simply broken.** An X11 client draws into a
+buffer whose pixels are Xwayland's pixels, Xwayland's screen is this
+compositor's logical desk, and the compositor magnifies the result onto the
+panel. On a 2x monitor an 800x600 X window is an 800x600 buffer stretched
+across 1600x1200 physical pixels: the window is exactly the physical size it
+should be, and it is blurry. Nothing is mispositioned, nothing is clipped, and
+an application that has never heard of a scale factor — xterm, an SDL game, a
+twenty-year-old Motif tool — behaves the way it always has. That is why this
+is the default and why several compositors stop here.
+
+**What `xwayland.scale` does.** Setting it to `2` (or to `"auto"`, which takes
+the number from the monitors) makes two changes at once, and they only work
+together:
+
+- Xwayland's connection is given a *client scale*. Its outputs are reported
+  at twice the pixels, so the X screen behind a 1600x900 desk is 3200x1800 X
+  pixels, and everything Xwayland sends back — buffers, surface offsets, the
+  geometry the window manager reads off an X window — is divided by two on the
+  way in. An X window of 1600x1200 lands on the desk as 800x600 logical pixels
+  with four times the detail.
+- XSETTINGS are published on the X server: `Gdk/WindowScalingFactor` (the
+  integer window scale GTK acts on), `Gdk/UnscaledDPI` (98304, i.e. 96dpi in
+  the 1024ths XSETTINGS uses, so GTK does not scale the text twice) and
+  `Xft/DPI` (96dpi times the scale). Xwayland is also started with
+  `-dpi 96×scale` so that a client computing density off the screen itself
+  gets the same answer.
+
+Without the first half, the second is every X11 window at twice the size it
+asked for — which is what setting `GDK_SCALE=2` by hand on an unpatched
+compositor does, and why that advice always arrives with a patched Xwayland
+attached. Without the second, the first is every X11 window crisp and half the
+size. The compositor sets them together or not at all.
+
+**What it reaches, and what it does not.** This is the partial answer, stated
+plainly:
+
+- GTK 3 and GTK 4 on X11 read `Gdk/WindowScalingFactor` and draw at the scale.
+  These come out sharp and correctly sized.
+- Qt 6 and Chromium (so also Electron) read `Xft/DPI` and scale from the
+  density. Sharp and correctly sized, give or take each toolkit's own
+  rounding.
+- Qt 5 scales only when `QT_AUTO_SCREEN_SCALE_FACTOR` or `QT_SCALE_FACTOR` is
+  in its environment, and this compositor does not put it there — see below.
+- Java/AWT, SDL, GLFW, Tk, xterm, and anything else with no notion of a scale
+  factor draw their 1x pixels into a screen whose pixels are now half the size
+  of a logical one. They come out **sharp and half as large**. On a 2x desk
+  with the key set to 2, an xterm is legible-if-small; on a 3x desk it is not.
+
+That asymmetry is the whole cost of the setting, and it is why the default is
+off. A desk whose X11 applications are a browser and a GTK image viewer wants
+this on; a desk whose X11 application is a game or an old scientific tool
+wants it off, and there is no third answer this compositor can pick on their
+behalf.
+
+**Mixed DPI has no right answer.** There is one X screen behind every monitor,
+so there is one scale. `pick_xwayland_scale` takes the largest — a 2x laptop
+panel beside a 1x monitor picks 2, which makes the panel sharp and leaves an X
+window on the monitor drawing four times the pixels it needs into a rectangle
+of the right size. Picking the smallest would leave the blur on exactly the
+panel that was the reason to turn it on. Per-window scale, the thing that
+would actually solve it, is the feature nobody has made look good: it means a
+different X screen per monitor, which X11 does not have, or rescaling a live
+window as it crosses a monitor edge, which the client is never told about.
+
+**What was rejected, and why.**
+
+- **Xwayland's own `-scale`.** Not in the pinned Xwayland (24.1.13, in the
+  flake and in nixpkgs both — the option list has `-dpi` and `-hidpi` and no
+  `-scale`), so it cannot be the mechanism here. It also moves the whole X
+  coordinate space, which every compositor that uses it has to compensate for
+  in its window manager. The client scale above is the same idea implemented
+  on this side of the socket, works on the Xwayland everyone has, and needs no
+  arithmetic in `handlers/xwayland.rs`.
+- **`_XWAYLAND_GLOBAL_OUTPUT_SCALE`.** The property the `hidpi-xprop` patch
+  set uses. It requires a patched Xwayland *and* a patched compositor, which
+  is two out-of-tree builds to ask a user for, and it is the same mechanism
+  reached by a worse road.
+- **`GDK_SCALE`, `GDK_DPI_SCALE` and `QT_SCALE_FACTOR` in the child
+  environment.** Refused, for two reasons that are each sufficient. The first
+  is reach: `child_display_env` is handed to programs this compositor spawns
+  and to nothing started from a terminal, an ssh session or a systemd unit,
+  while a setting on the X server reaches every client that ever connects to
+  it. The second is aim: nothing at spawn time knows whether the program about
+  to start will turn out to be an X11 client or a Wayland one, and a Wayland
+  toolkit that already scales itself from `wl_output` and then finds
+  `GDK_SCALE=2` in its environment draws at four times. Writing them into this
+  process's own environment instead is the `setenv`-against-live-threads
+  hazard that `child_display_env` exists to avoid. The one environment
+  variable that *is* set is `XCURSOR_SIZE`, and only in Xwayland's own
+  environment, where it cannot reach a Wayland client — an X cursor is loaded
+  in X pixels and would otherwise be half the size on screen.
+
+**Limits worth knowing.** The scale is read once, when Xwayland starts: a
+config reload moves the value and nothing on screen, because the X screen's
+size in X pixels is settled at connect and X11 has no graceful way for a
+window manager to resize the root window under a running client. A monitor
+plugged in after startup does not change it either. Changing the setting means
+restarting the session. `tests/xwayland-scale.test.sh` checks both halves
+arrive, and checks that a config file which says nothing about X11 leaves the
+X server exactly as it was.

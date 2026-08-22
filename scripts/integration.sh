@@ -189,5 +189,6 @@ run workspace "$root/tests/workspace.test.sh" \
 # Compiles its own client, because it is the one test here that needs X11 and
 # the suite is deliberately buildable without it. Skips where there is none.
 run xwayland-focus "$root/tests/xwayland-focus.test.sh" "$VIEWPORT"
+run xwayland-scale "$root/tests/xwayland-scale.test.sh" "$VIEWPORT"
 
 exit "$failed"

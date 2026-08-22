@@ -1581,3 +1581,50 @@ unplug. This block is applied after the restore, so a position written here
 still has the final say. A mode is only restored if the display advertises it,
 since the connector is the only identity there is and what comes back on a port
 need not be the panel that left it.
+
+## X11 applications on a HiDPI screen
+
+The `outputs` block's `scale` is honoured for Wayland clients, and X11 clients
+are left at 1x: an X window's pixels are logical pixels, and the compositor
+magnifies them onto the panel. The window ends up the size it should be and
+blurry, which is what an X11 application does on every compositor that has not
+been patched for it.
+
+`xwayland.scale` changes that, for the toolkits that can follow.
+
+```json
+"xwayland": {
+  "scale": 2
+}
+```
+
+| Value | What it does |
+| --- | --- |
+| `"off"` | X11 clients stay at 1x. The default, and what every release before this one did |
+| `"auto"` | Takes the largest scale of the monitors — a 2x panel beside a 1x monitor gives 2 |
+| a whole number | That scale, whatever the monitors say. `1` means the same as `"off"` |
+
+A fractional number is refused rather than rounded, because the only thing
+X11 has to carry a scale with is an integer window-scaling factor: `1.5` would
+silently become `2`. `"auto"` rounds a fractional output scale for the same
+reason — 1.5 becomes 2, 1.25 becomes 1.
+
+**It does not reach every application.** GTK 3, GTK 4, Qt 6 and Chromium (so
+also Electron) follow it and come out sharp at the right size. Qt 5 needs
+`QT_AUTO_SCREEN_SCALE_FACTOR` in its own environment, which the compositor
+deliberately does not set. Everything with no notion of a scale factor —
+xterm, SDL and GLFW games, Java/AWT, Tk — comes out **sharp and half the
+size** at `2`, because the X screen now has twice the pixels and those
+applications still draw the same number of them. That trade is the reason the
+default is off; `docs/protocols.md` has the full account of why it is the
+trade, and what else was tried.
+
+**It is read once, when Xwayland starts.** Reloading the config file moves the
+value and nothing on screen: the X screen's size in X pixels is settled when
+the server comes up, and X11 has no graceful way to resize the root window
+under a running client. Plugging a monitor in later does not change it either.
+Changing this means restarting the session.
+
+The cursor is scaled with it — Xwayland is started with `XCURSOR_SIZE`
+multiplied by the scale, since an X cursor is loaded in X pixels and would
+otherwise be half the size on screen. `cursor.size` is still the size you see.

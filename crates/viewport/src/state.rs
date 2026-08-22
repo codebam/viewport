@@ -772,6 +772,11 @@ pub struct ViewportState {
     /// `sync_osk_wanted` in `input.rs`; see `config::OskMode` for what each
     /// value means and why a boolean could not say it.
     pub osk_mode: crate::config::OskMode,
+    /// What `xwayland.scale` in the config file said. Read exactly once, by
+    /// [`Self::start_xwayland`], which runs after `apply_config` and before
+    /// the event loop turns; a reload moves this and nothing else, for the
+    /// reason `config::XwaylandConfig::scale` gives.
+    pub xwayland_scale: crate::config::XwaylandScale,
     /// Whether a touch-capable input device has ever been seen on this seat,
     /// from `DeviceCapability::Touch` on an `InputEvent::DeviceAdded` in
     /// `input.rs`. Sticky rather than a live count: `seat.add_touch()` in
@@ -1552,6 +1557,7 @@ impl ViewportState {
             _virtual_keyboard_state: virtual_keyboard_state,
             osk_wanted: false,
             osk_mode: crate::config::OskMode::Auto,
+            xwayland_scale: crate::config::XwaylandScale::Off,
             osk_touch_seen: false,
             gamma_state,
             output_power_state,
@@ -6699,11 +6705,69 @@ impl ViewportState {
     pub fn start_xwayland(&mut self, loop_handle: &LoopHandle<'static, Self>) {
         use smithay::xwayland::{XWayland, XWaylandEvent};
 
+        // What X11 clients are told about this desk's density, if anything.
+        // Absent from the config file this is 1, which is what every X11
+        // client here has always got: a buffer of logical pixels that the
+        // compositor magnifies onto whatever the panel is. See
+        // `docs/protocols.md` for why that is the default and what the cost
+        // of the alternative is.
+        //
+        // Both sources of scale, because neither alone is complete when this
+        // runs: the backend is up so the live outputs exist, but an output
+        // that is switched off is not in the space, and on a first start the
+        // config file's block has been applied to outputs that may not have
+        // arrived. Taking the largest of the union is the whole policy —
+        // `pick_xwayland_scale`, which is where the mixed-DPI case is argued.
+        let scale = crate::config::pick_xwayland_scale(
+            self.xwayland_scale,
+            self.space
+                .outputs()
+                .map(|output| output.current_scale().fractional_scale())
+                .chain(
+                    self.output_config
+                        .values()
+                        .filter_map(|output| output.scale),
+                ),
+        );
+
+        // Xwayland's own environment, which is not this process's and not a
+        // spawned child's either — it is the one process for which an X11
+        // cursor size is the right thing to say. `child_display_env` cannot
+        // carry this: it goes to everything the compositor launches, and
+        // whether a launched program will turn out to be an X11 client or a
+        // Wayland one is not knowable from here. XCURSOR_SIZE handed to a
+        // Wayland client that already scales its own cursor is a pointer at
+        // twice the size on the same screen.
+        //
+        // Sized up with the scale for the same reason the windows are: with a
+        // client scale of 2 the X server's pixels are half a logical pixel
+        // each, so the 24-pixel cursor an X client loads is a 12-pixel cursor
+        // on screen unless it is asked for at 48.
+        let mut envs: Vec<(String, String)> = Vec::new();
+        // The DPI Xwayland reports on its screen, which is what the toolkits
+        // that never learned about window scaling read — Qt 6, Chromium, and
+        // anything using Xft directly. 96 is X11's canonical density and the
+        // number every toolkit falls back to, so the scaled desk is a whole
+        // multiple of it.
+        let mut extra_args: Vec<String> = Vec::new();
+        if scale > 1 {
+            envs.push((
+                "XCURSOR_THEME".to_owned(),
+                self.cursor_theme.name().to_owned(),
+            ));
+            envs.push((
+                "XCURSOR_SIZE".to_owned(),
+                (self.cursor_theme.size() * scale).to_string(),
+            ));
+            extra_args.push("-dpi".to_owned());
+            extra_args.push((96 * scale).to_string());
+        }
+
         let (xwayland, client) = match XWayland::spawn(
             &self.display_handle,
             None,
-            std::iter::empty::<(String, String)>(),
-            std::iter::empty::<String>(),
+            envs,
+            extra_args,
             true,
             std::process::Stdio::null(),
             std::process::Stdio::null(),
@@ -6718,6 +6782,51 @@ impl ViewportState {
             }
         };
 
+        // The other half of the scale, and the half that makes it correct
+        // rather than merely large.
+        //
+        // A client scale is an extra mapping between this compositor's
+        // logical coordinates and one client's: at 2 the X server is told its
+        // outputs are twice as many pixels across, and everything it sends
+        // back — buffers, surface positions, the window geometry the X11
+        // window manager reads — is divided by two on the way in. So an X
+        // client that draws its 800x600 window at 2x makes a 1600x1200 buffer
+        // on a 1600x1200 X screen, and lands on the desk as 800x600 logical
+        // pixels with four times the detail. Without this the same client
+        // would simply be twice the size it asked to be, which is what
+        // setting GDK_SCALE by hand on an unpatched compositor does and why
+        // that advice comes with a patched Xwayland attached.
+        //
+        // Set before the event loop turns, which is what makes it safe: the
+        // server is a process that has not connected yet, and no output has
+        // been sent to it at the old scale.
+        let scale = if scale > 1 {
+            match client.get_data::<smithay::xwayland::XWaylandClientData>() {
+                Some(data) => {
+                    data.compositor_state.set_client_scale(scale as f64);
+                    tracing::info!(
+                        "X11 clients are scaled {scale}x (xwayland.scale is {})",
+                        self.xwayland_scale.as_str()
+                    );
+                    scale
+                }
+                // Nothing to do but say so, and stand the whole thing down
+                // together: telling every toolkit to draw at 2x while the
+                // surfaces are still measured at 1x is the one combination
+                // that is actively wrong, and it is wrong by a factor of two
+                // in the direction of "nothing fits on the screen".
+                None => {
+                    tracing::error!(
+                        "the Xwayland client carries no compositor state, so it cannot be \
+                         scaled; X11 clients stay at 1x"
+                    );
+                    1
+                }
+            }
+        } else {
+            scale
+        };
+
         let display_handle = self.display_handle.clone();
         let handle = loop_handle.clone();
         let inserted = loop_handle.insert_source(xwayland, move |event, _, state| match event {
@@ -6726,7 +6835,66 @@ impl ViewportState {
                 display_number,
             } => {
                 match X11Wm::start_wm(handle.clone(), &display_handle, x11_socket, client.clone()) {
-                    Ok(wm) => {
+                    Ok(mut wm) => {
+                        // The half of the scale that the clients themselves
+                        // have to act on. The compositor has made the X screen
+                        // bigger in X pixels; nothing yet has told anything
+                        // drawing on it to use them, and an application that
+                        // is not told comes out crisp and half the size.
+                        //
+                        // XSETTINGS rather than the environment, and not only
+                        // because writing environ behind the worker threads is
+                        // the hazard `child_display_env` exists to avoid:
+                        // GDK_SCALE reaches a program this compositor spawned
+                        // and nothing started from a terminal, an ssh session
+                        // or a systemd unit, while a setting on the X server
+                        // reaches every client that ever connects to it. The
+                        // three keys are the ones GNOME's settings daemon has
+                        // published for a decade, which is why the toolkits
+                        // read them:
+                        //
+                        //   Gdk/WindowScalingFactor  GTK's integer window
+                        //       scale — the one that makes GTK draw more
+                        //       pixels rather than larger ones.
+                        //   Gdk/UnscaledDPI          the font DPI *before*
+                        //       that factor, so GTK does not multiply the
+                        //       text by the scale twice.
+                        //   Xft/DPI                  the density everything
+                        //       else reads: Qt 6, Chromium, Xft directly.
+                        //
+                        // Both DPI values are in 1024ths of a point, which is
+                        // the unit the XSETTINGS registry defines for them.
+                        //
+                        // What this does not reach is written down in
+                        // `docs/protocols.md`: Qt 5 without
+                        // QT_AUTO_SCREEN_SCALE_FACTOR, Java, SDL games,
+                        // xterm, and anything else that has no notion of a
+                        // scale factor draws its 1x pixels into a screen
+                        // whose pixels are now half the size, and comes out
+                        // sharp and small.
+                        if scale > 1 {
+                            use smithay::xwayland::xwm::settings::Value;
+                            let dpi = 96 * 1024;
+                            let settings = [
+                                (
+                                    "Gdk/WindowScalingFactor".to_owned(),
+                                    Value::Integer(scale as i32),
+                                ),
+                                ("Gdk/UnscaledDPI".to_owned(), Value::Integer(dpi)),
+                                ("Xft/DPI".to_owned(), Value::Integer(dpi * scale as i32)),
+                            ];
+                            if let Err(e) = wm.set_xsettings(settings.into_iter()) {
+                                // Not fatal, and worth saying loudly: the
+                                // screen is already scaled at this point, so
+                                // a failure here is the crisp-and-small case
+                                // for every client rather than for the few
+                                // that cannot scale.
+                                tracing::warn!(
+                                    "the X settings could not be published, so X11 clients \
+                                     will not know to draw at {scale}x: {e}"
+                                );
+                            }
+                        }
                         state.xwm = Some(wm);
                         state.xdisplay = Some(display_number);
                         // Not written into the process environment. This runs
@@ -7136,6 +7304,22 @@ impl ViewportState {
                     self.sync_osk_wanted();
                 }
                 Err(e) => tracing::warn!("{e}; leaving osk as {:?}", self.osk_mode.as_str()),
+            }
+        }
+        if let Some(setting) = file.xwayland.scale.as_ref() {
+            match crate::config::parse_xwayland_scale(setting) {
+                Ok(scale) => {
+                    // Recorded, and acted on only by `start_xwayland`. A
+                    // reload that changes this says nothing here on purpose:
+                    // the log line belongs where the number is used, and
+                    // there is nothing this function could do with a new one
+                    // — the X screen's size is fixed when the server starts.
+                    self.xwayland_scale = scale;
+                }
+                Err(e) => tracing::warn!(
+                    "{e}; leaving the xwayland scale at {}",
+                    self.xwayland_scale.as_str()
+                ),
             }
         }
         if let Some(dark) = file.dark_mode {

@@ -393,6 +393,11 @@ pub struct File {
     pub border: BorderConfig,
     pub notifications: NotificationsConfig,
 
+    /// What X11 clients are told about this desk's pixel density. See
+    /// [`XwaylandConfig`], and `docs/protocols.md` for the decision behind
+    /// the default being "nothing".
+    pub xwayland: XwaylandConfig,
+
     /// Extra widgets to add to the bar, beyond the modules it draws by default.
     ///
     /// Empty or absent is the default bar, untouched. See `BarWidgetConfig`.
@@ -895,6 +900,152 @@ pub(crate) fn percent_decode(text: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// What `xwayland.scale` was written as: a name, or a number.
+///
+/// Two shapes for one key because the two useful answers are different kinds
+/// of thing — `"auto"` is a policy and `2` is a decision, and a desk that has
+/// picked a number does not want it re-derived from the monitors the next
+/// time one is plugged in. [`parse_xwayland_scale`] turns either into a
+/// [`XwaylandScale`]; the untagged enum only gets it out of JSON without the
+/// file having to say which of the two it meant.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum XwaylandScaleSetting {
+    Name(String),
+    Factor(f64),
+}
+
+/// What `xwayland.scale` means once it has been read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum XwaylandScale {
+    /// X11 clients are left at 1x: their buffers are logical pixels and the
+    /// compositor magnifies them onto a HiDPI panel, which is blurry and is
+    /// the right *size*. The default, and the only setting under which an X11
+    /// application that cannot scale itself still comes out the size it
+    /// should be — see the Xwayland section of `docs/protocols.md` for why
+    /// that is the trade and not an oversight.
+    #[default]
+    Off,
+    /// Take the number from the monitors — [`pick_xwayland_scale`].
+    Auto,
+    /// The number the file gave, whatever the monitors say.
+    Fixed(u32),
+}
+
+impl XwaylandScale {
+    /// The spelling this reads back as, for a log line that has to say what
+    /// was asked for as well as what came of it.
+    pub fn as_str(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            XwaylandScale::Off => "off".into(),
+            XwaylandScale::Auto => "auto".into(),
+            XwaylandScale::Fixed(n) => n.to_string().into(),
+        }
+    }
+}
+
+/// The `xwayland` block.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct XwaylandConfig {
+    /// `"off"` (the default), `"auto"`, or a whole number — see
+    /// [`parse_xwayland_scale`] and [`XwaylandScale`].
+    ///
+    /// Read once, when Xwayland is started. A reload moves the value here and
+    /// nothing on screen with it: the X screen's size in X pixels is a
+    /// function of this, X clients read it once at connect, and resizing the
+    /// root window under a running xterm is not a thing X11 lets a window
+    /// manager do gracefully.
+    pub scale: Option<XwaylandScaleSetting>,
+}
+
+/// The largest scale the key will accept.
+///
+/// Not a hardware limit — an arbitrary one, so that a typo (`"scale": 200`,
+/// meaning percent) does not hand Xwayland a root window two hundred times
+/// the size of the desk and an allocation to match.
+pub const MAX_XWAYLAND_SCALE: u32 = 8;
+
+/// The scale X11 clients should be told to draw at.
+///
+/// Pure, and deliberately so: which number falls out of a set of monitors is
+/// the whole of the policy, and a policy that can only be exercised by
+/// plugging a 4K panel in is a policy nobody ever checks. `scales` is every
+/// monitor's scale — the live ones *and* whatever the config file asked for,
+/// because on the first start the file has been read and an output may not
+/// have arrived yet, and because a monitor that is switched off still has a
+/// scale somebody chose for it.
+///
+/// A mixed-DPI desk has no right answer here, and this does not pretend to
+/// one. There is a single X screen behind every monitor, so there is a single
+/// number: the largest. That makes the sharpest panel right and leaves an X
+/// window on the 1x monitor drawing four times the pixels it needs into the
+/// same rectangle — wasteful, and the correct size on both, which is the part
+/// that matters. Picking the smallest instead would keep the blur on exactly
+/// the panel that was the reason to turn this on.
+///
+/// Fractional scales round rather than truncate. The only wire this has to
+/// the toolkits is an integer window-scaling factor, so 1.5 is either 1 or 2,
+/// and 2 is the one that leaves text sharp.
+pub fn pick_xwayland_scale(setting: XwaylandScale, scales: impl IntoIterator<Item = f64>) -> u32 {
+    match setting {
+        XwaylandScale::Off => 1,
+        XwaylandScale::Fixed(n) => n,
+        XwaylandScale::Auto => scales
+            .into_iter()
+            .filter(|scale| scale.is_finite())
+            .map(|scale| (scale.round() as i64).clamp(1, MAX_XWAYLAND_SCALE as i64) as u32)
+            .max()
+            .unwrap_or(1),
+    }
+}
+
+/// What `xwayland.scale` in the config file accepts.
+///
+/// `"off"` and `"auto"` by name, or a whole number. Refused rather than
+/// guessed at, the way [`parse_osk_mode`] refuses: this key decides how every
+/// X11 window on the desk is sized, and a value quietly ignored reads as
+/// "Viewport cannot do this" rather than "that is not a value".
+///
+/// A fractional number is refused outright rather than rounded. The scale
+/// reaches the toolkits as an integer window-scaling factor — X11 has no wire
+/// for anything else — so `1.5` would silently become `2`, and a setting that
+/// means something other than what it says is worse than one that will not
+/// load.
+pub fn parse_xwayland_scale(value: &XwaylandScaleSetting) -> anyhow::Result<XwaylandScale> {
+    match value {
+        XwaylandScaleSetting::Name(name) => match name.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "1" => Ok(XwaylandScale::Off),
+            "auto" => Ok(XwaylandScale::Auto),
+            _ => Err(anyhow::anyhow!(
+                "xwayland scale {name:?} is not off, auto or a whole number"
+            )),
+        },
+        XwaylandScaleSetting::Factor(factor) => {
+            if !factor.is_finite() || factor.fract() != 0.0 {
+                return Err(anyhow::anyhow!(
+                    "xwayland scale {factor} is not a whole number, and X11 toolkits take \
+                     an integer window scale and nothing else"
+                ));
+            }
+            let whole = *factor as i64;
+            if !(1..=MAX_XWAYLAND_SCALE as i64).contains(&whole) {
+                return Err(anyhow::anyhow!(
+                    "xwayland scale {whole} is outside 1..={MAX_XWAYLAND_SCALE}"
+                ));
+            }
+            // 1 is off rather than a scale of one, so that the whole of the
+            // scaling apparatus — the client scale, the X settings, the
+            // doubled cursor — is never set up to multiply by nothing.
+            if whole == 1 {
+                Ok(XwaylandScale::Off)
+            } else {
+                Ok(XwaylandScale::Fixed(whole as u32))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1440,6 +1591,84 @@ mod tests {
                 serde_json::from_str(&format!(r#"{{"tiling_mode": "{mode}"}}"#)).expect("parses");
             assert_eq!(file.tiling_mode.as_deref(), Some(mode));
         }
+    }
+
+    #[test]
+    fn an_xwayland_scale_is_off_auto_or_a_whole_number() {
+        let name = |text: &str| XwaylandScaleSetting::Name(text.to_owned());
+        assert_eq!(
+            parse_xwayland_scale(&name("off")).unwrap(),
+            XwaylandScale::Off
+        );
+        assert_eq!(
+            parse_xwayland_scale(&name(" AUTO ")).unwrap(),
+            XwaylandScale::Auto
+        );
+        // A file may spell the number as a string; both mean the same, and
+        // one of the two working would be a bug report about JSON types.
+        assert_eq!(
+            parse_xwayland_scale(&name("1")).unwrap(),
+            XwaylandScale::Off
+        );
+        assert_eq!(
+            parse_xwayland_scale(&XwaylandScaleSetting::Factor(1.0)).unwrap(),
+            XwaylandScale::Off
+        );
+        assert_eq!(
+            parse_xwayland_scale(&XwaylandScaleSetting::Factor(2.0)).unwrap(),
+            XwaylandScale::Fixed(2)
+        );
+        // Refused, not rounded: see parse_xwayland_scale.
+        assert!(parse_xwayland_scale(&XwaylandScaleSetting::Factor(1.5)).is_err());
+        assert!(parse_xwayland_scale(&XwaylandScaleSetting::Factor(0.0)).is_err());
+        assert!(parse_xwayland_scale(&XwaylandScaleSetting::Factor(200.0)).is_err());
+        assert!(parse_xwayland_scale(&name("2x")).is_err());
+    }
+
+    #[test]
+    fn the_xwayland_block_parses_either_shape() {
+        let file: File = serde_json::from_str(r#"{"xwayland": {"scale": 2}}"#).expect("parses");
+        assert_eq!(file.xwayland.scale, Some(XwaylandScaleSetting::Factor(2.0)));
+        let file: File =
+            serde_json::from_str(r#"{"xwayland": {"scale": "auto"}}"#).expect("parses");
+        assert_eq!(
+            file.xwayland.scale,
+            Some(XwaylandScaleSetting::Name("auto".to_owned()))
+        );
+        // Absent is absent, which is what keeps a file that says nothing
+        // about X11 from changing what X11 clients see.
+        let file: File = serde_json::from_str("{}").expect("parses");
+        assert_eq!(file.xwayland.scale, None);
+    }
+
+    #[test]
+    fn the_xwayland_scale_comes_from_the_sharpest_monitor() {
+        // Off is off no matter what is plugged in.
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Off, [2.0, 3.0]), 1);
+        // A fixed number ignores the monitors entirely — that is the point of
+        // spelling one out rather than asking for auto.
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Fixed(3), [1.0]), 3);
+
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [1.0]), 1);
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [2.0]), 2);
+        // The mixed-DPI desk, which is the case with no right answer: a 2x
+        // laptop panel beside a 1x monitor picks 2, so the panel is sharp and
+        // the monitor merely draws more pixels than it needs.
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [1.0, 2.0]), 2);
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [2.0, 1.0]), 2);
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [3.0, 1.0, 2.0]), 3);
+        // Fractional scales round to the integer the toolkits can carry.
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [1.5]), 2);
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [1.25]), 1);
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [1.25, 1.75]), 2);
+        // No monitors at all — headless, or a session started before any
+        // connector came up — is 1 rather than a panic or a zero.
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, []), 1);
+        // Nonsense from a config file that got a scale of zero past the
+        // output parser: never below 1, never above the cap.
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [0.0]), 1);
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [f64::NAN, 2.0]), 2);
+        assert_eq!(pick_xwayland_scale(XwaylandScale::Auto, [1000.0]), 8);
     }
 
     #[test]
