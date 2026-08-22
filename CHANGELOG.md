@@ -376,12 +376,207 @@ to summarise rather than to duplicate.
   page is still running starts every planned page afresh — or a session
   restart. Kept apart from exit 87, which asks for one specific second chance
   and gets it. See `docs/shell-backends.md`.
+- A lock screen the shell draws, and PAM behind it. Locking used to mean one
+  thing — run `idle.lock_command`, which is `swaylock` unless the config says
+  otherwise — and the compositor's whole part in it was being a correct
+  `ext-session-lock` server for whatever that program turned out to be. Every
+  other modal surface on this desk is drawn by the page: the launcher, the
+  power menu, the notification centre, the on-screen keyboard. The power menu
+  was moved here on the argument that a desk with no keyboard — a touch
+  screen, a kiosk — could not otherwise leave; that same desk could not get
+  back *in*, because a locker in another process cannot reach
+  `data/shell/osk.js` and swaylock has no keyboard of its own. So the surface
+  with the strongest case for being drawn here was the one surface that was
+  not. Now, with no `idle.lock_command` set, locking draws a clock on every
+  monitor, a password box on the one being looked at, and a button that raises
+  the on-screen keyboard. The password goes to PAM on a thread of its own,
+  because `pam_authenticate` reads a file, hashes with a deliberately slow KDF
+  and sleeps up to two seconds inside `pam_fail_delay` on a wrong one — and
+  pam_sss or pam_krb5 talk to the network — every second of which on the event
+  loop is the whole desk frozen while somebody types at the lock screen.
+  libpam is opened with `dlopen` rather than linked, so a build on a machine
+  without PAM headers still runs and a machine without libpam at all gets a
+  lock screen that refuses every password rather than one that accepts any.
+  `idle.lock_command` is unchanged and is still the escape hatch: somebody who
+  configured swaylock keeps getting swaylock, and setting the key back is the
+  way out of the built-in screen. The `lock` binding, `idle.lock_after`, the
+  lid action and the power menu's new Lock row all go through the one
+  `lock_session`, as that function was always documented to guarantee.
+- A lock screen that fails closed, which is the part that had to be got right
+  before any of the above was worth having. The page drawing the lock screen
+  is the same page that draws the desktop, out of the same buffer, so "draw
+  the shell" and "show the user's email client" are one instruction apart —
+  and a lock screen that fails open is worse than no lock screen. The
+  compositor therefore draws no part of the shell's buffer on a locked screen
+  until the page has said, naming *this* lock, that it painted a lock screen,
+  *and* a frame has landed after it said so. The message alone is not enough,
+  because a page can send one from a handler and then never paint again; a
+  live process is not the test either, because a page that is running and
+  stuck is exactly the case. The page sends it from a double
+  `requestAnimationFrame`, which runs after the frame the lock screen was
+  rendered into was submitted, so every buffer arriving after the message has
+  the lock screen in it. Both facts are dropped on anything that could
+  invalidate them — a new lock, the shell process dying, its toplevel going
+  away, a reload — and the session stays locked through every one of them. A
+  shell that crashes, hangs or is reloaded while it holds the lock is a black
+  screen, which is an unhelpful failure; the desktop reappearing would be a
+  way past the lock, and that is the one this refuses to have. An output the
+  page's rectangle does not cover is black for the same reason.
+  `tests/lock-builtin.test.sh` locks a session that has no shell able to draw
+  and captures the screen: black, still black after a message claiming the
+  lock screen was drawn, and still black after a password on the control
+  socket — and the second half of it checks that `idle.lock_command` still
+  runs the program it names.
+- A settings panel, on `Mod4+Shift+comma`. `docs/configuration.md` has opened
+  by justifying two tiers of configuration with "a settings UI cannot run on a
+  display that is not working" since the file was written, and named a settings
+  panel twice more as the thing the runtime setters were for — while the
+  runtime tier stayed three keys deep against a config file with dozens, so the
+  argument for the design and the extent of the design drifted apart. The panel
+  now exists and the setters it needed were written as it needed them: dark
+  mode, the wallpaper and its fitting, the gaps, the window border, and each
+  monitor's mode, scale and rotation. Every control sends the runtime setter
+  for what it changes, so the desktop is already that shape while you are
+  looking at it, and the panel draws nothing it has not been told — a value it
+  has just sent is not shown until the compositor has echoed it back, so a
+  refusal cannot be mistaken for a change.
+- `config.dark_mode` sets the colour scheme applications are told to draw
+  themselves in, and the `config` event now carries `dark_mode` so the shell
+  can read it back. `appearance toggle` on a chord was the only way in, which
+  left a panel able to move the setting and unable to show where it was — and a
+  switch drawn from a guess shows the wrong state until it is pressed twice.
+  Absent still toggles, which is what a key wants; a named state is what a
+  switch wants.
+- `config.save` writes the runtime settings into `settings.json` beside the
+  config file, and that file is applied over the config file at every start and
+  every reload. A settings panel whose every change is lost at the next restart
+  is not a settings panel — but the config file is hand-written JSONC and no
+  round trip through a JSON parser keeps its comments or its formatting, so
+  nothing writes back into it. Saving is one explicit request rather than
+  something each setter does, because the same setters are what a wallpaper
+  cycler uses and a cycler that wrote the disk would rewrite the file
+  twenty-four times a day. Delete `settings.json`, or a line out of it, to put
+  the config file back in charge; the command line still beats both. Answered
+  with `config.saved` naming the file, and `outputs.enabled` is now a config
+  key so that a screen deliberately left off can be written down at all.
+- A screen magnifier. `Mod4+Alt+equal` blows up the part of the screen under
+  the pointer, `Mod4+Alt+minus` comes back down and `Mod4+Alt+0` goes straight
+  to 1:1; the region follows the pointer and is held to the monitor it is on,
+  so moving toward an edge slides it along rather than showing a strip of
+  whatever is laid out beside that screen. This is not `canvas.zoom`, which is
+  a layout the shell draws at a scale and whose own comment records that input
+  only lands where it is aimed at 1.0 — the opposite of what magnifying a
+  screen is for. Here the pointer is not magnified and the picture is: the
+  cursor stays at the real place it was and is drawn through the same transform
+  as everything else, so clicks, drags, resize edges and focus-follows-mouse
+  all land on the thing under the drawn cursor without any of them being told
+  the magnifier exists. The one exception is input that names a place on the
+  glass rather than a movement — a touchscreen, a tablet in absolute mode —
+  which is mapped back through the magnification before anything sees it.
+  `magnify.step` and `magnify.max` configure it; both are clamped rather than
+  refused, because a maximum below 1.0 is a magnifier that cannot magnify and
+  the useful response to a configuration mistake is a working compositor.
+
+- Every surface the shell can put on screen can now be finished with a
+  keyboard. The launcher and the network picker had `keydown` handlers because
+  each has a text field; the tray menu, the clipboard history, the notification
+  centre and the power menu had none, so each was opened by a chord and then
+  handed to the mouse — the same gap as a power menu a touch screen could not
+  open, which is the gap that got it built. Arrows choose, Enter acts, Delete
+  forgets a row where a list has a notion of forgetting one, Escape dismisses,
+  and a ring that no picker's own styling can paint over says where the
+  keyboard is. The half that was not obvious is that a `keydown` handler on
+  those surfaces would have received nothing: the shell is a Wayland client,
+  the window under it has the keyboard, and only the two surfaces with text
+  fields ever asked for it. Every surface now asks on the way up and hands it
+  back on the way down.
+
+- Roles and names on the shell's markup, so that the accessibility tree the
+  engine builds out of the desktop is worth reading: `dialog`, `listbox` and
+  `menu` on the surfaces, `aria-selected` following the keyboard, `aria-live`
+  on the clock and the notification strip, and an explicit label wherever a row
+  is drawn out of private-use glyphs — a Wi-Fi row's strength is four bars in
+  an icon font, and read aloud that is a nonsense syllable in front of the
+  useful part.
+- A calendar under the clock, and a clock that is not one American's. The bar's
+  clock passed the literal `'en-US'` to `toLocaleDateString` and assembled the
+  time by hand out of `getHours()`, so every desk in the world read an American
+  date and a twenty-four-hour clock whether or not that is how it writes one,
+  and there was no key to ask for either. A `clock` block now carries three
+  things to the page: `locale`, a BCP 47 tag; `hour12`, which absent leaves to
+  the locale; and `format`, a strftime-style template for the whole module —
+  a string rather than a further pile of booleans, because what people change
+  is the *arrangement*, and every flag that could be added would be a worse
+  spelling of one line of `date(1)`. Absent is not `en-US` and is not any other
+  tag written into the shell: it is the locale the engine is running under,
+  which is what `LANG` already said and the one answer the compositor cannot
+  give on the page's behalf. One session-visible consequence of that: a desk
+  running in `en_US` now gets a twelve-hour clock where it used to get a
+  twenty-four-hour one, because that is what the locale writes;
+  `"clock": { "hour12": false }` asks for the old one back without giving up
+  the names. Clicking the clock now opens a month grid under
+  it — on the monitor whose clock was clicked, anchored like the tray menu
+  rather than centred like the pickers, dismissed by the same document click
+  that dismisses them, and taken down with the bar it hangs off when `bar:
+  auto` hides it. The grid inherits the same locale for its month name, its
+  weekday headings and the day its week starts on, which is not a property of
+  the language: `en-US` starts its week on Sunday and `en-GB` on Monday, so
+  nothing short of asking about the region can be right. It draws six rows
+  whatever the month needs, because a panel that changed height as somebody
+  paged through the year would move the rectangle the compositor is drawing it
+  in. None of it needed a compositor change beyond carrying the three config
+  fields: a month is arithmetic a page can do. Every call into `Intl` is
+  guarded and falls back to English names, because the shell is drawn by
+  whichever engine the backend names and a clock that went blank looking up a
+  month name would be worse than one in the wrong language.
+- `xwayland.scale` in the config file: `"off"` (the default, and what every
+  release before this one did), `"auto"`, or a whole number. X11 clients have
+  always drawn a buffer of logical pixels that the compositor then magnifies
+  onto a HiDPI panel — the right size and blurry — because per-output `scale`
+  is honoured for Wayland clients and nothing at all reached Xwayland. The key
+  scales the Xwayland connection, so the X screen has that many times the
+  pixels and everything coming back is divided by the same number, and
+  publishes the XSETTINGS that tell the toolkits to spend them:
+  `Gdk/WindowScalingFactor`, `Gdk/UnscaledDPI` and `Xft/DPI`. Both halves or
+  neither — half of it is every X11 window at twice or a quarter of the size
+  it asked for.
+
+  It reaches GTK 3, GTK 4, Qt 6 and Chromium. It does not reach Qt 5 without
+  `QT_AUTO_SCREEN_SCALE_FACTOR`, and it cannot reach xterm, SDL, GLFW or
+  Java/AWT at all: those come out sharp and half the size, which is why the
+  default is off rather than `"auto"`. `docs/protocols.md` records that trade,
+  the mixed-DPI case that has no right answer, and why `GDK_SCALE` in the
+  child environment was refused — it reaches only programs the compositor
+  spawned, and nothing at spawn time knows whether the program will turn out
+  to be an X11 client or a Wayland one.
+- `gpu` chooses which graphics card renders and which one clients are told
+  about — `--gpu`, `$VIEWPORT_GPU` or the config file, flag over variable over
+  file, matched as a substring of a device path so `card1`, `renderD129` and a
+  whole `/dev/dri/by-path/...` all work. Only the environment variable existed
+  before, which is a poor place to keep a standing preference. Every card is
+  opened either way; this names the primary, and on a hybrid laptop that is the
+  choice between battery and frames, which is not something the hardware
+  answers.
+- `cross_gpu` says what clients are told they may allocate when there is more
+  than one card. `native`, the default, advertises everything the primary's
+  renderer can import, which keeps the tiled and compressed modifiers a window
+  that never leaves its card should have. `portable` advertises only what every
+  card can import, for the desk where windows are dragged between two cards'
+  monitors all day and for the client that ignores the per-surface feedback that
+  would have told it to reallocate — at the cost, paid by every client, of the
+  modifiers only one card understands. Nothing at all on a machine with one
+  card.
 
 ### Changed
 - Modifier state is computed only when a page can read it. `shell_modifiers`
   ran on every key, button and axis event whatever the build, and in one
   without the web engine the answer went nowhere; a build without `wpe` now
   skips the work outright rather than computing what nothing consumes.
+- `Event::Config` travels boxed. It is far the largest thing the event enum
+  carries — a keymap, the window rules, a theme, the whole right side of the
+  bar, and now the clock — and it is sent twice a session, while an enum is as
+  big as its widest variant: inline, every `view.geometry` in a resize gesture
+  was carrying that much dead space around the event loop.
 
 ### Fixed
 - The Wi-Fi, Bluetooth, power-profile and clipboard pickers no longer open
@@ -544,6 +739,78 @@ to summarise rather than to duplicate.
   half-made stream back out of the compositor rather than leaving a stream
   nobody can reach. A remote-desktop session that drives without watching is
   still answered straight away, since its grant is the whole answer.
+- An output change is put back if nobody says they can see it. `docs/ipc.md`
+  has promised since it was written that a configuration reverts after twelve
+  seconds unless `output.confirm` arrives, and `output.confirm` was a handler
+  with an empty body and a comment saying nothing armed a revert — so anything
+  that read the documentation and skipped the confirmation kept a mode that had
+  blanked the screen, which is the exact failure the sentence was there to rule
+  out. A mode, scale, rotation or power change now snapshots the monitors and
+  starts the clock, on a timerfd because the desktop it has to fire on is one
+  where nothing is happening; the restore goes through the same path
+  wlr-output-management applies a configuration, so it revalidates and runs the
+  same tail rather than being an undo written twice. Two changes inside the
+  window are one change, and go back to the state from before the first. The
+  new `output.revert` is that undo asked for early, for the screen that came
+  back and can be seen to be wrong. The config file's own `outputs` block is
+  exempt, since nobody is at a confirmation dialog during startup.
+- `docs/ipc.md` no longer claims `output.configure` runs `wlr_output_test_state`
+  before committing. It never has — that is the output-management path — and
+  what it actually does (refuse a non-positive scale, refuse the last screen
+  off, prefer an advertised modeline) is now what the page says.
+- A Viewport session now has an accessibility bus. The desktop is a web page,
+  so the engine has already built a real accessibility tree out of it, and with
+  the `webkitgtk` backend the whole of that tree is one bus away from Orca —
+  the view is the child of a presented `GtkApplicationWindow` inside a live GTK
+  main loop, both GTK4 and WebKitGTK speak AT-SPI themselves rather than
+  through a bridge, and the shell process inherits the session bus untouched.
+  What was missing was the bus: `org.a11y.Bus` is D-Bus activated and a
+  compositor started from a TTY has nothing behind it that would have installed
+  it, so it was not stopped but unactivatable, and nothing anywhere said so.
+  The NixOS module enables it by default, which costs nothing until a screen
+  reader asks. `VIEWPORT_CEF_ARGS` is added alongside the `chromium` backend's
+  existing pass-through, which is what makes the second Blink backend reachable
+  at all. `docs/shell-backends.md` records the verdict for each of the six
+  backends and what would have to change for the three that cannot: `wpe` has
+  no toolkit in its path and therefore no accessible root to embed the web
+  process's tree under, and both Servo backends build AccessKit trees that no
+  adapter turns into AT-SPI. The last of those is the default backend, so a
+  desk that needs a screen reader wants `shellBackend = "webkitgtk"` until
+  Servo grows one.
+- A client's buffer is judged by every graphics card on the seat rather than by
+  the primary alone. Each card is told which of its screens a window is on and
+  each window is told which card to allocate against, and a client that does
+  what its per-surface feedback asked — allocating for the second card, because
+  that is the card showing it — handed back a buffer that was then offered to
+  the *first* card's renderer for approval. A modifier the discrete card
+  understands and the display controller does not is the ordinary case, so the
+  import failed, and `linux-dmabuf` has one answer to a failed import: a
+  protocol error. The client was disconnected for having followed the
+  compositor's own instruction. Every online card is asked now and one "yes" is
+  enough; a buffer some cards read and others refuse is accepted, and the window
+  being missing from the screens that refused it is said once per format,
+  modifier and card rather than being a hole in a monitor with nothing in the
+  log.
+- Two graphics cards no longer give two screens the same name. Connector names
+  are handed out per card, so a laptop with an integrated display controller and
+  a discrete card beside it has two `DP-1`s, and everything that identifies a
+  screen by name takes the name as unique: the config file's per-output rules,
+  the active output, the saved layout, the `wl_output` a client binds, and the
+  per-output vblank bookkeeping whose entire purpose is that one screen's flip
+  must not answer for another's. The first card to claim a name keeps it, so no
+  screen on a machine with one card is renamed and no config file stops
+  matching, and a collision gets the card index appended and says so.
+- `wp-drm-lease-v1` leases a connector from the card that has it. There was one
+  lease global for the session, made on the primary card, and a lease request
+  was answered out of the primary's DRM device whichever card it named — so a
+  headset wired to the discrete card was advertised under the wrong card's node,
+  and a client that took the lease would open the wrong card and be handed a
+  CRTC number that on that card is very likely a real CRTC, possibly one
+  scanning out the desktop. CRTC handles are small integers handed out per
+  device, so that collision is the normal case and not the unlucky one. The
+  state is per card now, both handlers look the card up by the node the request
+  arrived on, and the free-CRTC search is scoped to that card the way the
+  connector scan's already was.
 
 ## [0.1.8] - 2026-08-17
 

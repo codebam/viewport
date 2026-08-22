@@ -2,15 +2,27 @@
 
 What is missing, and why each one is worth doing here rather than by
 installing another daemon beside this. The Wayland protocol surface is close to
-complete — what is left is desktop integration, shell UX, and the two places
-underneath where the hardware assumption is narrower than the desks people
-have.
+complete — what is left is desktop integration and shell UX.
 
 Nothing here is a commitment to an order. The list exists so that a gap found
 once is written down rather than rediscovered. What lands comes off the list
 and is documented where the rest of that subject is.
 
-The power menu was the last entry taken off it —
+Six entries came off it at once, which is not the usual way and is worth
+naming: the lock screen the shell draws
+(`crates/viewport/src/lock.rs`, `data/shell/lock.js`, `idle.lock_command` in
+`docs/configuration.md`); the settings panel and the overlay file it writes
+(`crates/viewport/src/settings.rs`, `data/shell/settings.js`,
+`config.save`/`config.dark_mode`/`output.revert` in `docs/ipc.md`); a keyboard
+for every surface that can be opened, and a screen magnifier
+(`data/shell/keys.js`, `crates/viewport/src/magnify.rs`, and
+`docs/shell-backends.md` for which engine can reach an accessibility bus and
+which cannot); the calendar under the clock, and a clock that reads the
+locale (`data/shell/calendar.js`, `clock` in `docs/configuration.md`); and
+`xwayland.scale`, with the per-toolkit limits recorded in `docs/protocols.md`
+rather than promised away.
+
+Before them, the power menu —
 `crates/viewport/src/power.rs` for `Suspend`, `Reboot` and `PowerOff` over
 logind, `data/shell/power.js` for the rows, `power.action` in `docs/ipc.md`, and
 the battery note in `docs/configuration.md`. Before it, the launcher —
@@ -44,18 +56,6 @@ this is now built: silencing a popup is only acceptable if the notification is
 still somewhere afterwards, and `crate::notification::History` is where it
 would be — so this is a question of when to draw rather than of what to keep.
 
-**The clock is a line of text, and it is one American's line of text.**
-`clockText()` in `data/shell/bar.js` formats it and nothing sits under it. This
-is the one entry on this list that needs no compositor change whatever — a
-calendar is a grid and a stylesheet, in a shell that already draws dropdowns —
-which is worth writing down precisely so that it is not put off as though it
-needed one. What the calendar would inherit is the second half of this: the
-locale is the literal `'en-US'` and the time is assembled by hand from
-`getHours()`, so there is no twelve-hour desk, no other language's month, and
-no key to ask for either. A calendar drawn under a clock that is wrong in both
-respects is a bigger wrong thing, so the format belongs with the grid rather
-than after it.
-
 **Changing the volume shows nothing on screen.** `status.volume` re-samples
 the bar, so the number moves wherever the bar happens to be, on whichever
 monitor that is, and a bar toggled off says nothing at all. Brightness is
@@ -63,39 +63,6 @@ further away than that: the keys `exec brightnessctl`, so the shell never
 learns the value and could not draw it if it wanted to. A backlight is read
 from sysfs or over logind, which is this side of the line, and both would feed
 the same transient indicator.
-
-**Locking is still somebody else's program.** `lock_session()` runs
-`idle.lock_command`, which is `swaylock` unless the config says otherwise, and
-the compositor's whole part in it is being a correct ext-session-lock *server*
-for whatever that program turns out to be — see
-`crates/viewport/src/handlers/session_lock.rs`, down to telling the user when
-a crashed locker has left the session locked with nothing drawing. Every
-other modal surface on the desk is drawn here: the launcher, the power menu,
-the notification centre, the on-screen keyboard. The power menu was taken off
-this list on the argument that a desk with no keyboard — a touch screen, a
-kiosk — could not leave; that same desk cannot get back *in*, because a
-locker in another process cannot reach `data/shell/osk.js` and swaylock has
-no keyboard of its own. The
-surface with the strongest case for being drawn here is the one surface not
-drawn here. What makes it harder than the others, and worth saying before
-somebody starts: a lock screen that fails open is worse than no lock screen,
-so the shell crashing while it holds the lock has to leave the session locked
-rather than unlocked, which is the one place a web page drawing the desktop
-has to answer for something the rest of the shell does not.
-
-**The settings panel three paragraphs already assume.** `docs/configuration.md`
-opens by justifying two tiers of configuration with "a settings UI cannot run
-on a display that is not working", and names a settings panel twice more as
-the thing the runtime setters are for. Nobody has written it. The runtime tier
-it was designed around is three keys deep — `config.border`, `config.gaps`,
-`config.wallpaper` — against a config file with dozens, so the argument for
-the design and the extent of the design have drifted apart. Either the panel
-is a thing to build, and the missing setters get written as it needs them, or
-the runtime tier is a scripting surface for `viewport msg` and the
-documentation should stop promising a window. The first is the better answer
-— outputs, gaps, borders, the wallpaper and dark mode are exactly what
-somebody wants to try rather than to edit and reload — but it is the answer
-that has to be chosen out loud.
 
 ## Remote desktop
 
@@ -141,56 +108,41 @@ notices immediately — a washed-out frame is easy to blame on the file.
 
 ## What the machine underneath does not do yet
 
-Both of these are written in one source comment and nowhere a reader of this
-file would look, which is the case this list exists for.
+This section used to carry two entries. One of them, `xwayland.scale`, has
+landed. The other said multi-GPU and whole-device hotplug were missing, and it
+was wrong — it was written from `udev.rs`'s header comment, which was stale,
+rather than from the code under it, which has had `devices: Vec<Device>`, a
+renderer per card, per-device dmabuf feedback and `on_gpu_added`/
+`on_gpu_removed` for some time. The entry is gone and the header comment is
+fixed. What the audit that found this out *did* find is below: the places
+where one card is still assumed, all of which now have an answer, and the one
+that does not.
 
-**One GPU, and it has to be the right one.** `crates/viewport/src/udev.rs`
-says it in its header — multi-GPU and hotplug of whole devices are not there —
-and the desk that wants it is the ordinary one: a laptop with an Intel display
-controller and a discrete card beside it. Today one node renders and scans out
-everything, so a monitor wired to the other card's ports is a connector this
-compositor never sees, and a client rendering on the node that is not the
-primary one hands over a buffer that has to cross devices to be composited.
-Neither half is exotic any more. Half the machinery for the hotplug side
-already exists and was built for something else: `recovery.rs` reopens a card
-that was unregistered by a bus reset, which from userspace is the same event
-as one being unplugged — what is missing is the
-case where the card that appears is a *new* one rather than the one that left.
+**A buffer no scanout card can import is a hole in one screen.** Per-surface
+feedback tells a client which card is displaying it, and `cross_gpu =
+"portable"` narrows the default advertisement to what every card can import,
+which between them cover every client that listens. A client that ignores
+both hands over a buffer the scanout card cannot take, and the surface is
+dropped from that screen with one line in the log. The fallback that would
+close it — a copy through the primary renderer — is not written, and
+`crates/viewport/src/multigpu.rs`'s header argues the shape of it:
+`render_pass` is generic over one renderer and compiled twice, a blit needs
+two live in one pass, and smithay's own multi-GPU renderer is on its GLES
+`GraphicsApi` where this tree is Vulkan wherever Vulkan works.
 
-**Xwayland is handed no scale.** Per-output `scale` is in the config and is
-honoured for Wayland clients; nothing in the Xwayland handler, or in
-`start_xwayland`, mentions scale or DPI at all. On a HiDPI desk every X11
-window is therefore a 1x buffer stretched to a 2x screen, and
-the applications most likely to still be X11 are the ones somebody stares at
-for hours. The answer may well be that X11 clients stay at 1x deliberately —
-several compositors have concluded exactly that, and the alternative is a
-per-window scale nobody has made look good — but that answer belongs in
-`docs/protocols.md` beside the other decisions rather than being the silence
-it is now.
+**`Udev::primary()` answers `devices[0]` whether or not that card is up.**
+Three callers read a renderer through it — the screencast cast targets in
+`state.rs`, and the shell's copy modifiers — so a primary card that is
+mid-reset is read as though it were live. It is the most conspicuous
+single-card assumption left, it predates all of the above, and it wants the
+same treatment the rest of the audit gave: ask the card that is actually
+online.
 
-## Nobody who cannot see it can use it
-
-**The shell's accessibility tree reaches nothing.** The desktop here is a web
-page, which means it has a real accessibility tree already built by the
-engine, and no backend hands it to AT-SPI. Orca finds a screen with a bar, a
-launcher and a notification list on it and can read none of them. This is
-worth more than it sounds precisely because of how the shell is drawn: an
-accessible desktop is usually a large amount of bespoke work, and here most of
-it exists and is not plugged in.
-
-**Keyboard reach stops after two surfaces.** `data/shell/launcher.js` and
-`data/shell/network.js` bind `keydown`; the tray, the notification centre and
-the power menu bind none, so they are opened by a binding and then finished
-with the pointer. A power menu that a keyboard cannot choose a row in is the
-same gap as a power menu that a touch screen could not open, which is the one
-that got it built.
-
-**There is no magnifier.** Not `canvas.zoom` — that is a canvas feature whose
-own comment records that input only lands where it is aimed at 1.0, which is
-the opposite of what magnification is for. What is meant here is the pointer
-dragging a magnified region of the real screen around, with clicks still
-landing under the cursor, which is a compositing and input-transform question
-and so is squarely this side of the line.
+**None of the multi-GPU path has run on two cards.** Everything above is
+reasoned and unit-tested against a machine with one. `docs/debugging.md` has
+the symptoms and the log lines to look for, and whoever first boots this on a
+laptop with a discrete card beside an integrated one should expect to find
+something; that is not pessimism, it is what an untested path is worth.
 
 ## What is deliberately not on this list
 
