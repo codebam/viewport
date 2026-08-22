@@ -27,8 +27,9 @@ tracing.workspace = true
 gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
 drm-fourcc = "2.2"
 khronos-egl = { version = "6", features = ["dynamic"] }
-libloading = "0.8"
 glow = "0.16"
+# Percent-encoding file paths into `file://` URLs WebKit will actually load.
+percent-encoding = "2.3"
 
 [build-dependencies]
 cc = "1"

@@ -2768,7 +2768,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "viewport-ipc",
 ]
 
 [[package]]
@@ -2837,7 +2836,7 @@ dependencies = [
  "glow",
  "khronos-egl",
  "libc",
- "libloading",
+ "percent-encoding",
  "pkg-config",
  "tracing",
  "viewport-ipc",

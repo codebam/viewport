@@ -319,7 +319,7 @@ impl WebView {
 
     /// Load a file path as a `file://` URL.
     pub fn load_file(&self, path: &Path) -> Result<()> {
-        self.load(&format!("file://{}", path.display()))
+        self.load(&crate::file_url(path))
     }
 
     /// Deliver a message to the page.
