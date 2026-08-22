@@ -13,6 +13,35 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::{Box, PartialBox, Transform};
 
+/// A string that must never reach the log.
+///
+/// `Request` derives `Debug` and two lines in `apply` print a whole request
+/// when they refuse one — `tracing::warn!("refusing {request:?} ...")` — so a
+/// password carried in a plain `String` field would be written to the
+/// compositor's log by the very code that exists to be careful about a locked
+/// session. The wrapper makes that impossible rather than making it a rule
+/// somebody has to remember: the only `Debug` this has prints a fixed
+/// placeholder, and reading the value takes naming the field.
+///
+/// Serialisation is transparent, because the wire format is a JSON string and
+/// the page knows nothing about this type.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<secret>")
+    }
+}
+
+impl Secret {
+    /// The value itself, for the one caller that has to hand it to PAM.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
 /// A message from the shell to the compositor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -112,6 +141,48 @@ pub enum Request {
 
     #[serde(rename = "session.query")]
     SessionQuery,
+
+    /// Lock the session now.
+    ///
+    /// The power menu's Lock row, and anything else that wants the one thing
+    /// the `lock` binding and the idle deadline do. Deliberately *not* a
+    /// `power.action` verb: the three verbs there all go out to logind, and
+    /// locking is this compositor's own move — see `PowerAction`'s own note
+    /// about quitting, which is the same argument.
+    ///
+    /// Not refused while the session is already locked, because it does
+    /// nothing then: `lock_session` leaves a lock that is already drawing
+    /// alone. It is refused nowhere else either — asking a machine to lock is
+    /// the safe direction, and anything that can reach the control socket can
+    /// already do worse than lock the screen.
+    #[serde(rename = "session.lock")]
+    SessionLock,
+
+    /// The shell has painted the lock screen for this lock.
+    ///
+    /// The compositor draws nothing of the shell's buffer while the session is
+    /// locked until this arrives *and* a further frame lands after it. See
+    /// `ViewportState::lock_screen_is_drawing` for why both halves are needed
+    /// and what the failure being guarded against looks like.
+    #[serde(rename = "session.lock.drawn")]
+    SessionLockDrawn { generation: u64 },
+
+    /// Somebody typed a password at the lock screen.
+    ///
+    /// The compositor hands it to PAM on a thread of its own and answers with
+    /// `session.unlock` or `session.lock.error`. The shell never learns
+    /// whether a password was close; there is one answer and it is yes or no.
+    ///
+    /// `generation` is the lock the password was typed at. An attempt against
+    /// a lock that has already ended is dropped rather than checked, which is
+    /// what stops a keystroke queued behind a slow PAM stack from unlocking
+    /// the *next* lock.
+    #[serde(rename = "session.unlock")]
+    SessionUnlock {
+        generation: u64,
+        /// Never logged. See [`Secret`].
+        password: Secret,
+    },
 
     #[serde(rename = "notification.action")]
     NotificationAction {

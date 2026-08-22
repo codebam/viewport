@@ -161,6 +161,18 @@ and itself overriding the config file.
 Which engine draws the shell; overridden by
 .BR \-\-shell-backend .
 .TP
+.B VIEWPORT_PAM_SERVICE
+Which PAM service the built-in lock screen authenticates against.  Absent, it
+is
+.B viewport
+where
+.I /etc/pam.d/viewport
+exists and
+.B login
+otherwise.  Only consulted when
+.B idle.lock_command
+is unset, since a configured locker checks the password itself.
+.TP
 .B VIEWPORT_SOCKET
 The control socket
 .B viewport msg

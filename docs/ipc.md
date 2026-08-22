@@ -71,6 +71,9 @@ of what was asked.
 | `workspace.request` | `action` (`activate`, `deactivate`, `assign`, `remove`, `create`), optional `id`, `name`, `output` — a client outside the shell asked for something through `ext-workspace-v1`. See [Workspaces](#workspaces) |
 | `shell.command` | `command`, `args[]` — a keybinding forwarded for the shell to act on |
 | `session.restore` | `state` (whatever was last saved, or empty) |
+| `session.lock` | `generation`, `can_authenticate` — the session is locked and the shell draws the lock screen. Sent only where `idle.lock_command` is unset, since a configured locker draws its own. While it is up the compositor draws the shell's buffer and nothing else — no windows, no layer surfaces, no wallpaper — so the page must cover itself completely and opaquely; what it leaves uncovered is its own desktop showing through. `generation` identifies this lock and comes back on `session.lock.drawn` and `session.unlock`; a message naming any other one is dropped. `can_authenticate` false is a machine whose libpam would not load, which is a lock screen that will refuse every password — still a lock screen, and worth saying out loud rather than swallowing every attempt |
+| `session.lock.error` | `generation`, `message` — the password was refused, in PAM's own words. "Wrong password" and "your account has expired" are different problems and only one of them is worth trying again |
+| `session.unlock` | — the session is not locked any more; take the lock screen down. Sent on a correct password and also on an unlock the shell had no part in, such as an external locker taking the session over |
 | `status.update` | `cpu`, `memory`, `load`, `net_rx`, `net_tx`, `disk_free`, `disk_total` |
 | `notification.add` | `id`, `app_name`, `icon`, `summary`, `body`, `urgency`, `timeout`, `at` (seconds since the epoch, `0` where it was not stamped), `actions[]` with `key` and `label` |
 | `notification.close` | `id` — the application withdrew it |
@@ -135,6 +138,9 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `screencast.rect` | `x`, `y`, `width`, `height` — the older single-rectangle form of `shell.overlay`, still accepted; a zero size means nothing is above the windows |
 | `session.save` | `state` (opaque string) |
 | `session.query` | — |
+| `session.lock` | — lock the session now, which is the one thing the `lock` binding, the idle deadline and the lid all do. What locking *means* is the compositor's answer, not this message's: `idle.lock_command` if the config names one, the shell's own lock screen if it does not. Not a `power.action` verb, because those three go to logind and this one does not |
+| `session.lock.drawn` | `generation` — the shell has painted the lock screen for that lock. The compositor draws no part of the shell's buffer on a locked screen until this has arrived *and* a further frame has landed after it; send it from a double `requestAnimationFrame` so the frame it refers to has really been submitted. Sent early it costs nothing (the frame requirement still holds); not sent at all is a black screen for as long as that lasts, which is the safe direction and the point |
+| `session.unlock` | `generation`, `password` — somebody typed a password. The compositor hands it to PAM on a thread of its own and answers with `session.unlock` or `session.lock.error`; there is no third answer and nothing here is told whether a password was close. An attempt naming a lock that has ended is dropped rather than checked, and one sent while another is still with PAM is dropped too |
 | `notification.action` | `id`, `action` (the key the application supplied, not the label) |
 | `notification.dismiss` | `id` |
 | `notification.expire` | `id` |

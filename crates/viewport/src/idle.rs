@@ -25,7 +25,7 @@ pub enum Activity {
 /// What the config asks for.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Settings {
-    /// Seconds of inactivity before `lock_command` runs. Zero or absent is off.
+    /// Seconds of inactivity before the session locks. Zero or absent is off.
     pub lock_after: Option<i64>,
     /// Seconds before the outputs are turned off. Zero or absent is off.
     pub blank_after: Option<i64>,

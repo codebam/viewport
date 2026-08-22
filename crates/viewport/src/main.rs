@@ -36,6 +36,7 @@ mod ipc;
 mod keyboard_focus;
 mod launcher;
 mod libei;
+mod lock;
 mod magnify;
 mod mpris;
 mod msg;
@@ -1087,6 +1088,42 @@ fn run() -> Result<()> {
         // did before there was a thread.
         if let Err(e) = state.launcher_scan.start(sender) {
             tracing::warn!("the launcher worker could not start: {e}");
+        }
+    }
+
+    // The lock screen's password check, on a thread of its own.
+    //
+    // A PAM conversation blocks — on a file, on a slow hash, on the network if
+    // the stack reaches for LDAP or Kerberos, and on `pam_fail_delay`'s two
+    // seconds after a wrong password. Every one of those on this thread is the
+    // whole desk frozen while somebody types at the lock screen, so the
+    // attempt goes to a worker and the verdict comes back here like anything
+    // else the loop hears. See `crate::lock`.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(verdict) = event else {
+                    return;
+                };
+                state.handle_lock_verdict(verdict);
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the authentication source: {e}"))?;
+
+        // Not fatal, and the failure is in the safe direction: with no worker
+        // the lock screen is drawn, the session locks, and no password is ever
+        // accepted. `Authenticator::online` is false, the page is told so at
+        // the lock, and `lock_with_shell` says it in the log — because a
+        // password box that cannot open is the one failure somebody will sit
+        // in front of for a long time before suspecting the compositor.
+        if let Err(e) = state.authenticator.start(sender) {
+            tracing::error!(
+                "the authentication worker could not start: {e}. The built-in \
+                 lock screen will refuse every password; set idle.lock_command \
+                 to lock this machine with a locker of its own."
+            );
         }
     }
 

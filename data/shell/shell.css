@@ -2561,3 +2561,117 @@ html.no-tutorial .empty .tutorial { display: none; }
    somebody steering by keyboard is reading the position from it. It is also
    the one indicator whose whole job is to be found instantly, which is what
    `prefers-reduced-motion` asks of everything and this asks of itself. */
+/* ── The lock screen ────────────────────────────────────────────────────── */
+
+/* Opaque, and over everything.
+ *
+ * This is the one rule in this file that is a security property rather than a
+ * matter of taste. While the session is locked the compositor draws this
+ * page's buffer and nothing else — no windows, no wallpaper, no layer
+ * surfaces — so every pixel `#lock` does not paint is the desktop underneath
+ * showing through it: the bar, the taskbar with every window's title, whatever
+ * the notification centre last had open. `inset: 0` and a solid `background`,
+ * with nothing translucent and no `backdrop-filter` anywhere below, are what
+ * make that not happen. See lock.js for the rest of the argument.
+ *
+ * `pointer-events` is deliberately left alone rather than set to `none` the
+ * way every picker's docking box sets it: those boxes span an output and must
+ * let clicks through to what is behind them, and this one must not. There is
+ * nothing behind it that may be clicked. */
+#lock {
+  position: fixed;
+  inset: 0;
+  /* Above every picker (160), the screen-share chooser (200) and the keyboard
+     (180). Nothing on this page may be in front of it — and the keyboard,
+     which must be, is raised past it by the `:root.locked` rule below rather
+     than by living above it all the time. */
+  z-index: 300;
+  background: var(--bg);
+  color: var(--text);
+}
+#lock[hidden] { display: none; }
+
+/* The keyboard, over the lock screen and only there.
+ *
+ * It cannot simply live above 300 for the whole session: its own comment says
+ * why it sits below the screen-share chooser, and that reasoning still holds
+ * for an unlocked desk. On a locked one there is no chooser and no picker, and
+ * a keyboard behind the thing it is typing into is the one arrangement that
+ * makes this whole screen pointless on the desk it was built for. */
+:root.locked #osk { z-index: 400; }
+
+/* One per monitor, at that monitor's own corner in the layout — the same
+   docking the pickers do, for the same reason: `50%` of a two-monitor layout
+   is the gap between the screens. */
+.lock-pane {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+}
+
+.lock-time {
+  font-size: 5rem;
+  font-weight: 200;
+  line-height: 1;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.lock-date {
+  font-size: 1.1rem;
+  color: var(--muted);
+  margin-bottom: 2rem;
+}
+
+.lock-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  width: min(24rem, 80%);
+}
+
+.lock-input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  padding: .6rem .8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 1rem;
+}
+.lock-input:focus { outline: none; border-color: var(--border-focus); }
+.lock-input:disabled { color: var(--muted); }
+
+.lock-unlock,
+.lock-keyboard {
+  padding: .6rem .9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--fill);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+.lock-unlock:hover,
+.lock-keyboard:hover { background: var(--fill-hover); }
+.lock-unlock:disabled { color: var(--muted); cursor: default; }
+
+/* Always in the tree, empty when there is nothing to say: a message that
+   appears and disappears would move the password box up and down under
+   somebody's finger, and on a touch screen that is a mistyped password. */
+.lock-message {
+  flex: 1 0 100%;
+  min-height: 1.2em;
+  text-align: center;
+  font-size: .85rem;
+  color: var(--muted);
+}
+.lock-message-error { color: var(--urgent); }

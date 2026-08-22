@@ -232,6 +232,20 @@ pub struct Frame {
     /// or has died. Black, because showing the desktop instead would be a way
     /// past the lock.
     pub locked_blank: bool,
+    /// The shell is drawing the lock screen, and it covers this output.
+    ///
+    /// The other way a locked screen has something on it, and the only one
+    /// that uses `shell`: the page draws the lock screen into the same buffer
+    /// it draws the desktop into, so this says "draw that buffer and nothing
+    /// else" rather than naming a surface of its own.
+    ///
+    /// Per output, and false for an output the shell's rectangle does not
+    /// cover — a monitor plugged in a moment ago, or the one a `--url` page
+    /// took on a multi-monitor desk. That screen is black instead. There is no
+    /// third option: the page cannot paint a lock screen where it is not
+    /// drawing, and leaving the desktop on the monitor it does not cover would
+    /// be the lock screen on one screen and the email client on the other.
+    pub shell_lock: bool,
 }
 
 /// Turn a [`Frame`] into elements, front to back.
@@ -287,10 +301,25 @@ where
     let scale = frame.scale;
     let mut elements: Vec<OutputElement<R>> = Vec::new();
 
-    // Locked: the lock surface and the pointer, and nothing else. Returning
+    // Locked: the lock screen and the pointer, and nothing else. Returning
     // early is the guarantee — there is no ordering of the desktop that would
     // also be safe.
+    //
+    // Two things can be the lock screen. `lock` is an external locker's
+    // surface, one per output, drawn at the output's origin. `shell_lock` is
+    // the page drawing one into its own buffer, which is the same buffer the
+    // desktop is in — so it is drawn here through the same element the bottom
+    // of this function would have used, and *only* here, with nothing else in
+    // the list. Whether that flag may be set at all is
+    // `lock_screen_is_drawing`, which is where the argument about failing
+    // closed is written down.
+    //
+    // The pointer is drawn over both, which it was not before: an external
+    // locker draws its own or hides it, and the shell's lock screen has a
+    // password box that has to be clickable. Nothing else is, so a cursor
+    // cannot point at anything it should not.
     if frame.locked_blank || frame.lock.is_some() {
+        push_cursor(&mut elements, frame, renderer, scale);
         if let Some(surface) = frame.lock.as_ref() {
             use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
             elements.extend(
@@ -305,47 +334,17 @@ where
                 .into_iter()
                 .map(OutputElement::from),
             );
+        } else if frame.shell_lock {
+            if let Some(shell) = frame.shell.as_ref() {
+                if let Some(element) = shell_element(renderer, shell, shell.id.clone()) {
+                    elements.push(OutputElement::from(element));
+                }
+            }
         }
         return elements;
     }
 
-    match &frame.cursor {
-        Cursor::Hidden => {}
-        Cursor::Surface(surface, hotspot) => {
-            use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
-            // Drawn with the hotspot subtracted, so the point the user aims
-            // with is where the pointer is.
-            let at = Point::from((-hotspot.x, -hotspot.y));
-            elements.extend(
-                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
-                    renderer,
-                    surface,
-                    at,
-                    scale,
-                    1.0,
-                    Kind::Cursor,
-                )
-                .into_iter()
-                .map(OutputElement::from),
-            );
-        }
-        Cursor::Image(image, at) => {
-            // The source rectangle and the drawn size are both given: the
-            // theme's nearest image is whatever resolution it happens to be,
-            // and the size the configuration asked for is the one on screen.
-            if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                at.to_f64(),
-                &image.buffer,
-                None,
-                Some(image.src),
-                Some(image.size),
-                Kind::Cursor,
-            ) {
-                elements.push(OutputElement::from(element));
-            }
-        }
-    }
+    push_cursor(&mut elements, frame, renderer, scale);
 
     for (layer, location) in &frame.layers_above {
         elements.extend(
@@ -636,6 +635,55 @@ where
     }
 
     elements
+}
+
+/// The pointer, front of everything.
+///
+/// Its own function because there are two paths that draw it — the ordinary
+/// one and the locked one — and a second copy of it is a second place for the
+/// hotspot arithmetic to be wrong.
+fn push_cursor<R>(elements: &mut Vec<OutputElement<R>>, frame: &Frame, renderer: &mut R, scale: f64)
+where
+    R: Renderer + ImportAll + ImportMem + ImportDma,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    match &frame.cursor {
+        Cursor::Hidden => {}
+        Cursor::Surface(surface, hotspot) => {
+            use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+            // Drawn with the hotspot subtracted, so the point the user aims
+            // with is where the pointer is.
+            let at = Point::from((-hotspot.x, -hotspot.y));
+            elements.extend(
+                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+                    renderer,
+                    surface,
+                    at,
+                    scale,
+                    1.0,
+                    Kind::Cursor,
+                )
+                .into_iter()
+                .map(OutputElement::from),
+            );
+        }
+        Cursor::Image(image, at) => {
+            // The source rectangle and the drawn size are both given: the
+            // theme's nearest image is whatever resolution it happens to be,
+            // and the size the configuration asked for is the one on screen.
+            if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                at.to_f64(),
+                &image.buffer,
+                None,
+                Some(image.src),
+                Some(image.size),
+                Kind::Cursor,
+            ) {
+                elements.push(OutputElement::from(element));
+            }
+        }
+    }
 }
 
 /// The shell's frame as one texture, under the id it is drawn with.

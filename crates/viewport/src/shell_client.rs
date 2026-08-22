@@ -1007,6 +1007,13 @@ impl ViewportState {
         // Whatever it painted belonged to the process that has gone. Leaving
         // it up would be a desktop that is a photograph: it still shows
         // windows where they were, and nothing in it can be clicked.
+        //
+        // And if what it painted was the lock screen, the same applies with
+        // teeth: a photograph of a lock screen accepts no password, so the
+        // compositor stops drawing it and shows black until whatever comes
+        // back has drawn a real one. The session stays locked throughout —
+        // killing the shell is not a way past the lock.
+        self.forget_lock_screen();
         self.shell_clients.remove(at);
         self.shell_frames = 0;
         self.needs_render = true;
@@ -1248,6 +1255,9 @@ impl ViewportState {
             return false;
         };
         tracing::info!("shell {at}: its toplevel went away");
+        // Nothing of it is on screen any more, so nothing of it is a lock
+        // screen any more. The session stays locked; see `forget_lock_screen`.
+        self.forget_lock_screen();
         let shell = &mut self.shell_clients[at];
         let desktop = shell.desktop;
         shell.toplevel = None;

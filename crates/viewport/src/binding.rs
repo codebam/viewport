@@ -38,7 +38,8 @@ pub enum Action {
     /// Not the shell's: a client's colour scheme is answered over D-Bus by the
     /// settings portal, which the shell has no way to reach.
     Appearance,
-    /// Run the locker now, rather than waiting for `idle.lock_after`.
+    /// Lock now, rather than waiting for `idle.lock_after`. What locking
+    /// means is `lock_session`'s answer and not this binding's.
     ///
     /// The same locker the deadline would run, so there is one place to
     /// configure it and no second answer to what locking means here

@@ -115,6 +115,14 @@ function renderPowerPicker() {
   dialog.append(sep);
 
   const verbs = [
+    /* Lock first, because it is the only one of these that is not a way of
+       ending the session, and it is the one somebody reaches for most. It
+       sends `session.lock` rather than a `power.action` verb: the other three
+       go out to logind, and locking is this compositor's own move — what it
+       means is `idle.lock_command` if the config names one and the shell's own
+       lock screen if it does not, and that decision lives in one place on the
+       compositor's side (`lock_session`) rather than being made here. */
+    ['Lock', 'lock', false],
     ['Suspend', 'suspend', false],
     ['Power Off', 'poweroff', true],
     ['Reboot', 'reboot', true],
@@ -127,7 +135,9 @@ function renderPowerPicker() {
     keyNavRowEl(row);
     row.addEventListener('click', (e) => {
       e?.stopPropagation?.();
-      if (verb === 'quit') {
+      if (verb === 'lock') {
+        send({ type: 'session.lock' });
+      } else if (verb === 'quit') {
         send({ type: 'quit' });
       } else {
         send({ type: 'power.action', action: verb });

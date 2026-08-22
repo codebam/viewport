@@ -97,6 +97,16 @@
 -->
 <div id="osk" role="group" aria-label="On-screen keyboard" hidden></div>
 
+<!--
+  The lock screen. Page level and above everything, including the keyboard's
+  own container, because while the session is locked the compositor draws this
+  page's buffer and nothing else — so anything this does not cover is the
+  desktop showing through. It is the one surface here that has to be opaque
+  from edge to edge of the whole layout; see lock.js and the note beside
+  `#lock` in shell.css.
+-->
+<div id="lock" hidden></div>
+
 <template id="desktop-template">
   <main class="desktop">
     <!--
@@ -223,4 +233,5 @@ Mod4+d       launcher</pre>
 <script src="screencast.js"></script>
 <script src="settings.js"></script>
 <script src="osk.js"></script>
+<script src="lock.js"></script>
 <script src="commands.js"></script>

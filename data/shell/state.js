@@ -376,6 +376,7 @@ const bluetoothEl = document.getElementById('bluetooth-picker');
 const calendarEl = document.getElementById('calendar');
 const settingsEl = document.getElementById('settings');
 const oskEl = document.getElementById('osk');
+const lockEl = document.getElementById('lock');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
 

@@ -226,6 +226,28 @@ const TYPES: &[Type] = &[
         hint: "(replies with the saved session)",
     },
     Type {
+        name: "session.lock",
+        fields: &[],
+        strings: &[],
+        hint: "(locks the screen, however this machine is configured to)",
+    },
+    Type {
+        name: "session.lock.drawn",
+        fields: &["generation"],
+        strings: &[],
+        hint: "--generation N   (the shell saying it has painted the lock screen)",
+    },
+    Type {
+        name: "session.unlock",
+        fields: &["generation", "password"],
+        // A password of digits is a string and not a number, and a password of
+        // `true` is a string too. Left to the general rule, `--password 1234`
+        // would go out as the JSON number 1234 and be refused as a bad body —
+        // which reads, at a prompt, exactly like the password being wrong.
+        strings: &["password"],
+        hint: "--generation N --password TEXT   (checked by PAM; nothing else unlocks)",
+    },
+    Type {
         name: "notification.action",
         fields: &["id", "action"],
         strings: &[],

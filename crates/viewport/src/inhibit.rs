@@ -254,11 +254,14 @@ impl ScreenSaver {
 
     /// Whether a screensaver is drawing right now.
     ///
-    /// Always false, and honestly so: locking here runs `lock_command`, an
-    /// `ext-session-lock` client that is a separate process — this compositor
-    /// does not draw a screensaver and has none to report. Answering the call
-    /// still matters, because a client that gets an error on it sometimes
-    /// concludes the whole interface is missing and stops inhibiting too.
+    /// Always false, and honestly so. A screensaver is a thing that comes up
+    /// on its own and goes away when you touch the mouse, and this compositor
+    /// has none of those: locking is either `lock_command`, an
+    /// `ext-session-lock` client in a process of its own, or the shell's own
+    /// lock screen — and a lock screen is not a screensaver, because touching
+    /// the mouse does not end it. Answering the call still matters, because a
+    /// client that gets an error on it sometimes concludes the whole interface
+    /// is missing and stops inhibiting too.
     fn get_active(&self) -> bool {
         false
     }

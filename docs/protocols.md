@@ -278,10 +278,25 @@ policy, so a machine left alone behaves without a daemon having to be installed
 and configured alongside it. Set neither threshold and there is none, leaving
 the field to swayidle or anything else.
 
-The compositor runs the locker named in `lock_command` rather than locking the
-screen itself. That is the whole point of `ext-session-lock`: the program
-drawing the lock screen is separate, and can crash without unlocking anything.
-Blanking turns the outputs off, which is what actually saves the panel.
+The compositor runs the locker named in `lock_command` where one is named, and
+its part is then being a correct `ext-session-lock` server for it — which is
+the whole point of that protocol: the program drawing the lock screen is
+separate, and can crash without unlocking anything. Blanking turns the outputs
+off, which is what actually saves the panel.
+
+With no `lock_command` the lock screen is the shell's, and no client and no
+protocol is involved at all — the compositor takes the lock itself, tells the
+page to draw, and draws the page's buffer and nothing else until it is
+unlocked. The property `ext-session-lock` exists for is kept by hand there, and
+it has to be, because the thing drawing the lock screen is the same page that
+draws the desktop out of the same buffer: none of that buffer reaches a locked
+screen until the page has said it painted a lock screen for that lock *and*
+painted a frame after saying so, so a page that crashed, hung or reloaded is a
+black screen rather than a desktop. The two never run together — a locker
+asking for the session while the built-in screen is drawing is refused by
+`lock()` exactly as a second swaylock is, and one asking while it is *not*
+drawing is granted, which is the same documented escape from a lock screen that
+has stopped painting.
 
 Idle inhibitors are honoured, and only while their surface is mapped — a paused
 video on a hidden workspace is not keeping anyone awake. An inhibitor counts as
@@ -316,8 +331,8 @@ is version 1 deliberately: version 2 adds `CreateMonitor` and
 dialog on screen and wait for the answer, and there is no logout here to be
 about. `GetActive` answers false rather than erroring, because a client that
 gets an error on it sometimes concludes the whole interface is missing and
-stops inhibiting with it — this compositor never draws a screensaver, since
-locking runs `lock_command` in a process of its own.
+stops inhibiting with it — this compositor never draws a screensaver, and its
+lock screen is not one.
 
 Key presses count as activity; releases do not. That is what makes blanking
 from a keybinding possible at all — the chord fires on press, and letting go of

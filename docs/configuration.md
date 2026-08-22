@@ -111,12 +111,49 @@ and the inhibit portal are answered too, which between them is what a browser
 playing video, a video player and a presentation actually use. Nothing to
 configure — see [Idle](protocols.md#idle) for what a hold is and when it ends.
 
-`lock` runs the same `idle.lock_command` the idle timer would, so there is one
+`lock` locks the session the same way the idle timer would, so there is one
 place to configure what locking means; `blank` turns the outputs off until the
 next input, exactly as the idle timer does. `lid` is what the laptop hinge
 does: `"lock"`, `"blank"`, `"suspend"` (via logind) or `"ignore"`. Absent is
 lock when `idle.lock_command` is set, otherwise blank. A desktop has no lid,
-so the setting never fires. Chords use sway's
+so the setting never fires.
+
+What locking means is one setting, `idle.lock_command`, and it has two answers.
+Set, it is the program to run — `swaylock -f`, or anything else that speaks
+`ext-session-lock-v1` — and the compositor's part is being a correct server for
+it, exactly as before. Unset, which is the default, the shell draws the lock
+screen itself: a clock on every monitor, a password box on the one you are
+looking at, and a button that raises the on-screen keyboard, so a machine with
+a touch screen and no keyboard can get back in. That last part is why it
+exists — a locker in another process cannot reach `data/shell/osk.js`, so a
+touch-only desk could lock and then had no way to type a password at all.
+Setting the key back to a command is the way out of the built-in screen, and
+the empty string is not a command: `"lock_command": ""` reads as "no locker",
+so it means the built-in screen rather than a shell started to run nothing.
+
+The password is checked with PAM, on a thread of its own so a slow or
+unreachable authentication stack cannot stall the desk. The service is
+`viewport` where `/etc/pam.d/viewport` exists and `login` otherwise, and
+`$VIEWPORT_PAM_SERVICE` overrides both; `login` is the fallback rather than the
+service's own name because an unknown service falls through to
+`/etc/pam.d/other`, which either denies everything or permits everything
+depending on how the machine was set up, and neither is a thing to leave to
+chance. Nothing has to be installed for this to work — the compositor loads
+libpam at the first password rather than linking it, so a build on a machine
+without PAM headers still runs — but a machine with no libpam at all is a lock
+screen that refuses every password. It still locks: a session that declined to
+lock because it could not check a password would be a laptop going into a bag
+with the desktop on screen. The lock screen says so, the log says so, and the
+ways out are another VT or an `idle.lock_command`.
+
+The lock screen fails closed, and this is the part worth knowing before relying
+on it. The shell is a web page, and a page can crash, hang or be reloaded while
+it is holding the lock. When any of that happens the session **stays locked**
+and the screen goes black — the compositor draws no part of the page's buffer
+on a locked screen until the page has said it painted a lock screen for that
+particular lock and painted a frame after saying so. A black screen that eats
+every key is an unhelpful failure; the desktop reappearing because the shell
+died would be a way past the lock, and that is the one this refuses to have. Chords use sway's
 spelling — `Mod4`/`Super`/`Logo`, `Shift`, `Ctrl`, `Alt` — and any key
 `xkb_keysym_from_name` accepts, including `XF86AudioRaiseVolume`. Caps and num
 lock are masked out of matching. Bindings outrank both the focused client and
@@ -203,7 +240,7 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+o` | the overview of open windows |
 | `Mod4+grave` | back to the previous workspace |
 | `Mod4+Shift+Return` | give the keyboard to the wallpaper terminal, and take it back |
-| `Mod4+Shift+x` | lock, via `idle.lock_command` |
+| `Mod4+Shift+x` | lock: `idle.lock_command` if one is set, the shell's own lock screen if not |
 | `Mod4+Shift+b` | blank the screens until the next input |
 | `Mod4+Shift+p` | HDR on the monitor you are looking at |
 | `Mod4+Alt+equal` / `Mod4+Alt+minus` | magnify the screen in / out |

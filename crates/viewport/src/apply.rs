@@ -286,7 +286,46 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 state: session::load(),
             };
             state.notify(&event);
+
+            // A page asking for the saved layout is a page that has just
+            // started — a restart after a crash, a reload, the first load of
+            // the session. Whatever the last page had drawn is therefore not
+            // on screen, and this one has drawn nothing yet.
+            //
+            // So the lock screen is withdrawn and asked for again, in that
+            // order. Withdrawn, because the flag is per lock and not per page
+            // and a restart inside one lock would otherwise inherit it — the
+            // compositor would draw the new page's first frames, which are the
+            // desktop coming up, over a locked session. Asked for again,
+            // because the page that was told to lock is gone and the one that
+            // replaced it has no idea the session is locked; without this it
+            // draws the desktop and waits to be clicked.
+            if state.locked && state.lock_mode.is_built_in() {
+                state.forget_lock_screen();
+                let generation = state.lock_generation;
+                let can_authenticate = state.authenticator.online();
+                tracing::info!(
+                    "lock: telling a page that has just started to draw lock {generation}"
+                );
+                state.notify(&Event::SessionLock {
+                    generation,
+                    can_authenticate,
+                });
+                state.focus_lock_shell();
+            }
         }
+
+        // The one thing the `lock` binding, the idle deadline and the lid all
+        // do. Nothing here decides what locking means; `lock_session` does,
+        // once, from the config.
+        Request::SessionLock => state.lock_session(),
+
+        Request::SessionLockDrawn { generation } => state.lock_screen_drawn(generation),
+
+        Request::SessionUnlock {
+            generation,
+            password,
+        } => state.try_unlock(generation, password),
 
         Request::WorkspaceList { workspaces } => {
             // The shell's list, whole. Publishing it is the compositor's only
