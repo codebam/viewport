@@ -105,6 +105,31 @@ impl Pcm {
 /// DoS with a notification as the trigger.
 const DECODED_BUDGET: usize = 64 * 1024 * 1024;
 
+/// The largest sound file that will be decoded.
+///
+/// Thirty-two megabytes, against the 64 MiB [`DECODED_BUDGET`] the decoded
+/// cache holds, because the two bound different things: the budget bounds what
+/// is *kept*, this bounds what one notification makes this *read*. The path in
+/// a `sound-file` hint is chosen by whoever published it, and not every
+/// publisher is the application it says it is — the decode below materialises
+/// the whole file before the budget ever gets a say, so a gigabyte of WAV in a
+/// hint would be several gigabytes of `f32` per notification. The same
+/// discipline [`crate::icon::art_data_url`] applies to cover art: the size
+/// comes from the open file rather than from the name, so what is checked is
+/// the inode that would be read, and a device or a FIFO named like a sound is
+/// refused before anything blocks on it. A theme sound is a second or two of
+/// stereo; nothing honest comes near this.
+const MAX_FILE: u64 = 32 << 20;
+
+/// Most samples one decode may produce.
+///
+/// The size check bounds the file, and a compressed file can still expand: an
+/// hour of silence in Ogg is kilobytes on disk and gigabytes of `f32` out.
+/// This is [`DECODED_BUDGET`] expressed as a sample count, checked as the
+/// decode runs so that the answer stops arriving rather than arriving too big
+/// to cache or to play.
+const MAX_SAMPLES: usize = DECODED_BUDGET / std::mem::size_of::<f32>();
+
 /// The decoded cache proper.
 ///
 /// A map for the lookup and a queue recording the order entries were last
@@ -456,6 +481,10 @@ fn format(pcm: &Pcm) -> anyhow::Result<Vec<u8>> {
 /// the freedesktop theme is under two seconds — so the file fits in memory
 /// many times over, and holding it there is what lets the second notification
 /// skip this entirely.
+///
+/// Before anything is read, the file is measured: the path arrives off the
+/// bus, and the checks in [`MAX_FILE`] are what keep a hint from naming
+/// something endless or enormous.
 fn decode(path: &Path) -> anyhow::Result<Pcm> {
     use symphonia::core::codecs::CodecParameters;
     use symphonia::core::formats::probe::Hint;
@@ -463,6 +492,21 @@ fn decode(path: &Path) -> anyhow::Result<Pcm> {
     use symphonia::core::io::MediaSourceStream;
 
     let file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+    // A length check alone never fires on `/dev/zero`, which reports no size
+    // at all, and a FIFO with no writer blocks forever — so the regular-file
+    // check comes first, on the inode rather than the name.
+    if !meta.is_file() {
+        anyhow::bail!("{} is not a regular file", path.display());
+    }
+    if meta.len() > MAX_FILE {
+        anyhow::bail!(
+            "{} is {} bytes, past the {} a notification sound may be",
+            path.display(),
+            meta.len(),
+            MAX_FILE
+        );
+    }
     let source = MediaSourceStream::new(Box::new(file), Default::default());
 
     // The extension, as a hint only. It is what distinguishes the `.oga` and
@@ -507,6 +551,11 @@ fn decode(path: &Path) -> anyhow::Result<Pcm> {
         channels = decoded.spec().channels().count() as u32;
         decoded.copy_to_vec_interleaved(&mut frame);
         samples.append(&mut frame);
+        // Defensively, past the probe: a file that decompresses large stops
+        // here rather than growing until the allocation does.
+        if samples.len() > MAX_SAMPLES {
+            anyhow::bail!("{} decodes to more than the sample cap", path.display());
+        }
     }
 
     if samples.is_empty() || rate == 0 || channels == 0 {
