@@ -642,6 +642,11 @@ impl Pipewire {
 
         let streaming = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = streaming.clone();
+        // Made here rather than after the connection, because the stream's own
+        // state changes are the first place the node id is reliably there —
+        // see the round trip below for why they cannot be the only place.
+        let arrival = Arrival::new();
+        let named_by_the_state = arrival.clone();
         let chose_dmabuf = dmabuf.clone();
         let added = memory.clone();
         let removed = memory.clone();
@@ -650,12 +655,22 @@ impl Pipewire {
         let handing_out = pool.clone();
         let listener = stream
             .add_local_listener_with_user_data(())
-            .state_changed(move |_stream, (), old, new| {
+            .state_changed(move |stream, (), old, new| {
                 tracing::debug!("screencast stream: {old:?} -> {new:?}");
                 flag.store(
                     matches!(new, pw::stream::StreamState::Streaming),
                     std::sync::atomic::Ordering::Relaxed,
                 );
+                // Where the node actually comes from. PipeWire sets the id
+                // when the server binds the stream's node and leaves
+                // `Connecting` for `Paused` in the same breath, so any state
+                // past `Connecting` carries a real number — and this is the
+                // only event guaranteed to be after it, whatever order the
+                // daemon answers the compositor's other messages in.
+                let node = stream.node_id();
+                if node != INVALID_NODE {
+                    named_by_the_state.announced(node);
+                }
             })
             // What the consumer needs to allocate against.
             //
@@ -780,7 +795,7 @@ impl Pipewire {
             )
             .map_err(|e| anyhow::anyhow!("connecting a pipewire stream: {e}"))?;
 
-        // Ask the daemon to say when, and listen for it.
+        // Ask the daemon to say when, in case the state never says it.
         //
         // The node id does not exist until the server has created it —
         // `node_id()` before that is 0xffffffff, which no client can connect
@@ -793,16 +808,26 @@ impl Pipewire {
         // nothing, because the only thing that needed the number, the portal
         // reply, can be sent from anywhere.
         //
-        // Instead the round trip itself says when it is done. `sync` asks the
-        // daemon for a `done` event once everything sent before it — the
-        // stream's creation and connection included — has been processed, and
-        // by then the node exists: proxy events are answered in order, so the
-        // bound id is set before the done that follows it. The listener below
-        // fills in the [`Arrival`] and keeps whatever promises were made on
-        // it, and the portal reply leaves with them. The deadline that gives
-        // up on a daemon which never answers lives with the rest of the
-        // compositor's timers, in `state.rs`: refusing a share means taking
-        // the stream back out, and that is the compositor's thread's job.
+        // The number itself comes from the stream, in `state_changed` above:
+        // the server binds the node and the stream leaves `Connecting` in the
+        // same breath, so that event is the first moment there is anything to
+        // read. A core round trip is not — `sync` only promises a `done` once
+        // everything sent before it has been processed, and the bind that
+        // names the node is answered by the server on its own schedule, after
+        // the client node it created has been registered. Waiting on the
+        // round trip alone is what made every share arrive unnamed: the
+        // `done` landed first, `node_id()` was still the placeholder, and the
+        // portal refused a stream that was about to be perfectly good.
+        //
+        // It stays as a floor under the state event: a daemon that answers
+        // the round trip having already named the node — a restarted stream,
+        // an answer that overtook the state change — is answered from here
+        // instead, and whichever arrives first is the one that counts. An
+        // answer with no node says nothing at all; the deadline that gives up
+        // on a daemon which never names one lives with the rest of the
+        // compositor's timers, in `state.rs`, because refusing a share means
+        // taking the stream back out, and that is the compositor's thread's
+        // job.
         //
         // The lock is held across the whole of this, which is what makes the
         // ordering safe: the answer is dispatched on the thread loop's
@@ -812,7 +837,6 @@ impl Pipewire {
             .sync(0)
             .map_err(|e| anyhow::anyhow!("asking pipewire for a round trip: {e}"))?;
         let named = stream.clone();
-        let arrival = Arrival::new();
         let announced_from = arrival.clone();
         let done_listener = self
             .core
@@ -821,7 +845,10 @@ impl Pipewire {
                 if id != pw::core::PW_ID_CORE || done_seq.seq() != seq.seq() {
                     return;
                 }
-                announced_from.announced(named.node_id());
+                let node = named.node_id();
+                if node != INVALID_NODE {
+                    announced_from.announced(node);
+                }
             })
             .register();
 
