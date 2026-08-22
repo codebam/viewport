@@ -24,7 +24,6 @@ license=('GPL-3.0-or-later')
 depends=(
   'wayland'
   'libxkbcommon'
-  'pixman'
   'libdrm'
   'libinput'
   'seatd'
@@ -34,7 +33,6 @@ depends=(
   'vulkan-icd-loader'
   'pipewire'
   'libxcb'
-  'xcb-util-wm'
   'chromium'
 )
 
