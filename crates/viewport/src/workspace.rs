@@ -46,6 +46,17 @@ pub use viewport_ipc::request::Workspace;
 
 const VERSION: u32 = 1;
 
+/// The most requests one client may hold between commits.
+///
+/// The same discipline as [`crate::framing::MAX_PENDING`] on the control
+/// socket: what an honest client sends is a few, and what an unbounded queue
+/// invites is a client that pushes millions of asks without ever committing
+/// and grows the compositor's heap for the pleasure of it. Past this, further
+/// requests in the same batch are refused until the commit that was owed
+/// arrives — which is also how a client recovers: commit, and the queue is
+/// taken and the room is back.
+const MAX_PENDING_ASKS: usize = 256;
+
 /// What a client asked for, once its commit says it meant it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ask {
@@ -326,10 +337,23 @@ impl WorkspaceState {
     }
 
     /// Remember a request until its commit.
+    ///
+    /// A client past [`MAX_PENDING_ASKS`] has its further requests refused,
+    /// with one line saying so rather than silence: the protocol has no error
+    /// to send back, and a client whose asks vanish without a word would read
+    /// it as a compositor ignoring it, which is at least half true.
     fn push(&mut self, manager: &ExtWorkspaceManagerV1, ask: Ask) {
-        if let Some(bound) = self.bound.iter_mut().find(|b| &b.manager == manager) {
-            bound.pending.push(ask);
+        let Some(bound) = self.bound.iter_mut().find(|b| &b.manager == manager) else {
+            return;
+        };
+        if bound.pending.len() >= MAX_PENDING_ASKS {
+            tracing::warn!(
+                "workspace: a client holds {MAX_PENDING_ASKS} uncommitted requests; \
+                 refusing more until it commits"
+            );
+            return;
         }
+        bound.pending.push(ask);
     }
 
     /// Everything asked since the last commit, in order.
