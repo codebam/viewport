@@ -54,10 +54,6 @@ pub enum Message {
 pub struct Bluetooth {
     worker: Option<mpsc::Sender<Command>>,
     events: Option<smithay::reexports::calloop::channel::Sender<Message>>,
-    /// Whether starting the worker has already failed once, so that a picker
-    /// on a machine with no bluetoothd does not try the system bus again on
-    /// every keypress.
-    unavailable: bool,
 }
 
 impl Bluetooth {
@@ -95,26 +91,10 @@ impl Bluetooth {
 
     fn send(&mut self, command: Command) {
         if self.worker.is_none() {
-            if self.unavailable {
-                return;
-            }
             let Some(events) = self.events.clone() else {
                 return;
             };
-            match start(events) {
-                Ok(worker) => self.worker = Some(worker),
-                Err(e) => {
-                    tracing::warn!("bluetooth: BlueZ is unavailable: {e:#}");
-                    self.unavailable = true;
-                    // An empty snapshot with `available` false, so the picker
-                    // says there is nobody to ask rather than drawing an empty
-                    // list that reads as "no devices".
-                    if let Some(events) = self.events.as_ref() {
-                        let _ = events.send(Message::Snapshot(BluetoothSnapshot::default()));
-                    }
-                    return;
-                }
-            }
+            self.worker = Some(start(events));
         }
         if let Some(worker) = self.worker.as_ref() {
             let _ = worker.send(command);
@@ -171,57 +151,72 @@ impl PairingAgent {
     fn cancel(&self) {}
 }
 
-fn start(
-    events: smithay::reexports::calloop::channel::Sender<Message>,
-) -> anyhow::Result<mpsc::Sender<Command>> {
+fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc::Sender<Command> {
     let (commands, inbox) = mpsc::channel();
-    let connection = zbus::blocking::Connection::system()?;
 
-    // Two rules rather than one. A property that changed — a device that
-    // connected, an adapter that was powered on — arrives as
-    // `PropertiesChanged`, but a device that has only just been *seen* is a
-    // new object, and a new object is announced on the object manager instead.
-    // A picker subscribed to only the first would show the devices that were
-    // already known and never grow a row for the one somebody just switched
-    // on, which is the one they are waiting for.
-    pump(
-        connection.clone(),
-        commands.clone(),
-        format!("type='signal',interface='org.freedesktop.DBus.Properties',sender='{BLUEZ}'"),
-    )?;
-    pump(
-        connection.clone(),
-        commands.clone(),
-        format!("type='signal',interface='org.freedesktop.DBus.ObjectManager',sender='{BLUEZ}'"),
-    )?;
-
-    std::thread::Builder::new()
+    // Connecting happens here and not on the thread that called `start`, for
+    // the reason network.rs gives: the caller is the compositor's event loop,
+    // and a round trip to a wedged bus daemon must not stall a frame. A
+    // machine with no bus at all is reported through the events channel, as
+    // an empty snapshot with `available` false — so the picker says there is
+    // nobody to ask rather than drawing an empty list that reads as "no
+    // devices".
+    let (worker_events, worker_commands) = (events.clone(), commands.clone());
+    let spawned = std::thread::Builder::new()
         .name("bluetooth".to_owned())
-        .spawn(move || Worker::new(connection, events).run(&inbox))?;
-    Ok(commands)
-}
-
-/// A thread that turns one match rule's traffic into `Refresh`, exactly as
-/// network.rs does and for the same reason: the worker blocks on calls that
-/// take seconds — pairing is one — and a signal that arrives during one must
-/// not be lost.
-fn pump(
-    connection: zbus::blocking::Connection,
-    commands: mpsc::Sender<Command>,
-    rule: String,
-) -> anyhow::Result<()> {
-    let rule = zbus::MatchRule::try_from(rule.as_str())?;
-    let messages = zbus::blocking::MessageIterator::for_match_rule(rule, &connection, None)?;
-    std::thread::Builder::new()
-        .name("bluetooth-signals".to_owned())
         .spawn(move || {
-            for _ in messages.flatten() {
-                if commands.send(Command::Refresh).is_err() {
+            let connection = match zbus::blocking::Connection::system() {
+                Ok(connection) => connection,
+                Err(e) => {
+                    tracing::warn!("bluetooth: BlueZ is unavailable: {e:#}");
+                    let _ = worker_events.send(Message::Snapshot(BluetoothSnapshot::default()));
                     return;
                 }
+            };
+
+            // Two rules rather than one. A property that changed — a device
+            // that connected, an adapter that was powered on — arrives as
+            // `PropertiesChanged`, but a device that has only just been
+            // *seen* is a new object, and a new object is announced on the
+            // object manager instead. A picker subscribed to only the first
+            // would show the devices that were already known and never grow a
+            // row for the one somebody just switched on, which is the one
+            // they are waiting for.
+            if let Err(e) = crate::dbus_util::pump(
+                connection.clone(),
+                worker_commands.clone(),
+                "bluetooth-signals",
+                format!(
+                    "type='signal',interface='org.freedesktop.DBus.Properties',sender='{BLUEZ}'"
+                ),
+                |_, commands| {
+                    let _ = commands.send(Command::Refresh);
+                },
+            ) {
+                tracing::warn!("bluetooth: could not follow BlueZ's properties: {e:#}");
             }
-        })?;
-    Ok(())
+            if let Err(e) = crate::dbus_util::pump(
+                connection.clone(),
+                worker_commands.clone(),
+                "bluetooth-signals",
+                format!(
+                    "type='signal',interface='org.freedesktop.DBus.ObjectManager',sender='{BLUEZ}'"
+                ),
+                |_, commands| {
+                    let _ = commands.send(Command::Refresh);
+                },
+            ) {
+                tracing::warn!("bluetooth: could not follow BlueZ's objects: {e:#}");
+            }
+
+            Worker::new(connection, worker_events).run(&inbox);
+        });
+
+    if spawned.is_err() {
+        tracing::warn!("bluetooth: the worker could not start");
+        let _ = events.send(Message::Snapshot(BluetoothSnapshot::default()));
+    }
+    commands
 }
 
 struct Worker {
@@ -601,19 +596,12 @@ fn as_i16(value: &zvariant::OwnedValue) -> Option<i16> {
     i16::try_from(value.clone()).ok()
 }
 
-/// The half of a bus error that was written for a person; see the note on
-/// `network::complaint`, which is the same problem.
+/// The half of a bus error that was written for a person.
+///
+/// See [`crate::dbus_util::complaint`], which is this and which the tray and
+/// the network picker share.
 fn complaint<E: Into<zbus::Error>>(error: E) -> String {
-    // Generic over the two error types zbus hands back, which are the same
-    // failure told twice: a method call fails with `zbus::Error` and a
-    // property write with `zbus::fdo::Error`, because setting a property is a
-    // call to `org.freedesktop.DBus.Properties.Set`. One conversion rather
-    // than two spellings of this function.
-    let error: zbus::Error = error.into();
-    match &error {
-        zbus::Error::MethodError(_, Some(message), _) => message.clone(),
-        _ => error.to_string(),
-    }
+    crate::dbus_util::complaint(error)
 }
 
 #[cfg(test)]

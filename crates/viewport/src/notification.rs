@@ -57,6 +57,15 @@ pub struct Notifications {
     /// The last id handed out, shared with the D-Bus thread because both ends
     /// allocate them.
     next: Arc<AtomicU32>,
+    /// Which connection owns which id, by the sender's unique bus name.
+    ///
+    /// An id is a handle: whoever holds one can replace the notification,
+    /// close it, and is the one its `ActionInvoked` and `NotificationClosed`
+    /// go to. Recorded here when an id is given out, so that a stranger's
+    /// `replaces_id` can be refused and a signal can be addressed to its
+    /// owner rather than shouted at the whole session. Shared with the D-Bus
+    /// thread, which is the only one that learns a sender's name.
+    owners: Arc<Mutex<HashMap<u32, String>>>,
     /// What a notification that names no sound of its own plays.
     ///
     /// Behind a lock and shared with the D-Bus thread because the
@@ -72,6 +81,7 @@ impl Default for Notifications {
             outbound: None,
             // Zero means "allocate one" in the protocol, so ids start at one.
             next: Arc::new(AtomicU32::new(1)),
+            owners: Arc::new(Mutex::new(HashMap::new())),
             default_sound: Arc::new(Mutex::new(None)),
         }
     }
@@ -88,9 +98,11 @@ impl Notifications {
         sender: smithay::reexports::calloop::channel::Sender<Message>,
     ) -> anyhow::Result<()> {
         let next = self.next.clone();
+        let owners = self.owners.clone();
         let server = Server {
             sender,
             next: next.clone(),
+            owners,
             default_sound: self.default_sound.clone(),
             // A session with no sound server gets no sounds and every other
             // part of a notification unchanged; see `sound::Player::new`.
@@ -126,21 +138,56 @@ impl Notifications {
     }
 
     /// Tell the sender its notification was acted on.
+    ///
+    /// To the sender, and to it alone: an action is a private answer between
+    /// the desktop and the application that offered the button, and a signal
+    /// broadcast to every connection would let any program on the bus learn
+    /// which buttons somebody presses.
     pub fn invoke_action(&self, id: u32, action: &str) {
-        self.emit("ActionInvoked", &(id, action));
+        self.emit_to_owner(id, "ActionInvoked", &(id, action));
     }
 
-    /// Tell the sender its notification is gone, and why.
+    /// Tell the sender its notification is gone, and why — then forget whose
+    /// it was. A closed id is finished with; keeping the owner would only
+    /// grow this map for the life of the session.
     pub fn closed(&self, id: u32, reason: CloseReason) {
-        self.emit("NotificationClosed", &(id, reason as u32));
+        self.emit_to_owner(id, "NotificationClosed", &(id, reason as u32));
+        if let Ok(mut owners) = self.owners.lock() {
+            owners.remove(&id);
+        }
     }
 
-    fn emit<T: serde::Serialize + zvariant::DynamicType>(&self, signal: &str, body: &T) {
+    /// Emit one of the interface's signals, addressed to the notification's
+    /// owner when this compositor knows who that is.
+    ///
+    /// An owner this process does not know — one from before a restart, say —
+    /// falls back to broadcasting, which is what every version of this did
+    /// and what keeps the ordinary case working across a reload.
+    fn emit_to_owner<T: serde::Serialize + zvariant::DynamicType>(
+        &self,
+        id: u32,
+        signal: &str,
+        body: &T,
+    ) {
+        let destination = self
+            .owners
+            .lock()
+            .ok()
+            .and_then(|owners| owners.get(&id).cloned());
+        self.emit(destination.as_deref(), signal, body);
+    }
+
+    fn emit<T: serde::Serialize + zvariant::DynamicType>(
+        &self,
+        destination: Option<&str>,
+        signal: &str,
+        body: &T,
+    ) {
         let Some(connection) = self.outbound.as_ref() else {
             return;
         };
         if let Err(e) = connection.emit_signal(
-            None::<&str>,
+            destination,
             "/org/freedesktop/Notifications",
             "org.freedesktop.Notifications",
             signal,
@@ -155,9 +202,67 @@ impl Notifications {
 struct Server {
     sender: smithay::reexports::calloop::channel::Sender<Message>,
     next: Arc<AtomicU32>,
+    /// Which connection owns which id; see `Notifications::owners`.
+    owners: Arc<Mutex<HashMap<u32, String>>>,
     default_sound: Arc<Mutex<Option<crate::sound::Sound>>>,
     /// Absent when there is no sound server to play through.
     player: Option<crate::sound::Player>,
+}
+
+/// The id a notification gets, given what the sender asked to replace.
+///
+/// `replaces_id` is honoured only when the sender asking is the one the id
+/// was given to. The specification scopes replacement to the sender, and for
+/// good reason: an id is a handle, so honouring a stranger's guess would let
+/// one application overwrite another's notification on screen, close it, and
+/// receive the actions meant for it. mako tracks the same pair. Anything
+/// else — a zero, an id nobody holds, somebody else's — is a fresh
+/// allocation, which is the forgiving answer: the sender's notification
+/// appears either way, and the owner of the named id keeps theirs.
+///
+/// `sender` absent means there is nobody to check against — the bus did not
+/// say, which does not happen for a real call — and the id is then taken at
+/// its word, as every version of this did before there was an owner to check.
+fn resolve_id(
+    next: &AtomicU32,
+    owners: &HashMap<u32, String>,
+    replaces_id: u32,
+    sender: Option<&str>,
+) -> u32 {
+    let owned = match sender {
+        Some(sender) => owners
+            .get(&replaces_id)
+            .is_some_and(|owner| owner == sender),
+        None => replaces_id != 0,
+    };
+    if replaces_id != 0 && owned {
+        // And the counter is moved past it. Both ends allocate ids, and a
+        // replacement id honoured but not accounted for was handed out
+        // again later as if it were fresh: two live notifications with one
+        // id, and dismissing either closed the other.
+        next.fetch_max(replaces_id.saturating_add(1), Ordering::Relaxed);
+        return replaces_id;
+    }
+    if replaces_id != 0 {
+        tracing::debug!(
+            "notification replaces_id {replaces_id} is not this sender's; allocating fresh"
+        );
+    }
+    next.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Whether this caller may close this id.
+///
+/// An id whose owner is known is closed only by its owner — closing is the
+/// other half of the handle `replaces_id` is, and a program that could close
+/// anything could take every notification on the desktop down. An id nobody
+/// claims stays closable by anyone, which is what it always was: refusing on
+/// a guess is how a legitimate close stops working.
+fn may_close(owners: &HashMap<u32, String>, id: u32, sender: Option<&str>) -> bool {
+    match (owners.get(&id), sender) {
+        (Some(owner), Some(sender)) => owner == sender,
+        _ => true,
+    }
 }
 
 #[zbus::interface(name = "org.freedesktop.Notifications")]
@@ -180,19 +285,26 @@ impl Server {
         actions: Vec<String>,
         hints: HashMap<String, zvariant::OwnedValue>,
         expire_timeout: i32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> Result<u32, zbus::fdo::Error> {
-        // A sender replacing its own notification keeps the id, so it updates
-        // in place rather than stacking a duplicate.
-        let id = if replaces_id != 0 {
-            // And the counter is moved past it. Both ends allocate ids, and a
-            // replacement id honoured but not accounted for was handed out
-            // again later as if it were fresh: two live notifications with one
-            // id, and dismissing either one closed the other.
-            self.next
-                .fetch_max(replaces_id.saturating_add(1), Ordering::Relaxed);
-            replaces_id
-        } else {
-            self.next.fetch_add(1, Ordering::Relaxed)
+        // The unique name of whoever is asking, which is what replacement and
+        // closing are checked against. Well-known names would be spoofable —
+        // a program could ask for another's name and inherit its
+        // notifications — but a unique name is handed out by the bus itself.
+        let sender = header.sender().map(|name| name.to_string());
+
+        let id = match self.owners.lock() {
+            Ok(mut owners) => {
+                let id = resolve_id(&self.next, &owners, replaces_id, sender.as_deref());
+                // An id with no known owner stays unowned rather than owned
+                // by an empty string: an unknown owner is one anybody may
+                // close, and that is what it always was.
+                if let Some(sender) = sender {
+                    owners.insert(id, sender);
+                }
+                id
+            }
+            Err(_) => resolve_id(&self.next, &HashMap::new(), replaces_id, None),
         };
 
         // Before the notification goes to the shell, not after: the shell is a
@@ -234,7 +346,25 @@ impl Server {
         Ok(id)
     }
 
-    fn close_notification(&self, id: u32) -> Result<(), zbus::fdo::Error> {
+    fn close_notification(
+        &self,
+        id: u32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> Result<(), zbus::fdo::Error> {
+        // A close of somebody else's notification is refused silently, in the
+        // shape the specification gives a close of one that is not there: the
+        // sender has no way to act on the difference, and an error reply
+        // would only tell an attacker their guess was right.
+        let sender = header.sender().map(|name| name.to_string());
+        let owned = match self.owners.lock() {
+            Ok(owners) => may_close(&owners, id, sender.as_deref()),
+            Err(_) => true,
+        };
+        if !owned {
+            tracing::debug!("close of notification {id} refused: the caller is not its owner");
+            return Ok(());
+        }
+
         // Same story as `notify`: a close request that vanishes into a dead
         // channel leaves the sender believing its notification is gone when
         // it is still on screen.
@@ -609,6 +739,7 @@ mod tests {
         let server = Server {
             sender,
             next: Arc::new(AtomicU32::new(1)),
+            owners: Arc::new(Mutex::new(HashMap::new())),
             default_sound: Arc::new(Mutex::new(None)),
             // No sound server under a test runner, and none wanted: these
             // cover id allocation. What plays is [`sound`]'s, tested directly.
@@ -617,7 +748,23 @@ mod tests {
         (server, channel)
     }
 
-    fn notify(server: &Server, replaces_id: u32) -> u32 {
+    /// A header for a local call, with or without a sender on it.
+    ///
+    /// The bus stamps the real one on when the message arrives; building one
+    /// here is what lets these tests exercise ownership without a bus. The
+    /// message leaks so the header can borrow from it for `'static`.
+    fn header(sender: Option<&str>) -> zbus::message::Header<'static> {
+        let builder = zbus::Message::method_call("/org/freedesktop/Notifications", "Notify")
+            .and_then(|builder| match sender {
+                Some(sender) => builder.sender(sender),
+                None => Ok(builder),
+            })
+            .and_then(|builder| builder.build(&()))
+            .expect("a message to hang a header off");
+        Box::leak(Box::new(builder)).header()
+    }
+
+    fn notify_as(server: &Server, replaces_id: u32, sender: Option<&str>) -> u32 {
         server
             .notify(
                 "test".to_owned(),
@@ -628,10 +775,15 @@ mod tests {
                 Vec::new(),
                 HashMap::new(),
                 -1,
+                header(sender),
             )
             // The channel is alive under a test runner; delivery is what the
             // error return is for, and id allocation is what these cover.
             .expect("the compositor side of the channel is alive")
+    }
+
+    fn notify(server: &Server, replaces_id: u32) -> u32 {
+        notify_as(server, replaces_id, None)
     }
 
     #[test]
@@ -658,6 +810,82 @@ mod tests {
         assert_eq!(notify(&server, 7), 7);
         assert_eq!(notify(&server, 2), 2);
         assert!(notify(&server, 0) > 7, "fetch_max, not a store");
+    }
+
+    /// Replacement is the owner's alone. A sender that guesses another
+    /// application's id gets a fresh notification of its own — and the id it
+    /// tried to take stays where it was.
+    #[test]
+    fn a_stranger_cannot_replace_another_application_s_notification() {
+        let (server, _channel) = server();
+        assert_eq!(notify_as(&server, 0, Some(":1.2")), 1);
+        // The owner replaces its own; the stranger does not.
+        assert_eq!(notify_as(&server, 1, Some(":1.2")), 1);
+        assert_ne!(notify_as(&server, 1, Some(":1.9")), 1);
+        assert_eq!(
+            server.owners.lock().unwrap().get(&1).map(String::as_str),
+            Some(":1.2")
+        );
+    }
+
+    /// An id nobody holds is not trusted either: a fresh one is allocated,
+    /// which is mako's rule — a sender may only replace what it owns.
+    #[test]
+    fn an_unknown_replaces_id_is_a_fresh_notification() {
+        let (server, _channel) = server();
+        assert_ne!(notify_as(&server, 9, Some(":1.2")), 9);
+    }
+
+    /// Refusing the hijack must not disturb the counter: fresh ids keep
+    /// coming one after another, and the refused id is never handed out as
+    /// if it were fresh while its owner's notification is still live.
+    #[test]
+    fn a_refused_replaces_id_does_not_disturb_allocation() {
+        let (server, _channel) = server();
+        assert_eq!(notify_as(&server, 0, Some(":1.2")), 1);
+        // A stranger guessing high: refused, and the counter does not jump.
+        notify_as(&server, 4_000_000_000, Some(":1.9"));
+        assert_eq!(notify_as(&server, 0, Some(":1.3")), 3);
+    }
+
+    /// Closing is the owner's alone, and an unowned id stays closable by
+    /// anyone, which is what it was before owners were tracked at all.
+    #[test]
+    fn close_is_the_owner_s_alone() {
+        let mut owners = HashMap::new();
+        owners.insert(4u32, ":1.2".to_owned());
+        assert!(may_close(&owners, 4, Some(":1.2")));
+        assert!(!may_close(&owners, 4, Some(":1.9")));
+        assert!(may_close(&owners, 5, Some(":1.9")), "an unknown id");
+        assert!(may_close(&owners, 4, None), "no sender to check against");
+
+        // And through the server itself, end to end: a stranger's close is
+        // refused without error and the compositor never hears of it, while
+        // the owner's own close goes through.
+        let (server, channel) = server();
+        notify_as(&server, 0, Some(":1.2"));
+        // The notify above put its notification on the channel; that much was
+        // supposed to arrive, so it is drained before the closes are judged.
+        while let Ok(message) = channel.try_recv() {
+            assert!(
+                matches!(message, Message::Add(_)),
+                "only the notification itself was meant to be in flight"
+            );
+        }
+        server
+            .close_notification(1, header(Some(":1.9")))
+            .expect("a silent refusal is not an error");
+        assert!(
+            matches!(
+                channel.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "nothing reached the compositor"
+        );
+        server
+            .close_notification(1, header(Some(":1.2")))
+            .expect("the owner may close");
+        assert!(matches!(channel.try_recv(), Ok(Message::Close(1))));
     }
 
     #[test]
