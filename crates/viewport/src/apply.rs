@@ -29,6 +29,28 @@ fn moves_focus(request: &Request) -> bool {
     )
 }
 
+/// Whether carrying this request out would *act* — on the host, as the user,
+/// or on the session itself.
+///
+/// Moving the keyboard is one way to act on a locked session and not the only
+/// one. `shell.exec` runs a line on the host; the three `input.*` requests
+/// press keys and click as though a hand had, which behind a lock screen means
+/// into whatever box the locker drew; `bind.add` installs a chord that the
+/// key path will refuse while locked but that survives past the unlock; and
+/// quitting takes the lock screen down with the compositor — a frozen session
+/// is logind's to recover, not the socket's.
+fn acts_while_locked(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::ShellExec { .. }
+            | Request::InputKey { .. }
+            | Request::InputButton { .. }
+            | Request::InputPointer { .. }
+            | Request::BindAdd { .. }
+            | Request::Quit
+    )
+}
+
 pub fn apply(state: &mut ViewportState, request: Request) {
     // Everything except another layout pays off what the last run of layouts
     // left owing, first.
@@ -55,6 +77,12 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         tracing::debug!("ignoring {request:?} while the session is locked");
         return;
     }
+    // The same rule where the stakes are not the keyboard but anything at all:
+    // these do not need the focus to matter.
+    if state.locked && acts_while_locked(&request) {
+        tracing::warn!("refusing {request:?} while the session is locked");
+        return;
+    }
 
     match request {
         Request::ViewLayout(layout) => view_layout(state, layout),
@@ -76,6 +104,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 }
             } else {
                 state.space.unmap_elem(&window);
+                // The renderer draws from the space, and nothing else in this
+                // arm changes a pixel: without marking it, the closed
+                // window's last frame stayed on screen until something else
+                // happened to cause a redraw.
+                state.needs_render = true;
             }
         }
 
@@ -928,6 +961,19 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         return;
     };
 
+    // A non-positive scale is refused outright, as `apply_output_configuration`
+    // refuses it: a scale of zero or less is not a thing a monitor can have,
+    // and it used to be dropped silently, which reported success for a change
+    // that was never made. Before the enabled check below, so a message that
+    // carries both is refused whole rather than half-applied — the same
+    // validate-everything-first rule the management path runs.
+    if let Some(scale) = config.scale {
+        if scale <= 0.0 {
+            reject(state, "output.configure", &format!("scale {scale}"));
+            return;
+        }
+    }
+
     // Turning a screen off, which this request has documented since it was
     // written and never did.
     //
@@ -951,33 +997,54 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
             );
             return;
         }
-        state.set_output_enabled(&output, enabled);
         if !enabled {
+            // Written down before the unmap, not after: `remember_output`
+            // reads the position out of the space, and once the output is
+            // unmapped there is nothing left to read — the memory is the only
+            // record of where it goes when it is turned back on.
+            state.remember_output(&output);
+            state.set_output_enabled(&output, false);
             // Nothing below applies to a screen that is off, and a mode or a
-            // position for one is not an error worth reporting either.
+            // position for one is not an error worth reporting either. What
+            // does apply is the tail every applied configuration runs on the
+            // management path, which the early return here used to skip: the
+            // windows it carried were never put back anywhere, output-management
+            // clients kept heads describing a screen that had gone dark, and
+            // the frame that showed the desktop without it was never asked
+            // for.
+            state.remap_placed_views();
+            state.notify_output_layout();
+            state.advertise_outputs();
+            state.needs_render = true;
             return;
         }
+        state.set_output_enabled(&output, enabled);
     }
 
     // Prefer an exact modeline the display advertised; fall back to a custom
-    // mode so unusual panels stay configurable.
+    // mode so unusual panels stay configurable. The fallback needs a refresh:
+    // the kernel takes a whole modeline, and a custom mode with none of its
+    // own was a silent no-op waiting to be programmed.
     let mode = config.mode.and_then(|requested| {
         let exact = output.modes().into_iter().find(|m| {
             m.size.w == requested.width
                 && m.size.h == requested.height
                 && (requested.refresh == 0 || m.refresh == requested.refresh)
         });
-        exact.or(if requested.width > 0 && requested.height > 0 {
-            Some(OutputMode {
-                size: (requested.width, requested.height).into(),
-                refresh: requested.refresh,
-            })
-        } else {
-            None
-        })
+        exact.or(
+            if requested.width > 0 && requested.height > 0 && requested.refresh > 0 {
+                Some(OutputMode {
+                    size: (requested.width, requested.height).into(),
+                    refresh: requested.refresh,
+                })
+            } else {
+                None
+            },
+        )
     });
 
-    let scale = config.scale.filter(|s| *s > 0.0).map(Scale::Fractional);
+    // Refused above when non-positive, so what is left is taken as given.
+    let scale = config.scale.map(Scale::Fractional);
     let transform = config.transform.map(to_smithay_transform);
     // Said out loud, because a rotated output has three sizes that must agree
     // and only one of them is visible from any given place: the mode the panel

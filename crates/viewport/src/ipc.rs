@@ -281,6 +281,28 @@ impl Ipc {
             )
             .map_err(|e| anyhow::anyhow!("insert control socket source: {e}"))?;
 
+        // A slow sweep after the clients the write path has killed, which no
+        // read callback will ever reap: a connection that was dropped for
+        // taking none of its backlog and then went silent is readable never,
+        // and only something on this side of the socket can take its entry,
+        // its fd and its sources back. The send paths sweep too, but they run
+        // when there is something to send — an idle session with one dead
+        // connection would otherwise hold it until the next event anywhere.
+        // One second, like the compositor's other housekeeping.
+        loop_handle
+            .insert_source(
+                smithay::reexports::calloop::timer::Timer::from_duration(
+                    std::time::Duration::from_secs(1),
+                ),
+                |_, _, state| {
+                    state.ipc.reap_clients();
+                    smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
+                        std::time::Duration::from_secs(1),
+                    )
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("insert control socket housekeeping timer: {e}"))?;
+
         // For anything that would rather not assemble the path itself.
         unsafe { std::env::set_var("VIEWPORT_SOCKET", &path) };
         tracing::info!("control socket at {}", path.display());
@@ -304,6 +326,11 @@ impl Ipc {
             return;
         };
         text.push('\n');
+        // The write path can kill a client — the backlog rules, or a write
+        // error — and its own callback never reaps, so anything it killed
+        // would sit here holding its fd and both calloop sources until it
+        // happened to speak again. Every send is therefore also a sweep.
+        self.reap_clients();
         for client in self.clients.values_mut() {
             client.send(text.as_bytes());
         }
@@ -335,6 +362,7 @@ impl Ipc {
             return;
         };
         text.push('\n');
+        self.reap_clients();
         for client in self.clients.values_mut() {
             if client.pid.is_some_and(|pid| pids.contains(&pid)) {
                 continue;
@@ -350,6 +378,7 @@ impl Ipc {
             return;
         };
         text.push('\n');
+        self.reap_clients();
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.send(text.as_bytes());
         }
@@ -453,6 +482,13 @@ impl Ipc {
                 }
             }
         }
+    }
+
+    /// [`Self::reap`] through this `Ipc`'s own handle, for the callers that
+    /// are not inside a calloop callback and so have no other handle to name.
+    fn reap_clients(&mut self) {
+        let loop_handle = self.loop_handle.clone();
+        self.reap(&loop_handle);
     }
 }
 
