@@ -533,19 +533,29 @@ pub struct Device {
     pub attempts: u32,
     /// When it went, so the backoff has something to count from.
     pub offline_since: Option<std::time::Instant>,
-}
-
-pub struct Udev {
-    /// `wp-drm-lease-v1`: handing a whole connector to a client.
+    /// `wp-drm-lease-v1` for this card: handing one of its connectors to a
+    /// client whole.
     ///
     /// A headset is not a monitor — the compositor cannot composite for it,
     /// because the client is the only thing that knows how to warp for the
     /// lenses and when to submit for the display's own timing. So the
     /// connector is leased out whole and the compositor stops touching it.
     ///
+    /// Per card, because a lease *is* a card: the global carries the DRM node
+    /// a client should open, the CRTC and plane handles in it only mean
+    /// anything on the device that issued them, and the fd handed over is that
+    /// device's. One state for the whole session meant a headset plugged into
+    /// the discrete card was either not offered at all — the scan that offers
+    /// connectors runs per device and had one place to put them — or offered
+    /// under the primary's node, which is a client opening the wrong card and
+    /// leasing a CRTC number that belongs to a monitor.
+    ///
     /// `None` if the global could not be created, which is not fatal: it
-    /// leaves a session where nothing can lease, and everything else works.
+    /// leaves a card nothing can lease, and everything else works.
     pub lease_state: Option<smithay::wayland::drm_lease::DrmLeaseState>,
+}
+
+pub struct Udev {
     /// Leases handed out. Dropping one revokes it, so they are kept here for
     /// as long as the client holds them.
     pub leases: Vec<smithay::wayland::drm_lease::DrmLease>,
@@ -1266,21 +1276,9 @@ pub fn init(
         state.shell_ping = Some(ping);
     }
 
-    // The lease global, one per DRM device. Non-fatal if it cannot be made:
-    // no client can lease, and everything else is unaffected.
-    let lease_state = match smithay::wayland::drm_lease::DrmLeaseState::new::<ViewportState>(
-        &state.display_handle,
-        &card,
-    ) {
-        Ok(lease_state) => Some(lease_state),
-        Err(e) => {
-            tracing::warn!("no drm-lease global on {card:?}: {e}");
-            None
-        }
-    };
+    let lease_state = lease_state_for(&state.display_handle, &card);
 
     state.udev = Some(Udev {
-        lease_state,
         leases: Vec::new(),
         session,
         // The GPU chosen above is device 0: what the shell allocates on, what
@@ -1303,6 +1301,7 @@ pub fn init(
             offline_since: None,
             stepped_at: None,
             settle: 0,
+            lease_state,
         }],
         blanked: false,
         active: true,
@@ -1332,14 +1331,18 @@ pub fn init(
     // Rendering happens on the GPU that scans out, rather than drawing
     // everything on the primary and copying across: a buffer is only cheap on
     // the device that allocated it. The cost is that a client buffer allocated
-    // on the primary has to be importable by the secondary, which is what the
-    // shared modifiers are for — where it cannot be, that surface does not
-    // appear on that screen rather than the session failing.
+    // on the primary has to be importable by the secondary — see
+    // [`crate::multigpu`] for what is done about that and what happens when it
+    // cannot be: the surface does not appear on that screen rather than the
+    // session failing.
     //
     // A GPU that cannot be opened is skipped with a warning. One card failing
     // is a monitor that stays dark; refusing to start is every monitor dark.
     for other in candidates.iter().filter(|c| **c != card) {
         let other_render = client_render_node(other);
+        // Before the borrow below, which takes all of `state`: this card's
+        // lease global needs the display handle, and its own node.
+        let other_lease = lease_state_for(&state.display_handle, other);
 
         let Some(udev) = state.udev.as_mut() else {
             break;
@@ -1364,6 +1367,7 @@ pub fn init(
                     offline_since: None,
                     stepped_at: None,
                     settle: 0,
+                    lease_state: other_lease,
                 });
                 tracing::info!("gpu {index}: {other:?} also driving outputs");
 
@@ -1581,6 +1585,30 @@ pub fn init(
     state.start_background_process();
 
     Ok(())
+}
+
+/// The `wp-drm-lease-v1` global for one card.
+///
+/// One per card, not one per session. The global carries the DRM node a client
+/// should open in order to drive what it leases, and the connector, CRTC and
+/// plane handles that travel through it only mean anything on the device that
+/// issued them — so a second card needs a second global, with its own node, or
+/// its non-desktop connectors cannot be offered at all.
+///
+/// Non-fatal if it cannot be made: that card leases nothing and everything
+/// else about it works. Refusing to start over a headset nobody has plugged in
+/// would be the wrong trade on every machine.
+pub fn lease_state_for(
+    display: &smithay::reexports::wayland_server::DisplayHandle,
+    card: &DrmNode,
+) -> Option<smithay::wayland::drm_lease::DrmLeaseState> {
+    match smithay::wayland::drm_lease::DrmLeaseState::new::<ViewportState>(display, card) {
+        Ok(state) => Some(state),
+        Err(e) => {
+            tracing::warn!("no drm-lease global on {card:?}: {e}");
+            None
+        }
+    }
 }
 
 /// Open the DRM device and build everything that hangs off it.
@@ -2066,7 +2094,10 @@ impl ViewportState {
             // compositing. It is offered for lease instead, and a client that
             // knows how to drive it takes the whole connector.
             if leasable.contains(&connector.handle()) {
-                if let Some(lease) = udev.lease_state.as_mut() {
+                // This card's lease global, not the session's: the handles
+                // being offered belong to this device and a client told to
+                // open the primary's node would find nothing behind them.
+                if let Some(lease) = udev.devices[index].lease_state.as_mut() {
                     tracing::info!("{name}: non-desktop, offered for lease");
                     lease.add_connector::<ViewportState>(
                         connector.handle(),

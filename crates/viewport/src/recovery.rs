@@ -667,6 +667,19 @@ impl ViewportState {
             self.drop_device_outputs(index);
             self.unwatch_device(index);
         }
+        // A lease global for the card that arrived, before the borrow below
+        // takes all of `self`.
+        //
+        // A fresh one rather than the old device's, and not only because the
+        // old device is about to be dropped: the global advertises a DRM node,
+        // and a card that comes back while an fd still pins its old minor
+        // comes back on a *different* node. Carrying the old global over would
+        // leave a headset client opening a minor that no longer exists. The
+        // old one goes with the old device a few lines below, which withdraws
+        // it — a client holding it is talking about hardware that has gone,
+        // and `drm_lease_state` in `handlers/mod.rs` is what catches the
+        // requests still in flight.
+        let lease_state = crate::udev::lease_state_for(&self.display_handle, &card);
         let Some(udev) = self.udev.as_mut() else {
             return false;
         };
@@ -690,6 +703,7 @@ impl ViewportState {
             // Give the connectors a couple of seconds to become readable. See
             // the field.
             settle: 5,
+            lease_state,
         };
         match slot {
             // Assigning over the slot is what drops the old device — its
@@ -839,6 +853,17 @@ impl ViewportState {
             device.stepped_at = None;
             device.settle = 0;
             device.offline_since = Some(std::time::Instant::now());
+            // The lease global goes with the card. It advertises a DRM node
+            // the kernel has unregistered, and a client that binds it is
+            // offered connectors on hardware that is not there — and would be
+            // handed an fd for a minor that may since have been given to
+            // something else. Dropping the state withdraws the global; a
+            // request already in flight lands in `drm_lease_state`, which
+            // answers with an empty state rather than aborting the session.
+            //
+            // A new one is made when the card comes back, on whichever node it
+            // comes back as. See `install_device`.
+            device.lease_state = None;
         }
         // The card is expected straight back after a bus reset, so the first
         // retry is soon. If it never comes the backoff takes over.

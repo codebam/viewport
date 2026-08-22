@@ -1338,14 +1338,28 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         &mut self,
         node: smithay::backend::drm::DrmNode,
     ) -> &mut smithay::wayland::drm_lease::DrmLeaseState {
-        // One device, so one state — and this is only reached for a node that
-        // has a global, which only the device that made one has.
-        if let Some(lease_state) = self
-            .udev
-            .as_mut()
-            .and_then(|udev| udev.lease_state.as_mut())
-        {
-            return lease_state;
+        // The card this node names, because there is one global per card and
+        // the request arrived through one of them. Matched on the node rather
+        // than answered with the primary's: handing back the wrong card's
+        // state would offer a client connectors that are not on the device it
+        // is about to open.
+        //
+        // By `dev_id` rather than by equality, because the node the protocol
+        // carries is the one the global was made with and the one stored is
+        // the card as udev named it — the same device, and not necessarily the
+        // same `DrmNode` value.
+        if let Some(index) = self.udev.as_ref().and_then(|udev| {
+            udev.devices
+                .iter()
+                .position(|device| device.node.dev_id() == node.dev_id())
+        }) {
+            if let Some(lease_state) = self
+                .udev
+                .as_mut()
+                .and_then(|udev| udev.devices[index].lease_state.as_mut())
+            {
+                return lease_state;
+            }
         }
 
         // The device that owned this node has gone (GPU unplugged, session
@@ -1378,7 +1392,7 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
 
     fn lease_request(
         &mut self,
-        _node: smithay::backend::drm::DrmNode,
+        node: smithay::backend::drm::DrmNode,
         request: smithay::wayland::drm_lease::DrmLeaseRequest,
     ) -> Result<
         smithay::wayland::drm_lease::DrmLeaseBuilder,
@@ -1390,14 +1404,40 @@ impl smithay::wayland::drm_lease::DrmLeaseHandler for ViewportState {
         let Some(udev) = self.udev.as_mut() else {
             return Err(LeaseRejected::default());
         };
-        let device = udev.primary().manager.device();
-        let mut builder = DrmLeaseBuilder::new(device);
+        // The card the request came in on, not the primary. Every handle below
+        // — the connector, the CRTC it is given, that CRTC's plane — is issued
+        // by one DRM device and means nothing on another, and the fd the lease
+        // carries is that device's. Answering from the primary for a headset
+        // wired to the discrete card builds a lease out of the wrong card's
+        // resources, and the numbers collide readily enough that it would not
+        // even fail cleanly: CRTC handles are small integers handed out per
+        // device, so the "free" CRTC found on the primary is very likely a
+        // real CRTC there, and it might be scanning out the desktop.
+        let Some(index) = udev
+            .devices
+            .iter()
+            .position(|device| device.online && device.node.dev_id() == node.dev_id())
+        else {
+            tracing::warn!("a lease was asked for on {node:?}, which is not a card we drive");
+            return Err(LeaseRejected::default());
+        };
 
         // A CRTC that is not already driving one of this compositor's outputs,
         // and is legal for the connector asking. Handing over a CRTC that is
         // scanning out the desktop would take the desktop with it.
-        let taken: std::collections::HashSet<_> =
-            udev.ids().into_iter().map(|id| id.crtc).collect();
+        //
+        // This card's CRTCs only, for the reason above: taking every device's
+        // handles and comparing them by value reserves whichever unrelated
+        // CRTC happens to share a number on this one. The same scoping
+        // `scan_device` applies to its own CRTC search.
+        let taken: std::collections::HashSet<_> = udev
+            .ids()
+            .into_iter()
+            .filter(|id| id.device == index)
+            .map(|id| id.crtc)
+            .collect();
+        let device = udev.devices[index].manager.device();
+        let mut builder = DrmLeaseBuilder::new(device);
         let Ok(resources) = device.resource_handles() else {
             return Err(LeaseRejected::default());
         };
