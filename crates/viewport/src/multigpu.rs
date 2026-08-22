@@ -213,6 +213,16 @@ pub enum CrossGpu {
 
 /// What `cross_gpu`, `--cross-gpu` and `$VIEWPORT_CROSS_GPU` accept.
 ///
+/// Read once, when the cards are opened. A card that arrives mid-session — an
+/// eGPU, or one coming back from a bus reset on a different node — does not
+/// re-narrow the default advertisement, because the `linux-dmabuf` global
+/// carries its default feedback from the moment it is created and changing it
+/// means destroying the global and making another, which every client bound to
+/// it would see as the protocol going away. The per-surface feedback is sent
+/// per frame and does follow the new card, so a client that honours it is
+/// unaffected; the one that does not gets the advertisement the session started
+/// with. Worth knowing before concluding that `portable` did nothing.
+///
 /// Trimmed and case-folded, the same forgiveness `pixel_format` gets. An
 /// unknown value is an error rather than a guess, for the reason every other
 /// setting in this tree gives: a typo that silently means the default leaves

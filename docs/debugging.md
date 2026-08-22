@@ -261,6 +261,14 @@ renderer alone, so a client that had been told by its per-surface feedback to
 allocate for the second card was disconnected for doing exactly that. Every
 online card is asked now, and one "yes" is enough.
 
+`cross_gpu` is read once, when the cards are opened. A card that arrives
+mid-session — an eGPU, or one coming back from a bus reset — does not re-narrow
+the default advertisement: the `linux-dmabuf` global carries its default from
+the moment it is created, and replacing it means every bound client watching
+the protocol disappear. Per-surface feedback does follow the new card, so a
+client that honours it is unaffected. Restart the session if `portable` needs
+to account for a card that was not there at startup.
+
 ### Two screens with the same name
 
 Connector names are handed out per card, so an integrated display controller and
