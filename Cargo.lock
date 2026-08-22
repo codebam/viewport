@@ -2777,7 +2777,6 @@ version = "0.1.8"
 dependencies = [
  "anyhow",
  "rustix 1.1.4",
- "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -2805,7 +2804,6 @@ version = "0.1.8"
 dependencies = [
  "anyhow",
  "libc",
- "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
