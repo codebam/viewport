@@ -117,6 +117,53 @@ pub enum Event {
     #[serde(rename = "session.restore")]
     SessionRestore { state: String },
 
+    /// Draw the lock screen: the session is locked and nothing else is
+    /// drawing one.
+    ///
+    /// Sent only when the compositor has decided the built-in lock screen is
+    /// what locking means here — an `idle.lock_command` in the config file
+    /// means somebody else's program draws it and this is never sent at all.
+    /// While it is up the compositor draws the shell's buffer and nothing
+    /// else: no windows, no layer surfaces, no wallpaper. So the page has to
+    /// cover itself completely and opaquely, because whatever it leaves
+    /// uncovered is its own desktop showing through.
+    ///
+    /// `generation` is which lock this is. It comes back on
+    /// `session.lock.drawn` and on `session.unlock`, and a message carrying
+    /// the wrong one is ignored — a shell that crashed and restarted must
+    /// draw again and say so again before anything of its buffer reaches the
+    /// screen, and a stale `drawn` from the process that died must not stand
+    /// in for that.
+    #[serde(rename = "session.lock")]
+    SessionLock {
+        generation: u64,
+        /// Whether a password can be checked at all.
+        ///
+        /// False on a machine where libpam could not be loaded, which is a
+        /// lock screen that will refuse every password there is. The page is
+        /// told so it can say so, because the alternative is somebody typing
+        /// the right password twenty times at a box that was never going to
+        /// accept one. It is still a lock screen: locking with no way out is
+        /// the safe direction, and the way out is another VT.
+        can_authenticate: bool,
+    },
+
+    /// The password was wrong, or PAM would not answer.
+    ///
+    /// The text is PAM's own where there is one, because "your account has
+    /// expired" and "wrong password" are different problems and only the
+    /// first one is worth walking away from the machine over.
+    #[serde(rename = "session.lock.error")]
+    SessionLockError { generation: u64, message: String },
+
+    /// The session is not locked any more; take the lock screen down.
+    ///
+    /// Sent on a correct password and also on an unlock this shell had no
+    /// part in — an external locker taking the session over, or a
+    /// `viewport msg` from a script. The page does not decide when it is over.
+    #[serde(rename = "session.unlock")]
+    SessionUnlock,
+
     #[serde(rename = "notification.add")]
     NotificationAdd(Notification),
 
@@ -1536,6 +1583,15 @@ mod tests {
             json(&Event::SessionRestore {
                 state: String::new(),
             }),
+            json(&Event::SessionLock {
+                generation: 1,
+                can_authenticate: true,
+            }),
+            json(&Event::SessionLockError {
+                generation: 1,
+                message: String::new(),
+            }),
+            json(&Event::SessionUnlock),
             json(&Event::NotificationAdd(Notification {
                 id: 1,
                 app_name: String::new(),
@@ -1609,6 +1665,9 @@ mod tests {
                 "workspace.request",
                 "modifiers",
                 "session.restore",
+                "session.lock",
+                "session.lock.error",
+                "session.unlock",
                 "notification.add",
                 "notification.close",
                 "notification.history",

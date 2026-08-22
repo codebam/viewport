@@ -337,6 +337,7 @@ const powerEl = document.getElementById('power-picker');
 const networkEl = document.getElementById('network-picker');
 const bluetoothEl = document.getElementById('bluetooth-picker');
 const oskEl = document.getElementById('osk');
+const lockEl = document.getElementById('lock');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
 

@@ -192,6 +192,10 @@ const bluetoothEl = new El('div');
 /* And the on-screen keyboard, on the same terms: what a tap leaves behind is
    only visible if the element the shell drew into is the one read back. */
 const oskEl = new El('div');
+/* And the lock screen, on the same terms: whether it is up, what it says and
+   what it sends are only visible if the element the shell drew into is the one
+   the test reads back. */
+const lockEl = new El('div');
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -227,6 +231,7 @@ global.document = {
     'network-picker': networkEl,
     'bluetooth-picker': bluetoothEl,
     osk: oskEl,
+    lock: lockEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -436,6 +441,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' get networkEl() { return networkEl; },'
   + ' get bluetoothEl() { return bluetoothEl; },'
   + ' get oskEl() { return oskEl; },'
+  + ' get lockEl() { return lockEl; },'
   /* The keyboard's own idea of Shift and which page it is on, which nothing
      drawn on the page says directly — a test reading capitalisation off a
      rendered key would be testing toUpperCase rather than the shell. */
@@ -4687,47 +4693,170 @@ if (mode === 'scrolling') {
        drawn after the divider. */
     const dialog = globalThis.__shell.powerEl.children[0];
     const actions = dialog.children.filter((el) => el._classes.has('power-row'));
-    check('below the profiles it always draws the four power rows',
-      actions.length === 4 &&
+    check('below the profiles it always draws the five power rows',
+      actions.length === 5 &&
         actions.map((r) => r.textContent).join(' ') ===
-          'Suspend Power Off Reboot Quit');
+          'Lock Suspend Power Off Reboot Quit');
     check('the ones that end the machine wear their colour, and only those',
       actions.filter((r) => r._classes.has('danger'))
         .map((r) => r.textContent).join(' ') ===
         'Power Off Reboot Quit' &&
-        !actions[0]._classes.has('danger'));
+        !actions[0]._classes.has('danger') &&
+        !actions[1]._classes.has('danger'));
 
+    /* Lock is not a logind verb. What locking means is the compositor's
+       answer — a locker named in the config file, or the shell's own lock
+       screen — and this row says nothing about which. */
     let before = sent.length;
     (actions[0].listeners.click ?? []).forEach((fn) =>
+      fn({ preventDefault() {}, stopPropagation() {} }));
+    check('lock asks the compositor to lock, not logind to do something',
+      sent.slice(before).some((m) => m.type === 'session.lock') &&
+        !sent.slice(before).some((m) => m.type === 'power.action'));
+    check('and it takes the picker down',
+      globalThis.__shell.powerEl.hidden === true);
+
+    emit({ type: 'shell.command', command: 'power', args: [] });
+
+    before = sent.length;
+    (actions[1].listeners.click ?? []).forEach((fn) =>
       fn({ preventDefault() {}, stopPropagation() {} }));
     check('suspend hands its verb to the compositor',
       sent.slice(before).some((m) => m.type === 'power.action' &&
         m.action === 'suspend'));
-    check('and it takes the picker down',
+    check('and it takes the picker down too',
       globalThis.__shell.powerEl.hidden === true);
 
     before = sent.length;
-    (actions[1].listeners.click ?? []).forEach((fn) =>
+    (actions[2].listeners.click ?? []).forEach((fn) =>
       fn({ preventDefault() {}, stopPropagation() {} }));
     check('power off is the same row, second word',
       sent.slice(before).some((m) => m.type === 'power.action' &&
         m.action === 'poweroff'));
 
     before = sent.length;
-    (actions[2].listeners.click ?? []).forEach((fn) =>
+    (actions[3].listeners.click ?? []).forEach((fn) =>
       fn({ preventDefault() {}, stopPropagation() {} }));
     check('reboot goes out the same way',
       sent.slice(before).some((m) => m.type === 'power.action' &&
         m.action === 'reboot'));
 
     before = sent.length;
-    (actions[3].listeners.click ?? []).forEach((fn) =>
+    (actions[4].listeners.click ?? []).forEach((fn) =>
       fn({ preventDefault() {}, stopPropagation() {} }));
-    check('quit is a message of its own, not a fourth power verb',
+    check('quit is a message of its own, not a fifth power verb',
       sent.slice(before).some((m) => m.type === 'quit') &&
         !sent.slice(before).some((m) => m.type === 'power.action'));
     emit({ type: 'config', layout: mode });
   }
+
+/* The lock screen.
+ *
+ * The one surface here whose failure mode is not "the desktop looks wrong".
+ * Three things are worth stating exactly, and the rest of this block is
+ * arranging for them to be observable:
+ *
+ * The page never decides anything. It draws when the compositor says the
+ * session is locked, it stops when the compositor says it is not, and a
+ * password goes out as a question rather than an answer.
+ *
+ * It says when it has drawn. `session.lock.drawn` carries the generation it
+ * was told, and the compositor draws none of this page on a locked screen
+ * until it has arrived — see `lock_screen_is_drawing` on the Rust side. The
+ * harness runs `requestAnimationFrame` synchronously, so the double frame the
+ * real page waits out lands inside `emit` here.
+ *
+ * And it answers for the lock it is on and no other. A message naming a lock
+ * that has ended is a message from before a shell restart, and acting on one
+ * is how a stale error lands on a screen somebody is typing at.
+ */
+{
+  const lockEl = globalThis.__shell.lockEl;
+  const pane = () => lockEl.children[0];
+  const field = () => pane()?.querySelector('lock-input');
+  const messageEl = () => pane()?.querySelector('lock-message');
+
+  let before = sent.length;
+  emit({ type: 'session.lock', generation: 7, can_authenticate: true });
+  check('a lock puts the lock screen up', lockEl.hidden === false);
+  check('and it says so, naming the lock it was told about',
+    sent.slice(before).some((m) => m.type === 'session.lock.drawn' &&
+      m.generation === 7));
+  check('with a clock and a password box on the screen being looked at',
+    !!pane()?.querySelector('lock-time') && !!field());
+  check('and a keyboard to type into it with, for a desk that has none',
+    !!pane()?.querySelector('lock-keyboard'));
+
+  /* Typing. The password goes out with the generation; nothing about whether
+     it was right is decided here. */
+  before = sent.length;
+  field().value = 'hunter2';
+  (field().listeners.keydown ?? []).forEach((fn) =>
+    fn({ key: 'Enter', preventDefault() {}, stopPropagation() {} }));
+  const attempt = sent.slice(before).find((m) => m.type === 'session.unlock');
+  check('Enter asks the compositor, rather than deciding anything',
+    !!attempt && attempt.generation === 7 && attempt.password === 'hunter2');
+
+  /* A refusal. The words are the compositor's — PAM's, really — because
+     "wrong password" and "your account has expired" are different problems. */
+  emit({ type: 'session.lock.error', generation: 7, message: 'Sorry, try again.' });
+  check('a refusal is shown in the words it came with',
+    messageEl()?.textContent === 'Sorry, try again.');
+  check('and the box is emptied rather than left half-typed over',
+    field().value === '');
+  check('and the screen is still up', lockEl.hidden === false);
+
+  /* A refusal for a lock that is over. This is what a message from before a
+     shell restart looks like, and acting on it would put somebody else's
+     error on the screen in front of the person typing. */
+  emit({ type: 'session.lock.error', generation: 6, message: 'stale' });
+  check('a refusal naming a lock that is over is ignored',
+    messageEl()?.textContent === 'Sorry, try again.');
+
+  /* Every monitor gets a pane. A screen showing nothing while another shows a
+     lock screen reads as a screen that has died — and, on the compositor's
+     side, an output the page does not cover is drawn black rather than left
+     showing the desktop, so a pane is the only thing that says what happened
+     on it. */
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 2560, height: 1440,
+      usable_x: 0, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-2', x: 2560, y: 0, width: 2560, height: 1440,
+      usable_x: 2560, usable_y: 30, usable_width: 2560, usable_height: 1410,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-1'] });
+  emit({ type: 'session.lock', generation: 7, can_authenticate: true });
+  check('every monitor gets a pane', lockEl.children.length === 2);
+  check('and each one is docked to its own corner of the layout',
+    lockEl.children[1].style.left === '2560px');
+  const boxes = lockEl.children.filter((el) => !!el.querySelector('lock-input'));
+  check('but only one password box, on the screen being looked at',
+    boxes.length === 1);
+
+  /* A machine whose PAM could not be loaded still locks. It says so rather
+     than silently swallowing every password, because the alternative is
+     somebody typing the right one twenty times. */
+  emit({ type: 'session.lock', generation: 8, can_authenticate: false });
+  check('a session that cannot check a password locks anyway',
+    lockEl.hidden === false);
+  check('and says so instead of swallowing every attempt',
+    (pane()?.querySelector('lock-message')?.textContent ?? '')
+      .includes('cannot check a password'));
+
+  emit({ type: 'session.unlock' });
+  check('the compositor ends it, and the screen goes', lockEl.hidden === true);
+  check('leaving nothing of it behind', lockEl.children.length === 0);
+
+  /* Back to one output for everything after this, which every later section
+     assumes. */
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+}
 
   /* A full bar override, `bar_items`: modules and widgets listed together in
      whatever order the config wants them drawn. Unlike bar_widgets, this

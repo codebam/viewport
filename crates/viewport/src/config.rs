@@ -66,6 +66,11 @@ pub struct CursorConfig {
 pub struct IdleConfig {
     pub lock_after: Option<i64>,
     pub blank_after: Option<i64>,
+    /// The locker to run, or absent for the lock screen the shell draws.
+    ///
+    /// The one setting that decides what locking means anywhere — see
+    /// `crate::lock::Mode`, which every path that locks reads and which is the
+    /// only place that reads this.
     pub lock_command: Option<String>,
 }
 

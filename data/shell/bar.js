@@ -1102,7 +1102,15 @@ function renderClocks() {
   }
 }
 
-setInterval(renderClocks, 1000);
+/* The lock screen's clock rides the same tick. One timer for the session
+   rather than two: see the note above `renderClocks` for why an idle machine
+   painting once a second is a cost worth counting, and shell.md's rule that
+   nothing here repeats for ever. It writes text into elements that already
+   exist and does nothing at all while the session is unlocked. */
+setInterval(() => {
+  renderClocks();
+  renderLockClocks();
+}, 1000);
 
 
 /* ------------------------------------------------------------------------

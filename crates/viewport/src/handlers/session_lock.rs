@@ -54,6 +54,18 @@ impl SessionLockHandler for ViewportState {
         self.locked_at = Some(std::time::Instant::now());
         self.lock_warned = false;
         self.lock_surfaces.clear();
+        // Whatever the shell was drawing, it is not the lock screen any more.
+        //
+        // Reached where the built-in screen is up and not drawing — a shell
+        // that hung or died — which is the case a locker is *meant* to be able
+        // to take over, and the refusal above already turned away the case
+        // where it is drawing. Dropping it here stops the shell's next frame
+        // from being drawn over the locker that has just taken the session,
+        // and tells the page to put its own lock screen away.
+        if self.lock_shell_drawn.take().is_some() {
+            self.notify(&viewport_ipc::Event::SessionUnlock);
+        }
+        self.lock_attempt = None;
 
         // Keyboard focus goes nowhere until a lock surface arrives and takes
         // it. Leaving it where it was would let the previously focused window
@@ -74,6 +86,15 @@ impl SessionLockHandler for ViewportState {
         self.locked = false;
         self.locked_at = None;
         self.lock_surfaces.clear();
+        // The page is told either way. It will not normally have a lock screen
+        // up when an external locker unlocks — the two do not run together —
+        // but it does after a takeover of a built-in lock that had stopped
+        // drawing, and a page left holding one over an unlocked session is a
+        // desktop nobody can click.
+        if self.lock_shell_drawn.take().is_some() || self.lock_mode.is_built_in() {
+            self.notify(&viewport_ipc::Event::SessionUnlock);
+        }
+        self.lock_attempt = None;
         self.needs_render = true;
     }
 
@@ -109,18 +130,86 @@ impl SessionLockHandler for ViewportState {
 }
 
 impl ViewportState {
-    /// Whether a locker is up and has a surface on at least one screen.
+    /// Whether a lock screen is up and on at least one screen.
     ///
     /// The question both refusals ask: a locked session whose locker has gone
     /// is one anybody may take over — that is the documented way out of a
     /// crashed locker, and `check_lock_screen` tells the user to do exactly
     /// that. A locked session that is *drawing* is not, and a second locker
     /// over it is how one ends up unreachable.
+    ///
+    /// It is also the fail-closed gate for the lock screen this compositor
+    /// draws itself, and that is the harder half. The renderer asks this
+    /// before it will put a single pixel of the shell's buffer on a locked
+    /// screen, and false here is a black screen — which is an acceptable
+    /// failure, where the desktop showing through is not.
+    ///
+    /// For the built-in screen it takes two facts, and neither alone is
+    /// enough:
+    ///
+    /// * The shell has said, naming this lock, that it has painted the lock
+    ///   screen. A message alone is not proof of a pixel: a page can send one
+    ///   from a handler and then never paint. But a live process is not the
+    ///   test either — a page that is running and stuck is exactly the case —
+    ///   so something the page has to say is the only way to know it got as
+    ///   far as building the thing.
+    ///
+    /// * *And* a frame has landed since it said so. The page sends `drawn`
+    ///   from a double `requestAnimationFrame`, which runs strictly after the
+    ///   frame the lock screen was rendered into was submitted — so any buffer
+    ///   arriving after that message is that frame or a later one, and every
+    ///   one of them has the lock screen in it. The frame the page committed
+    ///   *before* it was told to lock is the desktop, and drawing that is
+    ///   exactly the failure this guard exists to stop: a locked session
+    ///   showing the bar, the window titles, and whatever the notification
+    ///   centre last had in it.
+    ///
+    /// Both facts are dropped on anything that could invalidate them — a new
+    /// lock, the shell process dying, its toplevel going away — so the answer
+    /// after any of those is false until the page has drawn and said so again.
+    /// A hung shell never says so, and a dead one cannot; both are black.
+    ///
+    /// The message is not privileged. Anything that can reach the control
+    /// socket can send it, and the generation it names is broadcast rather
+    /// than secret. That is deliberate and not a hole worth closing here: the
+    /// socket is reachable only by processes already running as this user,
+    /// which is a position from which the desktop was readable before the lock
+    /// was ever taken. What this guards against is the shell being *broken*,
+    /// which is the failure that actually happens.
     pub fn lock_screen_is_drawing(&self) -> bool {
         use smithay::utils::IsAlive as _;
-        self.lock_surfaces
+        if self
+            .lock_surfaces
             .values()
             .any(|surface| surface.wl_surface().alive())
+        {
+            return true;
+        }
+        self.lock_mode.is_built_in()
+            && self.lock_shell_drawn.is_some_and(|(lock, frames)| {
+                lock == self.lock_generation && self.shell_frames > frames
+            })
+    }
+
+    /// Forget that the shell had drawn the lock screen.
+    ///
+    /// Called wherever the page that drew it stops being the page on screen:
+    /// its process died, its toplevel went away, it was reloaded. The next
+    /// thing rendered on a locked session is then black until the page that
+    /// replaced it has drawn a lock screen of its own and said so.
+    ///
+    /// Separate from the lock itself on purpose. The session stays locked
+    /// across every one of those — a shell that crashes must not be a way past
+    /// the lock — and only what is *drawn* is withdrawn.
+    pub fn forget_lock_screen(&mut self) {
+        if self.lock_shell_drawn.take().is_some() {
+            tracing::info!(
+                "lock: the page that drew the lock screen has gone. The session \
+                 stays locked and the screen goes black until something draws \
+                 one again."
+            );
+            self.needs_render = true;
+        }
     }
 
     /// Say so if the session is locked and nothing is drawing a lock screen.
@@ -152,6 +241,31 @@ impl ViewportState {
         }
 
         if at.elapsed() < std::time::Duration::from_secs(3) {
+            return;
+        }
+
+        // The built-in screen has no per-output surfaces to count — it is one
+        // buffer across the whole layout — so what stands in for "nothing has
+        // drawn" is the same gate the renderer asks before it draws any of it.
+        //
+        // The advice differs too, and that is the point of saying it
+        // separately: an external locker that never draws is a program that
+        // crashed, and the answer is to run another one. A shell that never
+        // draws is the desktop itself, and the answer is `idle.lock_command` —
+        // a locker that is not this shell, for a machine whose shell will not
+        // paint.
+        if self.lock_mode.is_built_in() {
+            if self.lock_screen_is_drawing() {
+                return;
+            }
+            self.lock_warned = true;
+            tracing::error!(
+                "locked, but the shell has not drawn a lock screen. The session \
+                 stays locked — a shell that crashes must not be a way past the \
+                 lock — so the way out is Ctrl+Alt+F1..F12 to another VT. Set \
+                 idle.lock_command if this machine should lock with a locker of \
+                 its own instead."
+            );
             return;
         }
 

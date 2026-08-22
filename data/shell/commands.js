@@ -626,6 +626,22 @@ window.addEventListener('viewport', (event) => {
       applyOskWanted(message.wanted === true);
       break;
 
+    /* The lock screen. Nothing here decides any of it: whether the session is
+       locked, whether a password was right and when it is over are all the
+       compositor's, and this page's whole part is drawing what it is told to
+       and saying when it has. See lock.js. */
+    case 'session.lock':
+      applySessionLock(message.generation, message.can_authenticate !== false);
+      break;
+
+    case 'session.lock.error':
+      applySessionLockError(message.generation, message.message);
+      break;
+
+    case 'session.unlock':
+      applySessionUnlock();
+      break;
+
     case 'network.update':
       /* Sent whenever NetworkManager changes its mind, which while a scan is
          running is several times a second. Drawn only while the picker is

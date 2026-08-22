@@ -22,6 +22,14 @@ use viewport_ipc::event::{PowerBattery, PowerSnapshot};
 /// Absent in the file is lock when a locker is configured, otherwise blank —
 /// a laptop should do something, and a desktop has no lid so the setting
 /// never fires. `"ignore"` turns it off.
+///
+/// The default is still read off `idle.lock_command` even though locking now
+/// always means something — the shell's own screen where no command is named.
+/// Deliberately conservative: a lid that locks by default on every laptop is
+/// the better desktop, and it is also a machine whose PAM stack has to work
+/// before the lid can be closed. Somebody who wants it writes `"lid": "lock"`,
+/// which now works without a locker installed, and finds out at a keyboard
+/// rather than at the bottom of a bag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LidAction {
     Ignore,
@@ -44,7 +52,8 @@ impl LidAction {
         }
     }
 
-    /// What an absent `lid` key means.
+    /// What an absent `lid` key means. See the note on [`LidAction`] for why
+    /// this still asks about the command rather than about locking.
     pub fn default_for(has_lock_command: bool) -> Self {
         if has_lock_command {
             Self::Lock

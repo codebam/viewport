@@ -179,6 +179,11 @@ run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"
 run session-lock-takeover "$root/tests/lock-takeover.test.sh" \
 	"$VIEWPORT" "$work/lock-client"
+# The other lock screen: the one this compositor draws itself, and what it does
+# when nothing can draw it. No lock client, because there is no second process
+# in that story at all.
+run session-lock-builtin "$root/tests/lock-builtin.test.sh" \
+	"$VIEWPORT" "$work/capture-client" "$work/paint-client"
 run foreign-toplevel "$root/tests/foreign-toplevel.test.sh" \
 	"$VIEWPORT" "$work/foreign-toplevel-client" "$work/paint-client"
 run output-management "$root/tests/output-management.test.sh" \

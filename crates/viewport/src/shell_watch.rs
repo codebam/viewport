@@ -158,6 +158,14 @@ impl ViewportState {
     /// out-of-process shell when the backend was chosen at run time, and the
     /// two lists are empty when they do not apply.
     pub fn reload_shells(&mut self) {
+        // Whatever it had drawn is about to be thrown away with the document.
+        //
+        // Without this a reload on a locked session keeps the compositor
+        // believing the lock screen is up while the page rebuilds itself from
+        // the desktop down — and the frames it paints on the way, which are
+        // the bar and the windows and no lock screen at all, would be drawn.
+        // `--watch-shell` on a locked session is the way somebody finds that.
+        self.forget_lock_screen();
         #[cfg(feature = "wpe")]
         for page in &self.shells {
             page.engine.reload();
