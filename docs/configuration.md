@@ -232,6 +232,27 @@ be used together, though there is little reason to.
 A screen capture — a screenshot, a share, a recording — shows the magnified
 picture, because it is a capture of what is on the screen.
 
+## A screen reader
+
+The desktop is a web page, so the engine drawing it has already built a real
+accessibility tree; whether that tree reaches AT-SPI depends on which engine it
+is, and the default is the one that cannot. A desk that needs Orca wants
+
+```jsonc
+"shell_backend": "webkitgtk"
+```
+
+and an accessibility bus in the session — which the NixOS module in `flake.nix`
+turns on by default and other distributions spell as installing
+`at-spi2-core`. [`shell-backends.md`](shell-backends.md) has the per-backend
+detail and the evidence behind each verdict.
+
+Every surface the shell can put on screen — the launcher, the clipboard
+history, the notification centre, the power menu, a tray item's menu, the two
+radio pickers — can be steered and finished with the keyboard alone: arrows to
+choose, Enter to act, Delete where a row can be forgotten, Escape to dismiss.
+See [`data/shell/shell.md`](../data/shell/shell.md).
+
 ## The keyboard
 
 `keyboard.layout`, `keyboard.variant` and `keyboard.options` are xkb's, spelled

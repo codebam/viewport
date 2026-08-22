@@ -125,6 +125,32 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
+    // Whatever else this session wants on the browser process's command line,
+    // the way the `chromium` backend already takes `VIEWPORT_CHROMIUM_ARGS`.
+    //
+    // The switch that prompted it is `--force-renderer-accessibility`. Blink
+    // builds its accessibility tree lazily and publishes it over AT-SPI once
+    // it notices a screen reader on the bus, which is the behaviour to want —
+    // a tree built for a session nobody is reading costs memory in every
+    // renderer for nothing. But "once it notices" is a negotiation with a bus
+    // that a compositor started from a TTY may not have, and when that does
+    // not happen there is nothing in any log that says so. This is the lever
+    // to pull to find out, and it is the same lever the other Blink backend
+    // has always had; the only reason CEF did not is that there was nowhere to
+    // put it. See docs/shell-backends.md.
+    //
+    // Declared before `extra` and not beside the push, because `extra` borrows
+    // these strings and `Argv` borrows `extra`: a `Vec<String>` built where it
+    // is used is dropped before the thing pointing into it.
+    let requested: Vec<String> = std::env::var("VIEWPORT_CEF_ARGS")
+        .into_iter()
+        .flat_map(|s| {
+            s.split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<String>>()
+        })
+        .collect();
+
     // The switches the browser process needs and the command line does not
     // carry. Appended rather than required of whoever starts this, because a
     // shell that has to be launched with four flags to work at all is a shell
@@ -152,6 +178,7 @@ fn main() -> Result<()> {
     if std::env::var_os("VIEWPORT_CHROMIUM_GPU_PROCESS").is_none() {
         extra.push("--in-process-gpu");
     }
+    extra.extend(requested.iter().map(String::as_str));
     let browser_args = Argv::new(&argv, &extra)?;
 
     // The page is opened from `on_context_initialized` rather than from here.
