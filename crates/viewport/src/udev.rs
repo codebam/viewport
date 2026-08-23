@@ -970,11 +970,26 @@ impl FrameLog {
     }
 }
 
+/// Which device index the default points at: the first card that is online,
+/// or `0` when none is — the default still names a real slot.
+fn primary_index(online: &[bool]) -> usize {
+    online.iter().position(|online| *online).unwrap_or(0)
+}
+
 impl Udev {
     /// The GPU everything defaults to: where the shell allocates, what clients
     /// are told about, and the one a single-GPU machine has.
+    ///
+    /// `devices[0]` is the one that answer is named after — the dmabuf feedback
+    /// and the shell's copy path point at it by identity, for the feedback's
+    /// default tranche and the copy renderer's formats — and a slot that is not
+    /// online cannot be asked for either of those. The default a caller reads
+    /// here therefore follows the first card that answers, falling back to
+    /// `devices[0]` itself when none of them do, so a single-GPU machine that
+    /// is down reads back what it was built for rather than nothing.
     pub fn primary(&self) -> &Device {
-        &self.devices[0]
+        let online: Vec<bool> = self.devices.iter().map(|device| device.online).collect();
+        &self.devices[primary_index(&online)]
     }
 
     pub fn primary_mut(&mut self) -> &mut Device {
@@ -3735,5 +3750,22 @@ mod tests {
         let cards = vec![None, Some("/dev/dri/card1".to_owned())];
         assert_eq!(gpu_named(&cards, Some("card1")), Choice::Named(1));
         assert_eq!(gpu_named(&cards, Some("card0")), Choice::NotFound);
+    }
+
+    #[test]
+    fn a_down_primary_is_not_the_default() {
+        // The audit's most conspicuous single-card assumption: `primary()`
+        // read `devices[0]` whether or not that card answered, so the
+        // shell's copy formats and the capture targets were read from a
+        // renderer whose GPU was mid-reset. The default is the first card
+        // that is online.
+        assert_eq!(primary_index(&[true]), 0);
+        assert_eq!(primary_index(&[false, true]), 1);
+        assert_eq!(primary_index(&[false, true, true]), 1);
+        assert_eq!(primary_index(&[true, true]), 0);
+        // None online: the default still names `devices[0]`, which a live
+        // session always has — this keeps the answer a real slot.
+        assert_eq!(primary_index(&[false, false]), 0);
+        assert_eq!(primary_index(&[]), 0);
     }
 }

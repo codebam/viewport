@@ -12,6 +12,16 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- The default device — where the shell allocates, what clients are told about,
+  the card behind the capture targets and the shell's copy modifiers — is the
+  first GPU that is online rather than `devices[0]` no matter its state. A
+  primary card that is mid-reset or gone during a hotplug previously answered
+  as if it were live, so a screen share or a shell copy read a renderer whose
+  GPU was not; the default is now the card that actually answers, and
+  `devices[0]` only when none of them do. `devices[0]` was the right answer
+  all along on the only path that existed — a single GPU — so nothing changes
+  there, and it is the one the multi-GPU audit named as the assumption left
+  behind.
 - Taskbars drawn per monitor are told which monitor each window is on. The
   wlr foreign-toplevel protocol carries an `output_enter`/`output_leave` pair
   for exactly this, and announce time was the only place it was ever sent — a

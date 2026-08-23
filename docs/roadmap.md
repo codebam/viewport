@@ -130,14 +130,6 @@ close it — a copy through the primary renderer — is not written, and
 two live in one pass, and smithay's own multi-GPU renderer is on its GLES
 `GraphicsApi` where this tree is Vulkan wherever Vulkan works.
 
-**`Udev::primary()` answers `devices[0]` whether or not that card is up.**
-Three callers read a renderer through it — the screencast cast targets in
-`state.rs`, and the shell's copy modifiers — so a primary card that is
-mid-reset is read as though it were live. It is the most conspicuous
-single-card assumption left, it predates all of the above, and it wants the
-same treatment the rest of the audit gave: ask the card that is actually
-online.
-
 **None of the multi-GPU path has run on two cards.** Everything above is
 reasoned and unit-tested against a machine with one. `docs/debugging.md` has
 the symptoms and the log lines to look for, and whoever first boots this on a
