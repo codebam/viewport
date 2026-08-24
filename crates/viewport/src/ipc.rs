@@ -295,6 +295,10 @@ impl Ipc {
                     std::time::Duration::from_secs(1),
                 ),
                 |_, _, state| {
+                    // A backlog with nothing watching it — a writability
+                    // source that could not be inserted — would otherwise sit
+                    // there until the next send. Push it and re-arm.
+                    state.ipc.flush_all();
                     state.ipc.reap_clients();
                     smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
                         std::time::Duration::from_secs(1),
@@ -435,7 +439,20 @@ impl Ipc {
             return;
         }
 
-        let source = Generic::new(Shared(client.stream.clone()), Interest::WRITE, Mode::Level);
+        // A dup of the connection, not the connection itself. calloop registers
+        // by raw fd and the read half already holds this one, so a second
+        // source over the same fd is EEXIST from epoll every time — which used
+        // to mark the client dead, and the client that most often has a
+        // backlog is the shell. `try_clone` gives a separate fd onto the same
+        // socket, which epoll accepts and which closes with the source.
+        let dup = match client.stream.try_clone() {
+            Ok(dup) => dup,
+            Err(e) => {
+                tracing::warn!("could not dup control client {id} for writability: {e}");
+                return;
+            }
+        };
+        let source = Generic::new(dup, Interest::WRITE, Mode::Level);
         let token = loop_handle.insert_source(source, move |_, _, state: &mut ViewportState| {
             // Drained, or gone: either way this source has no further job, and
             // leaving it registered would be the busy loop it exists to avoid.
@@ -461,10 +478,35 @@ impl Ipc {
         match token {
             Ok(token) => client.write_token = Some(token),
             Err(e) => {
+                // Not fatal to the client. Failing to watch for writability
+                // says nothing about the connection, and killing it here is
+                // what restarted the desktop on every short write: the shell
+                // sees its control socket close and stops its engine. The
+                // backlog stays owed, and the housekeeping sweep retries it.
                 tracing::warn!("could not watch control client {id} for writability: {e}");
-                client.dead = true;
             }
         }
+    }
+
+    /// Retry what a short write left behind, for the sweep.
+    ///
+    /// Every other path here flushes because it has something to send. This
+    /// one runs when nothing is happening, so a client owed the tail of a
+    /// burst drains within the second whether or not its write source exists.
+    fn flush_all(&mut self) {
+        if !self
+            .clients
+            .values()
+            .any(|c| !c.dead && !c.pending.is_empty())
+        {
+            return;
+        }
+        for client in self.clients.values_mut() {
+            if !client.dead {
+                client.flush();
+            }
+        }
+        self.arm_writers();
     }
 
     fn reap(&mut self, loop_handle: &LoopHandle<'static, ViewportState>) {
@@ -894,5 +936,41 @@ mod tests {
         assert_ne!(first, second);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Why `arm_writer` watches a dup rather than the connection.
+    ///
+    /// calloop registers by raw fd, so the write half cannot share the fd the
+    /// read half is already registered with: epoll answers EEXIST and the
+    /// desktop lost its control socket on every short write. A dup is a
+    /// different fd onto the same socket, and that is what the loop accepts.
+    #[test]
+    fn a_second_source_needs_a_second_fd() {
+        let event_loop =
+            smithay::reexports::calloop::EventLoop::<()>::try_new().expect("an event loop");
+        let handle = event_loop.handle();
+        let (stream, _peer) = UnixStream::pair().expect("a socket pair");
+        let stream = Rc::new(stream);
+
+        handle
+            .insert_source(
+                Generic::new(Shared(stream.clone()), Interest::READ, Mode::Level),
+                |_, _, _| Ok(PostAction::Continue),
+            )
+            .expect("the read half registers");
+
+        let same_fd = handle.insert_source(
+            Generic::new(Shared(stream.clone()), Interest::WRITE, Mode::Level),
+            |_, _, _| Ok(PostAction::Continue),
+        );
+        assert!(same_fd.is_err(), "epoll took the same fd twice");
+
+        let dup = stream.try_clone().expect("a dup of the connection");
+        handle
+            .insert_source(
+                Generic::new(dup, Interest::WRITE, Mode::Level),
+                |_, _, _| Ok(PostAction::Continue),
+            )
+            .expect("the write half registers on its own fd");
     }
 }
