@@ -199,7 +199,7 @@ On a TTY it takes the DRM session directly (needs `seatd` or logind).
 The checks run in two places, and neither is a superset of the other.
 
 `.github/workflows/ci.yml` runs on every push and pull request: `shell` for the
-layout engine under node, `rust` for `cargo fmt`, `cargo clippy`, the unit tests,
+layout engine under node, `rust` for `cargo deny`, `cargo fmt`, `cargo clippy`, the unit tests,
 the Wayland integration tests and a packaged build, and `asan` for the same suite
 instrumented. What it cannot run is anything that needs WPE WebKit — four hours
 on a hosted runner, against a build tree larger than the disk — so `--features
@@ -216,8 +216,9 @@ After that `git commit` runs, against the staged changes only:
 
 - the shell layout tests, if anything under `data/shell`, `examples/kiosk` or
   the JavaScript tests is staged;
-- `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test --workspace`,
-  if anything under `crates/`, `Cargo.toml`, `Cargo.lock` or `flake.nix` is;
+- `cargo deny check`, `cargo fmt --check`, `cargo clippy -D warnings` and
+  `cargo test --workspace`, if anything under `crates/`, `Cargo.toml`,
+  `Cargo.lock`, `deny.toml` or `flake.nix` is;
 - and a `cargo check` of *both* halves of the `wpe` feature, because a
   `#[cfg(feature = "wpe")]` on the wrong item compiles cleanly in whichever
   configuration you happen to test and breaks the other.

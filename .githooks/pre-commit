@@ -34,7 +34,7 @@ touches() { printf '%s\n' "$staged" | grep -qE "$1"; }
 
 rust=false
 shell=false
-touches '^(crates/|Cargo\.(toml|lock)$|flake\.nix$)' && rust=true
+touches '^(crates/|Cargo\.(toml|lock)$|deny\.toml$|flake\.nix$)' && rust=true
 touches '^(data/shell/|examples/kiosk/|tests/.*\.(js|test\.js)$)' && shell=true
 
 if ! $rust && ! $shell; then
@@ -140,8 +140,9 @@ if $rust; then
     # Smithay, DRM, libinput and libseat, and `nix develop` is what puts them
     # on the library path. `.#rust` rather than the default shell — it carries
     # exactly the Rust toolchain and those libraries, and skips WPE and Servo.
-    step "fmt, clippy and tests" nix develop "$root#rust" --command bash -c '
+    step "dependency policy, fmt, clippy and tests" nix develop "$root#rust" --command bash -c '
         set -eu
+        cargo deny check
         cargo fmt --all --check
         cargo clippy --workspace --all-targets -- -D warnings
         cargo test --workspace

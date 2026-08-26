@@ -12,6 +12,13 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- The screencast restore integration test now checks the permission model the
+  compositor implements: restore while its application-scoped, in-memory row
+  still exists, and ask again after a compositor restart. Its private D-Bus has
+  no activation directories, so the host's real portal frontend cannot take
+  the fake frontend's name between passes. The notification-centre test now
+  sends a replacement from the same D-Bus connection as the original; two
+  `gdbus` processes have different owners and were correctly refused.
 - Out-of-process shells now have a four-megabyte, byte-counted outbound IPC
   queue. The old 64 KiB batch limit bounded one write but left the channel
   behind it unbounded, so a page producing messages faster than the compositor
@@ -80,6 +87,10 @@ to summarise rather than to duplicate.
   and answering with another is worse than announcing nothing.
 
 ### Added
+- Dependency policy is checked by `cargo-deny` in CI and the commit hook:
+  advisories, accepted licenses, registries and the two deliberate Git sources.
+  Workflow actions are pinned to full commits, with Dependabot responsible for
+  updating those pins.
 - A power menu. Until now, leaving meant `Mod4+Shift+e` and a TTY, and a desk
   with no keyboard — a touch screen, a kiosk — had neither. The battery
   widget's picker, which already lists the power profiles, ends with the four

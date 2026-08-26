@@ -4,10 +4,11 @@
 # Restoring a screen share, end to end, without a display.
 #
 # The thing being tested is what OBS does: share a screen once, keep the token,
-# and get the same screen back on the next launch — including a launch on the
-# other side of a compositor restart, which is the case a view id or an Output
-# handle cannot survive. tests/portal-frontend does the frontend's half, which
-# is storing the restore data and handing it back.
+# and get the same screen back while this compositor still holds the remembered
+# permission. The token deliberately means nothing after a compositor restart:
+# it names an in-memory, application-scoped row rather than describing a source
+# anybody on the bus could forge. tests/portal-frontend does the frontend's
+# half, storing the restore data and handing it back.
 #
 # It runs on a session bus and a PipeWire daemon of its own. The compositor
 # claims org.freedesktop.impl.portal.desktop.viewport, and zbus fails the whole
@@ -40,13 +41,10 @@ if ! command -v dbus-run-session >/dev/null; then
 	exit 77
 fi
 
-# The binary alone is not a bus. A hosted runner can have dbus-run-session on
-# PATH and no session.conf for the daemon it starts to read, and that failure
-# arrives as exit 1 from the exec below — a real failure as far as the runner
-# is concerned, for a machine this test simply cannot run on.
-if [ ! -f /etc/dbus-1/session.conf ]; then
-	echo "SKIP: no /etc/dbus-1/session.conf for the private bus to start from"
-	exit 77
+bus_config=$(cd "$(dirname "$0")" && pwd)/private-session.conf
+if [ ! -f "$bus_config" ]; then
+	echo "missing private bus configuration: $bus_config" >&2
+	exit 2
 fi
 
 # Everything below runs inside the private bus, because the compositor claims
@@ -56,7 +54,11 @@ if [ "${VIEWPORT_RESTORE_TEST_BUS:-}" != yes ]; then
 	if [ -n "$paint_client" ]; then
 		paint_client=$(realpath "$paint_client")
 	fi
-	exec dbus-run-session -- "$0" "$viewport" "$frontend" "$paint_client"
+	# No service directories: when the stand-in frontend exits between runs,
+	# the host's real xdg-desktop-portal must not be auto-activated into its
+	# well-known name before the next stand-in can claim it.
+	exec dbus-run-session --config-file="$bus_config" -- \
+		"$0" "$viewport" "$frontend" "$paint_client"
 fi
 
 workdir=$(mktemp -d)
@@ -69,12 +71,15 @@ pipewire_pid=
 # machine as one; a bare `wait` would take the PipeWire daemon below with it,
 # which is a background job of this shell too and the one thing here that is
 # meant to outlive every compositor.
-stop_viewport() {
+stop_client() {
 	[ -n "$client_pid" ] && kill "$client_pid" 2>/dev/null
-	[ -n "$viewport_pid" ] && kill "$viewport_pid" 2>/dev/null
 	[ -n "$client_pid" ] && wait "$client_pid" 2>/dev/null
-	[ -n "$viewport_pid" ] && wait "$viewport_pid" 2>/dev/null
 	client_pid=
+}
+stop_viewport() {
+	stop_client
+	[ -n "$viewport_pid" ] && kill "$viewport_pid" 2>/dev/null
+	[ -n "$viewport_pid" ] && wait "$viewport_pid" 2>/dev/null
 	viewport_pid=
 }
 cleanup() {
@@ -154,12 +159,13 @@ start_viewport() {
 # refused for a reason that has nothing to do with restoring.
 window_app_id="viewport-restore-test"
 start_client() {
-	local log=$1 display
+	local log=$1 display before now
 	display=$(grep -o 'WAYLAND_DISPLAY=[A-Za-z0-9_-]*' "$log" | head -1 | cut -d= -f2)
 	if [ -z "$display" ]; then
 		echo "the compositor did not name its socket" >&2
 		exit 2
 	fi
+	before=$(grep -cE "view .* (boxed|placed at)" "$log" || true)
 	WAYLAND_DISPLAY="$display" "$paint_client" "$window_app_id" 320 240 0 \
 		ffff0000 ffff0000 >"$workdir/client.log" 2>&1 &
 	client_pid=$!
@@ -168,7 +174,8 @@ start_client() {
 	# is what happens here, two and a half seconds in, because a headless run
 	# has no page.
 	for _ in $(seq 1 100); do
-		grep -qE "view .* (boxed|placed at)" "$log" && return 0
+		now=$(grep -cE "view .* (boxed|placed at)" "$log" || true)
+		[ "$now" -gt "$before" ] && return 0
 		kill -0 "$client_pid" 2>/dev/null || break
 		sleep 0.1
 	done
@@ -200,26 +207,35 @@ check "it shared a monitor" 1 "$(field "$workdir/share.out" source_type)"
 node=$(field "$workdir/share.out" node)
 [ -n "$node" ] && echo "ok: it named a pipewire node ($node)"
 [ -s "$workdir/token.bin" ] && echo "ok: the token was written down"
+first_name=$(shared_name "$workdir/first.log")
 
 # ---------------------------------------------------------------------------
-# The restart. A token that only works while the compositor that issued it is
-# still running is a token that does nothing for a recorder: OBS is started
-# after the desktop, and the ids it was told about last time are gone.
+# The frontend exits after every call, as a real frontend can restart while the
+# compositor remains. The remembered table is compositor state, not frontend
+# state, so the next frontend gets the choice without another prompt.
 # ---------------------------------------------------------------------------
-stop_viewport
-start_viewport "$workdir/second.log"
-
 "$frontend" --restore "$workdir/token.bin" >"$workdir/restore.out" 2>&1
 check "the restored share started" 0 $?
 check "it was restored, not chosen" 1 \
-	"$(grep -c "as the application asked" "$workdir/second.log")"
-check "nothing was shared without asking" 0 \
-	"$(grep -c "without asking" "$workdir/second.log")"
+	"$(grep -c "as the application asked" "$workdir/first.log")"
+# One fallback is the original share. The restored one must not add another.
+check "the restored share did not ask again" 1 \
+	"$(grep -c "without asking" "$workdir/first.log")"
 check "it answered with restore data again" yes \
 	"$(field "$workdir/restore.out" got_restore_data)"
 check "it is still a monitor" 1 "$(field "$workdir/restore.out" source_type)"
-check "it is the same monitor" "$(shared_name "$workdir/first.log")" \
-	"$(shared_name "$workdir/second.log")"
+check "it is the same monitor" "$first_name" \
+	"$(shared_name "$workdir/first.log")"
+
+# Across a compositor restart the opaque token names no row. Asking again is
+# the security property: the restore blob does not carry a forgeable source.
+stop_viewport
+start_viewport "$workdir/second.log"
+"$frontend" --restore "$workdir/token.bin" >"$workdir/restart.out" 2>&1
+check "a restart forgets the in-memory permission" 0 \
+	"$(grep -c "as the application asked" "$workdir/second.log")"
+check "and asks for the source again" 1 \
+	"$(grep -c "without asking" "$workdir/second.log")"
 
 # ---------------------------------------------------------------------------
 # A token this compositor did not write. The frontend hands back whatever it
@@ -276,17 +292,19 @@ if [ -n "$paint_client" ]; then
 	check "a window share started" 0 $?
 	check "it shared a window" 2 "$(field "$workdir/window.out" source_type)"
 
-	stop_viewport
-	start_viewport "$workdir/window-again.log"
-	start_client "$workdir/window-again.log"
+	# Close and recreate the client while the compositor — and therefore the
+	# application-scoped remembered row — remains alive. The old view id is
+	# gone, so restoration has to match the new window by application id.
+	stop_client
+	start_client "$workdir/window.log"
 
 	"$frontend" --types 2 --restore "$workdir/window-token.bin" \
 		>"$workdir/window-restore.out" 2>&1
 	check "the window share was restored" 1 \
-		"$(grep -c "as the application asked" "$workdir/window-again.log")"
+		"$(grep -c "as the application asked" "$workdir/window.log")"
 	check "and it is the same window" 1 \
-		"$(grep -c "sharing Window { app_id: \"$window_app_id\"" \
-			"$workdir/window-again.log")"
+		"$(grep "sharing Window" "$workdir/window.log" | tail -1 | \
+			grep -c "app_id: \"$window_app_id\"")"
 	check "the restored window share started" 0 \
 		"$(field "$workdir/window-restore.out" response)"
 
@@ -301,9 +319,10 @@ if [ -n "$paint_client" ]; then
 		>"$workdir/reselect.out" 2>&1
 	# Still the one line from the restore above, and none from this request.
 	check "a request with no token is not answered from one" 1 \
-		"$(grep -c "as the application asked" "$workdir/window-again.log")"
-	check "it went to the chooser instead" 1 \
-		"$(grep -c "without asking" "$workdir/window-again.log")"
+		"$(grep -c "as the application asked" "$workdir/window.log")"
+	# The original window share and this reselect used the headless fallback.
+	check "it went to the chooser instead" 2 \
+		"$(grep -c "without asking" "$workdir/window.log")"
 	check "it shared the monitor it was offered" 1 \
 		"$(field "$workdir/reselect.out" source_type)"
 	if cmp -s "$workdir/window-token.bin" "$workdir/new-token.bin"; then

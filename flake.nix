@@ -942,7 +942,7 @@
         # every push.
         # --------------------------------------------------------------------
         devShells.rust = pkgs.mkShell (rustEnv // {
-          packages = (with pkgs; [ rustc cargo rustfmt clippy ]) ++ rustDeps;
+          packages = (with pkgs; [ rustc cargo rustfmt clippy cargo-deny ]) ++ rustDeps;
         });
 
         # --------------------------------------------------------------------

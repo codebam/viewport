@@ -171,9 +171,19 @@ run clipboard "$root/tests/clipboard.test.sh" "$VIEWPORT"
 run shell-stop "$root/tests/shell-stop.test.sh" "$VIEWPORT"
 
 # What is kept after a popup has gone: the notification on the bus, and the
-# history read back the way the shell's centre reads it. Needs gdbus and a
-# private bus, and skips (77) without either.
-run notification-centre "$root/tests/notification-centre.test.sh" "$VIEWPORT"
+# history read back the way the shell's centre reads it. The helper makes two
+# Notify calls on one connection so the second is allowed to replace the first;
+# two gdbus processes intentionally have different notification ownership.
+notification_sender="$root/target/debug/examples/notification-sender"
+if [ ! -x "$notification_sender" ] && command -v cargo >/dev/null; then
+	(cd "$root" && cargo build -p viewport --example notification-sender) || true
+fi
+if [ -x "$notification_sender" ]; then
+	run notification-centre "$root/tests/notification-centre.test.sh" \
+		"$VIEWPORT" "$notification_sender"
+else
+	echo "=== notification-centre: skipped, no notification-sender to run it with"
+fi
 
 run session-lock-crash "$root/tests/lock.test.sh" \
 	"$VIEWPORT" "$work/lock-client" "$work/capture-client" "$work/paint-client"

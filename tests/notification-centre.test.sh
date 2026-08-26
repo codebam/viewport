@@ -18,23 +18,29 @@
 # already holding it — mako, dunst, or the compositor the user is sitting in
 # front of.
 #
-#   tests/notification-centre.test.sh target/debug/viewport
+#   tests/notification-centre.test.sh target/debug/viewport \
+#     target/debug/examples/notification-sender
 set -u
 
 viewport=${1:-target/debug/viewport}
-if [ ! -x "$viewport" ]; then
-	echo "missing $viewport — build first" >&2
-	exit 2
-fi
+sender=${2:-target/debug/examples/notification-sender}
+for binary in "$viewport" "$sender"; do
+	if [ ! -x "$binary" ]; then
+		echo "missing $binary — build first" >&2
+		exit 2
+	fi
+done
 viewport=$(realpath "$viewport")
+sender=$(realpath "$sender")
 
 if ! command -v dbus-run-session >/dev/null; then
 	echo "SKIP: no dbus-run-session to hold the private bus"
 	exit 77
 fi
-if [ ! -f /etc/dbus-1/session.conf ]; then
-	echo "SKIP: no /etc/dbus-1/session.conf for the private bus to start from"
-	exit 77
+bus_config=$(cd "$(dirname "$0")" && pwd)/private-session.conf
+if [ ! -f "$bus_config" ]; then
+	echo "missing private bus configuration: $bus_config" >&2
+	exit 2
 fi
 if ! command -v gdbus >/dev/null; then
 	echo "SKIP: no gdbus to send the notification with"
@@ -43,7 +49,7 @@ fi
 
 if [ "${VIEWPORT_NOTIFICATION_TEST_BUS:-}" != yes ]; then
 	export VIEWPORT_NOTIFICATION_TEST_BUS=yes
-	exec dbus-run-session -- "$0" "$viewport"
+	exec dbus-run-session --config-file="$bus_config" -- "$0" "$viewport" "$sender"
 fi
 
 workdir=$(mktemp -d)
@@ -169,9 +175,9 @@ check "one that was acted on leaves it" yes \
 # A sender replacing its own notification replaces the entry rather than
 # stacking beside it — the progress-bar case, which fills a centre by itself
 # if it is got wrong.
-third=$(notify "counting" "1 of 10")
-third_id=$(id_of "$third")
-notify "counting" "10 of 10" "$third_id" >/dev/null
+# Both calls come from one connection. Two `gdbus call` invocations have two
+# unique bus names and are correctly prevented from replacing each other.
+"$sender" >"$workdir/replacement.out" 2>&1
 history=$(history_now)
 check "a replacement does not stack a second entry" 1 \
 	"$(echo "$history" | grep -o "counting" | wc -l)"

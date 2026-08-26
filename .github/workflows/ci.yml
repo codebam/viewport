@@ -68,9 +68,9 @@ jobs:
     name: Shell logic
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
 
@@ -116,13 +116,13 @@ jobs:
     name: Rust rewrite
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Everything this evaluates substitutes from cache.nixos.org. There is no
       # project cache to configure any more, and nothing here is built from
       # source that a fork could not build too.
-      - uses: DeterminateSystems/nix-installer-action@v4
-      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - uses: DeterminateSystems/nix-installer-action@65d7c888b2778e8cf30a07a88422ccb23499bfb8 # v4
+      - uses: DeterminateSystems/magic-nix-cache-action@8a218f9e264e9c3803c9a1ee1c30d8e4ab55be63 # v2
 
       # One `nix develop` for all three, so the shell is realised once. Split
       # into separate steps and each would pay for it again.
@@ -135,6 +135,7 @@ jobs:
         run: |
           nix develop .#rust --command bash -euo pipefail -c '
             cargo fmt --all --check
+            cargo deny check
             cargo clippy --workspace --all-targets -- -D warnings
             cargo test --workspace
           '
@@ -215,10 +216,10 @@ jobs:
     name: Rust under ASan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: DeterminateSystems/nix-installer-action@v4
-      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - uses: DeterminateSystems/nix-installer-action@65d7c888b2778e8cf30a07a88422ccb23499bfb8 # v4
+      - uses: DeterminateSystems/magic-nix-cache-action@8a218f9e264e9c3803c9a1ee1c30d8e4ab55be63 # v2
 
       - name: Test under AddressSanitizer
         run: |

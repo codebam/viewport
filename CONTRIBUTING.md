@@ -13,6 +13,7 @@ engine is behind a non-default feature and the tests do not link it:
 
 ```sh
 nix develop .#rust
+cargo deny check              # advisories, licenses and source policy
 cargo test --workspace        # the unit and control-socket tests
 scripts/integration.sh target/debug/viewport   # the Wayland integration tests
 ```
@@ -63,9 +64,9 @@ After that, `git commit` runs against the staged changes only. It runs:
 
 - the shell layout tests, if anything under `data/shell`, `examples/kiosk`,
   `tests/*.js` or `tests/*.test.js` is staged;
-- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --
-  -D warnings` and `cargo test --workspace`, if anything under `crates/`,
-  `Cargo.toml`, `Cargo.lock` or `flake.nix` is staged;
+- `cargo deny check`, `cargo fmt --all --check`, `cargo clippy --workspace
+  --all-targets -- -D warnings` and `cargo test --workspace`, if anything under
+  `crates/`, `Cargo.toml`, `Cargo.lock`, `deny.toml` or `flake.nix` is staged;
 - a `cargo check` of *both* halves of the `wpe` feature — with and without —
   because a `#[cfg(feature = "wpe")]` on the wrong item compiles cleanly in
   whichever configuration you happen to test and breaks the other. The `wpe`
