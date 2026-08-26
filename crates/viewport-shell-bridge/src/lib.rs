@@ -11,10 +11,12 @@
 // Nothing in this crate knows what an engine is. It hands lines up and takes
 // lines down.
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex};
 
 use anyhow::{anyhow, Context as _, Result};
 
@@ -97,33 +99,71 @@ pub enum Line {
 /// Cloneable and `Send`, because the engine callback that produces messages is
 /// not on any particular thread and should not have to care.
 #[derive(Clone)]
-pub struct Sender(mpsc::Sender<String>);
+pub struct Sender(Arc<Outbound>);
+
+/// Page messages waiting for the socket writer.
+///
+/// This is byte-bounded rather than message-bounded: a layout is a few hundred
+/// bytes, but the protocol permits a line close to a megabyte, so a queue of a
+/// fixed number of messages is not a useful memory limit.
+struct Outbound {
+    queue: Mutex<Queued>,
+    ready: Condvar,
+    socket: UnixStream,
+}
+
+#[derive(Default)]
+struct Queued {
+    messages: VecDeque<String>,
+    bytes: usize,
+    closed: bool,
+}
+
+/// Enough for many frames of ordinary geometry without allowing a wedged
+/// compositor to turn the shell process into an unbounded buffer.
+const MAX_QUEUED: usize = 4 * 1024 * 1024;
 
 impl Sender {
-    /// Queue one already-serialised message.
+    /// Queue one already-serialised message without blocking the engine.
     ///
-    /// Never blocks on the socket. A shell that stopped painting because the
-    /// compositor was slow to drain a socket would be a desktop that freezes
-    /// exactly when it is most needed.
+    /// Overflow closes the write half of the control socket. Dropping an
+    /// arbitrary command would leave the page and compositor with different
+    /// state; disconnecting instead lets the compositor restart the shell from
+    /// a known snapshot.
     pub fn send(&self, json: String) {
-        if self.0.send(json).is_err() {
-            tracing::error!("the compositor is gone; the message was dropped");
+        let size = json.len().saturating_add(1);
+        let mut queue = self.0.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if queue.closed {
+            return;
         }
+        if size > MAX_QUEUED || queue.bytes.saturating_add(size) > MAX_QUEUED {
+            queue.closed = true;
+            queue.messages.clear();
+            queue.bytes = 0;
+            drop(queue);
+            let _ = self.0.socket.shutdown(Shutdown::Write);
+            self.0.ready.notify_one();
+            tracing::error!(
+                "the compositor is not draining shell messages; closing the control socket"
+            );
+            return;
+        }
+        queue.bytes += size;
+        queue.messages.push_back(json);
+        drop(queue);
+        self.0.ready.notify_one();
     }
 }
 
 /// How much message text one `write_all` may carry.
 ///
 /// A bound rather than a target: the batch is whatever was already queued, so
-/// this only decides when to stop gathering and let the syscall go. A page that
-/// posts faster than the socket drains would otherwise be able to grow this
-/// buffer without limit, because the writer only stops gathering when the
-/// channel is empty and a runaway producer never leaves it empty.
+/// this only decides when to stop gathering and let the syscall go. The queue
+/// itself has the separate byte bound above.
 ///
-/// 64 KiB is well past a pipe's capacity and past what a layout pump produces
-/// in a frame — the case this exists for is eight `view.layout` messages, a few
-/// hundred bytes — so in practice the drain always ends because the channel ran
-/// dry, which is the point.
+/// 64 KiB is well past what a layout pump produces in a frame — the usual case
+/// is eight `view.layout` messages, a few hundred bytes — while still giving
+/// another producer a chance to enqueue between large writes.
 const MAX_BATCH: usize = 64 * 1024;
 
 /// One message, plus everything already queued behind it, as one write.
@@ -134,33 +174,35 @@ const MAX_BATCH: usize = 64 * 1024;
 /// per frame per window-full — around 480 a second at 60fps — for what the
 /// socket is perfectly happy to take in one.
 ///
-/// Nothing here ever *waits* for a message. `try_recv` takes what the producer
-/// has already handed over and stops the moment it has not; batching that
-/// blocked for a straggler would trade syscalls for exactly the input latency
-/// this compositor cannot afford.
+/// Waiting happens only when the queue is empty. Once the first message is
+/// present, the batch takes what is already there and never waits for a
+/// straggler; doing so would trade syscalls for input latency.
 ///
 /// The framing on the wire is unchanged — one JSON object per line — because
 /// the compositor reads this socket with a line reader (`viewport/src/ipc.rs`)
 /// and neither end has any notion of a batch.
-fn write_batch<W: Write>(
-    first: String,
-    rx: &mpsc::Receiver<String>,
-    sink: &mut W,
-) -> std::io::Result<()> {
-    let mut buf = Vec::with_capacity(first.len() + 1);
-    buf.extend_from_slice(first.as_bytes());
-    buf.push(b'\n');
+fn take_batch(outbound: &Outbound) -> Option<Vec<u8>> {
+    let mut queue = outbound.queue.lock().unwrap_or_else(|e| e.into_inner());
+    while queue.messages.is_empty() && !queue.closed {
+        queue = outbound
+            .ready
+            .wait(queue)
+            .unwrap_or_else(|e| e.into_inner());
+    }
+    if queue.closed {
+        return None;
+    }
 
+    let mut buf = Vec::new();
     while buf.len() < MAX_BATCH {
-        let Ok(line) = rx.try_recv() else { break };
+        let Some(line) = queue.messages.pop_front() else {
+            break;
+        };
+        queue.bytes = queue.bytes.saturating_sub(line.len() + 1);
         buf.extend_from_slice(line.as_bytes());
         buf.push(b'\n');
     }
-
-    // Over the bound, the caller's `recv` returns immediately with the next
-    // one still queued and this starts again: full batches keep draining, they
-    // just do not accumulate.
-    sink.write_all(&buf)
+    Some(buf)
 }
 
 /// Connect to the compositor and start both directions.
@@ -175,14 +217,21 @@ where
     let socket =
         UnixStream::connect(path).with_context(|| format!("connecting to {}", path.display()))?;
     let reader = socket.try_clone().context("duplicating the socket")?;
+    let outbound = Arc::new(Outbound {
+        queue: Mutex::new(Queued::default()),
+        ready: Condvar::new(),
+        socket: socket
+            .try_clone()
+            .context("duplicating the socket for overflow handling")?,
+    });
 
-    let (tx, rx) = mpsc::channel::<String>();
+    let writer = outbound.clone();
     std::thread::Builder::new()
         .name("ipc-write".into())
         .spawn(move || {
             let mut socket = socket;
-            while let Ok(line) = rx.recv() {
-                if let Err(e) = write_batch(line, &rx, &mut socket) {
+            while let Some(batch) = take_batch(&writer) {
+                if let Err(e) = socket.write_all(&batch) {
                     tracing::error!("writing to the compositor: {e}");
                     return;
                 }
@@ -210,7 +259,7 @@ where
         })
         .context("starting the socket reader")?;
 
-    Ok(Sender(tx))
+    Ok(Sender(outbound))
 }
 
 /// Whether a line is the compositor asking for a reload.
@@ -263,34 +312,25 @@ mod tests {
         assert!(message.contains("VIEWPORT_SHELL_URL"), "{message}");
     }
 
-    /// A sink that remembers where one `write_all` ended and the next began.
-    #[derive(Default)]
-    struct Writes(Vec<Vec<u8>>);
-
-    impl Write for Writes {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.push(buf.to_vec());
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+    fn sender() -> (Sender, Arc<Outbound>) {
+        let (socket, _peer) = UnixStream::pair().expect("a socket pair");
+        let outbound = Arc::new(Outbound {
+            queue: Mutex::new(Queued::default()),
+            ready: Condvar::new(),
+            socket,
+        });
+        (Sender(outbound.clone()), outbound)
     }
 
     #[test]
     fn everything_already_queued_goes_out_as_one_write() {
-        let (tx, rx) = mpsc::channel();
+        let (sender, outbound) = sender();
         for id in 0..8 {
-            tx.send(format!(r#"{{"type":"view.layout","id":{id}}}"#))
-                .expect("the receiver is still here");
+            sender.send(format!(r#"{{"type":"view.layout","id":{id}}}"#));
         }
 
-        let first = rx.recv().expect("the writer thread's blocking take");
-        let mut sink = Writes::default();
-        write_batch(first, &rx, &mut sink).expect("the sink never fails");
-
-        assert_eq!(sink.0.len(), 1, "a frame's worth of layout is one syscall");
-        let text = String::from_utf8(sink.0[0].clone()).expect("json is utf-8");
+        let batch = take_batch(&outbound).expect("a batch");
+        let text = String::from_utf8(batch).expect("json is utf-8");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 8);
         assert!(text.ends_with('\n'), "every message is terminated");
@@ -301,42 +341,42 @@ mod tests {
 
     #[test]
     fn a_lone_message_is_not_waited_on() {
-        let (tx, rx) = mpsc::channel();
-        tx.send(r#"{"type":"view.layout","id":1}"#.to_owned())
-            .expect("the receiver is still here");
+        let (sender, outbound) = sender();
+        sender.send(r#"{"type":"view.layout","id":1}"#.to_owned());
 
-        let first = rx.recv().expect("the one message");
-        let mut sink = Writes::default();
-        // The channel is still open, so a batcher that waited for a second
-        // message would block here rather than return.
-        write_batch(first, &rx, &mut sink).expect("the sink never fails");
-
-        assert_eq!(sink.0.len(), 1);
-        assert_eq!(sink.0[0], b"{\"type\":\"view.layout\",\"id\":1}\n".to_vec());
+        assert_eq!(
+            take_batch(&outbound).expect("the one message"),
+            b"{\"type\":\"view.layout\",\"id\":1}\n".to_vec()
+        );
     }
 
     #[test]
-    fn a_runaway_producer_does_not_grow_the_buffer_without_limit() {
-        let (tx, rx) = mpsc::channel();
+    fn a_runaway_producer_closes_before_the_queue_can_grow_without_limit() {
+        let (sender, outbound) = sender();
+        sender.send("x".repeat(MAX_QUEUED));
+
+        let queue = outbound.queue.lock().expect("the queue");
+        assert!(queue.closed);
+        assert_eq!(queue.bytes, 0);
+        assert!(queue.messages.is_empty());
+    }
+
+    #[test]
+    fn a_batch_is_bounded_even_when_more_is_queued() {
+        let (sender, outbound) = sender();
         let message = "x".repeat(4096);
-        // Far more than the bound, all queued before a single write.
         for _ in 0..64 {
-            tx.send(message.clone())
-                .expect("the receiver is still here");
+            sender.send(message.clone());
         }
 
-        let first = rx.recv().expect("the first of many");
-        let mut sink = Writes::default();
-        write_batch(first, &rx, &mut sink).expect("the sink never fails");
-
-        let written = sink.0[0].len();
-        assert_eq!(sink.0.len(), 1);
-        assert!(
-            written <= MAX_BATCH + message.len() + 1,
-            "one message may cross the bound, a hundred may not: {written}"
-        );
-        // And the rest is still queued, for the next pass to take.
-        assert!(rx.try_recv().is_ok());
+        let written = take_batch(&outbound).expect("a batch").len();
+        assert!(written <= MAX_BATCH + message.len() + 1);
+        assert!(!outbound
+            .queue
+            .lock()
+            .expect("the queue")
+            .messages
+            .is_empty());
     }
 
     #[test]

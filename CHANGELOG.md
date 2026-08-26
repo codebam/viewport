@@ -12,6 +12,20 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- Out-of-process shells now have a four-megabyte, byte-counted outbound IPC
+  queue. The old 64 KiB batch limit bounded one write but left the channel
+  behind it unbounded, so a page producing messages faster than the compositor
+  drained them could grow the shell process without limit. Overflow now closes
+  the connection instead of dropping an arbitrary state-changing command.
+- Launcher commands now expand Desktop Entry field codes according to the
+  specification: file and URL placeholders remove only themselves, `%%`, `%c`,
+  `%i` and `%k` are expanded, and an unterminated quoted command is refused.
+  In particular, an argument after `%U` is no longer mistaken for part of the
+  placeholder and silently discarded.
+- The launcher finds entries below subdirectories of `applications/` and uses
+  their desktop-file IDs for overrides. Its worker caches the parsed tree for
+  two seconds and keeps only the newest pending filter query, so typing no
+  longer queues a filesystem scan for every stale keystroke.
 - The default device — where the shell allocates, what clients are told about,
   the card behind the capture targets and the shell's copy modifiers — is the
   first GPU that is online rather than `devices[0]` no matter its state. A

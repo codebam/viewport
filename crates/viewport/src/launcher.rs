@@ -55,6 +55,12 @@ const ICON_SIZE: u32 = 48;
 /// large, which is what the tray does for an item with no icon at all.
 const MAX_ICON_URL: usize = 32 * 1024;
 
+/// Defensive limits for application trees. Package-managed trees are shallow
+/// and contain hundreds of entries; these keep a malformed or user-controlled
+/// tree from making one launcher refresh walk forever.
+const MAX_SCAN_DEPTH: usize = 16;
+const MAX_DESKTOP_FILES: usize = 8192;
+
 /// The applications directories, most specific first.
 ///
 /// The order is the specification's: a file the user wrote overrides one a
@@ -101,19 +107,45 @@ pub fn current_desktop() -> Vec<String> {
 /// only: the user's override is the whole point of the order.
 pub fn scan(dirs: &[PathBuf], desktop: &[&str]) -> Vec<App> {
     let mut winners: HashMap<String, PathBuf> = HashMap::new();
-    for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+    for root in dirs {
+        let mut pending = vec![(root.clone(), PathBuf::new(), 0usize)];
+        while let Some((dir, relative, depth)) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
             };
-            winners.entry(name.to_owned()).or_insert(path);
+            for entry in entries.flatten() {
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                let name = entry.file_name();
+                let child_relative = relative.join(&name);
+                if kind.is_dir() {
+                    if depth < MAX_SCAN_DEPTH {
+                        pending.push((entry.path(), child_relative, depth + 1));
+                    }
+                    continue;
+                }
+                if entry.path().extension().and_then(|e| e.to_str()) != Some("desktop") {
+                    continue;
+                }
+                // The desktop-file ID is its path below `applications`, with
+                // separators changed to dashes. This is what lets an entry in
+                // `kde/foo.desktop` override the same entry in another data
+                // directory without colliding with a top-level `foo.desktop`.
+                let Some(id) = child_relative.to_str().map(|p| p.replace('/', "-")) else {
+                    continue;
+                };
+                winners.entry(id).or_insert_with(|| entry.path());
+                if winners.len() >= MAX_DESKTOP_FILES {
+                    break;
+                }
+            }
+            if winners.len() >= MAX_DESKTOP_FILES {
+                break;
+            }
+        }
+        if winners.len() >= MAX_DESKTOP_FILES {
+            break;
         }
     }
 
@@ -122,7 +154,7 @@ pub fn scan(dirs: &[PathBuf], desktop: &[&str]) -> Vec<App> {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
-        if let Some(app) = entry(&text, desktop) {
+        if let Some(app) = entry_at(&text, desktop, Some(path)) {
             apps.push(app);
         }
     }
@@ -139,7 +171,12 @@ pub fn scan(dirs: &[PathBuf], desktop: &[&str]) -> Vec<App> {
 /// show.
 ///
 /// `desktop` is the list `NotShowIn` and `OnlyShowIn` are compared against.
-pub fn entry(text: &str, desktop: &[&str]) -> Option<App> {
+#[cfg(test)]
+fn entry(text: &str, desktop: &[&str]) -> Option<App> {
+    entry_at(text, desktop, None)
+}
+
+fn entry_at(text: &str, desktop: &[&str], path: Option<&Path>) -> Option<App> {
     let mut e = Entry::default();
     let mut in_desktop_entry = false;
     for line in text.lines() {
@@ -230,7 +267,10 @@ pub fn entry(text: &str, desktop: &[&str]) -> Option<App> {
 
     let name = e.name.trim().to_owned();
     let mut tokens = exec_tokens(&e.exec)?;
-    drop_field_codes(&mut tokens, &name);
+    expand_field_codes(&mut tokens, &name, e.icon.trim(), path);
+    if tokens.is_empty() {
+        return None;
+    }
     let exec = sh_line(&tokens);
 
     // The class the window will announce, or the name of the binary it runs:
@@ -351,29 +391,36 @@ fn exec_tokens(exec: &str) -> Option<Vec<String>> {
             }
         }
     }
+    if quoted {
+        return None;
+    }
     if has_token {
         tokens.push(current);
     }
     (!tokens.is_empty()).then_some(tokens)
 }
 
-/// The field codes, dropped the way the specification says a launcher with no
-/// files and no URLs must drop them.
+/// Expand the field codes from the Desktop Entry specification.
 ///
-/// `%f`, `%F`, `%u`, `%U`, `%d` and `%D` take an argument, and the argument
-/// goes with the code; `%n`, `%N` and `%c` are the name; the rest — `%k`,
-/// `%v`, anything else — have nothing to stand in for here and go. A code in
-/// the middle of a token is removed from it rather than splitting the token,
-/// and a trailing one on an argument-taking code still takes the next token
-/// with it.
-fn drop_field_codes(tokens: &mut Vec<String>, name: &str) {
+/// No files or URLs were supplied to the launcher, so `%f`, `%F`, `%u` and
+/// `%U` disappear. They are placeholders, not options taking the next token:
+/// removing `%U` from `browser %U --new-window` must leave `--new-window`.
+/// `%i` is the one code that expands to two arguments; `%k` is omitted only in
+/// tests that parse text without a file behind it. Deprecated and unknown
+/// codes are removed, while `%%` is a literal percent sign.
+fn expand_field_codes(tokens: &mut Vec<String>, name: &str, icon: &str, path: Option<&Path>) {
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
-    let mut i = 0;
-    while i < tokens.len() {
-        let token = tokens[i].clone();
+    for token in tokens.drain(..) {
+        if token == "%i" {
+            if !icon.is_empty() {
+                out.push("--icon".to_owned());
+                out.push(icon.to_owned());
+            }
+            continue;
+        }
+
         let mut cleaned = String::new();
-        let mut skip_next = false;
-        let mut chars = token.chars().peekable();
+        let mut chars = token.chars();
         while let Some(c) = chars.next() {
             if c != '%' {
                 cleaned.push(c);
@@ -383,19 +430,22 @@ fn drop_field_codes(tokens: &mut Vec<String>, name: &str) {
                 break;
             };
             match code {
-                'n' | 'N' | 'c' => cleaned.push_str(name),
-                'f' | 'F' | 'u' | 'U' | 'd' | 'D' if chars.peek().is_none() => {
-                    skip_next = true;
+                '%' => cleaned.push('%'),
+                'c' => cleaned.push_str(name),
+                'k' => {
+                    if let Some(path) = path {
+                        cleaned.push_str(&path.to_string_lossy());
+                    }
                 }
+                // No file or URL was supplied. `%i` is only valid as its own
+                // argument; embedded, it is invalid and contributes nothing.
+                'f' | 'F' | 'u' | 'U' | 'i' => {}
+                // Deprecated (`d`, `D`, `n`, `N`, `v`, `m`) and unknown.
                 _ => {}
             }
         }
         if !cleaned.is_empty() {
             out.push(cleaned);
-        }
-        i += 1;
-        if skip_next {
-            i += 1;
         }
     }
     *tokens = out;
@@ -502,12 +552,9 @@ pub struct Answer {
 
 /// What one query answers, scanning and all.
 ///
-/// This is the whole cost of a keystroke — `read_dir` over every
-/// applications directory, `read_to_string` over every surviving `.desktop`
-/// file, and for each row shown an icon found in the theme directories and
-/// base64-encoded out of the file it lives in. It runs on the scanner's
-/// thread; the event loop calls this directly only where no thread could be
-/// started for it.
+/// The scanner thread keeps the parsed applications briefly and resolves each
+/// icon once, so ordinary keystrokes only filter that snapshot. The event loop
+/// calls this full scan directly only where no worker thread could be started.
 pub fn answer(
     query: &Query,
     dirs: &[PathBuf],
@@ -515,6 +562,14 @@ pub fn answer(
     icons: &mut HashMap<String, Option<String>>,
 ) -> Answer {
     let apps = scan(dirs, desktop);
+    answer_from_apps(query, &apps, icons)
+}
+
+fn answer_from_apps(
+    query: &Query,
+    apps: &[App],
+    icons: &mut HashMap<String, Option<String>>,
+) -> Answer {
     let filter = query.filter.as_deref().map(str::to_lowercase);
     let matched: Vec<&App> = apps
         .iter()
@@ -572,18 +627,27 @@ pub fn answer(
 /// channel.
 #[derive(Default)]
 pub struct Scanner {
-    /// The worker's mailbox, once there is a worker. Absent in a test and in
-    /// anything running where the thread would not start, where the query is
-    /// answered in line as it always was.
-    mailbox: Option<std::sync::mpsc::Sender<Job>>,
+    /// The worker's one-slot mailbox, once there is a worker. A new query
+    /// replaces one the worker has not started: only the newest keystroke can
+    /// still be useful to the launcher.
+    mailbox: Option<std::sync::Arc<Mailbox>>,
 }
 
-/// One unit of work for the scanner's thread.
-enum Job {
-    Query(Query),
-    /// The icon theme changed under the cache; empty it.
-    IconsChanged,
+#[derive(Default)]
+struct PendingJobs {
+    query: Option<Query>,
+    icons_changed: bool,
+    stopping: bool,
 }
+
+struct Mailbox {
+    pending: std::sync::Mutex<PendingJobs>,
+    ready: std::sync::Condvar,
+}
+
+/// Package installs should appear promptly without making every keystroke
+/// reread the same directory tree.
+const APP_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Scanner {
     /// Start the thread, delivering its answers through `sink`.
@@ -595,7 +659,11 @@ impl Scanner {
         &mut self,
         sink: smithay::reexports::calloop::channel::Sender<Answer>,
     ) -> std::io::Result<()> {
-        let (sender, jobs) = std::sync::mpsc::channel::<Job>();
+        let mailbox = std::sync::Arc::new(Mailbox {
+            pending: std::sync::Mutex::new(PendingJobs::default()),
+            ready: std::sync::Condvar::new(),
+        });
+        let jobs = mailbox.clone();
         std::thread::Builder::new()
             .name("viewport-launcher".to_owned())
             .spawn(move || {
@@ -604,24 +672,43 @@ impl Scanner {
                 // off the environment for the rest of its life.
                 let dirs = directories();
                 let desktop = current_desktop();
+                let desktop: Vec<&str> = desktop.iter().map(String::as_str).collect();
                 let mut icons: HashMap<String, Option<String>> = HashMap::new();
-                for job in jobs {
-                    match job {
-                        Job::IconsChanged => icons.clear(),
-                        Job::Query(query) => {
-                            let desktop: Vec<&str> = desktop.iter().map(String::as_str).collect();
-                            if sink
-                                .send(answer(&query, &dirs, &desktop, &mut icons))
-                                .is_err()
-                            {
-                                // A closed channel is the compositor going away.
-                                return;
-                            }
+                let mut apps = Vec::new();
+                let mut scanned_at: Option<std::time::Instant> = None;
+                loop {
+                    let (query, icons_changed) = {
+                        let mut pending = jobs.pending.lock().unwrap_or_else(|e| e.into_inner());
+                        while pending.query.is_none() && !pending.icons_changed && !pending.stopping
+                        {
+                            pending = jobs.ready.wait(pending).unwrap_or_else(|e| e.into_inner());
                         }
+                        if pending.stopping {
+                            return;
+                        }
+                        (
+                            pending.query.take(),
+                            std::mem::take(&mut pending.icons_changed),
+                        )
+                    };
+                    if icons_changed {
+                        icons.clear();
+                    }
+                    let Some(query) = query else { continue };
+                    if scanned_at.is_none_or(|at| at.elapsed() >= APP_CACHE_TTL) {
+                        apps = scan(&dirs, &desktop);
+                        scanned_at = Some(std::time::Instant::now());
+                    }
+                    if sink
+                        .send(answer_from_apps(&query, &apps, &mut icons))
+                        .is_err()
+                    {
+                        // A closed channel is the compositor going away.
+                        return;
                     }
                 }
             })?;
-        self.mailbox = Some(sender);
+        self.mailbox = Some(mailbox);
         Ok(())
     }
 
@@ -636,14 +723,31 @@ impl Scanner {
     /// Hand a query to the thread.
     pub fn ask(&self, query: Query) {
         if let Some(mailbox) = self.mailbox.as_ref() {
-            let _ = mailbox.send(Job::Query(query));
+            let mut pending = mailbox.pending.lock().unwrap_or_else(|e| e.into_inner());
+            pending.query = Some(query);
+            drop(pending);
+            mailbox.ready.notify_one();
         }
     }
 
     /// Empty the icon cache, because the theme changed under it.
     pub fn clear_icons(&self) {
         if let Some(mailbox) = self.mailbox.as_ref() {
-            let _ = mailbox.send(Job::IconsChanged);
+            let mut pending = mailbox.pending.lock().unwrap_or_else(|e| e.into_inner());
+            pending.icons_changed = true;
+            drop(pending);
+            mailbox.ready.notify_one();
+        }
+    }
+}
+
+impl Drop for Scanner {
+    fn drop(&mut self) {
+        if let Some(mailbox) = self.mailbox.take() {
+            let mut pending = mailbox.pending.lock().unwrap_or_else(|e| e.into_inner());
+            pending.stopping = true;
+            drop(pending);
+            mailbox.ready.notify_one();
         }
     }
 }
@@ -671,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn field_codes_are_dropped_with_their_arguments() {
+    fn file_and_url_field_codes_are_dropped() {
         let app = entry(
             "[Desktop Entry]\nName=Firefox\nExec=firefox --new-window %u\n",
             desktop(),
@@ -682,23 +786,32 @@ mod tests {
     }
 
     #[test]
-    fn a_field_code_with_an_argument_drops_the_argument() {
+    fn a_field_code_does_not_consume_the_argument_after_it() {
         let app = entry(
             "[Desktop Entry]\nName=Link\nExec=x-www-browser %U https://example.com\n",
             desktop(),
         )
         .expect("parses");
-        assert_eq!(app.exec, "x-www-browser");
+        assert_eq!(app.exec, "x-www-browser https://example.com");
     }
 
     #[test]
-    fn the_name_codes_stand_in_for_the_name() {
+    fn the_name_icon_and_percent_codes_expand() {
         let app = entry(
-            "[Desktop Entry]\nName=Firefox\nExec=termite -t %n\n",
+            "[Desktop Entry]\nName=Firefox\nIcon=firefox\nExec=termite -t %c %i 100%%\n",
             desktop(),
         )
         .expect("parses");
-        assert_eq!(app.exec, "termite -t Firefox");
+        assert_eq!(app.exec, "termite -t Firefox --icon firefox 100%");
+    }
+
+    #[test]
+    fn an_unclosed_quote_is_not_an_application() {
+        assert!(entry(
+            "[Desktop Entry]\nName=Broken\nExec=run \"never closed\n",
+            desktop(),
+        )
+        .is_none());
     }
 
     #[test]
@@ -850,6 +963,31 @@ mod tests {
     }
 
     #[test]
+    fn the_scanner_mailbox_keeps_only_the_newest_query() {
+        let mailbox = std::sync::Arc::new(Mailbox {
+            pending: std::sync::Mutex::new(PendingJobs::default()),
+            ready: std::sync::Condvar::new(),
+        });
+        let scanner = Scanner {
+            mailbox: Some(mailbox.clone()),
+        };
+        for generation in 1..=3 {
+            scanner.ask(Query {
+                generation,
+                filter: Some(generation.to_string()),
+                theme: "hicolor".to_owned(),
+                limit: 10,
+            });
+        }
+
+        let pending = mailbox.pending.lock().expect("the mailbox");
+        let query = pending.query.as_ref().expect("the newest query");
+        assert_eq!(query.generation, 3);
+        assert_eq!(query.filter.as_deref(), Some("3"));
+        drop(pending);
+    }
+
+    #[test]
     fn a_scan_reads_the_first_directory_that_has_the_file() {
         let dir = test_dir("scan");
         let user = dir.join("user");
@@ -879,6 +1017,41 @@ mod tests {
         assert_eq!(apps[0].name, "Other");
         assert_eq!(apps[1].name, "User Thing");
         assert_eq!(apps[1].exec, "user-thing");
+    }
+
+    #[test]
+    fn a_scan_reads_nested_desktop_ids_and_overrides_the_same_id() {
+        let dir = test_dir("nested");
+        let user = dir.join("user");
+        let system = dir.join("system");
+        std::fs::create_dir_all(user.join("kde")).unwrap();
+        std::fs::create_dir_all(system.join("kde")).unwrap();
+        std::fs::write(
+            user.join("kde/thing.desktop"),
+            "[Desktop Entry]\nName=Nested User Thing\nExec=user-thing %k\n",
+        )
+        .unwrap();
+        std::fs::write(
+            system.join("kde/thing.desktop"),
+            "[Desktop Entry]\nName=Nested System Thing\nExec=system-thing\n",
+        )
+        .unwrap();
+        std::fs::write(
+            system.join("thing.desktop"),
+            "[Desktop Entry]\nName=Top-level Thing\nExec=top-level\n",
+        )
+        .unwrap();
+
+        let apps = scan(&[user.clone(), system], desktop());
+        assert_eq!(apps.len(), 2);
+        let nested = apps
+            .iter()
+            .find(|app| app.name == "Nested User Thing")
+            .expect("the nested override");
+        assert!(nested
+            .exec
+            .contains(user.join("kde/thing.desktop").to_string_lossy().as_ref()));
+        assert!(apps.iter().any(|app| app.name == "Top-level Thing"));
     }
 
     #[test]
