@@ -233,6 +233,12 @@ impl ViewportState {
         // switch.
         self.mpris.set_enabled(sampled.players);
         self.power.set_widget(sampled.battery);
+        self.ai_usage.configure(
+            drawn_widgets
+                .iter()
+                .filter_map(|widget| crate::ai_usage::account(widget))
+                .collect(),
+        );
         if let Some(url) = file.url {
             self.shell_url = Some(url);
         }

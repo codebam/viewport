@@ -4819,6 +4819,53 @@ if (mode === 'scrolling') {
   check('a config without widgets leaves the default bar',
     wout.widgetsEls.length === 0);
 
+  /* AI usage arrives independently of the two-second machine status sample.
+     Credentials never enter this page; only normalized windows and balances
+     do. */
+  emit({ type: 'config', layout: mode, bar_widgets: [
+    { type: 'ai', provider: 'claude' },
+    { type: 'ai', provider: 'openai' },
+    { type: 'ai', provider: 'openrouter' },
+  ] });
+  emit({ type: 'ai.usage', usage: [
+    { provider: 'claude', primary: 42.5, secondary: 18,
+      primary_seconds: 18000, secondary_seconds: 604800,
+      primary_reset: '2026-08-26T12:00:00Z' },
+    { provider: 'openai', primary: 30, primary_seconds: 604800 },
+    { provider: 'openrouter', remaining: 12.75 },
+  ] });
+  check('Claude usage shows both subscription windows',
+    wout.widgetsEls[0].textContent === 'Claude 5h 43% 7d 18%');
+  check('OpenAI uses the window duration reported by the account',
+    wout.widgetsEls[1].textContent === 'OpenAI 7d 30%');
+  check('OpenRouter shows credits left',
+    wout.widgetsEls[2].textContent === 'OpenRouter $12.75');
+  check('AI reset times stay in the tooltip rather than crowding the bar',
+    wout.widgetsEls[0].title.includes('5h resets'));
+  let aiBefore = sent.length;
+  wout.widgetsEls[1].listeners.click.forEach((fn) =>
+    fn({ preventDefault() {}, stopPropagation() {} }));
+  check('clicking authenticated OpenAI does not replace its login',
+    !sent.slice(aiBefore).some((m) => m.type === 'ai.login'));
+  emit({ type: 'ai.usage', usage: [] });
+  check('unavailable passive providers collapse while OpenAI offers login',
+    wout.widgetsEls[0].textContent === '' &&
+    wout.widgetsEls[1].textContent === 'OpenAI sign in' &&
+    wout.widgetsEls[2].textContent === '');
+  aiBefore = sent.length;
+  wout.widgetsEls[1].listeners.click.forEach((fn) =>
+    fn({ preventDefault() {}, stopPropagation() {} }));
+  check('clicking signed-out OpenAI starts OAuth',
+    sent.slice(aiBefore).some((m) => m.type === 'ai.login' && m.provider === 'openai'));
+  emit({ type: 'ai.auth', provider: 'openai', state: 'pending',
+    url: 'https://auth.openai.com/codex/device', code: 'ABCD-EFGH' });
+  check('device OAuth leaves its one-time code visible on the bar',
+    wout.widgetsEls[1].textContent === 'OpenAI ABCD-EFGH');
+  check('and opens the verification page only after a requested login',
+    sent.some((m) => m.type === 'shell.exec' &&
+      m.command.includes('https://auth.openai.com/codex/device')));
+  emit({ type: 'config', layout: mode });
+
   /* A mic widget mirrors the volume widget but aims at the default audio
      source. It reads the mic half of the sample, and muting must switch its
      glyph without hiding it — a muted node keeps its percentage. */

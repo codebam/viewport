@@ -132,6 +132,10 @@ let pendingSplit = 'horizontal';
  * second monitor silently un-fullscreened the first. */
 const fullscreens = new Map(); // workspace -> view id
 let lastStatus = {};
+/* Authenticated AI usage is fetched by the compositor. Keys are provider names;
+ * bearer credentials never enter this page. */
+let aiUsage = new Map();
+let aiAuth = new Map();
 /* The system tray, as the compositor last sent it: one entry per registered
  * StatusNotifierItem. A snapshot rather than a list this shell maintains —
  * every tray.update replaces it whole, which is why nothing here reconciles
@@ -379,4 +383,3 @@ const oskEl = document.getElementById('osk');
 const lockEl = document.getElementById('lock');
 const desktopTemplate = document.getElementById('desktop-template');
 const windowTemplate = document.getElementById('window-template');
-

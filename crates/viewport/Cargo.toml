@@ -20,10 +20,14 @@ viewport-ipc.workspace = true
 viewport-web.workspace = true
 viewport-vulkan.workspace = true
 anyhow.workspace = true
+base64 = "0.22"
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Authenticated usage APIs for the optional AI bar widget. Requests run on the
+# widget's worker thread, never on the compositor loop.
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api", "p2p"] }
 zvariant = "5"
 # For one type: the bit flags a bus name is asked for with. zbus takes them as

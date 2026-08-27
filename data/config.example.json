@@ -242,11 +242,16 @@
     "  { \"type\": \"battery\" }                    charge; click for profiles, suspend, power, reboot",
     "  { \"type\": \"mic\" }                        default source's (mic) volume and mute",
     "  { \"type\": \"weather\", \"location\": \"New York\" }  conditions for a place",
+    "  { \"type\": \"ai\", \"provider\": \"claude\" }        Claude subscription usage",
+    "  { \"type\": \"ai\", \"provider\": \"openai\" }        OpenAI subscription usage",
+    "  { \"type\": \"ai\", \"provider\": \"openrouter\" }    OpenRouter credits left",
     "",
     "Disk, volume and mic are sampled by the compositor with the rest of the",
     "status, so they show the machine as it is. Weather is fetched by the",
     "shell itself from open-meteo (no key); the location is a place it can",
-    "geocode, like a city name. Several of each kind may be listed."
+    "geocode, like a city name. AI credentials come from provider environment",
+    "variables; see docs/configuration.md. OpenAI can also sign in when its",
+    "widget is clicked. Several of each kind may be listed."
   ],
   "bar_widgets": [],
 

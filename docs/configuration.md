@@ -957,7 +957,8 @@ its options:
   "bar_widgets": [
     { "type": "disk", "path": "/home" },
     { "type": "volume" },
-    { "type": "weather", "location": "New York" }
+    { "type": "weather", "location": "New York" },
+    { "type": "ai", "provider": "claude" }
   ]
 }
 ```
@@ -1021,6 +1022,50 @@ profile — suspend, power off, reboot and quit. The first three go to logind
 `quit` is `Request::Quit`, this compositor itself, not a fourth word handed to
 logind. No battery, or no UPower, draws nothing at all. Lid policy can still
 talk to UPower with no widget on the bar; see `lid` below.
+
+`ai` shows AI account capacity. `provider` is `claude`, `openai` or
+`openrouter`. Claude and OpenAI show the usage percentage for each subscription
+window the account reports; OpenRouter shows purchased credits less usage. The
+compositor polls every five minutes on a worker thread. A failed refresh keeps
+the last good value, and an account with no usable credential draws nothing.
+
+Credentials are read by the compositor, not sent in the config event to the web
+shell. Existing CLI logins are used automatically; environment variables take
+precedence:
+
+| provider | environment | login file fallback |
+| --- | --- | --- |
+| `claude` | `CLAUDE_CODE_OAUTH_TOKEN` | `~/.claude/.credentials.json` from `claude login` |
+| `openai` | `OPENAI_ACCESS_TOKEN`, `OPENAI_ACCOUNT_ID` | `~/.codex/auth.json` from `codex login` |
+| `openrouter` | `OPENROUTER_API_KEY` | none; use an OpenRouter management key |
+
+The variable names can be changed without putting a token in JSON:
+
+```jsonc
+{ "type": "ai", "provider": "claude", "token_env": "WORK_CLAUDE_TOKEN" }
+{ "type": "ai", "provider": "openai", "token_env": "CODEX_TOKEN",
+  "account_id_env": "CODEX_ACCOUNT_ID" }
+```
+
+Set custom variables in whatever starts Viewport; exporting them in an
+unrelated terminal does not change an already-running compositor. Default
+variables and login files are checked again on each poll, so a CLI rotating its
+OAuth token is picked up. Token values are never sent to the shell or logged.
+
+OpenAI can also sign in without Codex already configured. With an OpenAI widget
+and no usage available, the bar reads **OpenAI sign in**. Click it to start
+OpenAI's device authorization flow: Viewport opens the verification page and
+puts the one-time code on the bar. After approval it stores the access, ID and
+refresh tokens in `$XDG_CONFIG_HOME/viewport/openai-auth.json` (or
+`~/.config/viewport/openai-auth.json`) with mode `0600`, refreshes them before
+expiry, and fetches usage immediately. The code expires after fifteen minutes.
+Only continue a device login started by that click; never enter a code supplied
+by another person or site.
+
+OpenRouter's credits endpoint is public API. Claude's OAuth usage endpoint and
+OpenAI's `wham/usage` endpoint are undocumented interfaces used by their own
+tools and may change. A changed endpoint leaves the last value standing and
+logs `ai usage: ... refresh failed` rather than taking down the bar.
 
 ## Overriding the whole bar
 

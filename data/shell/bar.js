@@ -571,6 +571,7 @@ function widgetTitle(w) {
     /* The media widget writes its own, from what is playing. */
     case 'mpris': return '';
     case 'battery': return 'battery';
+    case 'ai': return `${w.provider || 'AI'} usage`;
   }
   return '';
 }
@@ -645,6 +646,13 @@ function wireWidget(el) {
          close the one this click just opened. */
       e.stopPropagation?.();
       togglePowerPicker();
+    } else if (w.type === 'ai' && w.provider === 'openai') {
+      const auth = aiAuth.get('openai');
+      if (auth?.state === 'pending' && auth.url) {
+        cmd(`xdg-open ${JSON.stringify(auth.url)}`);
+      } else if (!aiUsage.has('openai')) {
+        send({ type: 'ai.login', provider: 'openai' });
+      }
     } else if (w.type === 'disk') {
       /* Open the mount in the default file manager — for this user that is
          a terminal at the directory. `xdg-open` respects the system default,
@@ -702,7 +710,7 @@ function syncBarWidgets(output) {
     }
     const w = barWidgets[i];
     el._widget = w;
-    const key = `${w.type}:${w.path || w.location || ''}`;
+    const key = `${w.type}:${w.path || w.location || w.provider || ''}`;
     if (el.dataset.widget !== key) el.dataset.widget = key;
     const title = widgetTitle(w);
     if (el.title !== title) el.title = title;
@@ -822,7 +830,7 @@ function syncBarRight(output) {
     } else {
       el._widget = item;
       el._module = null;
-      const key = `${item.type}:${item.path || item.location || ''}`;
+      const key = `${item.type}:${item.path || item.location || item.provider || ''}`;
       if (el.dataset.widget !== key) el.dataset.widget = key;
       const title = widgetTitle(item);
       if (el.title !== title) el.title = title;
@@ -906,9 +914,69 @@ function renderBarWidgets(output) {
       return;
     } else if (w.type === 'battery') {
       text = batteryText();
+    } else if (w.type === 'ai') {
+      text = aiUsageText(w.provider);
+      const title = aiUsageTitle(w.provider);
+      if (el.title !== title) el.title = title;
     }
     if (el.textContent !== text) el.textContent = text;
   });
+}
+
+function aiUsageText(provider) {
+  const usage = aiUsage.get(provider);
+  if (!usage) {
+    const auth = aiAuth.get(provider);
+    if (provider === 'openai' && auth?.state === 'pending') {
+      return `OpenAI ${auth.code || 'signing in'}`;
+    }
+    return provider === 'openai' ? 'OpenAI sign in' : '';
+  }
+  const name = provider === 'openai' ? 'OpenAI'
+    : provider === 'openrouter' ? 'OpenRouter' : 'Claude';
+  if (Number.isFinite(usage.remaining)) {
+    return `${name} $${usage.remaining.toFixed(2)}`;
+  }
+  const windows = [];
+  if (Number.isFinite(usage.primary)) {
+    windows.push(`${aiWindowLabel(usage.primary_seconds)} ${Math.round(usage.primary)}%`);
+  }
+  if (Number.isFinite(usage.secondary)) {
+    windows.push(`${aiWindowLabel(usage.secondary_seconds)} ${Math.round(usage.secondary)}%`);
+  }
+  return windows.length ? `${name} ${windows.join(' ')}` : '';
+}
+
+function aiWindowLabel(seconds) {
+  if (!Number.isFinite(seconds)) return 'usage';
+  if (seconds % 86400 === 0) return `${seconds / 86400}d`;
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  return 'usage';
+}
+
+function aiUsageTitle(provider) {
+  const usage = aiUsage.get(provider);
+  if (!usage) {
+    const auth = aiAuth.get(provider);
+    if (auth?.state === 'pending') {
+      return `Enter ${auth.code} at ${auth.url}`;
+    }
+    if (auth?.state === 'error') return auth.message || 'OpenAI sign-in failed';
+    return provider === 'openai' ? 'Click to sign in with OpenAI'
+      : `${provider || 'AI'} usage`;
+  }
+  if (Number.isFinite(usage.remaining)) return 'OpenRouter credits remaining';
+  const reset = (value) => {
+    if (!value) return '';
+    const date = /^\d+$/.test(String(value))
+      ? new Date(Number(value) * 1000) : new Date(value);
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
+  };
+  return [usage.primary_reset &&
+      `${aiWindowLabel(usage.primary_seconds)} resets ${reset(usage.primary_reset)}`,
+    usage.secondary_reset &&
+      `${aiWindowLabel(usage.secondary_seconds)} resets ${reset(usage.secondary_reset)}`]
+    .filter(Boolean).join('\n') || `${provider} usage`;
 }
 
 /* Charge and charging state, as UPower last reported them. Empty when there

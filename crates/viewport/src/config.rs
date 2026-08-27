@@ -321,6 +321,53 @@ pub enum BarWidgetConfig {
     /// one.
     #[serde(rename = "battery")]
     Battery,
+    /// Subscription rate limits for Claude or OpenAI, or the credit balance
+    /// for OpenRouter. Credentials are read from the named environment
+    /// variable by the compositor and are never sent to the shell.
+    #[serde(rename = "ai")]
+    Ai {
+        provider: AiProvider,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token_env: Option<String>,
+        /// OpenAI's ChatGPT account id when the OAuth token belongs to more
+        /// than one account. Ignored by the other providers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_id_env: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiProvider {
+    Claude,
+    Openai,
+    Openrouter,
+}
+
+impl AiProvider {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Openai => "openai",
+            Self::Openrouter => "openrouter",
+        }
+    }
+
+    pub fn token_env(self) -> &'static str {
+        match self {
+            Self::Claude => "CLAUDE_CODE_OAUTH_TOKEN",
+            Self::Openai => "OPENAI_ACCESS_TOKEN",
+            Self::Openrouter => "OPENROUTER_API_KEY",
+        }
+    }
+
+    pub fn usage_url(self) -> &'static str {
+        match self {
+            Self::Claude => "https://api.anthropic.com/api/oauth/usage",
+            Self::Openai => "https://chatgpt.com/backend-api/wham/usage",
+            Self::Openrouter => "https://openrouter.ai/api/v1/credits",
+        }
+    }
 }
 
 /// What `background_terminal` was set to.
@@ -1342,12 +1389,13 @@ mod tests {
                     {"type":"weather","location":"New York"},
                     {"type":"volume"},
                     {"type":"mic"},
-                    {"type":"battery"}
+                    {"type":"battery"},
+                    {"type":"ai","provider":"claude","token_env":"MY_CLAUDE_TOKEN"}
                 ]
             }"#,
         )
         .expect("should parse");
-        assert_eq!(file.bar_widgets.len(), 6);
+        assert_eq!(file.bar_widgets.len(), 7);
         assert_eq!(
             file.bar_widgets[0],
             BarWidgetConfig::Disk {
@@ -1366,6 +1414,14 @@ mod tests {
         assert_eq!(file.bar_widgets[3], BarWidgetConfig::Volume);
         assert_eq!(file.bar_widgets[4], BarWidgetConfig::Mic);
         assert_eq!(file.bar_widgets[5], BarWidgetConfig::Battery);
+        assert_eq!(
+            file.bar_widgets[6],
+            BarWidgetConfig::Ai {
+                provider: AiProvider::Claude,
+                token_env: Some("MY_CLAUDE_TOKEN".into()),
+                account_id_env: None,
+            }
+        );
     }
 
     #[test]

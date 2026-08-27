@@ -15,6 +15,7 @@ mod capture;
 mod clipboard;
 // Not gated on the web engine: an output composite is worth capturing
 // whatever is drawing into it.
+mod ai_usage;
 mod color_management;
 mod config;
 mod cursor;
@@ -823,6 +824,37 @@ fn run() -> Result<()> {
             })
             .map_err(|e| anyhow::anyhow!("inserting the media source: {e}"))?;
         state.mpris.attach(sender);
+    }
+
+    // Authenticated AI usage. The worker starts only when an AI widget has a
+    // usable token, and sends no credential back through this channel.
+    {
+        let (sender, source) = smithay::reexports::calloop::channel::channel();
+        event_loop
+            .handle()
+            .insert_source(source, |event, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                let Event::Msg(message) = event else { return };
+                match message {
+                    crate::ai_usage::Message::Usage(usage) => {
+                        state.notify(&viewport_ipc::Event::AiUsage { usage });
+                    }
+                    crate::ai_usage::Message::Auth {
+                        state: auth_state,
+                        url,
+                        code,
+                        message,
+                    } => state.notify(&viewport_ipc::Event::AiAuth {
+                        provider: "openai".to_owned(),
+                        state: auth_state.to_owned(),
+                        url,
+                        code,
+                        message,
+                    }),
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("inserting the AI usage source: {e}"))?;
+        state.ai_usage.attach(sender);
     }
 
     // Battery, lid and power profiles. Same shape as MPRIS: idle until

@@ -47,6 +47,7 @@ fn acts_while_locked(request: &Request) -> bool {
             | Request::InputButton { .. }
             | Request::InputPointer { .. }
             | Request::BindAdd { .. }
+            | Request::AiLogin { .. }
             | Request::Quit
     )
 }
@@ -157,6 +158,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         Request::ViewQuery => {
             state.notify_config();
             state.notify_views();
+            state.ai_usage.replay();
         }
 
         Request::BackgroundFocus => {
@@ -563,6 +565,17 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         // compositor last reported. The action is checked there rather than
         // here, where the list of methods lives.
         Request::MprisControl { action } => state.mpris.control(action),
+        Request::AiLogin { provider } => {
+            if provider == "openai" {
+                state.ai_usage.login_openai();
+            } else {
+                reject(
+                    state,
+                    "ai.login",
+                    &format!("no OAuth login for {provider:?}"),
+                );
+            }
+        }
         Request::PowerProfile { profile } => state.power.set_profile(profile),
         // The bar's power picker. Three go to logind through the UPower
         // worker — the call the lid policy makes when a hinge closes, and its

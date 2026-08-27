@@ -374,6 +374,25 @@ pub enum Event {
         mic_muted: bool,
     },
 
+    /// Secret-free result of polling authenticated AI usage APIs. One entry
+    /// per configured provider; failed providers are omitted.
+    #[serde(rename = "ai.usage")]
+    AiUsage { usage: Vec<AiUsage> },
+
+    /// Progress of an interactive provider OAuth login. `pending` carries the
+    /// one-time device code; `complete` and `error` finish it.
+    #[serde(rename = "ai.auth")]
+    AiAuth {
+        provider: String,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
     #[serde(rename = "output.layout")]
     OutputLayout { outputs: Vec<OutputInfo> },
 
@@ -807,6 +826,31 @@ pub enum BarWidget {
     /// DisplayDevice. Lid policy can still talk to UPower without one.
     #[serde(rename = "battery")]
     Battery,
+    /// Claude/OpenAI subscription windows or an OpenRouter credit balance.
+    /// Credentials stay in the compositor; the shell only needs the provider
+    /// to match this element with an `ai.usage` entry.
+    #[serde(rename = "ai")]
+    Ai { provider: String },
+}
+
+/// Normalized result from one AI provider's usage endpoint.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiUsage {
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_reset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_reset: Option<String>,
 }
 
 /// One entry in a `bar_items` override, as `bar_items` in the config file,

@@ -153,6 +153,7 @@ fn is_known_type(name: &str) -> bool {
             | "launcher.query"
             | "launcher.launch"
             | "mpris.control"
+            | "ai.login"
             | "power.profile"
             | "power.action"
             | "osk.key"

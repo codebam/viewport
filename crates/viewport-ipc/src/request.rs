@@ -317,6 +317,11 @@ pub enum Request {
         action: String,
     },
 
+    /// Start an interactive OAuth login for an AI bar provider. Currently
+    /// OpenAI only; unknown providers are refused by the compositor.
+    #[serde(rename = "ai.login")]
+    AiLogin { provider: String },
+
     /// Switch the power profile.
     ///
     /// Goes to the power-profiles daemon through the compositor, which is
@@ -1620,6 +1625,15 @@ mod tests {
         };
         assert_eq!(delta, None);
         assert!(mute);
+    }
+
+    #[test]
+    fn ai_login_names_the_provider() {
+        let Request::AiLogin { provider } = parse(r#"{"type":"ai.login","provider":"openai"}"#)
+        else {
+            panic!("not an ai.login message");
+        };
+        assert_eq!(provider, "openai");
     }
 
     #[test]

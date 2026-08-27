@@ -277,6 +277,9 @@ pub struct ViewportState {
     pub tray: crate::tray::Tray,
     /// What is playing, for the bar's media widget. Idle unless one is on it.
     pub mpris: crate::mpris::Mpris,
+    /// AI subscription limits and OpenRouter credits. Idle unless an AI widget
+    /// has a usable credential.
+    pub ai_usage: crate::ai_usage::AiUsage,
     /// Battery, lid and power profiles. Idle unless a widget or lid policy
     /// wants it.
     pub power: crate::power::Power,
@@ -1530,6 +1533,7 @@ impl ViewportState {
             notification_history: crate::notification::History::default(),
             tray: crate::tray::Tray::default(),
             mpris: crate::mpris::Mpris::default(),
+            ai_usage: crate::ai_usage::AiUsage::default(),
             power: crate::power::Power::default(),
             network: crate::network::Network::default(),
             bluetooth: crate::bluetooth::Bluetooth::default(),
@@ -3771,6 +3775,9 @@ fn bar_widget_ipc(widget: &crate::config::BarWidgetConfig) -> viewport_ipc::even
         crate::config::BarWidgetConfig::Mic => viewport_ipc::event::BarWidget::Mic,
         crate::config::BarWidgetConfig::Mpris => viewport_ipc::event::BarWidget::Mpris,
         crate::config::BarWidgetConfig::Battery => viewport_ipc::event::BarWidget::Battery,
+        crate::config::BarWidgetConfig::Ai { provider, .. } => viewport_ipc::event::BarWidget::Ai {
+            provider: provider.name().to_owned(),
+        },
     }
 }
 
@@ -3823,6 +3830,7 @@ impl crate::config::BarWidgetConfig {
                 battery: true,
                 ..Sampling::default()
             },
+            crate::config::BarWidgetConfig::Ai { .. } => Sampling::default(),
         }
     }
 }

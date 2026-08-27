@@ -604,6 +604,20 @@ window.addEventListener('viewport', (event) => {
       renderBarsModules();
       break;
 
+    case 'ai.usage':
+      aiUsage = new Map((message.usage || []).map((usage) =>
+        [usage.provider, usage]));
+      renderBarsWidgets();
+      break;
+
+    case 'ai.auth':
+      aiAuth.set(message.provider, message);
+      if (message.state === 'pending' && message.url) {
+        send({ type: 'shell.exec', command: `xdg-open ${JSON.stringify(message.url)}` });
+      }
+      renderBarsWidgets();
+      break;
+
     case 'screencast.pick':
       /* Sent whole every time the highlight moves: the compositor owns the
          selection because it owns the keyboard. */
