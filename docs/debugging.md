@@ -75,11 +75,10 @@ rather than opening where it was first placed.
 
 Xwayland starts lazily: a session that never runs an X11 client pays nothing.
 
-Touchpad gestures are split by finger count: three fingers belong to the
-compositor (swipe to scroll the strip or change workspace), everything else is
-forwarded to the focused client through `pointer-gestures-v1`, so pinch-to-zoom
-in a browser keeps working. A gesture that starts as the compositor's stays
-that way until it ends.
+Touchpad gestures are forwarded to the focused client through
+`pointer-gestures-v1` by default, so pinch-to-zoom in a browser keeps working.
+A gesture type and finger count named in the config belongs to the compositor
+from begin through end; see `docs/configuration.md`.
 
 Client scale is reported over both `fractional-scale-v1` and the `wl_surface`
 preferred buffer scale, taken from the largest scale among the outputs in the

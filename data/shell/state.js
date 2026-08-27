@@ -77,8 +77,8 @@ let logoHeld = false;
  * else a window needs is a field on its record, so dropping the record drops
  * the window entirely and there is nothing to keep in step by hand. */
 const views = new Map();
-// id -> { el, viewport, title, app_id, box, naturalWidth, naturalHeight,
-//         floating, overview }
+// id -> { el, viewport, title, app_id, tag, box, naturalWidth, naturalHeight,
+//         floating, special, specialOutput, specialHidden, overview }
 const workspaces = new Map(); // number -> tiling tree root
 
 /* Which monitor each workspace was last shown on. Nothing in the shell needs
@@ -110,7 +110,13 @@ function isFloating(id) {
  * has no record, so callers do not have to check for one. */
 function* floatingEntries() {
   for (const [id, view] of views) {
-    if (view.floating) yield [id, view.floating, view];
+    if (view.floating && !view.special) yield [id, view.floating, view];
+  }
+}
+
+function* specialEntries() {
+  for (const [id, view] of views) {
+    if (view.floating && view.special) yield [id, view.floating, view];
   }
 }
 
@@ -231,11 +237,47 @@ let currentMode = 'default';
  *   canvas     an unbounded plane per workspace, panned and zoomed —
  *              canvas.js
  *
- * Listed here rather than in each file so that the config handler, the runtime
- * command and the cycle order cannot disagree about what exists. The
- * compositor holds the same list in state.rs (apply_config) so that a name it
- * builds a keymap for is one the shell will actually run. */
-const LAYOUT_MODES = ['tiling', 'scrolling', 'solar', 'matrix', 'canvas'];
+ * Extensions append themselves through registerLayout(), after their explicit
+ * scripts have loaded and before the compositor replays any windows. */
+const BUILTIN_LAYOUT_MODES = ['tiling', 'scrolling', 'solar', 'matrix', 'canvas'];
+const LAYOUT_MODES = [...BUILTIN_LAYOUT_MODES];
+const layoutRegistry = new Map();
+const layoutSources = new Map();
+
+function validLayoutDescriptor(name, descriptor) {
+  return typeof name === 'string' && /^[A-Za-z0-9_-]+$/.test(name)
+    && descriptor && typeof descriptor.render === 'function'
+    && typeof descriptor.clear === 'function';
+}
+
+/* Public extension API. One name has one owner for the life of the page; in
+ * particular, a local script cannot silently replace shipped policy. */
+function registerLayout(name, descriptor) {
+  if (!validLayoutDescriptor(name, descriptor)) {
+    throw new TypeError('registerLayout requires a valid name and render/clear functions');
+  }
+  if (BUILTIN_LAYOUT_MODES.includes(name)) {
+    throw new Error(`layout ${name} is built in and cannot be replaced`);
+  }
+  const script = document.currentScript;
+  if (script?.dataset?.layoutName) {
+    if (script.dataset.layoutName !== name
+        || Number(script.dataset.layoutGeneration) !== layoutLoadGeneration) {
+      throw new Error(`stale or mismatched layout registration: ${name}`);
+    }
+  }
+  if (layoutRegistry.has(name)) throw new Error(`layout ${name} is already registered`);
+  layoutRegistry.set(name, Object.freeze({ ...descriptor, name }));
+  LAYOUT_MODES.push(name);
+}
+
+function registerBuiltinLayout(name, descriptor) {
+  if (!BUILTIN_LAYOUT_MODES.includes(name) || !validLayoutDescriptor(name, descriptor)
+      || layoutRegistry.has(name)) {
+    throw new Error(`invalid built-in layout registration: ${name}`);
+  }
+  layoutRegistry.set(name, Object.freeze({ ...descriptor, name, builtin: true }));
+}
 let layoutMode = 'tiling';
 /* How the tiling tree arranges itself: 'manual' is the splits you make, and
  * 'master-stack', 'spiral', 'bsp' and 'grid' derive the shape from which

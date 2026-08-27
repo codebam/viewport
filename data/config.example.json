@@ -72,6 +72,14 @@
     "\"shell layout.model\" switches at runtime; with no argument it cycles."
   ],
   "layout": "tiling",
+  "_layout_extensions": [
+    "Explicit local scripts keyed by the layout name they register.",
+    "Relative paths are resolved beside this config file. Scripts load before",
+    "session and window replay. Example:",
+    "  \"layout_extensions\": { \"monocle\": \"layouts/monocle.js\" }",
+    "See docs/layout-extension.md."
+  ],
+  "layout_extensions": {},
 
   "_tiling_mode": [
     "How the tiling tree arranges itself. Only meaningful with",
@@ -280,6 +288,30 @@
   ],
   "outputs": {
     "*": { "max_refresh": false }
+  },
+
+  "_input": [
+    "Per-device libinput settings. '*' applies first; an exact",
+    "vendor:product:name key overrides the fields it names. IDs are",
+    "four-digit lowercase hex and each identifier is logged on device add.",
+    "Unsupported settings are logged and ignored. Applied again on reload."
+  ],
+  "input": {
+    "*": { "tap": true, "disable_while_typing": true },
+    "046d:c52b:USB Receiver": { "accel_speed": -0.2, "accel_profile": "flat" }
+  },
+
+  "_gestures": [
+    "Discrete touchpad gestures use ordinary binding actions. A configured",
+    "type and finger count is captured from begin to end; all others are",
+    "forwarded to clients unchanged. Swipe threshold is 120 on the dominant",
+    "axis; pinch thresholds are 1.2 out and 0.8 in. Cancelled gestures do nothing."
+  ],
+  "gestures": {
+    "swipe:3:left": "shell workspace.next",
+    "swipe:3:right": "shell workspace.prev",
+    "pinch:2:out": "magnify in",
+    "pinch:2:in": "magnify out"
   },
 
   "_adaptive_sync": [

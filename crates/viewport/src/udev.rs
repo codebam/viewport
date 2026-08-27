@@ -583,6 +583,8 @@ pub struct Udev {
     /// clients are told about — where buffers are allocated by default — and
     /// the rest drive their own outputs with their own renderers.
     pub devices: Vec<Device>,
+    /// Concrete libinput devices, retained so config reload can update them.
+    pub input_devices: Vec<smithay::reexports::input::Device>,
     /// True while the outputs are off because the session went idle.
     pub blanked: bool,
     /// False between a VT switch away and the switch back. Every device fd is
@@ -1043,6 +1045,211 @@ impl Udev {
     }
 }
 
+/// Stable config-file name for a libinput device.
+pub fn input_device_identifier(device: &smithay::reexports::input::Device) -> String {
+    input_identifier(device.id_vendor(), device.id_product(), &device.name())
+}
+
+fn input_identifier(vendor: u32, product: u32, name: &str) -> String {
+    format!("{vendor:04x}:{product:04x}:{name}")
+}
+
+fn merged_input_config(
+    configs: &HashMap<String, crate::config::InputConfig>,
+    identifier: &str,
+) -> crate::config::InputConfig {
+    let mut config = configs.get("*").cloned().unwrap_or_default();
+    let Some(exact) = configs.get(identifier) else {
+        return config;
+    };
+    macro_rules! override_fields {
+        ($($field:ident),+ $(,)?) => {$(
+            if exact.$field.is_some() {
+                config.$field = exact.$field.clone();
+            }
+        )+};
+    }
+    override_fields!(
+        tap,
+        tap_drag,
+        natural_scroll,
+        left_handed,
+        middle_emulation,
+        disable_while_typing,
+        accel_speed,
+        accel_profile,
+        click_method,
+        scroll_method,
+    );
+    config
+}
+
+fn apply_input_config(
+    device: &mut smithay::reexports::input::Device,
+    configs: &HashMap<String, crate::config::InputConfig>,
+) {
+    use smithay::reexports::input::{AccelProfile, ClickMethod, ScrollMethod};
+
+    let identifier = input_device_identifier(device);
+    let config = merged_input_config(configs, &identifier);
+    let report = |field: &str, result: smithay::reexports::input::DeviceConfigResult| {
+        if let Err(error) = result {
+            tracing::warn!("input {identifier}: {field} was refused: {error:?}");
+        }
+    };
+
+    // Reload is authoritative. Reset every field we own before applying the
+    // merged wildcard/device policy, so deleting a key behaves the same as
+    // unplugging and reconnecting the device.
+    report(
+        "tap",
+        device.config_tap_set_enabled(device.config_tap_default_enabled()),
+    );
+    report(
+        "tap_drag",
+        device.config_tap_set_drag_enabled(device.config_tap_default_drag_enabled()),
+    );
+    report(
+        "natural_scroll",
+        device.config_scroll_set_natural_scroll_enabled(
+            device.config_scroll_default_natural_scroll_enabled(),
+        ),
+    );
+    report(
+        "left_handed",
+        device.config_left_handed_set(device.config_left_handed_default()),
+    );
+    report(
+        "middle_emulation",
+        device
+            .config_middle_emulation_set_enabled(device.config_middle_emulation_default_enabled()),
+    );
+    report(
+        "disable_while_typing",
+        device.config_dwt_set_enabled(device.config_dwt_default_enabled()),
+    );
+    report(
+        "accel_speed",
+        device.config_accel_set_speed(device.config_accel_default_speed()),
+    );
+    if let Some(profile) = device.config_accel_default_profile() {
+        report("accel_profile", device.config_accel_set_profile(profile));
+    }
+    if let Some(method) = device.config_click_default_method() {
+        report("click_method", device.config_click_set_method(method));
+    }
+    if let Some(method) = device.config_scroll_default_method() {
+        report("scroll_method", device.config_scroll_set_method(method));
+    }
+
+    if let Some(enabled) = config.tap {
+        report("tap", device.config_tap_set_enabled(enabled));
+    }
+    if let Some(enabled) = config.tap_drag {
+        report("tap_drag", device.config_tap_set_drag_enabled(enabled));
+    }
+    if let Some(enabled) = config.natural_scroll {
+        report(
+            "natural_scroll",
+            device.config_scroll_set_natural_scroll_enabled(enabled),
+        );
+    }
+    if let Some(enabled) = config.left_handed {
+        report("left_handed", device.config_left_handed_set(enabled));
+    }
+    if let Some(enabled) = config.middle_emulation {
+        report(
+            "middle_emulation",
+            device.config_middle_emulation_set_enabled(enabled),
+        );
+    }
+    if let Some(enabled) = config.disable_while_typing {
+        report(
+            "disable_while_typing",
+            device.config_dwt_set_enabled(enabled),
+        );
+    }
+    if let Some(profile) = config.accel_profile.as_deref() {
+        let profile = match profile {
+            "flat" => Some(AccelProfile::Flat),
+            "adaptive" => Some(AccelProfile::Adaptive),
+            other => {
+                tracing::warn!(
+                    "input {identifier}: accel_profile {other:?} is not flat or adaptive"
+                );
+                None
+            }
+        };
+        if let Some(profile) = profile {
+            report("accel_profile", device.config_accel_set_profile(profile));
+        }
+    }
+    if let Some(speed) = config.accel_speed {
+        report("accel_speed", device.config_accel_set_speed(speed));
+    }
+    if let Some(method) = config.click_method.as_deref() {
+        let method = match method {
+            "button_areas" => Some(ClickMethod::ButtonAreas),
+            "clickfinger" => Some(ClickMethod::Clickfinger),
+            other => {
+                tracing::warn!(
+                    "input {identifier}: click_method {other:?} is not button_areas or clickfinger"
+                );
+                None
+            }
+        };
+        if let Some(method) = method {
+            report("click_method", device.config_click_set_method(method));
+        }
+    }
+    if let Some(method) = config.scroll_method.as_deref() {
+        let method = match method {
+            "none" => Some(ScrollMethod::NoScroll),
+            "two_finger" => Some(ScrollMethod::TwoFinger),
+            "edge" => Some(ScrollMethod::Edge),
+            "on_button_down" => Some(ScrollMethod::OnButtonDown),
+            other => {
+                tracing::warn!(
+                    "input {identifier}: scroll_method {other:?} is not none, two_finger, edge, or on_button_down"
+                );
+                None
+            }
+        };
+        if let Some(method) = method {
+            report("scroll_method", device.config_scroll_set_method(method));
+        }
+    }
+}
+
+impl ViewportState {
+    fn libinput_device_added(&mut self, mut device: smithay::reexports::input::Device) {
+        let identifier = input_device_identifier(&device);
+        apply_input_config(&mut device, &self.input_config);
+        tracing::info!("input added: {identifier}");
+        if let Some(udev) = self.udev.as_mut() {
+            udev.input_devices.push(device);
+        }
+    }
+
+    fn libinput_device_removed(&mut self, device: &smithay::reexports::input::Device) {
+        let identifier = input_device_identifier(device);
+        if let Some(udev) = self.udev.as_mut() {
+            udev.input_devices.retain(|present| present != device);
+        }
+        tracing::info!("input removed: {identifier}");
+    }
+
+    pub fn apply_libinput_config(&mut self) {
+        let configs = self.input_config.clone();
+        let Some(udev) = self.udev.as_mut() else {
+            return;
+        };
+        for device in &mut udev.input_devices {
+            apply_input_config(device, &configs);
+        }
+    }
+}
+
 /// Bring up the backend.
 pub fn init(
     event_loop: &mut EventLoop<'static, ViewportState>,
@@ -1210,10 +1417,10 @@ pub fn init(
     event_loop
         .handle()
         .insert_source(input_backend, move |event, _, state| {
-            // Device added and removed events carry no pointer or key, so the
-            // generic handler ignores them; everything else routes as usual.
-            if let InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } = event {
-                return;
+            match &event {
+                InputEvent::DeviceAdded { device } => state.libinput_device_added(device.clone()),
+                InputEvent::DeviceRemoved { device } => state.libinput_device_removed(device),
+                _ => {}
             }
             state.process_input_event(event);
         })
@@ -1337,6 +1544,7 @@ pub fn init(
             settle: 0,
             lease_state,
         }],
+        input_devices: Vec::new(),
         blanked: false,
         active: true,
         frame_log: FrameLog::from_env(),
@@ -3677,6 +3885,40 @@ fn non_desktop(device: &DrmDevice, connector: connector::Handle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_identifier_is_stable_and_config_ready() {
+        assert_eq!(
+            input_identifier(0x46d, 0xc52b, "USB Receiver"),
+            "046d:c52b:USB Receiver"
+        );
+    }
+
+    #[test]
+    fn exact_input_config_overrides_only_named_wildcard_fields() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "*".to_owned(),
+            crate::config::InputConfig {
+                tap: Some(true),
+                natural_scroll: Some(false),
+                accel_speed: Some(0.2),
+                ..Default::default()
+            },
+        );
+        configs.insert(
+            "046d:c52b:USB Receiver".to_owned(),
+            crate::config::InputConfig {
+                natural_scroll: Some(true),
+                ..Default::default()
+            },
+        );
+
+        let merged = merged_input_config(&configs, "046d:c52b:USB Receiver");
+        assert_eq!(merged.tap, Some(true));
+        assert_eq!(merged.natural_scroll, Some(true));
+        assert_eq!(merged.accel_speed, Some(0.2));
+    }
 
     fn paths(list: &[&str]) -> Vec<Option<String>> {
         list.iter().map(|p| Some((*p).to_owned())).collect()

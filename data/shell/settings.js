@@ -58,6 +58,46 @@
  * value nobody but you wants. */
 const SETTINGS_SCALES = [1, 1.25, 1.5, 1.75, 2];
 
+/* Derive a conservative UI scale from EDID and the mode actually being used.
+ * Bad EDID is common, so no recommendation is safer than a precise-looking
+ * answer from a zero, wildly implausible, or internally inconsistent size. */
+function recommendedOutputScale(info) {
+  const widthMm = Number(info?.physical_width_mm);
+  const heightMm = Number(info?.physical_height_mm);
+  const mode = Array.isArray(info?.modes)
+    ? info.modes.find((candidate) => candidate.current) : null;
+  if (!mode || widthMm < 40 || heightMm < 40 ||
+      widthMm > 3000 || heightMm > 3000 ||
+      mode.width <= 0 || mode.height <= 0) return null;
+
+  const dpiX = mode.width * 25.4 / widthMm;
+  const dpiY = mode.height * 25.4 / heightMm;
+  if (!Number.isFinite(dpiX) || !Number.isFinite(dpiY) ||
+      dpiX < 40 || dpiY < 40 || dpiX > 1000 || dpiY > 1000 ||
+      Math.max(dpiX, dpiY) / Math.min(dpiX, dpiY) > 1.25) return null;
+
+  const rounded = Math.round((Math.sqrt(dpiX * dpiY) / 96) * 4) / 4;
+  return Math.max(SETTINGS_SCALES[0],
+    Math.min(SETTINGS_SCALES[SETTINGS_SCALES.length - 1], rounded));
+}
+
+/* Build position-only requests in the order outputs are published. Width and
+ * height are already logical and transformed in output.layout. */
+function settingsArrangementRequests(direction) {
+  let offset = 0;
+  const requests = [];
+  for (const [name, output] of outputs) {
+    const horizontal = direction === 'horizontal';
+    requests.push({
+      type: 'output.configure', name,
+      x: horizontal ? offset : 0,
+      y: horizontal ? 0 : offset,
+    });
+    offset += horizontal ? output.rect.width : output.rect.height;
+  }
+  return requests;
+}
+
 /* The rotations, spelled exactly as `Transform`'s wire names in
  * `crates/viewport-ipc/src/geometry.rs`. That comment says these strings are
  * load-bearing and that the shell's monitor settings compare against them
@@ -526,6 +566,15 @@ function settingsDisplays() {
     return section;
   }
 
+  if (outputs.size > 1) {
+    section.append(settingsRow('Arrange', settingsChoice([
+      ['horizontal', 'Horizontal'],
+      ['vertical', 'Vertical'],
+    ], '', (direction) => {
+      for (const request of settingsArrangementRequests(direction)) send(request);
+    })));
+  }
+
   for (const [name, output] of outputs) {
     const heading = document.createElement('div');
     heading.className = 'settings-display';
@@ -548,6 +597,19 @@ function settingsDisplays() {
         settingsPending();
       },
     )));
+
+    const recommended = recommendedOutputScale(output.info);
+    if (recommended !== null) {
+      const useRecommended = document.createElement('button');
+      useRecommended.className = 'settings-button';
+      useRecommended.textContent = `Use ${recommended}×`;
+      useRecommended.addEventListener('click', (e) => {
+        e.stopPropagation?.();
+        send({ type: 'output.configure', name, scale: recommended });
+        settingsPending();
+      });
+      section.append(settingsRow('Recommended scale', useRecommended));
+    }
 
     section.append(settingsRow('Rotation', settingsChoice(
       SETTINGS_TRANSFORMS,

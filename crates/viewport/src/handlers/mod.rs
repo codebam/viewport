@@ -1092,6 +1092,9 @@ impl smithay::wayland::xdg_toplevel_tag::XdgToplevelTagHandler for ViewportState
         if let Some(view) = self.views.get_mut(view) {
             view.tag = Some(tag);
         }
+        if let Some(surface) = self.views.get(view).and_then(|view| view.surface()) {
+            self.notify_props(&surface);
+        }
     }
 
     fn set_description(

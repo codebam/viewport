@@ -30,6 +30,9 @@ pub enum Event {
         id: u32,
         title: String,
         app_id: String,
+        /// Stable application-provided identity from xdg-toplevel-tag.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
         /// What the window says it looks like in a list, from
         /// `xdg-toplevel-icon`: a name to look up in the icon theme. Absent
         /// when the client has not said, which is most of them — omitted from
@@ -522,6 +525,9 @@ pub struct ViewAdded {
     pub id: u32,
     pub title: String,
     pub app_id: String,
+    /// Stable application-provided identity from xdg-toplevel-tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
     pub output: String,
 
     /// So the shell can refuse to shrink a window past what its client accepts.
@@ -562,6 +568,10 @@ pub struct ViewAdded {
 pub struct Config {
     /// `"tiling"` when unset in the config file.
     pub layout: String,
+    /// Explicit user scripts accepted by the compositor, with local paths
+    /// resolved to URLs the shell can load directly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layout_extensions: Vec<LayoutExtension>,
     pub logo: bool,
     pub tutorial: bool,
 
@@ -725,6 +735,12 @@ pub struct Config {
     /// never been told starts on.
     #[serde(default = "yes")]
     pub dark_mode: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayoutExtension {
+    pub name: String,
+    pub url: String,
 }
 
 fn yes() -> bool {
@@ -1307,6 +1323,13 @@ pub struct OutputInfo {
     pub model: String,
     pub serial: String,
 
+    /// Panel dimensions reported by EDID, in millimetres. Synthetic outputs
+    /// and displays with no usable size omit both fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_width_mm: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_height_mm: Option<i32>,
+
     pub enabled: bool,
 
     /// The output the shell last called active: where a new window opens, and
@@ -1380,6 +1403,7 @@ mod tests {
             id: 1,
             title: "term".into(),
             app_id: "foot".into(),
+            tag: Some("terminal-main".into()),
             output: "DP-1".into(),
             min_width: 0,
             min_height: 0,
@@ -1394,6 +1418,7 @@ mod tests {
             "id",
             "title",
             "app_id",
+            "tag",
             "output",
             "min_width",
             "min_height",
@@ -1419,6 +1444,7 @@ mod tests {
             id: 2,
             title: "save as".into(),
             app_id: "chrome".into(),
+            tag: None,
             output: "DP-1".into(),
             min_width: 0,
             min_height: 0,
@@ -1435,6 +1461,7 @@ mod tests {
     fn unset_config_members_are_omitted_not_null() {
         let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
+            layout_extensions: Vec::new(),
             logo: true,
             tutorial: false,
             binds: Vec::new(),
@@ -1463,9 +1490,30 @@ mod tests {
     }
 
     #[test]
+    fn resolved_layout_extensions_are_carried_to_the_shell() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "monocle",
+            "logo": true,
+            "tutorial": true
+        }))
+        .expect("minimal config");
+        config.layout_extensions.push(LayoutExtension {
+            name: "monocle".into(),
+            url: "file:///home/me/monocle.js".into(),
+        });
+        let value = json(&Event::Config(Box::new(config)));
+        assert_eq!(value["layout_extensions"][0]["name"], "monocle");
+        assert_eq!(
+            value["layout_extensions"][0]["url"],
+            "file:///home/me/monocle.js"
+        );
+    }
+
+    #[test]
     fn the_border_is_carried_to_the_shell() {
         let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
+            layout_extensions: Vec::new(),
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -1498,6 +1546,7 @@ mod tests {
     fn gaps_are_carried_to_the_shell_with_all_three_fields() {
         let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
+            layout_extensions: Vec::new(),
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -1547,6 +1596,7 @@ mod tests {
         // tiling from crossing and leave the strip crossing anyway.
         let value = json(&Event::Config(Box::new(Config {
             layout: "scrolling".into(),
+            layout_extensions: Vec::new(),
             logo: true,
             tutorial: true,
             binds: Vec::new(),
@@ -1573,6 +1623,7 @@ mod tests {
     fn rules_go_over_as_parsed_json() {
         let value = json(&Event::Config(Box::new(Config {
             layout: "scrolling".into(),
+            layout_extensions: Vec::new(),
             logo: false,
             tutorial: false,
             binds: Vec::new(),
@@ -1614,6 +1665,8 @@ mod tests {
                 make: String::new(),
                 model: String::new(),
                 serial: String::new(),
+                physical_width_mm: Some(597),
+                physical_height_mm: Some(336),
                 enabled: true,
                 active: true,
                 x: 0,
@@ -1641,6 +1694,16 @@ mod tests {
         assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), event);
         // The empty-string convention, not null.
         assert!(text.contains(r#""make":"""#));
+        assert!(text.contains(r#""physical_width_mm":597"#));
+
+        let old = text
+            .replace(r#","physical_width_mm":597"#, "")
+            .replace(r#","physical_height_mm":336"#, "");
+        let Event::OutputLayout { outputs } = serde_json::from_str(&old).unwrap() else {
+            unreachable!();
+        };
+        assert_eq!(outputs[0].physical_width_mm, None);
+        assert_eq!(outputs[0].physical_height_mm, None);
     }
 
     #[test]
@@ -1650,6 +1713,7 @@ mod tests {
                 id: 1,
                 title: String::new(),
                 app_id: String::new(),
+                tag: None,
                 output: String::new(),
                 min_width: 0,
                 min_height: 0,
@@ -1664,6 +1728,7 @@ mod tests {
                 id: 1,
                 title: String::new(),
                 app_id: String::new(),
+                tag: None,
                 icon: None,
             }),
             json(&Event::ViewConfigured {
@@ -1674,6 +1739,7 @@ mod tests {
             json(&Event::ViewFocused { id: 1 }),
             json(&Event::Config(Box::new(Config {
                 layout: "tiling".into(),
+                layout_extensions: Vec::new(),
                 logo: false,
                 tutorial: false,
                 binds: Vec::new(),

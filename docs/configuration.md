@@ -19,7 +19,10 @@ a TTY.
   "url_span": true,         // that page on every monitor; see below
   "shell_backend": "wpe",   // or "webkitgtk"; see docs/shell-backends.md
   "timeout_ms": 5000,
-  "layout": "tiling",       // or "scrolling", "solar", "matrix", "canvas"
+  "layout": "tiling",       // built-in, or a layout_extensions name
+  "layout_extensions": {
+    "monocle": "/home/me/.config/viewport/monocle.js"
+  },
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
   "pixel_format": "auto",   // or "10" / "8" bits per channel; see below
   "gpu": "card1",           // which card renders; see below
@@ -89,17 +92,24 @@ deliberate thing there is.
 
 `Mod4+Shift+comma` opens it. It covers dark mode, the wallpaper and its
 fitting, the gaps, the window border, and each monitor's mode, scale and
-rotation. Every control sends the runtime setter for what it changes, so the
-desktop is already that shape while you are looking at it; **Save** sends
-`config.save` and writes the lot into `settings.json`.
+rotation. Multiple monitors can be arranged horizontally or vertically in
+their published order. Every control sends the runtime setter for what it
+changes, so the desktop is already that shape while you are looking at it;
+**Save** sends `config.save` and writes the lot into `settings.json`.
+
+Where a display reports sane physical dimensions, the panel recommends a
+scale from its current mode and pixel density. It rejects missing or implausible
+EDID dimensions, rounds to quarter steps, and clamps the answer to the same
+1-2 range as the manual scale buttons. The recommendation is an explicit
+button, not an automatic change.
 
 A display change raises a Keep-or-Revert bar, because the compositor puts the
 monitors back after twelve seconds unless something says the screen came back —
 see [ipc.md](ipc.md). Doing nothing is the same as Revert, which is the point.
 
-What the panel does not do: move monitors around in the layout, turn one off,
-mirror one, or edit keybindings, window rules or bar widgets. Those are the
-config file's, and two of them are the config file's for a reason —
+What the panel does not do: arbitrary monitor placement, turn one off, mirror
+one, or edit keybindings, window rules or bar widgets. Those are the config
+file's, and two of them are the config file's for a reason —
 `output.configure` can turn a screen off and the shell is never told a disabled
 output exists, so a panel offering the switch could not offer the way back.
 
@@ -178,6 +188,53 @@ The scroll wheel binds the same way: `Mod4+WheelUp=exec …` and
 per notch of a physical wheel while the modifier is held and consumes the
 scroll; a touchpad's two-finger scroll is never bound — it keeps scrolling
 whatever is under the pointer.
+
+Touchpad swipes and pinches may run the same actions as keybindings through the
+top-level `gestures` object:
+
+```json
+"gestures": {
+  "swipe:3:left": "shell workspace.next",
+  "swipe:3:right": "shell workspace.prev",
+  "pinch:2:out": "magnify in",
+  "pinch:2:in": "magnify out"
+}
+```
+
+A swipe fires when its dominant axis reaches 120 libinput units. A pinch-out
+fires at scale 1.2 and pinch-in at 0.8. A cancelled or sub-threshold gesture
+does nothing. Configuring any direction for a gesture type and finger count
+captures that whole sequence from its beginning, so a client never receives a
+partial gesture. With no matching configuration, the complete gesture is
+forwarded through `pointer-gestures-v1` as before. Desktop gesture actions are
+disabled while locked.
+
+The top-level `input` object configures concrete libinput devices. `*` applies
+first; a device's exact entry overrides only fields it names. The stable key is
+`vendor:product:name`, with four-digit lowercase hexadecimal IDs, and is logged
+as `input added` when a device appears:
+
+```json
+"input": {
+  "*": {
+    "tap": true,
+    "tap_drag": true,
+    "natural_scroll": false,
+    "disable_while_typing": true
+  },
+  "046d:c52b:USB Receiver": {
+    "accel_speed": -0.2,
+    "accel_profile": "flat"
+  }
+}
+```
+
+Available fields are `tap`, `tap_drag`, `natural_scroll`, `left_handed`,
+`middle_emulation`, `disable_while_typing`, `accel_speed` (from -1 to 1),
+`accel_profile` (`adaptive` or `flat`), `click_method` (`button_areas` or
+`clickfinger`), and `scroll_method` (`none`, `two_finger`, `edge`, or
+`on_button_down`). Unsupported settings are logged and ignored. Settings apply
+when a device appears and again on config reload.
 
 Asking for the workspace you are already on takes you back to the one before
 it, so `Mod4+2` pressed twice from workspace 1 goes to 2 and then back to 1 —
@@ -1571,7 +1628,11 @@ exactly like a real one.
 "rules": [
   { "app_id": "cs2", "workspace": 3 },
   { "app_id": "pavucontrol", "floating": true, "width": 600, "height": 400 },
-  { "title": "Picture-in-Picture", "floating": true }
+  { "title": "Picture-in-Picture", "floating": true },
+  { "match": { "app_id": { "equals": "foot" }, "tag": { "contains": "drop" } },
+    "workspace": "scratchpad", "width": 900, "height": 600 },
+  { "match": { "title": { "regex": "^Picture.in.Picture$", "flags": "i" } },
+    "pinned": true, "width": 480, "height": 270 }
 ]
 ```
 
@@ -1580,6 +1641,19 @@ same `app_id` and differ only in what they show. Both are substring matches: an
 exact one would need the application's internal name known exactly. A rule is
 applied before the window is inserted anywhere, so it goes straight where it
 belongs rather than appearing in one place and jumping.
+
+The legacy flat shape above remains supported. Rich rules put `app_id`, `title`
+and/or the stable xdg-toplevel `tag` under `match`; each field accepts
+`contains`, `equals` or `regex` (plus optional regex `flags`). All supplied
+fields must match. Rules still use first-match order. String field values are a
+short form of `contains`.
+
+`workspace: "scratchpad"` opens a floating window hidden. `scratchpad.toggle`
+shows or hides it as an overlay on the active output and `scratchpad.move` sends
+the focused window there. `pinned: true` makes a window floating and keeps it on
+its assigned output across numbered workspace switches; `window.pin.toggle`
+changes that state. Scratchpad and pinned windows do not appear in overview or
+participate in canvas placement.
 
 The compositor passes these to the shell without reading them. Which workspace
 a window opens on and whether it floats are layout decisions, and the

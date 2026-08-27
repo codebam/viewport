@@ -408,10 +408,12 @@ impl ViewportState {
         let id = view.id;
         self.foreign_management_state.update(id, &title, &app_id);
         let icon = view.icon.clone();
+        let tag = view.tag.clone();
         let event = Event::ViewProps {
             id,
             title,
             app_id,
+            tag,
             icon,
         };
         self.notify(&event);

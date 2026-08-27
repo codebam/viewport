@@ -40,6 +40,15 @@ function handleShellCommand(command, args) {
     case 'window.fullscreen':
       toggleFullscreen();
       break;
+    case 'scratchpad.toggle':
+      toggleScratchpad(arg || null);
+      break;
+    case 'scratchpad.move':
+      moveToScratchpad();
+      break;
+    case 'window.pin.toggle':
+      togglePinned();
+      break;
     case 'window.focus_parent':
       focusParent();
       break;
@@ -336,8 +345,98 @@ function handleShellCommand(command, args) {
  * Inbound
  * --------------------------------------------------------------------- */
 
+let initialConfigReady = false;
+let layoutLoadGeneration = 0;
+const pendingViewReplay = [];
+
+function loadLayoutScript(entry, generation) {
+  return new Promise((resolve, reject) => {
+    if (!entry || typeof entry.name !== 'string' || typeof entry.url !== 'string') {
+      reject(new Error('invalid layout extension manifest entry'));
+      return;
+    }
+    if (layoutSources.get(entry.name) === entry.url) {
+      resolve();
+      return;
+    }
+    if (layoutRegistry.has(entry.name)) {
+      reject(new Error(`layout ${entry.name} was already registered by another script`));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = entry.url;
+    script.async = false;
+    script.dataset.layoutName = entry.name;
+    script.dataset.layoutGeneration = String(generation);
+    script.onload = () => {
+      if (generation !== layoutLoadGeneration) {
+        reject(new Error(`stale load of ${entry.url}`));
+        return;
+      }
+      if (!layoutRegistry.has(entry.name)) {
+        reject(new Error(`${entry.url} did not register layout ${entry.name}`));
+        return;
+      }
+      layoutSources.set(entry.name, entry.url);
+      resolve();
+    };
+    script.onerror = () => reject(new Error(`could not load ${entry.url}`));
+    document.head.append(script);
+  });
+}
+
+function loadLayoutExtensions(entries, generation) {
+  const manifest = Array.isArray(entries) ? entries : [];
+  const pending = manifest.filter((entry) => layoutSources.get(entry?.name) !== entry?.url);
+  if (pending.length === 0) return null;
+  return (async () => {
+    let ok = true;
+    for (const entry of pending) {
+      try {
+        await loadLayoutScript(entry, generation);
+      } catch (error) {
+        ok = false;
+        console.error(`layout extension: ${error.message}`);
+      }
+    }
+    return ok;
+  })();
+}
+
+function finishLayoutConfig(message, extensionsLoaded) {
+  const declared = new Set((message.layout_extensions ?? []).map((entry) => entry.name));
+  const availableModes = [
+    ...BUILTIN_LAYOUT_MODES,
+    ...[...declared].filter((name) => layoutRegistry.has(name)),
+  ];
+  LAYOUT_MODES.splice(0, LAYOUT_MODES.length, ...availableModes);
+  const available = BUILTIN_LAYOUT_MODES.includes(message.layout) || declared.has(message.layout);
+  const next = extensionsLoaded !== false && available && layoutRegistry.has(message.layout)
+    ? message.layout : 'tiling';
+  if (next !== layoutMode) {
+    layoutMode = next;
+    normaliseForLayout();
+  }
+  relayoutAll();
+  settingsChanged();
+  if (!initialConfigReady) {
+    initialConfigReady = true;
+    /* view.query sends Config and then mapped windows in one reply. Async script
+       loads hold those following view.added events here until registration has
+       completed, without adding a second config request to the protocol. */
+    for (const pending of pendingViewReplay.splice(0)) {
+      window.dispatchEvent(new CustomEvent('viewport', { detail: pending }));
+    }
+  }
+}
+
 window.addEventListener('viewport', (event) => {
   const message = event.detail;
+
+  if (!initialConfigReady && message.type.startsWith('view.')) {
+    pendingViewReplay.push(message);
+    return;
+  }
 
   switch (message.type) {
     case 'config':
@@ -454,13 +553,24 @@ window.addEventListener('viewport', (event) => {
           tilingMode = next;
         }
       }
-      if (LAYOUT_MODES.includes(message.layout)) {
-        if (message.layout !== layoutMode) {
-          layoutMode = message.layout;
-          normaliseForLayout();
+      /* Load every explicitly declared extension before selecting one. The
+       * initial session/view replay is gated in finishLayoutConfig below. */
+      {
+        const generation = ++layoutLoadGeneration;
+        if (initialConfigReady) {
+          finishLayoutConfig(message, true);
+          break;
         }
+        const loading = loadLayoutExtensions(message.layout_extensions, generation);
+        if (loading) {
+          loading.then((ok) => {
+            if (generation === layoutLoadGeneration) finishLayoutConfig(message, ok);
+          });
+          break;
+        }
+        finishLayoutConfig(message, true);
       }
-      /* And then lay the desktop out again, whatever changed.
+      /* The layout pass above runs whatever changed.
        *
        * Everything above is either a style the browser reflows for or a value
        * the geometry pass reads — the gaps, the border's width, whether a lone
@@ -477,11 +587,6 @@ window.addEventListener('viewport', (event) => {
        * A config message is rare — a connect, a reload, a line typed at the
        * socket — so doing this unconditionally costs nothing anybody can
        * measure. */
-      relayoutAll();
-      /* And the panel, if it is open: a config file reloaded from an editor,
-         or another client on the socket changing the wallpaper, both land here
-         and both have to reach the switches. */
-      settingsChanged();
       break;
 
     case 'modifiers':
@@ -494,7 +599,7 @@ window.addEventListener('viewport', (event) => {
 
     case 'output.layout':
       syncOutputs(message.outputs);
-      send({ type: 'view.query' });
+      if (initialConfigReady) send({ type: 'view.query' });
       /* The panel's Displays section is drawn from these, so a monitor
          unplugged — or a mode that has just been applied — redraws it. */
       settingsChanged();
@@ -522,6 +627,7 @@ window.addEventListener('viewport', (event) => {
       if (view) {
         view.title = message.title;
         view.app_id = message.app_id;
+        if (message.tag !== undefined) view.tag = message.tag;
         renderBars();
       }
       break;
@@ -834,8 +940,7 @@ document.addEventListener('keydown', (event) => {
 });
 
 send({ type: 'output.query' });
-/* Before view.query: the layout has to be in place as slots before the windows
-   that fill them are replayed, or every one of them lands in a default
-   position first and the restore has nothing left to do. */
+/* view.query answers with Config before any view.added replay. Session slots
+   are requested first; an extension load may delay only the view half. */
 send({ type: 'session.query' });
 send({ type: 'view.query' });

@@ -18,6 +18,7 @@
 function setFloating(id, floating, rect = null) {
   const view = views.get(id);
   if (!view) return;
+  if (!floating && view.special) return;
 
   const workspace = workspaceOf(id);
   if (workspace === null) return;
@@ -133,7 +134,7 @@ function moveByDelta(id, dx, dy) {
   gestureRelayout();
 }
 
-function addView({ id, title, app_id, output: outputName, min_width, min_height,
+function addView({ id, title, app_id, tag, output: outputName, min_width, min_height,
     floating, parent, width, height, replay }) {
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
@@ -170,7 +171,7 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   if (min_height > 0) el.style.minHeight = `${min_height}px`;
 
   views.set(id, {
-    el, viewport, title, app_id, box: null,
+    el, viewport, title, app_id, tag: tag ?? null, box: null,
     naturalWidth: width, naturalHeight: height,
     /* What the client says it will not go below, kept as numbers as well as on
        the element. The element carries them so flexbox enforces them, which is
@@ -187,6 +188,9 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
     parent: Number.isFinite(parent) ? parent : null,
     /* Rect while floating, null while tiled; see floatingOf(). */
     floating: null,
+    special: null,
+    specialOutput: null,
+    specialHidden: false,
     /* The frame last reported to the compositor, so an unchanged one is not
        re-sent. Null for a tiled window, which needs none. */
     frame: null,
@@ -211,9 +215,11 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
      width of the column it opens in. Applied before anything is inserted, so
      the window goes straight where it belongs rather than appearing in one
      place and jumping to another. */
-  const rule = ruleFor(app_id, title);
+  const rule = ruleFor(app_id, title, tag);
   const target = rule && Number.isFinite(rule.workspace)
     ? rule.workspace : output.workspace;
+  const special = rule?.workspace === 'scratchpad'
+    ? 'scratchpad' : (rule?.pinned === true ? 'pinned' : null);
 
   /* A window you just opened should be the one you are typing into, however it
      was started — a keybinding, a launcher, a link handler. The exceptions are
@@ -221,12 +227,16 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
      one on another workspace was an instruction to leave it there, not to be
      taken there. */
   const focusIt = () => {
-    if (!replay && target === output.workspace) {
+    if (!replay && special !== 'scratchpad' && target === output.workspace) {
       send({ type: 'view.focus', id });
     }
   };
 
-  if (rule && rule.floating) {
+  if (special || (rule && rule.floating)) {
+    const view = views.get(id);
+    view.special = special;
+    view.specialOutput = name;
+    view.specialHidden = special === 'scratchpad';
     insertLeaf(target, id);
     setFloating(id, true, Number.isFinite(rule.width) && Number.isFinite(rule.height)
       ? { x: rule.x ?? 0, y: rule.y ?? 0, width: rule.width, height: rule.height }
@@ -240,8 +250,12 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   /* A window that was floating comes back floating, at the rect it had —
      including one the compositor would not have floated on its own, because
      the decision to float it was the user's and is worth keeping. */
-  const floatSlot = claimFloatSlot(id, app_id || title);
+  const floatSlot = claimFloatSlot(id, app_id || title || tag, tag);
   if (floatSlot) {
+    const view = views.get(id);
+    view.special = floatSlot.special ?? null;
+    view.specialOutput = outputs.has(floatSlot.output) ? floatSlot.output : name;
+    view.specialHidden = view.special === 'scratchpad' ? floatSlot.hidden !== false : false;
     insertLeaf(floatSlot.workspace, id);
     setFloating(id, true, floatSlot);
     fadeIn(id);
@@ -251,7 +265,7 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   }
 
   /* If this application left a slot in the tree, it goes back into it. */
-  if (!floating && claimSlot(id, app_id || title)) {
+  if (!floating && claimSlot(id, app_id || title || tag, tag)) {
     treeGeneration++;
     relayoutAll();
     fadeIn(id);
@@ -287,6 +301,68 @@ function addView({ id, title, app_id, output: outputName, min_width, min_height,
   fadeIn(id);
   focusIt();
   saveSession();
+}
+
+function setSpecial(id, special, hide = false) {
+  const view = views.get(id);
+  const outputName = activeOutputName();
+  const output = outputs.get(outputName);
+  if (!view || !output) return false;
+
+  view.special = special;
+  view.specialOutput = outputName;
+  view.specialHidden = special === 'scratchpad' && hide;
+  if (!isFloating(id)) setFloating(id, true);
+  view.floating.workspace = output.workspace;
+  relayoutAll();
+  saveSession();
+  return true;
+}
+
+function toggleScratchpad(tag = null) {
+  const candidates = [...specialEntries()].filter(([, , view]) =>
+    view.special === 'scratchpad' && (!tag || view.tag === tag));
+  const entry = candidates.find(([, , view]) => !view.specialHidden)
+    ?? candidates[0];
+  if (!entry) return;
+  const [id, floating, view] = entry;
+  if (!view.specialHidden) {
+    view.specialHidden = true;
+    relayoutAll();
+    focusFirstOn(activeOutputName());
+  } else {
+    const outputName = activeOutputName();
+    const output = outputs.get(outputName);
+    if (!output) return;
+    view.specialOutput = outputName;
+    view.specialHidden = false;
+    floating.workspace = output.workspace;
+    relayoutAll();
+    send({ type: 'view.focus', id });
+  }
+  saveSession();
+}
+
+function moveToScratchpad() {
+  if (focusedId == null) return;
+  if (setSpecial(focusedId, 'scratchpad', true)) focusFirstOn(activeOutputName());
+}
+
+function togglePinned() {
+  if (focusedId == null) return;
+  const view = views.get(focusedId);
+  if (!view) return;
+  if (view.special === 'pinned') {
+    view.special = null;
+    view.specialHidden = false;
+    const output = outputs.get(view.specialOutput ?? activeOutputName());
+    if (output && view.floating) view.floating.workspace = output.workspace;
+    view.specialOutput = null;
+    relayoutAll();
+    saveSession();
+  } else {
+    setSpecial(focusedId, 'pinned');
+  }
 }
 
 /* The first window inside a subtree, in tree order. */
@@ -580,5 +656,3 @@ function focusParent() {
   }
   relayoutAll();
 }
-
-

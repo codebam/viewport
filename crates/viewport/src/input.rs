@@ -30,6 +30,128 @@ use smithay::utils::{Logical, Point, Rectangle, Serial, SERIAL_COUNTER};
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
+const SWIPE_THRESHOLD: f64 = 120.0;
+const PINCH_OUT_THRESHOLD: f64 = 1.2;
+const PINCH_IN_THRESHOLD: f64 = 0.8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GestureKind {
+    Swipe,
+    Pinch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GestureDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+    In,
+    Out,
+}
+
+/// One configured discrete touchpad gesture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GestureBinding {
+    kind: GestureKind,
+    fingers: u32,
+    direction: GestureDirection,
+    action: crate::binding::Action,
+}
+
+/// A gesture captured at begin. Once captured, no part reaches a client.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GestureState {
+    Swipe { fingers: u32, dx: f64, dy: f64 },
+    Pinch { fingers: u32, scale: f64 },
+}
+
+/// Parse `swipe:3:left` or `pinch:2:out` with an ordinary binding action.
+pub fn parse_gesture(spec: &str, action: &str) -> Option<GestureBinding> {
+    let mut parts = spec.split(':');
+    let kind = match parts.next()? {
+        "swipe" => GestureKind::Swipe,
+        "pinch" => GestureKind::Pinch,
+        _ => return None,
+    };
+    let fingers = parts.next()?.parse().ok()?;
+    if fingers == 0 {
+        return None;
+    }
+    let direction = match (kind, parts.next()?) {
+        (GestureKind::Swipe, "left") => GestureDirection::Left,
+        (GestureKind::Swipe, "right") => GestureDirection::Right,
+        (GestureKind::Swipe, "up") => GestureDirection::Up,
+        (GestureKind::Swipe, "down") => GestureDirection::Down,
+        (GestureKind::Pinch, "in") => GestureDirection::In,
+        (GestureKind::Pinch, "out") => GestureDirection::Out,
+        _ => return None,
+    };
+    if parts.next().is_some() || action.trim().is_empty() {
+        return None;
+    }
+    Some(GestureBinding {
+        kind,
+        fingers,
+        direction,
+        action: crate::binding::parse_action(action.trim()),
+    })
+}
+
+fn captures_gesture(bindings: &[GestureBinding], kind: GestureKind, fingers: u32) -> bool {
+    bindings
+        .iter()
+        .any(|binding| binding.kind == kind && binding.fingers == fingers)
+}
+
+fn finish_gesture(
+    state: GestureState,
+    bindings: &[GestureBinding],
+    cancelled: bool,
+) -> Option<crate::binding::Action> {
+    if cancelled {
+        return None;
+    }
+    let (kind, fingers, direction) = match state {
+        GestureState::Swipe {
+            fingers, dx, dy, ..
+        } => {
+            let direction = if dx.abs() >= SWIPE_THRESHOLD && dx.abs() > dy.abs() {
+                if dx < 0.0 {
+                    GestureDirection::Left
+                } else {
+                    GestureDirection::Right
+                }
+            } else if dy.abs() >= SWIPE_THRESHOLD && dy.abs() > dx.abs() {
+                if dy < 0.0 {
+                    GestureDirection::Up
+                } else {
+                    GestureDirection::Down
+                }
+            } else {
+                return None;
+            };
+            (GestureKind::Swipe, fingers, direction)
+        }
+        GestureState::Pinch { fingers, scale, .. } => {
+            let direction = if scale >= PINCH_OUT_THRESHOLD {
+                GestureDirection::Out
+            } else if scale <= PINCH_IN_THRESHOLD {
+                GestureDirection::In
+            } else {
+                return None;
+            };
+            (GestureKind::Pinch, fingers, direction)
+        }
+    };
+    bindings
+        .iter()
+        .find(|binding| {
+            binding.kind == kind && binding.fingers == fingers && binding.direction == direction
+        })
+        .map(|binding| binding.action.clone())
+}
+
 use crate::state::ViewportState;
 use crate::views::NO_VIEW;
 
@@ -1029,10 +1151,13 @@ impl ViewportState {
         // on that.
         self.settle();
 
-        // Anything at all counts. Device added and removed do not — they
-        // arrive when a dock is plugged in with nobody at the machine — but
-        // they are filtered out before this.
-        if self.idle.activity(activity_kind(&event)) {
+        // A hotplug is not somebody using the desk. These events still reach
+        // the match below for tablet, touch and device-config lifecycle.
+        let device_change = matches!(
+            &event,
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
+        );
+        if !device_change && self.idle.activity(activity_kind(&event)) {
             // The screens were off. Bring them back through the same path the
             // deadline turned them off by.
             self.set_outputs_enabled(true);
@@ -1040,8 +1165,10 @@ impl ViewportState {
         // And any client that asked to be told when the session goes idle —
         // a chat program marking you away, which is not the compositor's
         // business to decide but is its business to report.
-        let seat = self.seat.clone();
-        self.idle_notifier_state.notify_activity(&seat);
+        if !device_change {
+            let seat = self.seat.clone();
+            self.idle_notifier_state.notify_activity(&seat);
+        }
 
         // And the pointer's own deadline, which counts a narrower set of
         // events than either of those — see `uses_the_pointer`.
@@ -1919,11 +2046,21 @@ impl ViewportState {
                 tool.frame(self, time);
             }
 
-            // Touchpad gestures, forwarded whole. A client that cannot see
-            // them has no way to tell a three-finger swipe from a scroll,
-            // because scroll is all it would otherwise be sent — and pinch to
-            // zoom in a browser or a map is exactly this.
+            // Touchpad gestures forward whole unless this finger count has a
+            // configured binding. Capture is decided at begin: waiting for a
+            // threshold would leak a partial sequence to the client.
             InputEvent::GestureSwipeBegin { event, .. } => {
+                self.gesture = None;
+                if !self.locked
+                    && captures_gesture(&self.gestures, GestureKind::Swipe, event.fingers())
+                {
+                    self.gesture = Some(GestureState::Swipe {
+                        fingers: event.fingers(),
+                        dx: 0.0,
+                        dy: 0.0,
+                    });
+                    return;
+                }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.gesture_swipe_begin(
                         self,
@@ -1936,6 +2073,11 @@ impl ViewportState {
                 }
             }
             InputEvent::GestureSwipeUpdate { event, .. } => {
+                if let Some(GestureState::Swipe { dx, dy, .. }) = self.gesture.as_mut() {
+                    *dx += event.delta().x;
+                    *dy += event.delta().y;
+                    return;
+                }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.gesture_swipe_update(
                         self,
@@ -1947,6 +2089,16 @@ impl ViewportState {
                 }
             }
             InputEvent::GestureSwipeEnd { event, .. } => {
+                if let Some(state @ GestureState::Swipe { .. }) = self.gesture.take() {
+                    if !self.locked {
+                        if let Some(action) =
+                            finish_gesture(state, &self.gestures, event.cancelled())
+                        {
+                            self.handle_action(Action::Bound(action));
+                        }
+                    }
+                    return;
+                }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.gesture_swipe_end(
                         self,
@@ -1962,6 +2114,16 @@ impl ViewportState {
                 }
             }
             InputEvent::GesturePinchBegin { event, .. } => {
+                self.gesture = None;
+                if !self.locked
+                    && captures_gesture(&self.gestures, GestureKind::Pinch, event.fingers())
+                {
+                    self.gesture = Some(GestureState::Pinch {
+                        fingers: event.fingers(),
+                        scale: 1.0,
+                    });
+                    return;
+                }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.gesture_pinch_begin(
                         self,
@@ -1974,6 +2136,10 @@ impl ViewportState {
                 }
             }
             InputEvent::GesturePinchUpdate { event, .. } => {
+                if let Some(GestureState::Pinch { scale, .. }) = self.gesture.as_mut() {
+                    *scale = event.scale();
+                    return;
+                }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.gesture_pinch_update(
                         self,
@@ -1987,6 +2153,16 @@ impl ViewportState {
                 }
             }
             InputEvent::GesturePinchEnd { event, .. } => {
+                if let Some(state @ GestureState::Pinch { .. }) = self.gesture.take() {
+                    if !self.locked {
+                        if let Some(action) =
+                            finish_gesture(state, &self.gestures, event.cancelled())
+                        {
+                            self.handle_action(Action::Bound(action));
+                        }
+                    }
+                    return;
+                }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.gesture_pinch_end(
                         self,
@@ -3205,5 +3381,107 @@ mod tests {
         ] {
             assert_eq!(shortcut(&modifiers(true, true), Keysym::new(raw)), None);
         }
+    }
+
+    #[test]
+    fn gesture_specs_use_binding_actions() {
+        let swipe = parse_gesture("swipe:3:left", "shell workspace.next").unwrap();
+        assert_eq!(swipe.kind, GestureKind::Swipe);
+        assert_eq!(swipe.fingers, 3);
+        assert_eq!(swipe.direction, GestureDirection::Left);
+        assert_eq!(
+            swipe.action,
+            crate::binding::Action::Shell("workspace.next".to_owned())
+        );
+        assert!(parse_gesture("pinch:0:in", "close").is_none());
+        assert!(parse_gesture("pinch:2:left", "close").is_none());
+        assert!(parse_gesture("swipe:3:left:extra", "close").is_none());
+    }
+
+    #[test]
+    fn swipe_requires_threshold_and_dominant_direction() {
+        let bindings = [parse_gesture("swipe:3:left", "close").unwrap()];
+        assert!(captures_gesture(&bindings, GestureKind::Swipe, 3));
+        assert!(!captures_gesture(&bindings, GestureKind::Swipe, 4));
+        assert_eq!(
+            finish_gesture(
+                GestureState::Swipe {
+                    fingers: 3,
+                    dx: -120.0,
+                    dy: 30.0,
+                },
+                &bindings,
+                false,
+            ),
+            Some(crate::binding::Action::Close)
+        );
+        for state in [
+            GestureState::Swipe {
+                fingers: 3,
+                dx: -119.9,
+                dy: 0.0,
+            },
+            GestureState::Swipe {
+                fingers: 3,
+                dx: -130.0,
+                dy: 130.0,
+            },
+        ] {
+            assert_eq!(finish_gesture(state, &bindings, false), None);
+        }
+        assert_eq!(
+            finish_gesture(
+                GestureState::Swipe {
+                    fingers: 3,
+                    dx: -200.0,
+                    dy: 0.0,
+                },
+                &bindings,
+                true,
+            ),
+            None,
+            "cancelled gestures never act"
+        );
+    }
+
+    #[test]
+    fn pinch_uses_cumulative_scale_thresholds() {
+        let bindings = [
+            parse_gesture("pinch:2:out", "magnify in").unwrap(),
+            parse_gesture("pinch:2:in", "magnify out").unwrap(),
+        ];
+        assert_eq!(
+            finish_gesture(
+                GestureState::Pinch {
+                    fingers: 2,
+                    scale: 1.2,
+                },
+                &bindings,
+                false,
+            ),
+            Some(crate::binding::Action::Magnify(crate::magnify::Step::In))
+        );
+        assert_eq!(
+            finish_gesture(
+                GestureState::Pinch {
+                    fingers: 2,
+                    scale: 0.8,
+                },
+                &bindings,
+                false,
+            ),
+            Some(crate::binding::Action::Magnify(crate::magnify::Step::Out))
+        );
+        assert_eq!(
+            finish_gesture(
+                GestureState::Pinch {
+                    fingers: 2,
+                    scale: 1.19,
+                },
+                &bindings,
+                false,
+            ),
+            None
+        );
     }
 }

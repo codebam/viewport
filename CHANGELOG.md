@@ -87,6 +87,21 @@ to summarise rather than to duplicate.
   and answering with another is worse than announcing nothing.
 
 ### Added
+- Window rules now support `contains`, `equals`, and regular-expression
+  matching across `app_id`, title, and `xdg-toplevel-tag`, plus scratchpad and
+  output-pinned floating windows. `scratchpad.toggle`, `scratchpad.move`, and
+  `window.pin.toggle` expose the policy to bindings.
+- Per-device libinput settings can match the logged `vendor:product:name`, with
+  wildcard defaults and live reload. Discrete swipe and pinch gestures can run
+  any existing binding action while unmatched gestures still reach clients.
+- Explicit local `layout_extensions` register through a stable shell API and
+  load before mapped-window replay. The shipped monocle example demonstrates
+  the contract; failed or invalid extensions fall back to tiling.
+- Display settings can derive a conservative recommended scale from valid EDID
+  dimensions and arrange all connected outputs horizontally or vertically.
+- Physical input hotplug events now reach tablet, touchscreen, and device
+  configuration lifecycle handling instead of being discarded by the udev
+  callback.
 - Dependency policy is checked by `cargo-deny` in CI and the commit hook:
   advisories, accepted licenses, registries and the two deliberate Git sources.
   Workflow actions are pinned to full commits, with Dependabot responsible for

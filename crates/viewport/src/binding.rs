@@ -270,7 +270,7 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
     })
 }
 
-fn parse_action(action: &str) -> Action {
+pub(crate) fn parse_action(action: &str) -> Action {
     match action.split_once(' ') {
         Some(("exec", rest)) => Action::Exec(rest.trim().to_owned()),
         Some(("shell", rest)) => Action::Shell(rest.trim().to_owned()),

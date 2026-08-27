@@ -10,6 +10,14 @@ impl ViewportState {
     /// flag or an earlier load set, which is what makes a reload safe
     /// (`src/config.c:400`).
     pub fn apply_config(&mut self, file: crate::config::File) {
+        if let Some(extensions) = file.layout_extensions {
+            let mut extensions: Vec<_> = extensions
+                .into_iter()
+                .map(|(name, url)| viewport_ipc::event::LayoutExtension { name, url })
+                .collect();
+            extensions.sort_by(|a, b| a.name.cmp(&b.name));
+            self.config.layout_extensions = extensions;
+        }
         if let Some(layout) = file.layout {
             // Checked here for the same reason tiling_mode is, below: this is
             // where the name can be rejected while the file it came from is
@@ -18,14 +26,19 @@ impl ViewportState {
             // keymap was built for a layout that does not exist, so the chords
             // belonging to whichever one was meant were simply absent. What
             // that looks like is a config key that was ignored in silence.
-            const LAYOUTS: [&str; 5] = ["tiling", "scrolling", "solar", "matrix", "canvas"];
-            if LAYOUTS.contains(&layout.as_str()) {
+            let extension = self
+                .config
+                .layout_extensions
+                .iter()
+                .any(|entry| entry.name == layout);
+            if crate::config::BUILTIN_LAYOUTS.contains(&layout.as_str()) || extension {
                 self.config.layout = layout;
             } else {
                 tracing::warn!(
-                    "unknown layout {layout:?}; expected one of {}",
-                    LAYOUTS.join(", ")
+                    "unknown layout {layout:?}; expected a built-in ({}) or layout_extensions entry",
+                    crate::config::BUILTIN_LAYOUTS.join(", ")
                 );
+                self.config.layout = "tiling".to_owned();
             }
         }
         if let Some(logo) = file.logo {
@@ -262,6 +275,28 @@ impl ViewportState {
             // is what the comment on `apply_output_config` describes — and on
             // a reload it is what makes the file the last word again.
             self.apply_output_config();
+        }
+        if let Some(input) = file.input {
+            self.input_config = input;
+            self.apply_libinput_config();
+        }
+        if let Some(gestures) = file.gestures {
+            let mut specs: Vec<_> = gestures.into_iter().collect();
+            specs.sort_by(|a, b| a.0.cmp(&b.0));
+            self.gestures = specs
+                .into_iter()
+                .filter_map(|(gesture, action)| {
+                    match crate::input::parse_gesture(&gesture, &action) {
+                        Some(binding) => Some(binding),
+                        None => {
+                            tracing::warn!("invalid gesture {gesture:?}");
+                            None
+                        }
+                    }
+                })
+                .collect();
+            // Keep any captured sequence captured. Forwarding its update or
+            // end after consuming its begin would give a client half a gesture.
         }
         // Run after the compositor is up, so it reaches whatever it names.
         if let Some(command) = file.startup.as_deref() {

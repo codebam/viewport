@@ -183,6 +183,15 @@ function syncOutputs(list) {
     if (activeOutput === name) activeOutput = null;
   }
 
+  const fallback = firstOutputName();
+  for (const [, floating, view] of specialEntries()) {
+    if (outputs.has(view.specialOutput)) continue;
+    view.specialOutput = fallback;
+    const output = outputs.get(fallback);
+    if (output) floating.workspace = output.workspace;
+    if (view.special === 'scratchpad') view.specialHidden = true;
+  }
+
   relayoutAll();
 }
 
@@ -487,4 +496,3 @@ function moveToWorkspace(n) {
     }
   }
 }
-

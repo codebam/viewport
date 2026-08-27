@@ -20,10 +20,11 @@
 function serialiseNode(node) {
   if (node.type === 'leaf') {
     const view = views.get(node.id);
-    const app = view ? (view.app_id || view.title) : node.app;
+    const app = view ? (view.app_id || view.title || view.tag) : node.app;
     if (!app) return null;
     return {
       type: 'leaf', app,
+      ...(view?.tag ? { tag: view.tag } : (node.tag ? { tag: node.tag } : {})),
       weight: node.weight ?? 1,
       ...(node.width !== undefined ? { width: node.width } : {}),
     };
@@ -63,14 +64,20 @@ function serialiseSession() {
   /* Floating windows live outside the tree, so walking it misses them
      entirely — they came back tiled, in whatever order they happened to open.
      Their rect is the whole of their layout, so it is what gets written. */
-  for (const [id, floating, view] of floatingEntries()) {
-    const app = view.app_id || view.title;
+  for (const [id, view] of views) {
+    const floating = view.floating;
+    if (!floating) continue;
+    const app = view.app_id || view.title || view.tag;
     if (!app) continue;
     saved.floating.push({
       app,
+      ...(view.tag ? { tag: view.tag } : {}),
       workspace: floating.workspace,
       x: floating.x, y: floating.y,
       width: floating.width, height: floating.height,
+      ...(view.special ? { special: view.special } : {}),
+      ...(view.specialOutput ? { output: view.specialOutput } : {}),
+      ...(view.special === 'scratchpad' ? { hidden: view.specialHidden !== false } : {}),
     });
   }
   for (const [name, output] of outputs) {
@@ -98,6 +105,7 @@ function reviveNode(node) {
   if (node.type === 'leaf') {
     const leaf = newLeaf(nextSlotId--);
     leaf.app = node.app;
+    if (node.tag) leaf.tag = node.tag;
     leaf.weight = node.weight ?? 1;
     if (node.width !== undefined) leaf.width = node.width;
     slotsPending++;
@@ -207,14 +215,16 @@ function dropUnclaimedSlots() {
  * only change which of three identical terminals ends up on which screen,
  * and the saved layout is a better answer to that than the order the
  * applications happened to start in. */
-function claimSlot(id, app) {
+function claimSlot(id, app, tag = null) {
   if (slotsPending === 0 || !app) return false;
 
   for (const [n, root] of workspaces) {
     for (const [leaf] of walk(root)) {
-      if (leaf.id < 0 && leaf.app === app) {
+      const identityMatches = leaf.tag ? tag === leaf.tag : leaf.app === app;
+      if (leaf.id < 0 && identityMatches) {
         leaf.id = id;
         delete leaf.app;
+        delete leaf.tag;
         slotsPending--;
         return true;
       }
@@ -453,11 +463,44 @@ function reportNotificationRect() {
  * window the same app_id and differ only in what they display. Both are
  * substring matches, since an exact one would need the user to know the
  * application's internal name exactly. */
-function ruleFor(appId, title) {
+function ruleValueMatches(value, condition) {
+  const text = String(value || '');
+  if (typeof condition === 'string') {
+    return text.toLowerCase().includes(condition.toLowerCase());
+  }
+  if (!condition || typeof condition !== 'object') return false;
+  if (condition.contains !== undefined) {
+    return text.toLowerCase().includes(String(condition.contains).toLowerCase());
+  }
+  if (condition.equals !== undefined) {
+    return text.toLowerCase() === String(condition.equals).toLowerCase();
+  }
+  if (condition.regex !== undefined) {
+    try {
+      return new RegExp(String(condition.regex), condition.flags ?? '').test(text);
+    } catch (_) {
+      return false;
+    }
+  }
+  return false;
+}
+
+function ruleFor(appId, title, tag) {
   const haystackApp = (appId || '').toLowerCase();
   const haystackTitle = (title || '').toLowerCase();
 
   return windowRules.find((rule) => {
+    if (!rule || typeof rule !== 'object') return false;
+    if (rule.match && typeof rule.match === 'object') {
+      const fields = [['app_id', appId], ['title', title], ['tag', tag]];
+      let matched = false;
+      for (const [field, value] of fields) {
+        if (rule.match[field] === undefined) continue;
+        matched = true;
+        if (!ruleValueMatches(value, rule.match[field])) return false;
+      }
+      return matched;
+    }
     if (rule.app_id && !haystackApp.includes(String(rule.app_id).toLowerCase())) {
       return false;
     }
@@ -472,10 +515,10 @@ function ruleFor(appId, title) {
 
 /* The place a floating window left behind, if it had one. Returns the rect to
  * reopen it at, or null. */
-function claimFloatSlot(id, app) {
+function claimFloatSlot(id, app, tag = null) {
   if (floatSlots.length === 0 || !app) return null;
 
-  const at = floatSlots.findIndex((slot) => slot.app === app);
+  const at = floatSlots.findIndex((slot) => slot.tag ? slot.tag === tag : slot.app === app);
   if (at < 0) return null;
 
   const [slot] = floatSlots.splice(at, 1);
@@ -1007,4 +1050,3 @@ function cycleWindowHeight() {
   found.leaf.weight = next * found.parent.children.length;
   relayoutAll();
 }
-

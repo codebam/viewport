@@ -132,6 +132,7 @@ impl View {
             id: self.id,
             title: self.title(),
             app_id: self.app_id(),
+            tag: self.tag.clone(),
             output,
             min_width,
             min_height,

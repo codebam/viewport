@@ -256,6 +256,8 @@ pub struct ViewportState {
     /// The config file's `outputs` block, kept because an output named there
     /// may be plugged in later.
     pub output_config: std::collections::HashMap<String, crate::config::OutputConfig>,
+    /// Per-device settings retained for devices hotplugged after config load.
+    pub input_config: std::collections::HashMap<String, crate::config::InputConfig>,
     /// How each monitor was arranged when it was last seen, by connector name.
     ///
     /// A connector that comes back is a new output as far as the backend is
@@ -421,6 +423,9 @@ pub struct ViewportState {
 
     /// Keybindings. Almost all of them are passthroughs to the shell.
     pub bindings: Vec<crate::binding::Binding>,
+    /// Configured discrete gestures and the captured sequence in progress.
+    pub gestures: Vec<crate::input::GestureBinding>,
+    pub gesture: Option<crate::input::GestureState>,
 
     /// Stops the outer GLib loop. calloop's own signal only ends the inner
     /// dispatch, so quitting has to go through this when the web engine is
@@ -1478,6 +1483,7 @@ impl ViewportState {
             shell_announced: false,
             config: Config {
                 layout: "tiling".to_owned(),
+                layout_extensions: Vec::new(),
                 // Both true, as in src/main.c:69 — "the empty desktop explains
                 // itself until told not to". These set no-logo and no-tutorial
                 // on the document when false, and on a desktop with no windows
@@ -1527,6 +1533,7 @@ impl ViewportState {
             },
             shell_url: None,
             output_config: std::collections::HashMap::new(),
+            input_config: std::collections::HashMap::new(),
             output_memory: std::collections::HashMap::new(),
             startup: None,
             notifications: crate::notification::Notifications::default(),
@@ -1586,6 +1593,8 @@ impl ViewportState {
                 // file turned out to say.
                 "tiling",
             ),
+            gestures: Vec::new(),
+            gesture: None,
             #[cfg(feature = "wpe")]
             shell_ping: None,
             capture: None,
@@ -3199,6 +3208,9 @@ impl ViewportState {
                 let usable = self.usable_area(output);
                 let props = output.physical_properties();
                 let current = output.current_mode();
+                let physical_size = props.size;
+                let physical_dimensions = (physical_size.w > 0 && physical_size.h > 0)
+                    .then_some((physical_size.w, physical_size.h));
                 OutputInfo {
                     name: output.name(),
                     // Never null: the shell concatenates these without
@@ -3206,6 +3218,8 @@ impl ViewportState {
                     make: props.make,
                     model: props.model,
                     serial: String::new(),
+                    physical_width_mm: physical_dimensions.map(|size| size.0),
+                    physical_height_mm: physical_dimensions.map(|size| size.1),
                     enabled: true,
                     // The shell owns this — it tracks the pointer and keyboard
                     // focus, and tells the compositor. Reporting it back is

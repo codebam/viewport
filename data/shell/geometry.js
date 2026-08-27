@@ -122,7 +122,9 @@ function reportGeometry(id) {
      In solar's Lagrange field it is bounded by the monitor it was parked on,
      which is not the one showing its workspace — clipped against that, a
      parked window would be cropped away entirely. */
-  const cell = view.overview?.cell ?? view.solar?.cell ?? null;
+  const specialOutput = view.special
+    ? outputs.get(view.specialOutput)?.windowsEl ?? null : null;
+  const cell = view.overview?.cell ?? view.solar?.cell ?? specialOutput;
   const area = cell
     ? (() => {
       const r = measureOf(cell);
@@ -593,6 +595,58 @@ const resizeObserver = new ResizeObserver((entries) => {
   }
 });
 
+function layoutContext(output = null, root = null, plan = null) {
+  return {
+    output,
+    root,
+    plan,
+    views,
+    workspaces,
+    outputs,
+    renderedIds,
+    focusedId,
+    workspace: output?.workspace ?? null,
+    helpers: {
+      renderTree,
+      renderStrip,
+      idsOf,
+      dynamicOrder,
+      isFloating,
+      isFullscreen,
+      edgeGapPx,
+      measureOf,
+      markRendered(id) { renderedIds.add(id); },
+    },
+  };
+}
+
+registerBuiltinLayout('tiling', {
+  clear() {},
+  render({ root }) { return root ? renderTree(root) : null; },
+});
+registerBuiltinLayout('scrolling', {
+  clear() {},
+  render({ root, output }) { return root ? renderStrip(root, output) : null; },
+});
+registerBuiltinLayout('solar', {
+  clear: clearSolarState,
+  prepare: planSolar,
+  render({ output, plan }) { return renderSolar(plan?.get(output.name) ?? [], output); },
+  content({ output, plan }) { return plan?.get(output.name)?.length ?? 0; },
+  after({ faded }) { settleSolarOpacity(faded); },
+});
+registerBuiltinLayout('matrix', {
+  clear: clearMatrixState,
+  prepare: planMatrix,
+  render({ output, plan }) { return renderMatrix(plan?.get(output.name) ?? [], output); },
+});
+registerBuiltinLayout('canvas', {
+  clear: clearCanvasState,
+  prepare: planCanvas,
+  render({ output, plan }) { return renderCanvas(plan?.get(output.name) ?? [], output); },
+  absorbsFloating: true,
+});
+
 function relayoutAll() {
   /* A dynamic tiling mode derives the shape from which windows are open, so
      the tree may be out of date before anything is measured. Cheap when
@@ -600,44 +654,13 @@ function relayoutAll() {
      for and returns. */
   arrangeAll();
 
-  /* Solar positions absolutely and dims what is not in focus, neither of which
-     any other layout would undo — a window left carrying an orbit's left/top
-     would be placed in the middle of a tiling column, and one left at 0.4
-     would stay dim for the rest of the session. Cheap when there is nothing to
-     undo. */
-  if (layoutMode !== 'solar' || overviewActive) clearSolarState();
-
-  /* The matrix positions absolutely and hides what is buried in its deepest
-     slot, neither of which any other layout would undo: a window left with a
-     slot's left/top would sit in the middle of a tiling column, and one left
-     hidden would stay invisible for the rest of the session. */
-  if (layoutMode !== 'matrix' || overviewActive) clearMatrixState();
-
-  /* The canvas positions absolutely for the same reason both of those do, and
-     leaves the same inline rect behind: a window carrying a place on the plane
-     would sit in the middle of a tiling column. Its *places* survive — see
-     clearCanvasState — so leaving the canvas and coming back finds the plane
-     as it was left. */
-  if (layoutMode !== 'canvas' || overviewActive) clearCanvasState();
-
-  /* Every output's orbits, worked out in one pass before any of them is drawn.
-     A Lagrange field puts one monitor's cold windows on another, and the
-     outputs are rendered in whatever order the map is in, so the companion has
-     to already know what it is holding by the time its turn comes. */
-  const solar = (layoutMode === 'solar' && !overviewActive)
-    ? planSolar() : null;
-
-  /* The matrix's rectangles, for every output at once. One pass rather than
-     one per output as it is drawn, so that whether a monitor is empty is
-     answerable from the plan rather than from how far the drawing has got. */
-  const matrix = (layoutMode === 'matrix' && !overviewActive)
-    ? planMatrix() : null;
-
-  /* And the canvas's, in one pass for the same reason: placing a window that
-     has never been placed reads the viewport of the workspace it is on, so
-     every output's plan has to be settled before any of them is drawn. */
-  const canvas = (layoutMode === 'canvas' && !overviewActive)
-    ? planCanvas() : null;
+  let activeLayout = layoutRegistry.get(layoutMode) ?? layoutRegistry.get('tiling');
+  if (!layoutRegistry.has(layoutMode)) layoutMode = 'tiling';
+  for (const [name, descriptor] of layoutRegistry) {
+    if (overviewActive || name !== layoutMode) descriptor.clear(layoutContext());
+  }
+  const layoutPlan = !overviewActive && typeof activeLayout.prepare === 'function'
+    ? activeLayout.prepare(layoutContext()) : null;
 
   /* Where everything was, before the tree is thrown away and rebuilt.
      Not while a gesture is running: a window under the hand is not animated
@@ -671,29 +694,14 @@ function relayoutAll() {
     /* Only one output shows the overview: a window element exists once in the
        DOM, so two grids would fight over the same windows and the second would
        simply steal them. The others go blank for the duration. */
-    /* Solar is asked for the output rather than for the root: what it draws
-       here is not this workspace's tree but this monitor's share of the plan,
-       which in a Lagrange field includes windows belonging to the workspace on
-       the other screen. */
     const rendered = overviewActive
       ? renderOverview(output, assignment.get(name) ?? [])
-      : (solar
-        ? renderSolar(solar.get(name) ?? [], output)
-        : (matrix
-          ? renderMatrix(matrix.get(name) ?? [], output)
-          : (canvas
-            ? renderCanvas(canvas.get(name) ?? [], output)
-            : (root
-              ? (layoutMode === 'scrolling'
-                ? renderStrip(root, output)
-                : renderTree(root))
-              : null))));
+      : activeLayout.render(layoutContext(output, root, layoutPlan));
 
     output.windowsEl.replaceChildren();
-    output.windowsEl.classList.toggle('scrolling', layoutMode === 'scrolling');
-    output.windowsEl.classList.toggle('solar', layoutMode === 'solar');
-    output.windowsEl.classList.toggle('matrix', layoutMode === 'matrix');
-    output.windowsEl.classList.toggle('canvas', layoutMode === 'canvas');
+    for (const name of layoutRegistry.keys()) {
+      output.windowsEl.classList.toggle(name, name === layoutMode);
+    }
     /* Everything this output draws follows the hand directly while a gesture
        is running. The dragged window has a class of its own and has had one
        for as long as dragging has worked; this is for the windows it is not.
@@ -727,7 +735,7 @@ function relayoutAll() {
          would nail the window to the screen — the rect is in screen
          coordinates, so the window would sit still while the plane panned
          underneath it. */
-      if (canvas) break;
+      if (activeLayout.absorbsFloating) break;
       if (floating.workspace !== output.workspace) continue;
       view.el.classList.add('floating');
       output.windowsEl.append(view.el);
@@ -742,11 +750,35 @@ function relayoutAll() {
       });
     }
 
+    /* Scratchpads and pinned windows are output-owned overlays, not members of
+       the numbered workspace or any layout model. */
+    if (!overviewActive) {
+      for (const [id, floating, view] of specialEntries()) {
+        if (view.specialOutput !== name || view.specialHidden) continue;
+        view.canvas = null;
+        view.el.classList.remove('plane', 'front');
+        view.el.classList.add('floating');
+        output.windowsEl.append(view.el);
+        renderedIds.add(id);
+        Object.assign(view.el.style, {
+          left: `${floating.x}px`, top: `${floating.y}px`,
+          width: `${floating.width}px`, height: `${floating.height}px`,
+          minWidth: view.minWidth > 0 ? `${view.minWidth}px` : '',
+          minHeight: view.minHeight > 0 ? `${view.minHeight}px` : '',
+          flexGrow: '',
+        });
+      }
+    }
+
     /* A monitor holding another workspace's Lagrange field has nothing of its
        own on it and is not empty, so the placeholder is answered by what was
        drawn rather than by whose workspace it was. */
+    const layoutContent = typeof activeLayout.content === 'function'
+      ? activeLayout.content(layoutContext(output, root, layoutPlan)) : 0;
+    const specialContent = [...specialEntries()].some(([id, , view]) =>
+      view.specialOutput === name && !view.specialHidden && renderedIds.has(id));
     output.emptyEl.hidden = idsOf(output.workspace).length > 0
-      || (solar?.get(name)?.length ?? 0) > 0;
+      || layoutContent > 0 || specialContent;
 
     /* A fullscreen window covers the whole output, bar included — that is what
      * fullscreen means, and a video with a status bar across the top is not
@@ -831,9 +863,11 @@ function relayoutAll() {
        the whole answer. Without this exception a window on a workspace that
        happened to be off screen stayed hidden, and its thumbnail came out
        labelled empty. */
-    const visible = overviewActive
-      ? renderedIds.has(id)
-      : (workspace !== null && shown.has(workspace) && renderedIds.has(id));
+    const visible = view.special
+      ? (!overviewActive && renderedIds.has(id))
+      : (overviewActive
+        ? renderedIds.has(id)
+        : (workspace !== null && shown.has(workspace) && renderedIds.has(id)));
 
     /* A window that was not on screen a moment ago fades in exactly as a
        newly opened one does, and for the same reason: its contents are a
@@ -872,7 +906,7 @@ function relayoutAll() {
      from renderSolar instead would put a window's resting value on the wire
      immediately before the fade set it back to zero, which is a window that
      flashes at its final brightness on the frame it opens. */
-  if (solar) settleSolarOpacity(faded);
+  activeLayout.after?.({ ...layoutContext(null, null, layoutPlan), faded });
 
   /* Offset every window back to where it was and let it slide into place.
      Except under the hand: a drag is already a window following a pointer at
@@ -904,4 +938,3 @@ function relayoutAll() {
   if (isGesturing()) reportAllGeometry();
   pumpGeometry();
 }
-

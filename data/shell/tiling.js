@@ -79,7 +79,8 @@ function workspaceOf(id) {
  * the top. Used wherever "what is on this workspace" is the question rather
  * than "where does it sit in the tree". */
 function idsOf(n) {
-  const ids = leavesOf(n).map((leaf) => leaf.id);
+  const ids = leavesOf(n).map((leaf) => leaf.id)
+    .filter((id) => !views.get(id)?.special);
   for (const [id, floating] of floatingEntries()) {
     if (floating.workspace === n) ids.push(id);
   }
@@ -383,4 +384,3 @@ function renderTree(node) {
 
   return rendered.length > 0 ? el : null;
 }
-

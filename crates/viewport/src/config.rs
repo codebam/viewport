@@ -73,6 +73,29 @@ pub struct CursorConfig {
     pub hide_after_ms: Option<i64>,
 }
 
+/// Settings libinput applies to one device.
+///
+/// Entries under `input` are keyed by `vendor:product:name`. The `*` entry is
+/// applied first and an exact entry overrides the fields it names.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct InputConfig {
+    pub tap: Option<bool>,
+    pub tap_drag: Option<bool>,
+    pub natural_scroll: Option<bool>,
+    pub left_handed: Option<bool>,
+    pub middle_emulation: Option<bool>,
+    pub disable_while_typing: Option<bool>,
+    /// libinput's normalized range, from -1 to 1.
+    pub accel_speed: Option<f64>,
+    /// `adaptive` or `flat`.
+    pub accel_profile: Option<String>,
+    /// `button_areas` or `clickfinger`.
+    pub click_method: Option<String>,
+    /// `none`, `two_finger`, `edge`, or `on_button_down`.
+    pub scroll_method: Option<String>,
+}
+
 /// The `magnify` block: the screen magnifier's step and its ceiling.
 ///
 /// Only the two numbers, because everything else about the magnifier is a
@@ -422,6 +445,9 @@ pub struct File {
     pub menu: Option<String>,
     pub startup: Option<String>,
     pub layout: Option<String>,
+    /// User layout scripts, keyed by the name they register with the shell.
+    /// Relative paths are resolved beside this config file by [`load`].
+    pub layout_extensions: Option<std::collections::HashMap<String, String>>,
     pub logo: Option<bool>,
     pub tutorial: Option<bool>,
     pub bar: Option<String>,
@@ -522,6 +548,11 @@ pub struct File {
     pub theme: Option<serde_json::Value>,
 
     pub outputs: std::collections::HashMap<String, OutputConfig>,
+    /// Per-device libinput settings. An empty map clears the remembered map;
+    /// absence leaves settings from an earlier load alone.
+    pub input: Option<std::collections::HashMap<String, InputConfig>>,
+    /// Discrete touchpad gestures mapped to ordinary binding actions.
+    pub gestures: Option<std::collections::HashMap<String, String>>,
     pub keyboard: KeyboardConfig,
     pub cursor: CursorConfig,
     pub magnify: MagnifyConfig,
@@ -602,9 +633,65 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
     };
     // The line and column come from serde_json, which is what makes a
     // misplaced comma findable rather than "config is invalid".
-    let file: File =
+    let mut file: File =
         serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    if let Some(extensions) = file.layout_extensions.as_mut() {
+        for (name, value) in extensions {
+            anyhow::ensure!(
+                valid_layout_name(name),
+                "{}: invalid layout extension name {name:?}",
+                path.display()
+            );
+            anyhow::ensure!(
+                !BUILTIN_LAYOUTS.contains(&name.as_str()),
+                "{}: layout extension {name:?} cannot replace a built-in layout",
+                path.display()
+            );
+            *value = layout_extension_url(value, path).map_err(|e| {
+                anyhow::anyhow!("{}: layout extension {name:?}: {e}", path.display())
+            })?;
+        }
+    }
     Ok(Some(file))
+}
+
+/// Layout names implemented by the shipped shell.
+pub const BUILTIN_LAYOUTS: [&str; 5] = ["tiling", "scrolling", "solar", "matrix", "canvas"];
+
+fn valid_layout_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+}
+
+fn layout_extension_url(value: &str, config_path: &Path) -> anyhow::Result<String> {
+    let value = value.trim();
+    anyhow::ensure!(!value.is_empty(), "path is empty");
+    anyhow::ensure!(
+        !value.contains("://"),
+        "only local script paths are accepted"
+    );
+    let expanded = match value.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default()
+            .join(rest),
+        None => std::path::PathBuf::from(value),
+    };
+    let path = if expanded.is_absolute() {
+        expanded
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(expanded)
+    };
+    // Existing files are canonicalised so the shell receives one stable URL.
+    // A missing file still has to reach the shell: script.onerror is where an
+    // extension load falls back to tiling without taking the compositor down.
+    let path = path.canonicalize().unwrap_or(path);
+    Ok(format!("file://{}", encode_path(&path.to_string_lossy())))
 }
 
 /// The binding specifications a file asks for, in the form `parse` takes.
@@ -1198,6 +1285,29 @@ pub fn parse_xwayland_scale(value: &XwaylandScaleSetting) -> anyhow::Result<Xway
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_and_gesture_blocks_parse() {
+        let file: File = serde_json::from_str(
+            r#"{
+                "input": {
+                    "*": {"tap": true, "accel_speed": 0.25},
+                    "046d:c52b:USB Receiver": {"natural_scroll": true}
+                },
+                "gestures": {
+                    "swipe:3:left": "shell workspace.next",
+                    "pinch:2:out": "magnify in"
+                }
+            }"#,
+        )
+        .expect("should parse");
+        assert_eq!(file.input.as_ref().unwrap()["*"].tap, Some(true));
+        assert_eq!(
+            file.input.as_ref().unwrap()["046d:c52b:USB Receiver"].natural_scroll,
+            Some(true)
+        );
+        assert_eq!(file.gestures.as_ref().unwrap().len(), 2);
+    }
 
     #[test]
     fn a_pixel_format_names_its_bit_depth_in_any_form_somebody_types_it() {
@@ -1869,5 +1979,62 @@ mod tests {
                 serde_json::from_str(&format!(r#"{{"layout": "{layout}"}}"#)).expect("parses");
             assert_eq!(file.layout.as_deref(), Some(layout));
         }
+    }
+
+    #[test]
+    fn layout_extension_paths_resolve_beside_the_config() {
+        let dir =
+            std::env::temp_dir().join(format!("viewport-layout-extension-{}", std::process::id()));
+        let scripts = dir.join("my layouts");
+        std::fs::create_dir_all(&scripts).expect("mkdir");
+        std::fs::write(scripts.join("monocle.js"), "registerLayout('monocle', {})")
+            .expect("script");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"layout":"monocle","layout_extensions":{"monocle":"my layouts/monocle.js"}}"#,
+        )
+        .expect("config");
+
+        let file = load(&path).expect("valid config").expect("present");
+        let url = &file.layout_extensions.expect("manifest")["monocle"];
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(url.ends_with("/my%20layouts/monocle.js"), "{url}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn layout_extensions_cannot_replace_builtins() {
+        let dir = std::env::temp_dir().join(format!(
+            "viewport-layout-replacement-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("bad.js"), "").expect("script");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"layout_extensions":{"tiling":"bad.js"}}"#).expect("config");
+        let error = load(&path).expect_err("built-in replacement").to_string();
+        assert!(error.contains("cannot replace"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_missing_layout_script_is_left_for_the_shell_fallback() {
+        let dir = std::env::temp_dir().join(format!(
+            "viewport-missing-layout-extension-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"layout":"gone","layout_extensions":{"gone":"gone.js"}}"#,
+        )
+        .expect("config");
+        let file = load(&path)
+            .expect("config remains usable")
+            .expect("present");
+        assert!(file.layout_extensions.expect("manifest")["gone"].ends_with("/gone.js"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

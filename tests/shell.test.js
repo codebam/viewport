@@ -442,7 +442,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   + ' fullscreenOnForTest: fullscreenOn,'
   + ' dynamicOrderForTest: dynamicOrder,'
-  + ' TILING_MODES, LAYOUT_MODES,'
+  + ' TILING_MODES, LAYOUT_MODES, layoutRegistry, registerLayout,'
   + ' get tilingMode() { return tilingMode; },'
   + ' get layoutMode() { return layoutMode; },'
   /* The solar layout's kernel, which is a pure function of (ids, sun, area)
@@ -697,6 +697,36 @@ for (let id = 1; id <= 4; id++) {
 
 const layouts = sent.filter((m) => m.type === 'view.layout');
 check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
+
+{
+  let renders = 0;
+  let clears = 0;
+  globalThis.__shell.registerLayout('test-extension', {
+    render({ root, helpers }) {
+      renders++;
+      return root ? helpers.renderTree(root) : null;
+    },
+    clear() { clears++; },
+  });
+  emit({ type: 'config', layout: 'test-extension', rules: HARNESS_RULES,
+    layout_extensions: [{ name: 'test-extension', url: 'file:///test-extension.js' }] });
+  check('registered extension is selected through generic layout dispatch',
+    globalThis.__shell.layoutMode === 'test-extension' && renders > 0);
+
+  let duplicateRejected = false;
+  let builtinRejected = false;
+  try {
+    globalThis.__shell.registerLayout('test-extension', { render() {}, clear() {} });
+  } catch (_) { duplicateRejected = true; }
+  try {
+    globalThis.__shell.registerLayout('tiling', { render() {}, clear() {} });
+  } catch (_) { builtinRejected = true; }
+  check('duplicate extension registration is rejected', duplicateRejected);
+  check('built-in layout replacement is rejected', builtinRejected);
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+  check('leaving an extension calls its clear hook', clears > 0);
+}
 
 /* Closing a window hands focus to its neighbour, not to whatever is first on
  * the workspace. */
@@ -2232,8 +2262,68 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   open(52, 'ordinary');
   check('an unmatched window is placed normally',
     globalThis.__shell.floatingForTest(52) === null);
+  emit({ type: 'view.focused', id: 52 });
+  emit({ type: 'shell.command', command: 'scratchpad.move', args: [] });
+  check('scratchpad.move hides the focused window as a floating scratchpad',
+    globalThis.__shell.views.get(52).special === 'scratchpad'
+      && globalThis.__shell.views.get(52).specialHidden);
 
-  for (const id of [50, 51, 52]) emit({ type: 'view.removed', id });
+  const richRules = [
+    { match: { app_id: { equals: 'dropterm' }, title: { contains: 'console' },
+      tag: { regex: '^drop-[0-9]+$' } }, workspace: 'scratchpad',
+      width: 700, height: 500 },
+    /* Also matches app_id. First-match semantics must keep this from pinning. */
+    { match: { app_id: { contains: 'drop' } }, pinned: true },
+    { match: { title: { regex: '^PiP$', flags: 'i' } }, pinned: true,
+      width: 320, height: 180 },
+  ];
+  emit({ type: 'config', layout: mode, rules: richRules });
+  emit({ type: 'view.added', id: 53, title: 'dev console', app_id: 'dropterm',
+    tag: 'drop-7', output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  const scratch = globalThis.__shell.views.get(53);
+  check('nested rule fields are ANDed across equals, contains and regex',
+    scratch.special === 'scratchpad' && scratch.floating.width === 700);
+  check('scratchpad starts hidden and first matching rule wins',
+    scratch.specialHidden && scratch.el.hidden);
+
+  emit({ type: 'shell.command', command: 'scratchpad.toggle', args: ['drop-7'] });
+  check('scratchpad.toggle overlays and focuses the tagged window',
+    !scratch.specialHidden && !scratch.el.hidden);
+  emit({ type: 'shell.command', command: 'scratchpad.toggle', args: ['drop-7'] });
+  check('scratchpad.toggle hides it again', scratch.specialHidden && scratch.el.hidden);
+
+  emit({ type: 'view.added', id: 54, title: 'pip', app_id: 'video', tag: null,
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  const pinned = globalThis.__shell.views.get(54);
+  check('regex flags and pinned action make a floating output window',
+    pinned.special === 'pinned' && pinned.floating.width === 320);
+  emit({ type: 'view.focused', id: 54 });
+  emit({ type: 'shell.command', command: 'window.pin.toggle', args: [] });
+  check('window.pin.toggle unpins the focused pinned window',
+    pinned.special === null && pinned.floating !== null);
+  emit({ type: 'shell.command', command: 'window.pin.toggle', args: [] });
+  check('window.pin.toggle pins it again on the active output',
+    pinned.special === 'pinned' && pinned.specialOutput !== null);
+  const ruleOutput = globalThis.__shell.outputs.get(pinned.specialOutput);
+  const ruleOutputWorkspace = ruleOutput.workspace;
+  const ruleOutputPrevious = ruleOutput.previous;
+  const freeWorkspace = [2, 3, 4, 5, 7, 8].find((n) =>
+    ![...globalThis.__shell.outputs.values()].some((output) => output.workspace === n));
+  emit({ type: 'shell.command', command: 'workspace.switch',
+    args: [String(freeWorkspace)] });
+  check('pinned window survives numbered workspace switches', !pinned.el.hidden);
+  emit({ type: 'shell.command', command: 'layout.overview', args: [] });
+  check('overview hides pinned and scratchpad windows',
+    pinned.el.hidden && scratch.el.hidden && pinned.overview === null);
+  emit({ type: 'shell.command', command: 'layout.overview', args: [] });
+  ruleOutput.workspace = ruleOutputWorkspace;
+  ruleOutput.previous = ruleOutputPrevious;
+  emit({ type: 'config', layout: mode, rules: richRules });
+
+  for (const id of [50, 51, 52, 53, 54]) emit({ type: 'view.removed', id });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
   /* Put focus back where the rest of the file expects it. */
   emit({ type: 'view.focused', id: 4 });
 }
@@ -5641,6 +5731,7 @@ if (mode === 'scrolling') {
     dark_mode: false });
   emit({ type: 'output.layout', outputs: [
     { name: 'DP-1', make: '', model: 'Screen', serial: '',
+      physical_width_mm: 344, physical_height_mm: 194,
       x: 0, y: 0, width: 1920, height: 1080,
       usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
       scale: 1, transform: 'normal', enabled: true,
@@ -5650,6 +5741,13 @@ if (mode === 'scrolling') {
         { width: 1920, height: 1080, refresh: 143998,
           preferred: false, current: false },
       ] },
+    { name: 'HDMI-A-1', make: '', model: 'Second', serial: '',
+      physical_width_mm: 600, physical_height_mm: 340,
+      x: 1920, y: 0, width: 1280, height: 720,
+      usable_x: 1920, usable_y: 0, usable_width: 1280, usable_height: 720,
+      scale: 1, transform: 'normal', enabled: true,
+      modes: [{ width: 1280, height: 720, refresh: 60000,
+        preferred: true, current: true }] },
   ] });
 
   let before = sent.length;
@@ -5722,6 +5820,48 @@ if (mode === 'scrolling') {
       select.children[1].textContent === '1920×1080 @ 144.0 Hz');
   check('and the one it is in is the one selected',
     select.value === '1920x1080@60000');
+
+  check('physical size and current mode expose the quarter-step recommendation',
+    controls('Recommended scale')[0]?.textContent === 'Use 1.5×');
+  before = sent.length;
+  click(controls('Recommended scale')[0]);
+  check('the recommendation uses the existing provisional configure path',
+    sent.slice(before).some((m) => m.type === 'output.configure' &&
+      m.name === 'DP-1' && m.scale === 1.5) &&
+      all(dialog(), 'settings-confirm').length === 1);
+  click(all(dialog(), 'settings-button').find((b) => b.textContent === 'Keep'));
+
+  before = sent.length;
+  click(controls('Arrange')[0]?.children.find((b) =>
+    b.textContent === 'Vertical'));
+  const arranged = sent.slice(before).filter((m) => m.type === 'output.configure');
+  check('vertical arrangement preserves output order and sends x and y',
+    arranged.length === 2 && arranged[0].name === 'DP-1' &&
+      arranged[0].x === 0 && arranged[0].y === 0 &&
+      arranged[1].name === 'HDMI-A-1' &&
+      arranged[1].x === 0 && arranged[1].y === 1080);
+  check('arrangement does not fake mirroring with overlapping coordinates',
+    arranged[0].x !== arranged[1].x || arranged[0].y !== arranged[1].y);
+
+  before = sent.length;
+  click(controls('Arrange')[0]?.children.find((b) =>
+    b.textContent === 'Horizontal'));
+  const horizontal = sent.slice(before)
+    .filter((m) => m.type === 'output.configure');
+  check('horizontal arrangement advances by each logical width',
+    horizontal.length === 2 && horizontal[0].x === 0 &&
+      horizontal[0].y === 0 && horizontal[1].x === 1920 &&
+      horizontal[1].y === 0);
+
+  check('bad EDID yields no recommendation', recommendedOutputScale({
+    physical_width_mm: 0, physical_height_mm: 1,
+    modes: [{ width: 3840, height: 2160, current: true }],
+  }) === null);
+  check('recommended scale clamps to the supported range',
+    recommendedOutputScale({
+      physical_width_mm: 100, physical_height_mm: 100,
+      modes: [{ width: 3840, height: 3840, current: true }],
+    }) === 2);
 
   before = sent.length;
   select.value = '1920x1080@143998';
