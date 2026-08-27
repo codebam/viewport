@@ -2813,7 +2813,7 @@ dependencies = [
 [[package]]
 name = "viewport-vulkan"
 version = "0.1.3"
-source = "git+https://github.com/codebam/viewport-vulkan.git?rev=29dec6f00e3eaec436745402503b0d67519cc8f5#29dec6f00e3eaec436745402503b0d67519cc8f5"
+source = "git+https://github.com/codebam/viewport-vulkan.git?rev=f9e6eb41bc47bf1faad16f62456a398cddc3fe53#f9e6eb41bc47bf1faad16f62456a398cddc3fe53"
 dependencies = [
  "anyhow",
  "ash",
