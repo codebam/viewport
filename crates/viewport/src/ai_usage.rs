@@ -449,8 +449,58 @@ fn save_openai_auth(auth: &OpenAiAuth) -> Result<(), String> {
         let _ = std::fs::remove_file(&temporary);
         return Err(format!("writing {}: {error}", temporary.display()));
     }
-    std::fs::rename(&temporary, &path)
-        .map_err(|error| format!("saving {}: {error}", path.display()))
+    match std::fs::rename(&temporary, &path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::EBUSY) => {
+            // A file persisted by bind-mounting it cannot be replaced, but the
+            // mounted inode can still be updated safely and kept private.
+            let result = update_mounted_auth(&path, &bytes, &error);
+            let _ = std::fs::remove_file(&temporary);
+            result
+        }
+        Err(error) => Err(format!("saving {}: {error}", path.display())),
+    }
+}
+
+fn update_mounted_auth(
+    path: &std::path::Path,
+    bytes: &[u8],
+    replace_error: &std::io::Error,
+) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "saving {}: {replace_error}; updating mount: {error}",
+                path.display()
+            )
+        })?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| {
+            format!(
+                "saving {}: {replace_error}; securing mount: {error}",
+                path.display()
+            )
+        })?;
+    file.set_len(0).map_err(|error| {
+        format!(
+            "saving {}: {replace_error}; truncating mount: {error}",
+            path.display()
+        )
+    })?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| {
+            format!(
+                "saving {}: {replace_error}; updating mount: {error}",
+                path.display()
+            )
+        })
 }
 
 fn jwt_claims(token: &str) -> Option<Value> {
@@ -713,6 +763,31 @@ fn text(value: &Value, path: &[&str]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::config::AiProvider;
+
+    #[test]
+    fn mounted_openai_auth_is_updated_in_place_and_kept_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = std::env::temp_dir().join(format!(
+            "viewport-mounted-openai-auth-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let replace_error = std::io::Error::from_raw_os_error(libc::EBUSY);
+
+        update_mounted_auth(&path, br#"{"access_token":"token"}"#, &replace_error).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"access_token":"token"}"#
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn openai_account_id_comes_from_the_namespaced_id_token_claim() {
