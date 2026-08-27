@@ -745,7 +745,7 @@ impl ViewportState {
             .current_mode()
             .map(|mode| output.current_transform().transform_size(mode.size))
             .ok_or_else(|| "the output has no mode".to_owned())?;
-        let elements = crate::render::build(&frame, renderer);
+        let elements = crate::render::build_capture(&frame, renderer);
 
         let mut framebuffer = renderer
             .bind(&mut target)
@@ -831,7 +831,7 @@ impl ViewportState {
             // happens before the move. See `render::desk_placement`.
             let (bounds, at) = crate::render::desk_placement(geometry, union, scale);
             elements.extend(
-                crate::render::build(&frame, renderer)
+                crate::render::build_capture(&frame, renderer)
                     .into_iter()
                     .filter_map(|element| {
                         let scaled = RescaleRenderElement::from_element(
@@ -1066,7 +1066,7 @@ impl ViewportState {
             .map(|mode| output.current_transform().transform_size(mode.size))
             .ok_or_else(|| "the output has no mode".to_owned())?;
 
-        let elements = crate::render::build(&frame, renderer);
+        let elements = crate::render::build_capture(&frame, renderer);
         // What went into the copy. A capture that comes back black is either a
         // frame with nothing in it or a frame that was drawn and read back
         // wrong, and the picture alone cannot say which.

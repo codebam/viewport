@@ -1286,9 +1286,173 @@ pub fn parse_xwayland_scale(value: &XwaylandScaleSetting) -> anyhow::Result<Xway
     }
 }
 
+/// Conservative capture policy before the shell resolves the full rule.
+///
+/// Layout policy belongs to the shell, but privacy cannot fail open while that
+/// shell starts or after it crashes. Any identity-matching `capture: false`
+/// rule starts the view private. Workspace predicates are deliberately treated
+/// as possible matches here because only the shell knows the opening workspace;
+/// its later `view.capture` answer may safely make the result less conservative.
+pub fn initially_allows_capture(
+    rules: Option<&serde_json::Value>,
+    app_id: &str,
+    title: &str,
+    tag: Option<&str>,
+) -> bool {
+    let Some(rules) = rules.and_then(serde_json::Value::as_array) else {
+        return true;
+    };
+    !rules.iter().any(|rule| {
+        rule.get("capture").and_then(serde_json::Value::as_bool) == Some(false)
+            && capture_rule_might_match(rule, app_id, title, tag)
+    })
+}
+
+fn capture_rule_might_match(
+    rule: &serde_json::Value,
+    app_id: &str,
+    title: &str,
+    tag: Option<&str>,
+) -> bool {
+    let Some(rule) = rule.as_object() else {
+        return false;
+    };
+    if let Some(matcher) = rule.get("match").and_then(serde_json::Value::as_object) {
+        let mut matched = false;
+        for (name, value) in [
+            ("app_id", app_id),
+            ("title", title),
+            ("tag", tag.unwrap_or("")),
+        ] {
+            let Some(condition) = matcher.get(name) else {
+                continue;
+            };
+            matched = true;
+            if !capture_value_matches(value, condition) {
+                return false;
+            }
+        }
+        // Potentially matching is the safe startup answer; the shell applies
+        // the actual opening workspace and can explicitly allow capture.
+        matched || matcher.contains_key("workspace")
+    } else {
+        let app = rule.get("app_id").filter(|value| json_truthy(value));
+        let title_rule = rule.get("title").filter(|value| json_truthy(value));
+        if app.is_none() && title_rule.is_none() {
+            return false;
+        }
+        app.is_none_or(|condition| contains_ignoring_case(app_id, &json_text(condition)))
+            && title_rule
+                .is_none_or(|condition| contains_ignoring_case(title, &json_text(condition)))
+    }
+}
+
+fn capture_value_matches(value: &str, condition: &serde_json::Value) -> bool {
+    if let Some(condition) = condition.as_str() {
+        return contains_ignoring_case(value, condition);
+    }
+    let Some(condition) = condition.as_object() else {
+        return false;
+    };
+    if let Some(wanted) = condition.get("contains") {
+        return contains_ignoring_case(value, &json_text(wanted));
+    }
+    if let Some(wanted) = condition.get("equals") {
+        return value.to_lowercase() == json_text(wanted).to_lowercase();
+    }
+    let Some(pattern) = condition.get("regex") else {
+        return false;
+    };
+    let mut regex = regex::RegexBuilder::new(&json_text(pattern));
+    if let Some(flags) = condition.get("flags").map(json_text) {
+        for flag in flags.chars() {
+            match flag {
+                'i' => {
+                    regex.case_insensitive(true);
+                }
+                'm' => {
+                    regex.multi_line(true);
+                }
+                's' => {
+                    regex.dot_matches_new_line(true);
+                }
+                // JavaScript flags that do not change whether a single test
+                // matches. Duplicate or unknown flags make RegExp invalid.
+                'd' | 'g' | 'u' | 'v' | 'y' => {}
+                _ => return false,
+            }
+        }
+    }
+    regex.build().is_ok_and(|regex| regex.is_match(value))
+}
+
+fn contains_ignoring_case(value: &str, wanted: &str) -> bool {
+    value.to_lowercase().contains(&wanted.to_lowercase())
+}
+
+fn json_text(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn json_truthy(value: &serde_json::Value) -> bool {
+    !matches!(
+        value,
+        serde_json::Value::Null | serde_json::Value::Bool(false)
+    ) && value.as_str() != Some("")
+        && value.as_f64() != Some(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_denials_are_applied_before_the_shell_can_answer() {
+        let rules = serde_json::json!([
+            {"app_id": "keepass", "capture": false},
+            {"match": {"title": {"regex": "secret$", "flags": "i"}}, "capture": false}
+        ]);
+        assert!(!initially_allows_capture(
+            Some(&rules),
+            "org.keepassxc.KeePassXC",
+            "Passwords",
+            None
+        ));
+        assert!(!initially_allows_capture(
+            Some(&rules),
+            "terminal",
+            "Project Secret",
+            None
+        ));
+        assert!(initially_allows_capture(
+            Some(&rules),
+            "terminal",
+            "ordinary",
+            None
+        ));
+    }
+
+    #[test]
+    fn workspace_capture_denials_start_private_until_the_shell_resolves_them() {
+        let rules = serde_json::json!([
+            {"match": {"app_id": {"equals": "vault"}, "workspace": 3}, "capture": false}
+        ]);
+        assert!(!initially_allows_capture(
+            Some(&rules),
+            "vault",
+            "Vault",
+            None
+        ));
+        assert!(initially_allows_capture(
+            Some(&rules),
+            "terminal",
+            "Terminal",
+            None
+        ));
+    }
 
     #[test]
     fn input_and_gesture_blocks_parse() {

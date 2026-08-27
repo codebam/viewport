@@ -132,6 +132,7 @@ fn is_known_type(name: &str) -> bool {
             | "view.focus"
             | "view.close"
             | "view.opacity"
+            | "view.capture"
             | "view.query"
             | "shell.focus"
             | "shell.overview"
@@ -301,6 +302,18 @@ mod tests {
         let error = parse(br#"{"type":"view.focus","id":"seven"}"#).unwrap_err();
         assert_eq!(error.context(), "view.focus");
         assert!(matches!(error, ParseError::BadBody { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn malformed_view_capture_is_a_bad_body_of_a_known_type() {
+        for raw in [
+            br#"{"type":"view.capture","id":7}"#.as_slice(),
+            br#"{"type":"view.capture","id":7,"capture":1}"#,
+        ] {
+            let error = parse(raw).unwrap_err();
+            assert_eq!(error.context(), "view.capture");
+            assert!(matches!(error, ParseError::BadBody { .. }), "{error:?}");
+        }
     }
 
     #[test]

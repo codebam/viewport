@@ -12,9 +12,8 @@
 // way to hand a client pixels it can use: a client asking for a screenshot
 // cannot be given a DMA-BUF it has no way to map.
 //
-// What is deliberately not here: no permission check. This compositor has no
-// notion of a privileged client, and a check that every client passes is worse
-// than none because it reads as though it were doing something.
+// Sandboxed clients do not see this global. They must use the portal, where a
+// source is selected through compositor-owned consent UI.
 
 use std::sync::Mutex;
 
@@ -91,6 +90,12 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         data_init.init(resource, ());
+    }
+
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        client
+            .get_data::<crate::state::ClientState>()
+            .is_none_or(|data| data.security_context.is_none())
     }
 }
 

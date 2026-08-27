@@ -8,9 +8,9 @@
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
     /// Set when the client connected through a socket a sandbox asked for, and
-    /// carries what the sandbox said about itself. Nothing is refused on the
-    /// strength of it yet — the point of the protocol is that a compositor
-    /// *can* tell, and a compositor that cannot tell has no way to start.
+    /// carries what the sandbox said about itself. Direct capture and nested
+    /// security contexts are withheld; capture remains available through the
+    /// consent-bearing desktop portal.
     pub security_context: Option<smithay::wayland::security_context::SecurityContext>,
     /// Set on the one connection the compositor made for the shell process it
     /// started itself.

@@ -200,13 +200,15 @@
     "active workspace when the window opens. pseudotile keeps the full tiled",
     "slot while centring a preferred-size client. swallow replaces a matching",
     "parent only through verified native Wayland process ancestry; a child",
-    "rule with swallow false opts out."
+    "rule with swallow false opts out. capture false replaces that window",
+    "with black in screenshots and screen shares."
   ],
   "rules": [
     { "match": { "app_id": { "equals": "foot" }, "workspace": 2 },
       "pseudotile": true, "width": 900, "height": 600 },
     { "app_id": "foot", "swallow": true },
-    { "app_id": "keep-terminal-visible", "swallow": false }
+    { "app_id": "keep-terminal-visible", "swallow": false },
+    { "app_id": "org.keepassxc.KeePassXC", "capture": false }
   ],
 
   "_notifications": [

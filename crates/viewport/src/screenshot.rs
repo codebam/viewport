@@ -35,11 +35,15 @@ pub enum Message {
 #[derive(Clone)]
 pub struct Screenshot {
     sender: smithay::reexports::calloop::channel::Sender<Message>,
+    sessions: crate::screencast::portal::Sessions,
 }
 
 impl Screenshot {
-    pub fn new(sender: smithay::reexports::calloop::channel::Sender<Message>) -> Self {
-        Self { sender }
+    pub fn new(
+        sender: smithay::reexports::calloop::channel::Sender<Message>,
+        sessions: crate::screencast::portal::Sessions,
+    ) -> Self {
+        Self { sender, sessions }
     }
 }
 
@@ -58,7 +62,11 @@ impl Screenshot {
         _app_id: &str,
         _parent_window: &str,
         options: HashMap<String, OwnedValue>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !crate::screencast::portal::called_by_frontend(&self.sessions, "screenshot", &header) {
+            return (RESPONSE_CANCELLED, HashMap::new());
+        }
         let interactive = options
             .get("interactive")
             .and_then(|v| bool::try_from(v).ok())

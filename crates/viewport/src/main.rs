@@ -989,7 +989,8 @@ fn run() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("inserting the shortcuts source: {e}"))?;
         let shortcuts =
             crate::shortcuts::GlobalShortcuts::new(shortcuts_sender, screencast.sessions());
-        let screenshot = crate::screenshot::Screenshot::new(screenshot_sender);
+        let screenshot =
+            crate::screenshot::Screenshot::new(screenshot_sender, screencast.sessions());
 
         // The inhibit backend goes up with them, on the same connection and
         // for the same reason: one bus name, so whichever interface was built

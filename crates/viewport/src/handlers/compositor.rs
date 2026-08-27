@@ -329,10 +329,30 @@ impl ViewportState {
             .find_by_surface(surface)
             .map(|view| self.views.ancestor_ids_of(view))
             .unwrap_or_default();
+        let (capture_allowed, app_id, title) = self
+            .views
+            .find_by_surface(surface)
+            .map(|view| {
+                let app_id = view.app_id();
+                let title = view.title();
+                let allowed = crate::config::initially_allows_capture(
+                    self.config.rules.as_ref(),
+                    &app_id,
+                    &title,
+                    view.tag.as_deref(),
+                );
+                (allowed, app_id, title)
+            })
+            .unwrap_or_else(|| (true, String::new(), String::new()));
         let Some(view) = self.views.find_by_surface_mut(surface) else {
             return;
         };
         view.mapped = true;
+        view.capture_allowed = capture_allowed;
+        tracing::debug!(
+            "view {}: initial capture policy is {capture_allowed} for app_id {app_id:?}, title {title:?}",
+            view.id
+        );
         // What the client asked for before it had anywhere to be told about.
         // Read here rather than trusted from the earlier request, because an
         // X11 window never made a request at all — it carries the state as a

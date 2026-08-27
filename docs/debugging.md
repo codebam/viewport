@@ -9,6 +9,14 @@ Both capture protocols are implemented — `ext-image-copy-capture-v1` and
 grim ~/shot.png          # from a terminal inside the session
 ```
 
+They are not advertised on `security-context-v1` sandbox connections. A
+sandboxed application uses the desktop portal so capture has an explicit source
+choice and consent.
+
+`VIEWPORT_UNSAFE_NO_CONSENT=1` restores the headless no-UI ScreenCast fallback
+for isolated tests. It disables the portal's consent guarantee and must not be
+set in a desktop session.
+
 This is load-bearing rather than a nicety. Once the compositor is driving a TTY
 there is no outer compositor to screenshot it from, so without this there is no
 way to see what the desktop looks like, and debugging a *visual* shell becomes

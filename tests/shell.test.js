@@ -2268,6 +2268,30 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     globalThis.__shell.views.get(52).special === 'scratchpad'
       && globalThis.__shell.views.get(52).specialHidden);
 
+  const captureRules = [
+    { app_id: 'private-window', capture: false },
+    { app_id: 'shared-window', capture: true },
+    { app_id: 'invalid-capture', capture: 'false' },
+  ];
+  emit({ type: 'config', layout: mode, rules: captureRules });
+  let captureMark = sent.length;
+  open(64, 'private-window');
+  check('a matching capture:false rule denies capture for that window',
+    sent.slice(captureMark).some((m) => m.type === 'view.capture'
+      && m.id === 64 && m.capture === false));
+  captureMark = sent.length;
+  open(65, 'shared-window');
+  check('a matching capture:true rule explicitly allows capture',
+    sent.slice(captureMark).some((m) => m.type === 'view.capture'
+      && m.id === 65 && m.capture === true));
+  captureMark = sent.length;
+  open(66, 'invalid-capture');
+  open(67, 'no-capture-rule');
+  check('non-boolean and unmatched capture rules resolve to capture allowed',
+    sent.slice(captureMark).filter((m) => m.type === 'view.capture'
+      && (m.id === 66 || m.id === 67) && m.capture === true).length === 2);
+  for (const id of [64, 65, 66, 67]) emit({ type: 'view.removed', id });
+
   const richRules = [
     { match: { app_id: { equals: 'dropterm' }, title: { contains: 'console' },
       tag: { regex: '^drop-[0-9]+$' } }, workspace: 'scratchpad',

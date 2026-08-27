@@ -178,6 +178,12 @@ const TYPES: &[Type] = &[
         hint: "--id N [--opacity 0..1]",
     },
     Type {
+        name: "view.capture",
+        fields: &["id", "capture"],
+        strings: &[],
+        hint: "--id N --capture BOOL",
+    },
+    Type {
         name: "view.query",
         fields: &[],
         strings: &[],
@@ -1593,10 +1599,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 65 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 66 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 65);
+        assert_eq!(TYPES.len(), 66);
     }
 
     #[test]

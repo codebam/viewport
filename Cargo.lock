@@ -3013,6 +3013,7 @@ dependencies = [
  "pipewire",
  "pkg-config",
  "raw-window-handle",
+ "regex",
  "serde",
  "serde_json",
  "smithay",

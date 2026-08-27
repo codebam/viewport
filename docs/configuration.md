@@ -875,8 +875,8 @@ share can be restored from a token so that OBS finds the same monitor months
 later, and the same trick applied to a keyboard would be a process that can
 type into this machine on the strength of a blob in the permission store. And
 it refuses outright when the desktop page is not drawing, so a broken shell
-cannot become a way in — a screen share falls back to the focused window in
-that case, which is a much smaller thing to get wrong.
+cannot become a way in. Screen sharing follows the same fail-closed rule:
+without trusted consent UI, no source is shared.
 
 Registering both needs the same three environment variables the Settings
 portal needs, listed under **Dark mode** above; `start.sh` sets them.
@@ -1636,7 +1636,8 @@ exactly like a real one.
   { "match": { "app_id": { "equals": "foot" }, "workspace": 2 },
     "pseudotile": true, "width": 900, "height": 600 },
   { "app_id": "foot", "swallow": true },
-  { "app_id": "keep-terminal-visible", "swallow": false }
+  { "app_id": "keep-terminal-visible", "swallow": false },
+  { "app_id": "org.keepassxc.KeePassXC", "capture": false }
 ]
 ```
 
@@ -1677,9 +1678,18 @@ client-supplied and therefore is not accepted as proof. Closing the child puts
 the parent back in the same leaf; moving, floating, fullscreening, specialising,
 or closing either side dissolves the relation safely.
 
-The compositor passes these to the shell without reading them. Which workspace
-a window opens on and whether it floats are layout decisions, and the
-compositor has no opinion about either.
+`capture: false` replaces that window, its native popups, related X11 popup
+windows and its shell frame with opaque black in screenshots and screen shares.
+Direct window captures stay alive at their original size but return black; the
+portal does not offer that window as a source or restore it from an old token.
+The physical display is not changed. Shell metadata elsewhere, such as a
+taskbar label, is outside the window and is not hidden. Capture is allowed by
+default, and a non-boolean value is ignored.
+
+The compositor passes the rules to the shell. Layout actions remain shell
+decisions. Capture denials are also matched conservatively in the compositor so
+a shell that has not answered or has crashed cannot expose a private window;
+the shell sends its full workspace-aware resolution back afterwards.
 
 ## Layout models
 

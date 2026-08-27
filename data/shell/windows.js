@@ -321,6 +321,10 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   const openingWorkspace = output.workspace;
   const rule = ruleFor(app_id, title, tag, replay ? null : openingWorkspace);
   const view = views.get(id);
+  if (!replay || typeof rule?.capture === 'boolean') {
+    send({ type: 'view.capture', id,
+      capture: typeof rule?.capture === 'boolean' ? rule.capture : true });
+  }
   view.swallow = rule?.swallow === true;
   if (rule?.pseudotile === true) {
     view.pseudotile = preferredPseudoDimensions(view, rule);

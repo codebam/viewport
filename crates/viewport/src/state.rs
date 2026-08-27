@@ -1267,15 +1267,29 @@ impl ViewportState {
         // current xdg-desktop-portal looks for these first.
         let image_capture_source_state =
             smithay::wayland::image_capture_source::ImageCaptureSourceState::new();
+        let direct_capture_allowed = |client: &smithay::reexports::wayland_server::Client| {
+            client
+                .get_data::<ClientState>()
+                .is_none_or(|data| data.security_context.is_none())
+        };
         let output_capture_source_state =
-            smithay::wayland::image_capture_source::OutputCaptureSourceState::new::<Self>(&dh);
+            smithay::wayland::image_capture_source::OutputCaptureSourceState::new_with_filter::<
+                Self,
+                _,
+            >(&dh, direct_capture_allowed);
         // Windows as well as screens. The picker in a browser's "share your
         // screen" dialogue lists both, and a client that binds this manager
         // and finds nothing behind it has no way to offer the second.
         let toplevel_capture_source_state =
-            smithay::wayland::image_capture_source::ToplevelCaptureSourceState::new::<Self>(&dh);
+            smithay::wayland::image_capture_source::ToplevelCaptureSourceState::new_with_filter::<
+                Self,
+                _,
+            >(&dh, direct_capture_allowed);
         let image_copy_capture_state =
-            smithay::wayland::image_copy_capture::ImageCopyCaptureState::new::<Self>(&dh);
+            smithay::wayland::image_copy_capture::ImageCopyCaptureState::new_with_filter::<Self, _>(
+                &dh,
+                direct_capture_allowed,
+            );
         // Input methods. Three protocols that only work together: the
         // application says where its text is going through text-input, the
         // input method reads that and sends back what was composed, and

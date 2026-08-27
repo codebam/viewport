@@ -16,6 +16,7 @@
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::utils::{
@@ -60,6 +61,8 @@ smithay::backend::renderer::element::render_elements! {
     /// above.
     RoundedShell=RoundedRenderElement<CropRenderElement<TextureRenderElement<<R as RendererSuper>::TextureId>>>,
     Cursor=MemoryRenderBufferRenderElement<R>,
+    /// Opaque replacement for a window whose rule forbids capture.
+    Redaction=SolidColorRenderElement,
 }
 
 smithay::backend::renderer::element::render_elements! {
@@ -137,6 +140,9 @@ pub struct WindowFrame {
     pub scale: f64,
     /// What the shell asked this window to be drawn at, 0.0 to 1.0.
     pub opacity: f32,
+    /// `Some` only for a private window. The rectangle includes its surface
+    /// tree, popups and frame, already transformed into output coordinates.
+    pub redaction: Option<(Id, Rectangle<i32, Physical>)>,
     /// The shell's border around this window, drawn immediately above it: the
     /// four sides, and not the middle.
     ///
@@ -260,7 +266,24 @@ where
     R: Renderer + ImportAll + ImportMem + ImportDma,
     <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
 {
-    let elements = layers(frame, renderer);
+    build_for(frame, renderer, false)
+}
+
+/// Turn a frame into capture elements, replacing private windows with black.
+pub fn build_capture<R>(frame: &Frame, renderer: &mut R) -> Vec<ScreenElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem + ImportDma,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    build_for(frame, renderer, true)
+}
+
+fn build_for<R>(frame: &Frame, renderer: &mut R, capture: bool) -> Vec<ScreenElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem + ImportDma,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    let elements = layers(frame, renderer, capture);
     // The magnifier, applied to the finished list rather than woven through
     // the assembly above. Two reasons: the transform is the same for every
     // element, including the ones the lock screen path returns early with —
@@ -290,7 +313,7 @@ where
 }
 
 /// The desktop, front to back, before the magnifier.
-fn layers<R>(frame: &Frame, renderer: &mut R) -> Vec<OutputElement<R>>
+fn layers<R>(frame: &Frame, renderer: &mut R, capture: bool) -> Vec<OutputElement<R>>
 where
     R: Renderer + ImportAll + ImportMem + ImportDma,
     // MemoryRenderBufferRenderElement keeps per-renderer textures in a shared
@@ -386,12 +409,25 @@ where
         clip,
         scale: window_scale,
         opacity: frame_opacity,
+        redaction,
         overlay,
         corners,
         rounded,
         overlay_rounded,
     } in &frame.windows
     {
+        if capture {
+            if let Some((id, geometry)) = redaction {
+                elements.push(OutputElement::from(SolidColorRenderElement::new(
+                    id.clone(),
+                    *geometry,
+                    smithay::backend::renderer::utils::CommitCounter::default(),
+                    smithay::backend::renderer::Color32F::from([0.0, 0.0, 0.0, 1.0]),
+                    Kind::Unspecified,
+                )));
+                continue;
+            }
+        }
         // This window's border, above the windows it is stacked over and below
         // its own surface's popups. The sides only: the middle is the client,
         // and the shell's buffer has the desktop behind it rather than a hole.

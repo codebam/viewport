@@ -130,6 +130,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `view.focus` | `id` |
 | `view.close` | `id` |
 | `view.opacity` | `id`, `opacity` (0–1) |
+| `view.capture` | `id`, `capture` (required boolean) — changes whether capture paths may include this window; windows allow capture by default |
 | `view.query` | — replays `config` and a `view.added` for every mapped window |
 | `shell.focus` | — |
 | `background.focus` | — (toggles the keyboard onto the wallpaper terminal and back) |

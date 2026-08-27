@@ -571,7 +571,8 @@ client on its first frame:
 
 `xdg-toplevel-icon` (the name reaches the shell on `view.props`),
 `xdg-foreign`, `security-context` (a client through a sandbox's socket is
-tagged, and cannot create sandboxes of its own) and `xwayland-keyboard-grab`
+tagged, cannot create sandboxes of its own, and is not offered direct capture;
+it uses the consent-bearing portal instead) and `xwayland-keyboard-grab`
 (advertised only to Xwayland, by Smithay's own filter, so its absence from
 `wayland-info` is not a fault).
 

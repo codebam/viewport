@@ -109,6 +109,10 @@ run capture-tiling "$root/tests/capture.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client" tiling
 run capture-scrolling "$root/tests/capture.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client" scrolling
+run capture-private "$root/tests/capture.test.sh" \
+	"$VIEWPORT" "$work/paint-client" "$work/capture-client" tiling private
+run capture-private-scrolling "$root/tests/capture.test.sh" \
+	"$VIEWPORT" "$work/paint-client" "$work/capture-client" scrolling private
 run output-order "$root/tests/output-order.test.sh" "$VIEWPORT"
 
 # The screencast frontend is Rust — it speaks D-Bus rather than Wayland, so it

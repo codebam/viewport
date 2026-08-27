@@ -22,6 +22,7 @@ capture_client=${3:-build/viewport-test-capture-client}
 # on every frame, which is the harder case for a capture to survive: the size
 # churn that came out of that is what froze the sharing client.
 layout=${4:-tiling}
+privacy=${5:-public}
 
 for binary in "$viewport" "$paint_client" "$capture_client"; do
 	if [ ! -x "$binary" ]; then
@@ -39,6 +40,7 @@ height=240
 margin=24
 body=ffff0000
 edge=ff0000ff
+expected=$body
 
 workdir=$(mktemp -d)
 viewport_pid=
@@ -58,7 +60,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-printf '{ "layout": "%s" }\n' "$layout" >"$workdir/config.json"
+if [ "$privacy" = private ]; then
+	printf '{ "layout": "%s", "rules": [{ "app_id": "%s", "capture": false }] }\n' \
+		"$layout" "$app_id" >"$workdir/config.json"
+	expected=ff000000
+else
+	printf '{ "layout": "%s" }\n' "$layout" >"$workdir/config.json"
+fi
 
 # Off whatever session is already running: this test starts its own compositor
 # and must not join, or be joined to, the one the developer is sitting in.
@@ -70,7 +78,7 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 # how long a layout takes. A value from the caller wins, as everywhere else.
 export VIEWPORT_LOG="${VIEWPORT_LOG:-viewport=debug}"
 
-"$viewport" --headless -c "$workdir/config.json" \
+"$viewport" --headless --config "$workdir/config.json" \
 	>"$workdir/viewport.log" 2>&1 &
 viewport_pid=$!
 
@@ -155,11 +163,31 @@ if [ -z "$placed" ]; then
 	exit 2
 fi
 
-"$capture_client" "$app_id" "$body" "$width" "$height" 2000
+"$capture_client" "$app_id" "$expected" "$width" "$height" 2000
 status=$?
+
+if [ "$status" -eq 0 ] && [ "$privacy" = private ]; then
+	"$capture_client" --output-not "$body"
+	status=$?
+	# Prove absence of red came from policy rather than from a window that was
+	# never in output capture. This also exercises the runtime allow direction.
+	view_id=$(grep -oE 'view [0-9]+:' "$workdir/viewport.log" | head -1 \
+		| cut -d' ' -f2 | tr -d ':')
+	if [ "$status" -eq 0 ] && [ -n "$view_id" ] && "$viewport" msg \
+			--socket "$XDG_RUNTIME_DIR/viewport-$display.sock" \
+			-t view.capture --id "$view_id" --capture true; then
+		"$capture_client" --output-has "$body"
+		status=$?
+	else
+		echo "FAIL could not make the private test window capturable" >&2
+		status=2
+	fi
+fi
 
 if [ "$status" -ne 0 ]; then
 	echo
+	echo "--- capture policy log ---" >&2
+	grep -E 'capture policy' "$workdir/viewport.log" >&2 || true
 	echo "--- compositor log (last 30 lines) ---" >&2
 	tail -30 "$workdir/viewport.log" >&2
 	echo "--- window log ---" >&2

@@ -493,12 +493,17 @@ static bool capture_one_frame(struct capture_client *client,
 int main(int argc, char *argv[])
 {
 	bool output_mode = argc >= 2 && strcmp(argv[1], "--output") == 0;
+	bool output_has = argc >= 2 && strcmp(argv[1], "--output-has") == 0;
+	bool output_not = argc >= 2 && strcmp(argv[1], "--output-not") == 0;
+	output_mode = output_mode || output_has || output_not;
 
 	if (!output_mode && argc != 6) {
 		fprintf(stderr,
 			"usage: %s APP_ID EXPECT_ARGB EXPECT_WIDTH EXPECT_HEIGHT "
 			"WATCH_MS\n"
 			"       %s --output EXPECT_ARGB\n"
+			"       %s --output-has EXPECT_ARGB\n"
+			"       %s --output-not EXPECT_ARGB\n"
 			"\n"
 			"Captures the window with APP_ID and checks that the frame is\n"
 			"EXPECT_WIDTH x EXPECT_HEIGHT and every pixel EXPECT_ARGB, then\n"
@@ -509,7 +514,7 @@ int main(int argc, char *argv[])
 			"actually being displayed, which is the only place the answer\n"
 			"lives: a compositor whose lock layer has been emptied still\n"
 			"reports itself locked.\n",
-			argv[0], argv[0]);
+			argv[0], argv[0], argv[0], argv[0]);
 		return 2;
 	}
 	if (output_mode && argc != 3) {
@@ -643,12 +648,15 @@ have_source:;
 
 	/* Every pixel, not a sample: the failure this catches is a region of the
 	 * frame belonging to something else, and a sample can miss a region. */
-	int64_t wrong = 0;
+	int64_t wrong = 0, matching = 0;
 	int32_t first_x = -1, first_y = -1;
 	uint32_t first_value = 0;
 	for (int32_t y = 0; y < buffer.height; y++) {
 		for (int32_t x = 0; x < buffer.width; x++) {
 			uint32_t pixel = buffer.pixels[y * buffer.width + x] & 0x00FFFFFF;
+			if (pixel == want_colour) {
+				matching++;
+			}
 			if (pixel != want_colour) {
 				if (wrong == 0) {
 					first_x = x;
@@ -663,8 +671,20 @@ have_source:;
 	const char *what = output_mode
 		? "every pixel of the screen is the colour it should be"
 		: "every pixel is the window's own colour";
-	if (wrong == 0) {
+	bool pixels_ok = wrong == 0;
+	if (output_has) {
+		what = "the screen contains the expected colour";
+		pixels_ok = matching > 0;
+	} else if (output_not) {
+		what = "the screen contains none of the protected colour";
+		pixels_ok = matching == 0;
+	}
+	if (pixels_ok) {
 		check(true, "%s", what);
+	} else if (output_has || output_not) {
+		check(false, "%s: %lld of %lld pixels matched %06x", what,
+			(long long)matching, (long long)buffer.width * buffer.height,
+			want_colour);
 	} else {
 		check(false, "%s: %lld of %lld wrong, first at %d,%d is %06x not %06x",
 			what, (long long)wrong, (long long)buffer.width * buffer.height,

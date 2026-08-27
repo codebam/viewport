@@ -155,6 +155,19 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ViewCapture { id, capture } => {
+            let Some(view) = state.views.get_mut(id) else {
+                return;
+            };
+            tracing::debug!("view {id}: capture policy set to {capture}");
+            if view.capture_allowed != capture {
+                view.capture_allowed = capture;
+                // Capture is serviced from a render pass. Wake an idle backend
+                // so the changed policy reaches any frame waiting on it.
+                state.needs_render = true;
+            }
+        }
+
         Request::ViewQuery => {
             state.notify_config();
             state.notify_views();

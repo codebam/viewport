@@ -3,6 +3,8 @@
 // Assembly of one output frame and its cursor elements.
 // Included by `state.rs` to share the state module's imports and privacy.
 
+struct X11CaptureRedactionId(smithay::backend::renderer::element::Id);
+
 impl ViewportState {
     pub fn frame_for(&mut self, output: &Output) -> crate::render::Frame {
         use smithay::wayland::seat::WaylandFocus as _;
@@ -53,7 +55,7 @@ impl ViewportState {
                     .wl_surface()
                     .as_deref()
                     .and_then(|surface| self.views.find_by_surface(surface));
-                let clip = view.and_then(|view| view.clip).map(|clip| {
+                let logical_clip = view.and_then(|view| view.clip).map(|clip| {
                     Rectangle::<i32, Logical>::new(
                         (clip.x, clip.y).into(),
                         (clip.width, clip.height).into(),
@@ -62,9 +64,16 @@ impl ViewportState {
                 // Which output the shell drew this window on, kept before the
                 // placement shadows it: the frame below is only drawn on that
                 // one. See `render::frame_on_output`.
-                let drawn_on_this_output = crate::render::frame_on_output(clip, output_geometry);
+                let drawn_on_this_output =
+                    crate::render::frame_on_output(logical_clip, output_geometry);
                 let (location, clip) =
-                    crate::render::window_placement(window, layout, output_geometry, clip, scale);
+                    crate::render::window_placement(
+                        window,
+                        layout,
+                        output_geometry,
+                        logical_clip,
+                        scale,
+                    );
 
                 // The shell's border for this window, where it has said one
                 // has to be drawn above whatever is underneath — as four
@@ -105,6 +114,96 @@ impl ViewportState {
                     .to_f64()
                     .to_physical(scale)
                     .to_i32_round();
+
+                // Capture redaction follows the complete rendered footprint,
+                // including client shadows and native popups. Merge the shell
+                // frame too so a title beside private pixels is not retained.
+                let private_x11_popup = window.x11_surface().and_then(|child| {
+                    if view.is_some() || !child.is_override_redirect() {
+                        return None;
+                    }
+                    let transient = child.is_transient_for();
+                    let pid = child.pid();
+                    let related = self.views.iter().any(|parent| {
+                        if parent.capture_allowed {
+                            return false;
+                        }
+                        let Some(parent) = parent.window.x11_surface() else {
+                            return false;
+                        };
+                        transient.is_some_and(|id| id == parent.window_id())
+                            || pid.is_some_and(|pid| parent.pid() == Some(pid))
+                            || (transient.is_none() && pid.is_none())
+                    });
+                    related.then(|| {
+                        child
+                            .user_data()
+                            .insert_if_missing(|| X11CaptureRedactionId(
+                                smithay::backend::renderer::element::Id::new(),
+                            ));
+                        child
+                            .user_data()
+                            .get::<X11CaptureRedactionId>()
+                            .expect("inserted above")
+                            .0
+                            .clone()
+                    })
+                });
+                let privacy = view
+                    .filter(|view| !view.capture_allowed)
+                    .map(|view| {
+                        (
+                            view.capture_redaction_id.clone(),
+                            view.scale,
+                            view.frame,
+                        )
+                    })
+                    .or_else(|| private_x11_popup.map(|id| (id, 1.0, None)));
+                let redaction = privacy.map(|(id, window_scale, frame)| {
+                    let mut bounds = self.space.element_bbox(window).unwrap_or(layout);
+                    let has_popups = window.wl_surface().is_some_and(|surface| {
+                        smithay::desktop::PopupManager::popups_for_surface(&surface)
+                            .next()
+                            .is_some()
+                    });
+                    if !has_popups {
+                        if let Some(clip) = logical_clip {
+                            bounds = bounds.intersection(clip).unwrap_or_default();
+                        }
+                    }
+                    if let Some(frame) = frame {
+                        bounds = bounds.merge(Rectangle::<i32, Logical>::new(
+                            (frame.x, frame.y).into(),
+                            (frame.width, frame.height).into(),
+                        ));
+                    }
+                    let local = Rectangle::<i32, Logical>::new(
+                        (bounds.loc.x - output_geometry.loc.x, bounds.loc.y - output_geometry.loc.y)
+                            .into(),
+                        bounds.size,
+                    )
+                    .to_f64()
+                    .to_physical(scale)
+                    .to_i32_round();
+                    let local = if (window_scale - 1.0).abs() > f64::EPSILON {
+                        let delta = (local.loc - origin).to_f64();
+                        let origin = origin.to_f64();
+                        let scaled_loc = Point::<f64, Physical>::from((
+                            origin.x + delta.x * window_scale,
+                            origin.y + delta.y * window_scale,
+                        ));
+                        Rectangle::<i32, Physical>::new(
+                            scaled_loc.to_i32_round(),
+                            local.size.to_f64().upscale(window_scale).to_i32_round(),
+                        )
+                    } else {
+                        local
+                    };
+                    let output_bounds = Rectangle::<i32, Physical>::from_size(
+                        output_geometry.size.to_f64().to_physical(scale).to_i32_round(),
+                    );
+                    (id, local.intersection(output_bounds).unwrap_or_default())
+                });
 
                 // The corner the shell drew, in physical pixels on this
                 // output. Some windows have none: a fullscreen one, where the
@@ -215,6 +314,7 @@ impl ViewportState {
                     // the shell stayed solid.
                     scale: view.map(|view| view.scale).unwrap_or(1.0),
                     opacity: view.map(|view| view.opacity).unwrap_or(1.0),
+                    redaction,
                     overlay,
                     corners,
                 })

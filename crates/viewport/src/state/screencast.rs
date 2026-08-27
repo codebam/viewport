@@ -788,7 +788,7 @@ impl ViewportState {
             .wl_surface()
             .ok_or_else(|| "that window has no surface".to_owned())?
             .into_owned();
-        if self.locked {
+        if self.locked || !view.capture_allowed {
             return Ok((Vec::new(), size));
         }
 
@@ -980,20 +980,20 @@ impl ViewportState {
             return;
         }
 
-        // Nobody to draw it. A shell that is not up — a test, a crash — should
-        // still be able to share a screen, so this falls back to what was on
-        // screen when the user pressed share.
-        //
-        // Asked of the page rather than of `shell_is_up`, which answers a
-        // narrower question and answered it wrong here: see `shell_can_draw`.
+        // No trusted UI means no consent. Sharing a fallback source here used
+        // to expose the desktop after a shell crash or during startup.
+        if !self.shell_can_draw()
+            && std::env::var("VIEWPORT_UNSAFE_NO_CONSENT").as_deref() != Ok("1")
+        {
+            tracing::warn!("refusing screen sharing because no consent UI is available");
+            let _ = reply.try_send(Err("no consent UI is available".to_owned()));
+            return;
+        }
+
         if !self.shell_can_draw() {
             let source = sources.into_iter().next().expect("checked above");
-            // Said out loud, because from outside it looks like the chooser
-            // was skipped for no reason — which is how this went unnoticed on
-            // every shipped build. A share that was never asked about is worth
-            // a line in the log whatever the reason.
-            tracing::info!(
-                "no desktop page is drawing, so sharing {} without asking",
+            tracing::warn!(
+                "VIEWPORT_UNSAFE_NO_CONSENT=1: sharing {} without asking",
                 source.describe()
             );
             self.begin_cast(source, 0, crate::screencast::Reply::Cast(reply));
@@ -1374,12 +1374,18 @@ impl ViewportState {
     fn screencast_sources(&self, types: u32) -> Vec<crate::screencast::Source> {
         let mut sources = Vec::new();
         if types & crate::screencast::SOURCE_WINDOW != 0 {
-            let focused = self.views.get(self.focused).filter(|view| view.mapped);
+            let focused = self
+                .views
+                .get(self.focused)
+                .filter(|view| view.mapped && view.capture_allowed);
             if let Some(view) = focused {
                 sources.push(crate::screencast::Source::Window(view.id));
             }
             for view in self.views.iter() {
-                if view.mapped && Some(view.id) != focused.map(|view| view.id) {
+                if view.mapped
+                    && view.capture_allowed
+                    && Some(view.id) != focused.map(|view| view.id)
+                {
                     sources.push(crate::screencast::Source::Window(view.id));
                 }
             }
@@ -1768,6 +1774,9 @@ impl ViewportState {
             Source::Output(output) => Some(Remembered::Output(output.name())),
             Source::Window(id) => {
                 let view = self.views.get(*id)?;
+                if !view.capture_allowed {
+                    return None;
+                }
                 let (app_id, title) = (view.app_id(), view.title());
                 (!app_id.is_empty() || !title.is_empty())
                     .then_some(Remembered::Window { app_id, title })
@@ -1818,7 +1827,7 @@ impl ViewportState {
         let open: Vec<_> = self
             .views
             .iter()
-            .filter(|view| view.mapped)
+            .filter(|view| view.mapped && view.capture_allowed)
             .map(|view| crate::screencast::Open {
                 id: view.id,
                 app_id: view.app_id(),

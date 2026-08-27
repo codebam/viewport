@@ -12,6 +12,13 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- Window rules accept `capture: false`. Output, region, desk and direct-window
+  captures replace matching client pixels, native and related X11 popups, and
+  the shell frame with opaque black; portal source selection and restore omit
+  private windows. Denials apply before the shell answers, so privacy fails
+  closed during shell startup or failure.
+  Sandboxed clients no longer receive direct screencopy globals and must use
+  the consent-bearing portal.
 - Outputs can explicitly mirror another same-GPU physical head. Mirror sinks
   scan out the source scene without creating a second desktop, workspace or
   input rectangle; settings and `output.layout` still expose every physical
@@ -19,6 +26,9 @@ to summarise rather than to duplicate.
   `game-or-video`, with configured and effective state published separately.
 
 ### Fixed
+- ScreenCast now refuses a request when no trusted consent UI is available
+  instead of silently sharing the first source. The Screenshot backend now
+  accepts calls only from the current desktop-portal frontend.
 - The screencast restore integration test now checks the permission model the
   compositor implements: restore while its application-scoped, in-memory row
   still exists, and ask again after a compositor restart. Its private D-Bus has

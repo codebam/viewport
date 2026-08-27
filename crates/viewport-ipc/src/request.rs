@@ -94,6 +94,15 @@ pub enum Request {
         opacity: f64,
     },
 
+    /// Allow or deny capture of one window. Both fields are required: capture
+    /// policy must be explicit rather than inferred from a malformed rule.
+    #[serde(rename = "view.capture")]
+    ViewCapture {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+        capture: bool,
+    },
+
     /// Ask for `config` and one `view.added` per mapped window.
     #[serde(rename = "view.query")]
     ViewQuery,
@@ -1188,6 +1197,22 @@ mod tests {
                 visible: true
             }
         );
+    }
+
+    #[test]
+    fn view_capture_requires_an_explicit_boolean() {
+        assert_eq!(
+            parse(r#"{"type":"view.capture","id":7,"capture":false}"#),
+            Request::ViewCapture {
+                id: 7,
+                capture: false
+            }
+        );
+        assert!(serde_json::from_str::<Request>(r#"{"type":"view.capture","id":7}"#).is_err());
+        assert!(serde_json::from_str::<Request>(
+            r#"{"type":"view.capture","id":7,"capture":"false"}"#
+        )
+        .is_err());
     }
 
     #[test]

@@ -94,6 +94,12 @@ pub struct View {
     pub box_: Box,
 
     pub visible: bool,
+    /// Whether capture paths may include this window. Window rules can turn it
+    /// off after the view is announced; ordinary windows remain capturable.
+    pub capture_allowed: bool,
+    /// Stable renderer identity for the black rectangle substituted into a
+    /// capture when `capture_allowed` is false.
+    pub capture_redaction_id: smithay::backend::renderer::element::Id,
     pub scale: f64,
     pub clip: Option<Box>,
     /// What the client calls this window, from xdg-toplevel-tag.
@@ -491,6 +497,8 @@ impl Views {
             placed: false,
             box_: Box::new(0, 0, 0, 0),
             visible: true,
+            capture_allowed: true,
+            capture_redaction_id: smithay::backend::renderer::element::Id::new(),
             scale: 1.0,
             clip: None,
             tag: None,

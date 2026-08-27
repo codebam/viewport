@@ -99,6 +99,10 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 # did with a piece of restore data it would not read is the whole assertion,
 # and at info it does it silently.
 export VIEWPORT_LOG="${VIEWPORT_LOG:-viewport=debug}"
+# This suite tests restore-token scoping, not consent UI. Headless has no page
+# that can draw the chooser, so opt into the otherwise-forbidden fallback for
+# these isolated compositor processes only.
+export VIEWPORT_UNSAFE_NO_CONSENT=1
 
 # PipeWire, which is what a screen share is carried on: the portal's answer is
 # a node id, and a compositor that cannot reach a daemon fails Start outright.
