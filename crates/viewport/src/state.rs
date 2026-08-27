@@ -266,6 +266,15 @@ pub struct ViewportState {
     /// Two monitors switched off overnight therefore came back swapped, and a
     /// rotated one came back landscape. This is what they go back to.
     pub output_memory: std::collections::HashMap<String, RememberedOutput>,
+    /// Physical mirror sinks keyed by sink connector, naming direct sources.
+    pub output_mirrors: std::collections::HashMap<String, String>,
+    /// Explicit per-head VRR policies. Heads absent here use the legacy global
+    /// `adaptive_sync` default.
+    pub output_vrr: std::collections::HashMap<String, viewport_ipc::event::VrrMode>,
+    /// Last state successfully requested from KMS, for publication and to
+    /// avoid programming VRR on unrelated output frames.
+    pub output_vrr_effective: std::collections::HashMap<String, bool>,
+    pub output_vrr_wanted: std::collections::HashMap<String, bool>,
     /// What to run once the compositor is up.
     pub startup: Option<String>,
     /// The D-Bus notification service, forwarding to the shell.
@@ -1535,6 +1544,10 @@ impl ViewportState {
             output_config: std::collections::HashMap::new(),
             input_config: std::collections::HashMap::new(),
             output_memory: std::collections::HashMap::new(),
+            output_mirrors: std::collections::HashMap::new(),
+            output_vrr: std::collections::HashMap::new(),
+            output_vrr_effective: std::collections::HashMap::new(),
+            output_vrr_wanted: std::collections::HashMap::new(),
             startup: None,
             notifications: crate::notification::Notifications::default(),
             notification_history: crate::notification::History::default(),
@@ -2685,6 +2698,8 @@ impl ViewportState {
                 scale: Some(want.scale),
                 transform: Some(crate::apply::from_smithay_transform(want.transform)),
                 adaptive_sync: None,
+                vrr: None,
+                mirror: None,
                 x: Some(want.x),
                 y: Some(want.y),
             };
@@ -2707,7 +2722,7 @@ impl ViewportState {
         // into effect, not somebody at a panel changing their mind.
         let was_replay = std::mem::replace(&mut self.output_config_replay, true);
         for (name, want) in &outputs {
-            if self.output_by_name(name).is_none() {
+            if self.any_output_by_name(name).is_none() {
                 // Not plugged in. Kept, because it may be later.
                 continue;
             }
@@ -2745,6 +2760,8 @@ impl ViewportState {
                     parsed
                 }),
                 adaptive_sync: None,
+                vrr: want.vrr,
+                mirror: None,
                 x: want.x,
                 y: want.y,
             };
@@ -2762,6 +2779,31 @@ impl ViewportState {
                     },
                 );
             }
+        }
+        // Topology after every head's own mode/scale/transform. HashMap order
+        // must not decide whether two eventually matching heads compare equal.
+        for (name, want) in &outputs {
+            let Some(source) = want.mirror.clone() else {
+                continue;
+            };
+            if self.any_output_by_name(name).is_none() {
+                continue;
+            }
+            crate::apply::apply(
+                self,
+                viewport_ipc::Request::OutputConfigure(viewport_ipc::request::OutputConfigure {
+                    name: name.clone(),
+                    enabled: None,
+                    mode: None,
+                    scale: None,
+                    transform: None,
+                    adaptive_sync: None,
+                    vrr: None,
+                    mirror: Some(source),
+                    x: None,
+                    y: None,
+                }),
+            );
         }
         self.output_config_replay = was_replay;
         self.output_config = outputs;
@@ -3090,11 +3132,18 @@ impl ViewportState {
         if let Some(output) = self.output_by_name(name) {
             return Some(output);
         }
-        self.udev.as_ref().and_then(|udev| {
-            udev.surfaces()
-                .find(|surface| surface.output.name() == name)
-                .map(|surface| surface.output.clone())
-        })
+        self.udev
+            .as_ref()
+            .and_then(|udev| {
+                udev.surfaces()
+                    .find(|surface| surface.output.name() == name)
+                    .map(|surface| surface.output.clone())
+            })
+            .or_else(|| {
+                self.headless
+                    .as_ref()
+                    .and_then(|headless| headless.outputs.get(name).cloned())
+            })
     }
 
     /// Announce every mapped window, as a replay.
@@ -3131,7 +3180,12 @@ impl ViewportState {
                 // Whose dialog this is, resolved against the same list being
                 // walked — a reloading shell rebuilds its layout from these
                 // and needs the parent links as much as a live one does.
-                Event::ViewAdded(v.added(output, true, self.views.parent_id_of(v)))
+                Event::ViewAdded(v.added(
+                    output,
+                    true,
+                    self.views.parent_id_of(v),
+                    self.views.ancestor_ids_of(v),
+                ))
             })
             .collect();
         for event in events {
@@ -3195,17 +3249,38 @@ impl ViewportState {
     /// anyway.
     fn output_infos(&self, region: Option<Rectangle<i32, Logical>>) -> Vec<OutputInfo> {
         let origin = region.map(|region| region.loc).unwrap_or_default();
-        self.space
-            .outputs()
-            .filter(
-                |output| match (region, self.space.output_geometry(output)) {
+        self.physical_outputs()
+            .into_iter()
+            .filter(|output| {
+                let scene = self.mirror_source(output);
+                match (region, self.space.output_geometry(&scene)) {
                     (Some(region), Some(geometry)) => geometry.overlaps(region),
+                    (Some(_), None) => true,
                     _ => true,
-                },
-            )
+                }
+            })
             .map(|output| {
-                let geometry = self.space.output_geometry(output).unwrap_or_default();
-                let usable = self.usable_area(output);
+                let scene = self.mirror_source(&output);
+                let geometry = self.space.output_geometry(&scene).unwrap_or_else(|| {
+                    let size = output
+                        .current_mode()
+                        .map(|mode| output.current_transform().transform_size(mode.size))
+                        .map(|size| {
+                            let scale = output.current_scale().fractional_scale();
+                            (
+                                (f64::from(size.w) / scale).round() as i32,
+                                (f64::from(size.h) / scale).round() as i32,
+                            )
+                                .into()
+                        })
+                        .unwrap_or_default();
+                    Rectangle::new(Point::default(), size)
+                });
+                let usable = self
+                    .space
+                    .output_geometry(&scene)
+                    .map(|_| self.usable_area(&scene))
+                    .unwrap_or(geometry);
                 let props = output.physical_properties();
                 let current = output.current_mode();
                 let physical_size = props.size;
@@ -3220,13 +3295,31 @@ impl ViewportState {
                     serial: String::new(),
                     physical_width_mm: physical_dimensions.map(|size| size.0),
                     physical_height_mm: physical_dimensions.map(|size| size.1),
-                    enabled: true,
+                    enabled: self.output_is_enabled(&output),
+                    role: if self.output_mirrors.contains_key(&output.name()) {
+                        viewport_ipc::event::OutputRole::MirrorSink
+                    } else if self
+                        .output_mirrors
+                        .values()
+                        .any(|source| source == &output.name())
+                    {
+                        viewport_ipc::event::OutputRole::MirrorSource
+                    } else {
+                        viewport_ipc::event::OutputRole::Desktop
+                    },
+                    mirror_source: self.output_mirrors.get(&output.name()).cloned(),
+                    vrr: self.configured_vrr(&output.name()),
+                    vrr_effective: *self
+                        .output_vrr_effective
+                        .get(&output.name())
+                        .unwrap_or(&false),
                     // The shell owns this — it tracks the pointer and keyboard
                     // focus, and tells the compositor. Reporting it back is
                     // what lets anything else ask which screen the user is on:
                     // a screenshot tool otherwise has to guess, and guessing
                     // over two monitors means capturing both.
-                    active: self.active_output.as_deref() == Some(output.name().as_str()),
+                    active: self.active_output.as_deref() == Some(output.name().as_str())
+                        && !self.output_mirrors.contains_key(&output.name()),
                     x: geometry.loc.x - origin.x,
                     y: geometry.loc.y - origin.y,
                     width: geometry.size.w,

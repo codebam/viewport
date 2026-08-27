@@ -620,6 +620,23 @@ impl ViewportState {
             }
             None => self.needs_render = true,
         }
+        // A mirror sink is not in `Space`, so `outputs_for_element` cannot
+        // discover it. It still needs every frame its source receives.
+        let sinks: Vec<Output> = self
+            .output_mirrors
+            .iter()
+            .filter(|(_, source)| source.as_str() == output.name())
+            .filter_map(|(sink, _)| self.any_output_by_name(sink))
+            .collect();
+        for sink in sinks {
+            if let Some(id) = self.udev.as_ref().and_then(|udev| {
+                udev.outputs()
+                    .find(|(_, surface)| surface.output == sink)
+                    .map(|(id, _)| id)
+            }) {
+                self.dirty_outputs.insert(id);
+            }
+        }
     }
 
     /// How long one frame lasts on the fastest output, near enough.

@@ -74,7 +74,9 @@ impl XwmHandler for ViewportState {
         if let Err(e) = window.configure(geometry) {
             tracing::warn!("could not configure an X11 window: {e}");
         }
-        let id = self.views.insert(Window::new_x11_window(window));
+        // `_NET_WM_PID` is supplied by the X client and is not proof of process
+        // ownership. Leave identity absent rather than enabling unsafe swallow.
+        let id = self.views.insert(Window::new_x11_window(window), None);
         tracing::debug!("new X11 window, view {id}");
     }
 

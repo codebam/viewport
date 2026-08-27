@@ -51,6 +51,63 @@ fn output_query_answers_with_the_headless_output() {
 }
 
 #[test]
+fn mirror_is_one_logical_desktop_with_two_physical_heads() {
+    let compositor = Compositor::start("output-mirror");
+    let mut client = compositor.connect();
+    client.send(r#"{"type":"output.test_add"}"#);
+    client.send(r#"{"type":"output.configure","name":"HEADLESS-1","enabled":false}"#);
+    client.send(r#"{"type":"output.configure","name":"HEADLESS-2","mirror":"HEADLESS-1"}"#);
+    let error = client.wait_for("error");
+    assert!(error["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("not an enabled logical output"));
+    client.send(r#"{"type":"output.configure","name":"HEADLESS-1","enabled":true}"#);
+    client.send(
+        r#"{"type":"output.configure","name":"HEADLESS-2","mirror":"HEADLESS-1","vrr":"fullscreen"}"#,
+    );
+    client.send(r#"{"type":"output.query"}"#);
+
+    let mut layout = client.wait_for("output.layout");
+    while layout["outputs"].as_array().map(Vec::len) != Some(2)
+        || layout["outputs"][1]["role"] != "mirror-sink"
+    {
+        layout = client.wait_for("output.layout");
+    }
+    assert_eq!(layout["outputs"][0]["role"], "mirror-source");
+    assert_eq!(layout["outputs"][1]["mirror_source"], "HEADLESS-1");
+    assert_eq!(layout["outputs"][1]["vrr"], "fullscreen");
+    assert_eq!(layout["outputs"][0]["x"], layout["outputs"][1]["x"]);
+    assert_eq!(layout["outputs"][0]["width"], layout["outputs"][1]["width"]);
+
+    client.send(r#"{"type":"output.configure","name":"HEADLESS-2","enabled":false}"#);
+    client.send(r#"{"type":"output.configure","name":"HEADLESS-1","enabled":false}"#);
+    let error = client.wait_for("error");
+    assert!(error["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("only output"));
+    client.send(r#"{"type":"output.configure","name":"HEADLESS-2","enabled":true}"#);
+
+    client.send(r#"{"type":"output.configure","name":"HEADLESS-2","mirror":"HEADLESS-2"}"#);
+    let error = client.wait_for("error");
+    assert!(error["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("itself"));
+
+    client.send(r#"{"type":"output.test_remove","name":"HEADLESS-1"}"#);
+    client.send(r#"{"type":"output.query"}"#);
+    let mut promoted = client.wait_for("output.layout");
+    while promoted["outputs"].as_array().map(Vec::len) != Some(1) {
+        promoted = client.wait_for("output.layout");
+    }
+    assert_eq!(promoted["outputs"][0]["name"], "HEADLESS-2");
+    assert_eq!(promoted["outputs"][0]["role"], "desktop");
+    assert_eq!(promoted["outputs"][0]["x"], 0);
+}
+
+#[test]
 fn view_query_answers_with_the_config() {
     let compositor = Compositor::start("config");
     let mut client = compositor.connect();

@@ -559,6 +559,11 @@ pub struct ViewAdded {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<u32>,
 
+    /// Mapped views whose verified processes are ancestors of this view's
+    /// process, nearest first. Process ids never cross the shell protocol.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestors: Vec<u32>,
+
     /// The window's natural size, which is what a floating window opens at.
     pub width: i32,
     pub height: i32,
@@ -1332,6 +1337,20 @@ pub struct OutputInfo {
 
     pub enabled: bool,
 
+    /// Whether this physical head owns a desktop, supplies one to mirrors, or
+    /// only scans out another head's desktop.
+    #[serde(default)]
+    pub role: OutputRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror_source: Option<String>,
+
+    /// Policy requested for this head and what KMS is using for the current
+    /// frame. They differ for conditional policies and unsupported displays.
+    #[serde(default)]
+    pub vrr: VrrMode,
+    #[serde(default)]
+    pub vrr_effective: bool,
+
     /// The output the shell last called active: where a new window opens, and
     /// what "the screen" means to anything outside the shell — a screenshot
     /// tool has no other way to ask, because `output.active` only ever went
@@ -1369,6 +1388,25 @@ pub struct OutputInfo {
     pub transform: Transform,
 
     pub modes: Vec<Mode>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputRole {
+    #[default]
+    Desktop,
+    MirrorSource,
+    MirrorSink,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VrrMode {
+    #[default]
+    Off,
+    Always,
+    Fullscreen,
+    GameOrVideo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1410,6 +1448,7 @@ mod tests {
             replay: false,
             floating: false,
             parent: None,
+            ancestors: Vec::new(),
             width: 800,
             height: 600,
         }));
@@ -1451,10 +1490,12 @@ mod tests {
             replay: false,
             floating: true,
             parent: Some(1),
+            ancestors: vec![1],
             width: 300,
             height: 200,
         }));
         assert_eq!(value["parent"], 1);
+        assert_eq!(value["ancestors"], serde_json::json!([1]));
     }
 
     #[test]
@@ -1668,6 +1709,10 @@ mod tests {
                 physical_width_mm: Some(597),
                 physical_height_mm: Some(336),
                 enabled: true,
+                role: OutputRole::MirrorSource,
+                mirror_source: None,
+                vrr: VrrMode::Fullscreen,
+                vrr_effective: true,
                 active: true,
                 x: 0,
                 y: 0,
@@ -1720,6 +1765,7 @@ mod tests {
                 replay: true,
                 floating: false,
                 parent: None,
+                ancestors: Vec::new(),
                 width: 0,
                 height: 0,
             })),

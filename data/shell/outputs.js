@@ -52,6 +52,9 @@ function setActiveOutput(name) {
 }
 
 function syncOutputs(list) {
+  physicalOutputs.clear();
+  for (const info of list) physicalOutputs.set(info.name, { name: info.name, info });
+  list = list.filter((info) => info.enabled !== false && info.role !== 'mirror-sink');
   const seen = new Set();
 
   for (const info of list) {
@@ -440,6 +443,7 @@ function focusOutputDirection(direction) {
  * workspace that monitor is showing. Used when the window is already at the
  * edge of its own workspace's tree — sway's behaviour. */
 function moveViewToOutput(id, direction) {
+  dissolveSwallow(id);
   const target = adjacentOutput(direction);
   if (target === null) return false;
 

@@ -1632,7 +1632,11 @@ exactly like a real one.
   { "match": { "app_id": { "equals": "foot" }, "tag": { "contains": "drop" } },
     "workspace": "scratchpad", "width": 900, "height": 600 },
   { "match": { "title": { "regex": "^Picture.in.Picture$", "flags": "i" } },
-    "pinned": true, "width": 480, "height": 270 }
+    "pinned": true, "width": 480, "height": 270 },
+  { "match": { "app_id": { "equals": "foot" }, "workspace": 2 },
+    "pseudotile": true, "width": 900, "height": 600 },
+  { "app_id": "foot", "swallow": true },
+  { "app_id": "keep-terminal-visible", "swallow": false }
 ]
 ```
 
@@ -1646,7 +1650,9 @@ The legacy flat shape above remains supported. Rich rules put `app_id`, `title`
 and/or the stable xdg-toplevel `tag` under `match`; each field accepts
 `contains`, `equals` or `regex` (plus optional regex `flags`). All supplied
 fields must match. Rules still use first-match order. String field values are a
-short form of `contains`.
+short form of `contains`. `match.workspace` is an integer from 1 through 9 and
+matches the active workspace at the instant the window opens. It does not
+change the action named by the outer `workspace` field.
 
 `workspace: "scratchpad"` opens a floating window hidden. `scratchpad.toggle`
 shows or hides it as an overlay on the active output and `scratchpad.move` sends
@@ -1654,6 +1660,22 @@ the focused window there. `pinned: true` makes a window floating and keeps it on
 its assigned output across numbered workspace switches; `window.pin.toggle`
 changes that state. Scratchpad and pinned windows do not appear in overview or
 participate in canvas placement.
+
+`pseudotile: true` reserves the ordinary full tiled slot but centres the client
+at the rule's `width` and `height`, or its natural size where either is absent.
+The client is capped by the slot. Pseudotiling is ignored while a window is
+floating, special, fullscreen, or shown by a non-tree layout; its state and
+optional dimensions survive dynamic rearrangement, layout switches and session
+restore. `shell window.pseudotile.toggle` changes the focused tiled window.
+
+`swallow: true` allows an ordinary tiled parent to be replaced by a descendant
+process's ordinary tiled window. A matching child rule with `swallow: false`
+opts out. This uses kernel process credentials plus start-time-verified process
+ancestry for native Wayland clients, never focus or launch timing. IPC carries
+only proven ancestor view IDs, not process IDs. X11 `_NET_WM_PID` is
+client-supplied and therefore is not accepted as proof. Closing the child puts
+the parent back in the same leaf; moving, floating, fullscreening, specialising,
+or closing either side dissolves the relation safely.
 
 The compositor passes these to the shell without reading them. Which workspace
 a window opens on and whether it floats are layout decisions, and the
@@ -1995,7 +2017,8 @@ The `outputs` block is keyed by connector name — `DP-1`, `HDMI-A-1`, what
 
 ```json
 "outputs": {
-  "DP-1": { "mode": "2560x1440@240" },
+  "DP-1": { "mode": "2560x1440@240", "vrr": "game-or-video" },
+  "HDMI-A-1": { "mode": "2560x1440@240", "mirror": "DP-1", "vrr": "off" },
   "DP-3": { "max_refresh": true, "transform": "90" }
 }
 ```
@@ -2006,6 +2029,13 @@ The `outputs` block is keyed by connector name — `DP-1`, `HDMI-A-1`, what
 | `max_refresh` | The fastest mode at the largest size the display offers |
 | `enabled` | `false` leaves the screen off. Absent leaves it as it is, which is what every block written before this key existed means. The last output on cannot be turned off — a session with every screen dark is not one you can point at anything to fix |
 | `scale`, `transform`, `hdr`, `x`, `y` | As the same names elsewhere |
+| `mirror` | Source connector to scan out. Sink remains a physical head but owns no workspace/input rectangle. Same GPU, transformed mode and scale required in the first implementation; no self mirrors, missing source, chains or cycles |
+| `vrr` | `off`, `always`, `fullscreen`, or `game-or-video`, per physical output. `game-or-video` follows committed `wp_content_type_v1` Game/Video and stays off when unavailable |
+
+The older global `adaptive_sync` boolean remains supported. `false` is the
+default `off`, `true` is `always`, and an output's `vrr` overrides that default.
+The settings panel exposes physical heads, including disabled and mirror sinks,
+while desktops and workspaces are created only for independent/source heads.
 
 **Two cards can offer the same connector name.** Connector names are handed out
 per card, so a laptop with an integrated display controller and a discrete card

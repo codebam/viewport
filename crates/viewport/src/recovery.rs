@@ -802,13 +802,27 @@ impl ViewportState {
             return;
         }
 
+        let gone_names: std::collections::HashSet<String> =
+            gone.iter().map(|(_, output)| output.name()).collect();
+        self.output_mirrors
+            .retain(|sink, source| !gone_names.contains(sink) && !gone_names.contains(source));
         for (crtc, output) in gone {
+            let global = self
+                .udev
+                .as_mut()
+                .and_then(|udev| udev.devices.get_mut(index))
+                .and_then(|device| device.surfaces.get_mut(&crtc))
+                .and_then(|surface| surface.global.take());
+            if let Some(global) = global {
+                self.display_handle.remove_global::<Self>(global);
+            }
             if let Some(udev) = self.udev.as_mut() {
                 if let Some(device) = udev.devices.get_mut(index) {
                     device.surfaces.remove(&crtc);
                 }
             }
             self.space.unmap_output(&output);
+            self.output_removed(&output.name());
             // Whatever named this screen has to stop naming it — see the same
             // handling for an unplugged monitor in `scan_device`.
             if self.active_output.as_deref() == Some(output.name().as_str()) {

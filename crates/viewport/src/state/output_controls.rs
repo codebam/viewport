@@ -117,6 +117,7 @@ impl ViewportState {
     /// config key is not under `outputs`, and a display that cannot do it says
     /// so rather than failing the commit.
     pub fn set_adaptive_sync(&mut self, enabled: bool) {
+        self.adaptive_sync = enabled;
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
@@ -126,6 +127,10 @@ impl ViewportState {
                 .with_compositor(|compositor| compositor.use_vrr(enabled));
             match result {
                 Ok(()) => {
+                    self.output_vrr_wanted
+                        .insert(surface.output.name(), enabled);
+                    self.output_vrr_effective
+                        .insert(surface.output.name(), enabled);
                     tracing::info!(
                         "adaptive sync {} on {}",
                         if enabled { "on" } else { "off" },

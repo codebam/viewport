@@ -195,6 +195,20 @@
   ],
   "border": {},
 
+  "_rules": [
+    "First matching rule wins. Rich match fields are ANDed; workspace is the",
+    "active workspace when the window opens. pseudotile keeps the full tiled",
+    "slot while centring a preferred-size client. swallow replaces a matching",
+    "parent only through verified native Wayland process ancestry; a child",
+    "rule with swallow false opts out."
+  ],
+  "rules": [
+    { "match": { "app_id": { "equals": "foot" }, "workspace": 2 },
+      "pseudotile": true, "width": 900, "height": 600 },
+    { "app_id": "foot", "swallow": true },
+    { "app_id": "keep-terminal-visible", "swallow": false }
+  ],
+
   "_notifications": [
     "What a notification sounds like. The compositor holds",
     "org.freedesktop.Notifications itself, so this is the setting mako or",
@@ -284,10 +298,15 @@
     "refresh rate available at the preferred resolution, which is what a",
     "high-refresh monitor that nominates a 60Hz timing needs. A named mode",
     "may leave the refresh off to match on resolution alone. An exact name",
-    "beats \"*\" whichever order they appear in."
+    "beats \"*\" whichever order they appear in.",
+    "Per-output vrr is off, always, fullscreen, or game-or-video and overrides",
+    "the legacy global. mirror names a direct same-GPU source. This first",
+    "version requires matching transformed mode and scale; chains are refused."
   ],
   "outputs": {
-    "*": { "max_refresh": false }
+    "*": { "max_refresh": false, "vrr": "off" },
+    "DP-1": { "vrr": "game-or-video" },
+    "HDMI-A-1": { "mirror": "DP-1", "vrr": "off" }
   },
 
   "_input": [
@@ -394,6 +413,7 @@
     "Mod4+Return": "exec rio",
     "Mod4+d": "exec wmenu-run -f 'Fira Code NerdFont 11' -i",
     "Mod4+Shift+q": "close",
+    "Mod4+p": "shell window.pseudotile.toggle",
     "Mod4+Shift+e": "exit",
     "Mod4+Shift+c": "reload",
 

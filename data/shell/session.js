@@ -20,13 +20,20 @@
 function serialiseNode(node) {
   if (node.type === 'leaf') {
     const view = views.get(node.id);
-    const app = view ? (view.app_id || view.title || view.tag) : node.app;
+    const swallowed = view?.swallowParent != null
+      ? views.get(view.swallowParent) : null;
+    const identity = swallowed ?? view;
+    const app = swallowed
+      ? (swallowed.app_id || swallowed.title || swallowed.tag)
+      : (view ? (view.app_id || view.title || view.tag) : node.app);
     if (!app) return null;
     return {
       type: 'leaf', app,
-      ...(view?.tag ? { tag: view.tag } : (node.tag ? { tag: node.tag } : {})),
+      ...(identity?.tag ? { tag: identity.tag } : (node.tag ? { tag: node.tag } : {})),
       weight: node.weight ?? 1,
       ...(node.width !== undefined ? { width: node.width } : {}),
+      ...(identity?.pseudotile ? { pseudotile: identity.pseudotile }
+        : (node.pseudotile ? { pseudotile: node.pseudotile } : {})),
     };
   }
 
@@ -75,6 +82,7 @@ function serialiseSession() {
       workspace: floating.workspace,
       x: floating.x, y: floating.y,
       width: floating.width, height: floating.height,
+      ...(view.pseudotile ? { pseudotile: view.pseudotile } : {}),
       ...(view.special ? { special: view.special } : {}),
       ...(view.specialOutput ? { output: view.specialOutput } : {}),
       ...(view.special === 'scratchpad' ? { hidden: view.specialHidden !== false } : {}),
@@ -108,6 +116,8 @@ function reviveNode(node) {
     if (node.tag) leaf.tag = node.tag;
     leaf.weight = node.weight ?? 1;
     if (node.width !== undefined) leaf.width = node.width;
+    const pseudo = safePseudoDimensions(node.pseudotile);
+    if (pseudo) leaf.pseudotile = pseudo;
     slotsPending++;
     return leaf;
   }
@@ -223,8 +233,11 @@ function claimSlot(id, app, tag = null) {
       const identityMatches = leaf.tag ? tag === leaf.tag : leaf.app === app;
       if (leaf.id < 0 && identityMatches) {
         leaf.id = id;
+        const view = views.get(id);
+        if (view && leaf.pseudotile) view.pseudotile = leaf.pseudotile;
         delete leaf.app;
         delete leaf.tag;
+        delete leaf.pseudotile;
         slotsPending--;
         return true;
       }
@@ -485,7 +498,7 @@ function ruleValueMatches(value, condition) {
   return false;
 }
 
-function ruleFor(appId, title, tag) {
+function ruleFor(appId, title, tag, openingWorkspace = null) {
   const haystackApp = (appId || '').toLowerCase();
   const haystackTitle = (title || '').toLowerCase();
 
@@ -498,6 +511,12 @@ function ruleFor(appId, title, tag) {
         if (rule.match[field] === undefined) continue;
         matched = true;
         if (!ruleValueMatches(value, rule.match[field])) return false;
+      }
+      if (rule.match.workspace !== undefined) {
+        matched = true;
+        if (!Number.isInteger(rule.match.workspace)
+            || rule.match.workspace < 1 || rule.match.workspace > WORKSPACES
+            || rule.match.workspace !== openingWorkspace) return false;
       }
       return matched;
     }
@@ -522,6 +541,7 @@ function claimFloatSlot(id, app, tag = null) {
   if (at < 0) return null;
 
   const [slot] = floatSlots.splice(at, 1);
+  slot.pseudotile = safePseudoDimensions(slot.pseudotile);
   return slot;
 }
 
@@ -529,6 +549,7 @@ function claimFloatSlot(id, app, tag = null) {
  * overview can act on any window on screen, not just the current one. */
 function moveViewToWorkspace(id, n) {
   if (n < 1 || n > WORKSPACES) return false;
+  dissolveSwallow(id);
   const from = workspaceOf(id);
   if (from === n) return false;
 
@@ -819,6 +840,7 @@ function scrollFocus(direction) {
  * column, which is what niri does. */
 function scrollMove(direction, targetId = focusedId) {
   if (targetId == null) return false;
+  dissolveSwallow(targetId);
   const workspace = workspaceOf(targetId);
   if (workspace === null) return false;
 
@@ -858,6 +880,7 @@ function colContainsAnySelected(column) {
 }
 
 function scrollMoveSelected(direction) {
+  for (const id of selectedIds) dissolveSwallow(id);
   const ws = activeWorkspace();
   if (ws === null) return false;
 
@@ -956,6 +979,7 @@ function scrollMoveSelected(direction) {
  * focused window. The inverse of expel, and the pair is how columns are built
  * up and taken apart without a tree to split. */
 function consumeWindow() {
+  dissolveSwallow(focusedId);
   const workspace = focusedWorkspace();
   if (workspace === null) return;
 
@@ -991,6 +1015,7 @@ function consumeWindow() {
 
 /* Push the focused window out of its column into one of its own, to the right. */
 function expelWindow() {
+  dissolveSwallow(focusedId);
   const workspace = focusedWorkspace();
   if (workspace === null) return;
 

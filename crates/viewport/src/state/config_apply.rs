@@ -267,6 +267,33 @@ impl ViewportState {
             }
         }
         if !file.outputs.is_empty() {
+            let stale_mirrors: Vec<String> = self
+                .output_config
+                .iter()
+                .filter(|(name, previous)| {
+                    previous.mirror.is_some()
+                        && file.outputs.get(*name).is_some_and(|next| next.mirror.is_none())
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            let stale_vrr: Vec<String> = self
+                .output_config
+                .iter()
+                .filter(|(name, previous)| {
+                    previous.vrr.is_some()
+                        && file.outputs.get(*name).is_some_and(|next| next.vrr.is_none())
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            for name in stale_mirrors {
+                if let Some(output) = self.any_output_by_name(&name) {
+                    let _ = self.configure_mirror(&output, None);
+                }
+            }
+            for name in stale_vrr {
+                self.output_vrr.remove(&name);
+                self.output_vrr_wanted.remove(&name);
+            }
             self.output_config = file.outputs;
             // Carried out here too, and not left for the next hotplug: the
             // block is otherwise applied only where an output arrives, and a
@@ -360,6 +387,8 @@ impl ViewportState {
         }
         if let Some(vrr) = file.adaptive_sync {
             self.adaptive_sync = vrr;
+            self.output_vrr_wanted.clear();
+            self.needs_render = true;
         }
         if let Some(mode) = file.decorations.as_deref() {
             // "client" hands the frame back; anything else, including a value

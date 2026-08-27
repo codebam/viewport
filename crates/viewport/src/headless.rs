@@ -17,7 +17,7 @@
 //
 // GLES and not Vulkan, deliberately. See `renderer()`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use smithay::backend::egl::{EGLContext, EGLDisplay};
@@ -43,7 +43,9 @@ pub struct Headless {
     /// The global each output owns, so unplugging can take it away. Dropping a
     /// `GlobalId` does not remove the global — `DisplayHandle::remove_global`
     /// does, and it needs the id back.
-    globals: HashMap<String, GlobalId>,
+    pub(crate) globals: HashMap<String, GlobalId>,
+    pub(crate) outputs: BTreeMap<String, Output>,
+    pub(crate) disabled: HashSet<String>,
     /// The number the next output gets. Only ever counts up: a name that comes
     /// back after an unplug is a different monitor to anything holding the old
     /// one, and reusing it is how a stale reference starts looking valid.
@@ -138,6 +140,8 @@ pub fn init(
             refresh: REFRESH,
         },
         globals: HashMap::new(),
+        outputs: BTreeMap::new(),
+        disabled: HashSet::new(),
         next: 1,
         renderer,
     });
@@ -301,6 +305,7 @@ pub fn add(state: &mut ViewportState) -> Option<String> {
 
     if let Some(headless) = state.headless.as_mut() {
         headless.globals.insert(name.clone(), global);
+        headless.outputs.insert(name.clone(), output.clone());
     }
 
     tracing::info!("headless output {name} plugged in at x={x}");
@@ -318,11 +323,7 @@ pub fn remove(state: &mut ViewportState, name: Option<&str>) -> bool {
     };
 
     let target = match name {
-        Some(name) => state
-            .space
-            .outputs()
-            .find(|output| output.name() == name)
-            .cloned(),
+        Some(name) => headless.outputs.get(name).cloned(),
         // The last one mapped, which is the one `add` put furthest right.
         None => state.space.outputs().last().cloned(),
     };
@@ -345,6 +346,11 @@ pub fn remove(state: &mut ViewportState, name: Option<&str>) -> bool {
     {
         state.display_handle.remove_global::<ViewportState>(global);
     }
+    if let Some(headless) = state.headless.as_mut() {
+        headless.outputs.remove(&output.name());
+        headless.disabled.remove(&output.name());
+    }
+    state.output_removed(&output.name());
 
     tracing::info!("headless output {} unplugged", output.name());
     true

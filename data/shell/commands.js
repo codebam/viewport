@@ -40,6 +40,9 @@ function handleShellCommand(command, args) {
     case 'window.fullscreen':
       toggleFullscreen();
       break;
+    case 'window.pseudotile.toggle':
+      togglePseudotile(focusedId);
+      break;
     case 'scratchpad.toggle':
       toggleScratchpad(arg || null);
       break;

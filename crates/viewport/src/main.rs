@@ -46,6 +46,7 @@ mod network;
 mod notification;
 mod output_management;
 mod output_power;
+mod output_topology;
 mod pointer;
 mod power;
 mod recovery;

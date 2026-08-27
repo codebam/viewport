@@ -15,10 +15,107 @@
  * so switching means moving it between the two representations rather than
  * setting a flag. Its rect is remembered while tiled, so toggling back and
  * forth returns it to where it was. */
+const MAX_PSEUDO_DIMENSION = 32768;
+
+function safePseudoDimensions(value) {
+  if (!value || typeof value !== 'object') return null;
+  const width = Number(value.width);
+  const height = Number(value.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)
+      || width <= 0 || height <= 0) return null;
+  return {
+    width: Math.max(1, Math.min(MAX_PSEUDO_DIMENSION, Math.round(width))),
+    height: Math.max(1, Math.min(MAX_PSEUDO_DIMENSION, Math.round(height))),
+  };
+}
+
+function preferredPseudoDimensions(view, rule = null) {
+  return safePseudoDimensions({
+    width: Number.isFinite(rule?.width) ? rule.width
+      : Math.max(1, view.naturalWidth || view.minWidth || 1),
+    height: Number.isFinite(rule?.height) ? rule.height
+      : Math.max(1, view.naturalHeight || view.minHeight || 1),
+  });
+}
+
+function togglePseudotile(id) {
+  const view = views.get(id);
+  if (!view || isFloating(id) || view.special || isFullscreen(id)
+      || view.parent != null
+      || (layoutMode !== 'tiling' && layoutMode !== 'scrolling')) return;
+  view.pseudotile = view.pseudotile ? null : preferredPseudoDimensions(view);
+  relayoutAll();
+  saveSession();
+}
+
+/* End a swallow before either participant changes model or location. The one
+ * not being changed regains the exact replaced leaf; the changed one is put
+ * beside it so the caller can continue through its ordinary path. */
+function dissolveSwallow(id) {
+  const view = views.get(id);
+  if (!view) return;
+  if (view.swallowParent != null) {
+    const parentId = view.swallowParent;
+    const parent = views.get(parentId);
+    const found = findLeaf(id);
+    const leaf = found?.leaf ?? view.swallowLeaf;
+    if (parent) parent.swallowChild = null;
+    view.swallowParent = null;
+    view.swallowLeaf = null;
+    if (parent && found) {
+      leaf.id = parentId;
+      found.parent.children.push(newLeaf(id));
+    } else if (parent && view.swallowWorkspace != null) {
+      workspaceRoot(view.swallowWorkspace).children.push(newLeaf(parentId));
+    }
+    view.swallowWorkspace = null;
+    return;
+  }
+  if (view.swallowChild != null) {
+    const childId = view.swallowChild;
+    const child = views.get(childId);
+    const found = child ? findLeaf(childId) : null;
+    if (child) {
+      child.swallowParent = null;
+      child.swallowLeaf = null;
+      child.swallowWorkspace = null;
+    }
+    view.swallowChild = null;
+    view.swallowWorkspace = null;
+    if (found) found.parent.children.push(newLeaf(id));
+  }
+}
+
+function trySwallow(id, ancestors, rule, compositorFloating) {
+  const child = views.get(id);
+  if (!child || compositorFloating || child.parent != null || rule?.swallow === false
+      || rule?.floating === true || rule?.workspace === 'scratchpad'
+      || rule?.pinned === true || Number.isFinite(rule?.workspace)
+      || (layoutMode !== 'tiling' && layoutMode !== 'scrolling')) return false;
+
+  for (const parentId of Array.isArray(ancestors) ? ancestors : []) {
+    const parent = views.get(parentId);
+    if (!parent || !parent.swallow || parent.parent != null || parent.swallowChild != null
+        || isFloating(parentId) || parent.special || isFullscreen(parentId)) continue;
+    const found = findLeaf(parentId);
+    if (!found) continue;
+    found.leaf.id = id;
+    parent.swallowChild = id;
+    parent.swallowWorkspace = found.workspace;
+    child.swallowParent = parentId;
+    child.swallowLeaf = found.leaf;
+    child.swallowWorkspace = found.workspace;
+    return true;
+  }
+  return false;
+}
+
 function setFloating(id, floating, rect = null) {
   const view = views.get(id);
   if (!view) return;
   if (!floating && view.special) return;
+
+  dissolveSwallow(id);
 
   const workspace = workspaceOf(id);
   if (workspace === null) return;
@@ -135,7 +232,7 @@ function moveByDelta(id, dx, dy) {
 }
 
 function addView({ id, title, app_id, tag, output: outputName, min_width, min_height,
-    floating, parent, width, height, replay }) {
+    floating, parent, ancestors, width, height, replay }) {
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
   if (views.has(id)) return;
@@ -200,6 +297,12 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     reportedFloating: false,
     /* Set while the overview is up; see clearOverviewState(). */
     overview: null,
+    pseudotile: null,
+    swallow: false,
+    swallowParent: null,
+    swallowChild: null,
+    swallowLeaf: null,
+    swallowWorkspace: null,
   });
   resizeObserver.observe(viewport);
 
@@ -215,7 +318,13 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      width of the column it opens in. Applied before anything is inserted, so
      the window goes straight where it belongs rather than appearing in one
      place and jumping to another. */
-  const rule = ruleFor(app_id, title, tag);
+  const openingWorkspace = output.workspace;
+  const rule = ruleFor(app_id, title, tag, replay ? null : openingWorkspace);
+  const view = views.get(id);
+  view.swallow = rule?.swallow === true;
+  if (rule?.pseudotile === true) {
+    view.pseudotile = preferredPseudoDimensions(view, rule);
+  }
   const target = rule && Number.isFinite(rule.workspace)
     ? rule.workspace : output.workspace;
   const special = rule?.workspace === 'scratchpad'
@@ -253,6 +362,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   const floatSlot = claimFloatSlot(id, app_id || title || tag, tag);
   if (floatSlot) {
     const view = views.get(id);
+    view.pseudotile = floatSlot.pseudotile ?? view.pseudotile;
     view.special = floatSlot.special ?? null;
     view.specialOutput = outputs.has(floatSlot.output) ? floatSlot.output : name;
     view.specialHidden = view.special === 'scratchpad' ? floatSlot.hidden !== false : false;
@@ -274,9 +384,20 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     return;
   }
 
+
+  if (trySwallow(id, ancestors, rule, floating)) {
+    treeGeneration++;
+    relayoutAll();
+    fadeIn(id);
+    focusIt();
+    saveSession();
+    return;
+  }
+
   insertLeaf(target, id);
 
-  if (rule && Number.isFinite(rule.width) && layoutMode === 'scrolling') {
+  if (rule && rule.pseudotile !== true && Number.isFinite(rule.width)
+      && layoutMode === 'scrolling') {
     /* In the strip a rule's width is the column's share of the screen, which
        is the only width a tiled window has there. */
     const found = findLeaf(id);
@@ -435,14 +556,48 @@ function removeView(id) {
   const wasFocused = focusedId === id;
   const workspace = workspaceOf(id);
   /* Worked out while the tree still knows where this window was. */
-  const successor = wasFocused ? focusAfterClosing(id) : null;
+  let successor = wasFocused ? focusAfterClosing(id) : null;
+  let restoredSwallow = false;
+
+  if (view.swallowParent != null) {
+    const parentId = view.swallowParent;
+    const parent = views.get(parentId);
+    const current = findLeaf(id)?.leaf;
+    if (parent) {
+      parent.swallowChild = null;
+      if (current) {
+        current.id = parentId;
+        restoredSwallow = true;
+      } else if ((view.swallowWorkspace ?? parent.swallowWorkspace) != null) {
+        workspaceRoot(view.swallowWorkspace ?? parent.swallowWorkspace)
+          .children.push(newLeaf(parentId));
+        restoredSwallow = true;
+      }
+      parent.swallowWorkspace = null;
+      if (wasFocused) successor = parentId;
+    }
+    view.swallowParent = null;
+    view.swallowLeaf = null;
+    view.swallowWorkspace = null;
+  } else if (view.swallowChild != null) {
+    const childId = view.swallowChild;
+    const child = views.get(childId);
+    if (child) {
+      child.swallowParent = null;
+      child.swallowLeaf = null;
+      child.swallowWorkspace = null;
+    }
+    view.swallowChild = null;
+    view.swallowWorkspace = null;
+    if (wasFocused && child) successor = childId;
+  }
 
   resizeObserver.unobserve(view.viewport);
   view.el.remove();
   /* The floating rect and the overview state live on the record, so they go
      with it — there is no second structure left to forget. */
   views.delete(id);
-  removeLeaf(id);
+  if (!restoredSwallow) removeLeaf(id);
   /* Which window is a workspace's sun is one of the few things kept outside
      the record, because it is a property of the workspace rather than of the
      window — so it does have to be forgotten by hand. */
@@ -477,6 +632,7 @@ function removeView(id) {
 }
 
 function setFullscreen(id, on) {
+  dissolveSwallow(id);
   const workspace = workspaceOf(id);
   if (workspace === null) return;
 

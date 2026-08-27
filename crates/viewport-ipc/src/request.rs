@@ -1003,6 +1003,13 @@ pub struct OutputConfigure {
     pub transform: Option<Transform>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adaptive_sync: Option<bool>,
+    /// Per-head variable-refresh policy. Supersedes `adaptive_sync` when both
+    /// are present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vrr: Option<crate::event::VrrMode>,
+    /// Source output name. An empty string detaches this head from its source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<String>,
 
     /// Position in the output layout. Applied after the mode commit succeeds,
     /// and each axis independently — sending only `x` keeps the current `y`
@@ -1381,7 +1388,20 @@ mod tests {
         assert_eq!(config.scale, Some(1.25));
         assert_eq!(config.transform, Some(Transform::Flipped90));
         assert_eq!(config.enabled, None);
+        assert_eq!(config.vrr, None);
+        assert_eq!(config.mirror, None);
         assert_eq!(config.x, None);
+    }
+
+    #[test]
+    fn output_configure_parses_mirror_and_vrr_mode() {
+        let Request::OutputConfigure(config) = parse(
+            r#"{"type":"output.configure","name":"HDMI-A-1","mirror":"DP-1","vrr":"game-or-video"}"#,
+        ) else {
+            panic!("wrong variant");
+        };
+        assert_eq!(config.mirror.as_deref(), Some("DP-1"));
+        assert_eq!(config.vrr, Some(crate::event::VrrMode::GameOrVideo));
     }
 
     #[test]

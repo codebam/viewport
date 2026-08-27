@@ -746,6 +746,10 @@ function relayoutAll() {
         top: `${floating.y}px`,
         width: `${floating.width}px`,
         height: `${floating.height}px`,
+        maxWidth: '',
+        maxHeight: '',
+        minWidth: view.minWidth > 0 ? `${view.minWidth}px` : '',
+        minHeight: view.minHeight > 0 ? `${view.minHeight}px` : '',
         flexGrow: '',
       });
     }

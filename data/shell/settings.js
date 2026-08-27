@@ -558,7 +558,7 @@ function settingsModeLabel(mode) {
 function settingsDisplays() {
   const section = settingsSection('Displays');
 
-  if (outputs.size === 0) {
+  if (physicalOutputs.size === 0) {
     const empty = document.createElement('div');
     empty.className = 'settings-empty';
     empty.textContent = 'No displays.';
@@ -575,7 +575,7 @@ function settingsDisplays() {
     })));
   }
 
-  for (const [name, output] of outputs) {
+  for (const [name, output] of physicalOutputs) {
     const heading = document.createElement('div');
     heading.className = 'settings-display';
     /* The connector name is what everything else calls this monitor — the
@@ -586,6 +586,36 @@ function settingsDisplays() {
       ? `${name} — ${output.info.model}`
       : name;
     section.append(heading);
+
+    section.append(settingsRow('Enabled', settingsToggle(
+      output.info?.enabled !== false,
+      (enabled) => {
+        send({ type: 'output.configure', name, enabled });
+        settingsPending();
+      },
+    )));
+
+    const mirrorChoices = [['', 'Independent']];
+    for (const [other, candidate] of physicalOutputs) {
+      if (other !== name && candidate.info?.enabled !== false
+          && candidate.info?.role !== 'mirror-sink') {
+        mirrorChoices.push([other, `Mirror ${other}`]);
+      }
+    }
+    section.append(settingsRow('Mirror', settingsChoice(
+      mirrorChoices, output.info?.mirror_source ?? '', (mirror) => {
+        send({ type: 'output.configure', name, mirror });
+      },
+    )));
+
+    section.append(settingsRow('Variable refresh', settingsChoice([
+      ['off', 'Off'],
+      ['always', 'Always'],
+      ['fullscreen', 'Fullscreen'],
+      ['game-or-video', 'Game or video'],
+    ], output.info?.vrr ?? 'off', (vrr) => {
+      send({ type: 'output.configure', name, vrr });
+    })));
 
     section.append(settingsRow('Mode', settingsModeSelect(name, output)));
 

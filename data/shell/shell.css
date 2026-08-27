@@ -1369,6 +1369,18 @@ html.behind body { background: transparent; }
    biasing the split, which is what makes two terminals come out equal. */
 .split > * { flex-basis: 0; flex-shrink: 1; min-width: 0; min-height: 0; }
 
+/* Pseudotiling keeps the slot in flex arithmetic while centring a smaller
+   client inside it. The max sizes cap rule/natural dimensions at the slot. */
+.pseudotile-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.pseudotile-slot > .window { flex-basis: auto; min-width: 0; min-height: 0; }
+
 /* The draggable edge between two windows. It occupies what would otherwise be
    a CSS gap, and never grows. */
 .divider {

@@ -240,7 +240,7 @@ pub struct Surface {
     pub connector: connector::Handle,
     pub drm_output: DrmOutput<GbmAllocator<DrmDeviceFd>, Exporter, Feedback, DrmDeviceFd>,
     /// The global handed to clients, dropped when the connector goes.
-    _global: smithay::reexports::wayland_server::backend::GlobalId,
+    pub(crate) global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
     /// Whether anything has been put on this output yet. Logged once, because
     /// "did it draw at all" is the first question of any bring-up and the
     /// answer was not in the log the first time.
@@ -2533,7 +2533,7 @@ impl ViewportState {
                             connector: connector.handle(),
                             drm_output,
                             feedback,
-                            _global: global,
+                            global: Some(global),
                             drawn: false,
                             dumped: false,
                             hdr: false,
@@ -2635,12 +2635,19 @@ impl ViewportState {
         // from this same pass — so nothing here can remove an output the pass
         // just created.
         for (crtc, output) in gone {
+            let global = self
+                .udev
+                .as_mut()
+                .and_then(|udev| udev.devices[index].surfaces.get_mut(&crtc))
+                .and_then(|surface| surface.global.take());
+            if let Some(global) = global {
+                self.display_handle.remove_global::<Self>(global);
+            }
             if let Some(udev) = self.udev.as_mut() {
-                // Dropping the surface drops the `GlobalId` it holds, which is
-                // what the field was there for.
                 udev.devices[index].surfaces.remove(&crtc);
             }
             self.space.unmap_output(&output);
+            self.output_removed(&output.name());
 
             // Whatever named this screen has to stop naming it.
             //
@@ -2669,6 +2676,7 @@ impl ViewportState {
         // is a different layout. Without this the windows stay where they were
         // — including on the monitor that is no longer there.
         self.notify_output_layout();
+        self.advertise_outputs();
     }
 
     /// Everyone waiting to hear that this output's frame reached the screen.
@@ -3147,7 +3155,9 @@ impl ViewportState {
             // The clock stays, because it is what restarts a desktop where
             // nothing is committing and so no vblank is coming. It is the
             // fallback now rather than the pacer.
-            self.send_frame_callbacks(&output, at);
+            if !self.output_mirrors.contains_key(&output.name()) {
+                self.send_frame_callbacks(&output, at);
+            }
         }
         // And if anything is still waiting, keep a clock on it: a blocked
         // commit makes no damage, so without this nothing would draw again.
@@ -3218,7 +3228,10 @@ impl ViewportState {
         // the two showing the same desktop.
         #[cfg(feature = "wpe")]
         self.import_shell_frame();
-        let frame = self.frame_for(&output);
+        let source = self.mirror_source(&output);
+        let wanted_vrr = self.desired_vrr(&output);
+        self.update_output_vrr(&output, wanted_vrr);
+        let frame = self.frame_for(&source);
         let wants_tearing = self.output_wants_tearing(&output);
         let settled_for = self.last_layout.map(|at| at.elapsed());
         let mut pending_dump = false;
@@ -3474,7 +3487,11 @@ impl ViewportState {
                 // `self.udev` here finds nothing — which cost the flip once
                 // already, and silenced per-output dmabuf feedback every
                 // frame.
-                let feedback = self.presentation_feedback(udev, output, &rendered.states);
+                let feedback = if self.output_mirrors.contains_key(&output.name()) {
+                    smithay::desktop::utils::OutputPresentationFeedback::new(output)
+                } else {
+                    self.presentation_feedback(udev, output, &rendered.states)
+                };
                 let Some(surface) = udev.surface_mut(id) else {
                     return;
                 };
@@ -3677,6 +3694,12 @@ impl ViewportState {
         let throttle = Some(self.frame_interval());
         let _ = submitted;
 
+        // A mirror is a second physical scanout of one logical desktop, not a
+        // second clock for its clients. Its capture work above still runs, but
+        // only the source vblank may consume frame callbacks.
+        if self.output_mirrors.contains_key(&output.name()) {
+            return;
+        }
         for window in self.space.elements() {
             window.send_frame(output, start, throttle, |_, _| Some(output.clone()));
         }

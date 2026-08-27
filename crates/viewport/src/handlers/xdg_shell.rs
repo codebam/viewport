@@ -16,6 +16,7 @@ use smithay::input::pointer::Focus;
 use smithay::input::Seat;
 use smithay::reexports::wayland_server::protocol::wl_seat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::Resource as _;
 use smithay::utils::Serial;
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
@@ -68,8 +69,14 @@ impl XdgShellHandler for ViewportState {
             self.adopt_background_toplevel(surface);
             return;
         }
+        let process = surface
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_credentials(&self.display_handle).ok())
+            .and_then(|credentials| u32::try_from(credentials.pid).ok())
+            .and_then(crate::views::ProcessIdentity::for_pid);
         let window = Window::new_wayland_window(surface);
-        let id = self.views.insert(window);
+        let id = self.views.insert(window, process);
         tracing::debug!("new toplevel, view {id}");
     }
 

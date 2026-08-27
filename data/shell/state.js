@@ -67,6 +67,7 @@ const OUTPUT_WORKSPACE = {
  * --------------------------------------------------------------------- */
 
 const outputs = new Map(); // name -> desktop elements + workspace + barHidden
+const physicalOutputs = new Map(); // name -> physical head info, including mirrors/off
 
 /* How the bar behaves, from the config file: 'visible' always, 'hidden' never,
    or 'auto', which reveals it only while Mod4 is held. 'auto' exists for OLED

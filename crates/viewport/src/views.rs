@@ -24,6 +24,48 @@ use smithay::wayland::shell::xdg::{SurfaceCachedState, XdgToplevelSurfaceData};
 use viewport_ipc::event::ViewAdded;
 use viewport_ipc::Box;
 
+/// Kernel process identity. `pid` alone is not identity because Linux reuses
+/// it; `/proc/<pid>/stat`'s start time distinguishes incarnations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pid: u32,
+    start_time: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProcessStat {
+    parent: u32,
+    start_time: u64,
+}
+
+fn parse_process_stat(text: &str) -> Option<ProcessStat> {
+    // comm is parenthesised and may itself contain spaces or ')'. Split after
+    // the final ')' rather than treating the record as whitespace fields.
+    let rest = text.rsplit_once(") ")?.1;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    Some(ProcessStat {
+        // `rest` starts at field 3 (state): ppid is its second field and
+        // starttime (field 22) is its twentieth.
+        parent: fields.get(1)?.parse().ok()?,
+        start_time: fields.get(19)?.parse().ok()?,
+    })
+}
+
+fn process_stat(pid: u32) -> Option<ProcessStat> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_process_stat(&text)
+}
+
+impl ProcessIdentity {
+    pub fn for_pid(pid: u32) -> Option<Self> {
+        let stat = process_stat(pid)?;
+        Some(Self {
+            pid,
+            start_time: stat.start_time,
+        })
+    }
+}
+
 /// The id of no window. `view.focused` carries this when focus leaves every
 /// client (`src/input.c:163`), so real ids start at 1.
 pub const NO_VIEW: u32 = 0;
@@ -31,6 +73,8 @@ pub const NO_VIEW: u32 = 0;
 pub struct View {
     pub id: u32,
     pub window: Window,
+    /// Verified native-client process identity, when Linux exposes it.
+    pub process: Option<ProcessIdentity>,
 
     /// The client has mapped it: it committed a buffer and is ready to be
     /// shown. Until then the shell is not told about it at all.
@@ -125,7 +169,13 @@ impl View {
     /// `replay` distinguishes a window that just appeared from one being
     /// re-announced in answer to `view.query`, which is how a reloading shell
     /// rebuilds its tree without the windows looking new.
-    pub fn added(&self, output: String, replay: bool, parent: Option<u32>) -> ViewAdded {
+    pub fn added(
+        &self,
+        output: String,
+        replay: bool,
+        parent: Option<u32>,
+        ancestors: Vec<u32>,
+    ) -> ViewAdded {
         let (min_width, min_height) = self.min_size();
         let (width, height) = self.natural_size();
         ViewAdded {
@@ -139,6 +189,7 @@ impl View {
             replay,
             floating: self.wants_floating(),
             parent,
+            ancestors,
             width,
             height,
         }
@@ -426,7 +477,7 @@ impl Views {
         }
     }
 
-    pub fn insert(&mut self, window: Window) -> u32 {
+    pub fn insert(&mut self, window: Window, process: Option<ProcessIdentity>) -> u32 {
         // Onto the end, so no position the surface index has cached moves.
         let id = self.next_id;
         self.next_id += 1;
@@ -434,6 +485,7 @@ impl Views {
             last_mismatch: None,
             id,
             window,
+            process,
             mapped: false,
             icon: None,
             placed: false,
@@ -504,6 +556,51 @@ impl Views {
 
         let parent = view.window.toplevel()?.parent()?;
         self.find_by_surface(&parent).map(|other| other.id)
+    }
+
+    /// Existing views in the new view's verified process ancestry, nearest
+    /// first. Every hop is reread from procfs and every candidate includes its
+    /// start time, so a reused pid cannot prove a relationship.
+    pub fn ancestor_ids_of(&self, view: &View) -> Vec<u32> {
+        let Some(mut identity) = view.process else {
+            return Vec::new();
+        };
+        let Some(first) = process_stat(identity.pid) else {
+            return Vec::new();
+        };
+        if first.start_time != identity.start_time {
+            return Vec::new();
+        }
+
+        let mut current_stat = first;
+        let mut ids = Vec::new();
+        for _ in 0..128 {
+            let parent = current_stat.parent;
+            if parent == 0 || parent == identity.pid {
+                break;
+            }
+            let Some(stat) = process_stat(parent) else {
+                break;
+            };
+            // The child still names this parent after the parent identity was
+            // read. This closes the exit/reparent/PID-reuse race between the
+            // two procfs reads.
+            if process_stat(identity.pid) != Some(current_stat) {
+                break;
+            }
+            identity = ProcessIdentity {
+                pid: parent,
+                start_time: stat.start_time,
+            };
+            ids.extend(
+                self.views
+                    .iter()
+                    .filter(|candidate| candidate.process == Some(identity))
+                    .map(|candidate| candidate.id),
+            );
+            current_stat = stat;
+        }
+        ids
     }
 
     /// The view painting into a surface.
@@ -673,5 +770,29 @@ mod tests {
         // sequence is checked directly rather than through it.
         views.next_id += 1;
         assert_eq!(views.next_id, 2);
+    }
+
+    #[test]
+    fn proc_stat_parser_handles_spaces_and_closing_parens_in_comm() {
+        let fields = (4..=20)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = format!("42 (odd name) here) S 7 {fields} 999 23 24");
+        assert_eq!(
+            parse_process_stat(&text),
+            Some(ProcessStat {
+                parent: 7,
+                start_time: 999
+            })
+        );
+    }
+
+    #[test]
+    fn current_process_identity_includes_proc_start_time() {
+        let pid = std::process::id();
+        let identity = ProcessIdentity::for_pid(pid).expect("this process is in procfs");
+        assert_eq!(identity.pid, pid);
+        assert_eq!(identity.start_time, process_stat(pid).unwrap().start_time);
     }
 }

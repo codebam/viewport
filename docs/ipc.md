@@ -61,7 +61,7 @@ of what was asked.
 | `config` | `layout` (a built-in or declared extension), optional `layout_extensions[]` of `{name,url}` with local paths already resolved, `logo`, `tutorial`, `binds[]` of `chord`, `action` and optional `mode` — the keymap as the compositor will really act on it, in the order it matches; optional `bar`, optional `rules[]`, optional `theme{}`, optional `wallpaper` (the desktop background: a URL, already resolved and encoded, or a CSS value such as `#1a1b26` or a gradient) and `wallpaper_mode` (`fill`, `fit`, `stretch`, `center` or `tile`; absent is `fill`), optional `clock{locale,hour12,format}` (how the bar writes the clock and the calendar under it — a BCP 47 tag, a twelve/twenty-four-hour choice, and a strftime-style template; absent means the shell uses the locale its engine runs under, which is the one thing the compositor cannot name for it), `osk` (`"auto"`, `"manual"` or `"off"` — whether the on-screen keyboard may raise itself, and whether `Mod4+Shift+k` still works if not; always present, unlike most of this message, since the compositor always has some answer for it), and `dark_mode` (whether applications are being told to draw themselves dark; always present, for the same reason `osk` is, and painted by nothing in the shell — it is the settings panel's switch reading its own position) |
 | `config.saved` | `path` — the runtime settings were written down, in answer to `config.save`. The path is in it because the overlay file is a thing to go and look at, or to delete when the config file should be in charge again |
 | `modifiers` | `logo` (whether Mod4 is held; only sent while `bar` is `"auto"`) |
-| `view.added` | `id`, `title`, `app_id`, optional stable xdg-toplevel `tag`, `output` (name of the output it opened on), `replay`, `floating`, `width`, `height`, `min_width`, `min_height`, and `parent` when this window is a dialog of another — the same link `floating` is partly inferred from, named rather than reduced to a boolean, and omitted entirely when there is none |
+| `view.added` | `id`, `title`, `app_id`, optional stable xdg-toplevel `tag`, `output` (name of the output it opened on), `replay`, `floating`, `width`, `height`, `min_width`, `min_height`, `parent` when this window is a dialog of another, and optional nearest-first `ancestors` containing only view IDs whose native Wayland process ancestry was verified by the compositor. Process IDs never cross this protocol |
 | `view.props` | `id`, `title`, `app_id`, and optional stable xdg-toplevel `tag` |
 | `view.configured` | `id`, `width`, `height` — the size the client was actually configured with, sent only when that is not the size the shell asked for and only when the answer changes. A client configured below its minimum may ignore it, so the compositor raises the configure to that minimum; a shell that is not told goes on holding a rectangle for a window of a different size |
 | `view.parent` | `id`, and `parent` when it has one — whose dialog this is, said after the window was announced. `view.added` carries it when it is known by then; a portal window (a file chooser, in another process) is parented over xdg-foreign long after it maps, and this is the only way the shell hears about it |
@@ -166,7 +166,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `bluetooth.device` | `address` (from `bluetooth.update`), `action` (`pair`, `connect`, `disconnect`, `trust`, `untrust` or `forget`) — `connect` is the compound one a picker sends for a row that was tapped: it pairs first when the device is not paired, trusts it, then connects |
 | `tray.menu.click` | `id`, `item` — a row of an open menu was chosen, named by the id the application gave it |
 | `tray.menu.closed` | `id` — the menu was dismissed without a choice |
-| `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `adaptive_sync` |
+| `output.configure` | `name`, `enabled`, `mode{width,height,refresh}`, `x`, `y`, `scale`, `transform`, `mirror`, `vrr` (`off`, `always`, `fullscreen`, `game-or-video`), legacy `adaptive_sync` |
 | `workspace.list` | `workspaces[]` with `id`, `name`, optional `output`, `active`, `urgent`, `hidden` — the whole list, whenever it changes. See [Workspaces](#workspaces) |
 | `output.confirm` | — the screen came back and somebody can read it: cancel the pending revert. See below |
 | `output.revert` | — and the other answer: put the monitors back now rather than waiting out the deadline. Nothing pending is not a refusal, because the deadline may have fired a moment earlier |
@@ -248,6 +248,27 @@ twelve seconds unless an `output.confirm` arrives, because a wrong mode blanks
 the very screen you would need in order to undo it. `output.revert` is the same
 undo asked for early, for the case where the screen did come back and can be
 seen to be wrong.
+
+`mirror` names a physical source output; the empty string detaches the sink.
+The source remains the only logical desktop, workspace and input rectangle.
+The sink stays a physical head in `output.layout`, with `role: "mirror-sink"`
+and `mirror_source`, but the shell creates no desktop for it. Self mirrors,
+missing heads, chains/cycles and cross-GPU pairs are refused. This first renderer
+path requires source and sink to have the same transformed physical mode and
+scale; configure those first, then mirror them. Mode, scale and transform
+changes to an attached group require detaching it first. The sink is rendered
+from the source's real scene into its own CRTC, transform and colour target; no
+overlapping fake layout rectangle is created. If a source disappears or is
+disabled, the lexicographically first surviving sink is promoted and remaining
+sinks follow it.
+
+`vrr` is per physical target. `off` never enables VRR, `always` requests it,
+`fullscreen` requests it only while the source desktop has a fullscreen window,
+and `game-or-video` follows the committed `wp_content_type_v1` value `game` or
+`video`. Missing content metadata is conservatively off. `OutputInfo.vrr` is
+configured policy and `vrr_effective` is KMS state. Legacy global
+`adaptive_sync: false/true` supplies the `off`/`always` default; a per-output
+`vrr` wins. The legacy request field still maps to `off`/`always`.
 
 Provisional means the four fields that can leave you unable to read the screen
 — `mode`, `scale`, `transform` and `enabled` — and not `x`/`y`: a monitor moved

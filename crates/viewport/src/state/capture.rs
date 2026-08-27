@@ -735,7 +735,8 @@ impl ViewportState {
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
-        let mut frame = self.frame_for(output);
+        let source = self.mirror_source(output);
+        let mut frame = self.frame_for(&source);
         if !overlay_cursor {
             frame.cursor = crate::render::Cursor::Hidden;
         }
@@ -1052,7 +1053,8 @@ impl ViewportState {
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
-        let mut frame = self.frame_for(output);
+        let source = self.mirror_source(output);
+        let mut frame = self.frame_for(&source);
         if !overlay_cursor {
             // A screenshot with a pointer in it is rarely what was asked for,
             // and the client says which it wants.

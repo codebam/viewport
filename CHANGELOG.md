@@ -11,6 +11,13 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- Outputs can explicitly mirror another same-GPU physical head. Mirror sinks
+  scan out the source scene without creating a second desktop, workspace or
+  input rectangle; settings and `output.layout` still expose every physical
+  head. Per-output VRR now supports `off`, `always`, `fullscreen` and
+  `game-or-video`, with configured and effective state published separately.
+
 ### Fixed
 - The screencast restore integration test now checks the permission model the
   compositor implements: restore while its application-scoped, in-memory row
@@ -87,6 +94,14 @@ to summarise rather than to duplicate.
   and answering with another is worse than announcing nothing.
 
 ### Added
+- Rich window rules can match the active opening workspace (1 through 9).
+  Rules and `window.pseudotile.toggle` can pseudotile a client at capped,
+  centred preferred or natural dimensions while its tree slot stays full;
+  dimensions survive sessions and layout changes. Rules can also safely
+  swallow descendants: native Wayland process ancestry is verified from kernel
+  credentials and procfs start times, only proven ancestor view IDs cross IPC,
+  child rules can opt out, and every move/float/special/fullscreen/close path
+  dissolves or restores the exact leaf without timing or focus guesses.
 - Window rules now support `contains`, `equals`, and regular-expression
   matching across `app_id`, title, and `xdg-toplevel-tag`, plus scratchpad and
   output-pinned floating windows. `scratchpad.toggle`, `scratchpad.move`, and

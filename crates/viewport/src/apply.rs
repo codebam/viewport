@@ -855,12 +855,12 @@ fn config_save(state: &mut ViewportState) {
     // A monitor arrives here because a message named it — see
     // `ViewportState::output_settings_touched`.
     let touched = state.output_settings_touched.clone();
-    for head in state.heads() {
-        let name = head.output.name();
+    for output in state.physical_outputs() {
+        let name = output.name();
         if !touched.contains(&name) {
             continue;
         }
-        let mode = head.output.current_mode().map(|mode| {
+        let mode = output.current_mode().map(|mode| {
             // Hertz, because that is what `config::parse_mode` reads and what
             // a person writes; the kernel counts in millihertz and the third
             // decimal is load-bearing — 143.998 is a real refresh rate and
@@ -876,19 +876,31 @@ fn config_save(state: &mut ViewportState) {
         // `Transform`'s `#[serde(rename)]`s, the shell compares against them
         // literally, and a second table here is a second thing to keep in
         // step with the first.
-        let transform =
-            serde_json::to_value(from_smithay_transform(head.output.current_transform()))
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned));
+        let transform = serde_json::to_value(from_smithay_transform(output.current_transform()))
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned));
+        let position = state
+            .space
+            .output_geometry(&state.mirror_source(&output))
+            .map(|geometry| geometry.loc)
+            .or_else(|| {
+                state
+                    .output_memory
+                    .get(&name)
+                    .map(|saved| (saved.x, saved.y).into())
+            })
+            .unwrap_or_default();
         overlay.outputs.insert(
             name,
             crate::settings::OutputOverlay {
-                enabled: Some(head.enabled),
+                enabled: Some(state.output_is_enabled(&output)),
                 mode,
-                scale: Some(head.output.current_scale().fractional_scale()),
+                scale: Some(output.current_scale().fractional_scale()),
                 transform,
-                x: Some(head.position.x),
-                y: Some(head.position.y),
+                x: Some(position.x),
+                y: Some(position.y),
+                mirror: state.output_mirrors.get(&output.name()).cloned(),
+                vrr: Some(state.configured_vrr(&output.name())),
             },
         );
     }
@@ -1161,6 +1173,51 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         }
     }
 
+    if config.mirror.is_some()
+        && (config.enabled.is_some()
+            || config.mode.is_some()
+            || config.scale.is_some()
+            || config.transform.is_some()
+            || config.x.is_some()
+            || config.y.is_some())
+    {
+        reject(
+            state,
+            "output.configure",
+            "mirror must be configured separately from mode, scale, transform, position or power",
+        );
+        return;
+    }
+    if (config.mode.is_some() || config.scale.is_some() || config.transform.is_some())
+        && (state.output_mirrors.contains_key(&config.name)
+            || state
+                .output_mirrors
+                .values()
+                .any(|source| source == &config.name))
+    {
+        reject(
+            state,
+            "output.configure",
+            "detach this mirror group before changing mode, scale or transform",
+        );
+        return;
+    }
+    if (config.x.is_some() || config.y.is_some()) && state.output_mirrors.contains_key(&config.name)
+    {
+        reject(
+            state,
+            "output.configure",
+            "a mirror sink has no independent logical position",
+        );
+        return;
+    }
+    if let Some(source) = config.mirror.as_deref() {
+        if let Err(e) = state.configure_mirror(&output, Some(source)) {
+            reject(state, "output.configure", &e);
+            return;
+        }
+    }
+
     // The last refusal, hoisted out of the `enabled` branch below so that
     // every `return` meaning "nothing happened" is above the point where the
     // change becomes provisional. A refused configuration that had already
@@ -1170,7 +1227,18 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     // A desk with every output disabled is not a state anything can be
     // recovered from by pointing at a screen, which is why this is refused at
     // all — the same rule `apply_output_configuration` follows.
-    if config.enabled == Some(false) && state.space.outputs().count() <= 1 {
+    let disabling_logical = state.space.outputs().any(|candidate| candidate == &output);
+    let has_surviving_mirror = state.output_mirrors.iter().any(|(sink, source)| {
+        source == &config.name
+            && state
+                .any_output_by_name(sink)
+                .is_some_and(|output| state.output_is_enabled(&output))
+    });
+    if config.enabled == Some(false)
+        && disabling_logical
+        && state.space.outputs().count() <= 1
+        && !has_surviving_mirror
+    {
         reject(
             state,
             "output.configure",
@@ -1241,6 +1309,18 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         state.set_output_enabled(&output, enabled);
     }
 
+    if let Some(mode) = config.vrr.or(config.adaptive_sync.map(|enabled| {
+        if enabled {
+            viewport_ipc::event::VrrMode::Always
+        } else {
+            viewport_ipc::event::VrrMode::Off
+        }
+    })) {
+        state.output_vrr.insert(config.name.clone(), mode);
+        state.output_vrr_wanted.remove(&config.name);
+        state.needs_render = true;
+    }
+
     // Prefer an exact modeline the display advertised; fall back to a custom
     // mode so unusual panels stay configurable. The fallback needs a refresh:
     // the kernel takes a whole modeline, and a custom mode with none of its
@@ -1306,6 +1386,8 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     // than drifted into, which is the only kind of arrangement worth restoring.
     state.remember_output(&output);
     state.notify_output_layout();
+    state.advertise_outputs();
+    state.needs_render = true;
 }
 
 /// What the shell is told an output is turned to.

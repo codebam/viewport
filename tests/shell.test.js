@@ -2322,6 +2322,105 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   ruleOutput.previous = ruleOutputPrevious;
   emit({ type: 'config', layout: mode, rules: richRules });
 
+  const openingWorkspace = globalThis.__shell.outputs
+    .get(globalThis.__shell.activeOutput).workspace;
+  const workspaceTarget = openingWorkspace === 8 ? 9 : 8;
+  const workspaceRules = [
+    { match: { app_id: { equals: 'local-only' }, workspace: openingWorkspace },
+      workspace: workspaceTarget },
+    { match: { app_id: { equals: 'local-only' } }, workspace: 7 },
+  ];
+  emit({ type: 'config', layout: mode, rules: workspaceRules });
+  open(55, 'local-only');
+  check('a rich rule can match the workspace active when a window opens',
+    globalThis.__shell.workspaceOfForTest(55) === workspaceTarget);
+  emit({ type: 'view.removed', id: 55 });
+
+  if (mode === 'tiling' || mode === 'scrolling') {
+    const featureRules = [
+      { app_id: 'pseudo-app', pseudotile: true, width: 500, height: 320 },
+      { app_id: 'parent-app', swallow: true },
+      { app_id: 'no-swallow', swallow: false },
+      { app_id: 'workspace-child', workspace: workspaceTarget },
+    ];
+    emit({ type: 'config', layout: mode, rules: featureRules });
+    open(56, 'pseudo-app');
+    const pseudo = globalThis.__shell.views.get(56);
+    check('a pseudotile rule keeps preferred dimensions on the view',
+      pseudo.pseudotile?.width === 500 && pseudo.pseudotile?.height === 320);
+    check('and leaves a full tree slot around the centred client',
+      pseudo.el.classList.contains('pseudotiled'));
+    emit({ type: 'view.focused', id: 56 });
+    emit({ type: 'shell.command', command: 'window.pseudotile.toggle', args: [] });
+    check('window.pseudotile.toggle disables it', pseudo.pseudotile === null);
+    emit({ type: 'shell.command', command: 'window.pseudotile.toggle', args: [] });
+    check('and restores natural dimensions',
+      pseudo.pseudotile?.width === 800 && pseudo.pseudotile?.height === 600);
+    const pseudoSaved = globalThis.__shell.sessionForTest.serialise();
+    const pseudoLeaf = JSON.stringify(pseudoSaved.workspaces).includes('pseudotile');
+    check('pseudotile dimensions are session state', pseudoLeaf);
+    emit({ type: 'shell.command', command: 'layout.float.toggle', args: [] });
+    check('floating a pseudotiled window clears tiled size constraints',
+      pseudo.el.style.maxWidth === '' && pseudo.el.style.maxHeight === '');
+    const floatingPseudoSaved = globalThis.__shell.sessionForTest.serialise();
+    check('a floating window keeps pseudotile state for session restore',
+      floatingPseudoSaved.floating.some((slot) => slot.app === 'pseudo-app'
+        && slot.pseudotile?.width === 800 && slot.pseudotile?.height === 600));
+
+    open(57, 'parent-app');
+    emit({ type: 'view.added', id: 58, title: 'child-app', app_id: 'child-app',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+      ancestors: [57], width: 800, height: 600 });
+    const parent = globalThis.__shell.views.get(57);
+    const child = globalThis.__shell.views.get(58);
+    check('proven process ancestry lets a swallow rule replace its parent leaf',
+      parent.swallowChild === 58 && child.swallowParent === 57
+      && globalThis.__shell.workspaceOfForTest(57) === null
+      && globalThis.__shell.workspaceOfForTest(58) !== null);
+    const swallowedSaved = JSON.stringify(globalThis.__shell.sessionForTest.serialise());
+    check('a swallowed session serialises the parent identity',
+      swallowedSaved.includes('parent-app'));
+    emit({ type: 'view.removed', id: 58 });
+    check('closing a swallowed child clears the parent link',
+      parent.swallowChild === null);
+    check('and restores the parent to the exact slot',
+      globalThis.__shell.workspaceOfForTest(57) !== null);
+
+    emit({ type: 'view.added', id: 59, title: 'no-swallow', app_id: 'no-swallow',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+      ancestors: [57], width: 800, height: 600 });
+    check('child swallow:false opts out despite proven ancestry',
+      globalThis.__shell.views.get(59).swallowParent === null);
+
+    emit({ type: 'view.added', id: 63, title: 'workspace-child', app_id: 'workspace-child',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+      ancestors: [57], width: 800, height: 600 });
+    check('an explicit workspace rule takes precedence over swallowing',
+      globalThis.__shell.views.get(63).swallowParent === null
+      && globalThis.__shell.workspaceOfForTest(63) === workspaceTarget);
+
+    emit({ type: 'view.added', id: 60, title: 'child-app', app_id: 'child-app',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+      ancestors: [57], width: 800, height: 600 });
+    emit({ type: 'view.focused', id: 60 });
+    emit({ type: 'shell.command', command: 'layout.float.toggle', args: [] });
+    check('floating a swallowed child dissolves the relation safely',
+      globalThis.__shell.floatingForTest(60) !== null
+      && globalThis.__shell.workspaceOfForTest(57) !== null
+      && parent.swallowChild === null);
+
+    open(61, 'parent-app');
+    emit({ type: 'view.added', id: 62, title: 'child-app', app_id: 'child-app',
+      output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+      ancestors: [61], width: 800, height: 600 });
+    emit({ type: 'view.removed', id: 61 });
+    check('closing a swallowed parent leaves the child in its slot',
+      globalThis.__shell.workspaceOfForTest(62) !== null
+      && globalThis.__shell.views.get(62).swallowParent === null);
+
+    for (const id of [56, 57, 59, 60, 62, 63]) emit({ type: 'view.removed', id });
+  }
+
   for (const id of [50, 51, 52, 53, 54]) emit({ type: 'view.removed', id });
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
   /* Put focus back where the rest of the file expects it. */
@@ -5820,6 +5919,20 @@ if (mode === 'scrolling') {
       select.children[1].textContent === '1920×1080 @ 144.0 Hz');
   check('and the one it is in is the one selected',
     select.value === '1920x1080@60000');
+
+  before = sent.length;
+  click(controls('Variable refresh')[0]?.children.find((button) =>
+    button.textContent === 'Game or video'));
+  check('variable refresh is configured per physical output',
+    sent.slice(before).some((m) => m.type === 'output.configure' &&
+      m.name === 'DP-1' && m.vrr === 'game-or-video'));
+
+  before = sent.length;
+  click(controls('Mirror')[0]?.children.find((button) =>
+    button.textContent === 'Mirror HDMI-A-1'));
+  check('mirroring names its physical source instead of overlapping coordinates',
+    sent.slice(before).some((m) => m.type === 'output.configure' &&
+      m.name === 'DP-1' && m.mirror === 'HDMI-A-1'));
 
   check('physical size and current mode expose the quarter-step recommendation',
     controls('Recommended scale')[0]?.textContent === 'Use 1.5×');

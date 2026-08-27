@@ -178,6 +178,7 @@ function insertLeaf(workspace, id) {
  * across it, the window is promoted into the grandparent — which is what lets
  * repeated moves walk out of a nested split instead of getting stuck. */
 function moveLeaf(id, direction) {
+  dissolveSwallow(id);
   const found = findLeaf(id);
   if (!found) return false;
 
@@ -344,9 +345,32 @@ function renderTree(node) {
   if (node.type === 'leaf') {
     const view = views.get(node.id);
     if (!view) return null;
-    view.el.style.flexGrow = String(node.weight ?? 1);
     renderedIds.add(node.id);
-    return view.el;
+    const pseudo = view.pseudotile;
+    const active = pseudo && !isFullscreen(node.id)
+      && (layoutMode === 'tiling' || layoutMode === 'scrolling');
+    view.el.classList.toggle('pseudotiled', Boolean(active));
+    if (!active) {
+      view.el.style.flexGrow = String(node.weight ?? 1);
+      Object.assign(view.el.style, {
+        width: '', height: '', maxWidth: '', maxHeight: '',
+        minWidth: view.minWidth > 0 ? `${view.minWidth}px` : '',
+        minHeight: view.minHeight > 0 ? `${view.minHeight}px` : '',
+      });
+      return view.el;
+    }
+
+    const slot = document.createElement('div');
+    slot.className = 'pseudotile-slot';
+    slot.style.flexGrow = String(node.weight ?? 1);
+    Object.assign(view.el.style, {
+      flexGrow: '0',
+      width: `${Math.max(pseudo.width, view.minWidth || 1)}px`,
+      height: `${Math.max(pseudo.height, view.minHeight || 1)}px`,
+      maxWidth: '100%', maxHeight: '100%', minWidth: '0', minHeight: '0',
+    });
+    slot.append(view.el);
+    return slot;
   }
 
   if (node.layout === 'tabbed' || node.layout === 'stacked') {

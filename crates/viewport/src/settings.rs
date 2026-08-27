@@ -125,6 +125,10 @@ pub struct OutputOverlay {
     pub x: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub y: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vrr: Option<viewport_ipc::event::VrrMode>,
 }
 
 /// Write the overlay, atomically.
@@ -189,6 +193,8 @@ mod tests {
                 transform: Some("90".to_owned()),
                 x: Some(0),
                 y: Some(0),
+                mirror: Some("HDMI-A-1".to_owned()),
+                vrr: Some(viewport_ipc::event::VrrMode::Fullscreen),
             },
         );
         Overlay {
@@ -239,6 +245,8 @@ mod tests {
         assert_eq!(output.transform.as_deref(), Some("90"));
         assert_eq!(output.x, Some(0));
         assert_eq!(output.y, Some(0));
+        assert_eq!(output.mirror.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(output.vrr, Some(viewport_ipc::event::VrrMode::Fullscreen));
     }
 
     /// An overlay is what the panel set, not a restatement of the defaults —

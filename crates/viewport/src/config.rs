@@ -45,6 +45,10 @@ pub struct OutputConfig {
     pub hdr: Option<bool>,
     pub x: Option<i32>,
     pub y: Option<i32>,
+    /// Another physical output whose logical desktop this head scans out.
+    pub mirror: Option<String>,
+    /// Variable-refresh policy for this physical head.
+    pub vrr: Option<viewport_ipc::event::VrrMode>,
 }
 
 /// The keyboard block.
