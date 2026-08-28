@@ -12,6 +12,10 @@ Smithay handles DRM/KMS, input and the `xdg-shell` protocol. WebKit renders the
 UI to a DMA-BUF. Neither ever hands a pixel to the CPU.
 
 <p align="center">
+  <img src="docs/img/mockup.webp" width="960" alt="Viewport desktop shell showing its keyboard controls" />
+</p>
+
+<p align="center">
   <a href="https://pub-b1fc9705d9cd4b50885284c3ede52d27.r2.dev/viewport-demo-1080p.mp4">
     <img src="docs/img/demo-poster.jpg" width="640" alt="Viewport demo — four tiled terminals under the web shell" />
   </a>
