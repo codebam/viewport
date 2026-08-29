@@ -2664,9 +2664,15 @@ impl ViewportState {
     ///
     /// Through the same path `output.configure` takes, so a restored rotation
     /// resizes the layer map and reaches the shell exactly as a fresh one does.
+    /// The restore is replayed rather than made provisional: after DPMS wake,
+    /// DisplayPort connectors can return one at a time, and a revert snapshot
+    /// taken between them describes that transient one-monitor desk. Reverting
+    /// to it twelve seconds later removes the second logical desktop and makes
+    /// the two physical heads appear mirrored.
     /// Run before [`Self::apply_output_config`], so a file that names a
     /// position still has the last word.
     pub fn restore_output_layout(&mut self) {
+        let was_replay = std::mem::replace(&mut self.output_config_replay, true);
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
         for output in outputs {
             let name = output.name();
@@ -2719,6 +2725,7 @@ impl ViewportState {
             };
             crate::apply::apply(self, viewport_ipc::Request::OutputConfigure(request));
         }
+        self.output_config_replay = was_replay;
     }
 
     /// Apply the config file's `outputs` block, once the outputs exist.
