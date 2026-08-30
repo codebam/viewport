@@ -427,24 +427,16 @@ impl ViewportState {
             }
             InputEvent::PointerMotionAbsolute { event } => {
                 let at = (event.x(), event.y()).into();
-                self.pointer_absolute_to(at, event.time(), event.time_msec());
+                self.pointer_absolute_to(at, event.time());
             }
             InputEvent::TouchDown { event } => {
                 if let Some(held) = self.held_by(session) {
                     held.touches += 1;
                 }
-                self.touch_down_at(
-                    event.slot(),
-                    (event.x(), event.y()).into(),
-                    event.time_msec(),
-                );
+                self.touch_down_at(event.slot(), (event.x(), event.y()).into(), event.time());
             }
             InputEvent::TouchMotion { event } => {
-                self.touch_motion_at(
-                    event.slot(),
-                    (event.x(), event.y()).into(),
-                    event.time_msec(),
-                );
+                self.touch_motion_at(event.slot(), (event.x(), event.y()).into(), event.time());
             }
             InputEvent::TouchUp { event } => {
                 if let Some(held) = self.held_by(session) {

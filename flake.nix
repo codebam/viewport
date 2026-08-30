@@ -385,7 +385,7 @@
             # Both have to be updated whenever the revision in Cargo.toml is.
             # The build fails loudly on a stale one, quoting the hash it got.
             outputHashes = {
-              "smithay-0.7.0" = "sha256-/N1300Sbk9HQL1ZjELlxbP/HXUmBe54wBtNg8R159Oo=";
+              "smithay-0.7.0" = "sha256-2eS4vQVShd3FO2nikQ0eQfElWkOF/pJzJO9/u15aONo=";
               "viewport-vulkan-0.1.3" = "sha256-RiU276JuIALCGyaVpjzB/KX8tD+GNLu136A7s/yW83Y=";
             };
           };
@@ -808,10 +808,10 @@
               pkgs.libGL
               pkgs.zlib
               pkgs.udev
-              pkgs.xorg.libX11
-              pkgs.xorg.libXcursor
-              pkgs.xorg.libXi
-              pkgs.xorg.libXrandr
+              pkgs.libx11
+              pkgs.libxcursor
+              pkgs.libxi
+              pkgs.libxrandr
             ]}:/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             echo "viewport devshell"

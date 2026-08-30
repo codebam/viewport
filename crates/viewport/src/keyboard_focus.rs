@@ -181,7 +181,7 @@ impl KeyboardTarget<ViewportState> for KeyboardFocus {
         key: KeysymHandle<'_>,
         state: smithay::backend::input::KeyState,
         serial: Serial,
-        time: u32,
+        time: smithay::backend::input::InputTime,
     ) {
         match self {
             KeyboardFocus::Wayland(surface) => {

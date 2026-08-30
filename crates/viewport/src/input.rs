@@ -13,8 +13,8 @@
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
     GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend,
-    InputEvent, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
-    TouchEvent,
+    InputEvent, InputTime, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+    PointerMotionEvent, TouchEvent,
 };
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{
@@ -560,7 +560,7 @@ impl ViewportState {
             return;
         };
         let serial = SERIAL_COUNTER.next_serial();
-        let time = self.start_time.elapsed().as_millis() as u32;
+        let time = InputTime::now();
         let state_bit = if pressed {
             smithay::backend::input::KeyState::Pressed
         } else {
@@ -615,7 +615,7 @@ impl ViewportState {
             return;
         };
         let serial = SERIAL_COUNTER.next_serial();
-        let time = self.start_time.elapsed().as_millis() as u32;
+        let time = InputTime::now();
         let to_shell = keyboard.current_focus().is_none() && self.shell_is_up();
         // The modifiers are read only by a page, so they are only worth
         // computing when there is one; without the web engine they go
@@ -648,7 +648,7 @@ impl ViewportState {
                         keysym: keysym.raw(),
                         pressed: false,
                         modifiers: modifiers_now,
-                        time,
+                        time: time.millis(),
                     })))
                 } else {
                     FilterResult::Intercept(Some(Action::Swallow))
@@ -682,7 +682,7 @@ impl ViewportState {
         let location = (x, y).into();
         let under = self.surface_under(location);
         let serial = SERIAL_COUNTER.next_serial();
-        let time = self.start_time.elapsed().as_millis() as u32;
+        let time = InputTime::now();
         pointer.motion(
             self,
             under,
@@ -721,7 +721,7 @@ impl ViewportState {
             );
         }
         let serial = SERIAL_COUNTER.next_serial();
-        let time = self.start_time.elapsed().as_millis() as u32;
+        let time = InputTime::now();
         pointer.button(
             self,
             &smithay::input::pointer::ButtonEvent {
@@ -760,7 +760,7 @@ impl ViewportState {
                 slot: inject_touch_slot(slot),
                 location: position,
                 serial,
-                time: self.start_time.elapsed().as_millis() as u32,
+                time: InputTime::now(),
             },
         );
         self.needs_render = true;
@@ -778,7 +778,7 @@ impl ViewportState {
             &smithay::input::touch::MotionEvent {
                 slot: inject_touch_slot(slot),
                 location: position,
-                time: self.start_time.elapsed().as_millis() as u32,
+                time: InputTime::now(),
             },
         );
     }
@@ -792,7 +792,7 @@ impl ViewportState {
             &smithay::input::touch::UpEvent {
                 slot: inject_touch_slot(slot),
                 serial: SERIAL_COUNTER.next_serial(),
-                time: self.start_time.elapsed().as_millis() as u32,
+                time: InputTime::now(),
             },
         );
     }
@@ -833,7 +833,7 @@ impl ViewportState {
 
         let delta = (dx, dy).into();
         self.note_pointer_motion(from, delta, locked, confine_to.as_ref(), under.is_some());
-        let time = self.start_time.elapsed().as_millis() as u32;
+        let time = InputTime::now();
         pointer.relative_motion(
             self,
             under.clone(),
@@ -843,9 +843,7 @@ impl ViewportState {
                 // distance that was meant — so the raw delta is also the
                 // unaccelerated one.
                 delta_unaccel: delta,
-                // The protocol carries microseconds here, not the
-                // milliseconds every other event uses.
-                utime: time as u64 * 1000,
+                time,
             },
         );
         if locked {
@@ -886,7 +884,7 @@ impl ViewportState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let time = self.start_time.elapsed().as_millis() as u32;
+        let time = InputTime::now();
         // A wheel when the caller counted notches, a touchpad-like continuous
         // source otherwise. Not `Finger`, which promises that a real finger is
         // on a real touchpad and that a stop event will follow when it lifts;
@@ -927,7 +925,7 @@ impl ViewportState {
                 horizontal,
                 vertical,
                 source == AxisSource::Continuous,
-                time,
+                time.millis(),
             );
         }
         pointer.axis(self, frame);
@@ -1179,7 +1177,7 @@ impl ViewportState {
         match event {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
-                let time = Event::time_msec(&event);
+                let time = Event::time(&event);
                 let Some(keyboard) = self.seat.get_keyboard() else {
                     return;
                 };
@@ -1335,7 +1333,7 @@ impl ViewportState {
                                         keysym: keysym.raw(),
                                         pressed: true,
                                         modifiers: modifiers_now,
-                                        time,
+                                        time: time.millis(),
                                     })))
                                 }
                                 None => FilterResult::Forward,
@@ -1367,7 +1365,7 @@ impl ViewportState {
                                     keysym: keysym.raw(),
                                     pressed: false,
                                     modifiers: modifiers_now,
-                                    time,
+                                    time: time.millis(),
                                 })))
                             } else {
                                 FilterResult::Intercept(Some(Action::Swallow))
@@ -1470,7 +1468,7 @@ impl ViewportState {
                     &smithay::input::pointer::RelativeMotionEvent {
                         delta: event.delta(),
                         delta_unaccel: event.delta_unaccel(),
-                        utime: event.time(),
+                        time: event.time(),
                     },
                 );
 
@@ -1482,7 +1480,7 @@ impl ViewportState {
                     return;
                 }
 
-                self.move_pointer(from, event.delta(), confine_to.as_ref(), event.time_msec());
+                self.move_pointer(from, event.delta(), confine_to.as_ref(), event.time());
             }
 
             InputEvent::PointerMotionAbsolute { event, .. } => {
@@ -1499,7 +1497,7 @@ impl ViewportState {
                 // must not be put through this — see
                 // `ViewportState::glass_to_content`.
                 let pos = self.glass_to_content(pos);
-                self.pointer_absolute_to(pos, event.time(), event.time_msec());
+                self.pointer_absolute_to(pos, event.time());
             }
 
             InputEvent::PointerButton { event, .. } => {
@@ -1754,7 +1752,12 @@ impl ViewportState {
                         self.pointer_grabbed_by_shell = true;
                     }
                     let at = pointer.current_location();
-                    self.shell_pointer_button(at, event.button_code(), pressed, event.time_msec());
+                    self.shell_pointer_button(
+                        at,
+                        event.button_code(),
+                        pressed,
+                        event.time().millis(),
+                    );
                 }
                 if !pressed {
                     self.pointer_grabbed_by_shell = false;
@@ -1766,7 +1769,7 @@ impl ViewportState {
                         button: event.button_code(),
                         state,
                         serial,
-                        time: event.time_msec(),
+                        time: event.time(),
                     },
                 );
                 pointer.frame(self);
@@ -1806,7 +1809,7 @@ impl ViewportState {
                     }
                 }
 
-                let mut frame = AxisFrame::new(event.time_msec()).source(source);
+                let mut frame = AxisFrame::new(event.time()).source(source);
                 if horizontal != 0.0 {
                     frame = frame.value(Axis::Horizontal, horizontal);
                     if let Some(discrete) = event.amount_v120(Axis::Horizontal) {
@@ -1840,7 +1843,7 @@ impl ViewportState {
                         horizontal,
                         vertical,
                         source == AxisSource::Finger,
-                        event.time_msec(),
+                        event.time().millis(),
                     );
                 }
                 pointer.axis(self, frame);
@@ -1900,7 +1903,7 @@ impl ViewportState {
                     return;
                 };
                 let under = self.surface_under(position);
-                let time = event.time_msec();
+                let time = event.time();
                 let tool = self.seat.tablet_seat().get_tool(&event.tool());
 
                 // The pointer moves too: a tablet is also how the cursor gets
@@ -1943,7 +1946,7 @@ impl ViewportState {
                     return;
                 };
                 let under = self.surface_under(position);
-                let time = event.time_msec();
+                let time = event.time();
                 let dh = self.display_handle.clone();
                 let seat = self.seat.tablet_seat();
                 let tablet = seat.get_tablet(&TabletDescriptor::from(&event.device()));
@@ -2002,7 +2005,7 @@ impl ViewportState {
                     return;
                 };
                 let serial = SERIAL_COUNTER.next_serial();
-                let time = event.time_msec();
+                let time = event.time();
                 match event.tip_state() {
                     smithay::backend::input::TabletToolTipState::Down => {
                         tool.down(
@@ -2033,7 +2036,7 @@ impl ViewportState {
                 let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
                     return;
                 };
-                let time = event.time_msec();
+                let time = event.time();
                 tool.button(
                     self,
                     &smithay::input::tablet::tool::ButtonEvent {
@@ -2066,7 +2069,7 @@ impl ViewportState {
                         self,
                         &GestureSwipeBeginEvent {
                             serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time_msec(),
+                            time: event.time(),
                             fingers: event.fingers(),
                         },
                     );
@@ -2082,7 +2085,7 @@ impl ViewportState {
                     pointer.gesture_swipe_update(
                         self,
                         &GestureSwipeUpdateEvent {
-                            time: event.time_msec(),
+                            time: event.time(),
                             delta: event.delta(),
                         },
                     );
@@ -2104,7 +2107,7 @@ impl ViewportState {
                         self,
                         &GestureSwipeEndEvent {
                             serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time_msec(),
+                            time: event.time(),
                             // A gesture the touchpad gave up on is not a
                             // gesture that finished, and a client that is told
                             // it finished acts on it.
@@ -2129,7 +2132,7 @@ impl ViewportState {
                         self,
                         &GesturePinchBeginEvent {
                             serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time_msec(),
+                            time: event.time(),
                             fingers: event.fingers(),
                         },
                     );
@@ -2144,7 +2147,7 @@ impl ViewportState {
                     pointer.gesture_pinch_update(
                         self,
                         &GesturePinchUpdateEvent {
-                            time: event.time_msec(),
+                            time: event.time(),
                             delta: event.delta(),
                             scale: event.scale(),
                             rotation: event.rotation(),
@@ -2168,7 +2171,7 @@ impl ViewportState {
                         self,
                         &GesturePinchEndEvent {
                             serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time_msec(),
+                            time: event.time(),
                             cancelled: event.cancelled(),
                         },
                     );
@@ -2182,7 +2185,7 @@ impl ViewportState {
                         self,
                         &GestureHoldBeginEvent {
                             serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time_msec(),
+                            time: event.time(),
                             fingers: event.fingers(),
                         },
                     );
@@ -2194,7 +2197,7 @@ impl ViewportState {
                         self,
                         &GestureHoldEndEvent {
                             serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time_msec(),
+                            time: event.time(),
                             cancelled: event.cancelled(),
                         },
                     );
@@ -2209,14 +2212,14 @@ impl ViewportState {
                 let Some(position) = self.touch_position(&event) else {
                     return;
                 };
-                self.touch_down_at(event.slot(), position, event.time_msec());
+                self.touch_down_at(event.slot(), position, event.time());
             }
 
             InputEvent::TouchMotion { event, .. } => {
                 let Some(position) = self.touch_position(&event) else {
                     return;
                 };
-                self.touch_motion_at(event.slot(), position, event.time_msec());
+                self.touch_motion_at(event.slot(), position, event.time());
             }
 
             InputEvent::TouchUp { event, .. } => {
@@ -2228,7 +2231,7 @@ impl ViewportState {
                     &smithay::input::touch::UpEvent {
                         slot: event.slot(),
                         serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time_msec(),
+                        time: event.time(),
                     },
                 );
             }
@@ -2292,7 +2295,7 @@ impl ViewportState {
         &mut self,
         slot: smithay::backend::input::TouchSlot,
         position: Point<f64, Logical>,
-        time: u32,
+        time: InputTime,
     ) {
         let Some(touch) = self.seat.get_touch() else {
             return;
@@ -2325,7 +2328,7 @@ impl ViewportState {
         &mut self,
         slot: smithay::backend::input::TouchSlot,
         position: Point<f64, Logical>,
-        time: u32,
+        time: InputTime,
     ) {
         let Some(touch) = self.seat.get_touch() else {
             return;
@@ -2358,11 +2361,9 @@ impl ViewportState {
     /// applied, a window being dragged follows, and the shell is told when the
     /// pointer is over it rather than over a client.
     ///
-    /// `utime` is microseconds, as `wp_relative_pointer` wants, and `time` is
-    /// the millisecond stamp `wl_pointer` carries. Both are passed rather than
-    /// one derived from the other because the device supplies both and a
-    /// derived one is a rounded one.
-    pub fn pointer_absolute_to(&mut self, pos: Point<f64, Logical>, utime: u64, time: u32) {
+    /// Keep the device timestamp intact until each protocol converts it to the
+    /// precision it carries.
+    pub fn pointer_absolute_to(&mut self, pos: Point<f64, Logical>, time: InputTime) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -2396,7 +2397,7 @@ impl ViewportState {
                 // Nothing accelerated it, so the raw delta is the
                 // unaccelerated one.
                 delta_unaccel: delta,
-                utime,
+                time,
             },
         );
         if locked {
@@ -2923,15 +2924,12 @@ impl ViewportState {
     /// move by, both in layout coordinates; the clamp wants them as they
     /// arrived, because the interesting case is the one at the edge.
     ///
-    /// `utime`-style microsecond precision is not carried here — by the time
-    /// a cursor lands, `wl_pointer` is the only one listening, and it takes
-    /// milliseconds.
     fn move_pointer(
         &mut self,
         from: Point<f64, Logical>,
         delta: Point<f64, Logical>,
         confine_to: Option<&Confinement>,
-        time: u32,
+        time: InputTime,
     ) {
         // The caller has a pointer by definition — every one of them gave up
         // already when there was none — so this cannot fail.
@@ -2969,7 +2967,7 @@ impl ViewportState {
         );
         pointer.frame(self);
         self.drag_to(pos);
-        self.shell_pointer_motion(pos, on_shell, time);
+        self.shell_pointer_motion(pos, on_shell, time.millis());
         // The cursor moved, and nothing else would draw it.
         self.needs_render = true;
     }

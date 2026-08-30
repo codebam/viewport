@@ -2347,7 +2347,7 @@ impl ViewportState {
         let location = pointer.current_location();
         let under = self.surface_under(location);
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        let time = self.start_time.elapsed().as_millis() as u32;
+        let time = smithay::backend::input::InputTime::now();
         pointer.motion(
             self,
             under,

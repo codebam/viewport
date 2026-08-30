@@ -103,7 +103,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # compositor pin it. (pre-rebase-b6e5bf02 and pre-rebase-a8f1c00 are the two
 # before that.)
 git = "https://github.com/codebam/smithay.git"
-rev = "b98f667e74571e45e63943bb06d1f410a422f8a2"
+rev = "41cbec825c1f9d44f764b467a75e30f554132e63"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -128,7 +128,7 @@ default-features = false
 # is what makes this a redirect and not a downgrade — rebase the fork before
 # bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "b98f667e74571e45e63943bb06d1f410a422f8a2" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "41cbec825c1f9d44f764b467a75e30f554132e63" }
 
 [profile.release]
 debug = 1

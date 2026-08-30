@@ -819,13 +819,16 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Viewpo
         &mut self,
         surface: &WlSurface,
         pointer: &smithay::input::pointer::PointerHandle<Self>,
-        // The constraint that was removed, handed over because it is already
-        // out of the surface's data by the time this is called and
-        // `with_pointer_constraint` would find nothing. Unused here: what the
-        // hint needs is the surface it came from and where the window is, and
-        // whether the capture was a lock or a confinement changes neither.
-        _constraint: Option<&smithay::wayland::pointer_constraints::PointerConstraint>,
+        removed: smithay::wayland::pointer_constraints::ConstraintRemove,
     ) {
+        // Leaving a constrained surface deactivates its constraint but does
+        // not destroy the lock, so its final cursor hint is not ready yet.
+        if matches!(
+            removed,
+            smithay::wayland::pointer_constraints::ConstraintRemove::PointerLeave(_)
+        ) {
+            return;
+        }
         // The lock is over, so now the hint applies: put the cursor back
         // under the crosshair the client was drawing rather than wherever it
         // was pinned when the lock started (`src/pointer.c:104`).
@@ -905,7 +908,7 @@ impl ViewportState {
             &smithay::input::pointer::MotionEvent {
                 location: at,
                 serial,
-                time: 0,
+                time: smithay::backend::input::InputTime::now(),
             },
         );
         // Without the frame the motion sits in the client's pending event
@@ -1153,7 +1156,7 @@ impl smithay::wayland::pointer_warp::PointerWarpHandler for ViewportState {
             &smithay::input::pointer::MotionEvent {
                 location: to,
                 serial,
-                time: self.start_time.elapsed().as_millis() as u32,
+                time: smithay::backend::input::InputTime::now(),
             },
         );
         pointer.frame(self);
