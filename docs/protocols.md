@@ -351,19 +351,22 @@ panels can turn a monitor off on request rather than only on a timer.
 ## What clients may ask for
 
 `maximize` fills the usable workspace while keeping the bar, gaps, border, and
-the window's prior tiled or floating place. `minimize` is declined, but
-*answered*: the protocol requires a configure in response to the request, and a
-client that gets none waits for one. `wm_capabilities` advertises fullscreen and
-maximize, so a client can stop drawing buttons for things this compositor will
-not do. It is sent on the initial
+the window's prior tiled or floating place. `minimize` removes the window from
+layout while retaining its tree place and taskbar entry; activating that entry
+restores it. The compositor owns this state, mirrors it to X11
+`_NET_WM_STATE_HIDDEN`, and publishes it through foreign-toplevel management.
+xdg-shell has no minimized state enum, so its request is answered with a
+configure while the state is carried to the shell. `wm_capabilities` advertises
+fullscreen and maximize, the capabilities xdg-shell can represent. It is sent on the initial
 commit rather than at creation, because the surface is not initialised before
 then and wlroots asserts rather than ignoring a configure scheduled too early.
 
 A client dragging itself by its own titlebar (`move`, `resize`) is honoured
-only for floating windows. A tiled window's place belongs to the layout, and
-letting a client pull itself out of it by holding its titlebar would be a
-surprise. The drag runs through the same machinery as Mod4+drag, so there is
-one implementation of "the pointer is moving a window".
+after its seat, press serial, and pointer focus are validated. The compositor
+captures the pointer until that button is released and forwards deltas plus the
+requested resize edge to the shell. The shell then interprets the gesture for
+the active layout, just as it does for Mod4+drag; the compositor never invents
+a rectangle or silently pulls a tiled window out of its layout.
 
 ## Keyboard shortcuts
 
@@ -581,8 +584,10 @@ it uses the consent-bearing portal instead) and `xwayland-keyboard-grab`
 
 Not advertised. The protocol describes moving a toplevel with the cursor
 during a drag, and here the shell owns placement: a compositor-driven
-`xdg_toplevel.move` would fight the layout rather than inform it, which is why
-`move` itself is a no-op in this compositor.
+`xdg_toplevel.move` would fight the layout if the compositor changed the
+rectangle itself. Viewport instead forwards that older request's pointer deltas
+to the shell. This protocol additionally describes a drag-and-drop attachment
+and offset hint, which are not forwarded yet.
 
 Advertising it anyway would be worse than absence. A browser that finds the
 global takes the tear-out path expecting the compositor to carry the window,

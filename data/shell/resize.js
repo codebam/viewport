@@ -174,7 +174,7 @@ function resizeFocused(direction) {
      reads — the same branch `window.move` has, and for the same reason.
      Before the floating check, because on the plane a floating window is on
      the plane like every other one. */
-  if (layoutMode === 'canvas') {
+  if (layoutModeOf() === 'canvas') {
     const step = (direction === 'left' || direction === 'up')
       ? -FLOAT_RESIZE_STEP : FLOAT_RESIZE_STEP;
     const horizontal = direction === 'left' || direction === 'right';
@@ -222,10 +222,14 @@ function resizeFocused(direction) {
  * the bottom right corner, so the two edges nearest the pointer in half the
  * grabs were the two that never moved. */
 const RESIZE_EDGES = {
-  'top-left': { west: true, north: true },
-  'top-right': { west: false, north: true },
-  'bottom-left': { west: true, north: false },
-  'bottom-right': { west: false, north: false },
+  'top': { west: false, north: true, horizontal: false, vertical: true },
+  'top-left': { west: true, north: true, horizontal: true, vertical: true },
+  'top-right': { west: false, north: true, horizontal: true, vertical: true },
+  'bottom': { west: false, north: false, horizontal: false, vertical: true },
+  'bottom-left': { west: true, north: false, horizontal: true, vertical: true },
+  'bottom-right': { west: false, north: false, horizontal: true, vertical: true },
+  'left': { west: true, north: false, horizontal: true, vertical: false },
+  'right': { west: false, north: false, horizontal: true, vertical: false },
 };
 
 /* Anything unnamed is the bottom right, which is what a resize was before the
@@ -297,7 +301,9 @@ function resizeColumn(workspace, id, dx, west) {
 }
 
 function resizeByDelta(id, dx, dy, edge) {
-  const { west, north } = edgesOf(edge);
+  const { west, north, horizontal, vertical } = edgesOf(edge);
+  if (!horizontal) dx = 0;
+  if (!vertical) dy = 0;
 
   /* On the canvas a window's place is its size, and nothing shares space with
      it, so the drag simply changes that. Before the floating branch below,
@@ -334,7 +340,7 @@ function resizeByDelta(id, dx, dy, edge) {
      nothing there, because columns are laid out at a fixed size rather than
      flexed. Vertical is still a share of the column, so it goes through the
      ordinary path. */
-  if (layoutMode === 'scrolling') {
+  if (layoutModeOf() === 'scrolling') {
     const workspace = workspaceOf(id);
     if (workspace === null) return;
     let changed = false;

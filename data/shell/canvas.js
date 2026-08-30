@@ -263,7 +263,7 @@ function markCanvasMoved(id) {
  * One round trip and it settles: the next relayout asks for the size the client
  * already has, the compositor's clamp does nothing, and nothing more is sent. */
 function canvasConfigured(id, width, height) {
-  if (layoutMode !== 'canvas') return false;
+  if (layoutModeOf() !== 'canvas') return false;
   if (!(width > 0) || !(height > 0)) return false;
   const rect = canvasPlaces.get(id);
   if (!rect) return false;
@@ -310,7 +310,7 @@ function canvasConfigured(id, width, height) {
  * The relayout is the caller's — this runs from the message handler, which ends
  * in one anyway. */
 function canvasReparented(id) {
-  if (layoutMode !== 'canvas' || id == null) return false;
+  if (layoutModeOf() !== 'canvas' || id == null) return false;
   const view = views.get(id);
   if (!view || view.parent == null) return false;
   if (view.canvasMoved) return false;
@@ -344,7 +344,7 @@ function canvasReparented(id) {
  * same distance: the offset that is preserved is the one in screen pixels, not
  * the one in world units. */
 function canvasCarry(id, from, to) {
-  if (layoutMode !== 'canvas') return;
+  if (layoutModeOf() !== 'canvas') return;
   if (from === null || to === null || from === to) return;
 
   const place = canvasPlaces.get(id);
@@ -629,14 +629,14 @@ function canvasOrderOf(workspace) {
 
   if (root) {
     for (const id of dynamicOrder(root)) {
-      if (!views.has(id) || seen.has(id)) continue;
+      if (!views.has(id) || seen.has(id) || isMinimized(id)) continue;
       seen.add(id);
       ids.push(id);
     }
   }
   for (const [id, floating] of floatingEntries()) {
     if (floating.workspace !== workspace) continue;
-    if (!views.has(id) || seen.has(id)) continue;
+    if (!views.has(id) || seen.has(id) || isMinimized(id)) continue;
     seen.add(id);
     ids.push(id);
   }
@@ -818,6 +818,7 @@ function canvasItemsOf(workspace, output, viewport, area) {
 function planCanvas() {
   const plan = new Map();
   for (const [name, output] of outputs) {
+    if (layoutModeOf(output.workspace) !== 'canvas') continue;
     const area = canvasAreaOf(output);
     if (!area) {
       plan.set(name, []);
@@ -856,7 +857,7 @@ function recalculateCanvasLayout(workspace, areaGiven = null) {
  * with this, so a chord left over in someone's config file does nothing rather
  * than throwing. */
 function canvasTarget() {
-  if (layoutMode !== 'canvas') return null;
+  if (layoutModeOf() !== 'canvas') return null;
   const output = outputs.get(activeOutputName());
   if (!output) return null;
   const area = canvasAreaOf(output);
@@ -1015,7 +1016,7 @@ function canvasFillFocused() {
  * Returns whether it did anything, so moveByDelta can fall through to the
  * floating path in every other layout. */
 function canvasDragBy(id, dx, dy) {
-  if (layoutMode !== 'canvas' || id == null) return false;
+  if (layoutModeOf() !== 'canvas' || id == null) return false;
   /* A place is kept for the session, so one malformed delta is not a bad
      frame — it is a NaN written into the plane, and everything read off it
      afterwards, bounds and fit included, is NaN too. */
@@ -1057,7 +1058,7 @@ function canvasDragBy(id, dx, dy) {
  * Clamped to a minimum, so a drag cannot shrink a window to nothing and leave
  * a rectangle too small to take hold of again. */
 function canvasResizeBy(id, dx, dy, west, north) {
-  if (layoutMode !== 'canvas' || id == null) return false;
+  if (layoutModeOf() !== 'canvas' || id == null) return false;
   /* As in canvasDragBy: a place outlives the gesture that wrote it. */
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
   const rect = canvasPlaces.get(id);
@@ -1098,7 +1099,7 @@ function canvasResizeBy(id, dx, dy, west, north) {
  * direction every canvas has moved since the first one. Panning the view right
  * instead would have the plane sliding out from under the hand. */
 function canvasPanBy(dx, dy) {
-  if (layoutMode !== 'canvas') return false;
+  if (layoutModeOf() !== 'canvas') return false;
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
   canvasPan(-dx, -dy, true);
   return true;
@@ -1167,7 +1168,7 @@ function canvasFocusStep(forward) {
  * every other layout. Minimal, per canvasFollow: focusing something already on
  * screen moves nothing at all. */
 function canvasFocused(id) {
-  if (layoutMode !== 'canvas' || id == null) return;
+  if (layoutModeOf() !== 'canvas' || id == null) return;
   const workspace = workspaceOf(id);
   if (workspace === null) return;
   const output = outputs.get(hostOfWorkspace(workspace));
@@ -1192,8 +1193,10 @@ function canvasFocused(id) {
  * plane as it was left, which is the one piece of this state that is worth
  * more than the layout it belongs to. Cheap when there is nothing to undo. */
 function clearCanvasState() {
-  for (const [, view] of views) {
+  for (const [id, view] of views) {
     if (!view.canvas) continue;
+    const workspace = workspaceOf(id);
+    if (!overviewActive && workspace !== null && layoutModeOf(workspace) === 'canvas') continue;
     view.canvas = null;
     view.el.classList.remove('plane', 'front');
     /* The minimum goes back to the client's own, unscaled: every other layout

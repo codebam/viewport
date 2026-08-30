@@ -78,6 +78,15 @@ pub enum Request {
         maximized: bool,
     },
 
+    #[serde(rename = "view.minimized")]
+    ViewMinimized {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+        /// Absent means restored.
+        #[serde(default)]
+        minimized: bool,
+    },
+
     #[serde(rename = "view.focus")]
     ViewFocus {
         #[serde(deserialize_with = "view_id")]
@@ -1275,6 +1284,17 @@ mod tests {
             Request::ViewMaximized {
                 id: 7,
                 maximized: false
+            }
+        );
+    }
+
+    #[test]
+    fn absent_minimized_means_restored() {
+        assert_eq!(
+            parse(r#"{"type":"view.minimized","id":7}"#),
+            Request::ViewMinimized {
+                id: 7,
+                minimized: false
             }
         );
     }

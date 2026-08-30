@@ -12,6 +12,16 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- Native xdg-shell titlebar move and resize requests now use validated pointer
+  grabs and the existing shell-owned delta path, including all eight resize
+  edges, without moving layout policy into the compositor.
+- Fixed workspaces 1 through 9 can override `output`, `layout`, `tiling_mode`
+  and individual `gaps` fields through the `workspaces` config object. Browser
+  shell resolves policy per active workspace and saves workspace homes plus
+  runtime layout choices in existing session state.
+- Minimize now works across native Wayland, Xwayland, shell IPC, taskbar
+  activation, and foreign-toplevel management. Minimized windows retain their
+  prior layout place and taskbar entry, lose focus, and restore on activation.
 - Native Wayland, Xwayland, and foreign-toplevel maximize requests now fill the
   usable workspace while preserving the bar, gaps, border, and prior window
   placement. `Mod4+m` toggles the same state.

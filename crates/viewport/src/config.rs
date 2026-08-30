@@ -187,6 +187,20 @@ pub struct GapsConfig {
     pub smart: Option<bool>,
 }
 
+/// Policy for one of the shell's fixed workspaces (1 through 9).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceConfig {
+    /// Preferred output connector. The shell decides when that output exists.
+    pub output: Option<String>,
+    /// Layout model for this workspace; absent inherits the global `layout`.
+    pub layout: Option<String>,
+    /// Tiling arrangement for this workspace; absent inherits `tiling_mode`.
+    pub tiling_mode: Option<String>,
+    /// Gap fields override the corresponding global fields.
+    pub gaps: GapsConfig,
+}
+
 /// The `border` block.
 ///
 /// The frame the shell draws around a window. Read on both sides: the shell
@@ -503,6 +517,10 @@ pub struct File {
     /// layout, so what an arrangement *is* belongs there.
     pub tiling_mode: Option<String>,
 
+    /// Rules for the nine fixed workspaces, keyed by `"1"` through `"9"`.
+    /// Presence replaces the prior rule set on reload; an empty object clears it.
+    pub workspaces: Option<std::collections::HashMap<u8, WorkspaceConfig>>,
+
     pub dark_mode: Option<bool>,
 
     /// How many bits per colour channel a scanout buffer carries: `"8"`,
@@ -654,6 +672,15 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
             *value = layout_extension_url(value, path).map_err(|e| {
                 anyhow::anyhow!("{}: layout extension {name:?}: {e}", path.display())
             })?;
+        }
+    }
+    if let Some(workspaces) = file.workspaces.as_ref() {
+        for workspace in workspaces.keys() {
+            anyhow::ensure!(
+                (1..=9).contains(workspace),
+                "{}: workspace {workspace} is outside 1 through 9",
+                path.display()
+            );
         }
     }
     Ok(Some(file))
@@ -1808,6 +1835,32 @@ mod tests {
         assert_eq!(empty_block.gaps.inner, None);
         let absent: File = serde_json::from_str("{}").expect("should parse");
         assert_eq!(absent.gaps, GapsConfig::default());
+    }
+
+    #[test]
+    fn fixed_workspace_rules_parse() {
+        let file: File = serde_json::from_str(
+            r#"{"workspaces":{"2":{"output":"DP-2","layout":"scrolling","tiling_mode":"grid","gaps":{"inner":12,"smart":true}}}}"#,
+        )
+        .expect("should parse");
+        let rule = &file.workspaces.expect("workspace rules")[&2];
+        assert_eq!(rule.output.as_deref(), Some("DP-2"));
+        assert_eq!(rule.layout.as_deref(), Some("scrolling"));
+        assert_eq!(rule.tiling_mode.as_deref(), Some("grid"));
+        assert_eq!(rule.gaps.inner, Some(12));
+        assert_eq!(rule.gaps.smart, Some(true));
+    }
+
+    #[test]
+    fn workspace_numbers_are_limited_to_one_through_nine() {
+        let dir =
+            std::env::temp_dir().join(format!("viewport-workspace-rules-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"workspaces":{"10":{"layout":"tiling"}}}"#).expect("config");
+        let error = load(&path).expect_err("workspace 10 must fail").to_string();
+        assert!(error.contains("outside 1 through 9"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

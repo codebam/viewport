@@ -2,28 +2,33 @@
 //
 // xdg-shell. Ports src/xdg_shell.c.
 //
-// Note what is missing: there are no move or resize grabs. In Viewport the
-// shell owns every rectangle, a window frame is DOM, and dragging an edge is
-// the browser resizing a flex container — so a client asking the compositor to
-// move or resize it has asked the wrong party. Those requests are ignored
-// rather than implemented.
+// The shell owns every rectangle, so client move/resize grabs forward pointer
+// deltas to it rather than changing Smithay's Space directly.
 
 use smithay::desktop::{
     find_popup_root_surface, get_popup_toplevel_coords, PopupKeyboardGrab, PopupKind,
     PopupPointerGrab, PopupUngrabStrategy, Window,
 };
-use smithay::input::pointer::Focus;
+use smithay::backend::input::ButtonState;
+use smithay::input::pointer::{
+    AxisFrame, ButtonEvent, Focus, GestureHoldBeginEvent, GestureHoldEndEvent,
+    GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
+    GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
+    GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
+    RelativeMotionEvent,
+};
 use smithay::input::Seat;
 use smithay::reexports::wayland_server::protocol::wl_seat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource as _;
-use smithay::utils::Serial;
+use smithay::utils::{Logical, Point, Serial};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 
 use viewport_ipc::Event;
@@ -111,8 +116,53 @@ impl XdgShellHandler for ViewportState {
         self.answer_maximized(&surface, false);
     }
 
+    fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        self.start_xdg_drag(
+            surface,
+            seat,
+            serial,
+            crate::state::DragKind::Move,
+            (false, false),
+            None,
+        );
+    }
+
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        seat: wl_seat::WlSeat,
+        serial: Serial,
+        edges: xdg_toplevel::ResizeEdge,
+    ) {
+        let Some((edge, edges)) = xdg_resize_edges(edges) else {
+            return;
+        };
+        self.start_xdg_drag(
+            surface,
+            seat,
+            serial,
+            crate::state::DragKind::Resize,
+            edges,
+            Some(edge),
+        );
+    }
+
     fn minimize_request(&mut self, surface: ToplevelSurface) {
+        let Some(id) = self
+            .views
+            .find_by_surface(surface.wl_surface())
+            .map(|view| view.id)
+        else {
+            surface.send_configure();
+            return;
+        };
+        let mapped = self.views.get(id).is_some_and(|view| view.mapped);
+        crate::apply::set_view_minimized(self, id, true);
+        // xdg-shell has no minimized state enum, but still requires an answer.
         surface.send_configure();
+        if mapped {
+            self.notify_minimized(id, true);
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -363,6 +413,71 @@ fn answer_kde_decoration(
 }
 
 impl ViewportState {
+    fn start_xdg_drag(
+        &mut self,
+        surface: ToplevelSurface,
+        seat_resource: wl_seat::WlSeat,
+        serial: Serial,
+        kind: crate::state::DragKind,
+        edges: (bool, bool),
+        edge: Option<&'static str>,
+    ) {
+        let Some(seat) = Seat::<Self>::from_resource(&seat_resource) else {
+            return;
+        };
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        if !pointer.has_grab(serial) {
+            return;
+        }
+        let Some(start_data) = pointer.grab_start_data() else {
+            return;
+        };
+        let Some((focus, _)) = start_data.focus.as_ref() else {
+            return;
+        };
+        if !focus.id().same_client_as(&surface.wl_surface().id()) {
+            return;
+        }
+        let Some(id) = self
+            .views
+            .find_by_surface(surface.wl_surface())
+            .filter(|view| view.mapped && !view.minimized)
+            .map(|view| view.id)
+        else {
+            return;
+        };
+
+        self.pointer_drag = Some(crate::state::PointerDrag {
+            id,
+            button: start_data.button,
+            kind,
+            edges,
+            edge,
+            last: pointer.current_location(),
+            pending: (0.0, 0.0),
+            sent: None,
+            client_requested: true,
+        });
+        if kind == crate::state::DragKind::Resize {
+            surface.with_pending_state(|state| {
+                state.states.set(xdg_toplevel::State::Resizing);
+            });
+            surface.send_pending_configure();
+        }
+        pointer.set_grab(
+            self,
+            XdgDragGrab {
+                start_data,
+                surface,
+                resizing: kind == crate::state::DragKind::Resize,
+            },
+            serial,
+            Focus::Clear,
+        );
+    }
+
     /// Server side unless the config file says `"decorations": "client"`.
     fn decoration_mode(&self) -> DecorationMode {
         if self.server_decorations {
@@ -443,6 +558,7 @@ impl ViewportState {
             id,
             self.focused == id,
             self.view_is_maximized(id),
+            self.view_is_minimized(id),
             fullscreen,
         );
         // Only once the shell knows the window exists.
@@ -479,6 +595,7 @@ impl ViewportState {
             id,
             self.focused == id,
             maximized,
+            self.view_is_minimized(id),
             self.view_is_fullscreen(id),
         );
         if mapped {
@@ -503,6 +620,13 @@ impl ViewportState {
         self.notify(&Event::ShellCommand {
             command: "window.maximized.set".to_owned(),
             args: vec![id.to_string(), u8::from(maximized).to_string()],
+        });
+    }
+
+    pub(crate) fn notify_minimized(&mut self, id: u32, minimized: bool) {
+        self.notify(&Event::ShellCommand {
+            command: "window.minimized.set".to_owned(),
+            args: vec![id.to_string(), u8::from(minimized).to_string()],
         });
     }
 
@@ -593,6 +717,154 @@ impl ViewportState {
     }
 }
 
+fn xdg_resize_edges(edges: xdg_toplevel::ResizeEdge) -> Option<(&'static str, (bool, bool))> {
+    use xdg_toplevel::ResizeEdge;
+
+    match edges {
+        ResizeEdge::Top => Some(("top", (false, true))),
+        ResizeEdge::TopLeft => Some(("top-left", (true, true))),
+        ResizeEdge::TopRight => Some(("top-right", (false, true))),
+        ResizeEdge::Bottom => Some(("bottom", (false, false))),
+        ResizeEdge::BottomLeft => Some(("bottom-left", (true, false))),
+        ResizeEdge::BottomRight => Some(("bottom-right", (false, false))),
+        ResizeEdge::Left => Some(("left", (true, false))),
+        ResizeEdge::Right => Some(("right", (false, false))),
+        _ => None,
+    }
+}
+
+struct XdgDragGrab {
+    start_data: PointerGrabStartData<ViewportState>,
+    surface: ToplevelSurface,
+    resizing: bool,
+}
+
+impl PointerGrab<ViewportState> for XdgDragGrab {
+    fn motion(
+        &mut self,
+        data: &mut ViewportState,
+        handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &MotionEvent,
+    ) {
+        handle.motion(data, None, event);
+    }
+
+    fn relative_motion(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        _event: &RelativeMotionEvent,
+    ) {
+    }
+
+    fn button(
+        &mut self,
+        data: &mut ViewportState,
+        handle: &mut PointerInnerHandle<'_, ViewportState>,
+        event: &ButtonEvent,
+    ) {
+        if event.state == ButtonState::Released && event.button == self.start_data.button {
+            handle.unset_grab(self, data, event.serial, event.time, true);
+        }
+    }
+
+    fn axis(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _details: AxisFrame,
+    ) {
+    }
+
+    fn frame(
+        &mut self,
+        data: &mut ViewportState,
+        handle: &mut PointerInnerHandle<'_, ViewportState>,
+    ) {
+        handle.frame(data);
+    }
+
+    fn gesture_swipe_begin(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _event: &GestureSwipeBeginEvent,
+    ) {
+    }
+
+    fn gesture_swipe_update(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _event: &GestureSwipeUpdateEvent,
+    ) {
+    }
+
+    fn gesture_swipe_end(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _event: &GestureSwipeEndEvent,
+    ) {
+    }
+
+    fn gesture_pinch_begin(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _event: &GesturePinchBeginEvent,
+    ) {
+    }
+
+    fn gesture_pinch_update(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _event: &GesturePinchUpdateEvent,
+    ) {
+    }
+
+    fn gesture_pinch_end(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _event: &GesturePinchEndEvent,
+    ) {
+    }
+
+    fn gesture_hold_begin(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _event: &GestureHoldBeginEvent,
+    ) {
+    }
+
+    fn gesture_hold_end(
+        &mut self,
+        _data: &mut ViewportState,
+        _handle: &mut PointerInnerHandle<'_, ViewportState>,
+        _event: &GestureHoldEndEvent,
+    ) {
+    }
+
+    fn start_data(&self) -> &PointerGrabStartData<ViewportState> {
+        &self.start_data
+    }
+
+    fn unset(&mut self, data: &mut ViewportState) {
+        data.finish_pointer_drag();
+        if self.resizing {
+            self.surface.with_pending_state(|state| {
+                state.states.unset(xdg_toplevel::State::Resizing);
+            });
+            self.surface.send_pending_configure();
+        }
+    }
+}
+
 /// Send the initial configure a client is waiting on before it will paint.
 pub fn handle_commit(state: &mut ViewportState, surface: &WlSurface) {
     if let Some(view) = state.views.find_by_surface(surface) {
@@ -630,5 +902,32 @@ pub fn handle_commit(state: &mut ViewportState, surface: &WlSurface) {
             }
             PopupKind::InputMethod(_) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+
+    #[test]
+    fn xdg_resize_edges_preserve_corner_direction() {
+        use xdg_toplevel::ResizeEdge::*;
+
+        assert_eq!(xdg_resize_edges(TopLeft), Some(("top-left", (true, true))));
+        assert_eq!(
+            xdg_resize_edges(TopRight),
+            Some(("top-right", (false, true)))
+        );
+        assert_eq!(
+            xdg_resize_edges(BottomLeft),
+            Some(("bottom-left", (true, false)))
+        );
+        assert_eq!(
+            xdg_resize_edges(BottomRight),
+            Some(("bottom-right", (false, false)))
+        );
+        assert_eq!(xdg_resize_edges(Top), Some(("top", (false, true))));
+        assert_eq!(xdg_resize_edges(Left), Some(("left", (true, false))));
+        assert_eq!(xdg_resize_edges(None), std::option::Option::None);
     }
 }

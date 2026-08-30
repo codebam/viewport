@@ -1548,6 +1548,7 @@ impl ViewportState {
                 // The tree of splits the shell has always built; a dynamic
                 // mode is opt-in.
                 tiling_mode: None,
+                workspaces: Vec::new(),
                 // No wallpaper but the shell's own, until a config file or a
                 // flag says otherwise.
                 background_terminal: false,
@@ -3756,13 +3757,15 @@ impl ViewportState {
         if previous != id {
             let fullscreen = self.view_is_fullscreen(previous);
             let maximized = self.view_is_maximized(previous);
+            let minimized = self.view_is_minimized(previous);
             self.foreign_management_state
-                .set_state(previous, false, maximized, fullscreen);
+                .set_state(previous, false, maximized, minimized, fullscreen);
         }
         let fullscreen = self.view_is_fullscreen(id);
         let maximized = self.view_is_maximized(id);
+        let minimized = self.view_is_minimized(id);
         self.foreign_management_state
-            .set_state(id, true, maximized, fullscreen);
+            .set_state(id, !minimized, maximized, minimized, fullscreen);
 
         let event = Event::ViewFocused { id };
         self.notify(&event);
@@ -3781,6 +3784,13 @@ impl ViewportState {
         self.views
             .get(id)
             .map(crate::views::View::wants_maximized)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn view_is_minimized(&self, id: u32) -> bool {
+        self.views
+            .get(id)
+            .map(|view| view.minimized)
             .unwrap_or(false)
     }
 }
@@ -4031,6 +4041,9 @@ pub struct PointerDrag {
     /// the middle of the window mid-drag is not a change of mind about which
     /// corner is in the hand.
     pub edges: (bool, bool),
+    /// Exact xdg-shell edge name for client-driven resizes. Mod4 resizes infer
+    /// a corner from `edges` instead.
+    pub edge: Option<&'static str>,
     /// Where the pointer was when the last delta was worked out.
     pub last: smithay::utils::Point<f64, smithay::utils::Logical>,
     /// Motion too small to be worth a whole pixel yet.
@@ -4042,6 +4055,10 @@ pub struct PointerDrag {
     /// When the shell was last told, so a mouse reporting a thousand times a
     /// second does not ask for a thousand relayouts.
     pub sent: Option<std::time::Instant>,
+    /// True when xdg-shell started the gesture from a client titlebar. Its
+    /// pointer grab owns the release; Mod4 drags are ended directly by the
+    /// input path instead.
+    pub client_requested: bool,
 }
 
 /// Record one turn of client-request dispatch. Split out so the call site

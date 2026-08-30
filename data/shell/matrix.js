@@ -125,7 +125,7 @@ function matrixOrderOf(workspace) {
   const root = workspaces.get(workspace);
   if (!root) return [];
   const ids = dynamicOrder(root).filter(
-    (id) => views.has(id) && !isFloating(id));
+    (id) => views.has(id) && !isFloating(id) && !isMinimized(id));
 
   const pending = new Set(ids);
   const ordered = [];
@@ -320,7 +320,7 @@ function matrixAreaOf(output) {
 function recalculateMatrixLayout(workspace, outputGeometry = null) {
   const area = outputGeometry
     ?? matrixAreaOf(outputs.get(hostOfWorkspace(workspace)));
-  return calculateLayout(matrixOrderOf(workspace), area, { gap: gapPx() });
+  return calculateLayout(matrixOrderOf(workspace), area, { gap: gapPx(workspace) });
 }
 
 /* Every output's rectangles, worked out on the way into a relayout. One pass
@@ -330,6 +330,7 @@ function recalculateMatrixLayout(workspace, outputGeometry = null) {
 function planMatrix() {
   const plan = new Map();
   for (const [name, output] of outputs) {
+    if (layoutModeOf(output.workspace) !== 'matrix') continue;
     const area = matrixAreaOf(output);
     plan.set(name, area
       ? recalculateMatrixLayout(output.workspace, area) : []);
@@ -349,8 +350,10 @@ function planMatrix() {
  * hidden would stay invisible for the rest of the session. Cheap when there is
  * nothing to undo. */
 function clearMatrixState() {
-  for (const [, view] of views) {
+  for (const [id, view] of views) {
     if (!view.matrix) continue;
+    const workspace = workspaceOf(id);
+    if (!overviewActive && workspace !== null && layoutModeOf(workspace) === 'matrix') continue;
     view.matrix = null;
     view.el.classList.remove('tile', 'primary', 'slot', 'stacked');
     view.el.hidden = false;

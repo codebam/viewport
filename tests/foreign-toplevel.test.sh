@@ -9,7 +9,7 @@
 #
 #   - a paint client puts a window on screen, and the manager must list it
 #     (the `toplevel` handle the test client waits for);
-#   - set/unset fullscreen and maximized must publish matching state events;
+#   - set/unset fullscreen, maximized and minimized publish matching state;
 #   - activate must be accepted;
 #   - close() must actually close the window, and the handle must then say
 #     `closed` — the part only this protocol can be checked on.

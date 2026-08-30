@@ -38,6 +38,7 @@ pub struct Toplevel {
     pub app_id: String,
     pub activated: bool,
     pub maximized: bool,
+    pub minimized: bool,
     pub fullscreen: bool,
     /// The outputs it is on, so a taskbar per monitor can show its own
     /// windows.
@@ -62,6 +63,8 @@ pub trait ForeignToplevelHandler {
     fn fullscreen_toplevel(&mut self, id: u32, fullscreen: bool);
 
     fn maximize_toplevel(&mut self, id: u32, maximized: bool);
+
+    fn minimize_toplevel(&mut self, id: u32, minimized: bool);
 }
 
 /// The global, the windows, and the handles each client holds for them.
@@ -97,17 +100,18 @@ impl ForeignToplevelState {
         id: u32,
         title: &str,
         app_id: &str,
-        state: (bool, bool, bool),
+        state: (bool, bool, bool, bool),
         outputs: Vec<Output>,
     ) where
         D: Dispatch<ZwlrForeignToplevelHandleV1, HandleData> + 'static,
     {
-        let (activated, maximized, fullscreen) = state;
+        let (activated, maximized, minimized, fullscreen) = state;
         let toplevel = Toplevel {
             title: title.to_owned(),
             app_id: app_id.to_owned(),
             activated,
             maximized,
+            minimized,
             fullscreen,
             outputs,
         };
@@ -139,21 +143,30 @@ impl ForeignToplevelState {
         }
     }
 
-    /// It was focused, maximized, or fullscreened.
-    pub fn set_state(&mut self, id: u32, activated: bool, maximized: bool, fullscreen: bool) {
+    /// Its externally visible state changed.
+    pub fn set_state(
+        &mut self,
+        id: u32,
+        activated: bool,
+        maximized: bool,
+        minimized: bool,
+        fullscreen: bool,
+    ) {
         let Some(toplevel) = self.toplevels.get_mut(&id) else {
             return;
         };
         if toplevel.activated == activated
             && toplevel.maximized == maximized
+            && toplevel.minimized == minimized
             && toplevel.fullscreen == fullscreen
         {
             return;
         }
         toplevel.activated = activated;
         toplevel.maximized = maximized;
+        toplevel.minimized = minimized;
         toplevel.fullscreen = fullscreen;
-        let states = state_bytes(activated, maximized, fullscreen);
+        let states = state_bytes(activated, maximized, minimized, fullscreen);
 
         for handle in self.handles.get(&id).into_iter().flatten() {
             handle.state(states.clone());
@@ -250,6 +263,7 @@ impl ForeignToplevelState {
         handle.state(state_bytes(
             toplevel.activated,
             toplevel.maximized,
+            toplevel.minimized,
             toplevel.fullscreen,
         ));
         // Nothing a client has been told is real until done: the protocol
@@ -261,13 +275,16 @@ impl ForeignToplevelState {
 }
 
 /// The state array, as the protocol carries it: native-endian u32s.
-fn state_bytes(activated: bool, maximized: bool, fullscreen: bool) -> Vec<u8> {
+fn state_bytes(activated: bool, maximized: bool, minimized: bool, fullscreen: bool) -> Vec<u8> {
     let mut states = Vec::new();
     if activated {
         states.extend((HandleState::Activated as u32).to_ne_bytes());
     }
     if maximized {
         states.extend((HandleState::Maximized as u32).to_ne_bytes());
+    }
+    if minimized {
+        states.extend((HandleState::Minimized as u32).to_ne_bytes());
     }
     if fullscreen {
         states.extend((HandleState::Fullscreen as u32).to_ne_bytes());
@@ -357,9 +374,7 @@ where
             zwlr_foreign_toplevel_handle_v1::Request::Activate { .. } => {
                 state.activate_toplevel(data.id)
             }
-            zwlr_foreign_toplevel_handle_v1::Request::Close => {
-                state.close_toplevel(data.id)
-            }
+            zwlr_foreign_toplevel_handle_v1::Request::Close => state.close_toplevel(data.id),
             zwlr_foreign_toplevel_handle_v1::Request::SetFullscreen { .. } => {
                 state.fullscreen_toplevel(data.id, true)
             }
@@ -372,13 +387,15 @@ where
             zwlr_foreign_toplevel_handle_v1::Request::UnsetMaximized => {
                 state.maximize_toplevel(data.id, false)
             }
-            // Accepted and not acted on. There is no minimized state or
-            // taskbar rectangle in the shell.
-            zwlr_foreign_toplevel_handle_v1::Request::SetMinimized
-            | zwlr_foreign_toplevel_handle_v1::Request::UnsetMinimized
+            zwlr_foreign_toplevel_handle_v1::Request::SetMinimized => {
+                state.minimize_toplevel(data.id, true)
+            }
+            zwlr_foreign_toplevel_handle_v1::Request::UnsetMinimized => {
+                state.minimize_toplevel(data.id, false)
+            }
             // Where a taskbar drew the window's entry, for a minimise
             // animation there is nothing to animate.
-            | zwlr_foreign_toplevel_handle_v1::Request::SetRectangle { .. } => {}
+            zwlr_foreign_toplevel_handle_v1::Request::SetRectangle { .. } => {}
             zwlr_foreign_toplevel_handle_v1::Request::Destroy => {}
             _ => {}
         }
@@ -421,11 +438,11 @@ mod tests {
         // The protocol says an array of the enum's values, native-endian. A
         // client reads it four bytes at a time, so a byte-per-state array
         // would be read as one enormous state number.
-        assert!(state_bytes(false, false, false).is_empty());
-        assert_eq!(state_bytes(true, false, false).len(), 4);
-        assert_eq!(state_bytes(true, true, true).len(), 12);
+        assert!(state_bytes(false, false, false, false).is_empty());
+        assert_eq!(state_bytes(true, false, false, false).len(), 4);
+        assert_eq!(state_bytes(true, true, true, true).len(), 16);
         assert_eq!(
-            state_bytes(true, false, false),
+            state_bytes(true, false, false, false),
             (HandleState::Activated as u32).to_ne_bytes().to_vec()
         );
     }
@@ -435,14 +452,20 @@ mod tests {
         // Order is not significant to the protocol, but a client reading the
         // first entry only — and they exist — should see the state that
         // decides how it is drawn in a list.
-        let bytes = state_bytes(true, false, true);
+        let bytes = state_bytes(true, false, false, true);
         assert_eq!(&bytes[..4], (HandleState::Activated as u32).to_ne_bytes());
         assert_eq!(&bytes[4..], (HandleState::Fullscreen as u32).to_ne_bytes());
     }
 
     #[test]
     fn maximized_is_published() {
-        let bytes = state_bytes(false, true, false);
+        let bytes = state_bytes(false, true, false, false);
         assert_eq!(bytes, (HandleState::Maximized as u32).to_ne_bytes());
+    }
+
+    #[test]
+    fn minimized_is_published() {
+        let bytes = state_bytes(false, false, true, false);
+        assert_eq!(bytes, (HandleState::Minimized as u32).to_ne_bytes());
     }
 }

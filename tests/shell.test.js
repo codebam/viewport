@@ -444,8 +444,8 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' maximizedOnForTest: maximizedOn,'
   + ' dynamicOrderForTest: dynamicOrder,'
   + ' TILING_MODES, LAYOUT_MODES, layoutRegistry, registerLayout,'
-  + ' get tilingMode() { return tilingMode; },'
-  + ' get layoutMode() { return layoutMode; },'
+  + ' get tilingMode() { return tilingModeOf(); },'
+  + ' get layoutMode() { return layoutModeOf(); },'
   /* The solar layout's kernel, which is a pure function of (ids, sun, area)
      and is the one piece of layout arithmetic in the shell that can be checked
      without a browser. Exported through a getter for SOLAR so that a test
@@ -480,6 +480,8 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      a real timer, so nothing synchronous can observe the message — and what
      is worth checking is what goes *into* the file rather than when. */
   + ' sessionForTest: { serialise: serialiseSession },'
+  + ' workspacePolicyForTest: { layout: layoutModeOf, tiling: tilingModeOf,'
+  + '   edge: edgeGapPx, homes: workspaceHomes, runtime: workspaceRuntime },'
   /* The tray menu's element, and the document's own listeners, so a test can
      see what was drawn and fire the click that missed it. */
   + ' get trayMenuEl() { return trayMenuEl; },'
@@ -634,6 +636,8 @@ if (sessionTest) {
         ] },
     },
     outputs: { 'DP-1': { workspace: 5 } },
+    workspace_homes: { 3: 'DP-1' },
+    workspace_state: { 5: { layout: 'matrix', tiling_mode: 'grid' } },
   });
 
   emit({ type: 'session.restore', state: saved });
@@ -641,6 +645,11 @@ if (sessionTest) {
   const outs = globalThis.__shell.outputs;
   check('the saved workspace is restored to its output',
     [...outs.values()][0].workspace === 5);
+  check('the saved workspace home is restored',
+    globalThis.__shell.workspacePolicyForTest.homes.get(3) === 'DP-1');
+  check('the saved workspace layout policy is restored',
+    globalThis.__shell.workspacePolicyForTest.layout(5) === 'matrix'
+      && globalThis.__shell.workspacePolicyForTest.tiling(5) === 'grid');
 
   /* Applications come back in an order that has nothing to do with the
      layout — the browser last, as it usually is. */
@@ -4980,6 +4989,33 @@ if (mode === 'scrolling') {
   /* Reset for the checks that follow, which read --gap expecting its default. */
   emit({ type: 'config', layout: mode, gaps: { inner: 8, outer: 0, smart: false } });
 
+  /* Workspace policy is resolved against the active workspace, while globals
+     remain fallback values for every workspace without a rule. */
+  const policy = globalThis.__shell.workspacePolicyForTest;
+  const policyWorkspace = [...globalThis.__shell.outputs.values()][0].workspace;
+  emit({ type: 'config', layout: mode, gaps: { inner: 8, outer: 0, smart: false },
+    workspaces: [{ workspace: policyWorkspace, output: 'DP-1', layout: 'matrix',
+      tiling_mode: 'grid', gaps: { inner: 13, outer: 2, smart: true } }] });
+  check('a workspace rule selects its own layout',
+    policy.layout(policyWorkspace) === 'matrix');
+  check('a workspace rule selects its own tiling mode',
+    policy.tiling(policyWorkspace) === 'grid');
+  check('workspace gap fields override global gaps',
+    policy.edge(policyWorkspace) === 15);
+  check('a workspace output becomes its remembered home',
+    policy.homes.get(policyWorkspace) === 'DP-1');
+  setActiveOutput([...globalThis.__shell.outputs.entries()]
+    .find(([, output]) => output.workspace === policyWorkspace)?.[0]);
+  handleShellCommand('layout.model', ['canvas']);
+  const policySession = globalThis.__shell.sessionForTest.serialise();
+  check('runtime workspace layout state is saved in session.json',
+    policySession.workspace_state[policyWorkspace].layout === 'canvas');
+  check('workspace homes are saved in session.json',
+    policySession.workspace_homes[policyWorkspace] === 'DP-1');
+  policy.runtime.clear();
+  emit({ type: 'config', layout: mode,
+    gaps: { inner: 8, outer: 0, smart: false }, workspaces: [] });
+
   /* The border block from the config file. The compositor crops each client
      to this same corner, so a radius the page does not draw with is a client
      cut to a curve that is not there. */
@@ -7019,6 +7055,31 @@ if (mode === 'scrolling') {
 
   let before = sent.length;
   emit({ type: 'view.focused', id: 82 });
+  emit({ type: 'shell.command', command: 'window.minimized', args: [] });
+  check('minimize retains the window in the taskbar but omits its layout',
+    floaty.el.hidden
+      && output.taskbarEl.children.some((button) => button.dataset.key === '82'));
+  check('minimize tells the compositor-owned state',
+    sent.slice(before).some((m) => m.type === 'view.minimized'
+      && m.id === 82 && m.minimized));
+  const taskButton = output.taskbarEl.children.find((button) => button.dataset.key === '82');
+  before = sent.length;
+  taskButton.click();
+  check('activating a minimized taskbar entry restores it before focusing',
+    !floaty.hidden
+      && sent.slice(before).some((m) => m.type === 'view.minimized'
+        && m.id === 82 && !m.minimized)
+      && sent.slice(before).some((m) => m.type === 'view.focus' && m.id === 82));
+  emit({ type: 'view.added', id: 83, title: 'already minimized', app_id: 'minimized',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: true,
+    minimized: true, width: 320, height: 200, replay: false });
+  check('an initially minimized view starts omitted but remains in the taskbar',
+    views.get(83).el.hidden
+      && output.taskbarEl.children.some((button) => button.dataset.key === '83'));
+  emit({ type: 'view.removed', id: 83 });
+
+  before = sent.length;
+  emit({ type: 'view.focused', id: 82 });
   emit({ type: 'shell.command', command: 'window.maximized', args: [] });
   check('maximize marks the focused window without making it fullscreen',
     floaty.el.classList.contains('maximized') &&
@@ -7278,6 +7339,20 @@ if (mode === 'scrolling') {
       rect().x === before.x - 30 && rect().y === before.y);
     check('and grows both axes all the same',
       rect().width === before.width + 30 && rect().height === before.height + 30);
+
+    const beforeLeft = { ...rect() };
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: ['95', '-20', '50', 'left'] });
+    check('a client left-edge resize changes only width',
+      rect().x === beforeLeft.x - 20 && rect().width === beforeLeft.width + 20
+      && rect().y === beforeLeft.y && rect().height === beforeLeft.height);
+
+    const beforeTop = { ...rect() };
+    emit({ type: 'shell.command', command: 'layout.resize.delta',
+      args: ['95', '50', '-20', 'top'] });
+    check('a client top-edge resize changes only height',
+      rect().y === beforeTop.y - 20 && rect().height === beforeTop.height + 20
+      && rect().x === beforeTop.x && rect().width === beforeTop.width);
 
     /* Into the clamp. 80x60 is what resizeByDelta falls back to for a client
        that named no minimum of its own. */

@@ -62,6 +62,64 @@ impl ViewportState {
                 );
             }
         }
+        if let Some(workspaces) = file.workspaces {
+            const MODES: [&str; 5] = ["manual", "master-stack", "spiral", "bsp", "grid"];
+            let mut rules = Vec::with_capacity(workspaces.len());
+            for (workspace, rule) in workspaces {
+                if !(1..=9).contains(&workspace) {
+                    tracing::warn!("workspace {workspace} is outside 1 through 9; ignoring it");
+                    continue;
+                }
+                let extension = |layout: &str| {
+                    self.config
+                        .layout_extensions
+                        .iter()
+                        .any(|entry| entry.name == layout)
+                };
+                let layout = rule.layout.filter(|layout| {
+                    let valid = crate::config::BUILTIN_LAYOUTS.contains(&layout.as_str())
+                        || extension(layout);
+                    if !valid {
+                        tracing::warn!(
+                            "workspace {workspace}: unknown layout {layout:?}; inheriting the global layout"
+                        );
+                    }
+                    valid
+                });
+                let tiling_mode = rule.tiling_mode.filter(|mode| {
+                    let valid = MODES.contains(&mode.as_str());
+                    if !valid {
+                        tracing::warn!(
+                            "workspace {workspace}: unknown tiling_mode {mode:?}; inheriting the global mode"
+                        );
+                    }
+                    valid
+                });
+                let mut gaps = viewport_ipc::event::Gaps {
+                    inner: rule.gaps.inner,
+                    outer: rule.gaps.outer,
+                    smart: rule.gaps.smart,
+                };
+                if gaps.inner.is_some_and(|value| value < 0) {
+                    tracing::warn!("workspace {workspace}: gaps.inner is negative; ignoring it");
+                    gaps.inner = None;
+                }
+                if gaps.outer.is_some_and(|value| value < 0) {
+                    tracing::warn!("workspace {workspace}: gaps.outer is negative; ignoring it");
+                    gaps.outer = None;
+                }
+                let gaps = (gaps != viewport_ipc::event::Gaps::default()).then_some(gaps);
+                rules.push(viewport_ipc::event::WorkspaceRule {
+                    workspace,
+                    output: rule.output.filter(|name| !name.trim().is_empty()),
+                    layout,
+                    tiling_mode,
+                    gaps,
+                });
+            }
+            rules.sort_by_key(|rule| rule.workspace);
+            self.config.workspaces = rules;
+        }
         if let Some(tutorial) = file.tutorial {
             self.config.tutorial = tutorial;
         }

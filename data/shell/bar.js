@@ -127,6 +127,7 @@ function renderBarChrome(name) {
       const classes = [];
       if (id === focusedId) classes.push('focused');
       if (isFloating(id)) classes.push('floating');
+      if (isMinimized(id)) classes.push('minimized');
       const text = view.title || view.app_id || `view ${id}`;
       return {
         key: String(id),
@@ -136,7 +137,11 @@ function renderBarChrome(name) {
         current: id === focusedId,
       };
     }),
-    (key) => send({ type: 'view.focus', id: Number(key) }));
+    (key) => {
+      const id = Number(key);
+      if (isMinimized(id)) setMinimized(id, false);
+      send({ type: 'view.focus', id });
+    });
 
   syncBarRight(output);
 }

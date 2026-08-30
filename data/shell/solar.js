@@ -323,7 +323,7 @@ function solarIdsOf(workspace) {
   const root = workspaces.get(workspace);
   if (!root) return [];
   return dynamicOrder(root).filter(
-    (id) => views.has(id) && !isFloating(id));
+    (id) => views.has(id) && !isFloating(id) && !isMinimized(id));
 }
 
 /* Which window is a workspace's sun.
@@ -430,6 +430,7 @@ function planSolar() {
   const active = activeOutputName();
 
   for (const [name, output] of outputs) {
+    if (layoutModeOf(output.workspace) !== 'solar') continue;
     const area = solarAreaOf(output);
     if (!area) continue;
     const ids = solarIdsOf(output.workspace);
@@ -453,7 +454,8 @@ function planSolar() {
 
     plan.get(name).push(...here);
 
-    if (companion && spilled.length > 0) {
+    if (companion && layoutModeOf(outputs.get(companion)?.workspace) === 'solar'
+        && spilled.length > 0) {
       const field = solarAreaOf(outputs.get(companion));
       plan.get(companion).push(...solarLagrangePlacements(spilled, field));
     }
@@ -480,6 +482,8 @@ function clearSolarState() {
   let touched = false;
   for (const [id, view] of views) {
     if (!view.solar) continue;
+    const workspace = workspaceOf(id);
+    if (!overviewActive && workspace !== null && layoutModeOf(workspace) === 'solar') continue;
     view.solar = null;
     view.el.classList.remove('orbit', 'sun', 'inner', 'outer', 'lagrange',
       'companion');
@@ -501,7 +505,7 @@ function clearSolarState() {
  * and a half — it would fade in bright and stay bright until something else
  * caused a relayout. */
 function solarRestingOpacity(id) {
-  if (layoutMode !== 'solar') return 1;
+  if (layoutModeOf() !== 'solar') return 1;
   return views.get(id)?.solar?.opacity ?? 1;
 }
 

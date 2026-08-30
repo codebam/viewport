@@ -49,6 +49,8 @@ function serialiseNode(node) {
 function serialiseSession() {
   const saved = {
     version: 1, layout: layoutMode, workspaces: {}, outputs: {}, floating: [],
+    workspace_homes: Object.fromEntries(workspaceHomes),
+    workspace_state: Object.fromEntries(workspaceRuntime),
     /* Where everything sits on the canvas's planes, and where each plane is
        being looked at from. Written whatever the layout is, so that switching
        away from the canvas and restarting does not lose the arrangement — the
@@ -167,6 +169,20 @@ function restoreSession(text) {
     if (revived) workspaces.set(Number(n), revived);
   }
   floatSlots = (saved.floating ?? []).filter((slot) => slot && slot.app);
+  for (const [n, name] of Object.entries(saved.workspace_homes ?? {})) {
+    const workspace = Number(n);
+    if (Number.isInteger(workspace) && workspace >= 1 && workspace <= WORKSPACES
+        && typeof name === 'string') workspaceHomes.set(workspace, name);
+  }
+  for (const [n, state] of Object.entries(saved.workspace_state ?? {})) {
+    const workspace = Number(n);
+    if (!Number.isInteger(workspace) || workspace < 1 || workspace > WORKSPACES
+        || !state || typeof state !== 'object') continue;
+    const restored = {};
+    if (LAYOUT_MODES.includes(state.layout)) restored.layout = state.layout;
+    if (TILING_MODES.includes(state.tiling_mode)) restored.tiling_mode = state.tiling_mode;
+    if (Object.keys(restored).length > 0) workspaceRuntime.set(workspace, restored);
+  }
   /* And the canvas's planes, whose places wait to be claimed by the windows as
      they are replayed exactly as the floating rects above do. A file written
      before this existed has no `canvas` key and restores nothing, which is the
@@ -558,7 +574,7 @@ function moveViewToWorkspace(id, n) {
     floating.workspace = n;
   } else {
     removeLeaf(id);
-    if (layoutMode === 'scrolling') {
+    if (layoutModeOf(n) === 'scrolling') {
       const root = workspaceRoot(n);
       root.dir = 'horizontal';
       const leaf = newLeaf(id);
@@ -665,11 +681,10 @@ function setOverview(active) {
 /* Move the strip under the fingers. The compositor sends a delta per touchpad
  * event; the shell owns where the limits are. */
 function gestureScroll(dx) {
-  if (layoutMode !== 'scrolling') return;
-
   const output = outputs.get(activeOutputName());
   if (!output) return;
   const workspace = output.workspace;
+  if (layoutModeOf(workspace) !== 'scrolling') return;
 
   gestureWorkspace = workspace;
   const at = scrollOffsets.get(workspace) ?? 0;
@@ -703,7 +718,7 @@ function gestureSettle() {
       landed = column;
       break;
     }
-    offset += width + gapPx();
+    offset += width + gapPx(workspace);
   }
   if (landed === null) landed = root.children[root.children.length - 1];
   if (!landed) return;

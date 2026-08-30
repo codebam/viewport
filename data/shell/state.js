@@ -89,6 +89,12 @@ const workspaces = new Map(); // number -> tiling tree root
  * bar has nowhere to draw it. Remembering where it was last is the only answer
  * that does not move it about while nobody is looking. */
 const workspaceHomes = new Map(); // number -> output name
+/* Validated config policy and changes made by layout commands. Runtime entries
+ * are separate so a config reload changes defaults without erasing choices
+ * made in this session; both are resolved by workspace at use sites. */
+const workspaceRules = new Map(); // number -> { output, layout, tiling_mode, gaps }
+const workspaceRuntime = new Map(); // number -> { layout, tiling_mode }
+let renderingWorkspace = null;
 
 /* Floating windows sit outside the tiling tree entirely: they keep their own
  * position and size and overlap whatever is tiled underneath. Dialogs land here
@@ -286,6 +292,26 @@ let layoutMode = 'tiling';
  * windows are open. Only meaningful while layoutMode is 'tiling' — the
  * scrolling strip is its own model. See dynamic.js. */
 let tilingMode = 'manual';
+
+function workspaceRule(n) {
+  return workspaceRules.get(n) ?? {};
+}
+
+function layoutModeOf(n = renderingWorkspace ?? activeWorkspace()) {
+  return workspaceRuntime.get(n)?.layout ?? workspaceRule(n).layout ?? layoutMode;
+}
+
+function tilingModeOf(n = renderingWorkspace ?? activeWorkspace()) {
+  return workspaceRuntime.get(n)?.tiling_mode
+    ?? workspaceRule(n).tiling_mode ?? tilingMode;
+}
+
+function setWorkspaceRuntime(n, key, value) {
+  const state = workspaceRuntime.get(n) ?? {};
+  state[key] = value;
+  workspaceRuntime.set(n, state);
+  saveSession();
+}
 /* How a wallpaper picture is fitted to the screen. `fill` is the default and
  * is the absence of all four classes, so it is not in the list — what this is
  * for is taking the last one off when the mode changes. The names are stylix's

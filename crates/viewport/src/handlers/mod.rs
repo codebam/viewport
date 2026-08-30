@@ -371,6 +371,16 @@ impl crate::foreign_toplevel::ForeignToplevelHandler for ViewportState {
             args: vec![id.to_string(), u8::from(maximized).to_string()],
         });
     }
+
+    fn minimize_toplevel(&mut self, id: u32, minimized: bool) {
+        if !crate::apply::set_view_minimized(self, id, minimized) {
+            return;
+        }
+        self.notify(&viewport_ipc::Event::ShellCommand {
+            command: "window.minimized.set".to_owned(),
+            args: vec![id.to_string(), u8::from(minimized).to_string()],
+        });
+    }
 }
 
 impl smithay::wayland::drm_syncobj::DrmSyncobjHandler for ViewportState {

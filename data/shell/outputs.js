@@ -28,7 +28,9 @@ function lowestFreeWorkspace() {
 }
 
 function startingWorkspace(name) {
-  const preferred = OUTPUT_WORKSPACE[name];
+  const configured = [...workspaceRules.entries()]
+    .find(([, rule]) => rule.output === name)?.[0];
+  const preferred = configured ?? OUTPUT_WORKSPACE[name];
   if (preferred !== undefined && hostOfWorkspace(preferred) === null) {
     return preferred;
   }
@@ -202,7 +204,7 @@ function syncOutputs(list) {
  * elsewhere moves focus there rather than creating a second copy — otherwise
  * each monitor grows its own "workspace 1". */
 function switchWorkspace(name, n) {
-  const output = outputs.get(name);
+  let output = outputs.get(name);
   if (!output || n < 1 || n > WORKSPACES) return;
 
   /* Asking for the workspace you are already on takes you back to the one
@@ -221,10 +223,16 @@ function switchWorkspace(name, n) {
     focusFirstOn(host);
     return;
   }
+  const preferred = workspaceRule(n).output;
+  if (host === null && preferred !== undefined && outputs.has(preferred)) {
+    name = preferred;
+    output = outputs.get(name);
+  }
   if (output.workspace === n) return;
 
   output.previous = output.workspace;
   output.workspace = n;
+  workspaceHomes.set(n, name);
   setActiveOutput(name);
 
   /* What was on screen before the switch, so the windows that arrive can be
@@ -234,6 +242,7 @@ function switchWorkspace(name, n) {
   fadeInArrivals(before);
 
   focusFirstOn(name);
+  saveSession();
 }
 
 /* Straight to the previous workspace, whatever it was. The same thing the

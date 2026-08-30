@@ -8,7 +8,8 @@
  * specific to this protocol, so this drives the requests a taskbar would and
  * checks the compositor carries them out.
  *
- *   foreign-toplevel-client   list, activate, maximize, fullscreen, close; pass
+ *   foreign-toplevel-client   list, activate, minimize, maximize, fullscreen,
+ *                             close; pass
  *
  * The script that runs it starts a compositor and a paint client first, so
  * there is one window to see. This client:
@@ -46,7 +47,9 @@ struct state {
 	bool toplevel_seen;
 	bool closed;
 	bool state_seen;
+	bool activated;
 	bool maximized;
+	bool minimized;
 	bool fullscreen;
 };
 
@@ -89,10 +92,16 @@ static void handle_state(void *data,
 	uint32_t *value;
 	(void)toplevel;
 	state->maximized = false;
+	state->minimized = false;
 	state->fullscreen = false;
+	state->activated = false;
 	wl_array_for_each(value, states) {
-		if (*value == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED) {
+		if (*value == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED) {
+			state->activated = true;
+		} else if (*value == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED) {
 			state->maximized = true;
+		} else if (*value == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED) {
+			state->minimized = true;
 		} else if (*value == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN) {
 			state->fullscreen = true;
 		}
@@ -313,13 +322,31 @@ int main(void)
 		wl_display_disconnect(display);
 		return 1;
 	}
-	/* A NULL seat marshals as an invalid argument, so bind a real one from
-	 * the registry rather than passing NULL — activate(seat) must carry a
-	 * valid seat handle. */
+	/* A NULL seat marshals as an invalid argument, so use the real one bound
+	 * above. Minimizing this focused window must also clear activation. */
 	zwlr_foreign_toplevel_handle_v1_activate(state.toplevel, state.seat);
-	dispatch_until(display, 500);
-	printf("ok   maximize and fullscreen state changes were published\n");
-	printf("ok   activate request was accepted\n");
+	wl_display_roundtrip(display);
+	if (!state.activated) {
+		fprintf(stderr, "activate state was not published\n");
+		wl_display_disconnect(display);
+		return 1;
+	}
+	zwlr_foreign_toplevel_handle_v1_set_minimized(state.toplevel);
+	wl_display_roundtrip(display);
+	if (!state.minimized || state.activated) {
+		fprintf(stderr, "minimized state or focus loss was not published\n");
+		wl_display_disconnect(display);
+		return 1;
+	}
+	zwlr_foreign_toplevel_handle_v1_unset_minimized(state.toplevel);
+	wl_display_roundtrip(display);
+	if (state.minimized) {
+		fprintf(stderr, "minimized state was not cleared\n");
+		wl_display_disconnect(display);
+		return 1;
+	}
+	printf("ok   minimize, maximize and fullscreen state changes were published\n");
+	printf("ok   minimizing a focused window cleared activation\n");
 
 	/* The observable act: close() must reach the window, and when it goes
 	 * the handle must be told with `closed`. */

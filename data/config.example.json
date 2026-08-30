@@ -101,6 +101,19 @@
   ],
   "tiling_mode": "manual",
 
+  "_workspaces": [
+    "Optional policy for the nine fixed workspaces, keyed by \"1\" through \"9\".",
+    "output is a preferred connector/home. layout and tiling_mode override the",
+    "global values. gaps overrides only fields it names; omitted fields inherit",
+    "the global gaps block. Layout commands change only the active workspace and",
+    "that mutable choice, plus workspace homes, survives in session.json.",
+    "There are no named or dynamically-created workspaces and no selectors."
+  ],
+  "workspaces": {
+    "1": { "output": "eDP-1", "layout": "tiling", "tiling_mode": "master-stack" },
+    "2": { "output": "DP-1", "layout": "scrolling", "gaps": { "inner": 12, "smart": true } }
+  },
+
   "_focus_crosses_outputs": [
     "Whether Mod4+h and Mod4+l — and Mod4+j and Mod4+k — carry focus onto the",
     "next monitor once there is nothing left to reach on this one. True is",

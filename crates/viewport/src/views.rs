@@ -94,6 +94,9 @@ pub struct View {
     pub box_: Box,
 
     pub visible: bool,
+    /// Compositor-owned minimize state. The shell decides how omission looks,
+    /// while protocol clients and Xwayland all observe this one value.
+    pub minimized: bool,
     /// Whether capture paths may include this window. Window rules can turn it
     /// off after the view is announced; ordinary windows remain capturable.
     pub capture_allowed: bool,
@@ -194,6 +197,7 @@ impl View {
             min_height,
             replay,
             floating: self.wants_floating(),
+            minimized: self.minimized,
             parent,
             ancestors,
             width,
@@ -509,6 +513,7 @@ impl Views {
             placed: false,
             box_: Box::new(0, 0, 0, 0),
             visible: true,
+            minimized: false,
             capture_allowed: true,
             capture_redaction_id: smithay::backend::renderer::element::Id::new(),
             scale: 1.0,

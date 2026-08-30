@@ -42,7 +42,7 @@ function togglePseudotile(id) {
   const view = views.get(id);
   if (!view || isFloating(id) || view.special || isFullscreen(id)
       || view.parent != null
-      || (layoutMode !== 'tiling' && layoutMode !== 'scrolling')) return;
+      || (layoutModeOf() !== 'tiling' && layoutModeOf() !== 'scrolling')) return;
   view.pseudotile = view.pseudotile ? null : preferredPseudoDimensions(view);
   relayoutAll();
   saveSession();
@@ -91,7 +91,7 @@ function trySwallow(id, ancestors, rule, compositorFloating) {
   if (!child || compositorFloating || child.parent != null || rule?.swallow === false
       || rule?.floating === true || rule?.workspace === 'scratchpad'
       || rule?.pinned === true || Number.isFinite(rule?.workspace)
-      || (layoutMode !== 'tiling' && layoutMode !== 'scrolling')) return false;
+      || (layoutModeOf() !== 'tiling' && layoutModeOf() !== 'scrolling')) return false;
 
   for (const parentId of Array.isArray(ancestors) ? ancestors : []) {
     const parent = views.get(parentId);
@@ -232,7 +232,7 @@ function moveByDelta(id, dx, dy) {
 }
 
 function addView({ id, title, app_id, tag, output: outputName, min_width, min_height,
-    floating, parent, ancestors, width, height, replay }) {
+    floating, minimized = false, parent, ancestors, width, height, replay }) {
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
   if (views.has(id)) return;
@@ -288,6 +288,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     special: null,
     specialOutput: null,
     specialHidden: false,
+    minimized: Boolean(minimized),
     /* The frame last reported to the compositor, so an unchanged one is not
        re-sent. Null for a tiled window, which needs none. */
     frame: null,
@@ -340,7 +341,8 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      one on another workspace was an instruction to leave it there, not to be
      taken there. */
   const focusIt = () => {
-    if (!replay && special !== 'scratchpad' && target === output.workspace) {
+    if (!replay && !view.minimized && special !== 'scratchpad'
+        && target === output.workspace) {
       send({ type: 'view.focus', id });
     }
   };
@@ -401,7 +403,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   insertLeaf(target, id);
 
   if (rule && rule.pseudotile !== true && Number.isFinite(rule.width)
-      && layoutMode === 'scrolling') {
+      && layoutModeOf(target) === 'scrolling') {
     /* In the strip a rule's width is the column's share of the screen, which
        is the only width a tiled window has there. */
     const found = findLeaf(id);
@@ -516,7 +518,7 @@ function focusAfterClosing(id) {
 
   const found = findLeaf(id);
 
-  if (layoutMode === 'scrolling' && found) {
+  if (layoutModeOf(workspace) === 'scrolling' && found) {
     const root = workspaceRoot(workspace);
     const index = columnIndexOf(workspace, id);
     const column = root.children[index];
@@ -697,6 +699,20 @@ function toggleMaximized() {
   setMaximized(focusedId, !isMaximized(focusedId));
 }
 
+function setMinimized(id, minimized, notifyCompositor = true) {
+  const view = views.get(id);
+  if (!view || view.minimized === minimized) return;
+  view.minimized = minimized;
+  if (notifyCompositor) {
+    send({ type: 'view.minimized', id, minimized });
+  }
+  relayoutAll();
+}
+
+function toggleMinimized() {
+  if (focusedId != null) setMinimized(focusedId, true);
+}
+
 /* Colours from the config file, as CSS custom properties.
    Names are restricted to what a custom property may contain and values to
    what a colour may: this is a string from a file being written into the
@@ -736,6 +752,17 @@ function applyGaps(gaps) {
   }
   if (gaps.smart !== null && gaps.smart !== undefined) {
     gapsSmart = gaps.smart === true;
+  }
+}
+
+function applyWorkspaceRules(rules) {
+  workspaceRules.clear();
+  if (!Array.isArray(rules)) return;
+  for (const rule of rules) {
+    const n = Number(rule?.workspace);
+    if (!Number.isInteger(n) || n < 1 || n > WORKSPACES) continue;
+    workspaceRules.set(n, rule);
+    if (typeof rule.output === 'string') workspaceHomes.set(n, rule.output);
   }
 }
 
@@ -807,7 +834,7 @@ function nodeContains(node, id) {
 function focusParent() {
   const ws = activeWorkspace();
 
-  if (layoutMode === 'scrolling') {
+  if (layoutModeOf(ws) === 'scrolling') {
     const allIds = idsOf(ws);
     if (allIds.length === 0) return;
 

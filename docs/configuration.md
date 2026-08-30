@@ -23,6 +23,12 @@ a TTY.
   "layout_extensions": {
     "monocle": "/home/me/.config/viewport/monocle.js"
   },
+  "workspaces": {
+    "1": { "output": "eDP-1", "layout": "tiling",
+           "tiling_mode": "master-stack" },
+    "2": { "output": "DP-1", "layout": "scrolling",
+           "gaps": { "inner": 12, "smart": true } }
+  },
   "adaptive_sync": false,   // variable refresh rate, if the monitor will
   "pixel_format": "auto",   // or "10" / "8" bits per channel; see below
   "gpu": "card1",           // which card renders; see below
@@ -46,6 +52,23 @@ a TTY.
   }
 }
 ```
+
+`workspaces` is an optional object whose keys are fixed workspace numbers
+`"1"` through `"9"`. Each value accepts `output`, `layout`, `tiling_mode` and
+`gaps`. `output` is the connector preferred as that workspace's home; `layout`
+accepts a built-in or validated `layout_extensions` name; `tiling_mode` accepts
+`manual`, `master-stack`, `spiral`, `bsp` or `grid`; and `gaps` has the same
+optional `inner`, `outer` and `smart` fields as the global block. Omitted fields
+inherit global values. Invalid workspace numbers, unknown layout/mode names and
+negative gap sizes are rejected or ignored with a diagnostic before reaching
+the shell.
+
+Workspace assignment and layout policy remain shell-owned. `shell layout.model`
+and `shell layout.mode` change the active workspace rather than a session-wide
+global; those mutable choices and each workspace's last output home are saved in
+existing `session.json`. Config rules remain defaults, so restored mutable state
+wins for that session. Workspaces remain exactly `1` through `9`: this adds no
+names, dynamic creation, selectors, runtime workspace-rule IPC or settings UI.
 
 `reload` re-reads the config file *and* reloads the shell, so a changed
 keybinding takes effect without a restart. Only keys the file actually contains

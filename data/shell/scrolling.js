@@ -30,7 +30,9 @@ const COLUMN_WIDTHS = [1 / 3, 1 / 2, 2 / 3, 1];
    from the stylesheet so the two cannot drift apart, with a fallback for the
    case where computed styles are unavailable (the test harness has no layout
    engine). */
-function gapPx() {
+function gapPx(workspace = renderingWorkspace ?? activeWorkspace()) {
+  const configured = workspaceRule(workspace).gaps?.inner;
+  if (Number.isFinite(configured)) return configured;
   const raw = typeof getComputedStyle === 'function'
     ? getComputedStyle(document.documentElement).getPropertyValue('--gap')
     : '';
@@ -41,7 +43,9 @@ function gapPx() {
 /* The outer gap: extra space around the edge of the output, added *on top of*
    the inner gap. Sway's `gaps.outer`. Default 0, so without it the desktop's
    edge is just the inner gap, exactly as it has always been. */
-function gapOuterPx() {
+function gapOuterPx(workspace = renderingWorkspace ?? activeWorkspace()) {
+  const configured = workspaceRule(workspace).gaps?.outer;
+  if (Number.isFinite(configured)) return configured;
   /* The computed value first, because a theme may set this in a stylesheet
      rather than through `gaps` — and the inline property after it, which is
      where applyGaps() writes and the only one a shell running without a
@@ -95,13 +99,12 @@ function smartRadius() {
    there the count alone settles it. */
 function singleWindowOn(workspace) {
   if (workspace == null) return false;
-  if (leavesOf(workspace).length !== 1) return false;
-  if (layoutMode !== 'scrolling') return true;
+  if (leavesOf(workspace).filter((leaf) => !isMinimized(leaf.id)).length !== 1) return false;
+  if (layoutModeOf(workspace) !== 'scrolling') return true;
 
   /* Same filter renderStrip uses: a child with no view of its own is a slot
      nothing has claimed yet and is not drawn, so it is not a column. */
-  const columns = (workspaces.get(workspace)?.children ?? []).filter(
-    (child) => child.type === 'split' || views.has(child.id));
+  const columns = (workspaces.get(workspace)?.children ?? []).filter(hasLayoutView);
   return columns.length === 1 && (columns[0].width ?? 0) >= 1;
 }
 
@@ -109,8 +112,9 @@ function singleWindowOn(workspace) {
    is inner + outer normally; with smart gaps and a single window it is just
    the outer gap, so a lone window does not sit far from its own screen edge. */
 function edgeGapPx(workspace) {
-  if (gapsSmart && singleWindowOn(workspace)) return gapOuterPx();
-  return gapPx() + gapOuterPx();
+  const smart = workspaceRule(workspace).gaps?.smart ?? gapsSmart;
+  if (smart && singleWindowOn(workspace)) return gapOuterPx(workspace);
+  return gapPx(workspace) + gapOuterPx(workspace);
 }
 
 const COLUMN_HEIGHTS = [1 / 3, 1 / 2, 2 / 3, 1];
@@ -133,8 +137,7 @@ function renderStrip(root, output, area = null) {
     const pad = edgeGapPx(output.workspace);
     area = { width: rect.width - pad * 2, height: rect.height - pad * 2 };
   }
-  const columns = root.children.filter(
-    (child) => child.type === 'split' || views.has(child.id));
+  const columns = root.children.filter(hasLayoutView);
 
   let offset = 0;
   let focusedStart = null;
@@ -222,9 +225,10 @@ function renderStrip(root, output, area = null) {
  * width. Coming back the other way, those widths are meaningless and the tabbed
  * containers a strip never has are left alone. Without this a switch mid-session
  * renders a tree the new model cannot make sense of. */
-function normaliseForLayout() {
-  for (const root of workspaces.values()) {
-    if (layoutMode === 'scrolling') {
+function normaliseForLayout(workspace = null) {
+  for (const [n, root] of workspaces) {
+    if (workspace !== null && workspace !== n) continue;
+    if (layoutModeOf(n) === 'scrolling') {
       root.dir = 'horizontal';
       root.layout = 'split';
       for (const column of root.children) {
@@ -371,7 +375,7 @@ function renderOverview(output, list) {
 
     const root = workspaces.get(n);
     const rendered = root
-      ? (layoutMode === 'scrolling'
+      ? (layoutModeOf(n) === 'scrolling'
         ? renderStrip(root, { ...output, workspace: n },
           { width: area.width, height: area.height })
         : renderTree(root))
@@ -380,7 +384,7 @@ function renderOverview(output, list) {
 
     /* Floating windows belong to the thumbnail of their own workspace too. */
     for (const [id, floating, view] of floatingEntries()) {
-      if (floating.workspace !== n) continue;
+      if (floating.workspace !== n || isMinimized(id)) continue;
       view.el.classList.add('floating');
       Object.assign(view.el.style, {
         left: `${floating.x}px`, top: `${floating.y}px`,
@@ -416,4 +420,3 @@ function renderOverview(output, list) {
 
   return grid;
 }
-

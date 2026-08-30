@@ -544,6 +544,10 @@ pub struct ViewAdded {
     /// and the shell cannot.
     pub floating: bool,
 
+    /// Whether the compositor currently keeps this window minimized.
+    #[serde(default)]
+    pub minimized: bool,
+
     /// The window this one is a dialog *of*, when it is one.
     ///
     /// The same parent link `floating` is partly inferred from, named rather
@@ -673,6 +677,11 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiling_mode: Option<String>,
 
+    /// Validated policy for fixed workspaces. The browser shell owns applying
+    /// it because the compositor does not own workspace layout or placement.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspaces: Vec<WorkspaceRule>,
+
     /// Whether something is being drawn *behind* the shell, so the page must
     /// stop painting a wallpaper of its own.
     ///
@@ -746,6 +755,19 @@ pub struct Config {
 pub struct LayoutExtension {
     pub name: String,
     pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRule {
+    pub workspace: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiling_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gaps: Option<Gaps>,
 }
 
 fn yes() -> bool {
@@ -1447,6 +1469,7 @@ mod tests {
             min_height: 0,
             replay: false,
             floating: false,
+            minimized: false,
             parent: None,
             ancestors: Vec::new(),
             width: 800,
@@ -1463,6 +1486,7 @@ mod tests {
             "min_height",
             "replay",
             "floating",
+            "minimized",
             "width",
             "height",
         ] {
@@ -1489,6 +1513,7 @@ mod tests {
             min_height: 0,
             replay: false,
             floating: true,
+            minimized: false,
             parent: Some(1),
             ancestors: vec![1],
             width: 300,
@@ -1516,6 +1541,7 @@ mod tests {
             bar_items: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
+            workspaces: Vec::new(),
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
@@ -1551,6 +1577,38 @@ mod tests {
     }
 
     #[test]
+    fn workspace_policy_is_carried_to_the_shell() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "tiling",
+            "logo": true,
+            "tutorial": true
+        }))
+        .expect("minimal config");
+        config.workspaces.push(WorkspaceRule {
+            workspace: 2,
+            output: Some("DP-1".into()),
+            layout: Some("scrolling".into()),
+            tiling_mode: Some("grid".into()),
+            gaps: Some(Gaps {
+                inner: Some(12),
+                outer: None,
+                smart: Some(true),
+            }),
+        });
+        let value = json(&Event::Config(Box::new(config)));
+        assert_eq!(
+            value["workspaces"][0],
+            serde_json::json!({
+                "workspace": 2,
+                "output": "DP-1",
+                "layout": "scrolling",
+                "tiling_mode": "grid",
+                "gaps": { "inner": 12, "outer": null, "smart": true }
+            })
+        );
+    }
+
+    #[test]
     fn the_border_is_carried_to_the_shell() {
         let value = json(&Event::Config(Box::new(Config {
             layout: "tiling".into(),
@@ -1572,6 +1630,7 @@ mod tests {
             bar_items: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
+            workspaces: Vec::new(),
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
@@ -1605,6 +1664,7 @@ mod tests {
             bar_items: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
+            workspaces: Vec::new(),
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
@@ -1651,6 +1711,7 @@ mod tests {
             bar_items: None,
             focus_crosses_outputs: false,
             tiling_mode: None,
+            workspaces: Vec::new(),
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
@@ -1678,6 +1739,7 @@ mod tests {
             bar_items: None,
             focus_crosses_outputs: true,
             tiling_mode: None,
+            workspaces: Vec::new(),
             background_terminal: false,
             wallpaper: None,
             wallpaper_mode: None,
@@ -1764,6 +1826,7 @@ mod tests {
                 min_height: 0,
                 replay: true,
                 floating: false,
+                minimized: false,
                 parent: None,
                 ancestors: Vec::new(),
                 width: 0,
@@ -1799,6 +1862,7 @@ mod tests {
                 bar_items: None,
                 focus_crosses_outputs: true,
                 tiling_mode: None,
+                workspaces: Vec::new(),
                 background_terminal: false,
                 wallpaper: None,
                 wallpaper_mode: None,

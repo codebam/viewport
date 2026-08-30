@@ -257,8 +257,9 @@ function workspaceAspect(workspace) {
 /* What one workspace's shape should be, given its windows and its screen. */
 function arrangementFor(workspace, root) {
   const ids = dynamicOrder(root);
+  const mode = tilingModeOf(workspace);
 
-  if (tilingMode === 'master-stack') {
+  if (mode === 'master-stack') {
     /* masterStack sets the root's direction itself, which is why it is handed
        the root rather than asked for children alone. */
     return { dir: 'horizontal', children: masterStack(ids, root) };
@@ -266,9 +267,9 @@ function arrangementFor(workspace, root) {
 
   const [w, h] = workspaceAspect(workspace);
 
-  if (tilingMode === 'grid') return grid(ids, w, h);
+  if (mode === 'grid') return grid(ids, w, h);
 
-  const pick = tilingMode === 'spiral' ? spiralPick : bspPick;
+  const pick = mode === 'spiral' ? spiralPick : bspPick;
   /* The root is one split already, so the first cut is its direction and the
      nest continues underneath it. */
   const dir = pick(w, h, ids.length);
@@ -284,7 +285,7 @@ function arrangementFor(workspace, root) {
 /* Rebuild one workspace's shape, if the mode asks for one and what it asks for
  * is not what is already there. */
 function arrangeWorkspace(workspace) {
-  if (layoutMode !== 'tiling' || tilingMode === 'manual') return;
+  if (layoutModeOf(workspace) !== 'tiling' || tilingModeOf(workspace) === 'manual') return;
 
   const root = workspaces.get(workspace);
   if (!root) return;
@@ -308,6 +309,5 @@ function arrangeWorkspace(workspace) {
 
 /* Every workspace, on the way into a relayout. */
 function arrangeAll() {
-  if (layoutMode !== 'tiling' || tilingMode === 'manual') return;
   for (const workspace of workspaces.keys()) arrangeWorkspace(workspace);
 }

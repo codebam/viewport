@@ -613,6 +613,7 @@ function layoutContext(output = null, root = null, plan = null) {
       dynamicOrder,
       isFloating,
       isFullscreen,
+      isMinimized,
       edgeGapPx,
       measureOf,
       markRendered(id) { renderedIds.add(id); },
@@ -654,13 +655,22 @@ function relayoutAll() {
      for and returns. */
   arrangeAll();
 
-  let activeLayout = layoutRegistry.get(layoutMode) ?? layoutRegistry.get('tiling');
-  if (!layoutRegistry.has(layoutMode)) layoutMode = 'tiling';
+  const modesInUse = new Set([...outputs.values()].map(
+    (output) => layoutModeOf(output.workspace)));
   for (const [name, descriptor] of layoutRegistry) {
-    if (overviewActive || name !== layoutMode) descriptor.clear(layoutContext());
+    if (overviewActive || !modesInUse.has(name) || descriptor.builtin) {
+      descriptor.clear(layoutContext());
+    }
   }
-  const layoutPlan = !overviewActive && typeof activeLayout.prepare === 'function'
-    ? activeLayout.prepare(layoutContext()) : null;
+  const layoutPlans = new Map();
+  if (!overviewActive) {
+    for (const mode of modesInUse) {
+      const descriptor = layoutRegistry.get(mode) ?? layoutRegistry.get('tiling');
+      if (typeof descriptor.prepare === 'function') {
+        layoutPlans.set(mode, descriptor.prepare(layoutContext()));
+      }
+    }
+  }
 
   /* Where everything was, before the tree is thrown away and rebuilt.
      Not while a gesture is running: a window under the hand is not animated
@@ -691,16 +701,28 @@ function relayoutAll() {
 
   for (const [name, output] of outputs) {
     const root = workspaces.get(output.workspace);
+    const mode = layoutModeOf(output.workspace);
+    const descriptor = layoutRegistry.get(mode) ?? layoutRegistry.get('tiling');
+    const workspaceGaps = workspaceRule(output.workspace).gaps ?? {};
+    for (const [field, property] of [['inner', '--gap'], ['outer', '--gap-outer']]) {
+      if (Number.isFinite(workspaceGaps[field])) {
+        output.windowsEl.style.setProperty(property, `${workspaceGaps[field]}px`);
+      } else {
+        output.windowsEl.style.removeProperty(property);
+      }
+    }
+    renderingWorkspace = output.workspace;
     /* Only one output shows the overview: a window element exists once in the
        DOM, so two grids would fight over the same windows and the second would
        simply steal them. The others go blank for the duration. */
     const rendered = overviewActive
       ? renderOverview(output, assignment.get(name) ?? [])
-      : activeLayout.render(layoutContext(output, root, layoutPlan));
+      : descriptor.render(layoutContext(output, root, layoutPlans.get(mode) ?? null));
+    renderingWorkspace = null;
 
     output.windowsEl.replaceChildren();
     for (const name of layoutRegistry.keys()) {
-      output.windowsEl.classList.toggle(name, name === layoutMode);
+      output.windowsEl.classList.toggle(name, name === mode);
     }
     /* Everything this output draws follows the hand directly while a gesture
        is running. The dragged window has a class of its own and has had one
@@ -714,7 +736,8 @@ function relayoutAll() {
        CSS padding has to match what edgeGapPx() (used by the layout math)
        computes, or the drawn edge and the measured one drift apart. */
     output.windowsEl.classList.toggle('smart-single',
-      gapsSmart && singleWindowOn(output.workspace));
+      (workspaceRule(output.workspace).gaps?.smart ?? gapsSmart)
+        && singleWindowOn(output.workspace));
     /* Smart radius: the same lone window, drawn square. A separate class from
        the one above because the two settings can be set apart — and off in the
        overview, where the windows are thumbnails whose corners are the
@@ -735,8 +758,8 @@ function relayoutAll() {
          would nail the window to the screen — the rect is in screen
          coordinates, so the window would sit still while the plane panned
          underneath it. */
-      if (activeLayout.absorbsFloating) break;
-      if (floating.workspace !== output.workspace) continue;
+      if (descriptor.absorbsFloating) break;
+      if (floating.workspace !== output.workspace || isMinimized(id)) continue;
       view.el.classList.add('floating');
       output.windowsEl.append(view.el);
       renderedIds.add(id);
@@ -758,7 +781,8 @@ function relayoutAll() {
        containers. A scrolling strip or canvas plane would otherwise become
        its containing block and maximize only inside the translated content. */
     const maximizedId = maximizedOn(output.workspace);
-    if (!overviewActive && maximizedId !== null && !isFullscreen(maximizedId)) {
+    if (!overviewActive && maximizedId !== null && !isFullscreen(maximizedId)
+        && !isMinimized(maximizedId)) {
       const view = views.get(maximizedId);
       if (view) {
         output.windowsEl.append(view.el);
@@ -789,8 +813,8 @@ function relayoutAll() {
     /* A monitor holding another workspace's Lagrange field has nothing of its
        own on it and is not empty, so the placeholder is answered by what was
        drawn rather than by whose workspace it was. */
-    const layoutContent = typeof activeLayout.content === 'function'
-      ? activeLayout.content(layoutContext(output, root, layoutPlan)) : 0;
+    const layoutContent = typeof descriptor.content === 'function'
+      ? descriptor.content(layoutContext(output, root, layoutPlans.get(mode) ?? null)) : 0;
     const specialContent = [...specialEntries()].some(([id, , view]) =>
       view.specialOutput === name && !view.specialHidden && renderedIds.has(id));
     output.emptyEl.hidden = idsOf(output.workspace).length > 0
@@ -916,6 +940,7 @@ function relayoutAll() {
     view.el.classList.toggle('selected', selectedIds.has(id));
     view.el.classList.toggle('fullscreen', isFullscreen(id));
     view.el.classList.toggle('maximized', isMaximized(id) && !isFullscreen(id));
+    view.el.classList.toggle('minimized', isMinimized(id));
   }
 
   /* The orbits' resting opacities, now that it is settled which windows are on
@@ -923,7 +948,10 @@ function relayoutAll() {
      from renderSolar instead would put a window's resting value on the wire
      immediately before the fade set it back to zero, which is a window that
      flashes at its final brightness on the frame it opens. */
-  activeLayout.after?.({ ...layoutContext(null, null, layoutPlan), faded });
+  for (const mode of modesInUse) {
+    const descriptor = layoutRegistry.get(mode) ?? layoutRegistry.get('tiling');
+    descriptor.after?.({ ...layoutContext(null, null, layoutPlans.get(mode) ?? null), faded });
+  }
 
   /* Offset every window back to where it was and let it slide into place.
      Except under the hand: a drag is already a window following a pointer at

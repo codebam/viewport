@@ -739,12 +739,10 @@ protocol testable in CI, and what `output.test_add` is gated on.
 - **No layout policy, at all.** A window is created but not mapped into the
   `Space` until a `view.layout` arrives for it. There is nowhere a window could
   legitimately be drawn before the shell has said where.
-- **No client-driven move or resize grabs.** A client asking the compositor to
-  move or resize it has asked the wrong party — the frame is DOM and dragging
-  an edge is the browser resizing a flex container. Those requests are ignored,
-  not implemented. Mod4 with a button *is* implemented, and works the other way
-  round: the compositor follows the pointer and sends the shell a delta, which
-  the shell resolves against whatever layout the window is in.
+- **No client-driven move or resize grabs in step 2.** These are implemented
+  now without adding compositor layout policy: after validating the request's
+  seat and press serial, the compositor follows the pointer and sends the shell
+  deltas, which the shell resolves against the window's layout.
 - **Per-window opacity is stored but not applied.** Applied since step 3.
 - Notifications, keybindings, config parsing and HDR answer with an `error`
   naming what is missing rather than failing silently. All four are implemented

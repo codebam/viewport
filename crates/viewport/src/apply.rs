@@ -121,6 +121,10 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             set_view_maximized(state, id, maximized);
         }
 
+        Request::ViewMinimized { id, minimized } => {
+            set_view_minimized(state, id, minimized);
+        }
+
         Request::ViewFocus { id } => focus_view(state, id),
 
         Request::ViewClose { id } => {
@@ -837,6 +841,7 @@ pub(crate) fn set_view_fullscreen(state: &mut ViewportState, id: u32, fullscreen
         id,
         state.focused == id,
         state.view_is_maximized(id),
+        state.view_is_minimized(id),
         fullscreen,
     );
     true
@@ -869,8 +874,47 @@ pub(crate) fn set_view_maximized(state: &mut ViewportState, id: u32, maximized: 
         id,
         state.focused == id,
         maximized,
+        state.view_is_minimized(id),
         state.view_is_fullscreen(id),
     );
+    true
+}
+
+/// Set compositor-owned minimize state and mirror it to Xwayland and observers.
+pub(crate) fn set_view_minimized(state: &mut ViewportState, id: u32, minimized: bool) -> bool {
+    let Some(window) = state.views.get(id).map(|view| view.window.clone()) else {
+        return false;
+    };
+
+    if let Some(x11) = window.x11_surface() {
+        if let Err(e) = x11.set_hidden(minimized) {
+            tracing::warn!("could not set hidden state on an X11 window: {e}");
+            return false;
+        }
+    }
+    if let Some(view) = state.views.get_mut(id) {
+        view.minimized = minimized;
+    }
+
+    state.foreign_management_state.set_state(
+        id,
+        state.focused == id && !minimized,
+        state.view_is_maximized(id),
+        minimized,
+        state.view_is_fullscreen(id),
+    );
+
+    if minimized && state.focused == id {
+        if let Some(keyboard) = state.seat.get_keyboard() {
+            let serial = SERIAL_COUNTER.next_serial();
+            keyboard.set_focus(
+                state,
+                Option::<crate::keyboard_focus::KeyboardFocus>::None,
+                serial,
+            );
+        }
+        state.notify_focus(NO_VIEW);
+    }
     true
 }
 
@@ -1187,6 +1231,15 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {
+    // Activation is also restore. This covers shell taskbars, foreign
+    // toplevels, and direct IPC with one rule rather than leaving a focused
+    // surface omitted from layout.
+    if state.view_is_minimized(id) {
+        if !set_view_minimized(state, id, false) {
+            return;
+        }
+        state.notify_minimized(id, false);
+    }
     // By window, not by surface: an X11 window's surface would take the
     // keyboard on the Wayland side while the X server went on believing
     // nothing was focused.

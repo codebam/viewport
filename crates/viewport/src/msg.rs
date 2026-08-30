@@ -160,6 +160,18 @@ const TYPES: &[Type] = &[
         hint: "--id N [--fullscreen BOOL]",
     },
     Type {
+        name: "view.maximized",
+        fields: &["id", "maximized"],
+        strings: &[],
+        hint: "--id N [--maximized BOOL]",
+    },
+    Type {
+        name: "view.minimized",
+        fields: &["id", "minimized"],
+        strings: &[],
+        hint: "--id N [--minimized BOOL]",
+    },
+    Type {
         name: "view.focus",
         fields: &["id"],
         strings: &[],
@@ -1599,10 +1611,10 @@ mod tests {
 
     #[test]
     fn the_offered_types_are_the_whole_request_set() {
-        // `viewport_ipc::Request` has 66 variants. A new one that is not listed
+        // `viewport_ipc::Request` has 68 variants. A new one that is not listed
         // here cannot be sent, and the only place that would show up is a
         // prompt saying it is unknown.
-        assert_eq!(TYPES.len(), 66);
+        assert_eq!(TYPES.len(), 68);
     }
 
     #[test]

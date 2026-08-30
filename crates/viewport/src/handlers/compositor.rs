@@ -357,6 +357,10 @@ impl ViewportState {
         // property and nothing calls into the compositor about it.
         let fullscreen = view.wants_fullscreen();
         let maximized = view.wants_maximized();
+        if view.window.x11_surface().is_some_and(|x11| x11.is_hidden()) {
+            view.minimized = true;
+        }
+        let minimized = view.minimized;
         let added = view.added(output, false, parent, ancestors);
 
         // What the client actually handed over. Whether a window is opaque is
@@ -392,6 +396,9 @@ impl ViewportState {
         if maximized {
             self.notify_maximized(id, true);
         }
+        if minimized {
+            self.notify_minimized(id, true);
+        }
 
         // Announce it outside the compositor too, now that it has a title and
         // an app id — before that there is nothing worth listing.
@@ -418,7 +425,12 @@ impl ViewportState {
             id,
             &title,
             &app_id,
-            (self.focused == id, maximized, fullscreen),
+            (
+                self.focused == id && !minimized,
+                maximized,
+                minimized,
+                fullscreen,
+            ),
             outputs,
         );
 

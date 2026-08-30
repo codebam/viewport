@@ -43,6 +43,9 @@ function handleShellCommand(command, args) {
     case 'window.maximized':
       toggleMaximized();
       break;
+    case 'window.minimized':
+      toggleMinimized();
+      break;
     case 'window.pseudotile.toggle':
       togglePseudotile(focusedId);
       break;
@@ -67,12 +70,12 @@ function handleShellCommand(command, args) {
          through to moveViewToOutput would carry the window to the other
          monitor the first time it reached the edge of this one, which is a
          plane that is not infinite after all. */
-      if (layoutMode === 'canvas') {
+      if (layoutModeOf() === 'canvas') {
         if (focusedId != null) canvasMoveFocused(arg);
         break;
       }
 
-      if (layoutMode === 'scrolling') {
+      if (layoutModeOf() === 'scrolling') {
         if (selectedIds.size > 0) {
           if (!scrollMoveSelected(arg) && focusedId != null) {
             moveViewToOutput(focusedId, arg);
@@ -109,11 +112,13 @@ function handleShellCommand(command, args) {
     /* Switch arrangement without editing the config file. No argument cycles,
        which is what a single key wants to do; a name picks one outright. */
     case 'layout.mode': {
+      const workspace = activeWorkspace();
+      const current = tilingModeOf(workspace);
       const next = TILING_MODES.includes(arg)
         ? arg
-        : TILING_MODES[(TILING_MODES.indexOf(tilingMode) + 1) % TILING_MODES.length];
-      if (next !== tilingMode) {
-        tilingMode = next;
+        : TILING_MODES[(TILING_MODES.indexOf(current) + 1) % TILING_MODES.length];
+      if (next !== current) {
+        setWorkspaceRuntime(workspace, 'tiling_mode', next);
         /* Nothing to invalidate: the next relayout works out what the shape
            should be and compares it against what is there. */
         relayoutAll();
@@ -125,13 +130,15 @@ function handleShellCommand(command, args) {
        tree survives the switch — every model reads the same one — so this is a
        change of presentation and not of what is open. */
     case 'layout.model': {
+      const workspace = activeWorkspace();
+      const current = layoutModeOf(workspace);
       const next = LAYOUT_MODES.includes(arg)
         ? arg
-        : LAYOUT_MODES[(LAYOUT_MODES.indexOf(layoutMode) + 1) % LAYOUT_MODES.length];
-      if (next !== layoutMode) {
-        layoutMode = next;
+        : LAYOUT_MODES[(LAYOUT_MODES.indexOf(current) + 1) % LAYOUT_MODES.length];
+      if (next !== current) {
+        setWorkspaceRuntime(workspace, 'layout', next);
         clearSelection();
-        normaliseForLayout();
+        normaliseForLayout(workspace);
         relayoutAll();
       }
       break;
@@ -219,6 +226,11 @@ function handleShellCommand(command, args) {
       if (Number.isFinite(id)) setMaximized(id, args[1] === '1', false);
       break;
     }
+    case 'window.minimized.set': {
+      const id = Number(args[0]);
+      if (Number.isFinite(id)) setMinimized(id, args[1] === '1', false);
+      break;
+    }
     case 'layout.resize.delta':
       resizeByDelta(Number(args[0]), Number(args[1]), Number(args[2]), args[3]);
       break;
@@ -259,7 +271,7 @@ function handleShellCommand(command, args) {
        has always been. */
     case 'layout.focus':
       clearSelection();
-      if (layoutMode === 'canvas') {
+      if (layoutModeOf() === 'canvas') {
         canvasFocusStep(arg !== 'prev');
       } else {
         scrollFocus(arg);
@@ -294,22 +306,22 @@ function handleShellCommand(command, args) {
        these is a no-op in the other two layouts rather than an error: a chord
        left over in someone's config file should do nothing, not log. */
     case 'solar.ray':
-      if (layoutMode === 'solar') {
+      if (layoutModeOf() === 'solar') {
         clearSelection();
         solarRay(arg);
       }
       break;
     case 'solar.spin':
-      if (layoutMode === 'solar') solarSpin(Number(arg) < 0 ? -1 : 1);
+      if (layoutModeOf() === 'solar') solarSpin(Number(arg) < 0 ? -1 : 1);
       break;
     case 'solar.slingshot':
-      if (layoutMode === 'solar') solarSlingshot();
+      if (layoutModeOf() === 'solar') solarSlingshot();
       break;
     case 'solar.mass':
-      if (layoutMode === 'solar') solarMass(Number(arg) < 0 ? -1 : 1);
+      if (layoutModeOf() === 'solar') solarMass(Number(arg) < 0 ? -1 : 1);
       break;
     case 'solar.field':
-      if (layoutMode === 'solar') solarToggleField();
+      if (layoutModeOf() === 'solar') solarToggleField();
       break;
 
     /* Canvas. Bound only when the compositor is configured for it, and each of
@@ -455,12 +467,17 @@ window.addEventListener('viewport', (event) => {
          its switches from. Before anything below unpacks it: what the panel
          needs is what the compositor *said*, not what the page did with it. */
       shellConfig = message;
+      /* Config is the base layer. A reload historically replaced runtime
+         layout commands; session.restore follows initial config and reapplies
+         persisted per-workspace choices. */
+      workspaceRuntime.clear();
       /* Which layout model to run. Sent on connect and on reload, so switching
          it in the config file and reloading takes effect without a restart —
          the tree survives, it is only presented differently. */
       windowRules = Array.isArray(message.rules) ? message.rules : [];
       applyTheme(message.theme);
       applyGaps(message.gaps);
+      applyWorkspaceRules(message.workspaces);
       applyBorder(message.border);
       applyBarMode(message.bar);
       applyBarWidgets(message.bar_widgets);

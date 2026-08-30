@@ -250,6 +250,14 @@ impl XwmHandler for ViewportState {
         self.answer_x11_maximized(&window, false);
     }
 
+    fn minimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.answer_x11_minimized(&window, true);
+    }
+
+    fn unminimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.answer_x11_minimized(&window, false);
+    }
+
     fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
 
     /// Whether an X client may read the Wayland clipboard.
@@ -388,6 +396,7 @@ impl ViewportState {
             id,
             self.focused == id,
             self.view_is_maximized(id),
+            self.view_is_minimized(id),
             fullscreen,
         );
         if mapped {
@@ -411,10 +420,28 @@ impl ViewportState {
             id,
             self.focused == id,
             maximized,
+            self.view_is_minimized(id),
             self.view_is_fullscreen(id),
         );
         if mapped {
             self.notify_maximized(id, maximized);
+        }
+    }
+
+    fn answer_x11_minimized(&mut self, window: &X11Surface, minimized: bool) {
+        let Some(surface) = window.wl_surface() else {
+            if let Err(e) = window.set_hidden(minimized) {
+                tracing::warn!("could not set hidden state on an X11 window: {e}");
+            }
+            return;
+        };
+        let Some(view) = self.views.find_by_surface(&surface) else {
+            return;
+        };
+        let (id, mapped) = (view.id, view.mapped);
+        crate::apply::set_view_minimized(self, id, minimized);
+        if mapped {
+            self.notify_minimized(id, minimized);
         }
     }
 }

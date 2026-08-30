@@ -3,7 +3,7 @@ registerLayout('monocle', {
   render({ root, views, focusedId, helpers }) {
     if (!root) return null;
     const ids = helpers.dynamicOrder(root).filter(
-      (id) => views.has(id) && !helpers.isFloating(id));
+      (id) => views.has(id) && !helpers.isFloating(id) && !helpers.isMinimized(id));
     const id = ids.includes(focusedId) ? focusedId : ids[0];
     const view = views.get(id);
     if (!view) return null;

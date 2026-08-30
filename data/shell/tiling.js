@@ -78,6 +78,10 @@ function isMaximized(id) {
   return maximizedOn(workspaceOf(id)) === id;
 }
 
+function isMinimized(id) {
+  return id != null && views.get(id)?.minimized === true;
+}
+
 /* Which workspace a window is on, tiled or floating. */
 function workspaceOf(id) {
   const floating = floatingOf(id);
@@ -122,7 +126,7 @@ function collapse(node, isRoot = false) {
      root's children *are* the columns, so a single column holding three windows
      would be flattened into three columns. */
   if (node.children.length === 1 && node.children[0].type === 'split' &&
-      !(isRoot && layoutMode === 'scrolling')) {
+      !(isRoot && layoutModeOf() === 'scrolling')) {
     const only = node.children[0];
     node.dir = only.dir;
     node.children = only.children;
@@ -154,7 +158,7 @@ function insertLeaf(workspace, id) {
   /* In the scrolling layout a new window is a new column, placed just right of
      the one in focus. Nothing already open changes size — that is the whole
      point of the model — so the strip simply gets longer. */
-  if (layoutMode === 'scrolling') {
+  if (layoutModeOf() === 'scrolling') {
     root.dir = 'horizontal';
     leaf.width = COLUMN_WIDTHS[1];
     const index = root.children.findIndex(containsFocus);
@@ -298,6 +302,11 @@ function containsFocus(node) {
   return [...walk(node)].some(([leaf]) => leaf.id === focusedId);
 }
 
+function hasLayoutView(node) {
+  if (node.type === 'leaf') return views.has(node.id) && !isMinimized(node.id);
+  return [...walk(node)].some(([leaf]) => views.has(leaf.id) && !isMinimized(leaf.id));
+}
+
 /* Tabbed and stacked containers: one child visible, the rest reachable through
  * a strip of titles. The only difference between them is which way the strip
  * runs — tabs across the top, stacked titles one per row — which is exactly how
@@ -307,8 +316,7 @@ function renderTabbed(node) {
   el.className = `split ${node.layout}`;
   el.style.flexGrow = String(node.weight ?? 1);
 
-  const children = node.children.filter(
-    (child) => child.type === 'split' || views.has(child.id));
+  const children = node.children.filter(hasLayoutView);
   if (children.length === 0) return null;
 
   /* Focus wins over the stored selection: focusing a window inside a collapsed
@@ -354,11 +362,11 @@ function renderTabbed(node) {
 function renderTree(node) {
   if (node.type === 'leaf') {
     const view = views.get(node.id);
-    if (!view) return null;
+    if (!view || isMinimized(node.id)) return null;
     renderedIds.add(node.id);
     const pseudo = view.pseudotile;
     const active = pseudo && !isFullscreen(node.id)
-      && (layoutMode === 'tiling' || layoutMode === 'scrolling');
+      && (layoutModeOf() === 'tiling' || layoutModeOf() === 'scrolling');
     view.el.classList.toggle('pseudotiled', Boolean(active));
     if (!active) {
       view.el.style.flexGrow = String(node.weight ?? 1);

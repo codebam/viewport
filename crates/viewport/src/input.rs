@@ -1509,6 +1509,27 @@ impl ViewportState {
                 let serial = SERIAL_COUNTER.next_serial();
                 let state = event.state();
 
+                // An xdg-shell move/resize replaced the client's implicit
+                // click grab with our own. That grab owns every button until
+                // the initiating one is released.
+                if self
+                    .pointer_drag
+                    .as_ref()
+                    .is_some_and(|drag| drag.client_requested)
+                {
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button: event.button_code(),
+                            state,
+                            serial,
+                            time: event.time(),
+                        },
+                    );
+                    pointer.frame(self);
+                    return;
+                }
+
                 // Mod4 and a button drags the window under the pointer: left
                 // moves it, right resizes it. The chord every tiling
                 // compositor has, and what makes a floating window usable
@@ -1528,7 +1549,7 @@ impl ViewportState {
                     state == ButtonState::Pressed,
                 ) {
                     DragEffect::End => {
-                        self.pointer_drag = None;
+                        self.finish_pointer_drag();
                         // The hand has let go, and the shell has been drawing
                         // without its animations for as long as the deltas
                         // were arriving — a window under the pointer must not
@@ -1538,10 +1559,6 @@ impl ViewportState {
                         // timeout as well, for the gesture that ends without a
                         // release: a VT switch takes the pointer away and no
                         // button is ever reported up.
-                        self.notify(&viewport_ipc::Event::ShellCommand {
-                            command: "layout.drag.end".to_owned(),
-                            args: Vec::new(),
-                        });
                         return;
                     }
                     DragEffect::Swallow => return,
@@ -1659,9 +1676,11 @@ impl ViewportState {
                             button: event.button_code(),
                             kind,
                             edges,
+                            edge: None,
                             last: pointer.current_location(),
                             pending: (0.0, 0.0),
                             sent: None,
+                            client_requested: false,
                         });
                         // Not forwarded. The client did not ask to be dragged
                         // and a button it sees pressed and never released is a
@@ -2755,7 +2774,9 @@ impl ViewportState {
                 drag.id.to_string(),
                 (dx as i32).to_string(),
                 (dy as i32).to_string(),
-                edge_name(drag.edges).to_owned(),
+                drag.edge
+                    .unwrap_or_else(|| edge_name(drag.edges))
+                    .to_owned(),
             ],
             crate::state::DragKind::Move => vec![
                 drag.id.to_string(),
@@ -2768,6 +2789,17 @@ impl ViewportState {
             args,
         };
         self.notify(&event);
+    }
+
+    /// End whichever shell-owned pointer gesture is active.
+    pub(crate) fn finish_pointer_drag(&mut self) {
+        if self.pointer_drag.take().is_none() {
+            return;
+        }
+        self.notify(&viewport_ipc::Event::ShellCommand {
+            command: "layout.drag.end".to_owned(),
+            args: Vec::new(),
+        });
     }
 }
 
