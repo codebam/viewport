@@ -1083,8 +1083,9 @@ fn run() -> Result<()> {
                 // A volume that changed is told to the shell now rather than on
                 // the next tick: a scroll on the bar is answered while the
                 // finger is still moving. Everything else waits for the tick.
-                if state.status.absorb(slow) {
-                    state.status_tick();
+                let (audio_changed, osd) = state.status.absorb(slow);
+                if audio_changed || osd.is_some() {
+                    state.status_tick_with_osd(osd);
                 }
             })
             .map_err(|e| anyhow::anyhow!("inserting the status source: {e}"))?;

@@ -2367,6 +2367,10 @@ impl ViewportState {
     /// http://, and neither origin can read /proc. How the numbers are
     /// *displayed* is still entirely the shell's business.
     pub fn status_tick(&mut self) {
+        self.status_tick_with_osd(None);
+    }
+
+    pub fn status_tick_with_osd(&mut self, osd: Option<viewport_ipc::event::StatusOsd>) {
         let sample = self.status.sample();
         let event = viewport_ipc::Event::StatusUpdate {
             // -1 rather than absent, which is what the bar tests for.
@@ -2394,6 +2398,8 @@ impl ViewportState {
             // for it the same way.
             mic_volume: sample.mic_volume.unwrap_or(-1.0),
             mic_muted: sample.mic_muted.unwrap_or(false),
+            brightness: sample.brightness.unwrap_or(-1.0),
+            osd,
         };
         self.notify(&event);
     }
@@ -3194,7 +3200,7 @@ impl ViewportState {
         // same guess as before. That is a window the space has nowhere to put,
         // which is the case the old answer was already the only one for.
         let fallback = self.output_for_new_view();
-        let events: Vec<Event> = self
+        let events: Vec<(Event, bool)> = self
             .views
             .iter()
             .filter(|v| v.mapped)
@@ -3208,16 +3214,26 @@ impl ViewportState {
                 // Whose dialog this is, resolved against the same list being
                 // walked — a reloading shell rebuilds its layout from these
                 // and needs the parent links as much as a live one does.
-                Event::ViewAdded(v.added(
-                    output,
-                    true,
-                    self.views.parent_id_of(v),
-                    self.views.ancestor_ids_of(v),
-                ))
+                (
+                    Event::ViewAdded(v.added(
+                        output,
+                        true,
+                        self.views.parent_id_of(v),
+                        self.views.ancestor_ids_of(v),
+                    )),
+                    v.wants_fullscreen(),
+                )
             })
             .collect();
-        for event in events {
+        for (event, fullscreen) in events {
+            let id = match &event {
+                Event::ViewAdded(view) => view.id,
+                _ => unreachable!("notify_views only builds view.added events"),
+            };
             self.notify(&event);
+            if fullscreen {
+                self.notify_fullscreen(id, true);
+            }
         }
     }
 
@@ -4055,7 +4071,7 @@ pub struct PointerDrag {
     /// When the shell was last told, so a mouse reporting a thousand times a
     /// second does not ask for a thousand relayouts.
     pub sent: Option<std::time::Instant>,
-    /// True when xdg-shell started the gesture from a client titlebar. Its
+    /// True when xdg-shell or XWayland started the gesture from a client. Its
     /// pointer grab owns the release; Mod4 drags are ended directly by the
     /// input path instead.
     pub client_requested: bool,

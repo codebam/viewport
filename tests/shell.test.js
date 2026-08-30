@@ -151,7 +151,7 @@ function buildDesktop() {
   const root = new El('div');
   const main = new El('main');
   main.className = 'desktop';
-  for (const c of ['windows', 'empty', 'notifications']) {
+  for (const c of ['windows', 'empty', 'notifications', 'status-osd']) {
     const el = new El('div');
     el.className = `${c} module`;
     /* The empty desktop's tutorial holds the keymap, which the shell fills in
@@ -162,6 +162,19 @@ function buildDesktop() {
       const keys = new El('pre');
       keys.className = 'keys';
       el.append(keys);
+    } else if (c === 'status-osd') {
+      el.hidden = true;
+      for (const childClass of ['status-osd-icon', 'status-osd-meter',
+        'status-osd-value']) {
+        const child = new El('span');
+        child.className = childClass;
+        if (childClass === 'status-osd-meter') {
+          const level = new El('span');
+          level.className = 'status-osd-level';
+          child.append(level);
+        }
+        el.append(child);
+      }
     }
     main.append(el);
   }
@@ -479,7 +492,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   /* The session file as it would be written. The save itself is debounced by
      a real timer, so nothing synchronous can observe the message — and what
      is worth checking is what goes *into* the file rather than when. */
-  + ' sessionForTest: { serialise: serialiseSession },'
+  + ' sessionForTest: { serialise: serialiseSession, restore: restoreSession },'
   + ' workspacePolicyForTest: { layout: layoutModeOf, tiling: tilingModeOf,'
   + '   edge: edgeGapPx, homes: workspaceHomes, runtime: workspaceRuntime },'
   /* The tray menu's element, and the document's own listeners, so a test can
@@ -492,6 +505,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      answer a test can state exactly: everything else it draws is text
      handed to it. */
   + ' notificationAgeForTest: notificationAge,'
+  + ' get notificationDndForTest() { return notificationDndManual; },'
   + ' get powerEl() { return powerEl; },'
   + ' get networkEl() { return networkEl; },'
   + ' get bluetoothEl() { return bluetoothEl; },'
@@ -502,6 +516,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
      week on. Both are answers a test can state exactly, which nothing else the
      bar draws is — the rest of it is a number the compositor sampled. */
   + ' get calendarEl() { return calendarEl; },'
+  + ' statusOsdForTest: () => ({ timer: statusOsdTimer, output: statusOsdOutput }),'
   + ' clockTextForTest: clockText,'
   + ' applyClockForTest: applyClock,'
   + ' calendarFirstDayForTest: calendarFirstDay,'
@@ -2077,6 +2092,49 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
  * open window, so it falls back to the active output — the one output there is. */
 {
   const strip = () => globalThis.__shell.outputs.get('DP-1').notificationsEl;
+
+  emit({ type: 'shell.command', command: 'notifications.dnd', args: [] });
+  emit({ type: 'notification.add', id: 5, app_name: 'test',
+    summary: 'quiet', body: '', urgency: 1, timeout: 0, actions: [] });
+  check('manual DND suppresses notification popups', strip().children.length === 0);
+  check('the manual DND command exposes its current state to the shell',
+    globalThis.__shell.notificationDndForTest === true);
+  const dndSession = globalThis.__shell.sessionForTest.serialise();
+  check('manual DND is written into the shell session',
+    dndSession.notification_dnd === true);
+  emit({ type: 'notification.history', entries: [{ id: 5, app_name: 'test',
+    summary: 'quiet', body: '', urgency: 1, timeout: 0, actions: [], at: 1 }] });
+  emit({ type: 'shell.command', command: 'notifications', args: [] });
+  const centreRows = globalThis.__shell.notificationCentreEl.children[0]
+    ?.children[0]?.children ?? [];
+  check('a manually suppressed notification remains in history',
+    centreRows.some((el) => el._classes.has('notification-centre-row')
+      && el.children[1]?.textContent === 'quiet'));
+  emit({ type: 'shell.command', command: 'notifications', args: [] });
+  emit({ type: 'shell.command', command: 'notifications.dnd', args: ['off'] });
+  check('turning manual DND off does not replay an old popup', strip().children.length === 0);
+  globalThis.__shell.sessionForTest.restore(JSON.stringify(dndSession));
+  check('manual DND survives a shell reload',
+    globalThis.__shell.notificationDndForTest === true);
+  emit({ type: 'shell.command', command: 'notifications.dnd', args: ['off'] });
+
+  emit({ type: 'notification.add', id: 4, app_name: 'test',
+    summary: 'already visible', body: '', urgency: 1, timeout: 0, actions: [] });
+  check('a popup is visible before fullscreen starts', strip().children.length === 1);
+  emit({ type: 'shell.command', command: 'window.fullscreen', args: [] });
+  check('entering fullscreen removes a popup already visible', strip().children.length === 0);
+  emit({ type: 'notification.add', id: 6, app_name: 'test',
+    summary: 'fullscreen quiet', body: '', urgency: 1, timeout: 0, actions: [] });
+  check('any fullscreen window suppresses notification popups', strip().children.length === 0);
+  emit({ type: 'shell.command', command: 'window.fullscreen', args: [] });
+  check('leaving fullscreen does not replay an old popup', strip().children.length === 0);
+
+  emit({ type: 'screencast.active', active: true });
+  emit({ type: 'notification.add', id: 9, app_name: 'test',
+    summary: 'cast quiet', body: '', urgency: 1, timeout: 0, actions: [] });
+  check('an active screencast suppresses notification popups', strip().children.length === 0);
+  emit({ type: 'screencast.active', active: false });
+  check('ending a screencast does not replay an old popup', strip().children.length === 0);
 
   emit({ type: 'notification.add', id: 7, app_name: 'test',
     summary: 'hello', body: 'world', urgency: 1, timeout: 0,
@@ -5068,6 +5126,52 @@ if (mode === 'scrolling') {
   emit({ type: 'config', layout: mode });
   check('a config without widgets leaves the default bar',
     wout.widgetsEls.length === 0);
+
+  /* Hardware feedback is a short-lived passthrough overlay, independent of
+     whether the bar itself is visible. Repeated changes replace its content
+     and deadline rather than stacking panels. */
+  {
+    const realTimeout = global.setTimeout;
+    const realClearTimeout = global.clearTimeout;
+    const timers = new Map();
+    let nextTimer = 0;
+    global.setTimeout = (fn, ms) => {
+      const id = ++nextTimer;
+      timers.set(id, { fn, ms });
+      return id;
+    };
+    global.clearTimeout = (id) => timers.delete(id);
+    wout.el.classList.add('bar-hidden');
+    const beforeFocus = focusedEl;
+
+    emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+      net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+      volume: 0.45, muted: false, brightness: -1, osd: 'volume' });
+    const osd = wout.statusOsdEl;
+    check('volume feedback appears with a hidden bar',
+      !osd.hidden && osd.getAttribute('aria-label') === 'Volume, 45 percent');
+    check('the OSD does not move keyboard focus', focusedEl === beforeFocus);
+    let overlay = sent.filter((m) => m.type === 'shell.overlay').at(-1);
+    check('the OSD overlay passes pointer input through',
+      overlay.rects.some((r) => r.passthrough === true));
+    check('the OSD has one predictable dismissal deadline',
+      [...timers.values()].some((timer) => timer.ms === 1200));
+
+    emit({ type: 'status.update', cpu: -1, memory: -1, load: 0,
+      net_rx: 0, net_tx: 0, disk_free: 0, disk_total: 0,
+      brightness: 0.7, volume: 0.45, muted: false, osd: 'brightness' });
+    check('rapid feedback coalesces into the same panel and timer',
+      osd.getAttribute('aria-label') === 'Brightness, 70 percent'
+      && timers.size === 1);
+    [...timers.values()][0].fn();
+    overlay = sent.filter((m) => m.type === 'shell.overlay').at(-1);
+    check('the OSD disappears and drops its overlay on deadline',
+      osd.hidden && !overlay.rects.some((r) => r.passthrough === true));
+
+    wout.el.classList.remove('bar-hidden');
+    global.setTimeout = realTimeout;
+    global.clearTimeout = realClearTimeout;
+  }
 
   /* AI usage arrives independently of the two-second machine status sample.
      Credentials never enter this page; only normalized windows and balances

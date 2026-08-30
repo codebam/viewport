@@ -282,6 +282,49 @@ html.behind body { background: transparent; }
 .desktop.bar-hidden .bar,
 .desktop.has-fullscreen .bar { display: none; }
 
+/* Hardware feedback stays separate from the bar so it survives hidden and
+ * fullscreen bars. The compositor redraws this measured rectangle above client
+ * surfaces; pointer-events and the passthrough overlay keep input underneath. */
+.status-osd {
+  position: absolute;
+  left: 50%;
+  bottom: max(2rem, calc(var(--rsv-bottom) + 2rem));
+  transform: translateX(-50%);
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  min-width: 16rem;
+  padding: .75rem 1rem;
+  border: 1px solid var(--bar-border);
+  border-radius: var(--radius-lg);
+  background: var(--bar-bg);
+  box-shadow: var(--shadow-2);
+  pointer-events: none;
+  user-select: none;
+}
+
+.status-osd[hidden] { display: none; }
+.status-osd-icon { color: var(--border-focus); font-size: 1.25rem; }
+.status-osd-value {
+  width: 3rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.status-osd-meter {
+  width: clamp(9rem, 18vw, 20rem);
+  height: .45rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--fill-active);
+}
+.status-osd-level {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--border-focus);
+}
+
 /* Revealing the bar is animateBarIn() in motion.js, and not a rule here.
  *
  * It was an opacity *transition* once, and it never ran: `display: none` above

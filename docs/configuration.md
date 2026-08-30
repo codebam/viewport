@@ -78,9 +78,11 @@ settings (shell URL, backend, socket path) are re-read but do nothing until
 restart.
 
 Actions are `exec COMMAND`, `close`, `exit`, `reload`, `focus DIRECTION`,
-`mode NAME`, `appearance toggle`, `lock`, `blank`, `background` and
-`shell COMMAND ARGS…`. `background` is the wallpaper terminal's only way in —
-see below.
+`mode NAME`, `appearance toggle`, `lock`, `blank`, `background`, `volume STEP`,
+`volume mute`, `volume mic-mute`, `brightness STEP` and `shell COMMAND ARGS…`.
+Typed volume and brightness actions read the resulting level back and show the
+OSD; an equivalent `exec` changes the device but cannot provide that feedback.
+`background` is the wallpaper terminal's only way in — see below.
 
 **Runtime** — the control socket. `config.gaps`, `config.border`,
 `config.wallpaper`, `config.dark_mode` and `output.configure` change the
@@ -307,6 +309,7 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+Shift+d` | toggle dark mode |
 | `Mod4+Shift+v` | the clipboard history |
 | `Mod4+Shift+m` | the notification centre |
+| `Mod4+Shift+i` | toggle notification popup do-not-disturb |
 | `Mod4+Shift+n` / `Mod4+Shift+t` | the Wi-Fi picker / the Bluetooth picker |
 | `Mod4+Shift+k` | the on-screen keyboard, which otherwise comes up on its own |
 | `Mod4+Shift+comma` | the settings panel |
@@ -327,9 +330,9 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+Alt+equal` / `Mod4+Alt+minus` | magnify the screen in / out |
 | `Mod4+Alt+0` | the magnifier off, straight back to 1:1 |
 | `XF86AudioPlay` / `XF86AudioPause` / `XF86AudioNext` / `XF86AudioPrev` / `XF86AudioStop` | playerctl play-pause / pause / next / previous / stop |
-| `XF86AudioRaiseVolume` / `XF86AudioLowerVolume` / `XF86AudioMute` | wpctl on the default sink, five percent a press |
-| `XF86AudioMicMute` | mute the microphone source |
-| `XF86MonBrightnessUp` / `XF86MonBrightnessDown` | brightnessctl, five percent a press |
+| `XF86AudioRaiseVolume` / `XF86AudioLowerVolume` / `XF86AudioMute` | default sink, five percent a press, with OSD feedback |
+| `XF86AudioMicMute` | mute the microphone source, with OSD feedback |
+| `XF86MonBrightnessUp` / `XF86MonBrightnessDown` | brightnessctl, five percent a press, with OSD feedback |
 | `Mod4+Tab` / `Mod4+Shift+Tab` | step through the windows on this workspace |
 | `Mod4+h j k l`, arrows | focus, crossing monitors at the edge |
 | `Mod4+Shift+h j k l`, arrows | move window, carrying it to the next monitor at the edge |
@@ -1359,9 +1362,12 @@ machine and not whatever happens to be playing, and the brightness keys go to
 
 The volume keys move the sink 5% a press and the brightness keys the backlight
 by the same, because a binding fires on press and does not repeat while the key
-is held — `data/config.example.json` shows the same five at 1% for anyone who
-wants a finer adjustment, and a `binds_override` entry replaces one of these
-without touching the rest.
+is held. The result appears for 1.2 seconds on the active output, even when the
+bar is hidden; repeated presses update one panel and restart its deadline.
+`data/config.example.json` shows typed actions at 1% for anyone who wants a
+finer adjustment, and a `binds_override` entry replaces one of these without
+touching the rest. Brightness still uses `brightnessctl`; it is read after the
+change rather than guessed from the requested step.
 
 Missing tools fail quietly per keypress rather than at startup, which is the
 right trade for a binding nobody may ever press. As with every default, naming
@@ -1497,6 +1503,14 @@ the stylesheet already open in the editor, like the popups themselves. A row's
 ✕ forgets that notification, the footer forgets all of them, and a row whose
 application offered buttons still has them: pressing one tells the application
 exactly what pressing it on the popup would have.
+
+`Mod4+Shift+i` toggles popup do-not-disturb. The `notifications.dnd on|off`
+shell command makes the state explicit for custom bindings or `shell.command`
+IPC. The manual choice is stored in the existing shell session.
+Fullscreen windows and active screencasts enable the same suppression
+automatically, without changing that manual choice. Existing popups are removed
+immediately; new notifications still enter history, and lifting suppression
+does not replay them. This affects popups only, not notification sounds.
 
 What stays and what goes:
 

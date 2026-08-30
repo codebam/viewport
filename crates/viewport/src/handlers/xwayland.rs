@@ -25,11 +25,13 @@
 // tooltips, drag icons — are the exception: they place themselves, are never
 // announced, and are drawn where they say.
 
+use smithay::backend::input::InputTime;
 use smithay::desktop::Window;
-use smithay::utils::{Logical, Rectangle};
+use smithay::input::pointer::Focus;
+use smithay::utils::{Logical, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::seat::WaylandFocus as _;
 use smithay::wayland::selection::SelectionTarget;
-use smithay::xwayland::xwm::{Reorder, XwmId};
+use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
 
 use viewport_ipc::Event;
@@ -118,6 +120,20 @@ impl XwmHandler for ViewportState {
             foreign.send_closed();
         }
         self.foreign_management_state.remove(view.id);
+
+        if self.pointer_drag.as_ref().is_some_and(|drag| drag.id == id) {
+            if self
+                .pointer_drag
+                .as_ref()
+                .is_some_and(|drag| drag.client_requested)
+            {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), InputTime::now());
+                }
+            } else {
+                self.finish_pointer_drag();
+            }
+        }
 
         self.space.unmap_elem(&element);
         self.views.remove(id);
@@ -213,16 +229,15 @@ impl XwmHandler for ViewportState {
         }
     }
 
-    fn resize_request(
-        &mut self,
-        _xwm: XwmId,
-        _window: X11Surface,
-        _button: u32,
-        _edges: smithay::xwayland::xwm::ResizeEdge,
-    ) {
-        // No grabs, as with xdg-shell: the frame is DOM and dragging an edge
-        // is the browser resizing a flex container, so a client asking the
-        // compositor to resize it has asked the wrong party.
+    fn resize_request(&mut self, _xwm: XwmId, window: X11Surface, button: u32, edges: ResizeEdge) {
+        let (edge, edges) = x11_resize_edges(edges);
+        self.start_x11_drag(
+            window,
+            button,
+            crate::state::DragKind::Resize,
+            edges,
+            Some(edge),
+        );
     }
 
     /// An X11 client asking to go fullscreen — a game, usually.
@@ -258,7 +273,15 @@ impl XwmHandler for ViewportState {
         self.answer_x11_minimized(&window, false);
     }
 
-    fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
+    fn move_request(&mut self, _xwm: XwmId, window: X11Surface, button: u32) {
+        self.start_x11_drag(
+            window,
+            button,
+            crate::state::DragKind::Move,
+            (false, false),
+            None,
+        );
+    }
 
     /// Whether an X client may read the Wayland clipboard.
     ///
@@ -371,6 +394,72 @@ impl XwmHandler for ViewportState {
 }
 
 impl ViewportState {
+    /// Start a pointer operation requested through `_NET_WM_MOVERESIZE`.
+    ///
+    /// X11 supplies no Wayland serial here. The active implicit grab is the
+    /// authority instead: its focus and Linux button must exactly match the X
+    /// window and raw X button named by the request. This prevents an X client
+    /// from moving another window or manufacturing a drag without a press.
+    fn start_x11_drag(
+        &mut self,
+        window: X11Surface,
+        button: u32,
+        kind: crate::state::DragKind,
+        edges: (bool, bool),
+        edge: Option<&'static str>,
+    ) {
+        if self.pointer_drag.is_some() {
+            return;
+        }
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let Some(start_data) = pointer.grab_start_data() else {
+            return;
+        };
+        if !x11_button_matches(button, start_data.button) {
+            return;
+        }
+        let Some(surface) = window.wl_surface() else {
+            return;
+        };
+        if !start_data
+            .focus
+            .as_ref()
+            .is_some_and(|(focus, _)| focus == &surface)
+        {
+            return;
+        }
+        let Some(id) = self
+            .views
+            .find_by_surface(&surface)
+            .filter(|view| {
+                view.mapped && !view.minimized && view.window.x11_surface() == Some(&window)
+            })
+            .map(|view| view.id)
+        else {
+            return;
+        };
+
+        self.pointer_drag = Some(crate::state::PointerDrag {
+            id,
+            button: start_data.button,
+            kind,
+            edges,
+            edge,
+            last: pointer.current_location(),
+            pending: (0.0, 0.0),
+            sent: None,
+            client_requested: true,
+        });
+        pointer.set_grab(
+            self,
+            super::xdg_shell::ClientDragGrab::x11(start_data),
+            SERIAL_COUNTER.next_serial(),
+            Focus::Clear,
+        );
+    }
+
     /// Grant an X11 fullscreen request and tell the shell.
     ///
     /// The property has to be set back on the window whatever the shell then
@@ -443,5 +532,79 @@ impl ViewportState {
         if mapped {
             self.notify_minimized(id, minimized);
         }
+    }
+}
+
+/// Compare `_NET_WM_MOVERESIZE`'s X button number with Smithay's Linux code.
+fn x11_button_matches(x11: u32, linux: u32) -> bool {
+    let converted = match x11 {
+        1 => Some(0x110), // BTN_LEFT
+        2 => Some(0x112), // BTN_MIDDLE
+        3 => Some(0x111), // BTN_RIGHT
+        // X buttons 4-7 are wheel directions, not held pointer buttons.
+        8.. => x11.checked_sub(8).and_then(|n| n.checked_add(0x113)),
+        _ => None,
+    };
+    converted == Some(linux)
+}
+
+fn x11_resize_edges(edge: ResizeEdge) -> (&'static str, (bool, bool)) {
+    match edge {
+        ResizeEdge::Top => ("top", (false, true)),
+        ResizeEdge::TopLeft => ("top-left", (true, true)),
+        ResizeEdge::TopRight => ("top-right", (false, true)),
+        ResizeEdge::Bottom => ("bottom", (false, false)),
+        ResizeEdge::BottomLeft => ("bottom-left", (true, false)),
+        ResizeEdge::BottomRight => ("bottom-right", (false, false)),
+        ResizeEdge::Left => ("left", (true, false)),
+        ResizeEdge::Right => ("right", (false, false)),
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+
+    #[test]
+    fn x11_resize_edges_preserve_all_requested_directions() {
+        assert_eq!(x11_resize_edges(ResizeEdge::Top), ("top", (false, true)));
+        assert_eq!(
+            x11_resize_edges(ResizeEdge::TopLeft),
+            ("top-left", (true, true))
+        );
+        assert_eq!(
+            x11_resize_edges(ResizeEdge::TopRight),
+            ("top-right", (false, true))
+        );
+        assert_eq!(
+            x11_resize_edges(ResizeEdge::Bottom),
+            ("bottom", (false, false))
+        );
+        assert_eq!(
+            x11_resize_edges(ResizeEdge::BottomLeft),
+            ("bottom-left", (true, false))
+        );
+        assert_eq!(
+            x11_resize_edges(ResizeEdge::BottomRight),
+            ("bottom-right", (false, false))
+        );
+        assert_eq!(x11_resize_edges(ResizeEdge::Left), ("left", (true, false)));
+        assert_eq!(
+            x11_resize_edges(ResizeEdge::Right),
+            ("right", (false, false))
+        );
+    }
+
+    #[test]
+    fn x11_buttons_match_only_held_linux_buttons() {
+        assert!(x11_button_matches(1, 0x110));
+        assert!(x11_button_matches(2, 0x112));
+        assert!(x11_button_matches(3, 0x111));
+        assert!(x11_button_matches(8, 0x113));
+        assert!(x11_button_matches(9, 0x114));
+        assert!(!x11_button_matches(0, 0x110));
+        assert!(!x11_button_matches(4, 0x113));
+        assert!(!x11_button_matches(1, 0x111));
+        assert!(!x11_button_matches(u32::MAX, 0x110));
     }
 }

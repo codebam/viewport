@@ -40,6 +40,8 @@ pub struct Sample {
     /// Whether the default audio source is muted; meaningful only when
     /// `mic_volume` is `Some`.
     pub mic_muted: Option<bool>,
+    /// Panel brightness, populated after a built-in brightness change.
+    pub brightness: Option<f64>,
 }
 
 /// Free and total bytes on one mount a bar widget asked about.
@@ -169,6 +171,8 @@ pub struct Slow {
     pub muted: Option<bool>,
     pub mic_volume: Option<f64>,
     pub mic_muted: Option<bool>,
+    pub brightness: Option<f64>,
+    pub osd: Option<viewport_ipc::event::StatusOsd>,
     /// Whether this answers a sampling job rather than a change asked for by
     /// [`Status::set_audio`]. Only a sampling job's answer frees the slot the
     /// next tick asks in; a volume scroll must not be mistaken for one, or a
@@ -187,6 +191,8 @@ struct Job {
     mounts: Vec<String>,
     want_volume: bool,
     want_mic: bool,
+    brightness: Option<i32>,
+    osd: Option<viewport_ipc::event::StatusOsd>,
 }
 
 /// Samples the machine, keeping what it needs to turn counters into rates.
@@ -271,14 +277,20 @@ impl Status {
     /// Take the worker's answer, and say whether the shell should hear about it
     /// before the next tick.
     ///
-    /// Only for the audio state: a volume scrolled through `status.volume` is
-    /// acted on at once and the bar has to show it at once, which is the whole
-    /// reason that path waits for `wpctl` at all. Disk figures drift by a block
-    /// on any busy machine and are not worth a message of their own — they go
-    /// out with the next tick.
-    pub fn absorb(&mut self, slow: Slow) -> bool {
+    /// Audio changes are reported before the next tick so their widgets and OSD
+    /// update immediately. Brightness feedback is returned separately without
+    /// replacing unrelated cached status fields. Disk figures drift by a block
+    /// on any busy machine and are not worth a message of their own.
+    pub fn absorb(&mut self, slow: Slow) -> (bool, Option<viewport_ipc::event::StatusOsd>) {
         if slow.sampled {
             self.asked = false;
+        }
+        // A brightness job samples only the backlight. Replacing the complete
+        // snapshot with that answer would briefly erase audio and mount widgets.
+        if slow.osd == Some(viewport_ipc::event::StatusOsd::Brightness) {
+            self.slow.brightness = slow.brightness;
+            self.slow.osd = slow.osd;
+            return (false, slow.osd);
         }
         let audio_changed = (slow.volume, slow.muted, slow.mic_volume, slow.mic_muted)
             != (
@@ -287,8 +299,9 @@ impl Status {
                 self.slow.mic_volume,
                 self.slow.mic_muted,
             );
+        let osd = slow.osd;
         self.slow = slow;
-        audio_changed
+        (audio_changed, osd)
     }
 
     /// Change an audio node's volume or mute state, and sample it afterwards.
@@ -322,6 +335,12 @@ impl Status {
             mounts: self.mounts.clone(),
             want_volume: self.want_volume || sink,
             want_mic: self.want_mic || !sink,
+            osd: Some(if sink {
+                viewport_ipc::event::StatusOsd::Volume
+            } else {
+                viewport_ipc::event::StatusOsd::Microphone
+            }),
+            ..Job::default()
         };
         // Queued whatever else is in flight, unlike a sampling job: a scroll
         // that is dropped is a volume that does not move.
@@ -336,7 +355,28 @@ impl Status {
 
         // No worker: do it here as it was always done, and let the caller
         // report the result.
-        self.slow = measure(&job);
+        self.absorb(measure(&job));
+        true
+    }
+
+    /// Change panel brightness and read back the result on the status worker.
+    pub fn set_brightness(&mut self, delta: i32) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        let job = Job {
+            brightness: Some(delta),
+            osd: Some(viewport_ipc::event::StatusOsd::Brightness),
+            ..Job::default()
+        };
+        let job = match &self.jobs {
+            Some(jobs) => match jobs.send(job) {
+                Ok(()) => return false,
+                Err(std::sync::mpsc::SendError(job)) => job,
+            },
+            None => job,
+        };
+        self.absorb(measure(&job));
         true
     }
 
@@ -385,6 +425,7 @@ impl Status {
             mounts: self.mounts.clone(),
             want_volume: self.want_volume,
             want_mic: self.want_mic,
+            ..Job::default()
         };
         match &self.jobs {
             Some(jobs) => {
@@ -394,7 +435,22 @@ impl Status {
                     self.asked = jobs.send(job).is_ok();
                 }
             }
-            None => self.slow = measure(&job),
+            None => {
+                // A just-completed on-demand read stays available when this
+                // unthreaded fallback samples unrelated fields. Production has
+                // a worker; tests and very early startup do not.
+                let previous = self.slow.clone();
+                self.slow = measure(&job);
+                if !job.want_volume {
+                    self.slow.volume = previous.volume;
+                    self.slow.muted = previous.muted;
+                }
+                if !job.want_mic {
+                    self.slow.mic_volume = previous.mic_volume;
+                    self.slow.mic_muted = previous.mic_muted;
+                }
+                self.slow.brightness = previous.brightness;
+            }
         }
 
         sample.disk_free = self.slow.disk_free;
@@ -408,6 +464,7 @@ impl Status {
         sample.muted = self.slow.muted;
         sample.mic_volume = self.slow.mic_volume;
         sample.mic_muted = self.slow.mic_muted;
+        sample.brightness = self.slow.brightness;
 
         self.at = Some(now);
         sample
@@ -423,12 +480,15 @@ fn measure(job: &Job) -> Slow {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         wpctl(&args);
     }
+    let brightness = job.brightness.and_then(change_brightness);
 
     let (disk_free, disk_total) = disk_usage("/");
     let mut slow = Slow {
         disk_free,
         disk_total,
-        sampled: job.set.is_empty(),
+        sampled: job.set.is_empty() && job.brightness.is_none(),
+        brightness,
+        osd: job.osd,
         ..Slow::default()
     };
 
@@ -454,6 +514,26 @@ fn measure(job: &Job) -> Slow {
     }
 
     slow
+}
+
+fn change_brightness(delta: i32) -> Option<f64> {
+    let step = relative_percent(delta);
+    let output = std::process::Command::new("brightnessctl")
+        .args(["-m", "set", &step])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        tracing::warn!("brightnessctl set {step}: {}", output.status);
+        return None;
+    }
+    parse_brightness(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_brightness(text: &str) -> Option<f64> {
+    text.split(|c: char| c == ',' || c.is_whitespace() || c == '(' || c == ')')
+        .filter_map(|part| part.strip_suffix('%'))
+        .find_map(|part| part.parse::<f64>().ok())
+        .map(|percent| (percent / 100.0).clamp(0.0, 1.0))
 }
 
 /// The one, five and fifteen minute load averages.
@@ -493,11 +573,7 @@ fn audio_args(node: &str, delta: Option<i32>, mute: bool) -> Vec<Vec<String>> {
     if let Some(delta) = delta.filter(|delta| *delta != 0) {
         // `wpctl` spells a relative change with the sign after the unit, and
         // takes no negative number: 5%+ up, 5%- down.
-        let step = if delta > 0 {
-            format!("{delta}%+")
-        } else {
-            format!("{}%-", -delta)
-        };
+        let step = relative_percent(delta);
         set.push(vec!["set-volume".to_owned(), node.to_owned(), step]);
     }
     if mute {
@@ -508,6 +584,14 @@ fn audio_args(node: &str, delta: Option<i32>, mute: bool) -> Vec<Vec<String>> {
         ]);
     }
     set
+}
+
+fn relative_percent(delta: i32) -> String {
+    if delta > 0 {
+        format!("{delta}%+")
+    } else {
+        format!("{}%-", delta.unsigned_abs())
+    }
 }
 
 /// The names `wpctl` knows the default sink and source by. A page names a
@@ -812,7 +896,10 @@ Inter-|   Receive                                                |  Transmit
             sampled: false,
             ..Slow::default()
         };
-        assert!(status.absorb(changed), "the volume moved, so the bar hears");
+        assert!(
+            status.absorb(changed).0,
+            "the volume moved, so the bar hears"
+        );
         assert!(
             status.asked,
             "the sample that was asked for is still coming"
@@ -824,7 +911,7 @@ Inter-|   Receive                                                |  Transmit
             ..Slow::default()
         };
         assert!(
-            !status.absorb(sampled),
+            !status.absorb(sampled).0,
             "nothing moved since the last answer"
         );
         assert!(!status.asked, "and now the next tick may ask again");
@@ -877,20 +964,24 @@ Inter-|   Receive                                                |  Transmit
         // next tick. A volume that changed is, because a scroll on the bar is
         // answered by re-sampling and has to show at once.
         let mut status = Status::default();
-        assert!(!status.absorb(Slow::default()), "nothing changed");
+        assert!(!status.absorb(Slow::default()).0, "nothing changed");
         assert!(
-            !status.absorb(Slow {
-                disk_free: 1.0,
-                ..Slow::default()
-            }),
+            !status
+                .absorb(Slow {
+                    disk_free: 1.0,
+                    ..Slow::default()
+                })
+                .0,
             "a disk figure waits for the tick"
         );
         assert!(
-            status.absorb(Slow {
-                disk_free: 1.0,
-                volume: Some(0.5),
-                ..Slow::default()
-            }),
+            status
+                .absorb(Slow {
+                    disk_free: 1.0,
+                    volume: Some(0.5),
+                    ..Slow::default()
+                })
+                .0,
             "a volume does not"
         );
     }
@@ -931,5 +1022,55 @@ Inter-|   Receive                                                |  Transmit
         let (volume, muted) = parse_sink("No default audio sink found.\n");
         assert_eq!(volume, None);
         assert_eq!(muted, None);
+    }
+
+    #[test]
+    fn brightnessctl_readback_becomes_a_bounded_fraction() {
+        assert_eq!(
+            parse_brightness("intel_backlight,backlight,48000,47%,102400\n"),
+            Some(0.47)
+        );
+        assert_eq!(
+            parse_brightness("Updated device 'panel':\nCurrent brightness: 1024 (100%)\n"),
+            Some(1.0)
+        );
+        assert_eq!(parse_brightness("no percentage here"), None);
+    }
+
+    #[test]
+    fn requested_feedback_survives_worker_delivery() {
+        let mut status = Status {
+            slow: Slow {
+                volume: Some(0.4),
+                muted: Some(false),
+                mic_volume: Some(0.3),
+                mic_muted: Some(true),
+                mounts: vec![MountUsage {
+                    path: "/home".to_owned(),
+                    free: 10.0,
+                    total: 20.0,
+                }],
+                ..Slow::default()
+            },
+            ..Status::default()
+        };
+        let (changed, osd) = status.absorb(Slow {
+            brightness: Some(0.62),
+            osd: Some(viewport_ipc::event::StatusOsd::Brightness),
+            ..Slow::default()
+        });
+        assert!(!changed, "brightness is not an audio-widget update");
+        assert_eq!(osd, Some(viewport_ipc::event::StatusOsd::Brightness));
+        assert_eq!(status.slow.brightness, Some(0.62));
+        assert_eq!(status.slow.volume, Some(0.4));
+        assert_eq!(status.slow.mic_volume, Some(0.3));
+        assert_eq!(status.slow.mounts[0].path, "/home");
+    }
+
+    #[test]
+    fn relative_steps_handle_the_full_signed_range() {
+        assert_eq!(relative_percent(5), "5%+");
+        assert_eq!(relative_percent(-5), "5%-");
+        assert_eq!(relative_percent(i32::MIN), "2147483648%-");
     }
 }

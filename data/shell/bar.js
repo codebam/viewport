@@ -43,6 +43,55 @@ function renderBar(name) {
   renderBarModules(name);
 }
 
+/* Feedback for hardware keys. It belongs to the active output rather than the
+ * bar, so hidden and fullscreen bars still leave controls visible. One timer is
+ * deliberately shared: repeated key presses update the same panel and re-arm
+ * its deadline instead of stacking notices. */
+function showStatusOsd(status) {
+  const kind = status.osd;
+  if (!['volume', 'microphone', 'brightness'].includes(kind)) return;
+  const value = kind === 'brightness' ? status.brightness
+    : kind === 'microphone' ? status.mic_volume : status.volume;
+  if (!Number.isFinite(value) || value < 0) return;
+
+  const name = activeOutputName();
+  const output = outputs.get(name);
+  const el = output?.statusOsdEl;
+  if (!el) return;
+
+  if (statusOsdOutput && statusOsdOutput !== name) {
+    const old = outputs.get(statusOsdOutput)?.statusOsdEl;
+    if (old) old.hidden = true;
+    setOverlay(`osd:${statusOsdOutput}`, null);
+  }
+  statusOsdOutput = name;
+
+  const percent = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  const muted = kind === 'volume' ? status.muted === true
+    : kind === 'microphone' ? status.mic_muted === true : false;
+  const label = kind === 'brightness' ? 'Brightness'
+    : kind === 'microphone' ? 'Microphone' : 'Volume';
+  const icon = kind === 'brightness' ? '󰃟'
+    : kind === 'microphone' ? (muted ? '󰍭' : '󰍬')
+      : (muted ? '󰝟' : '󰕾');
+  /* Expose the live region before changing its accessible text, so the first
+     update is announced as reliably as subsequent updates. */
+  el.hidden = false;
+  el.querySelector('.status-osd-icon').textContent = icon;
+  el.querySelector('.status-osd-level').style.width = `${muted ? 0 : percent}%`;
+  el.querySelector('.status-osd-value').textContent = `${percent}%`;
+  el.setAttribute('aria-label', `${label}${muted ? ' muted' : ''}, ${percent} percent`);
+  setOverlay(`osd:${name}`, el, { passthrough: true });
+
+  if (statusOsdTimer !== null) clearTimeout(statusOsdTimer);
+  statusOsdTimer = setTimeout(() => {
+    el.hidden = true;
+    setOverlay(`osd:${name}`, null);
+    statusOsdTimer = null;
+    statusOsdOutput = null;
+  }, 1200);
+}
+
 /* A row of buttons, kept and updated rather than rebuilt.
  *
  * This used to be replaceChildren() and a fresh element per entry, which cost

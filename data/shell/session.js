@@ -51,6 +51,7 @@ function serialiseSession() {
     version: 1, layout: layoutMode, workspaces: {}, outputs: {}, floating: [],
     workspace_homes: Object.fromEntries(workspaceHomes),
     workspace_state: Object.fromEntries(workspaceRuntime),
+    notification_dnd: notificationDndManual,
     /* Where everything sits on the canvas's planes, and where each plane is
        being looked at from. Written whatever the layout is, so that switching
        away from the canvas and restarting does not lose the arrangement — the
@@ -144,6 +145,8 @@ function restoreSession(text) {
     return;
   }
   if (!saved || saved.version !== 1) return;
+
+  notificationDndManual = saved.notification_dnd === true;
 
   /* Only into an empty session. Restoring over windows that are already open
      would move them somewhere they were never asked to be. */
@@ -291,8 +294,35 @@ function notificationOutputName(message) {
   return activeOutputName();
 }
 
+function notificationPopupsSuppressed() {
+  return notificationDndManual || screencastActive || fullscreens.size > 0;
+}
+
+/* Existing popups leave without becoming dismissed or expired. They remain in
+ * compositor history, and lifting suppression never has anything to replay. */
+function suppressNotificationPopups() {
+  for (const [id, entry] of notifications) {
+    clearTimeout(entry.timer);
+    clearTimeout(entry.fallback);
+    entry.el.remove();
+    notifications.delete(id);
+  }
+  reportNotificationRect();
+}
+
+function setNotificationDnd(value) {
+  notificationDndManual = value;
+  if (notificationPopupsSuppressed()) suppressNotificationPopups();
+}
+
+function setScreencastActive(value) {
+  screencastActive = value;
+  if (notificationPopupsSuppressed()) suppressNotificationPopups();
+}
+
 function showNotification(message) {
   dropNotification(message.id, false);
+  if (notificationPopupsSuppressed()) return;
 
   /* A notification is drawn over the output its source window is on, not over
      some global one — a message from an app sitting on the left monitor

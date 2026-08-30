@@ -468,11 +468,7 @@ impl ViewportState {
         }
         pointer.set_grab(
             self,
-            XdgDragGrab {
-                start_data,
-                surface,
-                resizing: kind == crate::state::DragKind::Resize,
-            },
+            ClientDragGrab::xdg(start_data, surface, kind == crate::state::DragKind::Resize),
             serial,
             Focus::Clear,
         );
@@ -733,13 +729,33 @@ fn xdg_resize_edges(edges: xdg_toplevel::ResizeEdge) -> Option<(&'static str, (b
     }
 }
 
-struct XdgDragGrab {
+pub(crate) struct ClientDragGrab {
     start_data: PointerGrabStartData<ViewportState>,
-    surface: ToplevelSurface,
-    resizing: bool,
+    /// Only xdg-shell has a protocol resizing state to clear when the grab ends.
+    resize_surface: Option<ToplevelSurface>,
 }
 
-impl PointerGrab<ViewportState> for XdgDragGrab {
+impl ClientDragGrab {
+    fn xdg(
+        start_data: PointerGrabStartData<ViewportState>,
+        surface: ToplevelSurface,
+        resizing: bool,
+    ) -> Self {
+        Self {
+            start_data,
+            resize_surface: resizing.then_some(surface),
+        }
+    }
+
+    pub(crate) fn x11(start_data: PointerGrabStartData<ViewportState>) -> Self {
+        Self {
+            start_data,
+            resize_surface: None,
+        }
+    }
+}
+
+impl PointerGrab<ViewportState> for ClientDragGrab {
     fn motion(
         &mut self,
         data: &mut ViewportState,
@@ -856,11 +872,11 @@ impl PointerGrab<ViewportState> for XdgDragGrab {
 
     fn unset(&mut self, data: &mut ViewportState) {
         data.finish_pointer_drag();
-        if self.resizing {
-            self.surface.with_pending_state(|state| {
+        if let Some(surface) = self.resize_surface.as_ref() {
+            surface.with_pending_state(|state| {
                 state.states.unset(xdg_toplevel::State::Resizing);
             });
-            self.surface.send_pending_configure();
+            surface.send_pending_configure();
         }
     }
 }

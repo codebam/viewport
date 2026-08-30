@@ -154,6 +154,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::ViewQuery => {
             state.notify_config();
+            state.notify(&viewport_ipc::Event::ScreencastActive {
+                active: !state.casts.is_empty(),
+            });
             state.notify_views();
             state.ai_usage.replay();
         }
@@ -401,7 +404,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // The reply is true only where there is no worker to ask, and then
             // the change has already been made in line.
             if state.status.set_audio(node, delta, mute) {
-                state.status_tick();
+                state.status_tick_with_osd(Some(if node == crate::status::SINK {
+                    viewport_ipc::event::StatusOsd::Volume
+                } else {
+                    viewport_ipc::event::StatusOsd::Microphone
+                }));
             }
         }
 

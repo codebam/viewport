@@ -660,6 +660,7 @@ function setFullscreen(id, on) {
   }
   if (current !== null && current !== previous) {
     send({ type: 'view.fullscreen', id: current, fullscreen: true });
+    suppressNotificationPopups();
   }
   relayoutAll();
 }

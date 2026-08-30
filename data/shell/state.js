@@ -146,6 +146,8 @@ let pendingSplit = 'horizontal';
 const fullscreens = new Map(); // workspace -> view id
 const maximized = new Map(); // workspace -> view id
 let lastStatus = {};
+let statusOsdTimer = null;
+let statusOsdOutput = null;
 /* Authenticated AI usage is fetched by the compositor. Keys are provider names;
  * bearer credentials never enter this page. */
 let aiUsage = new Map();
@@ -214,6 +216,10 @@ let clipboardOpen = false;
  * copy of what it last said, and a reload asks again. */
 let notificationHistory = [];
 let notificationCentreOpen = false;
+/* Manual DND belongs to this shell session. Screencast activity is sent by the
+ * compositor, which owns the streams; picker visibility is not activity. */
+let notificationDndManual = false;
+let screencastActive = false;
 /* How the bar's clock is written, from the config file's `clock` block, and
  * the calendar hanging under it. See calendar.js, which owns both — the grid
  * and the module above it have to agree about the locale or the desk is

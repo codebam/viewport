@@ -12,6 +12,16 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- XWayland clients can now start validated interactive move and all eight-edge
+  resize grabs from their own titlebars. They share the native Wayland
+  shell-owned delta path and are cancelled if the target disappears.
+- Notification popups can be silenced manually with `Mod4+Shift+i` or
+  `notifications.dnd on|off`, and are silenced automatically while any window
+  is fullscreen or a screencast is active. Existing popups disappear at once,
+  while every notification remains available in history and is never replayed.
+- Volume, microphone and brightness bindings now show a transient,
+  pointer-transparent OSD on the active output. Built-in typed actions perform
+  each change and read back its result without requiring a visible status bar.
 - Native xdg-shell titlebar move and resize requests now use validated pointer
   grabs and the existing shell-owned delta path, including all eight resize
   edges, without moving layout policy into the compositor.

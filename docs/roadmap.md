@@ -45,25 +45,6 @@ inhibit interfaces:
 `data/shell/osk.js`, `docs/ipc.md`'s `osk.key`/`osk.wanted` and
 `docs/configuration.md`'s default bindings.
 
-## The desktop this does not draw yet
-
-**Nothing can say "not now".** Do-not-disturb is missing, and the two moments
-that most want it are moments this compositor can already see without being
-told: a window it made fullscreen, and a screencast session it is itself
-serving (`crates/viewport/src/screencast/`). A notification popped over a
-shared screen is the one failure mode with an audience. What was in the way of
-this is now built: silencing a popup is only acceptable if the notification is
-still somewhere afterwards, and `crate::notification::History` is where it
-would be — so this is a question of when to draw rather than of what to keep.
-
-**Changing the volume shows nothing on screen.** `status.volume` re-samples
-the bar, so the number moves wherever the bar happens to be, on whichever
-monitor that is, and a bar toggled off says nothing at all. Brightness is
-further away than that: the keys `exec brightnessctl`, so the shell never
-learns the value and could not draw it if it wanted to. A backlight is read
-from sysfs or over logind, which is this side of the line, and both would feed
-the same transient indicator.
-
 ## Remote desktop
 
 The EI server itself is done and works — `crates/viewport/src/libei.rs`, and

@@ -67,6 +67,14 @@ pub enum Action {
     /// message to a page that is itself one of the things being magnified.
     /// See [`crate::magnify`].
     Magnify(crate::magnify::Step),
+    /// Change the default sink/source and read it back for status feedback.
+    Volume {
+        source: bool,
+        delta: Option<i32>,
+        mute: bool,
+    },
+    /// Change panel brightness and read it back for status feedback.
+    Brightness(i32),
     /// Hand the rest to the shell as a `shell.command`.
     ///
     /// The default for anything this does not implement itself, because the
@@ -168,6 +176,17 @@ impl Binding {
             Action::Magnify(crate::magnify::Step::In) => "magnify in".to_owned(),
             Action::Magnify(crate::magnify::Step::Out) => "magnify out".to_owned(),
             Action::Magnify(crate::magnify::Step::Off) => "magnify off".to_owned(),
+            Action::Volume {
+                source,
+                delta,
+                mute,
+            } => match (source, delta, mute) {
+                (false, Some(delta), false) => format!("volume {delta}"),
+                (false, None, true) => "volume mute".to_owned(),
+                (true, None, true) => "volume mic-mute".to_owned(),
+                _ => "volume".to_owned(),
+            },
+            Action::Brightness(delta) => format!("brightness {delta}"),
             Action::Shell(command) => format!("shell {command}"),
         }
     }
@@ -275,6 +294,30 @@ pub(crate) fn parse_action(action: &str) -> Action {
         Some(("exec", rest)) => Action::Exec(rest.trim().to_owned()),
         Some(("shell", rest)) => Action::Shell(rest.trim().to_owned()),
         Some(("focus", rest)) if !rest.trim().is_empty() => Action::Focus(rest.trim().to_owned()),
+        Some(("volume", rest)) => match rest.trim() {
+            "mute" => Action::Volume {
+                source: false,
+                delta: None,
+                mute: true,
+            },
+            "mic-mute" => Action::Volume {
+                source: true,
+                delta: None,
+                mute: true,
+            },
+            step => step.parse().map_or_else(
+                |_| Action::Shell(action.to_owned()),
+                |delta| Action::Volume {
+                    source: false,
+                    delta: Some(delta),
+                    mute: false,
+                },
+            ),
+        },
+        Some(("brightness", rest)) => rest
+            .trim()
+            .parse()
+            .map_or_else(|_| Action::Shell(action.to_owned()), Action::Brightness),
         Some(("mode", rest)) if !rest.trim().is_empty() => {
             let name = rest.trim();
             // "mode default" leaves whatever mode is active, which is what
@@ -414,6 +457,9 @@ pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding
         // modifier has claimed, and a shell verb for the reason the clipboard
         // picker is one: the compositor keeps the list and the page draws it.
         "Mod4+Shift+m=shell notifications".to_owned(),
+        // `i` for interruptions. DND is shell presentation policy: the
+        // compositor still records and delivers every notification.
+        "Mod4+Shift+i=shell notifications.dnd".to_owned(),
         // The two radios, on the same terms as the clipboard picker above: the
         // compositor does the talking to NetworkManager and BlueZ, because the
         // page has no bus, and the shell draws the list — so these are shell
@@ -516,14 +562,14 @@ pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding
         // repeat while the key is held: the one percent the example file
         // suggests is a fine adjustment, and a hundred presses from silence to
         // full is not a volume key.
-        "XF86AudioRaiseVolume=exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+".to_owned(),
-        "XF86AudioLowerVolume=exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-".to_owned(),
-        "XF86AudioMute=exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".to_owned(),
+        "XF86AudioRaiseVolume=volume 5".to_owned(),
+        "XF86AudioLowerVolume=volume -5".to_owned(),
+        "XF86AudioMute=volume mute".to_owned(),
         // The microphone's own key, which is the source and not the sink. On
         // the keyboards that have it, it is the key a video call is muted with.
-        "XF86AudioMicMute=exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle".to_owned(),
-        "XF86MonBrightnessUp=exec brightnessctl set 5%+".to_owned(),
-        "XF86MonBrightnessDown=exec brightnessctl set 5%-".to_owned(),
+        "XF86AudioMicMute=volume mic-mute".to_owned(),
+        "XF86MonBrightnessUp=brightness 5".to_owned(),
+        "XF86MonBrightnessDown=brightness -5".to_owned(),
     ];
 
     // Step through the windows, and *which* windows depends on who can see
@@ -948,22 +994,55 @@ mod tests {
         // described as bound by default since it was written and which lived
         // in the example config alone — so a desktop that had not copied that
         // file had a volume key that did nothing.
-        for keysym in [
-            keysyms::KEY_XF86AudioRaiseVolume,
-            keysyms::KEY_XF86AudioLowerVolume,
-            keysyms::KEY_XF86AudioMute,
-            keysyms::KEY_XF86AudioMicMute,
-            keysyms::KEY_XF86MonBrightnessUp,
-            keysyms::KEY_XF86MonBrightnessDown,
-        ] {
-            assert!(
-                matches!(action(keysym), Some(Action::Exec(_))),
-                "{} runs nothing",
-                smithay::input::keyboard::xkb::keysym_get_name(
-                    smithay::input::keyboard::Keysym::new(keysym)
-                )
-            );
-        }
+        assert_eq!(
+            action(keysyms::KEY_XF86AudioRaiseVolume),
+            Some(Action::Volume {
+                source: false,
+                delta: Some(5),
+                mute: false,
+            })
+        );
+        assert_eq!(
+            action(keysyms::KEY_XF86AudioLowerVolume),
+            Some(Action::Volume {
+                source: false,
+                delta: Some(-5),
+                mute: false,
+            })
+        );
+        assert_eq!(
+            action(keysyms::KEY_XF86AudioMute),
+            Some(Action::Volume {
+                source: false,
+                delta: None,
+                mute: true,
+            })
+        );
+        assert_eq!(
+            action(keysyms::KEY_XF86AudioMicMute),
+            Some(Action::Volume {
+                source: true,
+                delta: None,
+                mute: true,
+            })
+        );
+        assert_eq!(
+            action(keysyms::KEY_XF86MonBrightnessUp),
+            Some(Action::Brightness(5))
+        );
+        assert_eq!(
+            action(keysyms::KEY_XF86MonBrightnessDown),
+            Some(Action::Brightness(-5))
+        );
+
+        // A configured exec remains an exec. Overrides precede and shadow
+        // these defaults in config application; parsing must not rewrite it.
+        assert_eq!(
+            parse("XF86MonBrightnessUp=exec custom-brightness up")
+                .unwrap()
+                .action,
+            Action::Exec("custom-brightness up".to_owned())
+        );
     }
 
     #[test]
@@ -1245,12 +1324,12 @@ mod tests {
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
-        // 44 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // 45 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         assert_eq!(
             bindings.len(),
-            44 + 16 + 18 + 11 + 1,
+            45 + 16 + 18 + 11 + 1,
             "a default failed to parse"
         );
 
@@ -1330,6 +1409,21 @@ mod tests {
                 "{chord} should open the {verb} picker"
             );
         }
+    }
+
+    #[test]
+    fn notification_dnd_is_bound_to_a_shell_verb() {
+        let bindings = defaults("foot", Some("wmenu-run"), "tiling");
+        let wanted = parse_chord("Mod4+Shift+i").expect("the test's own chord parses");
+        let found = bindings.iter().find(|binding| {
+            binding.mode.is_empty()
+                && binding.keysym == wanted.keysym
+                && binding.modifiers == wanted.modifiers
+        });
+        assert_eq!(
+            found.map(|binding| binding.action.clone()),
+            Some(Action::Shell("notifications.dnd".to_owned()))
+        );
     }
 
     /// The on-screen keyboard is bound to a shell verb, on the same terms as

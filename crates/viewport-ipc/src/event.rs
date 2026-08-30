@@ -375,6 +375,15 @@ pub enum Event {
         /// mic widget is present.
         #[serde(default)]
         mic_muted: bool,
+        /// Resulting panel brightness in `0.0..=1.0`, or `-1.0` when it could
+        /// not be read. Sampled after a built-in brightness binding changes it.
+        #[serde(default)]
+        brightness: f64,
+        /// Which user-requested change this sample answers. Ordinary periodic
+        /// samples omit it, so outside changes update widgets without raising
+        /// an on-screen display.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        osd: Option<StatusOsd>,
     },
 
     /// Secret-free result of polling authenticated AI usage APIs. One entry
@@ -437,6 +446,13 @@ pub enum Event {
     #[serde(rename = "screencast.pick.done")]
     ScreencastPickDone { id: u32 },
 
+    /// Whether at least one compositor-owned PipeWire stream is live.
+    ///
+    /// This is separate from the picker: a restored share may never show one,
+    /// and the picker is already gone by the time sharing is active.
+    #[serde(rename = "screencast.active")]
+    ScreencastActive { active: bool },
+
     /// An application is asking to be told about a key chord it does not have
     /// focus for — push-to-talk, a recorder's start and stop.
     ///
@@ -478,6 +494,15 @@ pub enum Event {
     /// must see on the channel it already listens to.
     #[serde(rename = "error")]
     Error { context: String, message: String },
+}
+
+/// Transient feedback a shell should draw for a user-requested status change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatusOsd {
+    Volume,
+    Microphone,
+    Brightness,
 }
 
 /// One shortcut an application is asking to be told about.
@@ -1932,6 +1957,7 @@ mod tests {
                 devices: Vec::new(),
             }),
             json(&Event::ScreencastPickDone { id: 0 }),
+            json(&Event::ScreencastActive { active: true }),
             json(&Event::ShortcutsPick {
                 id: 0,
                 app: String::new(),
@@ -1979,6 +2005,7 @@ mod tests {
                 "output.layout",
                 "screencast.pick",
                 "screencast.pick.done",
+                "screencast.active",
                 "shortcuts.pick",
                 "shortcuts.pick.done",
                 "shell.command",

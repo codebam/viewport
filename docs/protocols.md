@@ -361,12 +361,14 @@ fullscreen and maximize, the capabilities xdg-shell can represent. It is sent on
 commit rather than at creation, because the surface is not initialised before
 then and wlroots asserts rather than ignoring a configure scheduled too early.
 
-A client dragging itself by its own titlebar (`move`, `resize`) is honoured
-after its seat, press serial, and pointer focus are validated. The compositor
-captures the pointer until that button is released and forwards deltas plus the
-requested resize edge to the shell. The shell then interprets the gesture for
-the active layout, just as it does for Mod4+drag; the compositor never invents
-a rectangle or silently pulls a tiled window out of its layout.
+A client dragging itself by its own titlebar (`move`, `resize`) is honoured for
+both native Wayland and XWayland after its seat, initiating button, implicit
+grab, and pointer focus are validated. Native requests additionally validate
+their serial. The compositor captures the pointer until that button is released
+and forwards deltas plus any of the eight requested resize edges to the shell.
+The shell then interprets the gesture for the active layout, just as it does for
+Mod4+drag; the compositor never invents a rectangle or silently pulls a tiled
+window out of its layout. A target that unmaps during an X11 drag ends the grab.
 
 ## Keyboard shortcuts
 

@@ -2547,6 +2547,29 @@ impl ViewportState {
                     self.needs_render = true;
                 }
             }
+            Bound::Volume {
+                source,
+                delta,
+                mute,
+            } => {
+                let node = if source {
+                    crate::status::SOURCE
+                } else {
+                    crate::status::SINK
+                };
+                if self.status.set_audio(node, delta, mute) {
+                    self.status_tick_with_osd(Some(if source {
+                        viewport_ipc::event::StatusOsd::Microphone
+                    } else {
+                        viewport_ipc::event::StatusOsd::Volume
+                    }));
+                }
+            }
+            Bound::Brightness(delta) => {
+                if self.status.set_brightness(delta) {
+                    self.status_tick_with_osd(Some(viewport_ipc::event::StatusOsd::Brightness));
+                }
+            }
             Bound::Shell(command) => {
                 // Split on whitespace so the shell gets a verb and arguments
                 // rather than a string it has to parse again.

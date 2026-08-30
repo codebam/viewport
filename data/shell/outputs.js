@@ -76,6 +76,7 @@ function syncOutputs(list) {
            each one over the output of the window it came from, not over some
            global one. */
         notificationsEl: el.querySelector('.notifications'),
+        statusOsdEl: el.querySelector('.status-osd'),
         barEl: el.querySelector('.bar'),
         emptyEl: el.querySelector('.empty'),
         workspacesEl: el.querySelector('.workspaces'),
@@ -151,6 +152,9 @@ function syncOutputs(list) {
       width: `${info.width}px`,
       height: `${info.height}px`,
     });
+    if (statusOsdOutput === info.name && !output.statusOsdEl.hidden) {
+      setOverlay(`osd:${info.name}`, output.statusOsdEl, { passthrough: true });
+    }
 
     output.hdr = info.hdr === true;
     output.hdrCapable = info.hdr_capable === true;
@@ -179,6 +183,11 @@ function syncOutputs(list) {
     if (seen.has(name)) continue;
     output.el.remove();
     outputs.delete(name);
+    if (statusOsdOutput === name) {
+      clearTimeout(statusOsdTimer);
+      statusOsdTimer = null;
+      statusOsdOutput = null;
+    }
     /* Before the rectangles are dropped, because moving a notification to a
        screen that is still there is what reports the new one. */
     rehomeNotifications(name);

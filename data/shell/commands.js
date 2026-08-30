@@ -159,6 +159,10 @@ function handleShellCommand(command, args) {
     case 'notifications':
       toggleNotificationCentre();
       break;
+    case 'notifications.dnd':
+      setNotificationDnd(arg === 'on' ? true
+        : arg === 'off' ? false : !notificationDndManual);
+      break;
     /* The two radios. Bound to Mod4+Shift+n and Mod4+Shift+t, and reachable
        by clicking the bar's network module — the same two ways in the
        clipboard and the power picker have between them. */
@@ -213,6 +217,7 @@ function handleShellCommand(command, args) {
         if (workspace !== null) {
           if (on) {
             fullscreens.set(workspace, id);
+            suppressNotificationPopups();
           } else if (fullscreens.get(workspace) === id) {
             fullscreens.delete(workspace);
           }
@@ -736,6 +741,7 @@ window.addEventListener('viewport', (event) => {
          list or the focus, so the chrome is left exactly as it is. */
       lastStatus = message;
       renderBarsModules();
+      if (message.osd) showStatusOsd(message);
       break;
 
     case 'ai.usage':
@@ -760,6 +766,10 @@ window.addEventListener('viewport', (event) => {
 
     case 'screencast.pick.done':
       hideScreencastPicker(message.id);
+      break;
+
+    case 'screencast.active':
+      setScreencastActive(message.active === true);
       break;
 
     case 'shortcuts.pick':

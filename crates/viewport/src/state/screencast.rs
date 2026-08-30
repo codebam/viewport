@@ -40,7 +40,11 @@ impl ViewportState {
         let stream = pipewire.create_stream(&name, size, targets)?;
         let arrival = stream.arrival();
         let stream_id = stream.id;
+        let was_active = !self.casts.is_empty();
         self.casts.push(crate::screencast::Cast { source, stream });
+        if !was_active {
+            self.notify(&viewport_ipc::Event::ScreencastActive { active: true });
+        }
         Ok(BegunCast {
             arrival,
             stream_id,
@@ -127,6 +131,9 @@ impl ViewportState {
         if self.casts.is_empty() {
             // Nothing is being shared, so the connection is not worth holding.
             self.pipewire = None;
+        }
+        if before > 0 && self.casts.is_empty() {
+            self.notify(&viewport_ipc::Event::ScreencastActive { active: false });
         }
     }
 
@@ -1756,6 +1763,9 @@ impl ViewportState {
             // is not worth holding. The pending shares count alongside the
             // casts — each of them still holds a live stream of its own.
             self.pipewire = None;
+        }
+        if before > 0 && self.casts.is_empty() {
+            self.notify(&viewport_ipc::Event::ScreencastActive { active: false });
         }
     }
 

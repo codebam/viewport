@@ -432,16 +432,17 @@
     "Mod4+Shift+e": "exit",
     "Mod4+Shift+c": "reload",
 
-    "XF86AudioRaiseVolume": "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 1%+",
-    "XF86AudioLowerVolume": "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 1%-",
-    "XF86AudioMute": "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
-    "XF86MonBrightnessUp": "exec brightnessctl set +1%",
-    "XF86MonBrightnessDown": "exec brightnessctl set 1%-",
+    "Mod4+Shift+i": "shell notifications.dnd",
+    "XF86AudioRaiseVolume": "volume 1",
+    "XF86AudioLowerVolume": "volume -1",
+    "XF86AudioMute": "volume mute",
+    "XF86MonBrightnessUp": "brightness 1",
+    "XF86MonBrightnessDown": "brightness -1",
 
     "Mod4+Mouse4": "shell workspace.next",
     "Mod4+Mouse5": "shell workspace.prev",
 
-    "Mod4+WheelUp": "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+",
-    "Mod4+WheelDown": "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+    "Mod4+WheelUp": "volume 5",
+    "Mod4+WheelDown": "volume -5"
   }
 }
