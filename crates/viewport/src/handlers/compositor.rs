@@ -76,32 +76,30 @@ impl CompositorHandler for ViewportState {
                 return;
             };
 
-            // An explicit acquire point is not waited for here.
-            //
-            // Smithay carries it to the two places that actually touch the
-            // buffer: `import_surface` waits on it through the renderer, which
-            // makes it a wait on the GPU rather than on this thread, and the
-            // DRM compositor hands it to KMS as an IN_FENCE_FD so the display
-            // waits instead. Neither costs a descriptor in the event loop and
-            // neither wakes the compositor.
-            //
-            // Waiting for it here did both. A blocker is an eventfd, two
-            // epoll_ctl to put it in the loop and take it out, a close, and a
-            // wakeup when it fires — about eight syscalls per commit per
-            // surface, and the second of exactly two wakeups every commit
-            // cost. A client in IMMEDIATE mode commits thirteen thousand times
-            // a second and paid all of it. Skipping the wait outright, which
-            // is wrong and was done only to price it, took that scenario from
-            // 52.6% of a core to 31.8%.
-            //
-            // Asking `is_signaled` first and skipping the blocker when the
-            // point had already fired was the cheap version of this and does
-            // nothing: 55.1%, still two turns per commit. A client committing
-            // that fast is ahead of the GPU by definition, so its acquire
-            // point has essentially never signalled by the time the commit
-            // arrives.
-            if acquire.is_some() {
-                return;
+            // Keep an unsignalled client fence out of the renderer's shared
+            // queue. Capture waits for its render to finish on this thread;
+            // queueing a client fence first would make that wait freeze input
+            // and every output until the client catches up.
+            if let Some(acquire) = acquire {
+                if let Ok((blocker, source)) = acquire.generate_blocker() {
+                    let client = client.clone();
+                    let inserted = state.loop_handle.insert_source(source, move |_, _, state| {
+                        let Some(compositor_state) = state.try_client_compositor_state(&client)
+                        else {
+                            tracing::debug!(
+                                "an explicit acquire fence fired for a client that has gone"
+                            );
+                            return Ok(());
+                        };
+                        let dh = state.display_handle.clone();
+                        compositor_state.blocker_cleared(state, &dh);
+                        Ok(())
+                    });
+                    if inserted.is_ok() {
+                        add_blocker(surface, blocker);
+                        return;
+                    }
+                }
             }
 
             // No explicit point, so the buffer's own fence — which is what a
