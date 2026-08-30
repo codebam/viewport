@@ -903,6 +903,32 @@ impl ViewportState {
                 devices,
             } => self.connect_eis(session, stream, devices),
             Message::RevokeEis { session } => self.revoke_eis(&session),
+            Message::StartInputCapture { app_id, capabilities, reply } => {
+                self.open_input_capture_picker(app_id, capabilities, reply)
+            }
+            Message::ConnectInputCaptureEis {
+                session,
+                generation,
+                stream,
+                capabilities,
+            } => {
+                self.connect_input_capture_eis(session, generation, stream, capabilities)
+            }
+            Message::DisableInputCapture {
+                session,
+                generation,
+            } => self.disable_input_capture(&session, generation),
+            Message::ReleaseInputCapture {
+                session,
+                generation,
+                activation_id,
+            } => {
+                self.release_input_capture(&session, generation, activation_id)
+            }
+            Message::RevokeInputCapture {
+                session,
+                generation,
+            } => self.revoke_input_capture(&session, generation, true),
             Message::Close { node } => self.stop_cast(node),
         }
     }
@@ -939,6 +965,31 @@ impl ViewportState {
     /// starting for as long as the chooser is open, so a user who walked away
     /// leaves it there. Long enough to read the list and think about it.
     const PICK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    fn open_input_capture_picker(
+        &mut self,
+        app_id: String,
+        capabilities: u32,
+        reply: async_channel::Sender<Result<u32, String>>,
+    ) {
+        if self.picker.is_some() {
+            let _ = reply.try_send(Err("something else is already being chosen".to_owned()));
+            return;
+        }
+        // Input capture is never covered by the unsafe screen-share escape
+        // hatch. With no trusted shell there is nobody who can grant it.
+        if !self.shell_can_draw() {
+            let _ = reply.try_send(Err("no consent UI is available".to_owned()));
+            return;
+        }
+        self.raise_picker(
+            Vec::new(),
+            capabilities,
+            Vec::new(),
+            app_id,
+            crate::screencast::Reply::InputCapture(reply),
+        );
+    }
 
     /// Ask the user what to share.
     fn open_screencast_picker(
@@ -1506,6 +1557,11 @@ impl ViewportState {
             // Empty for a plain screen share, which is what the shell reads to
             // decide which of the two questions it is asking.
             devices: crate::screencast::remote::device_names(devices),
+            purpose: if matches!(picker.reply, crate::screencast::Reply::InputCapture(_)) {
+                "input-capture".to_owned()
+            } else {
+                String::new()
+            },
         };
         self.notify(&event);
     }
@@ -1597,6 +1653,9 @@ impl ViewportState {
                         let _ = reply.try_send(Err("the request is gone".to_owned()));
                     }
                 }
+            }
+            crate::screencast::Reply::InputCapture(reply) => {
+                let _ = reply.try_send(Ok(devices));
             }
         }
         if shortcuts_answered {

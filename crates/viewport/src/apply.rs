@@ -139,6 +139,20 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ViewOpacityRule { id, opacity } => {
+            if let Some(view) = state.views.get_mut(id) {
+                let opacity = if opacity.is_finite() {
+                    opacity.max(0.0) as f32
+                } else {
+                    1.0
+                };
+                if view.rule_opacity != opacity {
+                    view.rule_opacity = opacity;
+                    state.needs_render = true;
+                }
+            }
+        }
+
         Request::ViewCapture { id, capture } => {
             let Some(view) = state.views.get_mut(id) else {
                 return;
@@ -358,6 +372,18 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         Request::OutputConfigure(config) => output_configure(state, config),
 
         Request::OutputActive { name } => state.active_output = Some(name),
+
+        Request::GestureCapture { gestures } => {
+            // Whole replacement, with malformed zero-finger entries and
+            // duplicates made harmless. The active sequence stays frozen.
+            let mut gestures: Vec<_> = gestures
+                .into_iter()
+                .filter(|gesture| gesture.fingers > 0)
+                .collect();
+            gestures.sort_by_key(|gesture| (gesture.kind as u8, gesture.fingers));
+            gestures.dedup();
+            state.live_gestures = gestures;
+        }
 
         // Straight back out as the event a keybinding produces. No validation:
         // the shell is the only thing that knows its own verbs, and it already
@@ -851,6 +877,7 @@ pub(crate) fn set_view_fullscreen(state: &mut ViewportState, id: u32, fullscreen
         state.view_is_minimized(id),
         fullscreen,
     );
+    state.needs_render = true;
     true
 }
 

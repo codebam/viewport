@@ -434,6 +434,8 @@ pub struct ViewportState {
     pub bindings: Vec<crate::binding::Binding>,
     /// Configured discrete gestures and the captured sequence in progress.
     pub gestures: Vec<crate::input::GestureBinding>,
+    /// Gesture kinds the shell currently owns as live sequences.
+    pub live_gestures: Vec<viewport_ipc::GestureCaptureSpec>,
     pub gesture: Option<crate::input::GestureState>,
 
     /// Stops the outer GLib loop. calloop's own signal only ends the inner
@@ -873,6 +875,9 @@ pub struct ViewportState {
     /// — in particular for why a connection is remembered at all, which is
     /// that closing the session has to be able to close the socket.
     pub eis: crate::libei::Connections,
+    pub input_capture_shared: crate::input_capture::Shared,
+    pub input_capture_signals: crate::input_capture::Signals,
+    pub input_capture_connections: crate::input_capture::Connections,
     /// The keymap the seat is using, as the config file described it.
     ///
     /// Kept because a keymap cannot be read back out of a seat in a form
@@ -1533,6 +1538,7 @@ impl ViewportState {
                 theme: None,
                 gaps: None,
                 border: None,
+                opacity: None,
                 // Nothing said about the clock, which is the shell deciding
                 // for itself: the locale the engine runs under and the hour
                 // that locale writes.
@@ -1628,6 +1634,7 @@ impl ViewportState {
                 "tiling",
             ),
             gestures: Vec::new(),
+            live_gestures: Vec::new(),
             gesture: None,
             #[cfg(feature = "wpe")]
             shell_ping: None,
@@ -1703,6 +1710,9 @@ impl ViewportState {
             pipewire: None,
             casts: Vec::new(),
             eis: crate::libei::Connections::default(),
+            input_capture_shared: crate::input_capture::Shared::default(),
+            input_capture_signals: crate::input_capture::Signals::default(),
+            input_capture_connections: crate::input_capture::Connections::default(),
             keyboard_config: crate::config::KeyboardConfig::default(),
             pointer_drag: None,
             pointer_on_shell: false,
@@ -3401,6 +3411,9 @@ impl ViewportState {
     /// been told nothing yet. `None` tells all of them, and everything else on
     /// the socket.
     pub fn notify_output_layout_to(&mut self, only: Option<usize>) {
+        if only.is_none() {
+            self.refresh_input_capture_zones();
+        }
         // The shell is one buffer across the whole layout, so a change to the
         // layout is a change to its size. Without this it keeps whatever size
         // it had when it started: a monitor plugged in later, or a nested
@@ -3771,6 +3784,7 @@ impl ViewportState {
         // differently, and one that is never told keeps highlighting the
         // window that had focus when it started.
         if previous != id {
+            self.needs_render = true;
             let fullscreen = self.view_is_fullscreen(previous);
             let maximized = self.view_is_maximized(previous);
             let minimized = self.view_is_minimized(previous);

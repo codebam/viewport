@@ -11,7 +11,15 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::event::GestureKind;
 use crate::geometry::{Box, PartialBox, Transform};
+
+/// One kind and finger count the shell wants as a live sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GestureCaptureSpec {
+    pub kind: GestureKind,
+    pub fingers: u32,
+}
 
 /// A string that must never reach the log.
 ///
@@ -108,6 +116,17 @@ pub enum Request {
         id: u32,
         /// Absent means opaque; the value is clamped to `0.0..=1.0`
         /// (`src/ipc.c:897`).
+        #[serde(default = "one")]
+        opacity: f64,
+    },
+
+    /// Stable per-window opacity multiplier resolved from window rules. Kept
+    /// separate from `view.opacity`, which the shell continuously rewrites
+    /// while animating and arranging windows.
+    #[serde(rename = "view.opacity_rule")]
+    ViewOpacityRule {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
         #[serde(default = "one")]
         opacity: f64,
     },
@@ -601,6 +620,14 @@ pub enum Request {
 
     #[serde(rename = "output.active")]
     OutputActive { name: String },
+
+    /// Replace the live gestures captured for the shell. Ownership is decided
+    /// at begin, so replacing this does not alter a sequence already underway.
+    #[serde(rename = "gesture.capture")]
+    GestureCapture {
+        #[serde(default)]
+        gestures: Vec<GestureCaptureSpec>,
+    },
 
     #[serde(rename = "output.query")]
     OutputQuery,
@@ -1562,6 +1589,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rule_opacity_defaults_to_an_identity_multiplier() {
+        let Request::ViewOpacityRule { id, opacity } =
+            parse(r#"{"type":"view.opacity_rule","id":7}"#)
+        else {
+            panic!("view.opacity_rule should parse");
+        };
+        assert_eq!(id, 7);
+        assert_eq!(opacity, 1.0);
+    }
+
     /// The power picker's verbs, one word apart: each named action parses to
     /// itself, so a rename fails here rather than as a row that does nothing
     /// at runtime. Quit is not one of them — it is its own message, the reason
@@ -1754,6 +1792,32 @@ mod tests {
         };
         assert_eq!(command, "layout.overview");
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn gesture_capture_is_a_whole_typed_declaration() {
+        let Request::GestureCapture { gestures } = parse(
+            r#"{"type":"gesture.capture","gestures":[{"kind":"swipe","fingers":3},{"kind":"pinch","fingers":2}]}"#,
+        ) else {
+            panic!("not a gesture.capture message");
+        };
+        assert_eq!(
+            gestures,
+            vec![
+                GestureCaptureSpec {
+                    kind: GestureKind::Swipe,
+                    fingers: 3,
+                },
+                GestureCaptureSpec {
+                    kind: GestureKind::Pinch,
+                    fingers: 2,
+                },
+            ]
+        );
+        assert!(matches!(
+            parse(r#"{"type":"gesture.capture"}"#),
+            Request::GestureCapture { gestures } if gestures.is_empty()
+        ));
     }
 
     #[test]

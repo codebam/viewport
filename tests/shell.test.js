@@ -449,7 +449,7 @@ global.gsap = {
  * shell's state is unreachable from out here unless it hands it over. */
 /* overviewStateForTest is a function rather than the maps themselves so the
  * test does not depend on where that state is kept. */
-const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffsets, overviewThumbs,'
+const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffsets, overviewThumbs, workspaceCatalog,'
   + ' workspaceOfForTest: workspaceOf,'
   + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
@@ -642,6 +642,7 @@ if (sessionTest) {
   const saved = JSON.stringify({
     version: 1,
     layout: mode,
+    workspace_catalog: [{ id: 42, name: 'restored project' }],
     workspaces: {
       3: { type: 'leaf', app: 'firefox', weight: 1 },
       5: { type: 'split', dir: 'horizontal', layout: 'split', weight: 1,
@@ -662,15 +663,17 @@ if (sessionTest) {
     [...outs.values()][0].workspace === 5);
   check('the saved workspace home is restored',
     globalThis.__shell.workspacePolicyForTest.homes.get(3) === 'DP-1');
+  check('a named empty workspace is restored from the session catalog',
+    globalThis.__shell.workspaceCatalog.get(42) === 'restored project');
   check('the saved workspace layout policy is restored',
     globalThis.__shell.workspacePolicyForTest.layout(5) === 'matrix'
       && globalThis.__shell.workspacePolicyForTest.tiling(5) === 'grid');
 
   /* Applications come back in an order that has nothing to do with the
      layout — the browser last, as it usually is. */
-  const open = (id, app) => emit({ type: 'view.added', id, title: app,
+  const open = (id, app, extra = {}) => emit({ type: 'view.added', id, title: app,
     app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
-    floating: false, width: 800, height: 600 });
+    floating: false, width: 800, height: 600, ...extra });
 
   open(11, 'foot');
   open(12, 'foot');
@@ -2340,6 +2343,7 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     { app_id: 'private-window', capture: false },
     { app_id: 'shared-window', capture: true },
     { app_id: 'invalid-capture', capture: 'false' },
+    { app_id: 'dim-window', opacity: 0.65 },
   ];
   emit({ type: 'config', layout: mode, rules: captureRules });
   let captureMark = sent.length;
@@ -2358,7 +2362,22 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   check('non-boolean and unmatched capture rules resolve to capture allowed',
     sent.slice(captureMark).filter((m) => m.type === 'view.capture'
       && (m.id === 66 || m.id === 67) && m.capture === true).length === 2);
-  for (const id of [64, 65, 66, 67]) emit({ type: 'view.removed', id });
+  const opacityMark = sent.length;
+  open(68, 'dim-window');
+  check('a rule sends a stable opacity multiplier for that window',
+    sent.slice(opacityMark).some((m) => m.type === 'view.opacity_rule'
+      && m.id === 68 && m.opacity === 0.65));
+  const resetMark = sent.length;
+  emit({ type: 'config', layout: mode, rules: [] });
+  check('removing an opacity rule restores its identity multiplier',
+    sent.slice(resetMark).some((m) => m.type === 'view.opacity_rule'
+      && m.id === 68 && m.opacity === 1));
+  const replayCaptureMark = sent.length;
+  open(69, 'private-window', { replay: true });
+  check('an unmatched replay explicitly clears a compositor-side capture denial',
+    sent.slice(replayCaptureMark).some((m) => m.type === 'view.capture'
+      && m.id === 69 && m.capture === true));
+  for (const id of [64, 65, 66, 67, 68, 69]) emit({ type: 'view.removed', id });
 
   const richRules = [
     { match: { app_id: { equals: 'dropterm' }, title: { contains: 'console' },
@@ -2428,6 +2447,34 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     globalThis.__shell.workspaceOfForTest(55) === workspaceTarget);
   emit({ type: 'view.removed', id: 55 });
 
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { title: { equals: 'private dynamic' } }, floating: true,
+      capture: false, width: 420, height: 260 },
+  ] });
+  open(68, 'dynamic-window');
+  const dynamicMark = sent.length;
+  emit({ type: 'view.props', id: 68, app_id: 'dynamic-window',
+    title: 'private dynamic', tag: null });
+  check('changed window properties re-evaluate rules for an existing view',
+    globalThis.__shell.floatingForTest(68)?.width === 420);
+  check('dynamic capture denial is sent with the matching property change',
+    sent.slice(dynamicMark).some((m) => m.type === 'view.capture'
+      && m.id === 68 && m.capture === false));
+
+  emit({ type: 'config', layout: mode,
+    rules: [{ app_id: 'dynamic-window', workspace: 10 }] });
+  check('a config reload applies a new workspace action to an existing view',
+    globalThis.__shell.workspaceOfForTest(68) === 10);
+  check('a workspace above nine is created lazily by a rule',
+    globalThis.__shell.workspaceCatalog.has(10));
+  emit({ type: 'config', layout: mode, rules: [] });
+  check('removing a rule does not destructively undo its layout action',
+    globalThis.__shell.workspaceOfForTest(68) === 10
+      && globalThis.__shell.floatingForTest(68) !== null);
+  check('removing a capture denial explicitly restores capture permission',
+    sent.filter((m) => m.type === 'view.capture' && m.id === 68).at(-1)?.capture === true);
+  emit({ type: 'view.removed', id: 68 });
+
   if (mode === 'tiling' || mode === 'scrolling') {
     const featureRules = [
       { app_id: 'pseudo-app', pseudotile: true, width: 500, height: 320 },
@@ -2442,6 +2489,26 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
       pseudo.pseudotile?.width === 500 && pseudo.pseudotile?.height === 320);
     check('and leaves a full tree slot around the centred client',
       pseudo.el.classList.contains('pseudotiled'));
+    const updatedFeatureRules = featureRules.map((rule) => rule.app_id === 'pseudo-app'
+      ? { ...rule, width: 640, height: 360 } : rule);
+    emit({ type: 'config', layout: mode, rules: updatedFeatureRules });
+    check('a changed pseudotile rule updates dimensions on an existing view',
+      pseudo.pseudotile?.width === 640 && pseudo.pseudotile?.height === 360);
+
+    if (mode === 'scrolling') {
+      open(69, 'dynamic-column-width');
+      const widthRules = [
+        ...updatedFeatureRules,
+        { app_id: 'dynamic-column-width', width: 0.6 },
+      ];
+      emit({ type: 'config', layout: mode, rules: widthRules });
+      const workspace = globalThis.__shell.workspaceOfForTest(69);
+      const column = workspaceRoot(workspace).children[columnIndexOf(workspace, 69)];
+      check('a dynamic scrolling width rule updates the existing column',
+        column?.width === 0.6);
+      emit({ type: 'view.removed', id: 69 });
+      emit({ type: 'config', layout: mode, rules: updatedFeatureRules });
+    }
     emit({ type: 'view.focused', id: 56 });
     emit({ type: 'shell.command', command: 'window.pseudotile.toggle', args: [] });
     check('window.pseudotile.toggle disables it', pseudo.pseudotile === null);
@@ -3244,6 +3311,81 @@ if (mode === 'tiling') {
     check('and zooming in stops at 1:1', zoom.zoom === 1);
     check('which is the cap the compositor can hit-test',
       canvas.clamp(4) === 1 && canvas.CANVAS.maxZoom === 1);
+  }
+
+  {
+    const capture = [...sent].reverse().find((m) => m.type === 'gesture.capture');
+    check('the canvas captures live two-finger pinches',
+      capture?.gestures?.length === 1
+        && capture.gestures[0].kind === 'pinch'
+        && capture.gestures[0].fingers === 2);
+
+    const workspace = globalThis.__shell.workspaceOfForTest(1);
+    emit({ type: 'shell.command', command: 'canvas.home', args: [] });
+    const start = { ...canvas.viewport(workspace) };
+    const centre = {
+      x: start.x + AREA.width / 2 / start.zoom,
+      y: start.y + AREA.height / 2 / start.zoom,
+    };
+    emit({ type: 'gesture.begin', kind: 'pinch', fingers: 2 });
+    emit({ type: 'gesture.update', kind: 'pinch', dx: 0, dy: 0,
+      scale: 0.8, rotation: 0 });
+    emit({ type: 'gesture.update', kind: 'pinch', dx: 0, dy: 0,
+      scale: 0.5, rotation: 0 });
+    const pinched = canvas.viewport(workspace);
+    check('a live pinch applies cumulative scale against its starting view',
+      pinched.zoom === 0.5);
+    check('and keeps the screen centre on the same world point',
+      near(pinched.x + AREA.width / 2 / pinched.zoom, centre.x)
+        && near(pinched.y + AREA.height / 2 / pinched.zoom, centre.y));
+    emit({ type: 'gesture.end', kind: 'pinch', cancelled: false });
+
+    emit({ type: 'shell.command', command: 'canvas.home', args: [] });
+    const restored = { ...canvas.viewport(workspace) };
+    emit({ type: 'gesture.begin', kind: 'pinch', fingers: 2 });
+    emit({ type: 'gesture.update', kind: 'pinch', dx: 0, dy: 0,
+      scale: 0.25, rotation: 0 });
+    emit({ type: 'gesture.end', kind: 'pinch', cancelled: true });
+    const cancelled = canvas.viewport(workspace);
+    check('a cancelled live pinch restores its whole starting viewport',
+      near(cancelled.x, restored.x) && near(cancelled.y, restored.y)
+        && cancelled.zoom === restored.zoom);
+
+    emit({ type: 'gesture.begin', kind: 'pinch', fingers: 2 });
+    emit({ type: 'gesture.update', kind: 'pinch', dx: 0, dy: 0,
+      scale: 0.4, rotation: 0 });
+    emit({ type: 'gesture.begin', kind: 'pinch', fingers: 2 });
+    emit({ type: 'gesture.update', kind: 'pinch', dx: 0, dy: 0,
+      scale: 0.8, rotation: 0 });
+    check('an interrupted begin cancels the old live pinch before replacing it',
+      canvas.viewport(workspace).zoom === restored.zoom * 0.8);
+    emit({ type: 'gesture.end', kind: 'pinch', cancelled: true });
+
+    const output = globalThis.__shell.outputs.get(globalThis.__shell.activeOutput);
+    let relayouts = 0;
+    const realReplace = output.windowsEl.replaceChildren.bind(output.windowsEl);
+    output.windowsEl.replaceChildren = (...nodes) => {
+      relayouts++;
+      return realReplace(...nodes);
+    };
+    const realTimeout = global.setTimeout;
+    const realClearTimeout = global.clearTimeout;
+    let idle = null;
+    global.setTimeout = (fn, ms) => {
+      if (ms === 120) idle = fn;
+      return 1;
+    };
+    global.clearTimeout = () => {};
+    emit({ type: 'gesture.begin', kind: 'pinch', fingers: 2 });
+    emit({ type: 'gesture.update', kind: 'pinch', dx: 0, dy: 0,
+      scale: 0.5, rotation: 0 });
+    idle();
+    relayouts = 0;
+    emit({ type: 'gesture.end', kind: 'pinch', cancelled: true });
+    check('a delayed live cancellation redraws the restored viewport', relayouts === 1);
+    global.setTimeout = realTimeout;
+    global.clearTimeout = realClearTimeout;
+    delete output.windowsEl.replaceChildren;
   }
 
   {
@@ -4453,6 +4595,32 @@ if (mode === 'scrolling') {
   const ws = outs.get(globalThis.__shell.activeOutput).workspace;
   const offsets = globalThis.__shell.scrollOffsets;
 
+  const capture = [...sent].reverse().find((m) => m.type === 'gesture.capture');
+  check('the scrolling layout captures live three-finger swipes',
+    capture?.gestures?.length === 1
+      && capture.gestures[0].kind === 'swipe'
+      && capture.gestures[0].fingers === 3);
+
+  emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
+  const liveStart = offsets.get(ws) ?? 0;
+  emit({ type: 'gesture.begin', kind: 'swipe', fingers: 3 });
+  emit({ type: 'gesture.update', kind: 'swipe', dx: -125.5, dy: 0 });
+  check('a live swipe tracks fractional screen pixels one for one',
+    Math.abs((offsets.get(ws) ?? 0) - (liveStart + 125.5)) < 1e-9);
+  emit({ type: 'gesture.update', kind: 'swipe', dx: -200, dy: 0 });
+  check('live swipe updates are cumulative rather than compounded',
+    Math.abs((offsets.get(ws) ?? 0) - (liveStart + 200)) < 1e-9);
+  emit({ type: 'gesture.end', kind: 'swipe', cancelled: true });
+  check('a cancelled live swipe restores its starting offset',
+    (offsets.get(ws) ?? 0) === liveStart);
+
+  const liveFocus = sent.length;
+  emit({ type: 'gesture.begin', kind: 'swipe', fingers: 3 });
+  emit({ type: 'gesture.update', kind: 'swipe', dx: -600, dy: 0 });
+  emit({ type: 'gesture.end', kind: 'swipe', cancelled: false });
+  check('a completed live swipe settles onto a column',
+    sent.slice(liveFocus).some((m) => m.type === 'view.focus'));
+
   emit({ type: 'shell.command', command: 'layout.focus', args: ['first'] });
   const before = offsets.get(ws) ?? 0;
 
@@ -4882,8 +5050,38 @@ if (mode === 'scrolling') {
   check('a workspace that went off screen keeps the monitor it was on',
     home === undefined || home.output === leftName);
 
-  /* Nothing the shell can honour: there are nine workspaces, always, and a
-     monitor is always showing one of them. Declined by doing nothing. */
+  emit({ type: 'workspace.request', action: 'create', output: leftName,
+    name: 'external project' });
+  const created = published()?.workspaces.find((w) => w.name === 'external project');
+  check('ext-workspace create adds a named empty workspace',
+    Number(created?.id) > 9 && created?.output === leftName);
+  check('dynamic workspace names are included in session state',
+    globalThis.__shell.sessionForTest.serialise().workspace_catalog
+      .some((w) => String(w.id) === created?.id && w.name === 'external project'));
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, workspaces: [{
+    workspace: Number(created?.id), output: leftName,
+  }] });
+  emit({ type: 'workspace.request', action: 'assign', id: created?.id,
+    output: rightName });
+  check('ext-workspace assign overrides the configured workspace home',
+    outs.get(rightName).workspace === Number(created?.id));
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, workspaces: [] });
+  emit({ type: 'workspace.request', action: 'activate', id: created?.id });
+  check('ext-workspace activate focuses the output already showing it',
+    globalThis.__shell.activeOutput === rightName);
+  emit({ type: 'workspace.request', action: 'assign', id: created?.id,
+    output: leftName });
+  check('assigning an active workspace to another output exchanges them',
+    outs.get(leftName).workspace === Number(created?.id));
+  emit({ type: 'workspace.request', action: 'assign', id: created?.id,
+    output: rightName });
+  emit({ type: 'workspace.request', action: 'activate', id: String(there) });
+  emit({ type: 'workspace.request', action: 'remove', id: created?.id });
+  check('ext-workspace remove drops an inactive empty workspace',
+    !published()?.workspaces.some((w) => w.id === created?.id));
+
+  /* A monitor is always showing one workspace, so these remain no-ops. */
   const before = sent.length;
   emit({ type: 'workspace.request', action: 'remove', id: '1' });
   emit({ type: 'workspace.request', action: 'deactivate', id: '1' });
@@ -5064,12 +5262,14 @@ if (mode === 'scrolling') {
     policy.homes.get(policyWorkspace) === 'DP-1');
   setActiveOutput([...globalThis.__shell.outputs.entries()]
     .find(([, output]) => output.workspace === policyWorkspace)?.[0]);
+  emit({ type: 'view.focused', id: 0 });
   handleShellCommand('layout.model', ['canvas']);
   const policySession = globalThis.__shell.sessionForTest.serialise();
   check('runtime workspace layout state is saved in session.json',
     policySession.workspace_state[policyWorkspace].layout === 'canvas');
   check('workspace homes are saved in session.json',
     policySession.workspace_homes[policyWorkspace] === 'DP-1');
+  emit({ type: 'view.focused', id: 4 });
   policy.runtime.clear();
   emit({ type: 'config', layout: mode,
     gaps: { inner: 8, outer: 0, smart: false }, workspaces: [] });
@@ -6324,6 +6524,23 @@ if (mode === 'scrolling') {
   const gone = sent.filter((m) => m.type === 'shell.overlay').at(-1);
   check('and tells the compositor there is nothing on top now',
     gone !== undefined && gone.rects.length === 0);
+
+  emit({
+    type: 'screencast.pick',
+    id: 8,
+    selected: 0,
+    sources: [],
+    devices: ['keyboard', 'mouse'],
+    purpose: 'input-capture',
+  });
+  const captureDialog = screencastEl.children[0];
+  check('input capture is named separately from remote control',
+    captureDialog.children.find((c) => c._classes.has('screencast-title')).textContent
+      === 'Let an application capture your input');
+  check('input capture says local events leave the compositor',
+    captureDialog.children.find((c) => c._classes.has('screencast-devices')).textContent
+      === 'It would receive events from the keyboard and mouse. Press Ctrl+Alt+Escape to stop capture.');
+  emit({ type: 'screencast.pick.done', id: 8 });
 
   /* The third question through the same dialog: keys an application wants to
      hear while something else has focus. There is nothing to choose between,

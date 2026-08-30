@@ -50,7 +50,9 @@ impl SessionLockHandler for ViewportState {
         }
 
         tracing::info!("session locked");
+        self.cancel_gesture();
         self.locked = true;
+        self.suspend_input_capture();
         self.locked_at = Some(std::time::Instant::now());
         self.lock_warned = false;
         self.lock_surfaces.clear();

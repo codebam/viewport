@@ -270,8 +270,7 @@ function overviewAssignment() {
   const names = [...outputs.keys()];
   const assignment = new Map(names.map((name) => [name, []]));
 
-  const remaining = [];
-  for (let n = 1; n <= WORKSPACES; n++) remaining.push(n);
+  const remaining = sortedWorkspaceIds();
   for (const name of names) {
     const own = outputs.get(name).workspace;
     const at = remaining.indexOf(own);

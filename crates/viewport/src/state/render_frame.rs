@@ -5,6 +5,27 @@
 
 struct X11CaptureRedactionId(smithay::backend::renderer::element::Id);
 
+fn effective_opacity(
+    base: f32,
+    rule: f32,
+    active: bool,
+    fullscreen: bool,
+    policy: Option<&viewport_ipc::event::Opacity>,
+) -> f32 {
+    let global = policy
+        .map(|policy| {
+            if fullscreen {
+                policy.fullscreen
+            } else if active {
+                policy.active
+            } else {
+                policy.inactive
+            }
+        })
+        .unwrap_or(1.0) as f32;
+    (base * rule * global).clamp(0.0, 1.0)
+}
+
 impl ViewportState {
     pub fn frame_for(&mut self, output: &Output) -> crate::render::Frame {
         use smithay::wayland::seat::WaylandFocus as _;
@@ -313,7 +334,17 @@ impl ViewportState {
                     // full-size windows into them, and a window faded out by
                     // the shell stayed solid.
                     scale: view.map(|view| view.scale).unwrap_or(1.0),
-                    opacity: view.map(|view| view.opacity).unwrap_or(1.0),
+                    opacity: view
+                        .map(|view| {
+                            effective_opacity(
+                                view.opacity,
+                                view.rule_opacity,
+                                view.id == self.focused,
+                                view.wants_fullscreen(),
+                                self.config.opacity.as_ref(),
+                            )
+                        })
+                        .unwrap_or(1.0),
                     redaction,
                     overlay,
                     corners,
@@ -586,5 +617,28 @@ impl ViewportState {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod opacity_tests {
+    use super::*;
+
+    #[test]
+    fn opacity_inputs_compose_and_clamp_once() {
+        let policy = viewport_ipc::event::Opacity {
+            active: 0.9,
+            inactive: 0.5,
+            fullscreen: 0.8,
+        };
+        let close = |actual: f32, expected: f32| {
+            assert!((actual - expected).abs() < f32::EPSILON * 4.0);
+        };
+        close(effective_opacity(0.8, 0.5, true, false, Some(&policy)), 0.36);
+        close(effective_opacity(0.8, 0.5, false, false, Some(&policy)), 0.2);
+        close(effective_opacity(0.8, 0.5, false, true, Some(&policy)), 0.32);
+        close(effective_opacity(0.8, 0.5, true, true, Some(&policy)), 0.32);
+        assert_eq!(effective_opacity(0.8, 2.0, true, false, Some(&policy)), 1.0);
+        close(effective_opacity(0.8, 0.5, false, false, None), 0.4);
     }
 }

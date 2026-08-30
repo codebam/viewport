@@ -521,6 +521,17 @@ impl ViewportState {
         self.foreign_management_state.update(id, &title, &app_id);
         let icon = view.icon.clone();
         let tag = view.tag.clone();
+        let capture_allowed = crate::config::initially_allows_capture(
+            self.config.rules.as_ref(),
+            &app_id,
+            &title,
+            tag.as_deref(),
+        );
+        if !capture_allowed {
+            if let Some(view) = self.views.get_mut(id) {
+                view.capture_allowed = false;
+            }
+        }
         let event = Event::ViewProps {
             id,
             title,

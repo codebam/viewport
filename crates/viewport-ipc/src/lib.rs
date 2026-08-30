@@ -14,9 +14,9 @@ pub mod geometry;
 pub mod js;
 pub mod request;
 
-pub use event::{CastSource, Event, ShortcutRow};
+pub use event::{CastSource, Event, GestureKind, ShortcutRow};
 pub use geometry::{Box, PartialBox, Transform};
-pub use request::Request;
+pub use request::{GestureCaptureSpec, Request};
 
 /// A message the compositor refused, in the shape the C build reports it.
 ///
@@ -134,6 +134,7 @@ fn is_known_type(name: &str) -> bool {
             | "view.focus"
             | "view.close"
             | "view.opacity"
+            | "view.opacity_rule"
             | "view.capture"
             | "view.query"
             | "shell.focus"
@@ -173,6 +174,7 @@ fn is_known_type(name: &str) -> bool {
             | "output.hdr"
             | "output.confirm"
             | "output.active"
+            | "gesture.capture"
             | "output.query"
             | "output.test_add"
             | "output.test_remove"

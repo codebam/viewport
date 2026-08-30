@@ -318,8 +318,6 @@ has drifted.
 
 ## What is not done yet
 
-- **Pinch to zoom.** The compositor already delivers pinch (`input.rs`, the
-  `scale:` field) and three-finger swipe; neither is routed here yet.
 - **A window carried to another monitor.** `window.move` slides a window across
   the plane and the view follows, so it never falls through to
   `moveViewToOutput` the way the tiling layouts do. Changing workspace is the

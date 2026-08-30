@@ -102,12 +102,14 @@
   "tiling_mode": "manual",
 
   "_workspaces": [
-    "Optional policy for the nine fixed workspaces, keyed by \"1\" through \"9\".",
+    "Optional policy for positive numbered workspaces.",
     "output is a preferred connector/home. layout and tiling_mode override the",
     "global values. gaps overrides only fields it names; omitted fields inherit",
     "the global gaps block. Layout commands change only the active workspace and",
-    "that mutable choice, plus workspace homes, survives in session.json.",
-    "There are no named or dynamically-created workspaces and no selectors."
+    "that mutable choice, workspace homes, names and empty created workspaces",
+    "survive in session.json. Workspaces 1 through 9 exist initially; larger",
+    "numbers are created lazily by commands, rules or config. The shell keeps",
+    "at most 512 workspaces."
   ],
   "workspaces": {
     "1": { "output": "eDP-1", "layout": "tiling", "tiling_mode": "master-stack" },
@@ -208,20 +210,29 @@
   ],
   "border": {},
 
+  "_opacity": [
+    "Compositor-side multipliers for focused, unfocused and fullscreen windows.",
+    "Fullscreen takes precedence over active/inactive. These multiply layout",
+    "and fade opacity rather than replacing it. Values are non-negative; the",
+    "final alpha is clamped to 1. Per-window rules may add an opacity multiplier."
+  ],
+  "opacity": { "active": 1, "inactive": 0.9, "fullscreen": 1 },
+
   "_rules": [
     "First matching rule wins. Rich match fields are ANDed; workspace is the",
     "active workspace when the window opens. pseudotile keeps the full tiled",
     "slot while centring a preferred-size client. swallow replaces a matching",
     "parent only through verified native Wayland process ancestry; a child",
-    "rule with swallow false opts out. capture false replaces that window",
-    "with black in screenshots and screen shares."
+    "rule with swallow false opts out. opacity multiplies that window's alpha.",
+    "capture false replaces that window with black in screenshots and shares."
   ],
   "rules": [
     { "match": { "app_id": { "equals": "foot" }, "workspace": 2 },
       "pseudotile": true, "width": 900, "height": 600 },
     { "app_id": "foot", "swallow": true },
     { "app_id": "keep-terminal-visible", "swallow": false },
-    { "app_id": "org.keepassxc.KeePassXC", "capture": false }
+    { "app_id": "org.keepassxc.KeePassXC", "capture": false },
+    { "app_id": "picture-in-picture", "opacity": 0.9 }
   ],
 
   "_notifications": [

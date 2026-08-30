@@ -33,6 +33,7 @@ mod icon;
 mod idle;
 mod inhibit;
 mod input;
+mod input_capture;
 mod ipc;
 mod keyboard_focus;
 mod launcher;
@@ -1000,10 +1001,14 @@ fn run() -> Result<()> {
         // Not fatal: a real desktop portal already holding the name knows more
         // about the session than this does, and applications keep the defaults
         // they had a moment ago.
-        if let Err(e) = state
-            .appearance
-            .start(settings, screencast, screenshot, inhibit, shortcuts)
-        {
+        if let Err(e) = state.appearance.start(
+            settings,
+            screencast,
+            screenshot,
+            inhibit,
+            shortcuts,
+            state.input_capture_shared.clone(),
+        ) {
             tracing::warn!("the portals are unavailable: {e}");
         }
         if let Some(connection) = state.appearance.connection() {
@@ -1016,7 +1021,8 @@ fn run() -> Result<()> {
             // And how a chord that fired reaches the application waiting for
             // it: the signal goes out on the connection the interface is
             // served from, and the compositor is not the thread that built it.
-            state.shortcut_signals.set_connection(connection);
+            state.shortcut_signals.set_connection(connection.clone());
+            state.input_capture_signals.set_connection(connection);
         }
     }
 

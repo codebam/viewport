@@ -267,6 +267,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   if (min_width > 0) el.style.minWidth = `${min_width}px`;
   if (min_height > 0) el.style.minHeight = `${min_height}px`;
 
+  const openingWorkspace = replay ? null : output.workspace;
   views.set(id, {
     el, viewport, title, app_id, tag: tag ?? null, box: null,
     naturalWidth: width, naturalHeight: height,
@@ -304,6 +305,10 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     swallowChild: null,
     swallowLeaf: null,
     swallowWorkspace: null,
+    openingWorkspace,
+    ruleSignature: null,
+    ruleCapture: null,
+    ruleOpacity: null,
   });
   resizeObserver.observe(viewport);
 
@@ -319,13 +324,17 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      width of the column it opens in. Applied before anything is inserted, so
      the window goes straight where it belongs rather than appearing in one
      place and jumping to another. */
-  const openingWorkspace = output.workspace;
-  const rule = ruleFor(app_id, title, tag, replay ? null : openingWorkspace);
+  const rule = ruleFor(app_id, title, tag, openingWorkspace);
   const view = views.get(id);
-  if (!replay || typeof rule?.capture === 'boolean') {
-    send({ type: 'view.capture', id,
-      capture: typeof rule?.capture === 'boolean' ? rule.capture : true });
-  }
+  /* Replay must resolve permission too: compositor state survives a shell
+   * reload, including an old denial whose rule may just have been removed. */
+  view.ruleCapture = typeof rule?.capture === 'boolean' ? rule.capture : true;
+  send({ type: 'view.capture', id, capture: view.ruleCapture });
+  const ruleOpacity = Number.isFinite(rule?.opacity) && rule.opacity >= 0
+    ? rule.opacity : 1;
+  view.ruleOpacity = ruleOpacity;
+  send({ type: 'view.opacity_rule', id, opacity: ruleOpacity });
+  view.ruleSignature = JSON.stringify(rule ?? null);
   view.swallow = rule?.swallow === true;
   if (rule?.pseudotile === true) {
     view.pseudotile = preferredPseudoDimensions(view, rule);
@@ -428,6 +437,100 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   fadeIn(id);
   focusIt();
   saveSession();
+}
+
+/* Existing windows keep manual state when a rule stops matching. A newly
+ * resolved rule applies only actions it explicitly names; this makes title and
+ * tag rules useful without a config reload unexpectedly tiling or moving every
+ * window whose old rule was removed. Capture is the exception: it is a current
+ * permission and always resolves back to allowed when no boolean rule denies it. */
+function reapplyWindowRule(id) {
+  const view = views.get(id);
+  if (!view) return;
+  const rule = ruleFor(view.app_id, view.title, view.tag, view.openingWorkspace);
+  const capture = typeof rule?.capture === 'boolean' ? rule.capture : true;
+  if (view.ruleCapture !== capture) {
+    view.ruleCapture = capture;
+    send({ type: 'view.capture', id, capture });
+  }
+  const opacity = Number.isFinite(rule?.opacity) && rule.opacity >= 0
+    ? rule.opacity : 1;
+  if (view.ruleOpacity !== opacity) {
+    view.ruleOpacity = opacity;
+    send({ type: 'view.opacity_rule', id, opacity });
+  }
+
+  const signature = JSON.stringify(rule ?? null);
+  if (signature === view.ruleSignature) return;
+  view.ruleSignature = signature;
+  if (!rule) return;
+
+  let changed = false;
+  const target = validWorkspaceId(rule.workspace)
+    ? ensureWorkspace(rule.workspace) : null;
+  if (target !== null) changed = moveViewToWorkspace(id, target) || changed;
+
+  if (rule.workspace === 'scratchpad') {
+    if (view.special !== 'scratchpad') {
+      view.special = 'scratchpad';
+      view.specialOutput = hostOfWorkspace(workspaceOf(id)) ?? activeOutputName();
+      view.specialHidden = true;
+      if (!isFloating(id)) setFloating(id, true);
+      changed = true;
+    }
+  } else if (rule.pinned === true && view.special !== 'pinned') {
+    view.special = 'pinned';
+    view.specialOutput = hostOfWorkspace(workspaceOf(id)) ?? activeOutputName();
+    view.specialHidden = false;
+    if (!isFloating(id)) setFloating(id, true);
+    changed = true;
+  } else if (rule.floating === true && !isFloating(id)) {
+    setFloating(id, true, Number.isFinite(rule.width) && Number.isFinite(rule.height)
+      ? { x: rule.x ?? 0, y: rule.y ?? 0, width: rule.width, height: rule.height }
+      : null);
+    changed = true;
+  }
+
+  if (rule.pseudotile === true) {
+    const dimensions = preferredPseudoDimensions(view, rule);
+    if (view.pseudotile?.width !== dimensions.width
+        || view.pseudotile?.height !== dimensions.height) {
+      view.pseudotile = dimensions;
+      changed = true;
+    }
+  }
+  if (typeof rule.swallow === 'boolean') view.swallow = rule.swallow;
+
+  const workspace = workspaceOf(id);
+  if (!isFloating(id) && rule.pseudotile !== true
+      && Number.isFinite(rule.width) && workspace !== null
+      && layoutModeOf(workspace) === 'scrolling') {
+    const root = workspaceRoot(workspace);
+    const column = root.children[columnIndexOf(workspace, id)];
+    const width = Math.max(0.1, Math.min(rule.width, 1));
+    if (column && column.width !== width) {
+      column.width = width;
+      changed = true;
+    }
+  }
+
+  if (isFloating(id) && Number.isFinite(rule.width) && Number.isFinite(rule.height)) {
+    const floating = floatingOf(id);
+    floating.x = Number.isFinite(rule.x) ? rule.x : floating.x;
+    floating.y = Number.isFinite(rule.y) ? rule.y : floating.y;
+    floating.width = rule.width;
+    floating.height = rule.height;
+    changed = true;
+  }
+  if (changed) {
+    treeGeneration++;
+    relayoutAll();
+    saveSession();
+  }
+}
+
+function reapplyWindowRules() {
+  for (const id of views.keys()) reapplyWindowRule(id);
 }
 
 function setSpecial(id, special, hide = false) {
@@ -761,7 +864,7 @@ function applyWorkspaceRules(rules) {
   if (!Array.isArray(rules)) return;
   for (const rule of rules) {
     const n = Number(rule?.workspace);
-    if (!Number.isInteger(n) || n < 1 || n > WORKSPACES) continue;
+    if (ensureWorkspace(n) === null) continue;
     workspaceRules.set(n, rule);
     if (typeof rule.output === 'string') workspaceHomes.set(n, rule.output);
   }

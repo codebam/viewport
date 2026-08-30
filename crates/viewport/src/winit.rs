@@ -216,7 +216,7 @@ pub fn init(
                 state.advertise_outputs();
             }
 
-            WinitEvent::Input(event) => state.process_input_event(event),
+            WinitEvent::Input(event) => state.process_local_input_event(event),
 
             WinitEvent::Redraw => {
                 let size = backend.window_size();

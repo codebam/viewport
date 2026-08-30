@@ -440,12 +440,14 @@ function isGesturing() {
  * gesture it has been swallowing. The timer above is the fallback for a
  * gesture that ends without one — a VT switch takes the pointer away and no
  * release is ever reported. */
-function endGesture() {
-  if (!gesturing) return;
-  gesturing = false;
-  clearTimeout(gestureTimer);
-  gestureTimer = null;
-  relayoutAll();
+function endGesture(redraw = false) {
+  if (gesturing) {
+    gesturing = false;
+    clearTimeout(gestureTimer);
+    gestureTimer = null;
+    redraw = true;
+  }
+  if (redraw) relayoutAll();
 }
 
 /* One relayout for this frame, however many deltas arrive before it. */
@@ -649,6 +651,7 @@ registerBuiltinLayout('canvas', {
 });
 
 function relayoutAll() {
+  syncGestureCapture();
   /* A dynamic tiling mode derives the shape from which windows are open, so
      the tree may be out of date before anything is measured. Cheap when
      nothing changed: it compares the window set against what it last built
@@ -982,4 +985,18 @@ function relayoutAll() {
      the FLIP above would have forced anyway and no longer does. */
   if (isGesturing()) reportAllGeometry();
   pumpGeometry();
+}
+
+/* Claim only what the active layout can consume. Repeated relayouts are the
+ * common case, so the whole-list request leaves only when that answer changes. */
+function syncGestureCapture() {
+  const output = outputs.get(activeOutputName());
+  const mode = layoutModeOf(output?.workspace ?? activeWorkspace());
+  const gestures = mode === 'scrolling'
+    ? [{ kind: 'swipe', fingers: 3 }]
+    : mode === 'canvas' ? [{ kind: 'pinch', fingers: 2 }] : [];
+  const declaration = JSON.stringify(gestures);
+  if (declaration === gestureCaptureDeclaration) return;
+  gestureCaptureDeclaration = declaration;
+  send({ type: 'gesture.capture', gestures });
 }

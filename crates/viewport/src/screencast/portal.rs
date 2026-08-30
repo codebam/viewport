@@ -96,6 +96,30 @@ pub enum Message {
     RevokeEis {
         session: OwnedObjectPath,
     },
+    StartInputCapture {
+        app_id: String,
+        capabilities: u32,
+        reply: async_channel::Sender<Result<u32, String>>,
+    },
+    ConnectInputCaptureEis {
+        session: OwnedObjectPath,
+        generation: u64,
+        stream: std::os::unix::net::UnixStream,
+        capabilities: u32,
+    },
+    DisableInputCapture {
+        session: OwnedObjectPath,
+        generation: u64,
+    },
+    ReleaseInputCapture {
+        session: OwnedObjectPath,
+        generation: u64,
+        activation_id: u32,
+    },
+    RevokeInputCapture {
+        session: OwnedObjectPath,
+        generation: u64,
+    },
     Close {
         node: u32,
     },
@@ -186,6 +210,8 @@ pub struct Session {
     /// consequence of getting it wrong is a screen handed over by the call
     /// that was meant to ask about a keyboard.
     pub(super) remote: bool,
+    pub(crate) input_capture: bool,
+    pub(crate) input_capture_generation: u64,
     /// What a remote-desktop session asked to be able to drive, as the
     /// interface's bitmask, and what the user actually allowed.
     ///
@@ -240,6 +266,16 @@ impl Session {
             ..Self::default()
         }
     }
+
+    pub(crate) fn new_input_capture(app_id: &str, owner: Option<String>, generation: u64) -> Self {
+        Self {
+            app_id: app_id.to_owned(),
+            owner,
+            input_capture: true,
+            input_capture_generation: generation,
+            ..Self::default()
+        }
+    }
 }
 
 /// What the object on the bus and the watcher both hold.
@@ -249,7 +285,7 @@ pub struct Frontend {
     ///
     /// One table for both interfaces. See [`Session`] for why they cannot be
     /// two.
-    pub(super) sessions: HashMap<OwnedObjectPath, Session>,
+    pub(crate) sessions: HashMap<OwnedObjectPath, Session>,
     /// Who owns [`FRONTEND_NAME`] just now, as a unique name.
     ///
     /// Learned once when the watcher starts and kept up to date from
@@ -345,7 +381,7 @@ pub fn called_by_frontend(
 /// the same two messages and the one that forgets either leaks: a stream the
 /// compositor goes on compositing into for a session nobody holds, or a libei
 /// socket that keeps carrying input after the grant was taken back.
-pub(super) fn release_session(
+pub(crate) fn release_session(
     closed: &Session,
     path: &OwnedObjectPath,
     sender: &smithay::reexports::calloop::channel::Sender<Message>,
@@ -360,6 +396,12 @@ pub(super) fn release_session(
     if closed.eis {
         let _ = sender.send(Message::RevokeEis {
             session: path.clone(),
+        });
+    }
+    if closed.input_capture {
+        let _ = sender.send(Message::RevokeInputCapture {
+            session: path.clone(),
+            generation: closed.input_capture_generation,
         });
     }
 }

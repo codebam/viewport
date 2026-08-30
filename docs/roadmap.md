@@ -47,9 +47,10 @@ inhibit interfaces:
 
 ## Remote desktop
 
-The EI server itself is done and works — `crates/viewport/src/libei.rs`, and
-`docs/protocols.md` for how it sits beside the Notify calls. These are the
-pieces around it that are not.
+The sender EI server and the receiver used by InputCapture are both done —
+`crates/viewport/src/libei.rs`, `crates/viewport/src/input_capture.rs`, and
+`docs/protocols.md` for how their opposite directions differ. One piece around
+remote sessions is not.
 
 **No clipboard for a remote session.** `Start` answers `clipboard_enabled`
 with a stated false, and `org.freedesktop.portal.Clipboard` is the interface
@@ -59,15 +60,6 @@ thing tried after the pointer. It is its own portal interface and its own
 consent question — reading the desk's clipboard is not the same permission as
 typing into it — which is why it is a list entry and not a line in the
 existing one.
-
-**No receiver contexts, so no input capture.** The EI server here is a sender:
-the client sends input and this compositor performs it. The other direction —
-`org.freedesktop.portal.InputCapture`, where a client asks to be *given* the
-pointer and keyboard as they leave the edge of a screen — is what a
-multi-machine setup like input-leap wants, and it is a different libei context
-type on a different portal interface. `EiInput` refuses a receiver context
-outright today, which is the right refusal rather than a bug, but it is a
-refusal.
 
 ## Two protocols, found by the same sweep
 

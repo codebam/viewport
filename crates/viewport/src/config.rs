@@ -187,7 +187,7 @@ pub struct GapsConfig {
     pub smart: Option<bool>,
 }
 
-/// Policy for one of the shell's fixed workspaces (1 through 9).
+/// Policy for one of the shell's positive numbered workspaces.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
@@ -230,6 +230,18 @@ pub struct BorderConfig {
     /// screen, and a rounded corner there is a notch of wallpaper in the
     /// corner of the monitor. Set it explicitly to have one without the other.
     pub smart: Option<bool>,
+}
+
+/// Compositor-side opacity multipliers.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct OpacityConfig {
+    /// Multiplier for the focused window.
+    pub active: Option<f64>,
+    /// Multiplier for windows without keyboard focus.
+    pub inactive: Option<f64>,
+    /// Multiplier used instead of active/inactive while fullscreen.
+    pub fullscreen: Option<f64>,
 }
 
 /// The `clock` block.
@@ -517,9 +529,9 @@ pub struct File {
     /// layout, so what an arrangement *is* belongs there.
     pub tiling_mode: Option<String>,
 
-    /// Rules for the nine fixed workspaces, keyed by `"1"` through `"9"`.
+    /// Rules for positive numbered workspaces, keyed by their number.
     /// Presence replaces the prior rule set on reload; an empty object clears it.
-    pub workspaces: Option<std::collections::HashMap<u8, WorkspaceConfig>>,
+    pub workspaces: Option<std::collections::HashMap<u32, WorkspaceConfig>>,
 
     pub dark_mode: Option<bool>,
 
@@ -587,6 +599,7 @@ pub struct File {
 
     pub gaps: GapsConfig,
     pub border: BorderConfig,
+    pub opacity: OpacityConfig,
     pub notifications: NotificationsConfig,
 
     /// The bar clock's locale and format; see [`ClockConfig`]. Absent leaves
@@ -677,8 +690,8 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
     if let Some(workspaces) = file.workspaces.as_ref() {
         for workspace in workspaces.keys() {
             anyhow::ensure!(
-                (1..=9).contains(workspace),
-                "{}: workspace {workspace} is outside 1 through 9",
+                *workspace > 0,
+                "{}: workspace numbers must be positive",
                 path.display()
             );
         }
@@ -1838,7 +1851,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_workspace_rules_parse() {
+    fn numbered_workspace_rules_parse() {
         let file: File = serde_json::from_str(
             r#"{"workspaces":{"2":{"output":"DP-2","layout":"scrolling","tiling_mode":"grid","gaps":{"inner":12,"smart":true}}}}"#,
         )
@@ -1852,14 +1865,19 @@ mod tests {
     }
 
     #[test]
-    fn workspace_numbers_are_limited_to_one_through_nine() {
+    fn workspace_numbers_are_positive_and_not_limited_to_nine() {
         let dir =
             std::env::temp_dir().join(format!("viewport-workspace-rules-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let path = dir.join("config.json");
         std::fs::write(&path, r#"{"workspaces":{"10":{"layout":"tiling"}}}"#).expect("config");
-        let error = load(&path).expect_err("workspace 10 must fail").to_string();
-        assert!(error.contains("outside 1 through 9"), "{error}");
+        let file = load(&path)
+            .expect("workspace 10 should load")
+            .expect("config");
+        assert!(file.workspaces.expect("workspace rules").contains_key(&10));
+        std::fs::write(&path, r#"{"workspaces":{"0":{"layout":"tiling"}}}"#).expect("config");
+        let error = load(&path).expect_err("workspace 0 must fail").to_string();
+        assert!(error.contains("must be positive"), "{error}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

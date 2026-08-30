@@ -192,13 +192,16 @@ function serialiseCanvas() {
 function restoreCanvas(saved) {
   canvasSlots = Array.isArray(saved?.places)
     ? saved.places.filter((slot) => slot && slot.app
+      && ensureWorkspace(Number(slot.workspace)) !== null
       && Number.isFinite(slot.x) && Number.isFinite(slot.y)
       && slot.width > 0 && slot.height > 0)
     : [];
 
   for (const [workspace, viewport] of Object.entries(saved?.viewports ?? {})) {
-    if (!Number.isFinite(viewport?.x) || !Number.isFinite(viewport?.y)) continue;
-    canvasViewports.set(Number(workspace), {
+    const id = ensureWorkspace(Number(workspace));
+    if (id === null || !Number.isFinite(viewport?.x)
+        || !Number.isFinite(viewport?.y)) continue;
+    canvasViewports.set(id, {
       x: viewport.x, y: viewport.y, zoom: canvasClampZoom(viewport.zoom),
     });
   }
@@ -902,6 +905,33 @@ function canvasZoom(arg) {
 
   canvasViewports.set(target.workspace, next);
   relayoutAll();
+}
+
+/* A live pinch uses the cumulative scale against one frozen viewport. Applying
+ * each update to the previous one would turn 0.8 then 0.5 into 0.4. */
+function canvasPinchBegin() {
+  const output = outputs.get(activeOutputName());
+  if (!output || layoutModeOf(output.workspace) !== 'canvas') return null;
+  const area = canvasAreaOf(output);
+  if (!area) return null;
+  return {
+    workspace: output.workspace,
+    area: { ...area },
+    viewport: { ...canvasViewportOf(output.workspace) },
+  };
+}
+
+function canvasPinchUpdate(pinch, scale) {
+  if (!pinch || !Number.isFinite(scale) || scale <= 0) return false;
+  canvasViewports.set(pinch.workspace,
+    canvasZoomed(pinch.viewport, scale, pinch.area));
+  gestureRelayout();
+  return true;
+}
+
+function canvasPinchCancel(pinch) {
+  if (!pinch) return;
+  canvasViewports.set(pinch.workspace, { ...pinch.viewport });
 }
 
 /* Show the whole plane. */

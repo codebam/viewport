@@ -70,6 +70,9 @@ of what was asked.
 | `output.layout` | `outputs[]` with `name`, `make`, `model`, `serial`, optional EDID `physical_width_mm` and `physical_height_mm`, `enabled`, `active` (the one the shell last named through `output.active`), `x`, `y`, `width`, `height`, `usable_x`, `usable_y`, `usable_width`, `usable_height`, `hdr`, `hdr_capable`, `scale`, `transform`, `modes[]` |
 | `workspace.request` | `action` (`activate`, `deactivate`, `assign`, `remove`, `create`), optional `id`, `name`, `output` — a client outside the shell asked for something through `ext-workspace-v1`. See [Workspaces](#workspaces) |
 | `shell.command` | `command`, `args[]` — a keybinding forwarded for the shell to act on |
+| `gesture.begin` | `kind` (`swipe` or `pinch`), `fingers` — start of a live sequence the shell claimed with `gesture.capture` |
+| `gesture.update` | `kind`, cumulative `dx`, `dy`, and, for a pinch, cumulative `scale` and `rotation` since begin |
+| `gesture.end` | `kind`, `cancelled` — completion or cancellation of the captured sequence |
 | `session.restore` | `state` (whatever was last saved, or empty) |
 | `session.lock` | `generation`, `can_authenticate` — the session is locked and the shell draws the lock screen. Sent only where `idle.lock_command` is unset, since a configured locker draws its own. While it is up the compositor draws the shell's buffer and nothing else — no windows, no layer surfaces, no wallpaper — so the page must cover itself completely and opaquely; what it leaves uncovered is its own desktop showing through. `generation` identifies this lock and comes back on `session.lock.drawn` and `session.unlock`; a message naming any other one is dropped. `can_authenticate` false is a machine whose libpam would not load, which is a lock screen that will refuse every password — still a lock screen, and worth saying out loud rather than swallowing every attempt |
 | `session.lock.error` | `generation`, `message` — the password was refused, in PAM's own words. "Wrong password" and "your account has expired" are different problems and only one of them is worth trying again |
@@ -133,6 +136,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `view.focus` | `id` |
 | `view.close` | `id` |
 | `view.opacity` | `id`, `opacity` (0–1) |
+| `view.opacity_rule` | `id`, non-negative `opacity` multiplier — stable window-rule policy, separate from animation opacity |
 | `view.capture` | `id`, `capture` (required boolean) — changes whether capture paths may include this window; windows allow capture by default |
 | `view.query` | — replays `config` and a `view.added` for every mapped window |
 | `shell.focus` | — |
@@ -176,6 +180,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `output.revert` | — and the other answer: put the monitors back now rather than waiting out the deadline. Nothing pending is not a refusal, because the deadline may have fired a moment earlier |
 | `output.hdr` | optional `name` (default: active output), optional `enabled` (absent toggles) |
 | `output.active` | `name` — which output the shell considers active |
+| `gesture.capture` | `gestures[]` of `kind` (`swipe` or `pinch`) and `fingers` — replace the live gesture kinds the shell owns. Empty releases all of them. Ownership is frozen at begin; changing this list cannot split a sequence already in progress |
 | `output.query` | — |
 | `output.test_add` | — headless only; plugs in a virtual monitor for tests |
 | `output.test_remove` | optional `name` (default: the first output); headless only |
@@ -210,6 +215,14 @@ understands — `handleShellCommand` warns about a name it does not recognise an
 carries on — so a list here would be a second copy of
 `data/shell/commands.js` to keep in step, kept by something with no way to
 check it.
+
+Live gesture ownership is decided before any part is delivered. A configured
+discrete gesture has first priority, then an exact kind-and-finger-count from
+the shell's latest `gesture.capture`, then the focused Wayland client. Thus a
+client receives a whole sequence or none of it. A live shell update is
+cumulative from `gesture.begin`, not a delta from the previous update; this
+makes coalescing updates safe. A declaration changed during a gesture applies
+to the next begin only.
 
 `input.pointer`, `input.button` and `input.key` are synthetic input, and they
 exist for the same reason `shell.command` does: a test that wants to know
@@ -552,7 +565,9 @@ toward a pointer lags it by the whole duration.
 
 Fading a window in cannot be done in CSS for the same reason, so it is tweened
 in the shell and sent as `view.opacity`, which the compositor applies to the
-surface itself. `prefers-reduced-motion` disables all of it.
+surface itself. `prefers-reduced-motion` disables all of it. Compositor opacity
+policy and the stable `view.opacity_rule` value multiply this animation channel;
+they never overwrite it.
 
 Switching workspace is the one moment where nothing moves and everything
 changes: one set of windows is replaced by another between two frames, so there
@@ -705,18 +720,21 @@ move it to.
 `data/shell/outputs.js` publishes the list from `relayoutAll()`, which is where
 everything that can change a workspace ends up — a switch, a window opening, the
 last one on a workspace closing — and sends only when the list differs from the
-one last sent. Workspaces are numbered, so `id` and `name` are both the number,
-and the ones published are the ones the bar's own buttons draw: on screen, or
-holding a window.
+one last sent. Workspace IDs are positive numbers represented as strings. The
+traditional 1 through 9 exist initially; larger IDs are allocated or created
+lazily. Names default to the ID but may differ for a workspace created through
+`ext-workspace-v1`. The catalog, including empty workspaces, is the same list
+the bar draws and is limited to 512 entries.
 
 `output` is the monitor showing it, or the one that showed it last. Nothing in
 the shell needs that second half — a workspace goes wherever it is asked for —
 but every workspace has to name a screen or a bar has no group to draw it in.
 
-Of the requests, `activate` and `assign` are honoured; both mean "show this
-workspace", on the monitor already showing it or on the one named. `deactivate`,
-`create` and `remove` are declined by doing nothing: there are nine workspaces,
-always, and a monitor is always showing one of them.
+`activate` and `assign` mean "show this workspace", on the monitor already
+showing it or on the one named. `create` allocates the lowest free positive ID,
+keeps the requested name and output home, and publishes the empty workspace.
+`remove` succeeds only for an empty inactive workspace. `deactivate` is a no-op
+because every enabled monitor always shows one workspace.
 
 ### Watching it from outside
 

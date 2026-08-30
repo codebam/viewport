@@ -237,6 +237,7 @@ pub struct Picker {
 pub enum Reply {
     Cast(async_channel::Sender<Result<portal::Started, String>>),
     Remote(async_channel::Sender<Result<remote::Started, String>>),
+    InputCapture(async_channel::Sender<Result<u32, String>>),
     /// A global-shortcuts request: the answer is the list of chords the
     /// application may hear. Here rather than in a chooser of its own because
     /// there is one keyboard and one person — see `Picker`.
@@ -257,6 +258,9 @@ impl Reply {
                 let _ = reply.try_send(Err(why.to_owned()));
             }
             Self::Remote(reply) => {
+                let _ = reply.try_send(Err(why.to_owned()));
+            }
+            Self::InputCapture(reply) => {
                 let _ = reply.try_send(Err(why.to_owned()));
             }
             Self::Shortcuts(reply) => {
@@ -285,6 +289,7 @@ impl Reply {
                 }));
             }
             Self::Shortcuts(_) => {}
+            Self::InputCapture(_) => {}
         }
     }
 }

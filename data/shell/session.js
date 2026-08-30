@@ -49,6 +49,9 @@ function serialiseNode(node) {
 function serialiseSession() {
   const saved = {
     version: 1, layout: layoutMode, workspaces: {}, outputs: {}, floating: [],
+    workspace_catalog: sortedWorkspaceIds().map((id) => ({
+      id, name: workspaceCatalog.get(id) ?? String(id),
+    })),
     workspace_homes: Object.fromEntries(workspaceHomes),
     workspace_state: Object.fromEntries(workspaceRuntime),
     notification_dnd: notificationDndManual,
@@ -152,8 +155,14 @@ function restoreSession(text) {
      would move them somewhere they were never asked to be. */
   if (views.size > 0) return;
 
+  for (const entry of Array.isArray(saved.workspace_catalog)
+    ? saved.workspace_catalog.slice(0, MAX_WORKSPACES) : []) {
+    ensureWorkspace(Number(entry?.id), entry?.name);
+  }
+
   for (const [n, tree] of Object.entries(saved.workspaces ?? {})) {
-    if (!tree || typeof tree !== 'object') continue;
+    const workspace = ensureWorkspace(Number(n));
+    if (workspace === null || !tree || typeof tree !== 'object') continue;
 
     /* A workspace root is always a split — every function that touches the
        tree reads root.children without checking, because workspaceRoot() only
@@ -169,18 +178,18 @@ function restoreSession(text) {
       root.children = [revived];
       revived = root;
     }
-    if (revived) workspaces.set(Number(n), revived);
+    if (revived) workspaces.set(workspace, revived);
   }
-  floatSlots = (saved.floating ?? []).filter((slot) => slot && slot.app);
+  floatSlots = (saved.floating ?? []).filter((slot) => slot && slot.app
+    && ensureWorkspace(Number(slot.workspace)) !== null);
   for (const [n, name] of Object.entries(saved.workspace_homes ?? {})) {
     const workspace = Number(n);
-    if (Number.isInteger(workspace) && workspace >= 1 && workspace <= WORKSPACES
+    if (ensureWorkspace(workspace) !== null
         && typeof name === 'string') workspaceHomes.set(workspace, name);
   }
   for (const [n, state] of Object.entries(saved.workspace_state ?? {})) {
     const workspace = Number(n);
-    if (!Number.isInteger(workspace) || workspace < 1 || workspace > WORKSPACES
-        || !state || typeof state !== 'object') continue;
+    if (ensureWorkspace(workspace) === null || !state || typeof state !== 'object') continue;
     const restored = {};
     if (LAYOUT_MODES.includes(state.layout)) restored.layout = state.layout;
     if (TILING_MODES.includes(state.tiling_mode)) restored.tiling_mode = state.tiling_mode;
@@ -194,9 +203,11 @@ function restoreSession(text) {
 
   for (const [name, state] of Object.entries(saved.outputs ?? {})) {
     const output = outputs.get(name);
-    if (output && Number.isFinite(state.workspace)) {
-      output.workspace = state.workspace;
-      if (Number.isFinite(state.previous)) output.previous = state.previous;
+    const workspace = ensureWorkspace(Number(state.workspace));
+    if (output && workspace !== null) {
+      output.workspace = workspace;
+      const previous = ensureWorkspace(Number(state.previous));
+      if (previous !== null) output.previous = previous;
     }
   }
 
@@ -561,7 +572,7 @@ function ruleFor(appId, title, tag, openingWorkspace = null) {
       if (rule.match.workspace !== undefined) {
         matched = true;
         if (!Number.isInteger(rule.match.workspace)
-            || rule.match.workspace < 1 || rule.match.workspace > WORKSPACES
+            || !validWorkspaceId(rule.match.workspace)
             || rule.match.workspace !== openingWorkspace) return false;
       }
       return matched;
@@ -594,7 +605,8 @@ function claimFloatSlot(id, app, tag = null) {
 /* Move one window to a workspace, without it having to be focused first. The
  * overview can act on any window on screen, not just the current one. */
 function moveViewToWorkspace(id, n) {
-  if (n < 1 || n > WORKSPACES) return false;
+  n = ensureWorkspace(Number(n));
+  if (n === null) return false;
   dissolveSwallow(id);
   const from = workspaceOf(id);
   if (from === n) return false;
@@ -708,20 +720,22 @@ function setOverview(active) {
   relayoutAll();
 }
 
-/* Move the strip under the fingers. The compositor sends a delta per touchpad
- * event; the shell owns where the limits are. */
-function gestureScroll(dx) {
-  const output = outputs.get(activeOutputName());
+/* Move the strip under the fingers. Live input supplies a cumulative screen
+ * distance and the legacy command supplies one delta; the shell owns limits. */
+function gestureScroll(dx, capturedWorkspace = null, startOffset = null) {
+  const output = capturedWorkspace === null
+    ? outputs.get(activeOutputName())
+    : outputs.get(hostOfWorkspace(capturedWorkspace));
   if (!output) return;
-  const workspace = output.workspace;
-  if (layoutModeOf(workspace) !== 'scrolling') return;
+  const workspace = capturedWorkspace ?? output.workspace;
+  if (capturedWorkspace === null && layoutModeOf(workspace) !== 'scrolling') return;
 
   gestureWorkspace = workspace;
-  const at = scrollOffsets.get(workspace) ?? 0;
+  const at = startOffset ?? (scrollOffsets.get(workspace) ?? 0);
   /* Clamped in renderStrip against the real strip length, which is only known
      once the columns have been measured. */
   scrollOffsets.set(workspace, Math.max(0, at + dx));
-  relayoutAll();
+  gestureRelayout();
 }
 
 /* The gesture ended. Focus whichever column the strip was left on, so the
@@ -770,9 +784,7 @@ function stepWorkspaceOnActive(delta) {
   const output = outputs.get(name);
   if (!output) return;
 
-  const next = output.workspace + delta;
-  if (next < 1 || next > WORKSPACES) return;
-  switchWorkspace(name, next);
+  stepWorkspace(name, delta);
 }
 
 /* The column holding a window, as an index into the strip. */

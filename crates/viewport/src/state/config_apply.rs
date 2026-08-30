@@ -66,8 +66,8 @@ impl ViewportState {
             const MODES: [&str; 5] = ["manual", "master-stack", "spiral", "bsp", "grid"];
             let mut rules = Vec::with_capacity(workspaces.len());
             for (workspace, rule) in workspaces {
-                if !(1..=9).contains(&workspace) {
-                    tracing::warn!("workspace {workspace} is outside 1 through 9; ignoring it");
+                if workspace == 0 {
+                    tracing::warn!("workspace numbers must be positive; ignoring workspace 0");
                     continue;
                 }
                 let extension = |layout: &str| {
@@ -128,6 +128,20 @@ impl ViewportState {
         }
         if file.rules.is_some() {
             self.config.rules = file.rules;
+            // A reload may introduce a denial for an already mapped window.
+            // Tighten immediately; only the shell's full workspace-aware
+            // resolution is allowed to relax this conservative answer.
+            let rules = self.config.rules.clone();
+            for view in self.views.views_mut().filter(|view| view.mapped) {
+                if !crate::config::initially_allows_capture(
+                    rules.as_ref(),
+                    &view.app_id(),
+                    &view.title(),
+                    view.tag.as_deref(),
+                ) {
+                    view.capture_allowed = false;
+                }
+            }
         }
         if file.theme.is_some() {
             self.config.theme = file.theme;
@@ -218,6 +232,26 @@ impl ViewportState {
                 border.width = prior.width;
             }
             self.config.border = Some(border);
+        }
+        if file.opacity != crate::config::OpacityConfig::default() {
+            let mut opacity = self.config.opacity.clone().unwrap_or_default();
+            for (name, value, target) in [
+                ("active", file.opacity.active, &mut opacity.active),
+                ("inactive", file.opacity.inactive, &mut opacity.inactive),
+                ("fullscreen", file.opacity.fullscreen, &mut opacity.fullscreen),
+            ] {
+                if let Some(value) = value {
+                    if value.is_finite() && value >= 0.0 {
+                        *target = value;
+                    } else {
+                        tracing::warn!(
+                            "config.opacity.{name} {value} is not a non-negative number; keeping the current value"
+                        );
+                    }
+                }
+            }
+            self.config.opacity = Some(opacity);
+            self.needs_render = true;
         }
         // The clock's locale and format. Forwarded whole rather than field by
         // field, and only when the file names one of them: the shell's own

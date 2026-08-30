@@ -145,26 +145,19 @@ function renderBarChrome(name) {
   const output = outputs.get(name);
   if (!output) return;
 
-  /* Every workspace that exists anywhere, since they are global. */
-  const occupied = new Set([output.workspace]);
-  for (const n of workspaces.keys()) {
-    if (leavesOf(n).length > 0) occupied.add(n);
-  }
-  /* A workspace holding only floating windows is still occupied. */
-  for (const [, floating] of floatingEntries()) occupied.add(floating.workspace);
-
   /* Built by joining an array rather than by concatenating, so the string is
      the same one every render for an unchanged button and the guard above can
      see that it is. */
   syncButtons(output.workspacesEl,
-    [...occupied].sort((a, b) => a - b).map((n) => {
+    sortedWorkspaceIds().map((n) => {
       const host = hostOfWorkspace(n);
       const classes = [];
       if (n === output.workspace) classes.push('active');
       if (host !== null && host !== name) classes.push('elsewhere');
       return {
-        key: String(n), text: String(n), className: classes.join(' '),
-        label: `Workspace ${n}`,
+        key: String(n), text: workspaceCatalog.get(n) ?? String(n),
+        className: classes.join(' '),
+        label: `Workspace ${workspaceCatalog.get(n) ?? n}`,
         current: n === output.workspace,
       };
     }),

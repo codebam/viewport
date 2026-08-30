@@ -1422,7 +1422,7 @@ pub fn init(
                 InputEvent::DeviceRemoved { device } => state.libinput_device_removed(device),
                 _ => {}
             }
-            state.process_input_event(event);
+            state.process_local_input_event(event);
         })
         .map_err(|e| anyhow!("inserting the libinput source: {e}"))?;
 
@@ -3754,6 +3754,8 @@ impl ViewportState {
 
     /// The VT was switched away from. Every device fd is about to be revoked.
     pub fn on_session_paused(&mut self) {
+        self.cancel_gesture();
+        self.suspend_input_capture();
         let Some(udev) = self.udev.as_mut() else {
             return;
         };

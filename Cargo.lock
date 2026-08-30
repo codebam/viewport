@@ -3014,6 +3014,7 @@ dependencies = [
  "pkg-config",
  "raw-window-handle",
  "regex",
+ "reis",
  "serde",
  "serde_json",
  "smithay",

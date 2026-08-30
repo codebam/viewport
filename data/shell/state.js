@@ -24,7 +24,44 @@ function send(message) {
  * Configuration
  * --------------------------------------------------------------------- */
 
-const WORKSPACES = 9;
+const MAX_WORKSPACES = 512;
+const MAX_WORKSPACE_ID = 0xffffffff;
+
+/* Numbered workspace identity is separate from its tree: an empty workspace
+ * created by an external bar still exists, has a name, and survives a session.
+ * The traditional nine are present from the start; larger numbers are made on
+ * demand by commands, rules, config and ext-workspace-v1. */
+const workspaceCatalog = new Map(); // number -> display name
+
+function validWorkspaceId(value) {
+  return Number.isInteger(value) && value >= 1 && value <= MAX_WORKSPACE_ID;
+}
+
+function ensureWorkspace(value, name = null) {
+  const n = Number(value);
+  if (!validWorkspaceId(n)) return null;
+  if (!workspaceCatalog.has(n)) {
+    if (workspaceCatalog.size >= MAX_WORKSPACES) return null;
+    workspaceCatalog.set(n, String(n));
+  }
+  if (typeof name === 'string' && name.trim() !== '') {
+    workspaceCatalog.set(n, name.trim());
+  }
+  return n;
+}
+
+function sortedWorkspaceIds() {
+  return [...workspaceCatalog.keys()].sort((a, b) => a - b);
+}
+
+function nextWorkspaceId() {
+  if (workspaceCatalog.size >= MAX_WORKSPACES) return null;
+  let n = 1;
+  while (workspaceCatalog.has(n)) n++;
+  return validWorkspaceId(n) ? n : null;
+}
+
+for (let n = 1; n <= 9; n++) ensureWorkspace(n);
 
 /* ------------------------------------------------------------------------
  * Session
@@ -344,6 +381,11 @@ const scrollOffsets = new Map();
  * exactly. Cleared on settle, when focus is moved to whichever column the
  * gesture landed on and the ordinary follow logic takes over again. */
 let gestureWorkspace = null;
+/* The compositor must decide ownership before the first update. This is the
+ * last whole declaration sent to it, and the sequence whose ownership was
+ * frozen when its begin arrived. */
+let gestureCaptureDeclaration = '';
+let liveGesture = null;
 /* The workspace whose column edge is being dragged with the mouse, for the
  * same reason: renderStrip builds a new strip element every render, so the
  * class that turns the columns' transitions off has to be re-applied from

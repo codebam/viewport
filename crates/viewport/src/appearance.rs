@@ -162,6 +162,7 @@ impl Appearance {
         screenshot: crate::screenshot::Screenshot,
         inhibit: crate::inhibit::PortalInhibit,
         shortcuts: crate::shortcuts::GlobalShortcuts,
+        input_capture_shared: crate::input_capture::Shared,
     ) -> anyhow::Result<()> {
         let scheme = settings.color_scheme;
         *self.settings.lock().unwrap() = settings;
@@ -195,11 +196,17 @@ impl Appearance {
         // same pair.
         let remote =
             crate::screencast::remote::RemoteDesktop::new(closer.clone(), sessions.clone());
+        let input_capture = crate::input_capture::InputCapture::new(
+            closer.clone(),
+            sessions.clone(),
+            input_capture_shared,
+        );
 
         let connection = zbus::blocking::connection::Builder::session()?
             .serve_at(OBJECT_PATH, portal)?
             .serve_at(OBJECT_PATH, screencast)?
             .serve_at(OBJECT_PATH, remote)?
+            .serve_at(OBJECT_PATH, input_capture)?
             .serve_at(OBJECT_PATH, screenshot)?
             .serve_at(OBJECT_PATH, inhibit)?
             .serve_at(OBJECT_PATH, shortcuts)?
@@ -217,7 +224,7 @@ impl Appearance {
 
         self.connection = Some(connection);
         tracing::info!(
-            "settings, screencast, remote desktop, screenshot, inhibit and \
+            "settings, screencast, remote desktop, input capture, screenshot, inhibit and \
              global-shortcuts portals up, \
              color-scheme={scheme}"
         );

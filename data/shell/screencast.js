@@ -115,17 +115,22 @@ function renderScreencastPicker() {
     ? screencastPick.devices
     : [];
   const remote = devices.length > 0;
+  const inputCapture = screencastPick.purpose === 'input-capture';
 
   const title = document.createElement('div');
   title.className = 'screencast-title';
-  title.textContent = remote
+  title.textContent = inputCapture
+    ? 'Let an application capture your input'
+    : remote
     ? 'Let an application control this computer'
     : 'Share your screen';
   dialog.append(title);
 
   const help = document.createElement('div');
   help.className = 'screencast-help';
-  help.textContent = remote
+  help.textContent = inputCapture
+    ? 'Local keyboard and pointer events would be sent to the application after you cross one of its screen-edge barriers.'
+    : remote
     ? 'An application is asking to use this desktop as if it were sitting here.'
     : 'An application is asking for a picture of this desktop.';
   dialog.append(help);
@@ -140,7 +145,9 @@ function renderScreencastPicker() {
   if (remote) {
     const grant = document.createElement('div');
     grant.className = 'screencast-devices';
-    grant.textContent = `It would be able to use the ${listPhrase(devices)}.`;
+    grant.textContent = inputCapture
+      ? `It would receive events from the ${listPhrase(devices)}. Press Ctrl+Alt+Escape to stop capture.`
+      : `It would be able to use the ${listPhrase(devices)}.`;
     dialog.append(grant);
   }
 

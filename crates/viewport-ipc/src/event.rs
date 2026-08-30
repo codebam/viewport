@@ -12,6 +12,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::Transform;
 
+/// A touchpad gesture the compositor can route as one complete sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GestureKind {
+    Swipe,
+    Pinch,
+}
+
 /// A message from the compositor to the shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -413,6 +421,28 @@ pub enum Event {
     #[serde(rename = "shell.command")]
     ShellCommand { command: String, args: Vec<String> },
 
+    /// A live touchpad gesture captured for the shell rather than a client.
+    #[serde(rename = "gesture.begin")]
+    GestureBegin { kind: GestureKind, fingers: u32 },
+
+    /// Cumulative movement since `gesture.begin`.
+    ///
+    /// Swipe uses `dx` and `dy`. Pinch additionally uses cumulative `scale`
+    /// and `rotation`; absent values keep the swipe message small and clear.
+    #[serde(rename = "gesture.update")]
+    GestureUpdate {
+        kind: GestureKind,
+        dx: f64,
+        dy: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scale: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotation: Option<f64>,
+    },
+
+    #[serde(rename = "gesture.end")]
+    GestureEnd { kind: GestureKind, cancelled: bool },
+
     /// An application asked to share the screen, and the user has to choose
     /// what.
     ///
@@ -439,6 +469,10 @@ pub enum Event {
         /// message it has always seen.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         devices: Vec<String>,
+        /// Explicit security purpose. Empty for ScreenCast and RemoteDesktop;
+        /// `input-capture` means local events leave the compositor.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        purpose: String,
     },
 
     /// The choice was made, or it was abandoned. The shell takes its chooser
@@ -655,6 +689,12 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border: Option<Border>,
 
+    /// Compositor-side opacity multipliers. Absent preserves the historical
+    /// fully opaque policy; the shell's own per-frame opacity remains a
+    /// separate input and is multiplied by this policy at render time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<Opacity>,
+
     /// The bar clock's locale and format, carried from the config file to the
     /// shell, which formats the module and the calendar under it from them.
     /// Absent means the shell decides for itself, which is the locale the
@@ -702,7 +742,7 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiling_mode: Option<String>,
 
-    /// Validated policy for fixed workspaces. The browser shell owns applying
+    /// Validated policy for numbered workspaces. The browser shell owns applying
     /// it because the compositor does not own workspace layout or placement.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspaces: Vec<WorkspaceRule>,
@@ -776,6 +816,24 @@ pub struct Config {
     pub dark_mode: bool,
 }
 
+/// Global multipliers applied to the shell-owned per-window opacity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Opacity {
+    pub active: f64,
+    pub inactive: f64,
+    pub fullscreen: f64,
+}
+
+impl Default for Opacity {
+    fn default() -> Self {
+        Self {
+            active: 1.0,
+            inactive: 1.0,
+            fullscreen: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayoutExtension {
     pub name: String,
@@ -784,7 +842,7 @@ pub struct LayoutExtension {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceRule {
-    pub workspace: u8,
+    pub workspace: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1561,6 +1619,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            opacity: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1610,7 +1669,7 @@ mod tests {
         }))
         .expect("minimal config");
         config.workspaces.push(WorkspaceRule {
-            workspace: 2,
+            workspace: 300,
             output: Some("DP-1".into()),
             layout: Some("scrolling".into()),
             tiling_mode: Some("grid".into()),
@@ -1624,7 +1683,7 @@ mod tests {
         assert_eq!(
             value["workspaces"][0],
             serde_json::json!({
-                "workspace": 2,
+                "workspace": 300,
                 "output": "DP-1",
                 "layout": "scrolling",
                 "tiling_mode": "grid",
@@ -1650,6 +1709,7 @@ mod tests {
                 width: Some(3),
                 smart: Some(true),
             }),
+            opacity: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1665,6 +1725,25 @@ mod tests {
         assert_eq!(value["border"]["radius"], 12);
         assert_eq!(value["border"]["width"], 3);
         assert_eq!(value["border"]["smart"], true);
+    }
+
+    #[test]
+    fn opacity_policy_is_carried_to_the_shell() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "tiling",
+            "logo": true,
+            "tutorial": true
+        }))
+        .expect("minimal config");
+        config.opacity = Some(Opacity {
+            active: 1.0,
+            inactive: 0.85,
+            fullscreen: 1.0,
+        });
+        let value = json(&Event::Config(Box::new(config)));
+        assert_eq!(value["opacity"]["active"], 1.0);
+        assert_eq!(value["opacity"]["inactive"], 0.85);
+        assert_eq!(value["opacity"]["fullscreen"], 1.0);
     }
 
     #[test]
@@ -1684,6 +1763,7 @@ mod tests {
                 smart: Some(true),
             }),
             border: None,
+            opacity: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1731,6 +1811,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            opacity: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1759,6 +1840,7 @@ mod tests {
             theme: None,
             gaps: None,
             border: None,
+            opacity: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1783,6 +1865,34 @@ mod tests {
         });
         assert_eq!(value["command"], "workspace.switch");
         assert_eq!(value["args"][0], "3");
+    }
+
+    #[test]
+    fn live_gestures_have_typed_cumulative_fields() {
+        assert_eq!(
+            json(&Event::GestureBegin {
+                kind: GestureKind::Pinch,
+                fingers: 2,
+            }),
+            serde_json::json!({"type": "gesture.begin", "kind": "pinch", "fingers": 2})
+        );
+        assert_eq!(
+            json(&Event::GestureUpdate {
+                kind: GestureKind::Swipe,
+                dx: -42.5,
+                dy: 1.0,
+                scale: None,
+                rotation: None,
+            }),
+            serde_json::json!({"type": "gesture.update", "kind": "swipe", "dx": -42.5, "dy": 1.0})
+        );
+        assert_eq!(
+            json(&Event::GestureEnd {
+                kind: GestureKind::Pinch,
+                cancelled: true,
+            }),
+            serde_json::json!({"type": "gesture.end", "kind": "pinch", "cancelled": true})
+        );
     }
 
     #[test]
@@ -1882,6 +1992,7 @@ mod tests {
                 theme: None,
                 gaps: None,
                 border: None,
+                opacity: None,
                 clock: None,
                 bar_widgets: None,
                 bar_items: None,
@@ -1955,6 +2066,7 @@ mod tests {
                 sources: Vec::new(),
                 selected: 0,
                 devices: Vec::new(),
+                purpose: String::new(),
             }),
             json(&Event::ScreencastPickDone { id: 0 }),
             json(&Event::ScreencastActive { active: true }),
@@ -1967,6 +2079,21 @@ mod tests {
             json(&Event::ShellCommand {
                 command: String::new(),
                 args: Vec::new(),
+            }),
+            json(&Event::GestureBegin {
+                kind: GestureKind::Swipe,
+                fingers: 3,
+            }),
+            json(&Event::GestureUpdate {
+                kind: GestureKind::Swipe,
+                dx: 0.0,
+                dy: 0.0,
+                scale: None,
+                rotation: None,
+            }),
+            json(&Event::GestureEnd {
+                kind: GestureKind::Swipe,
+                cancelled: false,
             }),
             json(&Event::Error {
                 context: String::new(),
@@ -2009,6 +2136,9 @@ mod tests {
                 "shortcuts.pick",
                 "shortcuts.pick.done",
                 "shell.command",
+                "gesture.begin",
+                "gesture.update",
+                "gesture.end",
                 "error",
             ]
         );

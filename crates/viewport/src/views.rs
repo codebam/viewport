@@ -153,6 +153,9 @@ pub struct View {
     /// window with CSS: the frame is DOM, the contents are a surface the
     /// compositor draws.
     pub opacity: f32,
+    /// Stable multiplier resolved from the current first-matching window rule.
+    /// Separate from `opacity`, which layout and fade tweens overwrite.
+    pub rule_opacity: f32,
 
     /// The last surface size that did not match the rectangle it was given,
     /// so the mismatch is said once rather than per frame.
@@ -525,6 +528,7 @@ impl Views {
             overlay_ids: std::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
             corner_id: smithay::backend::renderer::element::Id::new(),
             opacity: 1.0,
+            rule_opacity: 1.0,
             configured: None,
             foreign: None,
         });

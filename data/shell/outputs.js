@@ -21,10 +21,11 @@ function hostOfWorkspace(n) {
 }
 
 function lowestFreeWorkspace() {
-  for (let n = 1; n <= WORKSPACES; n++) {
+  for (const n of sortedWorkspaceIds()) {
     if (hostOfWorkspace(n) === null) return n;
   }
-  return 1;
+  const made = nextWorkspaceId();
+  return made === null ? (sortedWorkspaceIds()[0] ?? 1) : ensureWorkspace(made);
 }
 
 function startingWorkspace(name) {
@@ -51,6 +52,7 @@ function setActiveOutput(name) {
    * would otherwise decide from the cursor, which is wrong after a keyboard
    * focus move. */
   send({ type: 'output.active', name });
+  syncGestureCapture();
 }
 
 function syncOutputs(list) {
@@ -212,9 +214,10 @@ function syncOutputs(list) {
 /* A workspace lives on exactly one output at a time. Asking for one already
  * elsewhere moves focus there rather than creating a second copy — otherwise
  * each monitor grows its own "workspace 1". */
-function switchWorkspace(name, n) {
+function switchWorkspace(name, n, preferConfiguredOutput = true) {
   let output = outputs.get(name);
-  if (!output || n < 1 || n > WORKSPACES) return;
+  n = ensureWorkspace(Number(n));
+  if (!output || n === null) return;
 
   /* Asking for the workspace you are already on takes you back to the one
      before it — sway's workspace_auto_back_and_forth. The same key becomes a
@@ -233,7 +236,8 @@ function switchWorkspace(name, n) {
     return;
   }
   const preferred = workspaceRule(n).output;
-  if (host === null && preferred !== undefined && outputs.has(preferred)) {
+  if (preferConfiguredOutput && host === null
+      && preferred !== undefined && outputs.has(preferred)) {
     name = preferred;
     output = outputs.get(name);
   }
@@ -263,14 +267,16 @@ function workspaceBack(name) {
 }
 
 /* One workspace on from the current (`delta` 1) or back (`delta` -1), wrapping
- * within 1..WORKSPACES. The thumb-button gesture: forward to the next
+ * through the current catalog. The thumb-button gesture: forward to the next
  * workspace, back to the previous — browser back/forward, but for desktops. */
 function stepWorkspace(name, delta) {
   const output = outputs.get(name);
   if (!output) return;
-  const n = ((output.workspace - 1 + delta) % WORKSPACES + WORKSPACES)
-    % WORKSPACES + 1;
-  switchWorkspace(name, n);
+  const ids = sortedWorkspaceIds();
+  const at = ids.indexOf(output.workspace);
+  if (at < 0 || ids.length === 0) return;
+  const next = (at + Math.sign(delta) + ids.length) % ids.length;
+  switchWorkspace(name, ids[next]);
 }
 
 function focusFirstOn(name) {
@@ -293,9 +299,8 @@ function focusFirstOn(name) {
  * that never sends it publishes an empty world, which is what a bar with no
  * workspace buttons on it looks like.
  *
- * Which workspaces are in the list is the same question the bar's own buttons
- * answer: the ones on screen, plus any holding a window. An empty workspace
- * nobody is showing does not exist yet in any sense a bar could draw.
+ * The catalog is sent, including empty workspaces explicitly created by an
+ * external client. Otherwise a successful create would immediately disappear.
  *
  * The whole list every time, per the message: the shell already has it, and
  * reconciling two halves of one is how they drift apart. */
@@ -306,15 +311,8 @@ function workspaceList() {
     workspaceHomes.set(output.workspace, name);
   }
 
-  const known = new Set(shown.keys());
-  for (const n of workspaces.keys()) {
-    if (leavesOf(n).length > 0) known.add(n);
-  }
-  /* A workspace holding only floating windows is still occupied. */
-  for (const [, floating] of floatingEntries()) known.add(floating.workspace);
-
-  return [...known].sort((a, b) => a - b).map((n) => {
-    const workspace = { id: String(n), name: String(n) };
+  return sortedWorkspaceIds().map((n) => {
+    const workspace = { id: String(n), name: workspaceCatalog.get(n) ?? String(n) };
     /* The group it goes in. Where it is now if it is anywhere, and where it
        was last if it is not; a home on a monitor that has since been unplugged
        is no home at all, so it goes out ungrouped rather than into a group for
@@ -349,14 +347,34 @@ function publishWorkspaces() {
  * when this arrives, and whatever is decided here shows up in the next
  * `workspace.list` — which is what the asking bar redraws from.
  *
- * `activate` and `assign` are the two that mean something to this shell.
- * Deactivating is not a state it has — a monitor is always showing some
- * workspace — and creating or removing one is not either: there are WORKSPACES
- * of them, always, and a workspace comes into existence by having a window put
- * on it. Those are declined by doing nothing rather than by pretending. */
+ * A monitor always shows one workspace, so deactivate remains meaningless.
+ * Create and remove edit the catalog; removal is limited to an empty inactive
+ * workspace so no window or monitor is silently moved. */
+function removeWorkspace(n) {
+  if (!workspaceCatalog.has(n) || hostOfWorkspace(n) !== null) return false;
+  for (const [id] of views) {
+    if (workspaceOf(id) === n) return false;
+  }
+  workspaceCatalog.delete(n);
+  workspaces.delete(n);
+  workspaceHomes.delete(n);
+  workspaceRuntime.delete(n);
+  scrollOffsets.delete(n);
+  fullscreens.delete(n);
+  maximized.delete(n);
+  canvasViewports.delete(n);
+  canvasSlots = canvasSlots.filter((slot) => slot.workspace !== n);
+  for (const output of outputs.values()) {
+    if (output.previous === n) output.previous = null;
+  }
+  relayoutAll();
+  saveSession();
+  return true;
+}
+
 function workspaceRequested(message) {
   const n = Number(message.id);
-  const wanted = Number.isInteger(n) && n >= 1 && n <= WORKSPACES;
+  const wanted = validWorkspaceId(n) && workspaceCatalog.has(n);
 
   switch (message.action) {
     case 'activate': {
@@ -379,11 +397,49 @@ function workspaceRequested(message) {
     }
 
     /* "Put this workspace on that screen", which for this shell is the same
-       act as showing it there. */
-    case 'assign':
+       act as showing it there. If it is already on another output, exchange
+       the two outputs' workspaces so neither monitor is left with nothing. */
+    case 'assign': {
       if (!wanted || !outputs.has(message.output)) return;
-      if (outputs.get(message.output).workspace === n) return;
-      switchWorkspace(message.output, n);
+      const target = outputs.get(message.output);
+      if (target.workspace === n) return;
+      const host = hostOfWorkspace(n);
+      if (host === null) {
+        /* Assign names an explicit protocol target; configured homes are only
+         * defaults for ordinary activation. */
+        switchWorkspace(message.output, n, false);
+        break;
+      }
+      const source = outputs.get(host);
+      const displaced = target.workspace;
+      source.previous = source.workspace;
+      target.previous = target.workspace;
+      source.workspace = displaced;
+      target.workspace = n;
+      workspaceHomes.set(displaced, host);
+      workspaceHomes.set(n, message.output);
+      setActiveOutput(message.output);
+      relayoutAll();
+      focusFirstOn(message.output);
+      saveSession();
+      break;
+    }
+
+    case 'create': {
+      if (!outputs.has(message.output)) return;
+      const id = nextWorkspaceId();
+      if (id === null || ensureWorkspace(id, message.name) === null) return;
+      workspaceHomes.set(id, message.output);
+      relayoutAll();
+      saveSession();
+      break;
+    }
+
+    case 'remove':
+      if (wanted) removeWorkspace(n);
+      break;
+
+    case 'deactivate':
       break;
 
     default:

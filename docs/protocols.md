@@ -417,6 +417,27 @@ push-to-talk key is the reason both halves are sent — the application is
 holding a microphone open on the strength of the press, and nothing else will
 tell it the key came back up.
 
+## Input capture
+
+`org.freedesktop.impl.portal.InputCapture` serves the opposite direction from
+RemoteDesktop. RemoteDesktop accepts input from a sender libei context and
+performs it on this seat; InputCapture creates a receiver context and gives it
+physical keyboard and pointer events after the pointer crosses a validated
+exterior screen-edge barrier. Touch is not advertised.
+
+Every `Start` opens the trusted shell consent prompt. Grants are not persisted,
+and the unsafe no-consent screen-share fallback never applies. A session must
+fetch the current output zones, install barriers against that exact zone set,
+connect its receiver EI socket, and enable itself before a crossing can
+activate it. Output geometry changes invalidate the barriers.
+
+Only local libinput or nested-backend events enter this path. RemoteDesktop EI
+events cannot be captured and reflected into another remote connection. Lock,
+VT pause, output topology changes, portal frontend loss, session close, and EI
+disconnect all stop capture; `Ctrl+Alt+Escape` is the compositor-owned emergency
+release chord. Captured presses are tracked so neither side receives an
+unmatched release across an activation boundary.
+
 ## Status
 
 The architecture is grounded in the real 2.52.5 headers: the `WPEDisplay` and

@@ -30,6 +30,7 @@ function newLeaf(id) {
 }
 
 function workspaceRoot(n) {
+  if (ensureWorkspace(n) === null) return newSplit('horizontal');
   if (!workspaces.has(n)) workspaces.set(n, newSplit('horizontal'));
   return workspaces.get(n);
 }

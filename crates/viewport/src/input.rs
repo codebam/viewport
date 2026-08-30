@@ -62,8 +62,25 @@ pub struct GestureBinding {
 /// A gesture captured at begin. Once captured, no part reaches a client.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GestureState {
-    Swipe { fingers: u32, dx: f64, dy: f64 },
-    Pinch { fingers: u32, scale: f64 },
+    Swipe {
+        fingers: u32,
+        dx: f64,
+        dy: f64,
+    },
+    Pinch {
+        fingers: u32,
+        scale: f64,
+    },
+    LiveSwipe {
+        dx: f64,
+        dy: f64,
+    },
+    LivePinch {
+        dx: f64,
+        dy: f64,
+        scale: f64,
+        rotation: f64,
+    },
 }
 
 /// Parse `swipe:3:left` or `pinch:2:out` with an ordinary binding action.
@@ -102,6 +119,43 @@ fn captures_gesture(bindings: &[GestureBinding], kind: GestureKind, fingers: u32
     bindings
         .iter()
         .any(|binding| binding.kind == kind && binding.fingers == fingers)
+}
+
+fn captures_live_gesture(
+    captures: &[viewport_ipc::GestureCaptureSpec],
+    kind: GestureKind,
+    fingers: u32,
+) -> bool {
+    let kind = match kind {
+        GestureKind::Swipe => viewport_ipc::GestureKind::Swipe,
+        GestureKind::Pinch => viewport_ipc::GestureKind::Pinch,
+    };
+    captures
+        .iter()
+        .any(|capture| capture.kind == kind && capture.fingers == fingers)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GestureCapture {
+    Discrete,
+    Live,
+    Client,
+}
+
+fn gesture_capture(
+    bindings: &[GestureBinding],
+    captures: &[viewport_ipc::GestureCaptureSpec],
+    kind: GestureKind,
+    fingers: u32,
+    locked: bool,
+) -> GestureCapture {
+    if !locked && captures_gesture(bindings, kind, fingers) {
+        GestureCapture::Discrete
+    } else if !locked && captures_live_gesture(captures, kind, fingers) {
+        GestureCapture::Live
+    } else {
+        GestureCapture::Client
+    }
 }
 
 fn finish_gesture(
@@ -143,6 +197,7 @@ fn finish_gesture(
             };
             (GestureKind::Pinch, fingers, direction)
         }
+        GestureState::LiveSwipe { .. } | GestureState::LivePinch { .. } => return None,
     };
     bindings
         .iter()
@@ -150,6 +205,18 @@ fn finish_gesture(
             binding.kind == kind && binding.fingers == fingers && binding.direction == direction
         })
         .map(|binding| binding.action.clone())
+}
+
+fn cancelled_live_gesture(state: GestureState) -> Option<viewport_ipc::Event> {
+    let kind = match state {
+        GestureState::LiveSwipe { .. } => viewport_ipc::GestureKind::Swipe,
+        GestureState::LivePinch { .. } => viewport_ipc::GestureKind::Pinch,
+        GestureState::Swipe { .. } | GestureState::Pinch { .. } => return None,
+    };
+    Some(viewport_ipc::Event::GestureEnd {
+        kind,
+        cancelled: true,
+    })
 }
 
 use crate::state::ViewportState;
@@ -1898,6 +1965,7 @@ impl ViewportState {
                 }
             }
             InputEvent::DeviceRemoved { device } => {
+                self.cancel_gesture();
                 use smithay::backend::input::Device as _;
                 if device.has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
                     let seat = self.seat.tablet_seat();
@@ -2072,16 +2140,31 @@ impl ViewportState {
             // configured binding. Capture is decided at begin: waiting for a
             // threshold would leak a partial sequence to the client.
             InputEvent::GestureSwipeBegin { event, .. } => {
-                self.gesture = None;
-                if !self.locked
-                    && captures_gesture(&self.gestures, GestureKind::Swipe, event.fingers())
-                {
-                    self.gesture = Some(GestureState::Swipe {
-                        fingers: event.fingers(),
-                        dx: 0.0,
-                        dy: 0.0,
-                    });
-                    return;
+                self.cancel_gesture();
+                match gesture_capture(
+                    &self.gestures,
+                    &self.live_gestures,
+                    GestureKind::Swipe,
+                    event.fingers(),
+                    self.locked,
+                ) {
+                    GestureCapture::Discrete => {
+                        self.gesture = Some(GestureState::Swipe {
+                            fingers: event.fingers(),
+                            dx: 0.0,
+                            dy: 0.0,
+                        });
+                        return;
+                    }
+                    GestureCapture::Live => {
+                        self.gesture = Some(GestureState::LiveSwipe { dx: 0.0, dy: 0.0 });
+                        self.notify(&viewport_ipc::Event::GestureBegin {
+                            kind: viewport_ipc::GestureKind::Swipe,
+                            fingers: event.fingers(),
+                        });
+                        return;
+                    }
+                    GestureCapture::Client => {}
                 }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.gesture_swipe_begin(
@@ -2098,6 +2181,19 @@ impl ViewportState {
                 if let Some(GestureState::Swipe { dx, dy, .. }) = self.gesture.as_mut() {
                     *dx += event.delta().x;
                     *dy += event.delta().y;
+                    return;
+                }
+                if let Some(GestureState::LiveSwipe { dx, dy }) = self.gesture.as_mut() {
+                    *dx += event.delta().x;
+                    *dy += event.delta().y;
+                    let (dx, dy) = (*dx, *dy);
+                    self.notify(&viewport_ipc::Event::GestureUpdate {
+                        kind: viewport_ipc::GestureKind::Swipe,
+                        dx,
+                        dy,
+                        scale: None,
+                        rotation: None,
+                    });
                     return;
                 }
                 if let Some(pointer) = self.seat.get_pointer() {
@@ -2121,6 +2217,13 @@ impl ViewportState {
                     }
                     return;
                 }
+                if let Some(GestureState::LiveSwipe { .. }) = self.gesture.take() {
+                    self.notify(&viewport_ipc::Event::GestureEnd {
+                        kind: viewport_ipc::GestureKind::Swipe,
+                        cancelled: event.cancelled() || self.locked,
+                    });
+                    return;
+                }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.gesture_swipe_end(
                         self,
@@ -2136,15 +2239,35 @@ impl ViewportState {
                 }
             }
             InputEvent::GesturePinchBegin { event, .. } => {
-                self.gesture = None;
-                if !self.locked
-                    && captures_gesture(&self.gestures, GestureKind::Pinch, event.fingers())
-                {
-                    self.gesture = Some(GestureState::Pinch {
-                        fingers: event.fingers(),
-                        scale: 1.0,
-                    });
-                    return;
+                self.cancel_gesture();
+                match gesture_capture(
+                    &self.gestures,
+                    &self.live_gestures,
+                    GestureKind::Pinch,
+                    event.fingers(),
+                    self.locked,
+                ) {
+                    GestureCapture::Discrete => {
+                        self.gesture = Some(GestureState::Pinch {
+                            fingers: event.fingers(),
+                            scale: 1.0,
+                        });
+                        return;
+                    }
+                    GestureCapture::Live => {
+                        self.gesture = Some(GestureState::LivePinch {
+                            dx: 0.0,
+                            dy: 0.0,
+                            scale: 1.0,
+                            rotation: 0.0,
+                        });
+                        self.notify(&viewport_ipc::Event::GestureBegin {
+                            kind: viewport_ipc::GestureKind::Pinch,
+                            fingers: event.fingers(),
+                        });
+                        return;
+                    }
+                    GestureCapture::Client => {}
                 }
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.gesture_pinch_begin(
@@ -2160,6 +2283,27 @@ impl ViewportState {
             InputEvent::GesturePinchUpdate { event, .. } => {
                 if let Some(GestureState::Pinch { scale, .. }) = self.gesture.as_mut() {
                     *scale = event.scale();
+                    return;
+                }
+                if let Some(GestureState::LivePinch {
+                    dx,
+                    dy,
+                    scale,
+                    rotation,
+                }) = self.gesture.as_mut()
+                {
+                    *dx += event.delta().x;
+                    *dy += event.delta().y;
+                    *scale = event.scale();
+                    *rotation += event.rotation();
+                    let (dx, dy, scale, rotation) = (*dx, *dy, *scale, *rotation);
+                    self.notify(&viewport_ipc::Event::GestureUpdate {
+                        kind: viewport_ipc::GestureKind::Pinch,
+                        dx,
+                        dy,
+                        scale: Some(scale),
+                        rotation: Some(rotation),
+                    });
                     return;
                 }
                 if let Some(pointer) = self.seat.get_pointer() {
@@ -2183,6 +2327,13 @@ impl ViewportState {
                             self.handle_action(Action::Bound(action));
                         }
                     }
+                    return;
+                }
+                if let Some(GestureState::LivePinch { .. }) = self.gesture.take() {
+                    self.notify(&viewport_ipc::Event::GestureEnd {
+                        kind: viewport_ipc::GestureKind::Pinch,
+                        cancelled: event.cancelled() || self.locked,
+                    });
                     return;
                 }
                 if let Some(pointer) = self.seat.get_pointer() {
@@ -2827,6 +2978,15 @@ impl ViewportState {
 }
 
 impl ViewportState {
+    /// Drop an interrupted compositor-owned gesture. Live shell sequences need
+    /// an explicit cancelled end because their state lives in another process.
+    pub(crate) fn cancel_gesture(&mut self) {
+        let event = self.gesture.take().and_then(cancelled_live_gesture);
+        if let Some(event) = event {
+            self.notify(&event);
+        }
+    }
+
     /// Move focus to the neighbouring window, or step through them.
     ///
     /// Falls back to the shell when there is no window that way: in sway a
@@ -3449,6 +3609,68 @@ mod tests {
         assert!(parse_gesture("pinch:0:in", "close").is_none());
         assert!(parse_gesture("pinch:2:left", "close").is_none());
         assert!(parse_gesture("swipe:3:left:extra", "close").is_none());
+    }
+
+    #[test]
+    fn live_capture_matches_exact_kind_and_finger_count() {
+        let captures = [viewport_ipc::GestureCaptureSpec {
+            kind: viewport_ipc::GestureKind::Swipe,
+            fingers: 3,
+        }];
+        assert!(captures_live_gesture(&captures, GestureKind::Swipe, 3));
+        assert!(!captures_live_gesture(&captures, GestureKind::Swipe, 4));
+        assert!(!captures_live_gesture(&captures, GestureKind::Pinch, 3));
+
+        let bindings = [parse_gesture("swipe:3:left", "close").unwrap()];
+        assert_eq!(
+            gesture_capture(&bindings, &captures, GestureKind::Swipe, 3, false),
+            GestureCapture::Discrete,
+            "configured discrete gestures have first priority"
+        );
+        assert_eq!(
+            gesture_capture(&[], &captures, GestureKind::Swipe, 3, false),
+            GestureCapture::Live
+        );
+        assert_eq!(
+            gesture_capture(&[], &captures, GestureKind::Pinch, 2, false),
+            GestureCapture::Client
+        );
+        assert_eq!(
+            gesture_capture(&[], &captures, GestureKind::Swipe, 3, true),
+            GestureCapture::Client,
+            "the shell cannot capture gestures while locked"
+        );
+    }
+
+    #[test]
+    fn interrupted_live_gestures_emit_a_cancelled_end() {
+        assert_eq!(
+            cancelled_live_gesture(GestureState::LiveSwipe { dx: 4.0, dy: 2.0 }),
+            Some(viewport_ipc::Event::GestureEnd {
+                kind: viewport_ipc::GestureKind::Swipe,
+                cancelled: true,
+            })
+        );
+        assert_eq!(
+            cancelled_live_gesture(GestureState::LivePinch {
+                dx: 1.0,
+                dy: 2.0,
+                scale: 0.8,
+                rotation: 0.1,
+            }),
+            Some(viewport_ipc::Event::GestureEnd {
+                kind: viewport_ipc::GestureKind::Pinch,
+                cancelled: true,
+            })
+        );
+        assert_eq!(
+            cancelled_live_gesture(GestureState::Swipe {
+                fingers: 3,
+                dx: 0.0,
+                dy: 0.0,
+            }),
+            None
+        );
     }
 
     #[test]

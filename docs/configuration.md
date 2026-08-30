@@ -53,8 +53,8 @@ a TTY.
 }
 ```
 
-`workspaces` is an optional object whose keys are fixed workspace numbers
-`"1"` through `"9"`. Each value accepts `output`, `layout`, `tiling_mode` and
+`workspaces` is an optional object whose keys are positive workspace numbers.
+Each value accepts `output`, `layout`, `tiling_mode` and
 `gaps`. `output` is the connector preferred as that workspace's home; `layout`
 accepts a built-in or validated `layout_extensions` name; `tiling_mode` accepts
 `manual`, `master-stack`, `spiral`, `bsp` or `grid`; and `gaps` has the same
@@ -63,12 +63,15 @@ inherit global values. Invalid workspace numbers, unknown layout/mode names and
 negative gap sizes are rejected or ignored with a diagnostic before reaching
 the shell.
 
-Workspace assignment and layout policy remain shell-owned. `shell layout.model`
+Workspace assignment and layout policy remain shell-owned. Workspaces 1 through
+9 exist initially and keep their default bindings; a command, rule or config
+entry naming a larger positive number creates it lazily. The shipped shell keeps
+at most 512 workspaces. `shell layout.model`
 and `shell layout.mode` change the active workspace rather than a session-wide
 global; those mutable choices and each workspace's last output home are saved in
-existing `session.json`. Config rules remain defaults, so restored mutable state
-wins for that session. Workspaces remain exactly `1` through `9`: this adds no
-names, dynamic creation, selectors, runtime workspace-rule IPC or settings UI.
+existing `session.json`. Names and empty dynamically created workspaces are saved
+there too. Config rules remain defaults, so restored mutable state wins for that
+session.
 
 `reload` re-reads the config file *and* reloads the shell, so a changed
 keybinding takes effect without a restart. Only keys the file actually contains
@@ -233,6 +236,12 @@ captures that whole sequence from its beginning, so a client never receives a
 partial gesture. With no matching configuration, the complete gesture is
 forwarded through `pointer-gestures-v1` as before. Desktop gesture actions are
 disabled while locked.
+
+The reference shell also claims live gestures only while a layout uses them:
+three-finger swipes move the scrolling strip one screen pixel per gesture
+pixel, and two-finger pinches zoom the canvas continuously. A configured
+gesture of the same type and finger count wins over that live claim. Every
+other sequence continues to the focused client unchanged.
 
 The top-level `input` object configures concrete libinput devices. `*` applies
 first; a device's exact entry overrides only fields it names. The stable key is
@@ -1029,6 +1038,23 @@ absence, keeps the frame here — which is what the shell's border is. Both
 protocols are answered with the same setting, since a client that probes the
 manager and one that asks per surface must not be told different things.
 
+## Window opacity
+
+```jsonc
+{
+  "opacity": { "active": 1, "inactive": 0.9, "fullscreen": 1 }
+}
+```
+
+These non-negative values are compositor-side multipliers. `active` applies to
+the focused window, `inactive` to every other window, and `fullscreen` replaces
+that choice while a window is fullscreen. Absent fields retain their current
+value; all three start at `1`. Final alpha is clamped to `0..1`.
+
+Opacity policy multiplies, rather than replaces, opacity supplied by a layout or
+fade animation. This matters for layouts such as solar: an inactive multiplier
+of `0.9` applied to a layout opacity of `0.4` produces `0.36`, not `0.9`.
+
 ## Bar widgets
 
 The bar ships with a fixed set of modules — clock, CPU, memory, load, root
@@ -1675,7 +1701,8 @@ exactly like a real one.
     "pseudotile": true, "width": 900, "height": 600 },
   { "app_id": "foot", "swallow": true },
   { "app_id": "keep-terminal-visible", "swallow": false },
-  { "app_id": "org.keepassxc.KeePassXC", "capture": false }
+  { "app_id": "org.keepassxc.KeePassXC", "capture": false },
+  { "app_id": "picture-in-picture", "opacity": 0.9 }
 ]
 ```
 
@@ -1683,13 +1710,20 @@ Matched on `app_id`, or on `title` for applications that give every window the
 same `app_id` and differ only in what they show. Both are substring matches: an
 exact one would need the application's internal name known exactly. A rule is
 applied before the window is inserted anywhere, so it goes straight where it
-belongs rather than appearing in one place and jumping.
+belongs rather than appearing in one place and jumping. Existing windows are
+also re-evaluated when their title, app ID or tag changes and when configuration
+is reloaded. A newly matching rule applies the actions it explicitly names; a
+rule that stops matching does not undo manual workspace or floating state.
+Capture is current permission rather than layout state, so removing a denial
+explicitly allows capture again. Opacity is also current policy: a non-negative
+number multiplies that window's global and layout opacity, and removing the rule
+restores the identity multiplier `1`.
 
 The legacy flat shape above remains supported. Rich rules put `app_id`, `title`
 and/or the stable xdg-toplevel `tag` under `match`; each field accepts
 `contains`, `equals` or `regex` (plus optional regex `flags`). All supplied
 fields must match. Rules still use first-match order. String field values are a
-short form of `contains`. `match.workspace` is an integer from 1 through 9 and
+short form of `contains`. `match.workspace` is a positive workspace number and
 matches the active workspace at the instant the window opens. It does not
 change the action named by the outer `workspace` field.
 

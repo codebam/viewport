@@ -302,6 +302,7 @@ function handleShellCommand(command, args) {
       break;
     case 'gesture.settle':
       gestureSettle();
+      endGesture();
       break;
     case 'layout.overview':
       setOverview(!overviewActive);
@@ -367,6 +368,77 @@ function handleShellCommand(command, args) {
     default:
       console.warn('unknown shell command:', command, args);
   }
+}
+
+/* Live gesture ownership was declared before begin and stays on this record
+ * until end, even if focus, output or layout changes under the fingers. */
+function handleLiveGesture(message) {
+  if (message.type === 'gesture.begin') {
+    /* A backend interruption can lose an end event. Restore the old sequence
+     * before accepting the next begin rather than applying new deltas to its
+     * frozen workspace. */
+    if (liveGesture !== null) cancelLiveGesture();
+    if (message.kind === 'swipe' && message.fingers === 3) {
+      const output = outputs.get(activeOutputName());
+      if (!output || layoutModeOf(output.workspace) !== 'scrolling') return;
+      liveGesture = {
+        kind: 'swipe', workspace: output.workspace,
+        start: scrollOffsets.get(output.workspace) ?? 0,
+      };
+      gestureWorkspace = output.workspace;
+      gestureRelayout();
+    } else if (message.kind === 'pinch' && message.fingers === 2) {
+      const pinch = canvasPinchBegin();
+      if (pinch) {
+        liveGesture = { kind: 'pinch', pinch };
+        gestureRelayout();
+      }
+    }
+    return;
+  }
+
+  if (liveGesture === null || message.kind !== liveGesture.kind) return;
+  if (message.type === 'gesture.update') {
+    if (liveGesture.kind === 'swipe') {
+      const dx = Number(message.dx);
+      if (Number.isFinite(dx)) {
+        gestureScroll(-dx, liveGesture.workspace, liveGesture.start);
+      }
+    } else {
+      canvasPinchUpdate(liveGesture.pinch, Number(message.scale));
+    }
+    return;
+  }
+
+  if (message.type !== 'gesture.end') return;
+  const gesture = liveGesture;
+  liveGesture = null;
+  if (gesture.kind === 'swipe') {
+    if (message.cancelled) {
+      scrollOffsets.set(gesture.workspace, gesture.start);
+      gestureWorkspace = null;
+      endGesture(true);
+    } else {
+      gestureSettle();
+      endGesture();
+    }
+  } else {
+    if (message.cancelled) canvasPinchCancel(gesture.pinch);
+    endGesture(message.cancelled);
+  }
+}
+
+function cancelLiveGesture() {
+  const gesture = liveGesture;
+  liveGesture = null;
+  if (!gesture) return;
+  if (gesture.kind === 'swipe') {
+    scrollOffsets.set(gesture.workspace, gesture.start);
+    gestureWorkspace = null;
+  } else {
+    canvasPinchCancel(gesture.pinch);
+  }
+  endGesture(true);
 }
 
 /* ------------------------------------------------------------------------
@@ -445,6 +517,7 @@ function finishLayoutConfig(message, extensionsLoaded) {
     layoutMode = next;
     normaliseForLayout();
   }
+  reapplyWindowRules();
   relayoutAll();
   settingsChanged();
   if (!initialConfigReady) {
@@ -661,6 +734,7 @@ window.addEventListener('viewport', (event) => {
         view.title = message.title;
         view.app_id = message.app_id;
         if (message.tag !== undefined) view.tag = message.tag;
+        reapplyWindowRule(message.id);
         renderBars();
       }
       break;
@@ -879,6 +953,12 @@ window.addEventListener('viewport', (event) => {
       /* Most commands rearrange something; saving is debounced, so asking on
          every one of them costs a timer reset. */
       saveSession();
+      break;
+
+    case 'gesture.begin':
+    case 'gesture.update':
+    case 'gesture.end':
+      handleLiveGesture(message);
       break;
 
     case 'error':

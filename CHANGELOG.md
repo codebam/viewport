@@ -12,6 +12,18 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- Input capture portal support for sharing the local keyboard and pointer with
+  tools such as input-leap after explicit shell consent. Sessions use receiver
+  libei contexts, activate only across validated exterior output barriers, and
+  are revoked on lock, VT pause, topology change, frontend loss, or
+  `Ctrl+Alt+Escape`; touch is not advertised.
+- Layouts can claim live touchpad gestures without taking unmatched sequences
+  from clients. The scrolling strip follows a three-finger swipe one for one,
+  while the canvas zooms continuously under a two-finger pinch; configured
+  discrete gestures retain priority.
+- Window opacity policy now supports active, inactive and fullscreen
+  compositor-side multipliers, plus per-window rule multipliers. Policy composes
+  with existing layout and fade opacity instead of overwriting animations.
 - XWayland clients can now start validated interactive move and all eight-edge
   resize grabs from their own titlebars. They share the native Wayland
   shell-owned delta path and are cancelled if the target disappears.
@@ -25,10 +37,15 @@ to summarise rather than to duplicate.
 - Native xdg-shell titlebar move and resize requests now use validated pointer
   grabs and the existing shell-owned delta path, including all eight resize
   edges, without moving layout policy into the compositor.
-- Fixed workspaces 1 through 9 can override `output`, `layout`, `tiling_mode`
-  and individual `gaps` fields through the `workspaces` config object. Browser
-  shell resolves policy per active workspace and saves workspace homes plus
-  runtime layout choices in existing session state.
+- Positive numbered workspaces can override `output`, `layout`, `tiling_mode`
+  and individual `gaps` fields through the `workspaces` config object. The
+  shipped shell keeps 1 through 9 by default, creates larger IDs lazily, honours
+  ext-workspace create/remove/activate/assign, and saves names, empty workspaces,
+  homes and runtime layout choices in existing session state.
+- Existing windows now re-evaluate first-match rules when identity properties
+  change or configuration reloads. Newly explicit layout actions apply without
+  destructively undoing manual state when a rule disappears, while capture
+  permission is resolved on every change and tightened conservatively first.
 - Minimize now works across native Wayland, Xwayland, shell IPC, taskbar
   activation, and foreign-toplevel management. Minimized windows retain their
   prior layout place and taskbar entry, lose focus, and restore on activation.
@@ -142,6 +159,9 @@ to summarise rather than to duplicate.
 - Per-device libinput settings can match the logged `vendor:product:name`, with
   wildcard defaults and live reload. Discrete swipe and pinch gestures can run
   any existing binding action while unmatched gestures still reach clients.
+- Layouts can claim typed live touchpad sequences without splitting client
+  gestures. The scrolling strip follows three-finger swipes one for one, and
+  the canvas zooms continuously under a two-finger pinch.
 - Explicit local `layout_extensions` register through a stable shell API and
   load before mapped-window replay. The shipped monocle example demonstrates
   the contract; failed or invalid extensions fall back to tiling.
