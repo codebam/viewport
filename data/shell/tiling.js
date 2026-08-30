@@ -68,6 +68,16 @@ function isFullscreen(id) {
   return fullscreenOn(workspaceOf(id)) === id;
 }
 
+function maximizedOn(workspace) {
+  return workspace !== null && workspace !== undefined
+    ? maximized.get(workspace) ?? null : null;
+}
+
+function isMaximized(id) {
+  if (id == null) return false;
+  return maximizedOn(workspaceOf(id)) === id;
+}
+
 /* Which workspace a window is on, tiled or floating. */
 function workspaceOf(id) {
   const floating = floatingOf(id);

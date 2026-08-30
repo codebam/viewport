@@ -301,6 +301,18 @@ impl View {
         false
     }
 
+    pub fn wants_maximized(&self) -> bool {
+        if let Some(toplevel) = self.window.toplevel() {
+            use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+            return toplevel
+                .with_pending_state(|pending| pending.states.contains(State::Maximized));
+        }
+        if let Some(x11) = self.window.x11_surface() {
+            return x11.is_maximized();
+        }
+        false
+    }
+
     /// Whether this window would rather float than be tiled.
     ///
     /// The compositor can see these signals and the shell cannot, which is why

@@ -358,6 +358,7 @@ impl ViewportState {
         // X11 window never made a request at all — it carries the state as a
         // property and nothing calls into the compositor about it.
         let fullscreen = view.wants_fullscreen();
+        let maximized = view.wants_maximized();
         let added = view.added(output, false, parent, ancestors);
 
         // What the client actually handed over. Whether a window is opaque is
@@ -390,6 +391,9 @@ impl ViewportState {
         if fullscreen {
             self.notify_fullscreen(id, true);
         }
+        if maximized {
+            self.notify_maximized(id, true);
+        }
 
         // Announce it outside the compositor too, now that it has a title and
         // an app id — before that there is nothing worth listing.
@@ -411,8 +415,14 @@ impl ViewportState {
             None => Vec::new(),
         };
         let dh = self.display_handle.clone();
-        self.foreign_management_state
-            .add::<Self>(&dh, id, &title, &app_id, outputs);
+        self.foreign_management_state.add::<Self>(
+            &dh,
+            id,
+            &title,
+            &app_id,
+            (self.focused == id, maximized, fullscreen),
+            outputs,
+        );
 
         // Watch for the shell answering. A window that maps and is never given
         // a rectangle is invisible for ever, and a shell that has stopped

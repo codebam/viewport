@@ -127,6 +127,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `view.layout` | `id`, `x`, `y`, `width`, `height`, optional `clip{x,y,width,height}`, optional `scale`, optional `frame{x,y,width,height}`, optional `floating` |
 | `view.visible` | `id`, `visible` |
 | `view.fullscreen` | `id`, `fullscreen` — tells the client, which rearranges itself on the state |
+| `view.maximized` | `id`, `maximized` — tells the client while the shell preserves its prior layout place |
 | `view.focus` | `id` |
 | `view.close` | `id` |
 | `view.opacity` | `id`, `opacity` (0–1) |

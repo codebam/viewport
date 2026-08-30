@@ -103,18 +103,12 @@ impl XdgShellHandler for ViewportState {
         self.answer_fullscreen(&surface, false);
     }
 
-    /// Maximise, which this compositor has no notion of.
-    ///
-    /// The shell owns the layout and there is no maximised state for it to
-    /// mean. A configure is still sent, because the protocol requires an
-    /// answer and a client that gets none waits for one
-    /// (`src/xdg_shell.c:115`).
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        surface.send_configure();
+        self.answer_maximized(&surface, true);
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        surface.send_configure();
+        self.answer_maximized(&surface, false);
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
@@ -445,8 +439,12 @@ impl ViewportState {
             return;
         };
         let (id, mapped) = (view.id, view.mapped);
-        self.foreign_management_state
-            .set_state(id, self.focused == id, fullscreen);
+        self.foreign_management_state.set_state(
+            id,
+            self.focused == id,
+            self.view_is_maximized(id),
+            fullscreen,
+        );
         // Only once the shell knows the window exists.
         //
         // A client is allowed to ask for fullscreen before its first commit —
@@ -461,6 +459,33 @@ impl ViewportState {
         }
     }
 
+    fn answer_maximized(&mut self, surface: &ToplevelSurface, maximized: bool) {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+
+        surface.with_pending_state(|pending| {
+            if maximized {
+                pending.states.set(State::Maximized);
+            } else {
+                pending.states.unset(State::Maximized);
+            }
+        });
+        surface.send_configure();
+
+        let Some(view) = self.views.find_by_surface(surface.wl_surface()) else {
+            return;
+        };
+        let (id, mapped) = (view.id, view.mapped);
+        self.foreign_management_state.set_state(
+            id,
+            self.focused == id,
+            maximized,
+            self.view_is_fullscreen(id),
+        );
+        if mapped {
+            self.notify_maximized(id, maximized);
+        }
+    }
+
     /// Tell the shell a window's fullscreen state.
     ///
     /// The layout is the shell's, so this is the whole of what the compositor
@@ -471,6 +496,13 @@ impl ViewportState {
         self.notify(&Event::ShellCommand {
             command: "window.fullscreen.set".to_owned(),
             args: vec![id.to_string(), u8::from(fullscreen).to_string()],
+        });
+    }
+
+    pub(crate) fn notify_maximized(&mut self, id: u32, maximized: bool) {
+        self.notify(&Event::ShellCommand {
+            command: "window.maximized.set".to_owned(),
+            args: vec![id.to_string(), u8::from(maximized).to_string()],
         });
     }
 

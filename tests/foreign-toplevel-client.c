@@ -8,17 +8,15 @@
  * specific to this protocol, so this drives the requests a taskbar would and
  * checks the compositor carries them out.
  *
- *   foreign-toplevel-client   list, activate, fullscreen, close; pass
+ *   foreign-toplevel-client   list, activate, maximize, fullscreen, close; pass
  *
  * The script that runs it starts a compositor and a paint client first, so
  * there is one window to see. This client:
  *
  *   - binds zwlr_foreign_toplevel_manager_v1 v3 and waits for a `toplevel`
  *     handle — the listing part;
- *   - sends set_fullscreen/unset_fullscreen/activate, which must be accepted
- *     (the compositor forwards them to the shell; it deliberately does not
- *     echo fullscreen state back to the requester, so nothing is asserted
- *     about the state event);
+ *   - sends maximize/fullscreen requests and checks each state is published
+ *     back, then sends activate;
  *   - sends close() and waits for the `closed` event on the handle — the
  *     compositor acting: it forwarded close to the window client, and once
  *     that window goes away the handle must be told.
@@ -48,6 +46,8 @@ struct state {
 	bool toplevel_seen;
 	bool closed;
 	bool state_seen;
+	bool maximized;
+	bool fullscreen;
 };
 
 static void handle_title(void *data,
@@ -86,8 +86,17 @@ static void handle_state(void *data,
 	struct zwlr_foreign_toplevel_handle_v1 *toplevel, struct wl_array *states)
 {
 	struct state *state = data;
+	uint32_t *value;
 	(void)toplevel;
-	(void)states;
+	state->maximized = false;
+	state->fullscreen = false;
+	wl_array_for_each(value, states) {
+		if (*value == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED) {
+			state->maximized = true;
+		} else if (*value == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN) {
+			state->fullscreen = true;
+		}
+	}
 	state->state_seen = true;
 }
 
@@ -274,17 +283,43 @@ int main(void)
 	}
 	printf("ok   the compositor listed a toplevel\n");
 
-	/* Requests a taskbar makes. These must be accepted; the compositor
-	 * forwards them to the shell rather than echoing fullscreen back, so
-	 * nothing more is asserted about them here. */
+	/* Requests a taskbar makes. Each state must reach both the managed client
+	 * and every observer, including this handle. */
 	zwlr_foreign_toplevel_handle_v1_set_fullscreen(state.toplevel, NULL);
+	wl_display_roundtrip(display);
+	if (!state.fullscreen) {
+		fprintf(stderr, "fullscreen state was not published\n");
+		wl_display_disconnect(display);
+		return 1;
+	}
 	zwlr_foreign_toplevel_handle_v1_unset_fullscreen(state.toplevel);
+	wl_display_roundtrip(display);
+	if (state.fullscreen) {
+		fprintf(stderr, "fullscreen state was not cleared\n");
+		wl_display_disconnect(display);
+		return 1;
+	}
+	zwlr_foreign_toplevel_handle_v1_set_maximized(state.toplevel);
+	wl_display_roundtrip(display);
+	if (!state.maximized) {
+		fprintf(stderr, "maximized state was not published\n");
+		wl_display_disconnect(display);
+		return 1;
+	}
+	zwlr_foreign_toplevel_handle_v1_unset_maximized(state.toplevel);
+	wl_display_roundtrip(display);
+	if (state.maximized) {
+		fprintf(stderr, "maximized state was not cleared\n");
+		wl_display_disconnect(display);
+		return 1;
+	}
 	/* A NULL seat marshals as an invalid argument, so bind a real one from
 	 * the registry rather than passing NULL — activate(seat) must carry a
 	 * valid seat handle. */
 	zwlr_foreign_toplevel_handle_v1_activate(state.toplevel, state.seat);
 	dispatch_until(display, 500);
-	printf("ok   activate and fullscreen requests were accepted\n");
+	printf("ok   maximize and fullscreen state changes were published\n");
+	printf("ok   activate request was accepted\n");
 
 	/* The observable act: close() must reach the window, and when it goes
 	 * the handle must be told with `closed`. */

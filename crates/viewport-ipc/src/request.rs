@@ -69,6 +69,15 @@ pub enum Request {
         fullscreen: bool,
     },
 
+    #[serde(rename = "view.maximized")]
+    ViewMaximized {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+        /// Absent means not maximized.
+        #[serde(default)]
+        maximized: bool,
+    },
+
     #[serde(rename = "view.focus")]
     ViewFocus {
         #[serde(deserialize_with = "view_id")]
@@ -1255,6 +1264,17 @@ mod tests {
             Request::ViewFullscreen {
                 id: 7,
                 fullscreen: false
+            }
+        );
+    }
+
+    #[test]
+    fn absent_maximized_means_restored() {
+        assert_eq!(
+            parse(r#"{"type":"view.maximized","id":7}"#),
+            Request::ViewMaximized {
+                id: 7,
+                maximized: false
             }
         );
     }

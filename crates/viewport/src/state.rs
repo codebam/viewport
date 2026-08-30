@@ -1244,7 +1244,13 @@ impl ViewportState {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let color_management = crate::color_management::ColorManagementState::new::<Self>(&dh);
-        let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_shell_state = XdgShellState::new_with_capabilities::<Self>(
+            &dh,
+            [
+                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::WmCapabilities::Fullscreen,
+                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::WmCapabilities::Maximize,
+            ],
+        );
         let _xdg_dialog_state =
             smithay::wayland::shell::xdg::dialog::XdgDialogState::new::<Self>(&dh);
         let _system_bell_state =
@@ -3749,12 +3755,14 @@ impl ViewportState {
         // window that had focus when it started.
         if previous != id {
             let fullscreen = self.view_is_fullscreen(previous);
+            let maximized = self.view_is_maximized(previous);
             self.foreign_management_state
-                .set_state(previous, false, fullscreen);
+                .set_state(previous, false, maximized, fullscreen);
         }
         let fullscreen = self.view_is_fullscreen(id);
+        let maximized = self.view_is_maximized(id);
         self.foreign_management_state
-            .set_state(id, true, fullscreen);
+            .set_state(id, true, maximized, fullscreen);
 
         let event = Event::ViewFocused { id };
         self.notify(&event);
@@ -3762,17 +3770,17 @@ impl ViewportState {
 
     /// Whether a window is fullscreen, as the state it was configured with
     /// says — the shell decides it, and this is where it landed.
-    fn view_is_fullscreen(&self, id: u32) -> bool {
-        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
-
+    pub(crate) fn view_is_fullscreen(&self, id: u32) -> bool {
         self.views
             .get(id)
-            .and_then(|view| view.window.toplevel())
-            .map(|toplevel| {
-                toplevel.with_pending_state(|pending| {
-                    pending.states.contains(xdg_toplevel::State::Fullscreen)
-                })
-            })
+            .map(crate::views::View::wants_fullscreen)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn view_is_maximized(&self, id: u32) -> bool {
+        self.views
+            .get(id)
+            .map(crate::views::View::wants_maximized)
             .unwrap_or(false)
     }
 }

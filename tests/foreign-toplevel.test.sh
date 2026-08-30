@@ -9,9 +9,8 @@
 #
 #   - a paint client puts a window on screen, and the manager must list it
 #     (the `toplevel` handle the test client waits for);
-#   - set_fullscreen/unset_fullscreen/activate must be accepted (the
-#     compositor forwards them to the shell, which does not echo fullscreen
-#     back, so nothing is asserted about a state event);
+#   - set/unset fullscreen and maximized must publish matching state events;
+#   - activate must be accepted;
 #   - close() must actually close the window, and the handle must then say
 #     `closed` — the part only this protocol can be checked on.
 set -uo pipefail

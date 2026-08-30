@@ -288,6 +288,7 @@ empty, which on an OLED panel is two fewer things sitting in fixed pixels.
 | `Mod4+Shift+k` | the on-screen keyboard, which otherwise comes up on its own |
 | `Mod4+Shift+comma` | the settings panel |
 | `Mod4+f` | fullscreen |
+| `Mod4+m` | maximize while keeping bar, gaps, and border |
 | `Mod4+a` | focus the parent container |
 | `Mod4+Shift+space` | toggle floating on the focused window |
 | `Mod4+b` / `Mod4+v` | next window splits horizontally / vertically |

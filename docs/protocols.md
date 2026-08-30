@@ -350,11 +350,12 @@ panels can turn a monitor off on request rather than only on a timer.
 
 ## What clients may ask for
 
-`maximize` and `minimize` are declined, but *answered*: the protocol requires a
-configure in response to the request, and a client that gets none waits for one
-— GTK's own maximize button hangs the window rather than doing nothing.
-`wm_capabilities` is set to fullscreen alone, so a client can stop drawing
-buttons for things this compositor will not do. It is sent on the initial
+`maximize` fills the usable workspace while keeping the bar, gaps, border, and
+the window's prior tiled or floating place. `minimize` is declined, but
+*answered*: the protocol requires a configure in response to the request, and a
+client that gets none waits for one. `wm_capabilities` advertises fullscreen and
+maximize, so a client can stop drawing buttons for things this compositor will
+not do. It is sent on the initial
 commit rather than at creation, because the surface is not initialised before
 then and wlroots asserts rather than ignoring a configure scheduled too early.
 

@@ -1314,12 +1314,14 @@ html.behind body { background: transparent; }
   /* The edge gap is inner + outer: the outer gap is extra space around the
      output, added on top of the space between windows. */
   padding: calc(var(--gap) + var(--gap-outer));
+  --edge-gap: calc(var(--gap) + var(--gap-outer));
 }
 
 /* Smart gaps: with a single window on the workspace the inner gap is dropped,
    so a lone window sits at the outer gap rather than the doubled edge gap. */
 .windows.smart-single {
   padding: var(--gap-outer);
+  --edge-gap: var(--gap-outer);
 }
 
 /* Smart radius: that same lone window is drawn square. A window pushed against
@@ -1828,6 +1830,19 @@ html.behind body { background: transparent; }
      stayed as big as it was, and had its right and bottom edges cropped
      against a hole it never agreed to. */
   box-sizing: content-box;
+}
+
+/* Maximized keeps desktop chrome and gaps, unlike fullscreen. The original
+ * tree or floating rectangle remains untouched underneath this override. */
+.window.maximized {
+  position: absolute;
+  inset: var(--edge-gap) !important;
+  left: var(--edge-gap) !important;
+  top: var(--edge-gap) !important;
+  width: auto !important;
+  height: auto !important;
+  z-index: 9;
+  box-sizing: border-box;
 }
 
 /* Fullscreen covers the output entirely, bar included, like sway.

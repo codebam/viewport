@@ -441,6 +441,7 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
   + ' fullscreenOnForTest: fullscreenOn,'
+  + ' maximizedOnForTest: maximizedOn,'
   + ' dynamicOrderForTest: dynamicOrder,'
   + ' TILING_MODES, LAYOUT_MODES, layoutRegistry, registerLayout,'
   + ' get tilingMode() { return tilingMode; },'
@@ -7015,6 +7016,20 @@ if (mode === 'scrolling') {
     sheet.value(floaty.el, 'position') === 'absolute' && floatingLayer > 0);
   check('and its hole is still a hole',
     sheet.value(floaty.viewport, 'background-color') === 'transparent');
+
+  let before = sent.length;
+  emit({ type: 'view.focused', id: 82 });
+  emit({ type: 'shell.command', command: 'window.maximized', args: [] });
+  check('maximize marks the focused window without making it fullscreen',
+    floaty.el.classList.contains('maximized') &&
+    !output.el.classList.contains('has-fullscreen'));
+  check('maximize tells the client about its state',
+    sent.slice(before).some((m) => m.type === 'view.maximized' &&
+      m.id === 82 && m.maximized));
+  emit({ type: 'shell.command', command: 'window.maximized.set',
+    args: ['82', '0'] });
+  check('a client unmaximize request restores the old placement',
+    !floaty.el.classList.contains('maximized') && floaty.el.style.left !== '');
 
   /* Fullscreen over a floating window is the case the !important in shell.css
      exists for: the inline rect is left where it was, and the rule has to win

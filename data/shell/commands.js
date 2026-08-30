@@ -40,6 +40,9 @@ function handleShellCommand(command, args) {
     case 'window.fullscreen':
       toggleFullscreen();
       break;
+    case 'window.maximized':
+      toggleMaximized();
+      break;
     case 'window.pseudotile.toggle':
       togglePseudotile(focusedId);
       break;
@@ -209,6 +212,11 @@ function handleShellCommand(command, args) {
         }
         relayoutAll();
       }
+      break;
+    }
+    case 'window.maximized.set': {
+      const id = Number(args[0]);
+      if (Number.isFinite(id)) setMaximized(id, args[1] === '1', false);
       break;
     }
     case 'layout.resize.delta':

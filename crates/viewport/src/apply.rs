@@ -114,31 +114,11 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         }
 
         Request::ViewFullscreen { id, fullscreen } => {
-            // Resizing the hole is not enough: an application rearranges its
-            // own layout on the fullscreen state — hiding toolbars, switching
-            // a video to a fullscreen presentation — and never learns about it
-            // from a configure alone.
-            let Some(toplevel) = state
-                .views
-                .get(id)
-                .and_then(|v| v.window.toplevel().cloned())
-            else {
-                return;
-            };
-            toplevel.with_pending_state(|pending| {
-                if fullscreen {
-                    pending.states.set(xdg_toplevel::State::Fullscreen);
-                } else {
-                    pending.states.unset(xdg_toplevel::State::Fullscreen);
-                }
-            });
-            toplevel.send_pending_configure();
-            // The outside list carries the state a taskbar draws from, and
-            // fullscreen is one of the two it knows about.
-            let activated = state.focused == id;
-            state
-                .foreign_management_state
-                .set_state(id, activated, fullscreen);
+            set_view_fullscreen(state, id, fullscreen);
+        }
+
+        Request::ViewMaximized { id, maximized } => {
+            set_view_maximized(state, id, maximized);
         }
 
         Request::ViewFocus { id } => focus_view(state, id),
@@ -824,6 +804,74 @@ pub fn apply(state: &mut ViewportState, request: Request) {
 
         Request::Quit => state.shutdown(),
     }
+}
+
+/// Apply fullscreen state to either kind of managed client.
+///
+/// Resizing the hole is not enough: applications rearrange their own layout
+/// when this state changes. Shared by shell IPC and foreign-toplevel requests
+/// so neither path can update only the frame around the client.
+pub(crate) fn set_view_fullscreen(state: &mut ViewportState, id: u32, fullscreen: bool) -> bool {
+    let Some(window) = state.views.get(id).map(|view| view.window.clone()) else {
+        return false;
+    };
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.with_pending_state(|pending| {
+            if fullscreen {
+                pending.states.set(xdg_toplevel::State::Fullscreen);
+            } else {
+                pending.states.unset(xdg_toplevel::State::Fullscreen);
+            }
+        });
+        toplevel.send_pending_configure();
+    } else if let Some(x11) = window.x11_surface() {
+        if let Err(e) = x11.set_fullscreen(fullscreen) {
+            tracing::warn!("could not set fullscreen on an X11 window: {e}");
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    state.foreign_management_state.set_state(
+        id,
+        state.focused == id,
+        state.view_is_maximized(id),
+        fullscreen,
+    );
+    true
+}
+
+/// Apply maximized state to either kind of managed client.
+pub(crate) fn set_view_maximized(state: &mut ViewportState, id: u32, maximized: bool) -> bool {
+    let Some(window) = state.views.get(id).map(|view| view.window.clone()) else {
+        return false;
+    };
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.with_pending_state(|pending| {
+            if maximized {
+                pending.states.set(xdg_toplevel::State::Maximized);
+            } else {
+                pending.states.unset(xdg_toplevel::State::Maximized);
+            }
+        });
+        toplevel.send_pending_configure();
+    } else if let Some(x11) = window.x11_surface() {
+        if let Err(e) = x11.set_maximized(maximized) {
+            tracing::warn!("could not set maximized on an X11 window: {e}");
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    state.foreign_management_state.set_state(
+        id,
+        state.focused == id,
+        maximized,
+        state.view_is_fullscreen(id),
+    );
+    true
 }
 
 /// Write the runtime settings out so they survive the next start.

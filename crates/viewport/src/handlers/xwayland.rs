@@ -242,6 +242,14 @@ impl XwmHandler for ViewportState {
         self.answer_x11_fullscreen(&window, false);
     }
 
+    fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.answer_x11_maximized(&window, true);
+    }
+
+    fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.answer_x11_maximized(&window, false);
+    }
+
     fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
 
     /// Whether an X client may read the Wayland clipboard.
@@ -376,10 +384,37 @@ impl ViewportState {
             return;
         };
         let (id, mapped) = (view.id, view.mapped);
-        self.foreign_management_state
-            .set_state(id, self.focused == id, fullscreen);
+        self.foreign_management_state.set_state(
+            id,
+            self.focused == id,
+            self.view_is_maximized(id),
+            fullscreen,
+        );
         if mapped {
             self.notify_fullscreen(id, fullscreen);
+        }
+    }
+
+    fn answer_x11_maximized(&mut self, window: &X11Surface, maximized: bool) {
+        if let Err(e) = window.set_maximized(maximized) {
+            tracing::warn!("could not set maximized on an X11 window: {e}");
+            return;
+        }
+        let Some(surface) = window.wl_surface() else {
+            return;
+        };
+        let Some(view) = self.views.find_by_surface(&surface) else {
+            return;
+        };
+        let (id, mapped) = (view.id, view.mapped);
+        self.foreign_management_state.set_state(
+            id,
+            self.focused == id,
+            maximized,
+            self.view_is_fullscreen(id),
+        );
+        if mapped {
+            self.notify_maximized(id, maximized);
         }
     }
 }

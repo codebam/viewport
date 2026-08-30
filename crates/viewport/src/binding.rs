@@ -445,6 +445,7 @@ pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding
         // Tab is filled in below: two layouts have windows the compositor
         // cannot cycle through, so the chord goes to the shell there.
         "Mod4+f=shell window.fullscreen".to_owned(),
+        "Mod4+m=shell window.maximized".to_owned(),
         "Mod4+a=shell window.focus_parent".to_owned(),
         "Mod4+Shift+space=shell layout.float.toggle".to_owned(),
         "Mod4+b=shell layout.split horizontal".to_owned(),
@@ -1244,12 +1245,12 @@ mod tests {
     fn the_defaults_all_parse() {
         // A malformed default is silently dropped by the filter_map, so
         // without this a typo would just remove a binding.
-        // 43 plain, 16 directional, 18 workspace, 11 in resize mode, and one
+        // 44 plain, 16 directional, 18 workspace, 11 in resize mode, and one
         // more that enters it.
         let bindings = defaults("foot", Some("wmenu-run"), "tiling");
         assert_eq!(
             bindings.len(),
-            43 + 16 + 18 + 11 + 1,
+            44 + 16 + 18 + 11 + 1,
             "a default failed to parse"
         );
 

@@ -138,6 +138,7 @@ let pendingSplit = 'horizontal';
  * neither cancels the other. A single global here meant fullscreening on the
  * second monitor silently un-fullscreened the first. */
 const fullscreens = new Map(); // workspace -> view id
+const maximized = new Map(); // workspace -> view id
 let lastStatus = {};
 /* Authenticated AI usage is fetched by the compositor. Keys are provider names;
  * bearer credentials never enter this page. */

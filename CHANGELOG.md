@@ -12,6 +12,9 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- Native Wayland, Xwayland, and foreign-toplevel maximize requests now fill the
+  usable workspace while preserving the bar, gaps, border, and prior window
+  placement. `Mod4+m` toggles the same state.
 - Window rules accept `capture: false`. Output, region, desk and direct-window
   captures replace matching client pixels, native and related X11 popups, and
   the shell frame with opaque black; portal source selection and restore omit

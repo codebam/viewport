@@ -740,7 +740,7 @@ function relayoutAll() {
       view.el.classList.add('floating');
       output.windowsEl.append(view.el);
       renderedIds.add(id);
-      if (isFullscreen(id)) continue; // covers the output; rect ignored
+      if (isFullscreen(id) || isMaximized(id)) continue; // covering state wins
       Object.assign(view.el.style, {
         left: `${floating.x}px`,
         top: `${floating.y}px`,
@@ -752,6 +752,18 @@ function relayoutAll() {
         minHeight: view.minHeight > 0 ? `${view.minHeight}px` : '',
         flexGrow: '',
       });
+    }
+
+    /* Keep a maximized tiled window out of layout-specific transformed
+       containers. A scrolling strip or canvas plane would otherwise become
+       its containing block and maximize only inside the translated content. */
+    const maximizedId = maximizedOn(output.workspace);
+    if (!overviewActive && maximizedId !== null && !isFullscreen(maximizedId)) {
+      const view = views.get(maximizedId);
+      if (view) {
+        output.windowsEl.append(view.el);
+        renderedIds.add(maximizedId);
+      }
     }
 
     /* Scratchpads and pinned windows are output-owned overlays, not members of
@@ -903,6 +915,7 @@ function relayoutAll() {
     view.el.classList.toggle('focused', id === focusedId);
     view.el.classList.toggle('selected', selectedIds.has(id));
     view.el.classList.toggle('fullscreen', isFullscreen(id));
+    view.el.classList.toggle('maximized', isMaximized(id) && !isFullscreen(id));
   }
 
   /* The orbits' resting opacities, now that it is settled which windows are on

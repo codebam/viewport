@@ -619,6 +619,7 @@ function removeView(id) {
   const fullscreenWorkspace = workspace !== null && fullscreens.get(workspace) === id
     ? workspace : null;
   if (fullscreenWorkspace !== null) fullscreens.delete(fullscreenWorkspace);
+  if (workspace !== null && maximized.get(workspace) === id) maximized.delete(workspace);
 
   relayoutAll();
   /* A closed window means one fewer slot to restore next time. */
@@ -664,6 +665,36 @@ function setFullscreen(id, on) {
 function toggleFullscreen() {
   if (focusedId == null) return;
   setFullscreen(focusedId, !isFullscreen(focusedId));
+}
+
+function setMaximized(id, on, notifyClient = true) {
+  dissolveSwallow(id);
+  const workspace = workspaceOf(id);
+  if (workspace === null) return;
+
+  const previous = maximized.get(workspace) ?? null;
+  if (on) {
+    maximized.set(workspace, id);
+  } else if (previous === id) {
+    maximized.delete(workspace);
+  }
+  const current = maximized.get(workspace) ?? null;
+
+  /* A second maximized window displaces the first even when this transition
+   * came from a client. That client already knows its own state; the displaced
+   * one does not. */
+  if (previous !== null && previous !== current) {
+    send({ type: 'view.maximized', id: previous, maximized: false });
+  }
+  if (notifyClient && current !== null && current !== previous) {
+    send({ type: 'view.maximized', id: current, maximized: true });
+  }
+  relayoutAll();
+}
+
+function toggleMaximized() {
+  if (focusedId == null) return;
+  setMaximized(focusedId, !isMaximized(focusedId));
 }
 
 /* Colours from the config file, as CSS custom properties.

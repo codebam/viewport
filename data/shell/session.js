@@ -578,6 +578,10 @@ function moveViewToWorkspace(id, n) {
     fullscreens.delete(from);
     fullscreens.set(n, id);
   }
+  if (from !== null && maximized.get(from) === id) {
+    maximized.delete(from);
+    maximized.set(n, id);
+  }
 
   /* And on the canvas, where the window has a place, that place has to be
      rewritten for the plane it is arriving on: the two planes share no origin,

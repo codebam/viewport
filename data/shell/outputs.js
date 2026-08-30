@@ -467,6 +467,10 @@ function moveViewToOutput(id, direction) {
     fullscreens.delete(from);
     fullscreens.set(output.workspace, id);
   }
+  if (from !== null && maximized.get(from) === id) {
+    maximized.delete(from);
+    maximized.set(output.workspace, id);
+  }
 
   treeGeneration++;
 

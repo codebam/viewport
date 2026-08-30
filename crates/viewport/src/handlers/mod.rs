@@ -350,13 +350,25 @@ impl crate::foreign_toplevel::ForeignToplevelHandler for ViewportState {
     }
 
     fn fullscreen_toplevel(&mut self, id: u32, fullscreen: bool) {
-        // The shell owns the layout, so this goes there and comes back as an
-        // ordinary state change (`src/foreign.c:71`). The same command C
-        // sends, argument for argument (`src/ipc.c:582`), because it is the
-        // shell's own vocabulary on the other end.
+        // Apply the client state here: the shell command below suppresses its
+        // echo because the request normally came from that client. A foreign
+        // requester is different and otherwise changed only the DOM frame.
+        if !crate::apply::set_view_fullscreen(self, id, fullscreen) {
+            return;
+        }
         self.notify(&viewport_ipc::Event::ShellCommand {
             command: "window.fullscreen.set".to_owned(),
             args: vec![id.to_string(), u8::from(fullscreen).to_string()],
+        });
+    }
+
+    fn maximize_toplevel(&mut self, id: u32, maximized: bool) {
+        if !crate::apply::set_view_maximized(self, id, maximized) {
+            return;
+        }
+        self.notify(&viewport_ipc::Event::ShellCommand {
+            command: "window.maximized.set".to_owned(),
+            args: vec![id.to_string(), u8::from(maximized).to_string()],
         });
     }
 }

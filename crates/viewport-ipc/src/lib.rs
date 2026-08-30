@@ -129,6 +129,7 @@ fn is_known_type(name: &str) -> bool {
         "view.layout"
             | "view.visible"
             | "view.fullscreen"
+            | "view.maximized"
             | "view.focus"
             | "view.close"
             | "view.opacity"
