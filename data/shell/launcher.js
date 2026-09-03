@@ -49,11 +49,10 @@ function toggleLauncher() {
      and the centre's are drawn in the same place this list is. */
   closeClipboard();
   closeNotificationCentre();
-  /* The last list and the last filter are kept, not reset: the picker opens
-     on what it last showed, and the query it sends — with the filter it still
-     holds — answers with the same list a moment later. Resetting would be a
-     blank flash on the way to the same rows, or a filtered list under an
-     emptied field until the answer came back. */
+  /* The last list is kept, not reset: the picker opens on what it last showed,
+     and the query it sends answers with the full list a moment later — the
+     filter was emptied on the close. The old rows are the ones the scanner
+     holds in memory either way, so the wait for the answer costs nothing. */
   /* Take the keyboard, remembering who had it. Both halves are keys.js's
      now, on the same terms every other surface gets them — this file had the
      only copy of that dance and the network picker had the second. */
@@ -65,6 +64,11 @@ function toggleLauncher() {
 function closeLauncher() {
   if (!launcherOpen) return;
   launcherOpen = false;
+  /* The typed filter is dropped on the way out, so the next Mod4+d starts
+     from an empty field: a launcher left standing at a half-typed word from
+     the last invocation is a word re-typed or deleted, not a picker. The list
+     itself stays, so the rows are there the moment it opens again. */
+  launcherFilter = '';
   /* Gives the keyboard back to whatever had it — see keyNavClose. */
   keyNavClose('launcher');
   launcherListEl = null;

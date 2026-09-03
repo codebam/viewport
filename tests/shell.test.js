@@ -1133,9 +1133,15 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
     !(sent.slice(before).filter((m) => m.type === 'shell.overlay').at(-1)
       ?.rects ?? []).some((r) => r.name === 'launcher'));
 
+  before = sent.length;
   emit({ type: 'shell.command', command: 'launcher', args: [] });
   check('reopening re-shows the last list rather than a blank',
     rows().length === 3);
+  check('but the filter typed last time is gone from the field',
+    input().value === '');
+  check('and the query asks for the unfiltered list',
+    sent.slice(before).some((m) => m.type === 'launcher.query' &&
+      m.filter === undefined));
   before = sent.length;
   click(rows()[2]);
   check('a click on a row launches that row, whichever is highlighted',
