@@ -86,6 +86,7 @@ pkg-config = "0.3"
 # what an external bar sees through ext-workspace-v1. The client crates
 # themselves are ordinary dependencies now — see the note above them.
 serde_json.workspace = true
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 # The fork and the revision are in the workspace manifest, which also carries
 # the `[patch]` that points `viewport-vulkan`'s upstream Smithay at the same

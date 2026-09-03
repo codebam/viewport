@@ -76,6 +76,53 @@ place a description recorded against a surface can be attached to the texture
 made from its buffer. Recording it anywhere else means recording it and then
 decoding the buffer as sRGB anyway.
 
+## Background effects
+
+`ext-background-effect-v1` is advertised only when blur behind a surface is a
+real render element. The nested and headless backends do that through GLES: the
+element captures and downsamples the framebuffer already drawn behind it, runs a
+fixed Gaussian blur shader, and draws only the committed protocol region before
+the requesting surface is composited. Region add and subtract operations keep
+their protocol order, and subsurfaces and popups get an effect at their own
+place in the surface tree rather than one rectangle guessed from the toplevel.
+One composited image admits at most 64 effects and 4,194,304 downsampled scratch
+texels in total. A region accepts at most 256 add/subtract operations and 1,024
+resolved rectangles. Requests past those bounds draw without blur rather than
+allocating unbounded compositor memory or GPU work.
+
+The global is created after the GLES context reports framebuffer blits and the
+blur shader compiles. A GLES 2 context therefore gets no global. The DRM backend
+gets no global either, including on a card that happened to fall back to GLES:
+its renderer is selected independently per card, Vulkan is preferred, cards can
+be mixed, and a later output can hotplug onto another renderer. A compositor-wide
+global cannot honestly promise an effect that only some of those outputs draw.
+
+The built-in shell is not such a surface. Both the in-process WPE view and the
+out-of-process shell hand the compositor a DMA-BUF which is rendered as one
+`render::Shell` texture; no `wl_surface` survives in that element for this
+protocol to extend. Ordinary Wayland clients can request blur now. Giving the
+shell's own translucent chrome the same effect still needs blur-region metadata
+to travel with its frame and a framebuffer-effect element around that texture.
+
+Capture uses the same effect elements as the displayed frame. Private windows
+are replaced with black before anything above them captures the framebuffer.
+An isolated-window capture includes its associated xdg popups and their effects,
+clipped to the stream's fixed toplevel bounds; its blur samples only the
+isolated window image and black outside it, never neighbouring desktop pixels.
+While locked, frame construction returns the lock surface and pointer before it
+can reach any desktop element, so a lock surface requesting blur can sample only
+the black lock framebuffer, never the desktop underneath.
+
+Vulkan support belongs in `viewport-vulkan`, not in a protocol flag here. Its
+`VulkanFrame` currently offers neither `FrameContext` nor `BlitFrame`, so a
+`RenderElement::capture_framebuffer` implementation cannot copy the active
+render target into a sampleable image. It also has no renderer operation or
+pipeline for applying a blur to that image. Supporting the protocol on DRM
+requires both pieces: a render-pass-safe active-frame copy with synchronization,
+and a blur operation producing a texture that `render_texture_from_to` can draw.
+After that, Viewport must preflight the operation on every DRM renderer and keep
+the global absent whenever any active or newly hotplugged renderer lacks it.
+
 ## Hardware video
 
 A video decoder does not produce colour. VA-API and NVDEC hand back NV12, P010
@@ -437,6 +484,32 @@ VT pause, output topology changes, portal frontend loss, session close, and EI
 disconnect all stop capture; `Ctrl+Alt+Escape` is the compositor-owned emergency
 release chord. Captured presses are tracked so neither side receives an
 unmatched release across an activation boundary.
+
+## wlr-layer-shell policy
+
+`wlr-layer-shell`'s client-provided namespace is retained on Smithay's mapped
+`LayerSurface` and resolved through the ordered `layer_rules` configuration.
+Resolved opacity, capture permission, blur intent and same-layer `z_index` are
+attached to that mapped object and copied into renderer-neutral `Frame` data.
+Configuration reload replaces the attachment in place; it does not unmap the
+surface, disturb its exclusive zone, or send a configure unrelated to protocol
+state.
+
+Protocol layers remain the hard stacking boundary: `overlay`, `top`, `bottom`
+and `background` keep that order, while `z_index` orders only peers. Pointer hit
+testing consumes the same resolved order. Session lock bypasses the ordinary
+frame entirely, so no layer rule can place a client over a lock screen.
+
+Capture-denied layer trees are replaced with opaque black at their complete
+bounding rectangle, including subsurfaces and xdg popups. The deny state is
+resolved before mapping and refreshed synchronously on config reload, including
+maps retained by disabled outputs. A missing policy attachment is initialized
+from the active rules rather than an unrelated permissive default.
+
+`blur` uses the GLES framebuffer effect described above on nested and headless
+backends. It remains intent only on DRM/Vulkan, where Viewport advertises no
+background-effect capability rather than silently accepting client requests it
+cannot render.
 
 ## Status
 

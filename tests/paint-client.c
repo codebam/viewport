@@ -26,16 +26,24 @@
 
 #include <wayland-client.h>
 
+#include "ext-background-effect-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
+
+#define POPUP_SIZE 128
 
 struct paint_client {
 	struct wl_compositor *compositor;
 	struct wl_shm *shm;
 	struct xdg_wm_base *wm_base;
+	struct ext_background_effect_manager_v1 *effect_manager;
 
 	struct wl_surface *surface;
 	struct xdg_surface *xdg_surface;
 	struct xdg_toplevel *xdg_toplevel;
+	struct wl_surface *popup_surface;
+	struct xdg_surface *popup_xdg_surface;
+	struct xdg_popup *popup_role;
+	struct ext_background_effect_surface_v1 *popup_effect;
 
 	const char *app_id;
 	int width, height, margin;
@@ -45,6 +53,7 @@ struct paint_client {
 	 * strip. A window that is being captured must not be disturbed by another
 	 * window moving, and nothing else in this harness produces that motion. */
 	bool pulse;
+	bool popup;
 	int pulse_phase;
 
 	bool drawing;
@@ -87,6 +96,10 @@ static void handle_global(void *data, struct wl_registry *registry,
 		client->wm_base = wl_registry_bind(registry, name,
 			&xdg_wm_base_interface, 1);
 		xdg_wm_base_add_listener(client->wm_base, &wm_base_listener, client);
+	} else if (strcmp(interface,
+			ext_background_effect_manager_v1_interface.name) == 0) {
+		client->effect_manager = wl_registry_bind(registry, name,
+			&ext_background_effect_manager_v1_interface, 1);
 	}
 }
 
@@ -133,7 +146,12 @@ static struct wl_buffer *make_buffer(struct paint_client *client)
 				x < client->margin + client->width &&
 				y >= client->margin &&
 				y < client->margin + client->height;
-			pixels[y * width + x] = inside ? client->body : client->edge;
+			if (client->popup && inside) {
+				pixels[y * width + x] = x < client->margin + client->width / 2
+					? client->body : client->edge;
+			} else {
+				pixels[y * width + x] = inside ? client->body : client->edge;
+			}
 		}
 	}
 	munmap(pixels, size);
@@ -141,6 +159,38 @@ static struct wl_buffer *make_buffer(struct paint_client *client)
 	struct wl_shm_pool *pool = wl_shm_create_pool(client->shm, fd, (int32_t)size);
 	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height,
 		stride, WL_SHM_FORMAT_ARGB8888);
+	wl_shm_pool_destroy(pool);
+	close(fd);
+	if (buffer != NULL) {
+		wl_buffer_add_listener(buffer, &buffer_listener, NULL);
+	}
+	return buffer;
+}
+
+static struct wl_buffer *make_popup_buffer(struct paint_client *client)
+{
+	int stride = POPUP_SIZE * 4;
+	size_t size = (size_t)stride * POPUP_SIZE;
+	int fd = memfd_create("paint-client-popup", MFD_CLOEXEC);
+	if (fd < 0 || ftruncate(fd, (off_t)size) < 0) {
+		if (fd >= 0) {
+			close(fd);
+		}
+		return NULL;
+	}
+
+	uint32_t *pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
+		fd, 0);
+	if (pixels == MAP_FAILED) {
+		close(fd);
+		return NULL;
+	}
+	memset(pixels, 0, size);
+	munmap(pixels, size);
+
+	struct wl_shm_pool *pool = wl_shm_create_pool(client->shm, fd, (int32_t)size);
+	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, POPUP_SIZE,
+		POPUP_SIZE, stride, WL_SHM_FORMAT_ARGB8888);
 	wl_shm_pool_destroy(pool);
 	close(fd);
 	if (buffer != NULL) {
@@ -169,6 +219,77 @@ static void handle_frame_done(void *data, struct wl_callback *callback,
 static const struct wl_callback_listener frame_listener = {
 	.done = handle_frame_done,
 };
+
+static void handle_popup_surface_configure(void *data,
+	struct xdg_surface *xdg_surface, uint32_t serial)
+{
+	struct paint_client *client = data;
+	xdg_surface_ack_configure(xdg_surface, serial);
+	struct wl_buffer *buffer = make_popup_buffer(client);
+	if (buffer == NULL) {
+		client->closed = true;
+		return;
+	}
+	wl_surface_attach(client->popup_surface, buffer, 0, 0);
+	wl_surface_damage_buffer(client->popup_surface, 0, 0, POPUP_SIZE, POPUP_SIZE);
+	wl_surface_commit(client->popup_surface);
+	puts("popup-ready");
+	fflush(stdout);
+}
+
+static const struct xdg_surface_listener popup_surface_listener = {
+	.configure = handle_popup_surface_configure,
+};
+
+static void handle_popup_configure(void *data, struct xdg_popup *popup,
+	int32_t x, int32_t y, int32_t width, int32_t height)
+{
+}
+
+static void handle_popup_done(void *data, struct xdg_popup *popup)
+{
+	struct paint_client *client = data;
+	client->closed = true;
+}
+
+static const struct xdg_popup_listener popup_listener = {
+	.configure = handle_popup_configure,
+	.popup_done = handle_popup_done,
+};
+
+static void create_popup(struct paint_client *client)
+{
+	struct xdg_positioner *positioner =
+		xdg_wm_base_create_positioner(client->wm_base);
+	xdg_positioner_set_size(positioner, POPUP_SIZE, POPUP_SIZE);
+	xdg_positioner_set_anchor_rect(positioner,
+		client->width / 2 - POPUP_SIZE / 2,
+		client->height / 2 - POPUP_SIZE / 2, 1, 1);
+	xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_TOP_LEFT);
+	xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
+
+	client->popup_surface = wl_compositor_create_surface(client->compositor);
+	client->popup_xdg_surface = xdg_wm_base_get_xdg_surface(client->wm_base,
+		client->popup_surface);
+	xdg_surface_add_listener(client->popup_xdg_surface, &popup_surface_listener,
+		client);
+	client->popup_role = xdg_surface_get_popup(client->popup_xdg_surface,
+		client->xdg_surface, positioner);
+	xdg_popup_add_listener(client->popup_role, &popup_listener, client);
+	xdg_surface_set_window_geometry(client->popup_xdg_surface, 0, 0,
+		POPUP_SIZE, POPUP_SIZE);
+	xdg_positioner_destroy(positioner);
+
+	client->popup_effect =
+		ext_background_effect_manager_v1_get_background_effect(
+			client->effect_manager, client->popup_surface);
+	struct wl_region *region = wl_compositor_create_region(client->compositor);
+	wl_region_add(region, 0, 0, POPUP_SIZE, POPUP_SIZE);
+	ext_background_effect_surface_v1_set_blur_region(client->popup_effect,
+		region);
+	wl_region_destroy(region);
+	wl_surface_commit(client->popup_surface);
+}
 
 static void draw(struct paint_client *client)
 {
@@ -205,6 +326,9 @@ static void handle_xdg_surface_configure(void *data,
 	if (!client->drawing) {
 		client->drawing = true;
 		draw(client);
+		if (client->popup) {
+			create_popup(client);
+		}
 	}
 }
 
@@ -235,14 +359,16 @@ int main(int argc, char *argv[])
 	if (argc != 7 && argc != 8) {
 		fprintf(stderr,
 			"usage: %s APP_ID WIDTH HEIGHT MARGIN BODY_ARGB EDGE_ARGB "
-			"[pulse]\n"
+			"[pulse|popup]\n"
 			"\n"
 			"Paints a WIDTH x HEIGHT window in BODY_ARGB inside a surface\n"
 			"grown by MARGIN on every side and painted EDGE_ARGB, the way a\n"
 			"client with its own shadows does.\n"
 			"\n"
 			"With `pulse`, changes its own width every frame, so the shell\n"
-			"has to lay the whole workspace out again each time.\n", argv[0]);
+			"has to lay the whole workspace out again each time. With `popup`,\n"
+			"draws a transparent blur popup over a sharp colour boundary.\n",
+			argv[0]);
 		return 2;
 	}
 
@@ -254,6 +380,7 @@ int main(int argc, char *argv[])
 		.body = (uint32_t)strtoul(argv[5], NULL, 16),
 		.edge = (uint32_t)strtoul(argv[6], NULL, 16),
 		.pulse = argc == 8 && strcmp(argv[7], "pulse") == 0,
+		.popup = argc == 8 && strcmp(argv[7], "popup") == 0,
 	};
 
 	if (client.width <= 0 || client.height <= 0 || client.margin < 0) {
@@ -275,6 +402,10 @@ int main(int argc, char *argv[])
 			client.wm_base == NULL) {
 		fprintf(stderr, "compositor is missing wl_compositor, wl_shm or "
 			"xdg_wm_base\n");
+		return 1;
+	}
+	if (client.popup && client.effect_manager == NULL) {
+		fprintf(stderr, "compositor is missing ext-background-effect-v1\n");
 		return 1;
 	}
 

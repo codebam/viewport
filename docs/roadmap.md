@@ -61,16 +61,10 @@ consent question — reading the desk's clipboard is not the same permission as
 typing into it — which is why it is a list entry and not a line in the
 existing one.
 
-## Two protocols, found by the same sweep
+## A protocol found by the same sweep
 
-Short, because the protocol surface really is close to complete and neither of
-these changes that.
-
-**`ext-background-effect-v1` is never instantiated.** The pinned smithay fork
-carries it. Every other compositor implementing blur-behind-a-surface is doing
-it for clients; here the client that would use it is the shell, a web page
-already drawing translucent chrome over whatever is under it, which makes this
-the rare protocol whose consumer is in this repository.
+Short, because the protocol surface really is close to complete and this does
+not change that.
 
 **`wp-color-representation-v1` is absent, and so the matrix is guessed.**
 `docs/protocols.md`'s hardware-video section says it plainly: a DMA-BUF cannot
@@ -90,6 +84,15 @@ renderer per card, per-device dmabuf feedback and `on_gpu_added`/
 fixed. What the audit that found this out *did* find is below: the places
 where one card is still assumed, all of which now have an answer, and the one
 that does not.
+
+**The built-in shell cannot use the background effect it motivated.**
+`ext-background-effect-v1` now gives ordinary Wayland surfaces real blur on the
+nested and headless GLES backends, but the shell is rendered from an imported
+DMA-BUF as `render::Shell`, not from a `WaylandSurfaceRenderElement`. Its frame
+needs to carry blur-region metadata into the compositor before translucent web
+chrome can use the same framebuffer effect. Vulkan support is separate again:
+until `viewport-vulkan` can capture an active frame into a sampleable image and
+draw the blur, the DRM backend deliberately advertises no capability.
 
 **A buffer no scanout card can import is a hole in one screen.** Per-surface
 feedback tells a client which card is displaying it, and `cross_gpu =

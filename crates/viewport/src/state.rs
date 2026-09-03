@@ -251,6 +251,8 @@ pub struct ViewportState {
     /// What the shell is told on connect, and what the config file patches.
     /// The built-in values are C's (`src/main.c:61`).
     pub config: Config,
+    /// Compiled compositor-side policy for layer-shell namespaces.
+    pub layer_rules: crate::layer::Rules,
     /// Where the shell is loaded from, when the config names somewhere.
     pub shell_url: Option<String>,
     /// The config file's `outputs` block, kept because an output named there
@@ -664,6 +666,9 @@ pub struct ViewportState {
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
     pub color_management: crate::color_management::ColorManagementState,
+    /// ext-background-effect-v1, absent until a backend has proved it can
+    /// execute the blur it would advertise.
+    pub background_effect_state: Option<smithay::wayland::background_effect::BackgroundEffectState>,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -1202,7 +1207,7 @@ pub enum CaptureTarget {
 /// Generic over the renderer because `with_gpu!` compiles every render body
 /// twice, once per backend.
 type WindowElements<R> = (
-    Vec<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<R>>,
+    Vec<crate::render::SurfaceElement<R>>,
     smithay::utils::Size<i32, smithay::utils::Physical>,
 );
 
@@ -1567,6 +1572,7 @@ impl ViewportState {
                 // file overrides both this and osk_mode together.
                 osk: "auto".to_owned(),
             },
+            layer_rules: crate::layer::Rules::default(),
             shell_url: None,
             output_config: std::collections::HashMap::new(),
             input_config: std::collections::HashMap::new(),
@@ -1685,6 +1691,7 @@ impl ViewportState {
             needs_foreign_outputs: false,
 
             color_management,
+            background_effect_state: None,
             compositor_state,
             xdg_shell_state,
             _xdg_dialog_state,

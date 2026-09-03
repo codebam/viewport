@@ -13,10 +13,12 @@
 // takes space away from where windows may go, and only the shell places
 // windows.
 
+use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::{layer_map_for_output, LayerSurface, PopupKind};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::wayland::compositor::get_parent;
 use smithay::wayland::shell::wlr_layer::{
     Layer, LayerSurface as WlrLayerSurface, WlrLayerShellHandler, WlrLayerShellState,
 };
@@ -56,12 +58,16 @@ impl WlrLayerShellHandler for ViewportState {
         };
 
         tracing::debug!("layer surface {namespace:?} on {}", output.name());
+        let layer = LayerSurface::new(surface, namespace);
+        let (policy, _) = crate::layer::apply(&layer, &self.layer_rules);
+        log_policy(&layer, policy);
         let mut map = layer_map_for_output(&output);
-        if let Err(e) = map.map_layer(&LayerSurface::new(surface, namespace)) {
+        if let Err(e) = map.map_layer(&layer) {
             tracing::warn!("could not map a layer surface: {e}");
             return;
         }
         drop(map);
+        crate::layer::set_owner(&layer, output.clone());
 
         // An exclusive zone changes where windows may go, and the shell is
         // what puts them there.
@@ -70,7 +76,9 @@ impl WlrLayerShellHandler for ViewportState {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
-        let found = self.space.outputs().find_map(|output| {
+        crate::layer::clear_owner(surface.wl_surface());
+        let outputs = self.physical_outputs();
+        let found = outputs.iter().find_map(|output| {
             let map = layer_map_for_output(output);
             let layer = map
                 .layers()
@@ -79,6 +87,18 @@ impl WlrLayerShellHandler for ViewportState {
             layer.map(|layer| (output.clone(), layer))
         });
         let Some((output, layer)) = found else {
+            let mut cleaned = false;
+            for output in outputs {
+                let mut map = layer_map_for_output(&output);
+                let before = map.len();
+                map.cleanup();
+                cleaned |= map.len() != before;
+            }
+            if cleaned {
+                self.notify_output_layout();
+                self.needs_render = true;
+                self.refresh_pointer_focus();
+            }
             return;
         };
         let was_wallpaper = layer.layer() == Layer::Background;
@@ -98,58 +118,99 @@ impl WlrLayerShellHandler for ViewportState {
         // The space it reserved is usable again.
         self.notify_output_layout();
         self.needs_render = true;
+        self.refresh_pointer_focus();
     }
 
     fn new_popup(
         &mut self,
-        _parent: WlrLayerSurface,
+        parent: WlrLayerSurface,
         surface: smithay::wayland::shell::xdg::PopupSurface,
     ) {
         // A launcher's completion list. Tracked like any other popup; it is
         // positioned against its parent, which is not a window this compositor
         // has a rectangle for.
-        let _ = self.popups.track_popup(PopupKind::Xdg(surface));
+        if let Err(error) = self.popups.track_popup(PopupKind::Xdg(surface.clone())) {
+            tracing::warn!("could not track a layer popup: {error}");
+            return;
+        }
+        if crate::layer::inherit_owner(surface.wl_surface(), parent.wl_surface()) {
+            crate::layer::register_popup(&surface);
+        }
     }
 }
 
 impl ViewportState {
+    /// Re-resolve every mapped layer in place after a config reload.
+    pub fn refresh_layer_policies(&mut self) {
+        let mut mapped = 0usize;
+        let mut changed = 0usize;
+        let mut stacking_changed = false;
+        // Disabled and mirror outputs are absent from Space but retain their
+        // layer maps. Refresh them now so re-enabling one cannot revive stale
+        // capture policy.
+        for output in self.physical_outputs() {
+            let map = layer_map_for_output(&output);
+            for layer in map.layers() {
+                mapped += 1;
+                let previous = crate::layer::policy(layer, &self.layer_rules);
+                let (policy, did_change) = crate::layer::apply(layer, &self.layer_rules);
+                if did_change {
+                    changed += 1;
+                    stacking_changed |= previous.z_index != policy.z_index;
+                    log_policy(layer, policy);
+                }
+            }
+        }
+        tracing::debug!("layer rules: refreshed {mapped} mapped surfaces; {changed} changed");
+        self.needs_render = true;
+        if stacking_changed {
+            self.refresh_pointer_focus();
+        }
+    }
+
     /// Size a layer surface and send its configure, once it has committed.
     ///
     /// Called from the commit handler: a layer surface has no size until it
     /// has been arranged, and it will not paint until it has been configured.
     pub fn layer_commit(&mut self, surface: &WlSurface) {
-        let Some(output) = self.space.outputs().find(|output| {
-            layer_map_for_output(output)
-                .layer_for_surface(surface, smithay::desktop::WindowSurfaceType::TOPLEVEL)
-                .is_some()
-        }) else {
+        let mut owner_surface = surface.clone();
+        while let Some(parent) = get_parent(&owner_surface) {
+            owner_surface = parent;
+        }
+        let Some((output, layer)) = crate::layer::owner(&owner_surface) else {
             return;
         };
-        let output = output.clone();
+        let is_root = layer.wl_surface() == surface;
 
-        let sent = smithay::wayland::compositor::with_states(surface, |states| {
-            states
-                .data_map
-                .get::<smithay::wayland::shell::wlr_layer::LayerSurfaceData>()
-                .map(|data| data.lock().unwrap().initial_configure_sent)
-                .unwrap_or(true)
-        });
+        let sent = is_root
+            && smithay::wayland::compositor::with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<smithay::wayland::shell::wlr_layer::LayerSurfaceData>()
+                    .map(|data| data.lock().unwrap().initial_configure_sent)
+                    .unwrap_or(true)
+            });
 
         let mut map = layer_map_for_output(&output);
         // Arrange first, so the size the client asked for is respected before
         // it is told what it got.
-        let changed = map.arrange();
+        let changed = is_root && map.arrange();
         // Arranging does not send the first configure, and a layer surface
         // will not paint before it has one. wmenu asks for width 0 — meaning
         // "the compositor decides" — so without this it allocates a
         // zero-width buffer and the connection dies on an invalid shm pool.
-        if !sent {
-            if let Some(layer) =
-                map.layer_for_surface(surface, smithay::desktop::WindowSurfaceType::TOPLEVEL)
-            {
-                layer.layer_surface().send_configure();
-            }
+        if is_root && !sent {
+            layer.layer_surface().send_configure();
         }
+        let has_buffer =
+            with_renderer_surface_state(layer.wl_surface(), |state| state.buffer().is_some())
+                .unwrap_or(false);
+        let drawable_changed = crate::layer::set_drawable(&layer, has_buffer, &self.layer_rules);
+        let protocol_layer_changed = crate::layer::update_protocol_layer(&layer, &self.layer_rules);
+        let surface_hit_state_changed =
+            crate::layer::hit_test_state_changed(surface, crate::layer::popup_geometry(surface));
+        let pointer_stack_changed =
+            drawable_changed || protocol_layer_changed || surface_hit_state_changed;
         drop(map);
 
         // A wallpaper program — swaybg, hyprpaper — asks for the background
@@ -163,7 +224,7 @@ impl ViewportState {
         // on it took the terminal with it and left the desktop blank for the
         // rest of the session, since the position is only offered back when a
         // layer is destroyed. `wallpaper_layer_on` is what counts a mapped one.
-        if self.wallpaper_layer_on(&output) {
+        if is_root && self.wallpaper_layer_on(&output) {
             self.background_yield_to_wallpaper(&output);
         }
 
@@ -171,6 +232,9 @@ impl ViewportState {
             self.notify_output_layout();
         }
         self.needs_render = true;
+        if changed || pointer_stack_changed {
+            self.refresh_pointer_focus();
+        }
     }
 
     /// Give a layer surface the keyboard if it asked for it.
@@ -230,4 +294,15 @@ impl ViewportState {
         usable.loc += geometry.loc;
         usable
     }
+}
+
+fn log_policy(layer: &LayerSurface, policy: crate::layer::Policy) {
+    tracing::debug!(
+        "layer surface {:?}: policy opacity={} capture={} blur={} z_index={}",
+        layer.namespace(),
+        policy.opacity,
+        policy.capture,
+        policy.blur,
+        policy.z_index
+    );
 }

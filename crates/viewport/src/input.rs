@@ -769,6 +769,9 @@ impl ViewportState {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        if pressed && !pointer.is_grabbed() {
+            self.refresh_pointer_focus();
+        }
         if tracing::enabled!(tracing::Level::DEBUG) {
             let focus = pointer.current_focus();
             let shell = self.shell_client_surface().cloned();
@@ -1573,8 +1576,15 @@ impl ViewportState {
                 else {
                     return;
                 };
-                let serial = SERIAL_COUNTER.next_serial();
                 let state = event.state();
+                // Subsurface stacking changes have no compositor callback.
+                // Re-hit-test the first press so an immediate place_above,
+                // place_below or role destruction cannot receive one stale
+                // click before ordinary pointer motion repairs focus.
+                if state == ButtonState::Pressed && !pointer.is_grabbed() {
+                    self.refresh_pointer_focus();
+                }
+                let serial = SERIAL_COUNTER.next_serial();
 
                 // An xdg-shell move/resize replaced the client's implicit
                 // click grab with our own. That grab owns every button until
@@ -1920,6 +1930,9 @@ impl ViewportState {
                 let Some(pointer) = self.seat.get_pointer() else {
                     return;
                 };
+                if !pointer.is_grabbed() {
+                    self.refresh_pointer_focus();
+                }
                 // Scrolling the shell: the taskbar, the notification list, and
                 // a chooser longer than the screen.
                 let at = pointer.current_location();

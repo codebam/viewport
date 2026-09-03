@@ -1686,6 +1686,69 @@ itself — because a tap is `pressed: true` immediately followed by
 `pressed: false`, and a key held down is `true` once and `false` on release,
 exactly like a real one.
 
+## Layer-surface rules
+
+```jsonc
+"layer_rules": [
+  { "match": { "namespace": "panel" }, "opacity": 0.94, "blur": true },
+  { "match": { "namespace": { "equals": "private-panel" } },
+    "capture": false },
+  { "match": { "namespace": { "regex": "^(menu|wofi)$", "flags": "i" } },
+    "z_index": 10 }
+]
+```
+
+These rules match the namespace a `wlr-layer-shell` client supplies when it
+creates a surface. The matcher has the same forms as a rich window rule: a
+string is short for case-insensitive `contains`; an object names exactly one of
+`contains`, case-insensitive `equals`, or `regex`, with optional regex `flags`.
+Layer regexes use Rust [`regex`](https://docs.rs/regex) syntax, not JavaScript:
+look-around and backreferences are unavailable, and the supported flags are
+`i` (case-insensitive), `m` (multi-line), `s` (dot matches newline), and `y`
+(anchored at the start). Malformed regexes, unsupported flags, unknown rule
+fields, ambiguous matcher objects and rules with no namespace are configuration
+errors rather than silently unmatched privacy rules. At most 256 rules and 64
+KiB of matcher text are accepted, with 1 KiB per matcher and bounded compiled
+regex size, so a watched configuration cannot monopolise the compositor thread.
+
+Every matching rule composes in file order. A rule replaces only the fields it
+explicitly names, and a later match wins for a field named by both. This differs
+from first-match window rules: it permits a broad panel default followed by a
+narrow exception without repeating opacity, blur and ordering policy. Defaults
+are `opacity: 1`, `capture: true`, `blur: false` and `z_index: 0`. An empty
+`layer_rules` array clears the set; omitting the key on reload leaves the current
+set alone, like every other patch-style configuration key.
+
+`opacity` is the final alpha for the complete surface tree, including
+subsurfaces and popups, and must be between 0 and 1. `capture: false` leaves the
+physical display unchanged but replaces that tree's complete bounding rectangle,
+including popups, with opaque black in output, region and whole-desktop
+captures. Policy is resolved before a new layer is mapped and replaced
+atomically once a reload is accepted, so frame assembly cannot observe a mix of
+old and new policy. Removing or overriding it with `capture: true` allows
+capture again.
+
+`blur: true` requests blur behind the complete surface tree. Nested and headless
+GLES sessions implement it with the same framebuffer effect exposed through
+`ext-background-effect-v1`. The current DRM/Vulkan renderer cannot copy its
+active frame into a sampleable image, so it neither draws rule blur nor
+advertises that protocol. The rule remains renderer-neutral rather than
+claiming a capability an output cannot provide.
+
+`z_index` is a signed ordering override. Larger values are in front, but only
+among surfaces in the same protocol layer: no value can move `background` over
+`bottom`, `top` or `overlay`. Equal values retain the protocol map's stable
+newest-on-top order, and hit testing uses the same order as rendering. Reloading
+rules never unmaps, remaps, rearranges or reconfigures a client surface.
+
+The session-lock path remains absolute. While locked, no ordinary layer surface
+is rendered or hit-tested regardless of opacity or `z_index`; only the lock
+surface (or fail-closed black) and pointer can appear.
+
+Namespaces are client-chosen labels, not authenticated application identities.
+Rules are reliable policy for configured clients, but a hostile client can
+choose another namespace; do not treat a namespace match as a sandbox boundary.
+
 ## Window rules
 
 ```jsonc

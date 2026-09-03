@@ -579,6 +579,9 @@ pub struct File {
     /// Handed to the shell as parsed JSON rather than re-serialised text, so
     /// it does not parse twice inside a message it already parsed.
     pub rules: Option<serde_json::Value>,
+    /// Compositor-owned policy for wlr-layer-shell surfaces. Presence replaces
+    /// the prior ordered set on reload; an empty array clears it.
+    pub layer_rules: Option<Vec<crate::layer::RuleConfig>>,
     pub theme: Option<serde_json::Value>,
 
     pub outputs: std::collections::HashMap<String, OutputConfig>,
@@ -695,6 +698,10 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
                 path.display()
             );
         }
+    }
+    if let Some(rules) = file.layer_rules.as_ref() {
+        crate::layer::Rules::compile(rules.clone())
+            .map_err(|error| anyhow::anyhow!("{}: {error}", path.display()))?;
     }
     Ok(Some(file))
 }

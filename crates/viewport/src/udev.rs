@@ -3320,7 +3320,8 @@ impl ViewportState {
             + smithay::backend::renderer::ImportDma
             + smithay::backend::renderer::Bind<<R as Captures>::Buffer>
             + smithay::backend::renderer::Offscreen<<R as Captures>::Buffer>
-            + Captures,
+            + Captures
+            + crate::background_effect::BackgroundEffectRenderer,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {

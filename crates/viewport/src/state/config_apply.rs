@@ -126,6 +126,17 @@ impl ViewportState {
         if let Some(bar) = file.bar {
             self.config.bar = Some(bar);
         }
+        if let Some(configured) = file.layer_rules {
+            match crate::layer::Rules::compile(configured) {
+                Ok(rules) => {
+                    self.layer_rules = rules;
+                    self.refresh_layer_policies();
+                }
+                // `config::load` validates this before `File` reaches here.
+                // Keep the current set if an internal caller bypasses it.
+                Err(error) => tracing::warn!("invalid layer_rules: {error}; keeping current rules"),
+            }
+        }
         if file.rules.is_some() {
             self.config.rules = file.rules;
             // A reload may introduce a denial for an already mapped window.

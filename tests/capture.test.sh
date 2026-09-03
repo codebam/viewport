@@ -23,6 +23,7 @@ capture_client=${3:-build/viewport-test-capture-client}
 # churn that came out of that is what froze the sharing client.
 layout=${4:-tiling}
 privacy=${5:-public}
+content=${6:-plain}
 
 for binary in "$viewport" "$paint_client" "$capture_client"; do
 	if [ ! -x "$binary" ]; then
@@ -101,8 +102,9 @@ fi
 
 export WAYLAND_DISPLAY="$display"
 
-"$paint_client" "$app_id" "$width" "$height" "$margin" "$body" "$edge" \
-	>"$workdir/paint.log" 2>&1 &
+paint_args=("$app_id" "$width" "$height" "$margin" "$body" "$edge")
+[ "$content" = popup ] && paint_args+=(popup)
+"$paint_client" "${paint_args[@]}" >"$workdir/paint.log" 2>&1 &
 paint_pid=$!
 
 # In the scrolling layout, crowd the window under test.
@@ -163,8 +165,30 @@ if [ -z "$placed" ]; then
 	exit 2
 fi
 
-"$capture_client" "$app_id" "$expected" "$width" "$height" 2000
-status=$?
+if [ "$content" = popup ]; then
+	popup_ready=
+	for _ in $(seq 1 100); do
+		if grep -q '^popup-ready$' "$workdir/paint.log" 2>/dev/null; then
+			popup_ready=yes
+			break
+		fi
+		kill -0 "$paint_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	if [ -z "$popup_ready" ]; then
+		echo "FAIL the blur popup never painted" >&2
+		status=2
+	else
+		status=0
+		"$capture_client" --window-pixel "$app_id" 32 32 "$body" \
+			"$width" "$height" || status=1
+		"$capture_client" --window-pixel-mixed "$app_id" 160 120 \
+			"$width" "$height" || status=1
+	fi
+else
+	"$capture_client" "$app_id" "$expected" "$width" "$height" 2000
+	status=$?
+fi
 
 if [ "$status" -eq 0 ] && [ "$privacy" = private ]; then
 	"$capture_client" --output-not "$body"

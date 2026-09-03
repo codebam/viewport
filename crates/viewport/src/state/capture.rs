@@ -39,14 +39,6 @@ impl ViewportState {
             // Every click belongs to the shell while it is drawing miniatures.
             return self.shell_under(pos);
         }
-        if crate::pointer::over_overlay(&self.shell_overlay_hits, pos) {
-            // The shell drew something here in front of the windows — a
-            // notification, a floating bar, the screen-share chooser. It is on
-            // top, so it takes the pointer; reporting the window underneath
-            // would hand the click straight through it.
-            return self.shell_under(pos);
-        }
-
         // Layer surfaces first where they are in front, and last where they
         // are behind, so a launcher over a window takes the click and a
         // wallpaper client under one does not.
@@ -56,31 +48,16 @@ impl ViewportState {
             .next()
             .cloned()
             .or_else(|| self.space.outputs().next().cloned());
-        let (above, below) = match output.as_ref() {
-            Some(output) => {
-                let geometry = self.space.output_geometry(output).unwrap_or_default();
-                let local = pos - geometry.loc.to_f64();
-                let map = smithay::desktop::layer_map_for_output(output);
-                let hit = |layer: Option<&smithay::desktop::LayerSurface>| {
-                    let layer = layer?;
-                    let at = map.layer_geometry(layer)?.loc.to_f64() + geometry.loc.to_f64();
-                    layer
-                        .surface_under(pos - at, WindowSurfaceType::ALL)
-                        .map(|(s, p)| (s, p.to_f64() + at))
-                };
-                use smithay::wayland::shell::wlr_layer::Layer;
-                (
-                    hit(map.layer_under(Layer::Overlay, local))
-                        .or_else(|| hit(map.layer_under(Layer::Top, local))),
-                    hit(map.layer_under(Layer::Bottom, local))
-                        .or_else(|| hit(map.layer_under(Layer::Background, local))),
-                )
-            }
-            None => (None, None),
-        };
-
-        if above.is_some() {
-            return above;
+        if let Some(above) = output
+            .as_ref()
+            .and_then(|output| self.layer_surface_under(output, pos, true))
+        {
+            return Some(above);
+        }
+        if crate::pointer::over_overlay(&self.shell_overlay_hits, pos) {
+            // Shell overlays paint below top/overlay layer surfaces and above
+            // windows. Hit testing follows that same stack.
+            return self.shell_under(pos);
         }
         // Every window, topmost first, asked directly rather than through
         // `Space::element_under`.
@@ -147,7 +124,45 @@ impl ViewportState {
                 return Some((surface, pos - local));
             }
         }
-        below.or_else(|| self.shell_under(pos))
+        output
+            .as_ref()
+            .and_then(|output| self.layer_surface_under(output, pos, false))
+            .or_else(|| self.shell_under(pos))
+    }
+
+    fn layer_surface_under(
+        &self,
+        output: &Output,
+        pos: Point<f64, Logical>,
+        above: bool,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        use smithay::wayland::shell::wlr_layer::Layer;
+
+        let output_geometry = self.space.output_geometry(output).unwrap_or_default();
+        let map = smithay::desktop::layer_map_for_output(output);
+        let mut best = None;
+        for (mapped_at, layer) in map.layers().enumerate().filter(|(_, layer)| {
+            matches!(layer.layer(), Layer::Overlay | Layer::Top) == above
+        }) {
+            let Some(layer_geometry) = map.layer_geometry(layer) else {
+                continue;
+            };
+            let at = layer_geometry.loc.to_f64() + output_geometry.loc.to_f64();
+            let Some((surface, offset)) =
+                layer.surface_under(pos - at, WindowSurfaceType::ALL)
+            else {
+                continue;
+            };
+            let policy = crate::layer::policy(layer, &self.layer_rules);
+            let key = (layer.layer(), policy.z_index, mapped_at);
+            if best
+                .as_ref()
+                .is_none_or(|(best_key, _, _)| crate::layer::stacking_order(key, *best_key).is_lt())
+            {
+                best = Some((key, surface, offset.to_f64() + at));
+            }
+        }
+        best.map(|(_, surface, offset)| (surface, offset))
     }
 
     /// The topmost window at a point, skipping the parts cropped away.
@@ -358,7 +373,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
@@ -406,7 +422,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
@@ -604,7 +621,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
@@ -731,7 +749,8 @@ impl ViewportState {
             + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -799,7 +818,8 @@ impl ViewportState {
         R: Renderer
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
     {
         use smithay::backend::renderer::element::utils::{
@@ -818,6 +838,7 @@ impl ViewportState {
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
 
         let mut elements: Vec<DeskElement<R>> = Vec::new();
+        let mut effects = crate::background_effect::BackgroundEffectBudget::default();
         for output in outputs {
             let Some(geometry) = self.space.output_geometry(&output) else {
                 continue;
@@ -831,7 +852,7 @@ impl ViewportState {
             // happens before the move. See `render::desk_placement`.
             let (bounds, at) = crate::render::desk_placement(geometry, union, scale);
             elements.extend(
-                crate::render::build_capture(&frame, renderer)
+                crate::render::build_capture_with_budget(&frame, renderer, &mut effects)
                     .into_iter()
                     .filter_map(|element| {
                         let scaled = RescaleRenderElement::from_element(
@@ -869,7 +890,8 @@ impl ViewportState {
             + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -917,7 +939,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
@@ -979,7 +1002,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
@@ -1014,7 +1038,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
@@ -1047,7 +1072,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,

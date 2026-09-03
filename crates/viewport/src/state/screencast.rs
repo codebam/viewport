@@ -147,7 +147,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
@@ -548,7 +549,8 @@ impl ViewportState {
             + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -697,7 +699,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
@@ -725,7 +728,8 @@ impl ViewportState {
             + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
@@ -775,12 +779,14 @@ impl ViewportState {
     /// the lock is as much of the desktop as the next one would be.
     fn window_elements<R>(&mut self, id: u32, renderer: &mut R) -> Result<WindowElements<R>, String>
     where
-        R: Renderer + smithay::backend::renderer::ImportAll,
+        R: Renderer
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + crate::background_effect::BackgroundEffectRenderer,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
     {
-        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
-        use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
         use smithay::backend::renderer::element::Kind;
+        use smithay::desktop::PopupManager;
         use smithay::wayland::seat::WaylandFocus as _;
 
         let view = self
@@ -799,14 +805,38 @@ impl ViewportState {
             return Ok((Vec::new(), size));
         }
 
-        let elements = render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+        let root_at: smithay::utils::Point<i32, smithay::utils::Physical> =
+            (-geometry.loc.x, -geometry.loc.y).into();
+        let mut effects = crate::background_effect::BackgroundEffectBudget::default();
+        let mut elements = Vec::new();
+        for (popup, popup_offset) in PopupManager::popups_for_surface(&surface) {
+            if !matches!(&popup, smithay::desktop::PopupKind::Xdg(_)) {
+                continue;
+            }
+            let popup_at = root_at
+                + (geometry.loc + popup_offset - popup.geometry().loc)
+                    .to_f64()
+                    .to_physical(1.0)
+                    .to_i32_round();
+            elements.extend(crate::render::render_surface_tree(
+                renderer,
+                popup.wl_surface(),
+                popup_at,
+                1.0,
+                1.0,
+                Kind::Unspecified,
+                &mut effects,
+            ));
+        }
+        elements.extend(crate::render::render_surface_tree(
             renderer,
             &surface,
-            (-geometry.loc.x, -geometry.loc.y),
+            root_at,
             1.0,
             1.0,
             Kind::Unspecified,
-        );
+            &mut effects,
+        ));
         Ok((elements, size))
     }
 
@@ -827,7 +857,8 @@ impl ViewportState {
             + ExportMem
             + smithay::backend::renderer::ImportAll
             + smithay::backend::renderer::ImportMem
-            + smithay::backend::renderer::ImportDma,
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
         // Held between frames; see `capture_scratch`.
         B: 'static,
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,

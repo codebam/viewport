@@ -26,6 +26,43 @@ fn effective_opacity(
     (base * rule * global).clamp(0.0, 1.0)
 }
 
+fn placed_layer_bounds(
+    location: Point<i32, Physical>,
+    tree: Rectangle<i32, Logical>,
+    scale: f64,
+) -> Rectangle<i32, Physical> {
+    if tree.is_empty() {
+        return Rectangle::default();
+    }
+    // Popup placement and its surface size round separately. Their combined
+    // edge can be one pixel beyond a once-scaled logical bbox, so cover that
+    // rounding margin on every side rather than risking one private pixel.
+    let x1 = ((f64::from(tree.loc.x) * scale)
+        .floor()
+        .max(f64::from(i32::MIN)) as i32)
+        .saturating_sub(1);
+    let y1 = ((f64::from(tree.loc.y) * scale)
+        .floor()
+        .max(f64::from(i32::MIN)) as i32)
+        .saturating_sub(1);
+    let x2 = ((f64::from(tree.loc.x.saturating_add(tree.size.w)) * scale)
+        .ceil()
+        .min(f64::from(i32::MAX)) as i32)
+        .saturating_add(1);
+    let y2 = ((f64::from(tree.loc.y.saturating_add(tree.size.h)) * scale)
+        .ceil()
+        .min(f64::from(i32::MAX)) as i32)
+        .saturating_add(1);
+    Rectangle::new(
+        (
+            location.x.saturating_add(x1),
+            location.y.saturating_add(y1),
+        )
+            .into(),
+        (x2.saturating_sub(x1).max(0), y2.saturating_sub(y1).max(0)).into(),
+    )
+}
+
 impl ViewportState {
     pub fn frame_for(&mut self, output: &Output) -> crate::render::Frame {
         use smithay::wayland::seat::WaylandFocus as _;
@@ -36,21 +73,48 @@ impl ViewportState {
         };
         let scale = output.current_scale().fractional_scale();
 
-        // Layer surfaces, split by whether they sit above the windows or
-        // below them, in output-local physical coordinates.
-        let (mut layers_above, mut layers_below) = (Vec::new(), Vec::new());
+        // Layer surfaces in front-to-back protocol order. z_index only orders
+        // peers in the same protocol layer; map position breaks ties exactly as
+        // Smithay hit testing does, with the newest mapping in front.
+        let mut layers = Vec::new();
         {
             let map = smithay::desktop::layer_map_for_output(output);
-            for layer in map.layers() {
+            for (mapped_at, layer) in map.layers().enumerate() {
                 let Some(geometry) = map.layer_geometry(layer) else {
                     continue;
                 };
                 let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
-                let entry = (layer.clone(), location);
-                match layer.layer() {
-                    Layer::Overlay | Layer::Top => layers_above.push(entry),
-                    Layer::Background | Layer::Bottom => layers_below.push(entry),
-                }
+                let snapshot = crate::layer::snapshot(layer, &self.layer_rules);
+                let output_bounds = Rectangle::<i32, Physical>::from_size(
+                    output_geometry.size.to_f64().to_physical(scale).to_i32_round(),
+                );
+                let bounds = placed_layer_bounds(location, layer.bbox_with_popups(), scale)
+                    .intersection(output_bounds)
+                    .unwrap_or_default();
+                let protocol_layer = layer.layer();
+                layers.push((
+                    mapped_at,
+                    protocol_layer,
+                    crate::render::LayerFrame {
+                        layer: layer.clone(),
+                        location,
+                        policy: snapshot.policy,
+                        capture_redaction: (snapshot.capture_redaction_id, bounds),
+                    },
+                ));
+            }
+        }
+        layers.sort_by(|left, right| {
+            crate::layer::stacking_order(
+                (left.1, left.2.policy.z_index, left.0),
+                (right.1, right.2.policy.z_index, right.0),
+            )
+        });
+        let (mut layers_above, mut layers_below) = (Vec::new(), Vec::new());
+        for (_, protocol_layer, frame) in layers {
+            match protocol_layer {
+                Layer::Overlay | Layer::Top => layers_above.push(frame),
+                Layer::Background | Layer::Bottom => layers_below.push(frame),
             }
         }
 
@@ -621,7 +685,7 @@ impl ViewportState {
 }
 
 #[cfg(test)]
-mod opacity_tests {
+mod frame_tests {
     use super::*;
 
     #[test]
@@ -640,5 +704,32 @@ mod opacity_tests {
         close(effective_opacity(0.8, 0.5, true, true, Some(&policy)), 0.32);
         assert_eq!(effective_opacity(0.8, 2.0, true, false, Some(&policy)), 1.0);
         close(effective_opacity(0.8, 0.5, false, false, None), 0.4);
+    }
+
+    #[test]
+    fn layer_capture_bounds_follow_the_render_origin_and_include_popups() {
+        let location = Point::<i32, Physical>::from((8, 12));
+        // At 1.2, combining logical coordinates first would round the left
+        // edge to 5. Rendering rounds the origin and negative offset
+        // separately and starts at 4, which redaction must cover.
+        let tree = Rectangle::<i32, Logical>::new((-3, 0).into(), (360, 90).into());
+
+        assert_eq!(
+            placed_layer_bounds(location, tree, 1.2),
+            Rectangle::<i32, Physical>::new((3, 11).into(), (435, 110).into())
+        );
+
+        let separately_rounded = Rectangle::<i32, Logical>::new((1, 0).into(), (1, 1).into());
+        assert_eq!(
+            placed_layer_bounds((0, 0).into(), separately_rounded, 1.5),
+            Rectangle::<i32, Physical>::new((0, -1).into(), (4, 4).into())
+        );
+
+        assert!(placed_layer_bounds(
+            (100, 100).into(),
+            Rectangle::<i32, Logical>::default(),
+            1.5,
+        )
+        .is_empty());
     }
 }

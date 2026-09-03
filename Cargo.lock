@@ -3027,6 +3027,7 @@ dependencies = [
  "viewport-web",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-wlr",
  "xcursor",
  "zbus",
  "zvariant",

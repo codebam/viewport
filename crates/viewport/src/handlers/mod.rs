@@ -267,16 +267,23 @@ impl smithay::wayland::input_method::InputMethodHandler for ViewportState {
         }
     }
 
-    fn popup_repositioned(&mut self, _surface: smithay::wayland::input_method::PopupSurface) {}
+    fn popup_repositioned(&mut self, _surface: smithay::wayland::input_method::PopupSurface) {
+        self.needs_render = true;
+        self.refresh_pointer_focus();
+    }
 
     fn dismiss_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
         let Some(parent) = surface.get_parent().map(|parent| parent.surface.clone()) else {
             return;
         };
-        let _ = smithay::desktop::PopupManager::dismiss_popup(
+        let dismissed = smithay::desktop::PopupManager::dismiss_popup(
             &parent,
             &smithay::desktop::PopupKind::from(surface),
         );
+        if dismissed.is_ok() {
+            self.needs_render = true;
+            self.refresh_pointer_focus();
+        }
     }
 
     /// Where the text being composed is, so the candidate list can sit under

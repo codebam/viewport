@@ -12,6 +12,16 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- `ext-background-effect-v1` now provides bounded, region-aware blur for normal
+  Wayland surfaces on nested and headless GLES backends. Effects follow surface
+  trees and associated popups through display and capture, remain behind private
+  redactions and lock isolation, and are not advertised by unsupported
+  DRM/Vulkan renderers.
+- Ordered `layer_rules` can match layer-shell namespaces by substring, exact
+  value or regex and compose opacity, capture exclusion, blur intent and a
+  same-protocol-layer `z_index`. Mapped surfaces update in place on config
+  reload; capture denial blacks out their full tree including popups, while
+  lock-screen ordering remains absolute.
 - Input capture portal support for sharing the local keyboard and pointer with
   tools such as input-leap after explicit shell consent. Sessions use receiver
   libei contexts, activate only across validated exterior output barriers, and

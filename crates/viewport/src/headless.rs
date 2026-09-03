@@ -124,8 +124,11 @@ pub fn init(
     // without it, and most of what runs headless — the IPC, the layout, the
     // window lifecycle — never asks for any.
     let renderer = match renderer() {
-        Ok(renderer) => {
+        Ok(mut renderer) => {
             tracing::info!("headless renderer: OpenGL on a surfaceless EGL display");
+            if let Err(e) = state.advertise_background_effects(&mut renderer) {
+                tracing::info!("ext-background-effect-v1 unavailable: {e:#}");
+            }
             Some(renderer)
         }
         Err(e) => {

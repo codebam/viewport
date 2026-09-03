@@ -149,6 +149,20 @@ impl CompositorHandler for ViewportState {
             }
         }
     }
+
+    fn destroyed(&mut self, surface: &WlSurface) {
+        let was_pointer_focus = self
+            .seat
+            .get_pointer()
+            .and_then(|pointer| pointer.current_focus())
+            .as_ref()
+            == Some(surface);
+        crate::layer::clear_owner(surface);
+        crate::layer::clear_popup(surface);
+        if was_pointer_focus {
+            self.refresh_pointer_focus();
+        }
+    }
 }
 
 impl ViewportState {

@@ -51,6 +51,8 @@ sources+=("$(generate ext-image-copy-capture-v1 \
 	"$protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml")")
 sources+=("$(generate ext-session-lock-v1 \
 	"$protocols/staging/ext-session-lock/ext-session-lock-v1.xml")")
+sources+=("$(generate ext-background-effect-v1 \
+	"$protocols/staging/ext-background-effect/ext-background-effect-v1.xml")")
 # Vendored, as on the server side: the frame probe has to stay visible on a
 # chosen output even while a game is fullscreen on another.
 sources+=("$(generate wlr-layer-shell-unstable-v1 \
@@ -65,7 +67,7 @@ sources+=("$(generate wlr-output-management-unstable-v1 \
 sources+=("$(generate ext-workspace-v1 \
 	"$protocols/staging/ext-workspace/ext-workspace-v1.xml")")
 
-for client in paint capture lock foreign-toplevel output-management workspace; do
+for client in paint capture lock foreign-toplevel output-management workspace background-effect; do
 	# shellcheck disable=SC2046 # pkg-config output is a word list on purpose
 	cc -std=c11 -Wall -Wextra -Wno-unused-parameter \
 		-I"$work" \
@@ -113,6 +115,10 @@ run capture-private "$root/tests/capture.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client" tiling private
 run capture-private-scrolling "$root/tests/capture.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client" scrolling private
+run capture-popup-effect "$root/tests/capture.test.sh" \
+	"$VIEWPORT" "$work/paint-client" "$work/capture-client" tiling public popup
+run background-effect "$root/tests/background-effect.test.sh" \
+	"$VIEWPORT" "$work/background-effect-client" "$work/capture-client"
 run output-order "$root/tests/output-order.test.sh" "$VIEWPORT"
 
 # The screencast frontend is Rust — it speaks D-Bus rather than Wayland, so it

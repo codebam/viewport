@@ -23,13 +23,26 @@ use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
 use smithay::backend::renderer::element::{AsRenderElements as _, Id, Kind};
-use smithay::backend::renderer::utils::DamageSnapshot;
+use smithay::backend::renderer::utils::{DamageSnapshot, RendererSurfaceStateUserData};
 use smithay::backend::renderer::{ImportAll, ImportDma, ImportMem, Renderer, RendererSuper};
 use smithay::desktop::{LayerSurface, Window};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Buffer as BufferCoord, Logical, Physical, Point, Rectangle, Transform};
+use smithay::utils::{
+    Buffer as BufferCoord, Logical, Physical, Point, Rectangle, Scale, Transform,
+};
+use smithay::wayland::compositor::TraversalAction;
 
+use crate::background_effect::{
+    BackgroundEffectBudget, BackgroundEffectRenderElement, BackgroundEffectRenderer,
+};
 use crate::rounded::RoundedRenderElement;
+
+smithay::backend::renderer::element::render_elements! {
+    /// One Wayland surface and the framebuffer effect immediately behind it.
+    pub SurfaceElement<R> where R: ImportAll + ImportMem + BackgroundEffectRenderer;
+    Surface=WaylandSurfaceRenderElement<R>,
+    BackgroundEffect=BackgroundEffectRenderElement,
+}
 
 smithay::backend::renderer::element::render_elements! {
     /// Everything one output draws.
@@ -38,19 +51,19 @@ smithay::backend::renderer::element::render_elements! {
     /// Wayland client — it is a texture imported straight from WebKit's
     /// DMA-BUF — and a window may be cropped to the hole the shell drew for
     /// it, so no single element type covers the list.
-    pub OutputElement<R> where R: ImportAll + ImportMem;
-    Surface=WaylandSurfaceRenderElement<R>,
-    CroppedSurface=CropRenderElement<WaylandSurfaceRenderElement<R>>,
+    pub OutputElement<R> where R: ImportAll + ImportMem + BackgroundEffectRenderer;
+    Surface=SurfaceElement<R>,
+    CroppedSurface=CropRenderElement<SurfaceElement<R>>,
     /// A window with the corners of the shell's border cut out of it. Always
     /// cropped first, because rounding a window is also a promise that nothing
     /// of it is drawn outside the box the shell measured.
-    RoundedSurface=RoundedRenderElement<CropRenderElement<WaylandSurfaceRenderElement<R>>>,
+    RoundedSurface=RoundedRenderElement<CropRenderElement<SurfaceElement<R>>>,
     /// A window drawn smaller than it is: the overview, where every window on
     /// every workspace is on screen at once and no client is asked to resize
     /// itself into a thumbnail.
-    ScaledSurface=RescaleRenderElement<CropRenderElement<WaylandSurfaceRenderElement<R>>>,
-    ScaledRoundedSurface=RescaleRenderElement<RoundedRenderElement<CropRenderElement<WaylandSurfaceRenderElement<R>>>>,
-    ScaledWholeSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
+    ScaledSurface=RescaleRenderElement<CropRenderElement<SurfaceElement<R>>>,
+    ScaledRoundedSurface=RescaleRenderElement<RoundedRenderElement<CropRenderElement<SurfaceElement<R>>>>,
+    ScaledWholeSurface=RescaleRenderElement<SurfaceElement<R>>,
     Shell=TextureRenderElement<<R as RendererSuper>::TextureId>,
     /// A piece of the shell drawn above the windows: the frame around a
     /// floating window, or a dialog the shell put up.
@@ -78,7 +91,7 @@ smithay::backend::renderer::element::render_elements! {
     /// including the pointer. A magnifier that left the pointer out would draw
     /// a cursor somewhere other than over the thing it is pointing at, which
     /// is the one thing this feature exists to get right.
-    pub ScreenElement<R> where R: ImportAll + ImportMem;
+    pub ScreenElement<R> where R: ImportAll + ImportMem + BackgroundEffectRenderer;
     Plain=OutputElement<R>,
     /// Scaled about the output's corner and then pushed back, which together
     /// are "show this region, filling the screen". Two elements because the
@@ -112,6 +125,17 @@ pub struct Shell {
     pub damage: DamageSnapshot<i32, BufferCoord>,
     /// Stable for the life of the compositor, for the same reason.
     pub id: Id,
+}
+
+/// One layer surface and its renderer-independent policy.
+pub struct LayerFrame {
+    pub layer: LayerSurface,
+    pub location: Point<i32, Physical>,
+    /// Namespace rule policy resolved before renderer borrowing begins.
+    pub policy: crate::layer::Policy,
+    /// Stable identity and complete surface-tree bounds used when capture is
+    /// denied. Bounds include subsurfaces and layer-shell popups.
+    pub capture_redaction: (Id, Rectangle<i32, Physical>),
 }
 
 /// One window, and everything about drawing it that is not the window itself.
@@ -187,10 +211,10 @@ pub struct WindowFrame {
 #[derive(Default)]
 pub struct Frame {
     /// Front to back within each group.
-    pub layers_above: Vec<(LayerSurface, Point<i32, Physical>)>,
+    pub layers_above: Vec<LayerFrame>,
     /// The windows on this output, front to back.
     pub windows: Vec<WindowFrame>,
-    pub layers_below: Vec<(LayerSurface, Point<i32, Physical>)>,
+    pub layers_below: Vec<LayerFrame>,
     /// The page that runs the desktop. Windows are holes in it, and
     /// `overlay` is cropped out of it.
     pub shell: Option<Shell>,
@@ -257,33 +281,52 @@ pub struct Frame {
 /// Turn a [`Frame`] into elements, front to back.
 ///
 /// The order is the whole layering policy: pointer, then anything on an
-/// overlay or top layer, then the windows, then background and bottom layers,
+/// overlay or top layer, then the windows, then bottom and background layers,
 /// then the shell behind all of it. Hit-testing follows the same order, which
 /// is what makes "the click went to what you can see" fall out rather than
 /// being computed separately.
 pub fn build<R>(frame: &Frame, renderer: &mut R) -> Vec<ScreenElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem + ImportDma,
+    R: Renderer + ImportAll + ImportMem + ImportDma + BackgroundEffectRenderer,
     <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
 {
-    build_for(frame, renderer, false)
+    let mut effects = BackgroundEffectBudget::default();
+    build_for(frame, renderer, false, &mut effects)
 }
 
 /// Turn a frame into capture elements, replacing private windows with black.
 pub fn build_capture<R>(frame: &Frame, renderer: &mut R) -> Vec<ScreenElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem + ImportDma,
+    R: Renderer + ImportAll + ImportMem + ImportDma + BackgroundEffectRenderer,
     <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
 {
-    build_for(frame, renderer, true)
+    let mut effects = BackgroundEffectBudget::default();
+    build_capture_with_budget(frame, renderer, &mut effects)
 }
 
-fn build_for<R>(frame: &Frame, renderer: &mut R, capture: bool) -> Vec<ScreenElement<R>>
+pub(crate) fn build_capture_with_budget<R>(
+    frame: &Frame,
+    renderer: &mut R,
+    effects: &mut BackgroundEffectBudget,
+) -> Vec<ScreenElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem + ImportDma,
+    R: Renderer + ImportAll + ImportMem + ImportDma + BackgroundEffectRenderer,
     <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
 {
-    let elements = layers(frame, renderer, capture);
+    build_for(frame, renderer, true, effects)
+}
+
+fn build_for<R>(
+    frame: &Frame,
+    renderer: &mut R,
+    capture: bool,
+    effects: &mut BackgroundEffectBudget,
+) -> Vec<ScreenElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem + ImportDma + BackgroundEffectRenderer,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    let elements = layers(frame, renderer, capture, effects);
     // The magnifier, applied to the finished list rather than woven through
     // the assembly above. Two reasons: the transform is the same for every
     // element, including the ones the lock screen path returns early with —
@@ -313,9 +356,14 @@ where
 }
 
 /// The desktop, front to back, before the magnifier.
-fn layers<R>(frame: &Frame, renderer: &mut R, capture: bool) -> Vec<OutputElement<R>>
+fn layers<R>(
+    frame: &Frame,
+    renderer: &mut R,
+    capture: bool,
+    effects: &mut BackgroundEffectBudget,
+) -> Vec<OutputElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem + ImportDma,
+    R: Renderer + ImportAll + ImportMem + ImportDma + BackgroundEffectRenderer,
     // MemoryRenderBufferRenderElement keeps per-renderer textures in a shared
     // map, so the cursor path needs the texture to cross threads even though
     // nothing here does.
@@ -342,17 +390,17 @@ where
     // password box that has to be clickable. Nothing else is, so a cursor
     // cannot point at anything it should not.
     if frame.locked_blank || frame.lock.is_some() {
-        push_cursor(&mut elements, frame, renderer, scale);
+        push_cursor(&mut elements, frame, renderer, scale, effects);
         if let Some(surface) = frame.lock.as_ref() {
-            use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
             elements.extend(
-                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+                render_surface_tree(
                     renderer,
                     surface,
                     Point::from((0, 0)),
                     scale,
                     1.0,
                     Kind::Unspecified,
+                    effects,
                 )
                 .into_iter()
                 .map(OutputElement::from),
@@ -367,20 +415,10 @@ where
         return elements;
     }
 
-    push_cursor(&mut elements, frame, renderer, scale);
+    push_cursor(&mut elements, frame, renderer, scale, effects);
 
-    for (layer, location) in &frame.layers_above {
-        elements.extend(
-            layer
-                .render_elements::<WaylandSurfaceRenderElement<R>>(
-                    renderer,
-                    *location,
-                    scale.into(),
-                    1.0,
-                )
-                .into_iter()
-                .map(OutputElement::from),
-        );
+    for layer in &frame.layers_above {
+        push_layer(&mut elements, layer, renderer, scale, capture, effects);
     }
 
     // A dialog the shell put up, above every window.
@@ -464,7 +502,6 @@ where
         // — and the crop describes the hole the shell drew for the *window*.
         // Cropping the popup to it cuts a Firefox menu off at the window edge,
         // or removes it entirely when it opens past one.
-        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
         use smithay::desktop::PopupManager;
         use smithay::wayland::seat::WaylandFocus as _;
         if let Some(surface) = window.wl_surface() {
@@ -479,13 +516,14 @@ where
                         .to_f64()
                         .to_physical(scale)
                         .to_i32_round();
-                let drawn = render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+                let drawn = render_surface_tree(
                     renderer,
                     popup.wl_surface(),
                     at,
                     scale,
                     1.0,
                     Kind::Unspecified,
+                    effects,
                 );
                 // Shrunk with the window it belongs to. Uncropped still — a
                 // menu is entitled to overflow its window — but a full-size
@@ -511,23 +549,26 @@ where
         // X11 windows keep the Smithay path, which has no popups of its own to
         // duplicate: an X11 menu is a separate override-redirect window.
         let alpha = frame_opacity.clamp(0.0, 1.0);
-        let surfaces = match window.wl_surface() {
-            Some(surface) if window.toplevel().is_some() => {
-                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
-                    renderer,
-                    &surface,
-                    *location,
-                    scale,
-                    alpha,
-                    Kind::Unspecified,
-                )
-            }
-            _ => window.render_elements::<WaylandSurfaceRenderElement<R>>(
+        let surfaces: Vec<SurfaceElement<R>> = match window.wl_surface() {
+            Some(surface) if window.toplevel().is_some() => render_surface_tree(
                 renderer,
+                &surface,
                 *location,
-                scale.into(),
+                scale,
                 alpha,
+                Kind::Unspecified,
+                effects,
             ),
+            _ => window
+                .render_elements::<WaylandSurfaceRenderElement<R>>(
+                    renderer,
+                    *location,
+                    scale.into(),
+                    alpha,
+                )
+                .into_iter()
+                .map(SurfaceElement::from)
+                .collect(),
         };
 
         // Cropped first and scaled after, which is the order the shell's
@@ -546,7 +587,7 @@ where
         if let Some((rect, radius)) = rounded {
             let crop = clip.unwrap_or(*rect);
             elements.extend(surfaces.into_iter().filter_map(|surface| {
-                let cropped = CropRenderElement::from_element(surface, scale, crop)?;
+                let cropped = crop_surface_element(surface, scale, crop)?;
                 let rounded = RoundedRenderElement::from_element(cropped, scale, *rect, *radius)?;
                 Some(if shrink {
                     OutputElement::from(RescaleRenderElement::from_element(
@@ -565,12 +606,11 @@ where
                 // bar and the wallpaper with its own background.
                 (Some(clip), false) => {
                     elements.extend(surfaces.into_iter().filter_map(|surface| {
-                        CropRenderElement::from_element(surface, scale, *clip)
-                            .map(OutputElement::from)
+                        crop_surface_element(surface, scale, *clip).map(OutputElement::from)
                     }))
                 }
                 (Some(clip), true) => elements.extend(surfaces.into_iter().filter_map(|surface| {
-                    CropRenderElement::from_element(surface, scale, *clip).map(|cropped| {
+                    crop_surface_element(surface, scale, *clip).map(|cropped| {
                         OutputElement::from(RescaleRenderElement::from_element(
                             cropped,
                             *origin,
@@ -619,18 +659,8 @@ where
         }
     }
 
-    for (layer, location) in &frame.layers_below {
-        elements.extend(
-            layer
-                .render_elements::<WaylandSurfaceRenderElement<R>>(
-                    renderer,
-                    *location,
-                    scale.into(),
-                    1.0,
-                )
-                .into_iter()
-                .map(OutputElement::from),
-        );
+    for layer in &frame.layers_below {
+        push_layer(&mut elements, layer, renderer, scale, capture, effects);
     }
 
     // The shell itself, under everything. Every window is a hole in it.
@@ -655,15 +685,15 @@ where
     // screen the shell is in front of — and it is drawn at all only because
     // the shell has been told to leave its own background transparent.
     if let Some((surface, location)) = frame.background.as_ref() {
-        use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
         elements.extend(
-            render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
+            render_surface_tree(
                 renderer,
                 surface,
                 *location,
                 scale,
                 1.0,
                 Kind::Unspecified,
+                effects,
             )
             .into_iter()
             .map(OutputElement::from),
@@ -673,34 +703,239 @@ where
     elements
 }
 
+fn push_layer<R>(
+    elements: &mut Vec<OutputElement<R>>,
+    frame: &LayerFrame,
+    renderer: &mut R,
+    scale: f64,
+    capture: bool,
+    effects: &mut BackgroundEffectBudget,
+) where
+    R: Renderer + ImportAll + ImportMem + ImportDma + BackgroundEffectRenderer,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    if capture && !frame.policy.capture {
+        let (id, geometry) = &frame.capture_redaction;
+        elements.push(OutputElement::from(SolidColorRenderElement::new(
+            id.clone(),
+            *geometry,
+            smithay::backend::renderer::utils::CommitCounter::default(),
+            smithay::backend::renderer::Color32F::from([0.0, 0.0, 0.0, 1.0]),
+            Kind::Unspecified,
+        )));
+        return;
+    }
+
+    elements.extend(
+        layer_elements(
+            renderer,
+            &frame.layer,
+            frame.location,
+            scale,
+            frame.policy.opacity.clamp(0.0, 1.0),
+            frame.policy.blur,
+            effects,
+        )
+        .into_iter()
+        .map(OutputElement::from),
+    );
+}
+
+/// Render a Wayland surface tree and put each requested framebuffer effect
+/// directly behind the surface that owns it.
+///
+/// Smithay's helper returns only imported surface elements, so it loses the
+/// `WlSurface`/cached-state association needed to insert the second element.
+/// This is the same traversal and placement, retaining that association for
+/// one extra step.
+pub(crate) fn render_surface_tree<R>(
+    renderer: &mut R,
+    surface: &WlSurface,
+    location: Point<i32, Physical>,
+    scale: f64,
+    alpha: f32,
+    kind: Kind,
+    effects: &mut BackgroundEffectBudget,
+) -> Vec<SurfaceElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem + BackgroundEffectRenderer,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    render_surface_tree_with_effect(
+        renderer, surface, location, scale, alpha, kind, false, effects,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // Mirrors Smithay traversal inputs plus one shared frame budget.
+fn render_surface_tree_with_effect<R>(
+    renderer: &mut R,
+    surface: &WlSurface,
+    location: Point<i32, Physical>,
+    scale: f64,
+    alpha: f32,
+    kind: Kind,
+    force_blur: bool,
+    effects: &mut BackgroundEffectBudget,
+) -> Vec<SurfaceElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem + BackgroundEffectRenderer,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    let effects_available = renderer.background_effects_available();
+    let force_blur = force_blur && effects_available;
+    let location = location.to_f64();
+    let scale = Scale::from(scale);
+    let mut surfaces = Vec::new();
+
+    smithay::wayland::compositor::with_surface_tree_downward(
+        surface,
+        location,
+        |_, states, location| {
+            let mut location = *location;
+            let data = states.data_map.get::<RendererSurfaceStateUserData>();
+            if let Some(data) = data {
+                if let Some(view) = data.lock().unwrap_or_else(|e| e.into_inner()).view() {
+                    location += view.offset.to_f64().to_physical(scale);
+                    TraversalAction::DoChildren(location)
+                } else {
+                    TraversalAction::SkipChildren
+                }
+            } else {
+                TraversalAction::SkipChildren
+            }
+        },
+        |surface, states, location| {
+            let mut location = *location;
+            let data = states.data_map.get::<RendererSurfaceStateUserData>();
+            let has_view = data.is_some_and(|data| {
+                let Some(view) = data.lock().unwrap_or_else(|e| e.into_inner()).view() else {
+                    return false;
+                };
+                location += view.offset.to_f64().to_physical(scale);
+                true
+            });
+            if !has_view {
+                return;
+            }
+
+            match WaylandSurfaceRenderElement::from_surface(
+                renderer, surface, states, location, alpha, kind,
+            ) {
+                Ok(Some(surface)) => {
+                    let effect = effects_available
+                        .then(|| {
+                            crate::background_effect::render_element(
+                                states, &surface, scale, force_blur, effects,
+                            )
+                        })
+                        .flatten();
+                    surfaces.push(SurfaceElement::from(surface));
+                    if let Some(effect) = effect {
+                        surfaces.push(SurfaceElement::from(effect));
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!("failed to import surface: {error}"),
+            }
+        },
+        |_, _, _| true,
+    );
+
+    surfaces
+}
+
+fn crop_surface_element<R>(
+    mut element: SurfaceElement<R>,
+    scale: f64,
+    clip: Rectangle<i32, Physical>,
+) -> Option<CropRenderElement<SurfaceElement<R>>>
+where
+    R: Renderer + ImportAll + ImportMem + BackgroundEffectRenderer,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    let crop = match &mut element {
+        SurfaceElement::BackgroundEffect(effect) => {
+            if !effect.clip_regions(clip) {
+                return None;
+            }
+            crate::background_effect::expand_blur_geometry(clip)
+        }
+        _ => clip,
+    };
+    CropRenderElement::from_element(element, scale, crop)
+}
+
+/// A layer surface uses the same tree as a window, plus its native popups in
+/// front. Kept local so both pieces retain background-effect requests.
+fn layer_elements<R>(
+    renderer: &mut R,
+    layer: &LayerSurface,
+    location: Point<i32, Physical>,
+    scale: f64,
+    alpha: f32,
+    force_blur: bool,
+    effects: &mut BackgroundEffectBudget,
+) -> Vec<SurfaceElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem + BackgroundEffectRenderer,
+    <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+{
+    use smithay::desktop::PopupManager;
+    let mut elements = Vec::new();
+    for (popup, popup_offset) in PopupManager::popups_for_surface(layer.wl_surface()) {
+        let offset = (popup_offset - popup.geometry().loc)
+            .to_f64()
+            .to_physical(scale)
+            .to_i32_round();
+        elements.extend(render_surface_tree_with_effect(
+            renderer,
+            popup.wl_surface(),
+            location + offset,
+            scale,
+            alpha,
+            Kind::Unspecified,
+            force_blur,
+            effects,
+        ));
+    }
+    elements.extend(render_surface_tree_with_effect(
+        renderer,
+        layer.wl_surface(),
+        location,
+        scale,
+        alpha,
+        Kind::Unspecified,
+        force_blur,
+        effects,
+    ));
+    elements
+}
+
 /// The pointer, front of everything.
 ///
 /// Its own function because there are two paths that draw it — the ordinary
 /// one and the locked one — and a second copy of it is a second place for the
 /// hotspot arithmetic to be wrong.
-fn push_cursor<R>(elements: &mut Vec<OutputElement<R>>, frame: &Frame, renderer: &mut R, scale: f64)
-where
-    R: Renderer + ImportAll + ImportMem + ImportDma,
+fn push_cursor<R>(
+    elements: &mut Vec<OutputElement<R>>,
+    frame: &Frame,
+    renderer: &mut R,
+    scale: f64,
+    effects: &mut BackgroundEffectBudget,
+) where
+    R: Renderer + ImportAll + ImportMem + ImportDma + BackgroundEffectRenderer,
     <R as RendererSuper>::TextureId: Clone + Send + Sync + 'static,
 {
     match &frame.cursor {
         Cursor::Hidden => {}
         Cursor::Surface(surface, hotspot) => {
-            use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
             // Drawn with the hotspot subtracted, so the point the user aims
             // with is where the pointer is.
             let at = Point::from((-hotspot.x, -hotspot.y));
             elements.extend(
-                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
-                    renderer,
-                    surface,
-                    at,
-                    scale,
-                    1.0,
-                    Kind::Cursor,
-                )
-                .into_iter()
-                .map(OutputElement::from),
+                render_surface_tree(renderer, surface, at, scale, 1.0, Kind::Cursor, effects)
+                    .into_iter()
+                    .map(OutputElement::from),
             );
         }
         Cursor::Image(image, at) => {
@@ -1003,7 +1238,27 @@ pub fn window_placement(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smithay::backend::renderer::element::Element as _;
+    use smithay::backend::renderer::gles::GlesRenderer;
     use viewport_ipc::geometry::Box;
+
+    #[test]
+    fn a_window_crop_keeps_background_effect_source_padding() {
+        let requested = Rectangle::<i32, Physical>::new((10, 20).into(), (100, 80).into());
+        let clip = Rectangle::<i32, Physical>::new((30, 35).into(), (40, 30).into());
+        let source = crate::background_effect::expand_blur_geometry(requested);
+        let expected = source
+            .intersection(crate::background_effect::expand_blur_geometry(clip))
+            .expect("padded crop overlaps effect source");
+        let element: SurfaceElement<GlesRenderer> =
+            SurfaceElement::from(BackgroundEffectRenderElement::for_test(requested));
+
+        let cropped = crop_surface_element(element, 1.0, clip).expect("effect intersects crop");
+
+        assert_eq!(cropped.geometry(1.0.into()), expected);
+        assert!(cropped.geometry(1.0.into()).contains_rect(clip));
+        assert_ne!(cropped.geometry(1.0.into()), clip);
+    }
 
     /// A frame drawn over the window instead of around it is the desktop drawn
     /// over the client: `.viewport` has no background, but the wallpaper it

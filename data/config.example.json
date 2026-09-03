@@ -218,6 +218,23 @@
   ],
   "opacity": { "active": 1, "inactive": 0.9, "fullscreen": 1 },
 
+  "_layer_rules": [
+    "Layer-shell namespaces use the rich window-rule matcher forms: a string",
+    "or contains is case-insensitive substring matching, equals is exact, and",
+    "regex accepts flags. Every match composes in order; later explicit fields",
+    "replace earlier ones. opacity is 0..1. capture false blacks out the whole",
+    "surface tree in captures. blur works on nested/headless GLES and records",
+    "intent on unsupported renderers. Larger z_index is",
+    "in front only within the same protocol layer; equal values keep map order."
+  ],
+  "layer_rules": [
+    { "match": { "namespace": { "equals": "waybar" } },
+      "opacity": 0.94, "blur": true },
+    { "match": { "namespace": { "regex": "^private-", "flags": "i" } },
+      "capture": false },
+    { "match": { "namespace": { "contains": "menu" } }, "z_index": 10 }
+  ],
+
   "_rules": [
     "First matching rule wins. Rich match fields are ANDed; workspace is the",
     "active workspace when the window opens. pseudotile keeps the full tiled",

@@ -9,6 +9,7 @@
 mod appearance;
 mod apply;
 mod background;
+mod background_effect;
 mod binding;
 mod bluetooth;
 mod capture;
@@ -37,6 +38,7 @@ mod input_capture;
 mod ipc;
 mod keyboard_focus;
 mod launcher;
+mod layer;
 mod libei;
 mod lock;
 mod magnify;

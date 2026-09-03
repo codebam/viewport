@@ -87,6 +87,13 @@ pub fn init(
         }
     };
 
+    // Unlike globals that only keep protocol state, this one promises pixels.
+    // Publish it only after the renderer has compiled the shader and proved it
+    // has the framebuffer-copy operation the effect needs.
+    if let Err(e) = state.advertise_background_effects(backend.renderer()) {
+        tracing::info!("ext-background-effect-v1 unavailable: {e:#}");
+    }
+
     // A GPU client cannot present without this, whatever the backend. Nested
     // is where most development happens, so it is worth as much here as on
     // real hardware.

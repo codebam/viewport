@@ -495,15 +495,37 @@ int main(int argc, char *argv[])
 	bool output_mode = argc >= 2 && strcmp(argv[1], "--output") == 0;
 	bool output_has = argc >= 2 && strcmp(argv[1], "--output-has") == 0;
 	bool output_not = argc >= 2 && strcmp(argv[1], "--output-not") == 0;
-	output_mode = output_mode || output_has || output_not;
+	bool output_pixel = argc >= 2 && strcmp(argv[1], "--output-pixel") == 0;
+	bool output_pixel_not = argc >= 2 &&
+		strcmp(argv[1], "--output-pixel-not") == 0;
+	bool output_pixel_mixed = argc >= 2 &&
+		strcmp(argv[1], "--output-pixel-mixed") == 0;
+	bool window_pixel = argc >= 2 && strcmp(argv[1], "--window-pixel") == 0;
+	bool window_pixel_not = argc >= 2 &&
+		strcmp(argv[1], "--window-pixel-not") == 0;
+	bool window_pixel_mixed = argc >= 2 &&
+		strcmp(argv[1], "--window-pixel-mixed") == 0;
+	bool output_coordinate_mode = output_pixel || output_pixel_not ||
+		output_pixel_mixed;
+	bool window_pixel_mode = window_pixel || window_pixel_not ||
+		window_pixel_mixed;
+	bool coordinate_mode = output_coordinate_mode || window_pixel_mode;
+	output_mode = output_mode || output_has || output_not || output_pixel ||
+		output_pixel_not || output_pixel_mixed;
 
-	if (!output_mode && argc != 6) {
+	if (!output_mode && !window_pixel_mode && argc != 6) {
 		fprintf(stderr,
 			"usage: %s APP_ID EXPECT_ARGB EXPECT_WIDTH EXPECT_HEIGHT "
 			"WATCH_MS\n"
 			"       %s --output EXPECT_ARGB\n"
 			"       %s --output-has EXPECT_ARGB\n"
 			"       %s --output-not EXPECT_ARGB\n"
+			"       %s --output-pixel X Y EXPECT_ARGB\n"
+			"       %s --output-pixel-not X Y EXPECT_ARGB\n"
+			"       %s --output-pixel-mixed X Y\n"
+			"       %s --window-pixel APP_ID X Y EXPECT_ARGB WIDTH HEIGHT\n"
+			"       %s --window-pixel-not APP_ID X Y EXPECT_ARGB WIDTH HEIGHT\n"
+			"       %s --window-pixel-mixed APP_ID X Y WIDTH HEIGHT\n"
 			"\n"
 			"Captures the window with APP_ID and checks that the frame is\n"
 			"EXPECT_WIDTH x EXPECT_HEIGHT and every pixel EXPECT_ARGB, then\n"
@@ -514,20 +536,38 @@ int main(int argc, char *argv[])
 			"actually being displayed, which is the only place the answer\n"
 			"lives: a compositor whose lock layer has been emptied still\n"
 			"reports itself locked.\n",
-			argv[0], argv[0], argv[0], argv[0]);
+			argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0],
+			argv[0], argv[0], argv[0]);
 		return 2;
 	}
-	if (output_mode && argc != 3) {
-		fprintf(stderr, "usage: %s --output EXPECT_ARGB\n", argv[0]);
+	if (output_mode && (output_pixel_mixed ? argc != 4
+			: (output_pixel || output_pixel_not) ? argc != 5 : argc != 3)) {
+		fprintf(stderr, "bad output-check arguments\n");
+		return 2;
+	}
+	if (window_pixel_mode &&
+			(window_pixel_mixed ? argc != 7 : argc != 8)) {
+		fprintf(stderr, "bad window-pixel arguments\n");
 		return 2;
 	}
 
-	const char *want_app_id = output_mode ? NULL : argv[1];
-	uint32_t want_colour = (uint32_t)strtoul(
-		output_mode ? argv[2] : argv[2], NULL, 16) & 0x00FFFFFF;
-	int32_t want_width = output_mode ? 0 : atoi(argv[3]);
-	int32_t want_height = output_mode ? 0 : atoi(argv[4]);
-	int watch_ms = output_mode ? 0 : atoi(argv[5]);
+	const char *want_app_id = output_mode ? NULL
+		: (window_pixel_mode ? argv[2] : argv[1]);
+	const char *colour_arg = output_pixel_mixed || window_pixel_mixed ? "0"
+		: (output_pixel || output_pixel_not ? argv[4]
+		: (window_pixel_mode ? argv[5] : argv[2]));
+	uint32_t want_colour = (uint32_t)strtoul(colour_arg, NULL, 16) & 0x00FFFFFF;
+	int32_t want_x = output_coordinate_mode ? atoi(argv[2])
+		: (window_pixel_mode ? atoi(argv[3]) : 0);
+	int32_t want_y = output_coordinate_mode ? atoi(argv[3])
+		: (window_pixel_mode ? atoi(argv[4]) : 0);
+	int32_t want_width = output_mode ? 0
+		: (window_pixel_mixed ? atoi(argv[5])
+		: (window_pixel_mode ? atoi(argv[6]) : atoi(argv[3])));
+	int32_t want_height = output_mode ? 0
+		: (window_pixel_mixed ? atoi(argv[6])
+		: (window_pixel_mode ? atoi(argv[7]) : atoi(argv[4])));
+	int watch_ms = output_mode || window_pixel_mode ? 0 : atoi(argv[5]);
 
 	struct capture_client client = {0};
 
@@ -678,9 +718,34 @@ have_source:;
 	} else if (output_not) {
 		what = "the screen contains none of the protected colour";
 		pixels_ok = matching == 0;
+	} else if (coordinate_mode) {
+		bool in_bounds = want_x >= 0 && want_x < buffer.width && want_y >= 0 &&
+			want_y < buffer.height;
+		uint32_t pixel = in_bounds
+			? buffer.pixels[want_y * buffer.width + want_x] & 0x00FFFFFF
+			: 0;
+		if (output_pixel_mixed || window_pixel_mixed) {
+			uint32_t red = (pixel >> 16) & 0xff;
+			uint32_t green = (pixel >> 8) & 0xff;
+			uint32_t blue = pixel & 0xff;
+			what = "the selected capture pixel mixes red and blue";
+			pixels_ok = in_bounds && red > 8 && blue > 8 && green <= 8;
+		} else {
+			bool pixel_not = output_pixel_not || window_pixel_not;
+			what = output_pixel || window_pixel
+				? "the selected capture pixel has the expected colour"
+				: "the selected capture pixel changed from the sharp backdrop";
+			pixels_ok = in_bounds && ((pixel == want_colour) != pixel_not);
+		}
+		if (!pixels_ok) {
+			check(false, "%s: pixel %d,%d is %06x, reference %06x", what,
+				want_x, want_y, pixel, want_colour);
+		}
 	}
 	if (pixels_ok) {
 		check(true, "%s", what);
+	} else if (coordinate_mode) {
+		/* The coordinate-specific diagnostic was emitted above. */
 	} else if (output_has || output_not) {
 		check(false, "%s: %lld of %lld pixels matched %06x", what,
 			(long long)matching, (long long)buffer.width * buffer.height,
@@ -691,7 +756,7 @@ have_source:;
 			first_x, first_y, first_value, want_colour);
 	}
 
-	if (output_mode) {
+	if (output_mode || window_pixel_mode) {
 		ext_image_copy_capture_session_v1_destroy(session);
 		ext_image_capture_source_v1_destroy(source);
 		wl_display_roundtrip(display);
