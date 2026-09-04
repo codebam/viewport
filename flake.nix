@@ -4,6 +4,18 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # The cargo build, so the dependency graph is compiled once and reused.
+    #
+    # An inputless library flake — it imports its callers' `pkgs` rather than
+    # carrying its own nixpkgs — so there is nothing to `follows`: it builds
+    # against the same revision every other path here does. What it buys is
+    # `buildDepsOnly`, whose source is only the lock file and the trimmed
+    # manifests; editing a `.rs` file cannot invalidate that derivation, so
+    # smithay, this renderer and the rest of the graph stay in the store from
+    # one build to the next. Only `Cargo.lock`, a `Cargo.toml` or a native
+    # input moving rebuilds the dependencies — which is the one time they
+    # should be.
+    crane.url = "github:ipetkov/crane";
     # For one thing only: `-Zsanitizer=address` is nightly-gated and nixpkgs
     # ships a stable rustc. Everything else builds with the pinned stable
     # toolchain; see `devShells.asan`.
@@ -17,10 +29,15 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
+  outputs = { self, nixpkgs, flake-utils, crane, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+
+        # The cargo builder. `mkLib` takes this `pkgs` — the same stable
+        # toolchain every substituted path here is built against — so the
+        # conversion does not move the compiler out from under anything.
+        craneLib = crane.mkLib pkgs;
 
         # A second package set, for the toolchain and nothing else.
         #
@@ -262,21 +279,37 @@
         # Its own derivation because the crate is outside the workspace — it
         # does not build without `CEF_PATH` — so it has its own lock file and
         # cannot be a `-p` of the compositor's build.
-        viewport-shell-cef = pkgs.rustPlatform.buildRustPackage {
+        #
+        # It goes through the same builder as the compositor, but with
+        # `cargoArtifacts = null` rather than a cached dependency layer, and
+        # that is not an oversight: its lock file covers two sibling path
+        # dependencies and a handful of crates.io entries, so there is no
+        # graph worth caching, and the slow thing here is CMake compiling
+        # libcef_dll_wrapper from this crate's own build.rs against the
+        # 1.3 GB distribution — which runs in the package phase whatever
+        # the dep cache holds. A layer would only ever pay for itself on
+        # machines that rebuild this derivation, which is to say whenever
+        # the CEF archive changes, which is whenever it is built at all.
+        viewport-shell-cef = craneLib.buildPackage ({
           pname = "viewport-shell-cef";
           version = "0.1.8";
 
+          cargoArtifacts = null;
+
+          # What nixpkgs' buildRustPackage gave by default, and what the
+          # compositor packages are pinned to: an optimized binary.
+          CARGO_PROFILE = "release";
+
           # The whole tree, built from inside the crate.
           #
-          # `sourceRoot` rather than `buildAndTestSubdir`, because it is the
-          # lock file at the source root that `buildRustPackage` validates
-          # against the vendored dependencies — and this crate has its own,
-          # being outside the workspace. The rest of the tree still has to be
-          # here: `viewport-ipc` and `viewport-shell-bridge` inherit their
-          # version and dependencies from the root manifest above them.
+          # `sourceRoot` rather than a subdirectory build, because the lock
+          # file that names the vendored dependencies is this crate's own,
+          # being outside the workspace — and the rest of the tree still has
+          # to be here: `viewport-ipc` and `viewport-shell-bridge` inherit
+          # their version and dependencies from the root manifest above them.
           src = self;
           sourceRoot = "source/crates/viewport-shell-cef";
-          cargoLock.lockFile = ./crates/viewport-shell-cef/Cargo.lock;
+          cargoLock = ./crates/viewport-shell-cef/Cargo.lock;
 
           CEF_PATH = cefDistribution;
 
@@ -326,6 +359,22 @@
             platforms = platforms.linux;
             mainProgram = "viewport-shell-cef";
           };
+        });
+
+        # The vendoring both halves of the compositor build share.
+        #
+        # Two git dependencies — a fork of smithay for the tearing-control
+        # patch, and the Vulkan renderer, which is a repository of its own
+        # rather than a crate in this workspace. Neither has a crates.io
+        # hash to check against, so their contents are pinned here instead;
+        # both have to be updated whenever the revision in Cargo.toml is.
+        # The build fails loudly on a stale one, quoting the hash it got.
+        cargoVendoring = {
+          cargoLock = ./Cargo.lock;
+          outputHashes = {
+            "smithay-0.7.0" = "sha256-2eS4vQVShd3FO2nikQ0eQfElWkOF/pJzJO9/u15aONo=";
+            "viewport-vulkan-0.1.3" = "sha256-/TypnFM32Vz6JYsfWPx/zg8rtr1aApS+dHLN6Zqm4Ck=";
+          };
         };
 
         # The compositor, as a function of which engine draws its shell.
@@ -366,72 +415,120 @@
               chromium = "viewport-shell-chromium";
               servoshell = "viewport-shell-servoshell";
             }.${shellBackend} or null;
+
+            # Which crates this backend compiles and which feature it
+            # compiles them with, as cargo takes them. The shared
+            # dependency artifact is deliberately built as the superset
+            # of every answer, so this string appears exactly once here —
+            # in the package build, where the difference between the
+            # backends actually lives.
+            cargoTargetArgs = "-p viewport"
+              + pkgs.lib.optionalString (shellCrate != null) " -p ${shellCrate}"
+              + pkgs.lib.optionalString (shellBackend == "wpe") " --features wpe";
+
+            # The environment, named once because the two derivations below
+            # have to agree on it byte for byte. Cargo fingerprints the
+            # compiler's context, so a dependency built against a different
+            # selection, feature set or PKG_CONFIG_PATH than the package
+            # build uses is not a cache hit with a near miss — it is a
+            # crate compiled twice. That is also why the dependency layer is
+            # per backend and not one artifact shared by all five: the
+            # shared superset was tried first, and the narrower `-p` feature
+            # resolution of every package missed 57 of its fingerprints.
+            # Nix still shares the store paths where the derivations really
+            # are identical.
+            nativeBuildInputs = with pkgs; [
+              pkg-config
+              rustPlatform.bindgenHook
+              makeWrapper
+              wayland-scanner
+            ] ++ pkgs.lib.optionals (shellBackend == "webkitgtk") [
+              # A GTK program needs its GSettings schemas and GIO modules named
+              # in the environment or it aborts at startup rather than starting
+              # without them.
+              wrapGAppsHook4
+            ];
+
+            buildInputs =
+              (if shellBackend == "wpe"
+               then runtimeDeps
+               else builtins.filter (dep: dep != wpewebkit) runtimeDeps)
+              ++ (with pkgs; [
+                vulkan-loader
+                vulkan-headers
+                libgbm
+              ])
+              ++ pkgs.lib.optionals (shellBackend == "webkitgtk") (with pkgs; [
+                gtk4
+                webkitgtk_6_0
+                # WebKit refuses a `file://` page whose type it cannot work out,
+                # and it works it out from the shared MIME database. Without this
+                # the shell loads "successfully" and the desktop is empty.
+                shared-mime-info
+                gsettings-desktop-schemas
+              ]);
+
+            # The dependency graph of this backend, compiled once.
+            #
+            # This is the whole reason for the shape of the build: crane
+            # feeds `buildDepsOnly` a source tree built from only the lock
+            # file and the trimmed manifests, so editing a `.rs` file cannot
+            # invalidate this derivation — smithay, the renderer and the
+            # rest stay in the store from one build to the next, and a
+            # source change costs the workspace crates and the link. Only
+            # `Cargo.lock`, a `Cargo.toml` or a native input moving
+            # rebuilds dependencies, which is precisely when they should
+            # be.
+            #
+            # The release profile is pinned on both sides of the split.
+            # nixpkgs' buildRustPackage built release by default; a
+            # dev-profile dependency build would share nothing with a
+            # release package build, and the shipped binary would quietly
+            # stop being optimized besides.
+            #
+            # `doCheck = false` because a check with test targets would
+            # cache dev-dependencies for a package build that runs no
+            # tests (see below) — a slower first build paying for an
+            # artifact nothing here consumes.
+            cargoArtifacts = craneLib.buildDepsOnly ({
+              pname = "viewport-${shellBackend}";
+              src = self;
+              strictDeps = true;
+              inherit nativeBuildInputs buildInputs;
+              CARGO_PROFILE = "release";
+              cargoCheckExtraArgs = cargoTargetArgs;
+              cargoBuildExtraArgs = cargoTargetArgs;
+              doCheck = false;
+            } // cargoVendoring);
           in
-          pkgs.rustPlatform.buildRustPackage {
+          craneLib.buildPackage ({
           # Named for the engine, like the attribute is. Both produce a binary
           # called `viewport`; the store path is the only thing that says which
           # of them a running compositor came from.
           pname = "viewport-${shellBackend}";
           version = "0.1.8";
           src = self;
+          strictDeps = true;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            # Two git dependencies — a fork of smithay for the tearing-control
-            # patch, and the Vulkan renderer, which is a repository of its own
-            # rather than a crate in this workspace. Neither has a crates.io
-            # hash to check against, so their contents are pinned here instead.
-            #
-            # Both have to be updated whenever the revision in Cargo.toml is.
-            # The build fails loudly on a stale one, quoting the hash it got.
-            outputHashes = {
-              "smithay-0.7.0" = "sha256-2eS4vQVShd3FO2nikQ0eQfElWkOF/pJzJO9/u15aONo=";
-              "viewport-vulkan-0.1.3" = "sha256-/TypnFM32Vz6JYsfWPx/zg8rtr1aApS+dHLN6Zqm4Ck=";
-            };
-          };
+          # The same release profile the shared artifact was built against —
+          # a dev-profile package build would share nothing with it, and the
+          # substituted closure would rebuild the world on first run.
+          CARGO_PROFILE = "release";
 
-          # From the workspace root rather than `buildAndTestSubdir`, because
-          # the out-of-process backend is two binaries out of one tree and a
-          # subdirectory build can only produce one of them.
-          cargoBuildFlags = [ "-p" "viewport" ]
-            ++ pkgs.lib.optionals (shellCrate != null) [ "-p" shellCrate ];
-          buildFeatures = pkgs.lib.optionals (shellBackend == "wpe") [ "wpe" ];
+          # Everything from smithay down, compiled once, above.
+          inherit cargoArtifacts;
 
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            rustPlatform.bindgenHook
-            makeWrapper
-            wayland-scanner
-          ] ++ pkgs.lib.optionals (shellBackend == "webkitgtk") [
-            # A GTK program needs its GSettings schemas and GIO modules named
-            # in the environment or it aborts at startup rather than starting
-            # without them.
-            wrapGAppsHook4
-          ];
+          # From the workspace root rather than a subdirectory, because the
+          # out-of-process backend is two binaries out of one tree; the
+          # binaries are collected from the build log cargo emits.
+          cargoBuildExtraArgs = cargoTargetArgs;
+
+          inherit nativeBuildInputs buildInputs;
 
           # This package wraps `viewport` itself, and two wrappers around one
           # binary is one too many. The hook's arguments are applied by hand
           # below, to the binary that actually needs them.
           dontWrapGApps = true;
-
-          buildInputs =
-            (if shellBackend == "wpe"
-             then runtimeDeps
-             else builtins.filter (dep: dep != wpewebkit) runtimeDeps)
-            ++ (with pkgs; [
-              vulkan-loader
-              vulkan-headers
-              libgbm
-            ])
-            ++ pkgs.lib.optionals (shellBackend == "webkitgtk") (with pkgs; [
-              gtk4
-              webkitgtk_6_0
-              # WebKit refuses a `file://` page whose type it cannot work out,
-              # and it works it out from the shared MIME database. Without this
-              # the shell loads "successfully" and the desktop is empty.
-              shared-mime-info
-              gsettings-desktop-schemas
-            ]);
 
           # The renderer, gbm and EGL are opened by name at run time rather
           # than linked, so the closure has to carry them and the loader has to
@@ -498,6 +595,13 @@
                 libinput
                 udev
               ])}
+
+            # The data above is copied out of the store, write bits and all,
+            # and crane's fixup passes `sed -i` over every regular file in
+            # $out to rewrite toolchain references — which dies mid-tree
+            # with sed's "Permission denied" and not one word about why.
+            # BuildRustPackage never walked $out with sed; this does.
+            chmod -R u+w $out
           '' + pkgs.lib.optionalString (shellBackend == "webkitgtk") ''
             # The shell process, which the compositor starts by looking beside
             # itself in bin/. This is where the GTK hook's environment goes:
@@ -533,7 +637,7 @@
             platforms = platforms.linux;
             mainProgram = "viewport";
           };
-        };
+        } // cargoVendoring);
 
         # The engine in-process: what this project has always built.
         wpe = mkViewport { shellBackend = "wpe"; };

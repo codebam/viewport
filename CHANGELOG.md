@@ -11,6 +11,15 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Changed
+- The Nix build compiles the dependency graph once and reuses it. `flake.nix`
+  builds the compositor and the CEF shell through crane: `buildDepsOnly` keys
+  the dependency layer on the lock file, the manifests and the native inputs
+  alone, so editing a `.rs` file no longer rebuilds smithay, the renderer and
+  the rest in the sandbox. A full clean build is unchanged; a one-line change
+  went from nine and a half minutes to three on the servoshell backend. The
+  two git pins and their content hashes are untouched.
+
 ### Added
 - `wp-color-representation-v1` lets a client say what its Y'CbCr buffers mean:
   the matrix, the quantisation range and the chroma siting a DMA-BUF cannot
