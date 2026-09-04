@@ -147,15 +147,29 @@ image view and the pipeline's sampler have to name the same object, and a second
 conversion built with identical parameters is a different object as far as
 Vulkan is concerned.
 
-Two things a DMA-BUF cannot carry have to be inferred. The matrix comes from the
-picture's height — BT.601 at or below PAL's 576 active lines, BT.709 above it,
-which is the rule every video stack uses — and the range is taken as narrow,
-which is what broadcast and every hardware decoder default to. A full-range
-buffer read as narrow comes out slightly washed out; the reverse clips. Chroma
-siting is not guessed: it is whichever of the two the device says it can
-reconstruct, preferring the one the MPEG family actually uses, and where chroma
-cannot be filtered linearly the luma filter drops to nearest with it, because
-Vulkan requires the two to agree.
+Two things a DMA-BUF cannot carry are inferred when the client says nothing. The
+matrix comes from the picture's height — BT.601 at or below PAL's 576 active
+lines, BT.709 above it, which is the rule every video stack uses — and the range
+is taken as narrow, which is what broadcast and every hardware decoder default
+to. A full-range buffer read as narrow comes out slightly washed out; the
+reverse clips. Chroma siting is not guessed: it is whichever of the two the
+device says it can reconstruct, preferring the one the MPEG family actually uses,
+and where chroma cannot be filtered linearly the luma filter drops to nearest
+with it, because Vulkan requires the two to agree.
+
+Those guesses are the fallback, not the whole answer. `wp-color-representation-v1`
+lets a client *say* what its Y′CbCr code words mean — the matrix, the quantisation
+range and the chroma siting — so the height rule stops being load-bearing for
+anyone that bothers to declare. The compositor advertises only the three matrices
+its sampler conversion can be told (BT.709, BT.601 and BT.2020) across both
+ranges, refuses any other at the request, and stores what a client declares on
+the surface through the same double-buffered path `wp-color-management-v1` uses,
+so a declaration lands with the commit that carries it. At that commit the
+declared coefficients are checked against the buffer's format, and a Y′CbCr
+declaration on an RGB buffer is the protocol error the request asks for rather
+than a quiet substitution. The renderer reads the declaration when it imports
+the buffer — the one place the buffer and its surface are both in hand — and
+takes its matrix, range and siting from it in place of the inference.
 
 How the planes are laid out is the exporter's choice and both are handled. A
 decoder normally returns one allocation with the planes at different offsets;

@@ -12,6 +12,13 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Added
+- `wp-color-representation-v1` lets a client say what its Y'CbCr buffers mean:
+  the matrix, the quantisation range and the chroma siting a DMA-BUF cannot
+  carry. Only the three matrices the Vulkan sampler can be told are advertised,
+  the declaration is double-buffered like other surface state, and a commit
+  verifies it against the buffer's format. The renderer applies it at import in
+  place of the height-based matrix guess and the narrow-range default; the
+  import cache gained the honoured declaration in its key.
 - `ext-background-effect-v1` now provides bounded, region-aware blur for normal
   Wayland surfaces on nested and headless GLES backends. Effects follow surface
   trees and associated popups through display and capture, remain behind private

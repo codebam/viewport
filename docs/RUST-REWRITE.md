@@ -219,7 +219,7 @@ Beyond what Smithay hands over: `wlr-screencopy`, `wlr-output-management`,
 `content-type`, `alpha-modifier`, `pointer-gestures`,
 `keyboard-shortcuts-inhibit`, `text-input-v3` with `input-method-v2` and
 `virtual-keyboard-v1`, `tablet-v2`, `linux-drm-syncobj-v1`, `xdg-dialog-v1`,
-and `color-management-v1`.
+`color-management-v1` and `color-representation-v1`.
 
 Also implemented, from what Smithay ships: `xdg-system-bell`,
 `xdg-toplevel-tag` and `wp-pointer-warp`.

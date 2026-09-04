@@ -666,6 +666,11 @@ pub struct ViewportState {
     /// wp_color_management_v1. Smithay has no handler for it, so the
     /// implementation is in crate::color_management.
     pub color_management: crate::color_management::ColorManagementState,
+    /// wp_color_representation_v1: what a client says its Y'CbCr code words
+    /// mean, since the DMA-BUF does not carry it. The implementation is in
+    /// crate::color_representation; the renderer reads the result off the
+    /// surface at import.
+    pub color_representation: crate::color_representation::ColorRepresentationState,
     /// ext-background-effect-v1, absent until a backend has proved it can
     /// execute the blur it would advertise.
     pub background_effect_state: Option<smithay::wayland::background_effect::BackgroundEffectState>,
@@ -1254,6 +1259,8 @@ impl ViewportState {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let color_management = crate::color_management::ColorManagementState::new::<Self>(&dh);
+        let color_representation =
+            crate::color_representation::ColorRepresentationState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new_with_capabilities::<Self>(
             &dh,
             [
@@ -1691,6 +1698,7 @@ impl ViewportState {
             needs_foreign_outputs: false,
 
             color_management,
+            color_representation,
             background_effect_state: None,
             compositor_state,
             xdg_shell_state,

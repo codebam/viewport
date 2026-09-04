@@ -66,8 +66,11 @@ sources+=("$(generate wlr-output-management-unstable-v1 \
 	"$root/protocols/wlr-output-management-unstable-v1.xml")")
 sources+=("$(generate ext-workspace-v1 \
 	"$protocols/staging/ext-workspace/ext-workspace-v1.xml")")
+sources+=("$(generate color-representation-v1 \
+	"$protocols/staging/color-representation/color-representation-v1.xml")")
 
-for client in paint capture lock foreign-toplevel output-management workspace background-effect; do
+for client in paint capture lock foreign-toplevel output-management workspace background-effect \
+	color-representation; do
 	# shellcheck disable=SC2046 # pkg-config output is a word list on purpose
 	cc -std=c11 -Wall -Wextra -Wno-unused-parameter \
 		-I"$work" \
@@ -119,6 +122,8 @@ run capture-popup-effect "$root/tests/capture.test.sh" \
 	"$VIEWPORT" "$work/paint-client" "$work/capture-client" tiling public popup
 run background-effect "$root/tests/background-effect.test.sh" \
 	"$VIEWPORT" "$work/background-effect-client" "$work/capture-client"
+run color-representation "$root/tests/color-representation.test.sh" \
+	"$VIEWPORT" "$work/color-representation-client"
 run output-order "$root/tests/output-order.test.sh" "$VIEWPORT"
 
 # The screencast frontend is Rust — it speaks D-Bus rather than Wayland, so it

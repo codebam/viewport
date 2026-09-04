@@ -18,6 +18,7 @@ mod clipboard;
 // whatever is drawing into it.
 mod ai_usage;
 mod color_management;
+mod color_representation;
 mod config;
 mod cursor;
 mod dbus;

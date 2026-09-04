@@ -63,15 +63,11 @@ existing one.
 
 ## A protocol found by the same sweep
 
-Short, because the protocol surface really is close to complete and this does
-not change that.
-
-**`wp-color-representation-v1` is absent, and so the matrix is guessed.**
-`docs/protocols.md`'s hardware-video section says it plainly: a DMA-BUF cannot
-carry the YUV matrix, so it is inferred from the picture's height and the
-range is taken as narrow. This protocol is the client saying which it is
-instead. The guess is right almost always and wrong exactly where nobody
-notices immediately — a washed-out frame is easy to blame on the file.
+This section carried one entry, and it has come off. **`wp-color-representation-v1`
+is in**: `crates/viewport/src/color_representation.rs` is the server side, the
+declaration lives on the surface and is checked against the committed buffer's
+format, and `docs/protocols.md`'s hardware-video section says what a client can
+now say and what the renderer takes from it in place of the height guess.
 
 ## What the machine underneath does not do yet
 
