@@ -18,7 +18,13 @@ to summarise rather than to duplicate.
   alone, so editing a `.rs` file no longer rebuilds smithay, the renderer and
   the rest in the sandbox. A full clean build is unchanged; a one-line change
   went from nine and a half minutes to three on the servoshell backend. The
-  two git pins and their content hashes are untouched.
+  two git pins and their content hashes carried over — and had quietly stopped
+  checking anything, which the next entry fixes.
+- The Smithay fork is rebased onto upstream master at `809004787`: the four
+  patches — the async flip, the two virtual-keyboard hands-over and the
+  acquire point — replayed clean. The compositor's pin moves to the rebased
+  tip, the renderer follows upstream to the same base it was rebased onto,
+  and the rest of `Cargo.lock` picks up what had drifted since.
 
 ### Added
 - `wp-color-representation-v1` lets a client say what its Y'CbCr buffers mean:
@@ -92,6 +98,12 @@ to summarise rather than to duplicate.
   `game-or-video`, with configured and effective state published separately.
 
 ### Fixed
+- The `outputHashes` for the two git dependencies pin what the build actually
+  compiles. They key on the whole Cargo.lock `source` string now, the way crane
+  looks them up; under the `name-version` keys buildRustPackage used every
+  lookup missed since the crane migration, and crane takes a miss as a warning
+  and an unchecked `fetchGit` — the vendored smithay and renderer contents had
+  no hash standing behind them.
 - ScreenCast now refuses a request when no trusted consent UI is available
   instead of silently sharing the first source. The Screenshot backend now
   accepts calls only from the current desktop-portal frontend.

@@ -369,11 +369,19 @@
         # hash to check against, so their contents are pinned here instead;
         # both have to be updated whenever the revision in Cargo.toml is.
         # The build fails loudly on a stale one, quoting the hash it got.
+        #
+        # The keys are the whole `source` string from Cargo.lock, not the
+        # `name-version` that buildRustPackage's cargoLock used. That is what
+        # crane looks the hash up by (lib/vendorGitDeps.nix); a key it cannot
+        # match does not fail the build — it quietly drops to an unchecked
+        # fetchGit and emits only an evaluation warning, which is how this
+        # pairing went dead during the crane migration and vendored smithay
+        # contents that no hash stood behind.
         cargoVendoring = {
           cargoLock = ./Cargo.lock;
           outputHashes = {
-            "smithay-0.7.0" = "sha256-2eS4vQVShd3FO2nikQ0eQfElWkOF/pJzJO9/u15aONo=";
-            "viewport-vulkan-0.1.3" = "sha256-/TypnFM32Vz6JYsfWPx/zg8rtr1aApS+dHLN6Zqm4Ck=";
+            "git+https://github.com/codebam/smithay.git?rev=b2cc4c5125dfc483746441f918d3c677d57dad27#b2cc4c5125dfc483746441f918d3c677d57dad27" = "sha256-xlhwSJdFc1FR/Flpb60a5yCNnhOKXci2HwLUhl5/fVg=";
+            "git+https://github.com/codebam/viewport-vulkan.git?rev=cb81d2dc1b61531b450fdd910c83d14d23c2e102#cb81d2dc1b61531b450fdd910c83d14d23c2e102" = "sha256-cEgj+Pcq9satj6J7NeSqFbRCBCdBeCGU7+fR0lK6VHs=";
           };
         };
 
