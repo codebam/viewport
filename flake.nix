@@ -292,7 +292,7 @@
         # the CEF archive changes, which is whenever it is built at all.
         viewport-shell-cef = craneLib.buildPackage ({
           pname = "viewport-shell-cef";
-          version = "0.1.8";
+          version = "0.2.0";
 
           cargoArtifacts = null;
 
@@ -514,7 +514,7 @@
           # called `viewport`; the store path is the only thing that says which
           # of them a running compositor came from.
           pname = "viewport-${shellBackend}";
-          version = "0.1.8";
+          version = "0.2.0";
           src = self;
           strictDeps = true;
 

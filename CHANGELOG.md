@@ -11,6 +11,8 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-06
+
 ### Changed
 - The Nix build compiles the dependency graph once and reuses it. `flake.nix`
   builds the compositor and the CEF shell through crane: `buildDepsOnly` keys
@@ -1350,7 +1352,8 @@ deleted C compositor and the tree stopped carrying two implementations.
   missing — WebKit treated such pages as empty documents (see the `wpe`
   PKGBUILD's notes on `shared-mime-info`).
 
-[Unreleased]: https://github.com/codebam/viewport/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/codebam/viewport/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/codebam/viewport/releases/tag/v0.2.0
 [0.1.8]: https://github.com/codebam/viewport/releases/tag/v0.1.8
 [0.1.7]: https://github.com/codebam/viewport/releases/tag/v0.1.7
 [0.1.6]: https://github.com/codebam/viewport/releases/tag/v0.1.6
