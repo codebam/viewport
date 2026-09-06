@@ -36,6 +36,6 @@ pkgbase = viewport-chromium-bin
 	options = !strip
 	options = !debug
 	source_x86_64 = viewport-chromium-bin-0.2.0.tar.zst::https://github.com/codebam/viewport/releases/download/v0.2.0/viewport-chromium-0.2.0-1-x86_64.pkg.tar.zst
-	sha256sums_x86_64 = d2b4f6585cd74cf4b624b0420d2f53eb7db65a1fef7f57b703b956dd03ef6638
+	sha256sums_x86_64 = 0deb12b0cd204f429c7133887bdf416aede0e17d220d20a90d73b70472f24de3
 
 pkgname = viewport-chromium-bin

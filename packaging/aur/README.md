@@ -28,13 +28,15 @@ is `cef-minimal` at CEF 121 against the 149 this tree needs, and `chromium`
 gives Arch the same engine out of the repositories. `servoshell` has none
 either — nixpkgs' `servo` has no Arch counterpart.
 
-## What is not pushed yet
+## What is published
 
-Nothing is: none of the nine repositories exist on the AUR, and all nine names
-are free. Everything a push needs is here — the v0.1.5 release carries one
-artifact per engine, the three `-bin` recipes carry those artifacts' real
-checksums, and every package has a `.SRCINFO` beside its PKGBUILD. Pushing is
-copying a directory into its AUR repository and committing it.
+All nine repositories exist on the AUR, each one a copy of a directory here,
+and each carrying the version its last release commit named. A push is not the
+making of a repository: it is the directory's two files committed on top of the
+package's own history, which is what "Pushing to the AUR" at the end of this
+file is about. Everything a push needs is here — a release carries one artifact
+per engine, the three `-bin` recipes carry those artifacts' real checksums, and
+every package has a `.SRCINFO` beside its PKGBUILD.
 
 `.SRCINFO` is generated, never edited, and goes stale the moment a PKGBUILD
 changes — regenerate it in the same commit:
@@ -62,8 +64,8 @@ then regenerate the `.SRCINFO`, since that is what the AUR displays.
 
 | recipe | built | how |
 | --- | --- | --- |
-| `viewport-{webkitgtk,wpe,chromium}` | yes | they built the v0.1.5 artifacts |
-| `viewport-{webkitgtk,wpe,chromium}-bin` | yes | fetched the published artifact and checked its sum |
+| `viewport-{webkitgtk,wpe,chromium}` | yes | they built the v0.2.0 artifacts, which the release carries |
+| `viewport-{webkitgtk,wpe,chromium}-bin` | yes | built against those artifacts: the sums check, and the tree that comes out matches the source package's file for file apart from the license directory the recipe renames |
 | `viewport-chromium-git` | yes | `0.1.5.r1.gf5fe7d2`, so `pkgver()` and the branch fetch work |
 | `viewport-{webkitgtk,wpe}-git` | no | identical to `viewport-chromium-git` apart from the engine, which their source twins prove |
 
@@ -97,3 +99,22 @@ and rejects a push whose `pkgname` does not match the repository:
 makepkg --printsrcinfo > .SRCINFO   # on Arch, or in the container image
 git clone ssh://aur@aur.archlinux.org/viewport-webkitgtk.git
 ```
+
+A repository that exists takes a commit, not a replacement:
+
+```sh
+git clone ssh://aur@aur.archlinux.org/viewport-webkitgtk.git
+cp packaging/aur/viewport-webkitgtk/{PKGBUILD,.SRCINFO} viewport-webkitgtk/
+cd viewport-webkitgtk
+git commit -a -m 'release: X.Y.Z' && git push
+```
+
+Force-pushing rewrites the log every install of the package has, and the AUR
+reads that same log to say what a package did and when. The two files are the
+whole change.
+
+Diff before copying, for the other half of the same hazard: a recipe fixed on
+the AUR side alone would be overwritten without a sound. These repositories sat
+behind `3785363`, which dropped three dependencies that turn out not to be hard
+depends, so what was published named packages this tree does not need — which a
+`diff` says outright and a `cp` never will.
