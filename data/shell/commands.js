@@ -214,13 +214,15 @@ function handleShellCommand(command, args) {
         /* The client asked for this itself, so it already knows — just lay it
          * out, without echoing the state back and starting a loop. */
         const workspace = workspaceOf(id);
-        if (workspace !== null) {
-          if (on) {
-            fullscreens.set(workspace, id);
-            suppressNotificationPopups();
-          } else if (fullscreens.get(workspace) === id) {
-            fullscreens.delete(workspace);
-          }
+        if (on) {
+          if (workspace !== null) fullscreens.set(workspace, id);
+        } else {
+          /* By id rather than by the workspace asked for here: a player that
+           * exits fullscreen after moving is recorded against the workspace it
+           * went fullscreen on, and looking only where it is now leaves the
+           * claim behind on the screen that has to stop honouring it. What the
+           * cover does to the popups is the layout pass's to answer, below. */
+          forgetFullscreen(id);
         }
         relayoutAll();
       }

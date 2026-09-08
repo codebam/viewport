@@ -1538,6 +1538,11 @@ automatically, without changing that manual choice. Existing popups are removed
 immediately; new notifications still enter history, and lifting suppression
 does not replay them. This affects popups only, not notification sounds.
 
+A fullscreen window suppresses the popups on the monitor it covers, which is the
+one showing that workspace — the same scoping that decides where the bar goes.
+A video fullscreen on the second monitor leaves messages arriving on the first,
+and one left fullscreen on a workspace nobody is looking at suppresses nothing.
+
 What stays and what goes:
 
 | | |

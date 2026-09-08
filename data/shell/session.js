@@ -305,44 +305,75 @@ function notificationOutputName(message) {
   return activeOutputName();
 }
 
-function notificationPopupsSuppressed() {
-  return notificationDndManual || screencastActive || fullscreens.size > 0;
+/* The two reasons every output is kept quiet at once: the desktop was told to
+ * be quiet, or it is being recorded. Both are properties of the session, so
+ * neither can be answered per screen. */
+function notificationPopupsSuppressedEverywhere() {
+  return notificationDndManual || screencastActive;
+}
+
+/* Whether a popup is kept off *one* output.
+ *
+ * A fullscreen window covers the output showing it and says nothing about the
+ * others, which is the scoping every other reader of `fullscreens` uses — the
+ * bar hides through `fullscreenOn(output.workspace)`, in the same breath as it
+ * asks what that output is showing. Asking the map's size instead made it a
+ * session-wide question, so a video taken fullscreen on the second monitor
+ * silenced every notification on the first, and the same thing happened to a
+ * stale entry left on a workspace nobody was looking at. */
+function notificationPopupsSuppressed(output) {
+  if (notificationPopupsSuppressedEverywhere()) return true;
+  return output ? fullscreenOn(output.workspace) !== null : false;
 }
 
 /* Existing popups leave without becoming dismissed or expired. They remain in
- * compositor history, and lifting suppression never has anything to replay. */
-function suppressNotificationPopups() {
+ * compositor history, and lifting suppression never has anything to replay.
+ *
+ * Given an output, only that one's: a fullscreen window covers the corner it is
+ * drawn in, and the popups on every other monitor are none of its business.
+ * Answering whether anything left is what lets the layout pass call this on
+ * every relayout of a covered screen without walking the rectangles for a
+ * stack that was already empty. */
+function suppressNotificationPopups(output = null) {
+  let removed = false;
   for (const [id, entry] of notifications) {
+    if (output && entry.output !== output.name) continue;
     clearTimeout(entry.timer);
     clearTimeout(entry.fallback);
     entry.el.remove();
     notifications.delete(id);
+    removed = true;
   }
-  reportNotificationRect();
+  if (removed) reportNotificationRect();
+  return removed;
 }
 
 function setNotificationDnd(value) {
   notificationDndManual = value;
-  if (notificationPopupsSuppressed()) suppressNotificationPopups();
+  if (notificationPopupsSuppressedEverywhere()) suppressNotificationPopups();
 }
 
 function setScreencastActive(value) {
   screencastActive = value;
-  if (notificationPopupsSuppressed()) suppressNotificationPopups();
+  if (notificationPopupsSuppressedEverywhere()) suppressNotificationPopups();
 }
 
 function showNotification(message) {
   dropNotification(message.id, false);
-  if (notificationPopupsSuppressed()) return;
 
   /* A notification is drawn over the output its source window is on, not over
      some global one — a message from an app sitting on the left monitor
      belongs in that monitor's corner, not the right one's. Resolved by the
      app that sent it; a notification from an app with no window (a daemon, a
-     background service) falls back to the output being looked at. */
-  const outputName = notificationOutputName(message);
-  const hostEl = (outputs.get(outputName) ?? [...outputs.values()][0])
-    ?.notificationsEl;
+     background service) falls back to the output being looked at.
+
+     Resolved before the gate is asked, because which screen this lands on is
+     what decides whether anything covers it. */
+  const output = outputs.get(notificationOutputName(message))
+    ?? [...outputs.values()][0];
+  if (notificationPopupsSuppressed(output)) return;
+
+  const hostEl = output?.notificationsEl;
   if (!hostEl) return; // no outputs yet; a later layout will not replay this
 
   const el = document.createElement('div');
@@ -422,7 +453,7 @@ function showNotification(message) {
 
   notifications.set(message.id, {
     el,
-    output: outputName,
+    output: output.name,
     timer: ms > 0
       ? setTimeout(() => dropNotification(message.id, true), ms)
       : null,

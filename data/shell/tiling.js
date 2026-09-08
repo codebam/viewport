@@ -69,6 +69,27 @@ function isFullscreen(id) {
   return fullscreenOn(workspaceOf(id)) === id;
 }
 
+/* Forget a window's claim on fullscreen, whichever workspace recorded it.
+ *
+ * The map is keyed by workspace, but the two transitions that end a fullscreen
+ * — a client un-fullscreening itself, and the window going away — are both
+ * answering about a window, and either can arrive with the workspace no longer
+ * resolvable for it. Clearing only under the workspace asked for then leaves
+ * the entry behind, and an entry is not a memory: it hides the bar and keeps
+ * notifications off the screen for the workspace that holds it, for the rest of
+ * the session. The compositor plays a notification's sound on the bus thread
+ * before the shell is asked to draw anything, so what that costs is a message
+ * that is heard and never seen. */
+function forgetFullscreen(id) {
+  let forgotten = false;
+  for (const [workspace, kept] of [...fullscreens]) {
+    if (kept !== id) continue;
+    fullscreens.delete(workspace);
+    forgotten = true;
+  }
+  return forgotten;
+}
+
 function maximizedOn(workspace) {
   return workspace !== null && workspace !== undefined
     ? maximized.get(workspace) ?? null : null;

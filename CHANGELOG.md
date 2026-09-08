@@ -11,6 +11,20 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Fixed
+- Notifications are drawn again on a monitor that is not fullscreen. Popup
+  suppression asked whether *any* workspace in the session held a fullscreen
+  window rather than whether the workspace the message was about to be drawn on
+  did, so a video taken fullscreen on the second monitor silenced every
+  notification on the first, and a claim left on a workspace nobody was looking
+  at silenced them for the rest of the session. The sound kept playing because
+  the compositor plays it on the D-Bus thread before the shell is asked for
+  anything, which is what made a notification heard and never seen. The gate
+  now asks the per-output question the bar is already hidden by
+  (`fullscreenOn(output.workspace)`), and a window's claim is cleared by id on
+  the close and client-unfullscreen paths so it cannot outlive the window or
+  follow it to a workspace the entry was never updated for.
+
 ## [0.2.0] - 2026-09-06
 
 ### Changed

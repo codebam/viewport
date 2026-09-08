@@ -860,6 +860,14 @@ function relayoutAll() {
        see is a rectangle the compositor goes on drawing over the windows with
        nothing above it to say what it is. */
     if (!onScreen) closeCalendarOff(output);
+    /* The same argument one screen over: this output has just become covered,
+       so a popup still sitting in its corner is a rectangle of shell the
+       compositor goes on drawing in front of the fullscreen window, over a
+       message nobody asked to see again. Left here rather than at the two
+       places that set fullscreen, because arriving on a workspace that already
+       holds a fullscreen window covers the output just as surely as the window
+       going fullscreen does. */
+    if (fullscreenHere) suppressNotificationPopups(output);
     /* Auto draws the bar over the windows rather than above them, so revealing
        it does not resize anything. */
     output.el.classList.toggle('bar-auto', barMode === 'auto');

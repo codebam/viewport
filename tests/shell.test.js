@@ -2268,6 +2268,201 @@ check('windows laid out', new Set(layouts.map((m) => m.id)).size === 4);
   for (const id of [71, 72]) emit({ type: 'view.removed', id });
 }
 
+/* A fullscreen window covers the one output it is on and says nothing about
+ * the others.
+ *
+ * `fullscreens` is keyed by workspace, and every other reader of it asks about
+ * one workspace — the bar hides through `fullscreenOn(output.workspace)`, in
+ * the same breath as it asks what that output is showing. The popup gate asked
+ * the map's size instead, which is a session-wide question: a video taken
+ * fullscreen on the second monitor silenced every notification on the first.
+ * The sound of them survived, because the compositor plays it on the bus
+ * thread before the shell is asked to draw anything — so what that cost was a
+ * desktop that beeps and never shows the message. */
+{
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-3', x: 1920, y: 0, width: 1920, height: 1080,
+      usable_x: 1920, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+
+  const left = () => globalThis.__shell.outputs.get('DP-1').notificationsEl;
+  const right = () => globalThis.__shell.outputs.get('DP-3').notificationsEl;
+  const notify = (id, app, summary) => emit({ type: 'notification.add', id,
+    app_name: app, summary, body: '', urgency: 1, timeout: 0, actions: [] });
+
+  /* A chat window on the first monitor, and its message already up. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-1'] });
+  emit({ type: 'view.added', id: 95, title: 'chat', app_id: 'chat',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  notify(95, 'chat', 'before');
+  check('a popup is up on the monitor that is not about to be covered',
+    left().children.length === 1);
+
+  /* A player on the second, taken fullscreen by the client itself — which is
+     how a video actually gets there, and the path that reports nothing back to
+     the key binding. */
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-3'] });
+  emit({ type: 'view.added', id: 96, title: 'video', app_id: 'player',
+    output: 'DP-3', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['96', '1'] });
+
+  check('fullscreen on one monitor leaves the other drawing its popups',
+    left().children.length === 1);
+  notify(97, 'chat', 'still visible');
+  check('and a message arriving afterwards is drawn there',
+    left().children.length === 2);
+  check('while the covered monitor keeps showing none',
+    right().children.length === 0);
+
+  /* The covered half is still covered: a notification from the app sitting on
+     it belongs to that corner and so is still kept off. */
+  notify(98, 'player', 'on the covered one');
+  check('a notification whose window is on the covered output is still kept off',
+    right().children.length === 0);
+
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['96', '0'] });
+  emit({ type: 'notification.close', id: 95 });
+  emit({ type: 'notification.close', id: 97 });
+  for (const id of [95, 96]) emit({ type: 'view.removed', id });
+}
+
+/* A fullscreen window on a workspace nobody is showing covers nothing.
+ *
+ * The claim outlives the view of it: switch the monitor to another workspace
+ * and the entry is still in the map, still naming a window that is fullscreen
+ * somewhere. Asking the map whether it is empty read that as the whole desktop
+ * being covered, so the notifications stayed off after the switch and after
+ * the next one, for as long as the player was open on a workspace nobody was
+ * looking at. Asking the output being drawn on is what makes it stop when the
+ * covered screen is no longer on screen. */
+{
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+    { name: 'DP-3', x: 1920, y: 0, width: 1920, height: 1080,
+      usable_x: 1920, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+
+  const left = () => globalThis.__shell.outputs.get('DP-1').notificationsEl;
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-3'] });
+  emit({ type: 'view.added', id: 98, title: 'video', app_id: 'player',
+    output: 'DP-3', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['98', '1'] });
+
+  /* The player's monitor moved on to something else, leaving the claim behind
+     on a workspace no output is drawing. */
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['5'] });
+  emit({ type: 'shell.command', command: 'output.focus', args: ['DP-1'] });
+  emit({ type: 'notification.add', id: 101, app_name: 'player',
+    summary: 'unwatched fullscreen', body: '', urgency: 1, timeout: 0,
+    actions: [] });
+  check('a fullscreen window on an unshown workspace does not silence the desk',
+    left().children.length === 1);
+
+  emit({ type: 'notification.close', id: 101 });
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['98', '0'] });
+  emit({ type: 'view.removed', id: 98 });
+}
+
+/* Becoming covered is the same event as being made covered.
+ *
+ * The claim travels with the window, so switching onto a workspace holding a
+ * fullscreen video puts the cover on the screen just as surely as taking the
+ * video fullscreen does — and a popup still sitting in that corner is then a
+ * rectangle of shell drawn in front of a window that asked for the whole
+ * screen, over a message nobody can any longer be waiting for. This is decided
+ * by the layout pass rather than by the two places that set fullscreen so that
+ * the move, the switch and the client asking for itself all get the same
+ * answer. */
+{
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+
+  const strip = () => globalThis.__shell.outputs.get('DP-1').notificationsEl;
+  emit({ type: 'view.added', id: 110, title: 'chat', app_id: 'chat',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  emit({ type: 'view.added', id: 111, title: 'video', app_id: 'player',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+
+  /* The player, fullscreen on a workspace of its own. */
+  emit({ type: 'shell.command', command: 'workspace.move', args: ['2'] });
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['111', '1'] });
+
+  /* Back on the first workspace, where a message is drawn. */
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['1'] });
+  emit({ type: 'notification.add', id: 110, app_name: 'chat',
+    summary: 'before the switch', body: '', urgency: 1, timeout: 0,
+    actions: [] });
+  check('the uncovered workspace takes the popup',
+    strip().children.length === 1);
+
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['2'] });
+  check('switching onto a covered workspace takes the popup away',
+    strip().children.length === 0);
+
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['111', '0'] });
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['1'] });
+  for (const id of [110, 111]) emit({ type: 'view.removed', id });
+}
+
+/* A client that un-fullscreens itself where the shell can no longer place it.
+ *
+ * The entry is keyed by the workspace it was recorded on, but it is cleared by
+ * looking up the window's workspace at the moment the message arrives. A
+ * player that exits fullscreen while the shell cannot resolve that — moved,
+ * swallowed, or simply gone — leaves the claim behind, and the output showing
+ * that workspace goes on hiding its bar and refusing every notification for a
+ * fullscreen window that no longer exists. Closing one is the same leak with
+ * the same permanent cost. */
+{
+  emit({ type: 'output.layout', outputs: [
+    { name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080,
+      usable_x: 0, usable_y: 30, usable_width: 1920, usable_height: 1050,
+      scale: 1, transform: 'normal', modes: [], enabled: true },
+  ] });
+
+  emit({ type: 'view.added', id: 97, title: 'video', app_id: 'player',
+    output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+    width: 800, height: 600 });
+  emit({ type: 'shell.command', command: 'window.fullscreen.set',
+    args: ['97', '1'] });
+  emit({ type: 'notification.add', id: 99, app_name: 'player',
+    summary: 'held', body: '', urgency: 1, timeout: 0, actions: [] });
+  const strip = () => globalThis.__shell.outputs.get('DP-1').notificationsEl;
+  check('the covered output keeps popups off while it is covered',
+    strip().children.length === 0);
+
+  emit({ type: 'view.removed', id: 97 });
+  emit({ type: 'notification.add', id: 100, app_name: 'daemon',
+    summary: 'after the player closed', body: '', urgency: 1, timeout: 0,
+    actions: [] });
+  check('closing a fullscreen window frees the output it was on',
+    strip().children.length === 1);
+
+  emit({ type: 'notification.close', id: 99 });
+  emit({ type: 'notification.close', id: 100 });
+}
+
 /* A monitor going away while a notification is up on it.
  *
  * This is what a screen coming back from DPMS looks like from here: a

@@ -721,9 +721,10 @@ function removeView(id) {
      the view around a window that is gone. */
   canvasClosed(id);
   treeGeneration++;
-  const fullscreenWorkspace = workspace !== null && fullscreens.get(workspace) === id
-    ? workspace : null;
-  if (fullscreenWorkspace !== null) fullscreens.delete(fullscreenWorkspace);
+  /* By id, not by the workspace this window was on a moment ago: the claim is
+     what the bar and the notification popups read, and one left behind under a
+     stale key keeps them hidden for a window that is gone. */
+  forgetFullscreen(id);
   if (workspace !== null && maximized.get(workspace) === id) maximized.delete(workspace);
 
   relayoutAll();
@@ -744,17 +745,26 @@ function removeView(id) {
 function setFullscreen(id, on) {
   dissolveSwallow(id);
   const workspace = workspaceOf(id);
-  if (workspace === null) return;
+  if (workspace === null) {
+    /* Nothing to lay out, but a claim on this window is still a claim, and
+       leaving it recorded is what keeps an output silent for a fullscreen
+       window this shell can no longer place. */
+    if (!on && forgetFullscreen(id)) relayoutAll();
+    return;
+  }
 
   /* Only this workspace's fullscreen window is displaced. Whatever the other
      monitor is showing is none of its business. */
-  const previous = fullscreens.get(workspace) ?? null;
+  const previous = fullscreenOn(workspace);
   if (on) {
     fullscreens.set(workspace, id);
-  } else if (previous === id) {
-    fullscreens.delete(workspace);
+  } else {
+    /* By id, and so wherever it was recorded: this window may have gone
+       fullscreen on one workspace and left it from another, and a claim left
+       on the first keeps hiding that screen's bar and its notifications. */
+    forgetFullscreen(id);
   }
-  const current = fullscreens.get(workspace) ?? null;
+  const current = fullscreenOn(workspace);
 
   /* The client has to be told, not just resized: applications rearrange their
    * own layout on the fullscreen state rather than on size alone. */
@@ -763,7 +773,6 @@ function setFullscreen(id, on) {
   }
   if (current !== null && current !== previous) {
     send({ type: 'view.fullscreen', id: current, fullscreen: true });
-    suppressNotificationPopups();
   }
   relayoutAll();
 }
