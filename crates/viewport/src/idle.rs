@@ -110,7 +110,7 @@ impl Idle {
     ///
     /// Read by the tests, which is what checks that a deadline actually
     /// blanked them rather than only setting a flag.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn blanked(&self) -> bool {
         self.blanked
     }

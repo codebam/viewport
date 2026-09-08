@@ -120,12 +120,11 @@ impl Granted {
     }
 }
 
-fn owned<'a, T: Into<Value<'a>>>(value: T) -> OwnedValue {
-    value
-        .into()
-        .try_to_owned()
-        .expect("a shortcut description is never a file descriptor")
-}
+/// A value the way D-Bus carries it.
+///
+/// Infallible for everything here: only file descriptors can fail to be owned,
+/// and a shortcut description is never one.
+pub use crate::dbus_util::owned;
 
 /// One granted shortcut, as the compositor holds it while the session lives.
 #[derive(Debug, Clone, PartialEq, Eq)]

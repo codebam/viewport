@@ -121,7 +121,10 @@ fn keep_scratch<B: 'static>(
         buffer,
     }));
     while held.len() > KEPT_CAPTURE_TARGETS {
-        held.remove(0);
+        // Order does not matter: this is a pool of reusable buffers, not an
+        // ordered queue. swap_remove is O(1) where remove(0) shifts every
+        // remaining element.
+        held.swap_remove(0);
     }
 }
 

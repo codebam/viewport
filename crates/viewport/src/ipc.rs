@@ -411,12 +411,9 @@ impl Ipc {
 
     /// Ask about writability for any client a write came up short on.
     ///
-    /// The `any` first so that the ordinary case — every write completed,
-    /// which is nearly all of them — costs a scan and no allocation.
+    /// The ids are collected first so that [`Self::arm_writer`] — which mutates
+    /// `self.clients` — does not conflict with the iterator.
     fn arm_writers(&mut self) {
-        if !self.clients.values().any(Client::wants_writable) {
-            return;
-        }
         let ids: Vec<u64> = self
             .clients
             .iter()

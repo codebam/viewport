@@ -62,12 +62,7 @@ impl Default for Settings {
 ///
 /// Infallible for everything here: only file descriptors can fail to be owned,
 /// and a setting is never one.
-fn owned<'a, T: Into<Value<'a>>>(value: T) -> OwnedValue {
-    value
-        .into()
-        .try_to_owned()
-        .expect("a setting is never a file descriptor")
-}
+pub use crate::dbus_util::owned;
 
 /// The `org.gnome.desktop.interface` keys.
 ///

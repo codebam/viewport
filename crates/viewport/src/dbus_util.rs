@@ -11,6 +11,19 @@
 
 use std::sync::mpsc;
 
+use zvariant::{OwnedValue, Value};
+
+/// A value the way D-Bus carries it.
+///
+/// Infallible for everything here: only file descriptors can fail to be owned,
+/// and a setting, a shortcut description, or a signal body is never one.
+pub fn owned<'a, T: Into<Value<'a>>>(value: T) -> OwnedValue {
+    value
+        .into()
+        .try_to_owned()
+        .expect("a D-Bus value is never a file descriptor")
+}
+
 /// Run one piece of I/O on a throwaway thread, and wait with a stopwatch.
 ///
 /// zbus's blocking calls take no deadline, so the deadline is taken around
