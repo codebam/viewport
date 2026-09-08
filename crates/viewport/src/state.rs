@@ -3905,15 +3905,19 @@ fn shm_blit_layout(
             size.w, size.h
         ));
     }
-    if (pixels_len as i64) < want.unwrap() {
+    let Some(want) = want else {
         return Err(format!(
-            "the {what} frame is {pixels_len} bytes and {}x{} needs {}",
-            size.w,
-            size.h,
-            want.unwrap()
+            "{what} is {}x{}, which is not a size that can be copied",
+            size.w, size.h
+        ));
+    };
+    if (pixels_len as i64) < want {
+        return Err(format!(
+            "the {what} frame is {pixels_len} bytes and {}x{} needs {want}",
+            size.w, size.h,
         ));
     }
-    Ok((want.unwrap() as usize, row as usize))
+    Ok((want as usize, row as usize))
 }
 
 /// How much of a window sits on one screen, in square logical pixels.

@@ -995,7 +995,12 @@ impl Udev {
     }
 
     pub fn primary_mut(&mut self) -> &mut Device {
-        &mut self.devices[0]
+        let index = self
+            .devices
+            .iter()
+            .position(|device| device.online)
+            .unwrap_or(0);
+        &mut self.devices[index]
     }
 
     /// Every output on every GPU.

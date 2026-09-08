@@ -196,7 +196,7 @@ fn entry_at(text: &str, desktop: &[&str], path: Option<&Path>) -> Option<App> {
         };
         // A locale variant is the same key in another language. There is no
         // locale negotiation here; the base key is the one shown.
-        let key = key.split('[').next().unwrap();
+        let key = key.split('[').next().unwrap_or(key);
         let value = value.trim();
         match key {
             "Type" => e.r#type = value.to_owned(),

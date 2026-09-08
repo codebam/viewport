@@ -1,10 +1,8 @@
-# Rust rewrite (branch `smithay`)
+# Rust rewrite (formerly branch `smithay`, now `main`)
 
-This branch is a ground-up reimplementation of the Viewport compositor in Rust,
-tracking `git@github.com:codebam/viewport.git`. The C compositor on
-`main` (`git@github.com:codebam/viewport.git`) remains the daily driver and
-keeps receiving fixes; this branch optimises for correctness over speed to
-parity.
+This is a ground-up reimplementation of the Viewport compositor in Rust. The C
+compositor on `wlroots` that this replaced reached parity and was deleted;
+`main` is the Rust compositor and the daily driver.
 
 What does *not* change: `data/shell/` is the product. The HTML/CSS/JS shell is
 carried over untouched, and the JSON protocol it speaks is the fixed contract

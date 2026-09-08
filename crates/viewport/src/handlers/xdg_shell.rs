@@ -922,8 +922,12 @@ pub fn handle_commit(state: &mut ViewportState, surface: &WlSurface) {
             PopupKind::Xdg(ref xdg) => {
                 if !xdg.is_initial_configure_sent() {
                     // The initial configure is always allowed, so this cannot
-                    // legitimately fail.
-                    xdg.send_configure().expect("initial configure failed");
+                    // legitimately fail — but a client racing us here must
+                    // not take the whole session down with it.
+                    if let Err(e) = xdg.send_configure() {
+                        tracing::warn!("could not send a popup its initial configure: {e}");
+                        return;
+                    }
                     let geometry = xdg.with_pending_state(|state| state.geometry);
                     tracing::debug!(
                         "popup: configured at {},{} {}x{}",
