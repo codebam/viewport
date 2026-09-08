@@ -100,6 +100,13 @@ pub struct Binding {
     /// The mode this binding belongs to, empty for the ordinary keymap.
     /// Written `resize/h=...` in a config file.
     pub mode: String,
+    /// Whether this binding fires while the session is locked.
+    ///
+    /// A locked binding still receives input when the screen is locked:
+    /// media keys, brightness keys, or a custom shortcut that must work on
+    /// the lock screen. A binding without this flag is forwarded to the lock
+    /// screen's surface instead, so the password is not stolen by a binding.
+    pub locked: bool,
 }
 
 /// The direction a scroll-wheel binding matches.
@@ -135,6 +142,9 @@ impl Binding {
         let mut chord = String::new();
         // The order every default is written in, so a listing and the config
         // file it came from read the same way round.
+        if self.locked {
+            chord.push_str("locked+");
+        }
         if self.modifiers.logo {
             chord.push_str("Mod4+");
         }
@@ -237,6 +247,7 @@ pub fn parse(spec: &str) -> Option<Binding> {
 /// Parse a chord with no action, as `bind.add` sends it.
 pub fn parse_chord(chord: &str) -> Option<Binding> {
     let mut modifiers = Modifiers::default();
+    let mut locked = false;
     let mut rest = chord;
 
     // Left to right, stopping at the last '+': the key may itself be '+'.
@@ -246,6 +257,7 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
             "ctrl" | "control" => modifiers.ctrl = true,
             "alt" | "mod1" => modifiers.alt = true,
             "mod4" | "super" | "logo" => modifiers.logo = true,
+            "locked" => locked = true,
             // An unknown modifier is not a key with a stray plus in front of
             // it; treating it as one would bind something arbitrary.
             _ => return None,
@@ -286,6 +298,7 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         wheel,
         action: Action::Shell(String::new()),
         mode: String::new(),
+        locked,
     })
 }
 
@@ -732,11 +745,16 @@ pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding
 }
 
 /// The action a chord fires, if any.
+///
+/// When `locked` is true (the session is locked), only bindings flagged
+/// `locked: true` are considered — all others are forwarded to the lock
+/// screen. When unlocked, all bindings match regardless of the flag.
 pub fn match_binding<'a>(
     bindings: &'a [Binding],
     modifiers: &ModifiersState,
     keysym: u32,
     mode: &str,
+    locked: bool,
 ) -> Option<&'a Action> {
     let wanted = Modifiers::from_state(modifiers);
     bindings
@@ -755,6 +773,7 @@ pub fn match_binding<'a>(
                 && binding.keysym == keysym
                 && binding.button.is_none()
                 && binding.wheel.is_none()
+                && (!locked || binding.locked)
         })
         .map(|binding| &binding.action)
 }
@@ -769,12 +788,16 @@ pub fn match_button<'a>(
     modifiers: &ModifiersState,
     button: u32,
     mode: &str,
+    locked: bool,
 ) -> Option<&'a Action> {
     let wanted = Modifiers::from_state(modifiers);
     bindings
         .iter()
         .find(|binding| {
-            binding.mode == mode && binding.modifiers == wanted && binding.button == Some(button)
+            binding.mode == mode
+                && binding.modifiers == wanted
+                && binding.button == Some(button)
+                && (!locked || binding.locked)
         })
         .map(|binding| &binding.action)
 }
@@ -788,12 +811,16 @@ pub fn match_wheel<'a>(
     modifiers: &ModifiersState,
     wheel: Wheel,
     mode: &str,
+    locked: bool,
 ) -> Option<&'a Action> {
     let wanted = Modifiers::from_state(modifiers);
     bindings
         .iter()
         .find(|binding| {
-            binding.mode == mode && binding.modifiers == wanted && binding.wheel == Some(wheel)
+            binding.mode == mode
+                && binding.modifiers == wanted
+                && binding.wheel == Some(wheel)
+                && (!locked || binding.locked)
         })
         .map(|binding| &binding.action)
 }
@@ -821,7 +848,8 @@ pub fn match_wheel<'a>(
 /// earlier in the list — leave it unreachable. The same test `match_binding`
 /// makes, written once.
 fn shadows(earlier: &Binding, binding: &Binding) -> bool {
-    earlier.mode == binding.mode
+    earlier.locked == binding.locked
+        && earlier.mode == binding.mode
         && earlier.modifiers == binding.modifiers
         && earlier.keysym == binding.keysym
         && earlier.button.is_none()
@@ -943,6 +971,7 @@ mod tests {
                 wheel: None,
                 action: action.clone(),
                 mode: String::new(),
+                locked: false,
             };
             assert_eq!(parse_action(&binding.action_text()), action);
         }
@@ -1093,8 +1122,8 @@ mod tests {
             shift: true,
             ..Default::default()
         };
-        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "").is_some());
-        assert!(match_binding(&bindings, &shifted, keysyms::KEY_q, "").is_none());
+        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "", false).is_some());
+        assert!(match_binding(&bindings, &shifted, keysyms::KEY_q, "", false).is_none());
     }
 
     #[test]
@@ -1120,12 +1149,12 @@ mod tests {
         };
         let released = ModifiersState::default();
         assert_eq!(
-            match_button(&bindings, &held, 0x113, ""),
+            match_button(&bindings, &held, 0x113, "", false),
             Some(&Action::Close)
         );
         // Not Mouse5, and not without the modifier.
-        assert!(match_button(&bindings, &held, 0x114, "").is_none());
-        assert!(match_button(&bindings, &released, 0x113, "").is_none());
+        assert!(match_button(&bindings, &held, 0x114, "", false).is_none());
+        assert!(match_button(&bindings, &released, 0x113, "", false).is_none());
     }
 
     #[test]
@@ -1137,9 +1166,9 @@ mod tests {
             ..Default::default()
         };
         // The key binding has no button, so no button can match it.
-        assert!(match_button(std::slice::from_ref(&key), &held, 0x113, "").is_none());
+        assert!(match_button(std::slice::from_ref(&key), &held, 0x113, "", false).is_none());
         // And the button binding has keysym 0, not q.
-        assert!(match_binding(&[button], &held, keysyms::KEY_q, "").is_none());
+        assert!(match_binding(&[button], &held, keysyms::KEY_q, "", false).is_none());
     }
 
     #[test]
@@ -1157,7 +1186,7 @@ mod tests {
             logo: true,
             ..Default::default()
         };
-        assert!(match_binding(&bindings, &held, 0, "").is_none());
+        assert!(match_binding(&bindings, &held, 0, "", false).is_none());
     }
 
     #[test]
@@ -1185,7 +1214,7 @@ mod tests {
         };
         for modifiers in [ModifiersState::default(), held] {
             for button in [0x110, 0x111] {
-                assert!(match_button(&bindings, &modifiers, button, "").is_none());
+                assert!(match_button(&bindings, &modifiers, button, "", false).is_none());
             }
         }
     }
@@ -1211,16 +1240,16 @@ mod tests {
         };
         let released = ModifiersState::default();
         assert_eq!(
-            match_wheel(&bindings, &held, Wheel::Up, ""),
+            match_wheel(&bindings, &held, Wheel::Up, "", false),
             Some(&Action::Close)
         );
         // Not the other direction, and not without the modifier.
-        assert!(match_wheel(&bindings, &held, Wheel::Down, "").is_none());
-        assert!(match_wheel(&bindings, &released, Wheel::Up, "").is_none());
+        assert!(match_wheel(&bindings, &held, Wheel::Down, "", false).is_none());
+        assert!(match_wheel(&bindings, &released, Wheel::Up, "", false).is_none());
         // Nor does a button or a key bind a wheel.
         let key = parse("Mod4+q=close").unwrap();
         let button = parse("Mod4+Mouse4=close").unwrap();
-        assert!(match_wheel(&[key, button], &held, Wheel::Up, "").is_none());
+        assert!(match_wheel(&[key, button], &held, Wheel::Up, "", false).is_none());
     }
 
     #[test]
@@ -1283,16 +1312,17 @@ mod tests {
         ];
         let plain = ModifiersState::default();
 
-        let outside = match_binding(&bindings, &plain, keysyms::KEY_h, "").expect("outside");
+        let outside = match_binding(&bindings, &plain, keysyms::KEY_h, "", false).expect("outside");
         assert_eq!(outside, &Action::Shell("layout.focus left".to_owned()));
 
-        let inside = match_binding(&bindings, &plain, keysyms::KEY_h, "resize").expect("inside");
+        let inside =
+            match_binding(&bindings, &plain, keysyms::KEY_h, "resize", false).expect("inside");
         assert_eq!(inside, &Action::Shell("layout.resize left".to_owned()));
 
         // And a mode with nothing bound in it swallows nothing: the key
         // simply does not match, rather than falling back to the default
         // keymap, which is what makes a mode a mode.
-        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "resize").is_none());
+        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "resize", false).is_none());
     }
 
     #[test]
@@ -1633,6 +1663,7 @@ mod exit_tests {
                     },
                     b.keysym,
                     "",
+                    false,
                 ) == Some(&Action::Exit)
         })
     }

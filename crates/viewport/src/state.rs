@@ -630,6 +630,15 @@ pub struct ViewportState {
     /// precisely when nothing is happening, so a tick that needs the loop to
     /// wake for other reasons is a tick that never comes.
     pub cursor_hide_timer: Option<std::os::fd::OwnedFd>,
+    /// The position the pointer was at when focus last changed via
+    /// `follow_mouse`. Used to enforce the distance threshold so small
+    /// tremors do not cause focus churn.
+    pub follow_mouse_pos: Option<smithay::utils::Point<f64, smithay::utils::Logical>>,
+    /// Whether keyboard focus follows the pointer (from `cursor.follow_mouse`).
+    pub follow_mouse: bool,
+    /// Minimum pointer travel before focus changes (from
+    /// `cursor.follow_mouse_threshold`).
+    pub follow_mouse_threshold: f64,
 
     /// When the shell last moved a window, so a diagnostic capture can wait
     /// for the open animation to finish. Five shell frames is the middle of
@@ -1693,6 +1702,9 @@ impl ViewportState {
             magnifier: crate::magnify::Magnifier::default(),
             cursor_hide_armed: false,
             cursor_hide_timer: None,
+            follow_mouse_pos: None,
+            follow_mouse: false,
+            follow_mouse_threshold: 0.0,
             last_layout: None,
             needs_render: false,
             dirty_outputs: std::collections::HashSet::new(),

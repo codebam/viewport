@@ -1354,15 +1354,6 @@ impl ViewportState {
                                 .map(|sym| sym.raw())
                                 .unwrap_or_else(|| keysym.raw());
 
-                            // No binding fires while locked — one that
-                            // spawns a terminal would put it on top of the
-                            // lock screen — but the key still goes to the
-                            // client, because the client is the lock screen
-                            // and the key is the password.
-                            if state.locked {
-                                return FilterResult::Forward;
-                            }
-
                             // A global shortcut, but only after everything
                             // above has declined the key. An application that
                             // asks for a chord this desktop is already using
@@ -1386,6 +1377,7 @@ impl ViewportState {
                                 modifiers,
                                 unmodified,
                                 &state.binding_mode,
+                                state.locked,
                             ) {
                                 Some(bound) => {
                                     state.suppressed_keys.push(keysym);
@@ -1396,7 +1388,14 @@ impl ViewportState {
                                 // forwarded because forwarding it goes
                                 // nowhere: there is no focused surface, which
                                 // is why it is the shell's in the first place.
+                                //
+                                // While locked, forward instead: the key
+                                // belongs to the lock screen (the password),
+                                // not the page.
                                 None if to_shell => {
+                                    if state.locked {
+                                        return FilterResult::Forward;
+                                    }
                                     state.suppressed_keys.push(keysym);
                                     FilterResult::Intercept(Some(Action::Web(WebKey {
                                         keycode: handle.raw_code().raw() + 8,
@@ -1653,6 +1652,7 @@ impl ViewportState {
                         &keyboard.modifier_state(),
                         event.button_code(),
                         &self.binding_mode,
+                        self.locked,
                     ) {
                         self.handle_action(Action::Bound(bound.clone()));
                         // Not forwarded: the button was bound, and handing a
@@ -1898,6 +1898,7 @@ impl ViewportState {
                             &keyboard.modifier_state(),
                             wheel,
                             &self.binding_mode,
+                            self.locked,
                         ) {
                             self.handle_action(Action::Bound(bound.clone()));
                             return;
@@ -3198,6 +3199,44 @@ impl ViewportState {
         self.shell_pointer_motion(pos, on_shell, time.millis());
         // The cursor moved, and nothing else would draw it.
         self.needs_render = true;
+
+        // Focus follows the pointer: give the keyboard to whichever window
+        // the pointer is now over, subject to the distance threshold. Not
+        // while locked, while dragging, or while the overview is up — those
+        // are the same gates the click-to-focus path uses.
+        if self.follow_mouse && !self.locked && !pointer.is_grabbed() && !self.overview {
+            let threshold = self.follow_mouse_threshold;
+            if threshold > 0.0 {
+                if let Some(last) = self.follow_mouse_pos {
+                    let dx = pos.x - last.x;
+                    let dy = pos.y - last.y;
+                    if (dx * dx + dy * dy).sqrt() < threshold {
+                        return;
+                    }
+                }
+            }
+            if let Some(window) = self.window_under(pos) {
+                let id = self
+                    .views
+                    .iter()
+                    .find(|v| v.window == window)
+                    .map(|v| v.id)
+                    .unwrap_or(NO_VIEW);
+                if id != self.focused && id != NO_VIEW {
+                    if let Some(keyboard) = self.seat.get_keyboard() {
+                        if let Some(focus) =
+                            crate::keyboard_focus::KeyboardFocus::for_window(&window)
+                        {
+                            let serial = SERIAL_COUNTER.next_serial();
+                            keyboard.set_focus(self, Some(focus), serial);
+                            self.activate_view(id);
+                            self.notify_focus(id);
+                        }
+                    }
+                }
+                self.follow_mouse_pos = Some(pos);
+            }
+        }
     }
 
     /// Give the keyboard to whatever window a finger or a pen tip landed on.
@@ -3405,19 +3444,18 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
             return true;
         }
 
-        // No binding fires while locked — one that spawns a terminal would put
-        // it on top of the lock screen — but the key still goes to the client,
-        // because the client is the lock screen and the key is the password.
-        if self.locked {
-            return false;
-        }
-
         // The *unmodified* symbol, as the physical path uses. A chord is
         // written "Mod4+Shift+q": the shift is in the modifiers and the key is
         // still q, so matching the modified symbol would look for Q and never
         // find it.
         let unmodified = raw_keysym.unwrap_or(keysym).raw();
-        match crate::binding::match_binding(&self.bindings, &mods, unmodified, &self.binding_mode) {
+        match crate::binding::match_binding(
+            &self.bindings,
+            &mods,
+            unmodified,
+            &self.binding_mode,
+            self.locked,
+        ) {
             Some(bound) => {
                 let bound = bound.clone();
                 self.suppressed_keys.push(keysym);

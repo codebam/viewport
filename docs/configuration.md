@@ -217,6 +217,24 @@ per notch of a physical wheel while the modifier is held and consumes the
 scroll; a touchpad's two-finger scroll is never bound — it keeps scrolling
 whatever is under the pointer.
 
+The `locked` modifier makes a binding fire while the session is locked:
+
+```json
+"binds": {
+  "locked+XF86AudioRaiseVolume": "volume 5",
+  "locked+XF86AudioLowerVolume": "volume -5",
+  "locked+XF86AudioMute": "volume mute"
+}
+```
+
+Without `locked`, every binding is forwarded to the lock screen instead — the
+key goes to the password field, not to an action. A media-key row is the
+typical use: music controls and volume on the lock screen, while a chord that
+opens a terminal stays blocked. `locked` may appear anywhere in the modifier
+chain: `locked+Mod4+q` and `Mod4+locked+q` are the same binding. A `locked`
+binding and a non-`locked` binding on the same chord do not shadow each other:
+one fires while locked, the other while unlocked.
+
 Touchpad swipes and pinches may run the same actions as keybindings through the
 top-level `gestures` object:
 
@@ -379,6 +397,19 @@ for this, and a cursor that came back on every keystroke would never leave.
 Only the drawn image goes. The pointer has not moved, keeps its focus, and
 clients are told nothing, so a hidden cursor cannot make a page think the mouse
 left it.
+
+`cursor.follow_mouse` makes keyboard focus follow the pointer: moving the
+pointer over a window gives it the keyboard without a click. Absent is off.
+
+```jsonc
+"cursor": { "follow_mouse": true, "follow_mouse_threshold": 5 }
+```
+
+`follow_mouse_threshold` is the minimum distance in logical pixels the pointer
+must travel before focus changes. This prevents focus churn from small tremors.
+Zero — the default — means every motion triggers a focus check. Focus does not
+follow the pointer while the session is locked, while a window is being dragged,
+or while the overview is shown.
 
 ## The magnifier
 
@@ -1794,6 +1825,25 @@ fields must match. Rules still use first-match order. String field values are a
 short form of `contains`. `match.workspace` is a positive workspace number and
 matches the active workspace at the instant the window opens. It does not
 change the action named by the outer `workspace` field.
+
+Rules may be named for runtime control. A rule with a `name` field can be
+toggled from a keybinding or from the socket:
+
+```jsonc
+{ "name": "my-pip", "title": "Picture-in-Picture",
+  "floating": true, "pinned": true, "width": 480, "height": 270 }
+```
+
+```sh
+viewport msg -t shell.command --command rule.toggle --args my-pip
+```
+
+`rule.toggle` flips the named rule on and off; `rule.enable` and
+`rule.disable` set it explicitly. All existing windows are re-evaluated when a
+rule is toggled, so a window that was floating under a disabled rule returns to
+tiling and vice versa. Named rules without a `name` field are always active.
+A rule that is not in the current config file but was previously disabled is
+harmlessly ignored.
 
 `workspace: "scratchpad"` opens a floating window hidden. `scratchpad.toggle`
 shows or hides it as an overlay on the active output and `scratchpad.move` sends

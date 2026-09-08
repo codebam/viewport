@@ -647,6 +647,15 @@ impl ViewportState {
             // else would ever bring it back.
             self.needs_render = true;
         }
+        // Focus follows the pointer: applied from `cursor.follow_mouse` and
+        // `cursor.follow_mouse_threshold`. The threshold resets when the
+        // feature is toggled off and on, so the first motion after enabling
+        // does not have to re-cross the old distance.
+        if self.follow_mouse != file.cursor.follow_mouse.unwrap_or(false) {
+            self.follow_mouse = file.cursor.follow_mouse.unwrap_or(false);
+            self.follow_mouse_pos = None;
+        }
+        self.follow_mouse_threshold = file.cursor.follow_mouse_threshold.unwrap_or(0.0);
         // A file that turned it on gets a countdown without waiting for the
         // pointer to move first, which for a desk nobody is at is never.
         self.arm_cursor_hide();

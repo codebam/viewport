@@ -61,6 +61,31 @@ function handleShellCommand(command, args) {
     case 'window.focus_parent':
       focusParent();
       break;
+    case 'rule.toggle': {
+      const name = arg;
+      if (!name) break;
+      if (disabledRuleNames.has(name)) {
+        disabledRuleNames.delete(name);
+      } else {
+        disabledRuleNames.add(name);
+      }
+      reapplyWindowRules();
+      break;
+    }
+    case 'rule.enable': {
+      const name = arg;
+      if (!name) break;
+      disabledRuleNames.delete(name);
+      reapplyWindowRules();
+      break;
+    }
+    case 'rule.disable': {
+      const name = arg;
+      if (!name) break;
+      disabledRuleNames.add(name);
+      reapplyWindowRules();
+      break;
+    }
     case 'window.move': {
       if (focusedId == null && selectedIds.size === 0) break;
 

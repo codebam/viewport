@@ -75,6 +75,16 @@ pub struct CursorConfig {
     /// deadline is a second or two and the useful settings are not whole
     /// numbers of seconds — sway spells the same setting the same way.
     pub hide_after_ms: Option<i64>,
+    /// Whether keyboard focus follows the pointer. When true, moving the
+    /// pointer over a window gives it the keyboard without a click.
+    ///
+    /// Absent is off. Threshold is the minimum pointer travel in logical
+    /// pixels before focus changes — prevents focus churn from small tremors.
+    pub follow_mouse: Option<bool>,
+    /// Minimum distance the pointer must travel before focus changes when
+    /// `follow_mouse` is on. Absent is 0 (every motion triggers a focus
+    /// check).
+    pub follow_mouse_threshold: Option<f64>,
 }
 
 /// Settings libinput applies to one device.

@@ -1603,6 +1603,7 @@ fn same_chord(a: &crate::binding::Binding, b: &crate::binding::Binding) -> bool 
         && a.keysym == b.keysym
         && a.button == b.button
         && a.wheel == b.wheel
+        && a.locked == b.locked
 }
 
 /// Register a runtime binding from a `bind.add` message.
@@ -1669,10 +1670,13 @@ mod tests {
         ));
         let free = ModifiersState::default();
         assert!(
-            crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "resize").is_some(),
+            crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "resize", false)
+                .is_some(),
             "the resize-mode binding for h is gone"
         );
-        assert!(crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "").is_some());
+        assert!(
+            crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "", false).is_some()
+        );
 
         // Wheel and button bindings carry keysym 0, because each is drawn on
         // no key at all. Replaced on the keysym alone, registering one wheel
@@ -1693,11 +1697,11 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            crate::binding::match_button(&bindings, &held, 0x113, "").is_some(),
+            crate::binding::match_button(&bindings, &held, 0x113, "", false).is_some(),
             "the Mouse4 binding is gone"
         );
         assert_eq!(
-            crate::binding::match_wheel(&bindings, &held, Wheel::Down, ""),
+            crate::binding::match_wheel(&bindings, &held, Wheel::Down, "", false),
             Some(&Action::Shell("workspace.prev".to_owned())),
             "the WheelDown binding is gone"
         );
@@ -1713,7 +1717,7 @@ mod tests {
         ));
         assert_eq!(bindings.len(), before);
         assert_eq!(
-            crate::binding::match_wheel(&bindings, &held, Wheel::Up, ""),
+            crate::binding::match_wheel(&bindings, &held, Wheel::Up, "", false),
             Some(&Action::Shell("workspace.switch 2".to_owned()))
         );
     }

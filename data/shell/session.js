@@ -592,6 +592,8 @@ function ruleFor(appId, title, tag, openingWorkspace = null) {
 
   return windowRules.find((rule) => {
     if (!rule || typeof rule !== 'object') return false;
+    /* Named rules may be disabled at runtime. */
+    if (rule.name && disabledRuleNames.has(rule.name)) return false;
     if (rule.match && typeof rule.match === 'object') {
       const fields = [['app_id', appId], ['title', title], ['tag', tag]];
       let matched = false;

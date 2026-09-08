@@ -363,6 +363,9 @@ const WALLPAPER_MODES = ['fit', 'stretch', 'center', 'tile'];
 /* Rules from the config file, applied to a window when it opens. Matched on
  * app_id, or on title where an application gives everything the same app_id. */
 let windowRules = [];
+/* Named rules that have been disabled at runtime. A rule with a `name` field
+ * whose value is in this set is skipped by ruleFor. */
+let disabledRuleNames = new Set();
 /* Whether running off the end of the strip carries focus onto the next
  * monitor. From the config file; true unless it says otherwise, which is what
  * it has always done. The compositor honours the same setting for the tiling
