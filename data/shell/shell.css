@@ -136,6 +136,12 @@
   :root { --anim: 0ms; --anim-slow: 0ms; }
 }
 
+/* The same answer from the config file's `motion.enabled`. A class rather than
+   an inline property because applyMotion has to be able to take the durations
+   off again without leaving a zero behind when the setting is turned back on;
+   the rule is written with the media query above for the same reason. */
+:root.motion-off { --anim: 0ms; --anim-slow: 0ms; }
+
 * { box-sizing: border-box; }
 
 html, body {

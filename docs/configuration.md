@@ -1103,6 +1103,40 @@ absence, keeps the frame here — which is what the shell's border is. Both
 protocols are answered with the same setting, since a client that probes the
 manager and one that asks per surface must not be told different things.
 
+## Motion
+
+```jsonc
+{
+  "motion": {
+    "enabled": true,        // false is the system's reduced-motion setting
+    "duration": 180,        // the ordinary transition, in milliseconds
+    "slow": 320,            // entrances and larger moves
+    "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)"
+  }
+}
+```
+
+Every transition on this desktop is the shell's — the compositor draws none of
+its own — and the shell's motion has always been three custom properties in
+`data/shell/shell.css`. That is the right answer for a desktop that is a web
+page and it had no key that reached it: tuning a duration meant shipping a
+stylesheet. `motion` is the key. It lands `duration` on `--anim`, `slow` on
+`--anim-slow` and `ease` on `--ease`, so the stylesheet transitions and the
+JavaScript tweens run on the same curve.
+
+`enabled: false` is the system's `prefers-reduced-motion` setting said in
+another place, for a session whose environment cannot set it — a kiosk with a
+fixed user agent, or a desk where only the config file is under your control.
+The system setting wins either way: a configured duration never overrides a
+user who has asked their whole desktop for less motion. Absent fields leave the
+stylesheet's values; a negative or non-finite duration is refused and the
+previous value kept, with a line in the log naming the key.
+
+**At runtime.** There is no `config.motion` setter yet; edit the file and
+`reload`. The shell reapplies the whole block, and the read-once timing cache
+is cleared with it, so a changed pace takes effect on the next transition
+rather than at the next restart.
+
 ## Window opacity
 
 ```jsonc

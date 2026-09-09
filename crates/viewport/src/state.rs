@@ -1578,6 +1578,9 @@ impl ViewportState {
                 gaps: None,
                 border: None,
                 opacity: None,
+                // The shell's own stylesheet pace, until a config file says
+                // otherwise.
+                motion: None,
                 // Nothing said about the clock, which is the shell deciding
                 // for itself: the locale the engine runs under and the hour
                 // that locale writes.

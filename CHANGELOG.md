@@ -82,6 +82,12 @@ to summarise rather than to duplicate.
   button or scroll through, and `ignore_mods+` matches whatever modifiers are
   held. The two halves of a chord do not shadow each other, so one chord can do
   one thing on press and another on release.
+- A `motion` block tunes the shell's animation without shipping a stylesheet.
+  `duration`, `slow` and `ease` land on the `--anim`, `--anim-slow` and
+  `--ease` custom properties every transition and tween already runs on, and
+  `enabled: false` is the system's reduced-motion setting in another form. The
+  system setting still wins, and the read-once timing cache is cleared on
+  reload so a changed pace takes effect on the next transition.
 
 ### Changed
 - VRR's desired state no longer walks every window's whole surface tree — popups

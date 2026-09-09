@@ -453,6 +453,10 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' workspaceOfForTest: workspaceOf,'
   + ' overviewStateForTest: (id) => views.get(id)?.overview ?? {},'
   + ' floatingForTest: (id) => views.get(id)?.floating ?? null,'
+  /* The motion config: whether the reduced-motion switch is thrown, and the
+     easing a tween would run on. The CSS properties applyMotion writes are
+     read straight off the document element in the test. */
+  + ' reducedMotionForTest: reducedMotion, motionEaseForTest: motionEase,'
   + ' fullscreenOnForTest: fullscreenOn,'
   + ' maximizedOnForTest: maximizedOn,'
   + ' dynamicOrderForTest: dynamicOrder,'
@@ -5487,6 +5491,38 @@ if (mode === 'scrolling') {
     gapsStyle.getPropertyValue('--gap-outer') === '4px');
   /* Reset for the checks that follow, which read --gap expecting its default. */
   emit({ type: 'config', layout: mode, gaps: { inner: 8, outer: 0, smart: false } });
+
+  /* A motion block from the config file lands on the custom properties the
+     stylesheet animates on, and the tweens follow the same curve. */
+  const motionStyle = document.documentElement.style;
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    motion: { duration: 90, slow: 140, ease: 'cubic-bezier(0, 0, 1, 1)' } });
+  check('motion.duration lands on --anim',
+    motionStyle.getPropertyValue('--anim') === '90ms');
+  check('motion.slow lands on --anim-slow',
+    motionStyle.getPropertyValue('--anim-slow') === '140ms');
+  check('motion.ease lands on --ease',
+    motionStyle.getPropertyValue('--ease') === 'cubic-bezier(0, 0, 1, 1)');
+  check('and the tween easing follows it',
+    globalThis.__shell.motionEaseForTest() === 'cubic-bezier(0, 0, 1, 1)');
+  check('motion is on by default', !globalThis.__shell.reducedMotionForTest());
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    motion: { enabled: false } });
+  check('motion.enabled false throws the reduced-motion switch',
+    globalThis.__shell.reducedMotionForTest());
+  check('and takes both durations off the document',
+    motionStyle.getPropertyValue('--anim') === ''
+      && motionStyle.getPropertyValue('--anim-slow') === '');
+  check('and the class carries the zero',
+    document.documentElement.classList.contains('motion-off'));
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    motion: { enabled: true } });
+  check('turning it back on restores motion',
+    !globalThis.__shell.reducedMotionForTest());
+  check('and takes the class off',
+    !document.documentElement.classList.contains('motion-off'));
 
   /* Workspace policy is resolved against the active workspace, while globals
      remain fallback values for every workspace without a rule. */

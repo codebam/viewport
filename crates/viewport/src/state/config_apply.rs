@@ -244,6 +244,32 @@ impl ViewportState {
             }
             self.config.border = Some(border);
         }
+        if file.motion != crate::config::MotionConfig::default() {
+            // Validated for the same reason the gaps and the border are: a
+            // negative or non-finite duration is a transition that never
+            // finishes, or finishes before it is drawn, and the field keeps
+            // what it had rather than taking it.
+            let prior = self.config.motion.clone().unwrap_or_default();
+            let mut motion = viewport_ipc::event::Motion {
+                enabled: file.motion.enabled,
+                duration: file.motion.duration,
+                slow: file.motion.slow,
+                ease: file.motion.ease.clone(),
+            };
+            for (name, value, fallback) in [
+                ("duration", &mut motion.duration, prior.duration),
+                ("slow", &mut motion.slow, prior.slow),
+            ] {
+                if value.is_some_and(|v| !(v.is_finite() && v >= 0.0)) {
+                    tracing::warn!(
+                        "config.motion.{name} is not a finite non-negative number; \
+                         keeping the current value"
+                    );
+                    *value = fallback;
+                }
+            }
+            self.config.motion = Some(motion);
+        }
         if file.opacity != crate::config::OpacityConfig::default() {
             let mut opacity = self.config.opacity.clone().unwrap_or_default();
             for (name, value, target) in [

@@ -471,8 +471,16 @@ function gestureRelayout() {
 }
 
 /* Whether the user has asked for less motion. Checked at the point of use so
- * changing the setting takes effect without a reload. */
+ * changing the setting takes effect without a reload.
+ *
+ * Two ways to ask, and they are the same question: the system's setting, and
+ * the config file's `motion.enabled` — see applyMotion in motion.js, which
+ * owns the flag. A session where the browser cannot read the system setting
+ * (a kiosk with a fixed user agent) still gets the config's answer. */
+let motionEnabled = true;
+
 function reducedMotion() {
+  if (!motionEnabled) return true;
   return typeof matchMedia === 'function' &&
     matchMedia('(prefers-reduced-motion: reduce)').matches;
 }

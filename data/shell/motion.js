@@ -105,11 +105,68 @@ function motionSeconds(property) {
   return seconds;
 }
 
-/* The stylesheet's cubic-bezier, spelled the way GSAP wants it. Written out
-   rather than parsed from --ease: the property is a CSS function call, and a
-   parser for one value that has never changed is more to go wrong than the
-   duplication it removes. The comment beside it in shell.css says so too. */
-const MOTION_EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+/* The easing every tween runs on, read from the cascade the way the durations
+   are. It used to be a constant duplicating `--ease` in shell.css; the config
+   file's `motion.ease` now lands on that property, so a tween left on the old
+   constant would move on a different curve from every CSS transition beside
+   it. GSAP accepts a `cubic-bezier(...)` string directly — the old constant
+   was one. Cached like the durations, and cleared by applyMotion. */
+let motionEaseValue = null;
+
+function motionEase() {
+  if (motionEaseValue !== null) return motionEaseValue;
+  let ease = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+  if (typeof getComputedStyle === 'function') {
+    const raw = getComputedStyle(document.documentElement)
+      .getPropertyValue('--ease').trim();
+    if (raw) ease = raw;
+  }
+  motionEaseValue = ease;
+  return ease;
+}
+
+/* The config file's `motion` block, landed on the properties the stylesheet
+   already animates on. The shell is a page, so its motion has always been CSS
+   — this is the key that reaches it, and the reason a desk can tune its pace
+   without shipping a stylesheet.
+
+   `enabled: false` is the system's reduced-motion setting said in another
+   place: the class zeroes both durations for the CSS transitions, and
+   reducedMotion() reads the flag for the tweens. The system setting wins over
+   a configured duration either way — an inline `--anim` would otherwise
+   override the media query that is there to protect it. */
+function applyMotion(motion) {
+  if (motion === undefined || motion === null) return;
+  const root = document.documentElement;
+  const systemReduced = typeof matchMedia === 'function' &&
+    matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (typeof motion.enabled === 'boolean') motionEnabled = motion.enabled;
+
+  if (motion.enabled === false || systemReduced) {
+    root.classList.add('motion-off');
+    root.style.removeProperty('--anim');
+    root.style.removeProperty('--anim-slow');
+  } else {
+    root.classList.remove('motion-off');
+    if (Number.isFinite(motion.duration) && motion.duration >= 0) {
+      root.style.setProperty('--anim', motion.duration + 'ms');
+    }
+    if (Number.isFinite(motion.slow) && motion.slow >= 0) {
+      root.style.setProperty('--anim-slow', motion.slow + 'ms');
+    }
+  }
+  /* The read-once caches above have to go, or a reload that changed the pace
+     would keep the numbers the first frame read. The ease is cached here too
+     so a tween does not read the cascade again, and so the value is the one
+     just applied rather than whatever the engine reports a frame later. */
+  motionTimings.clear();
+  motionEaseValue = null;
+  if (typeof motion.ease === 'string' && motion.ease.trim() !== '') {
+    const ease = motion.ease.trim();
+    root.style.setProperty('--ease', ease);
+    motionEaseValue = ease;
+  }
+}
 
 /* The single question every helper asks before doing anything. reducedMotion()
    is geometry.js's, checked at the point of use so that changing the setting
@@ -153,7 +210,7 @@ function animateBarIn(output) {
 
   const timeline = gsap.timeline();
   timeline.fromTo(output.barEl, { opacity: 0 }, {
-    opacity: 1, duration: slow, ease: MOTION_EASE, clearProps: 'opacity',
+    opacity: 1, duration: slow, ease: motionEase(), clearProps: 'opacity',
   });
   if (items.length > 0) {
     /* Four pixels, and not more. Under 'auto' the compositor draws the bar
@@ -165,7 +222,7 @@ function animateBarIn(output) {
       opacity: 1,
       y: 0,
       duration: slow,
-      ease: MOTION_EASE,
+      ease: motionEase(),
       /* `amount`, not `each`: the whole sequence takes this long however many
          modules there are, so a bar with the network module showing does not
          take visibly longer to arrive than one without it. */
@@ -269,7 +326,7 @@ function animateNotificationIn(el) {
   gsap.from(el, {
     ...notificationCollapsed(),
     duration: motionSeconds('--anim-slow'),
-    ease: MOTION_EASE,
+    ease: motionEase(),
     clearProps: NOTIFICATION_BOX.join(','),
     /* The strip grew, and it is growing for the length of the tween. The
        overlay rect is measured off the container, so it has to be re-measured
@@ -314,7 +371,7 @@ function animateNotificationOut(el, remove) {
   gsap.to(el, {
     ...notificationCollapsed(),
     duration: motionSeconds('--anim'),
-    ease: MOTION_EASE,
+    ease: motionEase(),
     onUpdate: reportNotificationRect,
     onComplete: done,
   });
@@ -341,14 +398,14 @@ function animateScreencastIn(dialog, rows) {
   const slow = motionSeconds('--anim-slow');
   const timeline = gsap.timeline();
   timeline.fromTo(dialog, { opacity: 0 }, {
-    opacity: 1, duration: slow, ease: MOTION_EASE, clearProps: 'opacity',
+    opacity: 1, duration: slow, ease: motionEase(), clearProps: 'opacity',
   });
   if (rows.length > 0) {
     timeline.fromTo(rows, { opacity: 0, y: 8 }, {
       opacity: 1,
       y: 0,
       duration: slow,
-      ease: MOTION_EASE,
+      ease: motionEase(),
       stagger: { amount: slow * 0.8 },
       clearProps: 'opacity,transform',
     }, slow * 0.25);
@@ -391,7 +448,7 @@ function surfaceOpacityTween(resting, sample) {
        and a fade that outlasted that movement would still be brightening after
        the desktop had settled. */
     duration: motionSeconds('--anim'),
-    ease: MOTION_EASE,
+    ease: motionEase(),
     onUpdate() {
       if (++frame % 2 === 0) sample(state.value);
     },

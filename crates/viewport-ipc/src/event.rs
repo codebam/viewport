@@ -695,6 +695,14 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<Opacity>,
 
+    /// How the shell animates, carried from the config file to the shell. The
+    /// compositor draws none of its own transitions, so this is the pace and
+    /// the curve the shell lands on `--anim`, `--anim-slow` and `--ease`, plus
+    /// the switch the system's reduced-motion setting also throws. Absent
+    /// leaves every one of them as the stylesheet wrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion: Option<Motion>,
+
     /// The bar clock's locale and format, carried from the config file to the
     /// shell, which formats the module and the calendar under it from them.
     /// Absent means the shell decides for itself, which is the locale the
@@ -892,6 +900,26 @@ pub struct Border {
     /// around, and rounding it after it has been pushed against the screen
     /// edge is what leaves wallpaper showing in the corners of the monitor.
     pub smart: Option<bool>,
+}
+
+/// How the shell animates, as `motion` in the config file, carried to the
+/// shell.
+///
+/// The shell owns every transition — the compositor draws none of its own — so
+/// what travels is the pace and the curve, not a per-category tree. Absent
+/// fields leave the shell's stylesheet values standing, and `enabled: false` is
+/// the system's reduced-motion setting in another form.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Motion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease: Option<String>,
 }
 
 /// The bar clock's locale and format, as `clock` in the config file, carried
@@ -1620,6 +1648,7 @@ mod tests {
             gaps: None,
             border: None,
             opacity: None,
+            motion: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1710,6 +1739,7 @@ mod tests {
                 smart: Some(true),
             }),
             opacity: None,
+            motion: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1764,6 +1794,7 @@ mod tests {
             }),
             border: None,
             opacity: None,
+            motion: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1812,6 +1843,7 @@ mod tests {
             gaps: None,
             border: None,
             opacity: None,
+            motion: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1841,6 +1873,7 @@ mod tests {
             gaps: None,
             border: None,
             opacity: None,
+            motion: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1993,6 +2026,7 @@ mod tests {
                 gaps: None,
                 border: None,
                 opacity: None,
+                motion: None,
                 clock: None,
                 bar_widgets: None,
                 bar_items: None,

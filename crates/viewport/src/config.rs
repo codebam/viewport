@@ -242,6 +242,37 @@ pub struct BorderConfig {
     pub smart: Option<bool>,
 }
 
+/// The `motion` block: how the shell animates.
+///
+/// The shell's motion has always been a stylesheet — `--anim`, `--anim-slow`
+/// and `--ease` in `data/shell/shell.css` — which is the right answer for a
+/// desktop that is a web page, and had no key that reached it. Tuning a
+/// duration meant shipping a stylesheet, and `prefers-reduced-motion` was the
+/// only switch. This is the key.
+///
+/// Deliberately a small vocabulary rather than Hyprland's per-category tree.
+/// The categories there name the shapes a compositor draws — a border, a
+/// shadow, a workspace slide — and this desktop draws none of them in the
+/// compositor: the shell owns every transition and names them in CSS. What
+/// travels is the pace and the curve; the shell keeps the decision of what
+/// moves.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct MotionConfig {
+    /// Whether anything animates. Absent is on; `false` is the same as the
+    /// system's reduced-motion setting, for a desk whose session cannot set it.
+    pub enabled: Option<bool>,
+    /// The ordinary transition, in milliseconds. Absent leaves the shell's own
+    /// 180.
+    pub duration: Option<f64>,
+    /// The slower one — entrances and larger moves. Absent leaves 320.
+    pub slow: Option<f64>,
+    /// The easing, as any CSS timing function: a `cubic-bezier(...)`, a
+    /// `steps(...)`, or one of the keywords. Absent leaves the shell's own
+    /// cubic-bezier.
+    pub ease: Option<String>,
+}
+
 /// Compositor-side opacity multipliers.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -631,6 +662,7 @@ pub struct File {
     pub gaps: GapsConfig,
     pub border: BorderConfig,
     pub opacity: OpacityConfig,
+    pub motion: MotionConfig,
     pub notifications: NotificationsConfig,
 
     /// The bar clock's locale and format; see [`ClockConfig`]. Absent leaves
@@ -1567,6 +1599,24 @@ mod tests {
         let env = file.env.expect("the block is present");
         assert_eq!(env.get("MOZ_ENABLE_WAYLAND").map(String::as_str), Some("1"));
         assert_eq!(env.get("EDITOR").map(String::as_str), Some("hx"));
+    }
+
+    #[test]
+    fn the_motion_block_names_a_pace_and_a_curve() {
+        // Absent is the shell's own stylesheet values, which is what makes the
+        // block additive: a desk that names only a duration keeps the default
+        // curve, and one that names only the curve keeps the default pace.
+        let absent: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(absent.motion, MotionConfig::default());
+
+        let file: File = serde_json::from_str(
+            r#"{"motion":{"enabled":false,"duration":90,"slow":140,"ease":"steps(4)"}}"#,
+        )
+        .expect("should parse");
+        assert_eq!(file.motion.enabled, Some(false));
+        assert_eq!(file.motion.duration, Some(90.0));
+        assert_eq!(file.motion.slow, Some(140.0));
+        assert_eq!(file.motion.ease.as_deref(), Some("steps(4)"));
     }
 
     #[test]

@@ -582,6 +582,10 @@ window.addEventListener('viewport', (event) => {
       windowRules = Array.isArray(message.rules) ? message.rules : [];
       applyTheme(message.theme);
       applyGaps(message.gaps);
+      /* How the desktop moves: the pace and the curve, landed on `--anim`,
+         `--anim-slow` and `--ease`, plus the switch the system's
+         reduced-motion setting also throws. Absent leaves the stylesheet. */
+      applyMotion(message.motion);
       applyWorkspaceRules(message.workspaces);
       applyBorder(message.border);
       applyBarMode(message.bar);
