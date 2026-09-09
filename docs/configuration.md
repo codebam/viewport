@@ -1894,6 +1894,16 @@ short form of `contains`. `match.workspace` is a positive workspace number and
 matches the active workspace at the instant the window opens. It does not
 change the action named by the outer `workspace` field.
 
+The matcher vocabulary is Hyprland's as well as this one's. `class` is the same
+string as `app_id` under its X11 name, and `initial_class` / `initial_title`
+are the values at map time — which is when a rule is resolved, so they are the
+same strings unless a window retitles itself before it is placed. `xwayland`
+is true for an X11 client under Xwayland, and `modal` for a dialog: a floating
+window with a parent, the same pair the compositor floats for. `class`,
+`initial_class` and `initial_title` take the same `contains` / `equals` /
+`regex` conditions as the fields above; `xwayland` and `modal` take a boolean,
+and a rule that names one is only matched when the window's answer agrees.
+
 Rules may be named for runtime control. A rule with a `name` field can be
 toggled from a keybinding or from the socket:
 

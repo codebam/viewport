@@ -232,7 +232,8 @@ function moveByDelta(id, dx, dy) {
 }
 
 function addView({ id, title, app_id, tag, output: outputName, min_width, min_height,
-    floating, minimized = false, parent, ancestors, width, height, replay }) {
+    floating, minimized = false, parent, ancestors, width, height, replay,
+    xwayland = false }) {
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
   if (views.has(id)) return;
@@ -270,6 +271,8 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   const openingWorkspace = replay ? null : output.workspace;
   views.set(id, {
     el, viewport, title, app_id, tag: tag ?? null, box: null,
+    /* X11 under Xwayland. Only a rule can read it; see ruleFor. */
+    xwayland: Boolean(xwayland),
     naturalWidth: width, naturalHeight: height,
     /* What the client says it will not go below, kept as numbers as well as on
        the element. The element carries them so flexbox enforces them, which is
@@ -324,7 +327,8 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      width of the column it opens in. Applied before anything is inserted, so
      the window goes straight where it belongs rather than appearing in one
      place and jumping to another. */
-  const rule = ruleFor(app_id, title, tag, openingWorkspace);
+  const rule = ruleFor(app_id, title, tag, openingWorkspace,
+    { xwayland: Boolean(xwayland), modal: Boolean(parent) && floating });
   const view = views.get(id);
   /* Replay must resolve permission too: compositor state survives a shell
    * reload, including an old denial whose rule may just have been removed. */
@@ -447,7 +451,8 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
 function reapplyWindowRule(id) {
   const view = views.get(id);
   if (!view) return;
-  const rule = ruleFor(view.app_id, view.title, view.tag, view.openingWorkspace);
+  const rule = ruleFor(view.app_id, view.title, view.tag, view.openingWorkspace,
+    { xwayland: view.xwayland, modal: view.parent != null && isFloating(id) });
   const capture = typeof rule?.capture === 'boolean' ? rule.capture : true;
   if (view.ruleCapture !== capture) {
     view.ruleCapture = capture;

@@ -82,6 +82,11 @@ to summarise rather than to duplicate.
   button or scroll through, and `ignore_mods+` matches whatever modifiers are
   held. The two halves of a chord do not shadow each other, so one chord can do
   one thing on press and another on release.
+- Window rules match Hyprland's vocabulary beyond `app_id` and `title`:
+  `class`, `initial_class` and `initial_title` take the same `contains`,
+  `equals` and `regex` conditions, and `xwayland` and `modal` take a boolean.
+  The compositor now says whether a window is an X11 client, which the page
+  cannot work out for itself; `modal` is a floating window with a parent.
 - A `motion` block tunes the shell's animation without shipping a stylesheet.
   `duration`, `slow` and `ease` land on the `--anim`, `--anim-slow` and
   `--ease` custom properties every transition and tween already runs on, and

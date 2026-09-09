@@ -199,6 +199,7 @@ impl View {
             min_width,
             min_height,
             replay,
+            xwayland: self.window.x11_surface().is_some(),
             floating: self.wants_floating(),
             minimized: self.minimized,
             parent,

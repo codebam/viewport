@@ -586,7 +586,7 @@ function ruleValueMatches(value, condition) {
   return false;
 }
 
-function ruleFor(appId, title, tag, openingWorkspace = null) {
+function ruleFor(appId, title, tag, openingWorkspace = null, extra = {}) {
   const haystackApp = (appId || '').toLowerCase();
   const haystackTitle = (title || '').toLowerCase();
 
@@ -595,12 +595,32 @@ function ruleFor(appId, title, tag, openingWorkspace = null) {
     /* Named rules may be disabled at runtime. */
     if (rule.name && disabledRuleNames.has(rule.name)) return false;
     if (rule.match && typeof rule.match === 'object') {
-      const fields = [['app_id', appId], ['title', title], ['tag', tag]];
+      /* `class` is Hyprland's name for what Wayland calls an app_id, and
+         `initial_class` / `initial_title` are the values at map time — which
+         is when this runs, so they are the same strings under a second name.
+         A rule that changes a title and then matches `initial_title` is
+         asking about the window before the change, and this is that moment. */
+      const fields = [
+        ['app_id', appId], ['class', appId], ['initial_class', appId],
+        ['title', title], ['initial_title', title], ['tag', tag],
+      ];
       let matched = false;
       for (const [field, value] of fields) {
         if (rule.match[field] === undefined) continue;
         matched = true;
         if (!ruleValueMatches(value, rule.match[field])) return false;
+      }
+      /* The two matchers whose value is a boolean rather than a string.
+         `xwayland` comes from the compositor; `modal` is a dialog — a
+         floating window with a parent, which is the same pair the compositor
+         floats for. */
+      if (rule.match.xwayland !== undefined) {
+        matched = true;
+        if (Boolean(rule.match.xwayland) !== Boolean(extra.xwayland)) return false;
+      }
+      if (rule.match.modal !== undefined) {
+        matched = true;
+        if (Boolean(rule.match.modal) !== Boolean(extra.modal)) return false;
       }
       if (rule.match.workspace !== undefined) {
         matched = true;

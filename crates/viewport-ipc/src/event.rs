@@ -598,6 +598,15 @@ pub struct ViewAdded {
     /// window that just mapped.
     pub replay: bool,
 
+    /// True for an X11 client under Xwayland.
+    ///
+    /// A window rule can match on it — Hyprland's `xwayland` matcher — and the
+    /// shell cannot work it out: both an X11 window and a Wayland one arrive
+    /// as a toplevel with an app_id and a title, and the only difference is
+    /// which protocol surface is behind them.
+    #[serde(default)]
+    pub xwayland: bool,
+
     /// Dialogs and fixed-size windows want floating rather than tiling. The
     /// compositor can see the signals — a parent toplevel, an X11 window type —
     /// and the shell cannot.
@@ -1579,6 +1588,7 @@ mod tests {
             min_width: 0,
             min_height: 0,
             replay: false,
+            xwayland: false,
             floating: false,
             minimized: false,
             parent: None,
@@ -1623,6 +1633,7 @@ mod tests {
             min_width: 0,
             min_height: 0,
             replay: false,
+            xwayland: false,
             floating: true,
             minimized: false,
             parent: Some(1),
@@ -1993,6 +2004,7 @@ mod tests {
                 min_width: 0,
                 min_height: 0,
                 replay: true,
+                xwayland: false,
                 floating: false,
                 minimized: false,
                 parent: None,

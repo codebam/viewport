@@ -7239,6 +7239,49 @@ if (mode === 'scrolling') {
   check('teardown clean', process.exitCode !== 1);
 }
 
+/* --- window-rule matchers ----------------------------------------------
+ *
+ * Hyprland's vocabulary beyond app_id and title: `class` is the same string
+ * under its X11 name, `initial_class` / `initial_title` are the values at map
+ * time (which is when a rule is resolved), and `xwayland` and `modal` are the
+ * two facts the compositor knows and the page does not. The effects here are
+ * just a workspace move and a float, which is enough to tell a match from a
+ * miss. */
+{
+  const open = (id, app, extra = {}) => emit({ type: 'view.added', id,
+    title: app, app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600, ...extra });
+  const workspaceOf = globalThis.__shell.workspaceOfForTest;
+
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { class: 'xclass' }, workspace: 7 },
+    { match: { xwayland: true }, workspace: 8 },
+    { match: { initial_title: 'Dialog Title' }, floating: true,
+      width: 200, height: 100 },
+    { match: { modal: true }, workspace: 9 },
+  ] });
+
+  open(70, 'xclass');
+  check('a class matcher is an app_id matcher', workspaceOf(70) === 7);
+
+  open(71, 'wayland-app');
+  check('a Wayland window is not xwayland', workspaceOf(71) !== 8);
+  open(72, 'xapp', { xwayland: true });
+  check('an X11 window matches xwayland', workspaceOf(72) === 8);
+
+  open(73, 'Dialog Title');
+  check('initial_title matches the title at map time',
+    globalThis.__shell.floatingForTest(73) !== null);
+
+  open(74, 'dialog', { floating: true, parent: 70 });
+  check('a floating window with a parent is modal', workspaceOf(74) === 9);
+  open(75, 'tiled', { parent: 70 });
+  check('a tiled window with a parent is not modal', workspaceOf(75) !== 9);
+
+  /* The rules above are not the harness's; put them back for anything after. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+}
+
 /* --- the stylesheet ----------------------------------------------------
  *
  * A window is a border and a hole, and both of them are CSS. Nothing above
