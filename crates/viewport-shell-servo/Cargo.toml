@@ -46,14 +46,16 @@ rustls = { version = "0.23", features = ["aws-lc-rs"] }
 # would mean a build that works today and a four-hour failure tomorrow. Bump it
 # deliberately, with the API sources open.
 #
-# `default-features = false` drops two of the three defaults. `clipboard` pulls
-# in arboard and an X11 stack for a desktop that has no clipboard UI of its own;
-# what is kept is `bundled`, without which the engine looks for its resources on
-# disk at runtime, and `js_jit`, without which the shell's JavaScript is
-# interpreted. `webgpu`, `webxr` and `media-gstreamer` are off — every one of
-# them is engine build time for something a shell does not do.
+# `default-features = false` drops the defaults. `clipboard` pulls in arboard
+# and an X11 stack for a desktop that has no clipboard UI of its own; what is
+# kept is `bundled`, without which the engine looks for its resources on disk
+# at runtime, and `js_jit`, without which the shell's JavaScript is interpreted.
+# `webgl` is kept because it used to be unconditional — 0.6.0 made it optional
+# and put it in `default_web_features`, so dropping it would take a capability
+# away rather than leave one unbuilt. `webgpu`, `webxr` and `media-gstreamer`
+# are off: engine build time for something a shell does not do.
 [dependencies.servo]
 git = "https://github.com/servo/servo.git"
-rev = "0a5c50e52a65a13017290bc843afafe3758fd0ac"
+rev = "b633eb136c42d94fbdf29766b2de79b932034ef5"
 default-features = false
-features = ["bundled", "js_jit"]
+features = ["bundled", "js_jit", "webgl"]
