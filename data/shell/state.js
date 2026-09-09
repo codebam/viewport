@@ -33,6 +33,12 @@ const MAX_WORKSPACE_ID = 0xffffffff;
  * demand by commands, rules, config and ext-workspace-v1. */
 const workspaceCatalog = new Map(); // number -> display name
 
+/* Validated config policy, keyed by workspace number. Declared before
+ * `ensureWorkspace` because a freshly created workspace reads its
+ * `default_name` and `on_created_empty` from here. The rest of the fields are
+ * the layout policy the other callers read. */
+const workspaceRules = new Map(); // number -> { output, layout, tiling_mode, gaps, ... }
+
 function validWorkspaceId(value) {
   return Number.isInteger(value) && value >= 1 && value <= MAX_WORKSPACE_ID;
 }
@@ -40,12 +46,32 @@ function validWorkspaceId(value) {
 function ensureWorkspace(value, name = null) {
   const n = Number(value);
   if (!validWorkspaceId(n)) return null;
-  if (!workspaceCatalog.has(n)) {
+  const created = !workspaceCatalog.has(n);
+  if (created) {
     if (workspaceCatalog.size >= MAX_WORKSPACES) return null;
     workspaceCatalog.set(n, String(n));
   }
   if (typeof name === 'string' && name.trim() !== '') {
     workspaceCatalog.set(n, name.trim());
+  } else if (created) {
+    /* Hyprland's `default_name`: only a workspace that did not already have a
+       name takes it, because a name from the session file or a command is
+       somebody saying what the workspace is. */
+    const rule = workspaceRules.get(n);
+    if (typeof rule?.default_name === 'string' && rule.default_name.trim() !== '') {
+      workspaceCatalog.set(n, rule.default_name.trim());
+    }
+  }
+  if (created) {
+    /* Hyprland's `on-created-empty`. A ruled workspace is not made until
+       something asks for it — see applyWorkspaceRules — so this is the moment
+       a switch first brings it into being, and it is empty by definition
+       because the window that would fill it has not arrived yet. */
+    const rule = workspaceRules.get(n);
+    if (typeof rule?.on_created_empty === 'string'
+        && rule.on_created_empty.trim() !== '') {
+      send({ type: 'shell.exec', command: rule.on_created_empty.trim() });
+    }
   }
   return n;
 }
@@ -126,10 +152,9 @@ const workspaces = new Map(); // number -> tiling tree root
  * bar has nowhere to draw it. Remembering where it was last is the only answer
  * that does not move it about while nobody is looking. */
 const workspaceHomes = new Map(); // number -> output name
-/* Validated config policy and changes made by layout commands. Runtime entries
- * are separate so a config reload changes defaults without erasing choices
+/* Changes made by layout commands. Runtime entries are separate from
+ * `workspaceRules` so a config reload changes defaults without erasing choices
  * made in this session; both are resolved by workspace at use sites. */
-const workspaceRules = new Map(); // number -> { output, layout, tiling_mode, gaps }
 const workspaceRuntime = new Map(); // number -> { layout, tiling_mode }
 let renderingWorkspace = null;
 

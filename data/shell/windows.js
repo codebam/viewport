@@ -909,9 +909,13 @@ function applyGaps(gaps) {
 function applyWorkspaceRules(rules) {
   workspaceRules.clear();
   if (!Array.isArray(rules)) return;
+  /* Stored, not created. A ruled workspace is made when something switches to
+     it, which is what lets its `default_name` and `on_created_empty` run at
+     that moment rather than for every ruled number at load. The home is
+     remembered now so the switch that creates it knows where it belongs. */
   for (const rule of rules) {
     const n = Number(rule?.workspace);
-    if (ensureWorkspace(n) === null) continue;
+    if (!validWorkspaceId(n)) continue;
     workspaceRules.set(n, rule);
     if (typeof rule.output === 'string') workspaceHomes.set(n, rule.output);
   }

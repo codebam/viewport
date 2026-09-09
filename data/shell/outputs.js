@@ -355,6 +355,9 @@ function publishWorkspaces() {
  * workspace so no window or monitor is silently moved. */
 function removeWorkspace(n) {
   if (!workspaceCatalog.has(n) || hostOfWorkspace(n) !== null) return false;
+  /* Hyprland's `persistent`: the workspace stays even when it is empty, which
+     is what a bar watching it needs. */
+  if (workspaceRules.get(n)?.persistent === true) return false;
   for (const [id] of views) {
     if (workspaceOf(id) === n) return false;
   }

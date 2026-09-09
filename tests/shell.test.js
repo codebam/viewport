@@ -7402,6 +7402,39 @@ if (mode !== 'scrolling') {
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }
 
+/* --- workspace-rule extras ----------------------------------------------
+ *
+ * Hyprland's `persistent`, `default_name` and `on-created-empty`. A ruled
+ * workspace is made when something switches to it, which is when its default
+ * name is taken and its command runs — not at config load. */
+{
+  const catalog = globalThis.__shell.workspaceCatalog;
+
+  const before = sent.length;
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    workspaces: [{ workspace: 401, default_name: 'dash',
+      on_created_empty: 'echo made' }] });
+  check('a ruled workspace is not made at load', !catalog.has(401));
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['401'] });
+  check('switching to it takes its default_name', catalog.get(401) === 'dash');
+  check('and runs on-created-empty',
+    sent.slice(before).some((m) => m.type === 'shell.exec'
+      && m.command === 'echo made'));
+
+  /* Persistent: an empty workspace a bar asks to remove stays. */
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    workspaces: [{ workspace: 402, persistent: true }] });
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['402'] });
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['1'] });
+  emit({ type: 'workspace.request', id: 402, action: 'remove' });
+  check('a persistent workspace is not removed', catalog.has(402));
+
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['403'] });
+  emit({ type: 'shell.command', command: 'workspace.switch', args: ['1'] });
+  emit({ type: 'workspace.request', id: 403, action: 'remove' });
+  check('an ordinary empty workspace is removed', !catalog.has(403));
+}
+
 /* --- the stylesheet ----------------------------------------------------
  *
  * A window is a border and a hole, and both of them are CSS. Nothing above

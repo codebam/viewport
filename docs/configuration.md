@@ -54,14 +54,31 @@ a TTY.
 ```
 
 `workspaces` is an optional object whose keys are positive workspace numbers.
-Each value accepts `output`, `layout`, `tiling_mode` and
-`gaps`. `output` is the connector preferred as that workspace's home; `layout`
-accepts a built-in or validated `layout_extensions` name; `tiling_mode` accepts
-`manual`, `master-stack`, `spiral`, `bsp` or `grid`; and `gaps` has the same
-optional `inner`, `outer` and `smart` fields as the global block. Omitted fields
-inherit global values. Invalid workspace numbers, unknown layout/mode names and
-negative gap sizes are rejected or ignored with a diagnostic before reaching
-the shell.
+Each value accepts `output`, `layout`, `tiling_mode`, `gaps`, `persistent`,
+`default_name` and `on_created_empty`. `output` is the connector preferred as
+that workspace's home; `layout` accepts a built-in or validated
+`layout_extensions` name; `tiling_mode` accepts `manual`, `master-stack`,
+`spiral`, `bsp` or `grid`; and `gaps` has the same optional `inner`, `outer`
+and `smart` fields as the global block. Omitted fields inherit global values.
+Invalid workspace numbers, unknown layout/mode names and negative gap sizes are
+rejected or ignored with a diagnostic before reaching the shell.
+
+```jsonc
+{
+  "workspaces": {
+    "3": { "output": "DP-1", "layout": "scrolling",
+           "persistent": true, "default_name": "code" },
+    "9": { "on_created_empty": "rio" }
+  }
+}
+```
+
+`persistent` keeps a workspace even when it is empty, so a bar watching it does
+not lose it. `default_name` is the name a workspace takes the first time it is
+created, unless the session file or a command has already named it.
+`on_created_empty` is a command the shell runs when the workspace is first
+switched to, which is when it comes into being — not when the config is loaded,
+so a rule for a workspace nobody visits starts nothing.
 
 Workspace assignment and layout policy remain shell-owned. Workspaces 1 through
 9 exist initially and keep their default bindings; a command, rule or config

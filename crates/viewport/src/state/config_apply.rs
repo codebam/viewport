@@ -115,6 +115,13 @@ impl ViewportState {
                     layout,
                     tiling_mode,
                     gaps,
+                    persistent: rule.persistent,
+                    default_name: rule
+                        .default_name
+                        .filter(|name| !name.trim().is_empty()),
+                    on_created_empty: rule
+                        .on_created_empty
+                        .filter(|command| !command.trim().is_empty()),
                 });
             }
             rules.sort_by_key(|rule| rule.workspace);

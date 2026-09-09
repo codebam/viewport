@@ -225,6 +225,22 @@ pub struct WorkspaceConfig {
     pub tiling_mode: Option<String>,
     /// Gap fields override the corresponding global fields.
     pub gaps: GapsConfig,
+    /// Keep this workspace even when it is empty. Hyprland's `persistent`.
+    ///
+    /// Without it an empty workspace a bar or a command created is removed
+    /// again, which is what stops a session accumulating numbers nobody uses;
+    /// with it the space stays, which is what a workspace a bar is watching
+    /// needs.
+    pub persistent: Option<bool>,
+    /// The name a freshly created workspace takes. Hyprland's `default_name`.
+    ///
+    /// Only a name the workspace does not already have: a session file, a
+    /// command or `ext-workspace-v1` that named it wins, because that is
+    /// somebody saying what it is rather than a default.
+    pub default_name: Option<String>,
+    /// A command to run when the workspace is created and empty. Hyprland's
+    /// `on-created-empty`, for a dashboard or a terminal that belongs there.
+    pub on_created_empty: Option<String>,
 }
 
 /// The `border` block.
@@ -1705,6 +1721,22 @@ mod tests {
         let file: File =
             serde_json::from_str(r#"{"group":{"auto_group":true}}"#).expect("should parse");
         assert_eq!(file.group.auto_group, Some(true));
+    }
+
+    #[test]
+    fn a_workspace_rule_can_be_persistent_named_and_start_something() {
+        let file: File = serde_json::from_str(
+            r#"{"workspaces":{"300":{"persistent":true,"default_name":"code","on_created_empty":"rio"}}}"#,
+        )
+        .expect("should parse");
+        let rule = file
+            .workspaces
+            .as_ref()
+            .and_then(|rules| rules.get(&300))
+            .expect("workspace 300");
+        assert_eq!(rule.persistent, Some(true));
+        assert_eq!(rule.default_name.as_deref(), Some("code"));
+        assert_eq!(rule.on_created_empty.as_deref(), Some("rio"));
     }
 
     #[test]

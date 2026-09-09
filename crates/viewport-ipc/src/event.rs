@@ -873,6 +873,17 @@ pub struct WorkspaceRule {
     pub tiling_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gaps: Option<Gaps>,
+    /// Keep the workspace even when it is empty. Absent is off, which is what
+    /// stops a session accumulating numbers nobody uses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistent: Option<bool>,
+    /// The name a freshly created workspace takes, unless something else has
+    /// already named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_name: Option<String>,
+    /// A command to run when the workspace is created and empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_created_empty: Option<String>,
 }
 
 fn yes() -> bool {
@@ -1740,6 +1751,9 @@ mod tests {
                 outer: None,
                 smart: Some(true),
             }),
+            persistent: None,
+            default_name: None,
+            on_created_empty: None,
         });
         let value = json(&Event::Config(Box::new(config)));
         assert_eq!(

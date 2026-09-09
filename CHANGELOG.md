@@ -76,6 +76,12 @@ to summarise rather than to duplicate.
   itself sees it, and handed explicitly to each child so a value changed on
   `reload` reaches the next program. The `gpu`, `pixel_format` and `cross_gpu`
   keys and their flags still win for the variables they own.
+- Workspace rules gained Hyprland's `persistent` (keep an empty workspace),
+  `default_name` (the name a workspace takes when it is first created) and
+  `on_created_empty` (a command run the first time a workspace is switched to).
+  A ruled workspace is now made when something switches to it rather than at
+  config load, so `on_created_empty` starts nothing for a workspace nobody
+  visits.
 - A `binds` entry may be an object with an `action` and a `description` —
   Hyprland's `bindd`. The description is shown instead of the raw action in the
   tutorial on an empty desktop and in `bind.list`; an object with no `action`
