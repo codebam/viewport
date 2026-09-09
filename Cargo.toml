@@ -98,13 +98,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # that is the kind Rust gives EACCES. It dropped out of the rebase, which is the
 # arrangement above working rather than a patch being lost.
 #
-# The previous tip is tagged pre-rebase-b98f667e over there — and kept as the
+# The previous tip is tagged pre-rebase-b2cc4c51 over there — and kept as the
 # explicit-sync-scanout-2026-09-04 branch — because a revision no ref reaches
 # is one GitHub may collect, and older checkouts of this compositor pin it.
-# (pre-rebase-09de0d99, pre-rebase-b6e5bf02 and pre-rebase-a8f1c00 are the
-# three before that.)
+# (pre-rebase-b98f667e, pre-rebase-09de0d99, pre-rebase-b6e5bf02 and
+# pre-rebase-a8f1c00 are the four before that.)
+#
+# This pass rebased onto upstream d4bb0de4, six commits on from the last base:
+# an X11 property forward, two clippy passes, a winit 0.31-beta.3 bump and the
+# rand::RngExt bench. All four patches applied unchanged — `git range-diff`
+# shows `=` for each.
 git = "https://github.com/codebam/smithay.git"
-rev = "b2cc4c5125dfc483746441f918d3c677d57dad27"
+rev = "d64a9abee81ff5fd4f340a1ecc3d9c23f967d38c"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -129,7 +134,7 @@ default-features = false
 # is what makes this a redirect and not a downgrade — rebase the fork before
 # bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "b2cc4c5125dfc483746441f918d3c677d57dad27" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "d64a9abee81ff5fd4f340a1ecc3d9c23f967d38c" }
 
 [profile.release]
 debug = 1
