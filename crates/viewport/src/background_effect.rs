@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
+use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{Element, Id, RenderElement};
@@ -262,7 +263,32 @@ pub trait BackgroundEffectRenderer: Renderer {
     }
 }
 
-impl BackgroundEffectRenderer for viewport_vulkan::VulkanRenderer {}
+impl BackgroundEffectRenderer for viewport_vulkan::VulkanRenderer {
+    fn background_effects_available(&self) -> bool {
+        true
+    }
+
+    fn draw_background_effect(
+        effect: &BackgroundEffectRenderElement,
+        frame: &mut viewport_vulkan::VulkanFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
+    ) -> Result<(), viewport_vulkan::Error> {
+        effect.draw_vulkan(frame, src, dst, damage, cache)
+    }
+
+    fn capture_background_effect(
+        effect: &BackgroundEffectRenderElement,
+        frame: &mut viewport_vulkan::VulkanFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        cache: &UserDataMap,
+    ) -> Result<(), viewport_vulkan::Error> {
+        effect.capture_vulkan(frame, src, dst, cache)
+    }
+}
 
 impl BackgroundEffectRenderer for GlesRenderer {
     fn background_effects_available(&self) -> bool {
@@ -332,6 +358,24 @@ struct GlesEffectCache {
 struct CapturedFramebuffer {
     dst: Rectangle<i32, Physical>,
     transform: smithay::utils::Transform,
+}
+
+/// The Vulkan capture, and the offscreen target it lives in.
+///
+/// The DMA-BUF is kept beside the texture because the imported image reads its
+/// memory; the texture alone would be a view of a buffer nobody owns.
+#[derive(Default)]
+struct VulkanEffectCache {
+    target: Option<Dmabuf>,
+    /// The image the target was bound to, handed back by `capture_to`. Kept
+    /// rather than imported again: a second import is a second `VkImage` over
+    /// the same memory with its own layout, and the blur would sample one while
+    /// the capture wrote the other.
+    image: Option<std::sync::Arc<viewport_vulkan::Image>>,
+    /// The downsampled size the target was allocated at.
+    size: Option<Size<i32, Buffer>>,
+    captured: Option<CapturedFramebuffer>,
+    damage: Vec<Rectangle<i32, Physical>>,
 }
 
 impl BackgroundEffectRenderElement {
@@ -516,6 +560,130 @@ impl BackgroundEffectRenderElement {
             Some(&program.0),
             &uniforms,
         )
+    }
+
+    /// Capture the framebuffer behind the surface into a quarter-resolution
+    /// offscreen target. The Vulkan half of [`Self::capture_gles`].
+    fn capture_vulkan(
+        &self,
+        frame: &mut viewport_vulkan::VulkanFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        cache: &UserDataMap,
+    ) -> Result<(), viewport_vulkan::Error> {
+        let output = Rectangle::from_size(frame.output_size());
+        let Some(clamped) = dst.intersection(output) else {
+            return Ok(());
+        };
+        let transformed = frame
+            .transformation()
+            .transform_rect_in(clamped, &output.size);
+        let clamp_scale = clamped.size.to_f64() / dst.size.to_f64();
+        let source_size = Size::<i32, Buffer>::from((
+            (src.size.w * clamp_scale.x).round().max(1.0) as i32,
+            (src.size.h * clamp_scale.y).round().max(1.0) as i32,
+        ));
+        let source_size = frame.transformation().transform_size(source_size);
+        let cache = cache.get_or_insert::<RefCell<VulkanEffectCache>, _>(Default::default);
+        let mut cache = cache.borrow_mut();
+        let Some((size, _)) = blur_texture_size(source_size.w, source_size.h) else {
+            cache.target = None;
+            cache.image = None;
+            cache.size = None;
+            cache.captured = None;
+            return Ok(());
+        };
+        if cache.size != Some(size) {
+            cache.target = None;
+            cache.image = None;
+            cache.size = None;
+            cache.captured = None;
+        }
+        if cache.target.is_none() {
+            // Scoped rather than `drop`: the guard borrows the frame, and the
+            // borrow has to end before `capture_to` borrows it again.
+            let target = {
+                let mut renderer = frame.renderer();
+                renderer.as_mut().create_buffer(Fourcc::Abgr8888, size)?
+            };
+            cache.target = Some(target);
+        }
+
+        let target = cache.target.as_mut().expect("created above");
+        let image = frame.capture_to(
+            target,
+            transformed,
+            Rectangle::from_size((size.w, size.h).into()),
+            TextureFilter::Linear,
+        )?;
+        cache.image = Some(image);
+        cache.size = Some(size);
+        cache.captured = Some(CapturedFramebuffer {
+            dst: clamped,
+            transform: frame.transformation(),
+        });
+        Ok(())
+    }
+
+    /// Draw the captured target back through the nine-tap blur. The Vulkan
+    /// half of [`Self::draw_gles`].
+    fn draw_vulkan(
+        &self,
+        frame: &mut viewport_vulkan::VulkanFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
+    ) -> Result<(), viewport_vulkan::Error> {
+        let Some(cache) = cache.and_then(|cache| cache.get::<RefCell<VulkanEffectCache>>()) else {
+            return Ok(());
+        };
+        let output = Rectangle::from_size(frame.output_size());
+
+        let mut cache = cache.borrow_mut();
+        let Some(image) = cache.image.clone() else {
+            return Ok(());
+        };
+        let Some(captured) = cache.captured else {
+            return Ok(());
+        };
+        let Some(clamped) = dst
+            .intersection(output)
+            .and_then(|draw| draw.intersection(captured.dst))
+        else {
+            return Ok(());
+        };
+        let clamp = Rectangle::new(clamped.loc - dst.loc, clamped.size);
+        cache.damage.clear();
+        for region in &self.regions {
+            let Some(mapped) = map_region(*region, src, dst.size) else {
+                continue;
+            };
+            for damaged in damage {
+                let Some(mut draw) = mapped
+                    .intersection(*damaged)
+                    .and_then(|draw| draw.intersection(clamp))
+                else {
+                    continue;
+                };
+                draw.loc -= clamp.loc;
+                cache.damage.push(draw);
+            }
+        }
+        if cache.damage.is_empty() {
+            return Ok(());
+        }
+
+        let texture_src = captured_source(
+            captured,
+            clamped,
+            (image.width() as i32, image.height() as i32).into(),
+        );
+        // Taken rather than borrowed: the frame needs the renderer mutably and
+        // the cache is still borrowed.
+        let damage = std::mem::take(&mut cache.damage);
+        drop(cache);
+        frame.draw_background_blur(&image, texture_src, clamped, &damage, self.alpha)
     }
 }
 
@@ -863,6 +1031,22 @@ impl ViewportState {
             Some(BackgroundEffectState::new::<Self>(&self.display_handle));
         tracing::info!("ext-background-effect-v1: blur available through GLES");
         Ok(())
+    }
+
+    /// Publish the protocol for a renderer whose blur is built in.
+    ///
+    /// Vulkan has no capability to probe and no shader to compile: the blur is
+    /// a pipeline in the renderer, so a `VulkanRenderer` that exists can run
+    /// it. This is what lets the DRM backend advertise the global at all — the
+    /// GLES path there had no way to prove it could blit, and the Vulkan frame
+    /// could not capture its own framebuffer until it grew one.
+    pub fn advertise_background_effects_vulkan(&mut self) {
+        if self.background_effect_state.is_some() {
+            return;
+        }
+        self.background_effect_state =
+            Some(BackgroundEffectState::new::<Self>(&self.display_handle));
+        tracing::info!("ext-background-effect-v1: blur available through Vulkan");
     }
 }
 

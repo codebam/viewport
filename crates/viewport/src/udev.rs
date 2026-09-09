@@ -1412,6 +1412,23 @@ pub fn init(
     let mut session = session;
     let (manager, mut renderer, gbm, drm_notifier) = open_device(&mut session, &card, &render)?;
 
+    // `ext-background-effect-v1` is offered only where the renderer can draw
+    // the blur behind a surface. Vulkan has a blur pipeline built in; GLES has
+    // to compile and blit, which is what its own advertisement checks. The DRM
+    // backend asked neither before this, so the global existed on nested and
+    // headless sessions and nowhere a client could see it on real hardware.
+    match &mut renderer {
+        Gpu::Vulkan(_) => state.advertise_background_effects_vulkan(),
+        Gpu::Gles(gles) => {
+            if let Err(e) = state.advertise_background_effects(gles) {
+                tracing::warn!("{e:#}");
+            }
+        }
+        // Only ever here while a frame has the real renderer on the stack, and
+        // this runs before any frame exists.
+        Gpu::Placeholder => {}
+    }
+
     // Input.
     let mut libinput = smithay::reexports::input::Libinput::new_with_udev::<
         LibinputSessionInterface<LibSeatSession>,
