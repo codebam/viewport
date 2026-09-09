@@ -34,6 +34,14 @@ const SWIPE_THRESHOLD: f64 = 120.0;
 const PINCH_OUT_THRESHOLD: f64 = 1.2;
 const PINCH_IN_THRESHOLD: f64 = 0.8;
 
+/// How long a `long_press+` chord must be held before it fires.
+///
+/// Half a second, which is long enough not to fire on a normal keypress and
+/// short enough that holding a key to reach it does not feel like waiting.
+/// Not configurable: the useful range is narrow, and a second setting that
+/// changes what a chord means is one more thing to get wrong.
+const LONG_PRESS: std::time::Duration = std::time::Duration::from_millis(500);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GestureKind {
     Swipe,
@@ -1387,20 +1395,42 @@ impl ViewportState {
                                 state.locked,
                                 false,
                             ) {
-                                // A `non_consuming+` binding runs and lets the
-                                // key through. The action is left for after the
-                                // filter, which cannot both intercept and
-                                // forward, and running it here would re-enter
-                                // the keyboard while it is borrowed.
-                                Some(bound) if bound.non_consuming => {
-                                    state.deferred_bindings.push(bound.action.clone());
-                                    FilterResult::Forward
-                                }
                                 Some(bound) => {
-                                    state.suppressed_keys.push(keysym);
-                                    FilterResult::Intercept(Some(Action::Bound(
-                                        bound.action.clone(),
-                                    )))
+                                    let action = bound.action.clone();
+                                    let non_consuming = bound.non_consuming;
+                                    let long_press = bound.long_press;
+                                    let repeating = bound.repeating;
+
+                                    // A `long_press+` binding is not fired
+                                    // yet: a timer owns it for the length of
+                                    // the hold, and the release takes it back
+                                    // if the key comes up first. The key is
+                                    // kept from the client for the whole hold
+                                    // so a tap cannot do both.
+                                    if long_press {
+                                        state.suppressed_keys.push(keysym);
+                                        state.arm_long_press(keysym.raw(), action);
+                                        FilterResult::Intercept(Some(Action::Swallow))
+                                    } else if repeating {
+                                        state.suppressed_keys.push(keysym);
+                                        state.arm_repeating(keysym.raw(), action.clone());
+                                        if non_consuming {
+                                            state.deferred_bindings.push(action);
+                                            FilterResult::Forward
+                                        } else {
+                                            FilterResult::Intercept(Some(Action::Bound(action)))
+                                        }
+                                    } else if non_consuming {
+                                        // A `non_consuming+` binding runs and
+                                        // lets the key through. The action is
+                                        // left for after the filter, which
+                                        // cannot both intercept and forward.
+                                        state.deferred_bindings.push(action);
+                                        FilterResult::Forward
+                                    } else {
+                                        state.suppressed_keys.push(keysym);
+                                        FilterResult::Intercept(Some(Action::Bound(action)))
+                                    }
                                 }
                                 // To the page, which is the only thing left
                                 // that could want it. Intercepted rather than
@@ -1431,6 +1461,12 @@ impl ViewportState {
                             // released to whoever kept it, and a `release+`
                             // binding fires. Both can happen: the same chord
                             // may have a press binding and a release one.
+                            //
+                            // A held `long_press+` or `repeating+` binding
+                            // ends here: taking it out is what cancels the
+                            // hold and stops the repeat.
+                            state.long_press_pending.remove(&keysym.raw());
+                            state.repeating_held.remove(&keysym.raw());
                             let mut result = FilterResult::Forward;
                             if let Some(at) =
                                 state.suppressed_keys.iter().position(|k| *k == keysym)
@@ -2816,6 +2852,64 @@ impl ViewportState {
                 };
                 self.notify(&event);
             }
+        }
+    }
+
+    /// Arm the timer that fires a `long_press+` binding.
+    ///
+    /// The key is already suppressed when this runs, so if the timer cannot be
+    /// created the action is deferred rather than the hold being swallowed for
+    /// an action that will never fire.
+    fn arm_long_press(&mut self, code: u32, action: crate::binding::Action) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+
+        self.long_press_pending.insert(code, action);
+        let timer = Timer::from_duration(LONG_PRESS);
+        let result = self
+            .loop_handle
+            .insert_source(timer, move |_, _, state: &mut Self| {
+                if let Some(action) = state.long_press_pending.remove(&code) {
+                    state.run_binding(action);
+                }
+                TimeoutAction::Drop
+            });
+        if let Err(e) = result {
+            tracing::warn!("could not arm the long-press timer: {e}");
+            if let Some(action) = self.long_press_pending.remove(&code) {
+                self.deferred_bindings.push(action);
+            }
+        }
+    }
+
+    /// Arm the timer that repeats a `repeating+` binding until the key is up.
+    ///
+    /// The first repeat waits the keyboard's repeat delay and then fires at
+    /// its repeat rate, so a held volume key steps at the speed the rest of
+    /// the keyboard repeats rather than at whatever rate this loop happens to
+    /// run.
+    fn arm_repeating(&mut self, code: u32, action: crate::binding::Action) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+
+        self.repeating_held.insert(code, action);
+        let delay = std::time::Duration::from_millis(
+            self.keyboard_config.repeat_delay.unwrap_or(200).max(1) as u64,
+        );
+        let interval = std::time::Duration::from_millis(
+            (1000 / self.keyboard_config.repeat_rate.unwrap_or(25).max(1)) as u64,
+        );
+        let timer = Timer::from_duration(delay);
+        let result = self
+            .loop_handle
+            .insert_source(timer, move |_, _, state: &mut Self| {
+                let Some(action) = state.repeating_held.get(&code).cloned() else {
+                    return TimeoutAction::Drop;
+                };
+                state.run_binding(action);
+                TimeoutAction::ToDuration(interval)
+            });
+        if let Err(e) = result {
+            tracing::warn!("could not arm the repeat timer: {e}");
+            self.repeating_held.remove(&code);
         }
     }
 

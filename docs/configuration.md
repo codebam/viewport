@@ -248,7 +248,7 @@ chain: `locked+Mod4+q` and `Mod4+locked+q` are the same binding. A `locked`
 binding and a non-`locked` binding on the same chord do not shadow each other:
 one fires while locked, the other while unlocked.
 
-Three more flags are written the same way, anywhere before the key:
+Five more flags are written the same way, anywhere before the key:
 
 - `release+` fires on the key coming up rather than going down — Hyprland's
   `bindr`. The two halves do not shadow each other, so the same chord can do
@@ -260,12 +260,21 @@ Three more flags are written the same way, anywhere before the key:
   `bindi`. `ignore_mods+q=close` fires on plain `q`, on `Shift+q` and on
   `Mod4+q` alike, which is what makes it different from leaving the modifiers
   off the chord.
+- `repeating+` (also spelled `repeat+`) fires once on the press and then again
+  at the keyboard's own repeat delay and rate for as long as the key is held.
+  For a step that should keep stepping — volume, brightness — rather than an
+  action that opens something.
+- `long_press+` fires only once the key has been held half a second. A tap
+  does nothing, which is what lets one chord carry two meanings; the key is
+  kept from the client for the whole hold, so the two never both see it.
 
 ```json
 "binds": {
   "release+Mod4+Shift+t": "shell push-to-talk.stop",
   "non_consuming+Mod4+Mouse1": "shell bar.tap",
-  "ignore_mods+q": "close"
+  "ignore_mods+q": "close",
+  "repeating+XF86AudioRaiseVolume": "volume 5",
+  "long_press+Mod4+Return": "shell launcher"
 }
 ```
 

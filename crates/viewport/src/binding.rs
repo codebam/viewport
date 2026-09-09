@@ -126,6 +126,22 @@ pub struct Binding {
     /// which is what makes it different from leaving them out: `ignore_mods+q`
     /// fires on plain `q`, on `Shift+q` and on `Mod4+q` alike.
     pub ignore_mods: bool,
+    /// Fire again, at the keyboard's repeat rate, for as long as the key is
+    /// held.
+    ///
+    /// Written `repeating+`, Hyprland's `bindr` counterpart `repeating`.
+    /// Fires once on the press and then repeats until the release; the first
+    /// repeat waits the keyboard's repeat delay. Meant for a step that should
+    /// keep stepping — volume, brightness, a scroll — rather than for an
+    /// action that opens something.
+    pub repeating: bool,
+    /// Fire only after the key has been held, not on the press.
+    ///
+    /// Written `long_press+`. The action runs when the hold passes half a
+    /// second; letting go before that does nothing, which is what makes one
+    /// chord carry two meanings — a tap and a hold. The key is kept from the
+    /// client for the whole hold, so the two do not both see it.
+    pub long_press: bool,
 }
 
 /// The direction a scroll-wheel binding matches.
@@ -172,6 +188,12 @@ impl Binding {
         }
         if self.ignore_mods {
             chord.push_str("ignore_mods+");
+        }
+        if self.repeating {
+            chord.push_str("repeating+");
+        }
+        if self.long_press {
+            chord.push_str("long_press+");
         }
         if self.modifiers.logo {
             chord.push_str("Mod4+");
@@ -279,6 +301,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
     let mut release = false;
     let mut non_consuming = false;
     let mut ignore_mods = false;
+    let mut repeating = false;
+    let mut long_press = false;
     let mut rest = chord;
 
     // Left to right, stopping at the last '+': the key may itself be '+'.
@@ -295,6 +319,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
             "release" => release = true,
             "non_consuming" | "transparent" => non_consuming = true,
             "ignore_mods" => ignore_mods = true,
+            "repeating" | "repeat" => repeating = true,
+            "long_press" | "longpress" => long_press = true,
             // An unknown modifier is not a key with a stray plus in front of
             // it; treating it as one would bind something arbitrary.
             _ => return None,
@@ -339,6 +365,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         release,
         non_consuming,
         ignore_mods,
+        repeating,
+        long_press,
     })
 }
 
@@ -1058,6 +1086,8 @@ mod tests {
                 release: false,
                 non_consuming: false,
                 ignore_mods: false,
+                repeating: false,
+                long_press: false,
             };
             assert_eq!(parse_action(&binding.action_text()), action);
         }
@@ -1272,7 +1302,9 @@ mod tests {
             "non_consuming+Mod4+q=close",
             "transparent+Mod4+q=close",
             "ignore_mods+Mod4+q=close",
-            "locked+release+non_consuming+ignore_mods+Mod4+q=close",
+            "repeating+Mod4+q=close",
+            "long_press+Mod4+q=close",
+            "locked+release+non_consuming+ignore_mods+repeating+long_press+Mod4+q=close",
         ] {
             let binding = parse(spec).expect(spec);
             let again = parse_chord(&binding.chord()).expect("round trip");
@@ -1280,6 +1312,8 @@ mod tests {
             assert_eq!(again.release, binding.release, "{spec}");
             assert_eq!(again.non_consuming, binding.non_consuming, "{spec}");
             assert_eq!(again.ignore_mods, binding.ignore_mods, "{spec}");
+            assert_eq!(again.repeating, binding.repeating, "{spec}");
+            assert_eq!(again.long_press, binding.long_press, "{spec}");
             assert_eq!(again.modifiers, binding.modifiers, "{spec}");
             assert_eq!(again.keysym, binding.keysym, "{spec}");
         }

@@ -450,6 +450,16 @@ pub struct ViewportState {
     /// action but without the interception.
     pub deferred_bindings: Vec<crate::binding::Action>,
 
+    /// `long_press+` bindings waiting out their hold, by keysym.
+    ///
+    /// The action runs from the timer only while the key is still down; the
+    /// release removes it, which is what makes a tap do nothing.
+    pub long_press_pending: std::collections::HashMap<u32, crate::binding::Action>,
+
+    /// `repeating+` bindings still held, by keysym. The timer reads this each
+    /// time and stops when the release has taken the entry away.
+    pub repeating_held: std::collections::HashMap<u32, crate::binding::Action>,
+
     /// Keybindings. Almost all of them are passthroughs to the shell.
     pub bindings: Vec<crate::binding::Binding>,
     /// Configured discrete gestures and the captured sequence in progress.
@@ -1672,6 +1682,8 @@ impl ViewportState {
             headless: None,
             suppressed_keys: Vec::new(),
             deferred_bindings: Vec::new(),
+            long_press_pending: std::collections::HashMap::new(),
+            repeating_held: std::collections::HashMap::new(),
             bindings: crate::binding::defaults(
                 &std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
                 std::env::var("VIEWPORT_MENU").ok().as_deref(),

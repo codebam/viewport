@@ -76,12 +76,14 @@ to summarise rather than to duplicate.
   itself sees it, and handed explicitly to each child so a value changed on
   `reload` reaches the next program. The `gpu`, `pixel_format` and `cross_gpu`
   keys and their flags still win for the variables they own.
-- Bindings carry three more flags, written as pseudo-modifiers the way `locked`
+- Bindings carry five more flags, written as pseudo-modifiers the way `locked`
   already was. `release+` fires on the key coming up rather than going down,
   `non_consuming+` (or `transparent+`) runs the action and still lets the key,
   button or scroll through, and `ignore_mods+` matches whatever modifiers are
-  held. The two halves of a chord do not shadow each other, so one chord can do
-  one thing on press and another on release.
+  held. `repeating+` fires again at the keyboard's repeat delay and rate while
+  the key is held, and `long_press+` fires only after a half-second hold. The
+  two halves of a chord do not shadow each other, so one chord can do one
+  thing on press and another on release.
 - Named special workspaces, Hyprland's `special:NAME`. A rule can send a window
   to one, `special.toggle NAME` shows or hides that space as an overlay on the
   active output, and `special.move NAME` sends the focused window there. The
