@@ -29,4 +29,8 @@ node_modules/
 # zvec-grep index
 .zvec-grep/
 
+# ripwire's quality baseline, stamped with the commit it was taken at and
+# regenerated rather than hand-edited.
+.ripwire_quality_baseline
+
 .pi/
