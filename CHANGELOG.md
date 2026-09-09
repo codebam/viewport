@@ -232,7 +232,8 @@ to summarise rather than to duplicate.
   `pipewire` 0.9 to 0.10, `glow` 0.16 to 0.18 and `cef` 149 to 152. The Smithay
   fork is rebased onto upstream `0ff00983` — two documentation commits, with all
   four patches replayed unchanged — and the renderer follows to the same base,
-  which keeps the workspace's `[patch]` a redirect rather than a downgrade.
+  which keeps the workspace's `[patch]` a redirect rather than a downgrade, and
+  the flake's `outputHashes` are rehashed to the same revisions.
   `flake.lock` moves to the current nixpkgs and rust-overlay; the compiler is
   unchanged. The Servo shell's engine pin moves from 0.5.0 to 0.6.0; the public
   embedding surface it uses is unchanged, and `webgl` is named explicitly
