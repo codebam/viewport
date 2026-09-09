@@ -86,12 +86,13 @@ to summarise rather than to duplicate.
   Hyprland's `bindd`. The description is shown instead of the raw action in the
   tutorial on an empty desktop and in `bind.list`; an object with no `action`
   claims the chord and does nothing, as a `null` does.
-- Bindings carry five more flags, written as pseudo-modifiers the way `locked`
+- Bindings carry six more flags, written as pseudo-modifiers the way `locked`
   already was. `release+` fires on the key coming up rather than going down,
   `non_consuming+` (or `transparent+`) runs the action and still lets the key,
   button or scroll through, and `ignore_mods+` matches whatever modifiers are
   held. `repeating+` fires again at the keyboard's repeat delay and rate while
-  the key is held, and `long_press+` fires only after a half-second hold. The
+  the key is held, `long_press+` fires only after a half-second hold, and
+  `universal+` (or `submap_universal+`) matches in every binding mode. The
   two halves of a chord do not shadow each other, so one chord can do one
   thing on press and another on release.
 - Per-device `scroll_factor` and `emulate_discrete_scroll`. The factor

@@ -265,7 +265,7 @@ chain: `locked+Mod4+q` and `Mod4+locked+q` are the same binding. A `locked`
 binding and a non-`locked` binding on the same chord do not shadow each other:
 one fires while locked, the other while unlocked.
 
-Five more flags are written the same way, anywhere before the key:
+Six more flags are written the same way, anywhere before the key:
 
 - `release+` fires on the key coming up rather than going down — Hyprland's
   `bindr`. The two halves do not shadow each other, so the same chord can do
@@ -284,6 +284,10 @@ Five more flags are written the same way, anywhere before the key:
 - `long_press+` fires only once the key has been held half a second. A tap
   does nothing, which is what lets one chord carry two meanings; the key is
   kept from the client for the whole hold, so the two never both see it.
+- `universal+` (also spelled `submap_universal+`) matches in every binding
+  mode, not only the one it is written in — Hyprland's `submap_universal`. A
+  mode is otherwise a second keymap; this is the one chord that means the same
+  thing everywhere.
 
 ```json
 "binds": {
@@ -291,7 +295,8 @@ Five more flags are written the same way, anywhere before the key:
   "non_consuming+Mod4+Mouse1": "shell bar.tap",
   "ignore_mods+q": "close",
   "repeating+XF86AudioRaiseVolume": "volume 5",
-  "long_press+Mod4+Return": "shell launcher"
+  "long_press+Mod4+Return": "shell launcher",
+  "universal+XF86AudioMute": "volume mute"
 }
 ```
 

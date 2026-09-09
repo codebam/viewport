@@ -149,6 +149,13 @@ pub struct Binding {
     /// a binding parsed from a `chord=action` string — `bind.add`, the
     /// defaults — has none.
     pub description: Option<String>,
+    /// Match in every mode, not only the one it is written in. Hyprland's
+    /// `submap_universal`.
+    ///
+    /// A mode is otherwise a second keymap: `h` resizes inside resize mode and
+    /// moves focus outside it. A universal binding is the one that means the
+    /// same thing everywhere — a media key, or the chord that leaves.
+    pub universal: bool,
 }
 
 /// The direction a scroll-wheel binding matches.
@@ -201,6 +208,9 @@ impl Binding {
         }
         if self.long_press {
             chord.push_str("long_press+");
+        }
+        if self.universal {
+            chord.push_str("universal+");
         }
         if self.modifiers.logo {
             chord.push_str("Mod4+");
@@ -310,6 +320,7 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
     let mut ignore_mods = false;
     let mut repeating = false;
     let mut long_press = false;
+    let mut universal = false;
     let mut rest = chord;
 
     // Left to right, stopping at the last '+': the key may itself be '+'.
@@ -328,6 +339,7 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
             "ignore_mods" => ignore_mods = true,
             "repeating" | "repeat" => repeating = true,
             "long_press" | "longpress" => long_press = true,
+            "universal" | "submap_universal" => universal = true,
             // An unknown modifier is not a key with a stray plus in front of
             // it; treating it as one would bind something arbitrary.
             _ => return None,
@@ -375,6 +387,7 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         repeating,
         long_press,
         description: None,
+        universal,
     })
 }
 
@@ -868,7 +881,7 @@ pub fn find_binding<'a>(
         // carries `keysym: 0`, and an unmapped keycode produces exactly
         // that — so without this every NoSymbol press fired whatever
         // `Mod4+Mouse4` was bound to.
-        binding.mode == mode
+        (binding.universal || binding.mode == mode)
             && binding.release == release
             && (binding.ignore_mods || binding.modifiers == wanted)
             && binding.keysym == keysym
@@ -904,7 +917,7 @@ pub fn find_button<'a>(
 ) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
     bindings.iter().find(|binding| {
-        binding.mode == mode
+        (binding.universal || binding.mode == mode)
             && (binding.ignore_mods || binding.modifiers == wanted)
             && binding.button == Some(button)
             && (!locked || binding.locked)
@@ -936,7 +949,7 @@ pub fn find_wheel<'a>(
 ) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
     bindings.iter().find(|binding| {
-        binding.mode == mode
+        (binding.universal || binding.mode == mode)
             && (binding.ignore_mods || binding.modifiers == wanted)
             && binding.wheel == Some(wheel)
             && (!locked || binding.locked)
@@ -968,7 +981,7 @@ pub fn find_wheel<'a>(
 fn shadows(earlier: &Binding, binding: &Binding) -> bool {
     earlier.locked == binding.locked
         && earlier.release == binding.release
-        && earlier.mode == binding.mode
+        && (earlier.universal || earlier.mode == binding.mode)
         && (earlier.ignore_mods || earlier.modifiers == binding.modifiers)
         && earlier.keysym == binding.keysym
         && earlier.button.is_none()
@@ -1097,6 +1110,7 @@ mod tests {
                 repeating: false,
                 long_press: false,
                 description: None,
+                universal: false,
             };
             assert_eq!(parse_action(&binding.action_text()), action);
         }
@@ -1313,7 +1327,9 @@ mod tests {
             "ignore_mods+Mod4+q=close",
             "repeating+Mod4+q=close",
             "long_press+Mod4+q=close",
-            "locked+release+non_consuming+ignore_mods+repeating+long_press+Mod4+q=close",
+            "universal+Mod4+q=close",
+            "submap_universal+Mod4+q=close",
+            "locked+release+non_consuming+ignore_mods+repeating+long_press+universal+Mod4+q=close",
         ] {
             let binding = parse(spec).expect(spec);
             let again = parse_chord(&binding.chord()).expect("round trip");
@@ -1323,9 +1339,51 @@ mod tests {
             assert_eq!(again.ignore_mods, binding.ignore_mods, "{spec}");
             assert_eq!(again.repeating, binding.repeating, "{spec}");
             assert_eq!(again.long_press, binding.long_press, "{spec}");
+            assert_eq!(again.universal, binding.universal, "{spec}");
             assert_eq!(again.modifiers, binding.modifiers, "{spec}");
             assert_eq!(again.keysym, binding.keysym, "{spec}");
         }
+    }
+
+    #[test]
+    fn a_universal_binding_matches_in_every_mode() {
+        // `submap_universal`: the one chord that means the same thing in a
+        // mode as outside it. A mode-specific binding beside it is unaffected.
+        let universal = parse("universal+XF86AudioMute=volume mute").unwrap();
+        let resize = parse("resize/h=shell layout.resize left").unwrap();
+        let bindings = vec![universal, resize];
+        let free = ModifiersState::default();
+        assert_eq!(
+            match_binding(
+                &bindings,
+                &free,
+                keysyms::KEY_XF86AudioMute,
+                "resize",
+                false,
+                false
+            ),
+            Some(&Action::Volume {
+                source: false,
+                delta: None,
+                mute: true,
+            })
+        );
+        assert!(
+            match_binding(
+                &bindings,
+                &free,
+                keysyms::KEY_XF86AudioMute,
+                "",
+                false,
+                false
+            )
+            .is_some(),
+            "and outside a mode too"
+        );
+        assert!(
+            match_binding(&bindings, &free, keysyms::KEY_h, "", false, false).is_none(),
+            "the mode's own binding stays in its mode"
+        );
     }
 
     #[test]
