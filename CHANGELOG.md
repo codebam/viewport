@@ -71,6 +71,12 @@ to summarise rather than to duplicate.
   are.
 
 ### Added
+- `outputs.<name>.icc` loads a monitor's calibration from an ICC profile. Only
+  the `vcgt` tag is read — the table a profiler stored for the video card — and
+  it is composed under any client gamma ramp, so a night-light client and a
+  monitor profile both reach the screen. Hyprland's `render:icc_vcgt_enabled`
+  is the same idea, and this is the first half of ICC support: the `vcgt` tag
+  is a table, not a colour transform.
 - `ext-background-effect-v1` is advertised on DRM again, through the Vulkan
   renderer. `VulkanFrame` grew `FrameContext`, a render-pass-safe capture into a
   downsampled offscreen image, and a nine-tap blur pipeline — the same kernel

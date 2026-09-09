@@ -82,6 +82,40 @@ pub fn identity(size: usize) -> Ramp {
     }
 }
 
+impl Ramp {
+    /// Apply this calibration after `client`'s ramp.
+    ///
+    /// Both are `size`-entry tables over the same input range. The client's
+    /// table maps an index to a 16-bit level; the calibration maps that level
+    /// to what the monitor needs. The result samples the calibration at each
+    /// client level, interpolated between its entries — so a night-light
+    /// client and a monitor profile both reach the screen, which applying
+    /// either one alone would not.
+    pub fn compose(&self, client: &Ramp) -> Ramp {
+        let sample = |table: &[u16], value: u16| -> u16 {
+            let last = table.len().saturating_sub(1);
+            if last == 0 {
+                return table.first().copied().unwrap_or(0);
+            }
+            let at = f64::from(value) / f64::from(u16::MAX) * last as f64;
+            let lo = at.floor() as usize;
+            let hi = (lo + 1).min(last);
+            let frac = at - lo as f64;
+            let blended = f64::from(table[lo]) * (1.0 - frac) + f64::from(table[hi]) * frac;
+            blended.round().clamp(0.0, f64::from(u16::MAX)) as u16
+        };
+        Ramp {
+            red: client.red.iter().map(|v| sample(&self.red, *v)).collect(),
+            green: client
+                .green
+                .iter()
+                .map(|v| sample(&self.green, *v))
+                .collect(),
+            blue: client.blue.iter().map(|v| sample(&self.blue, *v)).collect(),
+        }
+    }
+}
+
 /// What the compositor has to be able to do for a ramp to reach a monitor.
 pub trait GammaControlHandler {
     fn gamma_control_state(&mut self) -> &mut GammaControlState;
@@ -426,6 +460,37 @@ mod tests {
         // Taking the first part of it programs a ramp made of the wrong
         // numbers, which is worse than refusing.
         assert!(split(&bytes_of(&[1, 2, 3, 4, 5, 6, 7]), 2).is_none());
+    }
+
+    #[test]
+    fn a_calibration_composes_with_a_client_ramp() {
+        // The monitor profile's ramp applied to what the client asked for: an
+        // identity client ramp leaves the calibration alone, a flat one lands
+        // on its first entry, and one that reaches full scale lands on its
+        // last.
+        let calibration = Ramp {
+            red: vec![0, 1000, 2000, 3000],
+            green: vec![0, 1000, 2000, 3000],
+            blue: vec![0, 1000, 2000, 3000],
+        };
+        assert_eq!(
+            calibration.compose(&identity(4)).red,
+            vec![0, 1000, 2000, 3000]
+        );
+
+        let flat = Ramp {
+            red: vec![0, 0, 0, 0],
+            green: vec![0, 0, 0, 0],
+            blue: vec![0, 0, 0, 0],
+        };
+        assert_eq!(calibration.compose(&flat).red, vec![0, 0, 0, 0]);
+
+        let full = Ramp {
+            red: vec![u16::MAX; 4],
+            green: vec![u16::MAX; 4],
+            blue: vec![u16::MAX; 4],
+        };
+        assert_eq!(calibration.compose(&full).red, vec![3000, 3000, 3000, 3000]);
     }
 
     #[test]

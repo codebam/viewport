@@ -995,6 +995,10 @@ pub struct ViewportState {
     /// again: the kernel resets gamma when the session is handed over, and a
     /// night-light client has no way to know it happened.
     pub gamma_ramps: std::collections::HashMap<String, crate::gamma::Ramp>,
+    /// The calibration ramp from each output's ICC profile, applied under
+    /// whatever a client asks for. Kept separately so a night-light client
+    /// taking over — and letting go — does not lose the monitor profile.
+    pub gamma_vcgt: std::collections::HashMap<String, crate::gamma::Ramp>,
     /// wlr-output-management: what kanshi, wlr-randr and wdisplays speak.
     /// Smithay implements it nowhere, so the dispatch is in
     /// `output_management.rs`.
@@ -1821,6 +1825,7 @@ impl ViewportState {
             pending_capture_frames: Vec::new(),
             syncobj_state: None,
             gamma_ramps: std::collections::HashMap::new(),
+            gamma_vcgt: std::collections::HashMap::new(),
             _cursor_shape_state: cursor_shape_state,
             _content_type_state: content_type_state,
             _alpha_modifier_state: alpha_modifier_state,
@@ -2937,6 +2942,13 @@ impl ViewportState {
                         enabled: Some(hdr),
                     },
                 );
+            }
+
+            // The monitor profile's calibration ramp, if the file has one.
+            // Loaded here rather than where the output is created so a reload
+            // picks up an edited profile.
+            if let Some(icc) = want.icc.as_deref() {
+                self.load_output_icc(name, icc);
             }
         }
         // Topology after every head's own mode/scale/transform. HashMap order

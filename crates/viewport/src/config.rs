@@ -49,6 +49,13 @@ pub struct OutputConfig {
     pub mirror: Option<String>,
     /// Variable-refresh policy for this physical head.
     pub vrr: Option<viewport_ipc::event::VrrMode>,
+    /// An ICC profile to load this monitor's calibration from.
+    ///
+    /// The `vcgt` tag is applied as a gamma ramp under whatever a night-light
+    /// client asks for, which is the one part of ICC support that does not
+    /// need a colour-management engine: it is a table, not a transform. See
+    /// `crate::icc`. Relative paths are resolved beside the config file.
+    pub icc: Option<String>,
 }
 
 /// The keyboard block.
@@ -864,6 +871,27 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
                 "{}: workspace numbers must be positive",
                 path.display()
             );
+        }
+    }
+    for output in file.outputs.values_mut() {
+        let Some(icc) = output.icc.as_mut() else {
+            continue;
+        };
+        if icc.trim().is_empty() {
+            output.icc = None;
+            continue;
+        }
+        // A relative path is beside the config file, as a layout extension and
+        // the wallpaper are — so a profile kept next to the file that names it
+        // does not depend on where the compositor was started from.
+        let named = Path::new(icc.trim());
+        if named.is_relative() {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                *icc = parent.join(named).to_string_lossy().into_owned();
+            }
         }
     }
     if let Some(rules) = file.layer_rules.as_ref() {
@@ -1996,6 +2024,20 @@ mod tests {
         assert_eq!(dp1.hdr, Some(true));
         // Absent within a block is still absent, not zero.
         assert_eq!(dp1.y, None);
+    }
+
+    #[test]
+    fn an_output_can_name_an_icc_profile() {
+        let file: File =
+            serde_json::from_str(r#"{"outputs":{"DP-1":{"icc":"profiles/monitor.icc"}}}"#)
+                .expect("should parse");
+        assert_eq!(
+            file.outputs["DP-1"].icc.as_deref(),
+            Some("profiles/monitor.icc")
+        );
+        // Absent is no calibration, not an empty path to open.
+        let absent: File = serde_json::from_str(r#"{"outputs":{"DP-1":{}}}"#).expect("parse");
+        assert_eq!(absent.outputs["DP-1"].icc, None);
     }
 
     #[test]

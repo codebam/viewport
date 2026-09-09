@@ -2450,6 +2450,7 @@ The `outputs` block is keyed by connector name — `DP-1`, `HDMI-A-1`, what
 | `scale`, `transform`, `hdr`, `x`, `y` | As the same names elsewhere |
 | `mirror` | Source connector to scan out. Sink remains a physical head but owns no workspace/input rectangle. Same GPU, transformed mode and scale required in the first implementation; no self mirrors, missing source, chains or cycles |
 | `vrr` | `off`, `always`, `fullscreen`, or `game-or-video`, per physical output. `game-or-video` follows committed `wp_content_type_v1` Game/Video and stays off when unavailable |
+| `icc` | Path to an ICC profile to read this monitor's calibration from. A relative path is beside the config file. Only the `vcgt` tag is used — the table a profiler stored for the video card — and it is applied as a gamma ramp under whatever a night-light client asks for |
 
 The older global `adaptive_sync` boolean remains supported. `false` is the
 default `off`, `true` is `always`, and an output's `vrr` overrides that default.

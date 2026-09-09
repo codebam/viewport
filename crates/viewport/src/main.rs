@@ -31,6 +31,7 @@ mod gamma;
 mod handlers;
 mod hdr;
 mod headless;
+mod icc;
 mod icon;
 mod idle;
 mod inhibit;

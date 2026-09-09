@@ -715,23 +715,31 @@ impl ViewportState {
                 self.gamma_ramps.remove(&name);
             }
         }
+        self.apply_effective_gamma(output)
+    }
 
+    /// Program the ramp an output should actually wear.
+    ///
+    /// The client's ramp and the ICC calibration are not alternatives: a
+    /// night-light client and a monitor profile both describe part of what
+    /// reaches the eye, and dropping either is wrong in a way that is visible.
+    /// With neither, the identity ramp — straight through, which is what a
+    /// display nobody is looking after should show.
+    pub fn apply_effective_gamma(&mut self, output: &Output) -> bool {
+        let name = output.name();
         let Some(size) = self.output_gamma_size(output) else {
             return false;
         };
-        let identity;
-        let ramp = match ramp {
-            Some(ramp) => ramp,
-            None => {
-                // Straight through, which is what a display with no client
-                // looking after it should show. Leaving the last ramp in place
-                // means a night-light client that was killed leaves the screen
-                // orange until the next reboot.
-                identity = crate::gamma::identity(size as usize);
-                &identity
-            }
+        let effective = match (
+            self.gamma_vcgt.get(&name).cloned(),
+            self.gamma_ramps.get(&name).cloned(),
+        ) {
+            (Some(vcgt), Some(client)) => vcgt.compose(&client),
+            (Some(vcgt), None) => vcgt,
+            (None, Some(client)) => client,
+            (None, None) => crate::gamma::identity(size as usize),
         };
-        self.apply_gamma(output, ramp)
+        self.apply_gamma(output, &effective)
     }
 
     fn apply_gamma(&mut self, output: &Output, ramp: &crate::gamma::Ramp) -> bool {
@@ -759,6 +767,39 @@ impl ViewportState {
         }
     }
 
+    /// Read an ICC profile and apply its calibration ramp to an output.
+    ///
+    /// Only the `vcgt` tag: it is a table, not a colour transform, and it is
+    /// what a profiler stored for the video card to load. A profile without
+    /// one — most camera and printer profiles, and a display profile made
+    /// without calibration — says so and leaves the output as it was.
+    pub fn load_output_icc(&mut self, name: &str, path: &str) {
+        let Some(output) = self.any_output_by_name(name) else {
+            return;
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!("{name}: could not read the ICC profile {path}: {e}");
+                return;
+            }
+        };
+        match crate::icc::vcgt(&bytes) {
+            Some(ramp) => {
+                tracing::info!(
+                    "{name}: {} ICC calibration entries from {path}",
+                    ramp.red.len()
+                );
+                self.gamma_vcgt.insert(name.to_owned(), ramp);
+            }
+            None => {
+                tracing::warn!("{name}: {path} has no usable vcgt tag; no calibration applied");
+                self.gamma_vcgt.remove(name);
+            }
+        }
+        self.apply_effective_gamma(&output);
+    }
+
     /// Put every ramp back after a VT switch.
     ///
     /// The kernel resets gamma when the session is handed over, and the client
@@ -766,16 +807,20 @@ impl ViewportState {
     /// another VT would drop the screen out of night mode until the next time
     /// wlsunset happened to recalculate.
     pub fn restore_gamma(&mut self) {
-        let ramps: Vec<(String, crate::gamma::Ramp)> = self
+        // The union of both maps: an output with a calibration and no client
+        // still has a ramp to put back, and one with a client and no
+        // calibration has the client's.
+        let names: Vec<String> = self
             .gamma_ramps
-            .iter()
-            .map(|(name, ramp)| (name.clone(), ramp.clone()))
+            .keys()
+            .chain(self.gamma_vcgt.keys())
+            .cloned()
             .collect();
-        for (name, ramp) in ramps {
+        for name in names {
             let Some(output) = self.any_output_by_name(&name) else {
                 continue;
             };
-            self.apply_gamma(&output, &ramp);
+            self.apply_effective_gamma(&output);
         }
     }
 }
