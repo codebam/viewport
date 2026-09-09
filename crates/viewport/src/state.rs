@@ -282,6 +282,12 @@ pub struct ViewportState {
     pub output_vrr_wanted: std::collections::HashMap<String, bool>,
     /// What to run once the compositor is up.
     pub startup: Option<String>,
+    /// Environment variables from the config file, for every child this
+    /// session starts. Applied to this process at startup too, so the
+    /// compositor sees them; kept here so a reload's value reaches the next
+    /// program started even though the process environment cannot be changed
+    /// safely once threads are running. See [`Self::child_display_env`].
+    pub session_env: Vec<(String, String)>,
     /// The D-Bus notification service, forwarding to the shell.
     pub notifications: crate::notification::Notifications,
     /// What was notified, kept after the popup has gone.
@@ -434,6 +440,15 @@ pub struct ViewportState {
 
     /// Keys whose press was intercepted, so the matching release can be too.
     pub suppressed_keys: Vec<smithay::input::keyboard::Keysym>,
+
+    /// Bindings that fired without consuming their key.
+    ///
+    /// The keyboard filter runs with the keyboard borrowed and can only return
+    /// one [`smithay::input::keyboard::FilterResult`], so a binding that must
+    /// both run and let the key through cannot be carried out inside it. It is
+    /// left here and run once the filter has returned, like an intercepted
+    /// action but without the interception.
+    pub deferred_bindings: Vec<crate::binding::Action>,
 
     /// Keybindings. Almost all of them are passthroughs to the shell.
     pub bindings: Vec<crate::binding::Binding>,
@@ -1601,6 +1616,7 @@ impl ViewportState {
             output_vrr_effective: std::collections::HashMap::new(),
             output_vrr_wanted: std::collections::HashMap::new(),
             startup: None,
+            session_env: Vec::new(),
             notifications: crate::notification::Notifications::default(),
             notification_history: crate::notification::History::default(),
             tray: crate::tray::Tray::default(),
@@ -1649,6 +1665,7 @@ impl ViewportState {
             udev: None,
             headless: None,
             suppressed_keys: Vec::new(),
+            deferred_bindings: Vec::new(),
             bindings: crate::binding::defaults(
                 &std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
                 std::env::var("VIEWPORT_MENU").ok().as_deref(),
@@ -3182,11 +3199,18 @@ impl ViewportState {
     /// hazard the cursor theme reload was stripped of the same way. The child
     /// is told here instead, the way the launcher's token and cursor pair
     /// already are.
+    ///
+    /// The config file's `env` rides along for the same reason: the process
+    /// environment is set once at startup and must not be written again once
+    /// threads exist, so a value changed on reload is handed to the next child
+    /// here. DISPLAY comes last so a stray `env.DISPLAY` cannot point a child
+    /// at the wrong X server.
     pub fn child_display_env(&self) -> Vec<(String, String)> {
-        match self.xdisplay {
-            Some(number) => vec![("DISPLAY".to_owned(), format!(":{number}"))],
-            None => Vec::new(),
+        let mut env = self.session_env.clone();
+        if let Some(number) = self.xdisplay {
+            env.push(("DISPLAY".to_owned(), format!(":{number}")));
         }
+        env
     }
 
     /// The output a new window should be told it is on.

@@ -231,19 +231,17 @@ fn inject_touch_slot(slot: u32) -> smithay::backend::input::TouchSlot {
     smithay::backend::input::TouchSlot::from(Some(slot))
 }
 
-/// Run a command, detached.
+/// Run a command, detached, with variables added to its environment.
 ///
 /// Double-forked through a shell so the compositor does not accumulate
 /// zombies and a launched application outlives the key that started it.
-pub fn spawn(command: &str) {
-    spawn_with_env(command, &[])
-}
-
-/// The same, with variables added to the environment the command is run in.
 ///
-/// The launcher's use of it: an xdg-activation token minted for the process,
-/// which the application presents when its window appears and the compositor
-/// honours as "focus this, a token says it was asked for".
+/// The launcher's use of `extra` is an xdg-activation token minted for the
+/// process, which the application presents when its window appears and the
+/// compositor honours as "focus this, a token says it was asked for"; the
+/// binding and shell-exec paths pass the config file's `env` instead. There is
+/// no bare form because every caller has at least one of the two, and a
+/// wrapper nothing called was a function the compiler kept asking about.
 pub fn spawn_with_env(command: &str, extra: &[(String, String)]) {
     use std::process::{Command, Stdio};
 
@@ -1381,16 +1379,28 @@ impl ViewportState {
                                 }
                             }
 
-                            match crate::binding::match_binding(
+                            match crate::binding::find_binding(
                                 &state.bindings,
                                 modifiers,
                                 unmodified,
                                 &state.binding_mode,
                                 state.locked,
+                                false,
                             ) {
+                                // A `non_consuming+` binding runs and lets the
+                                // key through. The action is left for after the
+                                // filter, which cannot both intercept and
+                                // forward, and running it here would re-enter
+                                // the keyboard while it is borrowed.
+                                Some(bound) if bound.non_consuming => {
+                                    state.deferred_bindings.push(bound.action.clone());
+                                    FilterResult::Forward
+                                }
                                 Some(bound) => {
                                     state.suppressed_keys.push(keysym);
-                                    FilterResult::Intercept(Some(Action::Bound(bound.clone())))
+                                    FilterResult::Intercept(Some(Action::Bound(
+                                        bound.action.clone(),
+                                    )))
                                 }
                                 // To the page, which is the only thing left
                                 // that could want it. Intercepted rather than
@@ -1416,40 +1426,67 @@ impl ViewportState {
                                 }
                                 None => FilterResult::Forward,
                             }
-                        } else if let Some(at) =
-                            state.suppressed_keys.iter().position(|k| *k == keysym)
-                        {
-                            state.suppressed_keys.remove(at);
-                            // The other half of a global shortcut. A
-                            // push-to-talk key is the case that makes this
-                            // more than tidiness: the application is holding a
-                            // microphone open on the strength of the press,
-                            // and nothing else will ever tell it the key came
-                            // back up.
-                            if let Some(at) = state
-                                .shortcuts_held
-                                .iter()
-                                .position(|(code, _)| *code == keysym.raw())
-                            {
-                                let (_, fired) = state.shortcuts_held.remove(at);
-                                state.shortcuts_to_announce.push((false, fired));
-                            }
-                            // A key the page was given has to be released to
-                            // it as well, or the page has one held down for
-                            // ever.
-                            if to_shell {
-                                FilterResult::Intercept(Some(Action::Web(WebKey {
-                                    keycode: handle.raw_code().raw() + 8,
-                                    keysym: keysym.raw(),
-                                    pressed: false,
-                                    modifiers: modifiers_now,
-                                    time: time.millis(),
-                                })))
-                            } else {
-                                FilterResult::Intercept(Some(Action::Swallow))
-                            }
                         } else {
-                            FilterResult::Forward
+                            // The release half. A key whose press was kept is
+                            // released to whoever kept it, and a `release+`
+                            // binding fires. Both can happen: the same chord
+                            // may have a press binding and a release one.
+                            let mut result = FilterResult::Forward;
+                            if let Some(at) =
+                                state.suppressed_keys.iter().position(|k| *k == keysym)
+                            {
+                                state.suppressed_keys.remove(at);
+                                // The other half of a global shortcut. A
+                                // push-to-talk key is the case that makes this
+                                // more than tidiness: the application is
+                                // holding a microphone open on the strength of
+                                // the press, and nothing else will ever tell it
+                                // the key came back up.
+                                if let Some(at) = state
+                                    .shortcuts_held
+                                    .iter()
+                                    .position(|(code, _)| *code == keysym.raw())
+                                {
+                                    let (_, fired) = state.shortcuts_held.remove(at);
+                                    state.shortcuts_to_announce.push((false, fired));
+                                }
+                                // A key the page was given has to be released
+                                // to it as well, or the page has one held down
+                                // for ever.
+                                result = if to_shell {
+                                    FilterResult::Intercept(Some(Action::Web(WebKey {
+                                        keycode: handle.raw_code().raw() + 8,
+                                        keysym: keysym.raw(),
+                                        pressed: false,
+                                        modifiers: modifiers_now,
+                                        time: time.millis(),
+                                    })))
+                                } else {
+                                    FilterResult::Intercept(Some(Action::Swallow))
+                                };
+                            }
+
+                            // The unmodified symbol, as on the press half.
+                            let unmodified = handle
+                                .raw_latin_sym_or_raw_current_sym()
+                                .map(|sym| sym.raw())
+                                .unwrap_or_else(|| keysym.raw());
+                            if let Some(bound) = crate::binding::find_binding(
+                                &state.bindings,
+                                modifiers,
+                                unmodified,
+                                &state.binding_mode,
+                                state.locked,
+                                true,
+                            ) {
+                                let action = bound.action.clone();
+                                if bound.non_consuming {
+                                    state.deferred_bindings.push(action);
+                                } else {
+                                    result = FilterResult::Intercept(Some(Action::Bound(action)));
+                                }
+                            }
+                            result
                         }
                     },
                 );
@@ -1457,6 +1494,16 @@ impl ViewportState {
                 let intercepted = action.is_some();
                 if let Some(action) = action.flatten() {
                     self.handle_action(action);
+                }
+                // `non_consuming+` bindings, which could not be run from inside
+                // the filter. Drained rather than indexed so an action that
+                // itself defers one — nothing does today — cannot alias the
+                // vector it is being read from.
+                if !self.deferred_bindings.is_empty() {
+                    let deferred: Vec<_> = self.deferred_bindings.drain(..).collect();
+                    for action in deferred {
+                        self.run_binding(action);
+                    }
                 }
 
                 // Tell the focused client about a modifier it did not see
@@ -1656,19 +1703,25 @@ impl ViewportState {
                 // Mod4 held. Runs before the drag line so a bound button is
                 // the user's gesture, not the window's.
                 if state == ButtonState::Pressed {
-                    if let Some(bound) = crate::binding::match_button(
+                    if let Some(bound) = crate::binding::find_button(
                         &self.bindings,
                         &keyboard.modifier_state(),
                         event.button_code(),
                         &self.binding_mode,
                         self.locked,
                     ) {
-                        self.handle_action(Action::Bound(bound.clone()));
-                        // Not forwarded: the button was bound, and handing a
-                        // press it did not ask for to a client would leave it
-                        // thinking the button is still down.
-                        suppress_button(event.button_code());
-                        return;
+                        let consuming = !bound.non_consuming;
+                        let action = bound.action.clone();
+                        self.handle_action(Action::Bound(action));
+                        if consuming {
+                            // Not forwarded: the button was bound, and handing
+                            // a press it did not ask for to a client would
+                            // leave it thinking the button is still down.
+                            suppress_button(event.button_code());
+                            return;
+                        }
+                        // `non_consuming+`: the action has run, and the button
+                        // goes on to the client like any other.
                     }
                 } else if release_suppressed(event.button_code()) {
                     // The other half of the same chord. Matching again would
@@ -1902,15 +1955,21 @@ impl ViewportState {
                         } else {
                             crate::binding::Wheel::Down
                         };
-                        if let Some(bound) = crate::binding::match_wheel(
+                        if let Some(bound) = crate::binding::find_wheel(
                             &self.bindings,
                             &keyboard.modifier_state(),
                             wheel,
                             &self.binding_mode,
                             self.locked,
                         ) {
-                            self.handle_action(Action::Bound(bound.clone()));
-                            return;
+                            let consuming = !bound.non_consuming;
+                            let action = bound.action.clone();
+                            self.handle_action(Action::Bound(action));
+                            if consuming {
+                                return;
+                            }
+                            // `non_consuming+`: the action has run, and the
+                            // scroll goes on to the client below.
                         }
                     }
                 }
@@ -2663,7 +2722,10 @@ impl ViewportState {
         use crate::binding::Action as Bound;
 
         match action {
-            Bound::Exec(command) => spawn(&command),
+            // With the session's environment, so `env` in the config file
+            // reaches a program started by a binding — the path most of them
+            // are started from.
+            Bound::Exec(command) => spawn_with_env(&command, &self.child_display_env()),
             Bound::Exit => self.shutdown(),
             Bound::Close => {
                 // An X11 window has no xdg toplevel, so `toplevel()` alone
@@ -3416,13 +3478,29 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
         use smithay::reexports::wayland_server::protocol::wl_keyboard::KeyState;
 
         if state != KeyState::Pressed {
-            // The release of a key whose press was kept. A client that saw
-            // only the release would think the key was stuck.
+            // The release of a key whose press was kept is swallowed, or a
+            // `release+` binding fires — and both can happen, because the same
+            // chord may have a press binding and a release one.
+            let mut handled = false;
             if let Some(at) = self.suppressed_keys.iter().position(|k| *k == keysym) {
                 self.suppressed_keys.remove(at);
-                return true;
+                handled = true;
             }
-            return false;
+            let unmodified = raw_keysym.unwrap_or(keysym).raw();
+            if let Some(bound) = crate::binding::find_binding(
+                &self.bindings,
+                &mods,
+                unmodified,
+                &self.binding_mode,
+                self.locked,
+                true,
+            ) {
+                let consuming = !bound.non_consuming;
+                let action = bound.action.clone();
+                self.handle_action(Action::Bound(action));
+                handled = handled || consuming;
+            }
+            return handled;
         }
 
         // A client holding a shortcut inhibitor gets everything, exactly as it
@@ -3461,18 +3539,22 @@ impl smithay::wayland::virtual_keyboard::VirtualKeyboardKeyFilter for ViewportSt
         // still q, so matching the modified symbol would look for Q and never
         // find it.
         let unmodified = raw_keysym.unwrap_or(keysym).raw();
-        match crate::binding::match_binding(
+        match crate::binding::find_binding(
             &self.bindings,
             &mods,
             unmodified,
             &self.binding_mode,
             self.locked,
+            false,
         ) {
             Some(bound) => {
-                let bound = bound.clone();
-                self.suppressed_keys.push(keysym);
-                self.handle_action(Action::Bound(bound));
-                true
+                let consuming = !bound.non_consuming;
+                let action = bound.action.clone();
+                if consuming {
+                    self.suppressed_keys.push(keysym);
+                }
+                self.handle_action(Action::Bound(action));
+                consuming
             }
             None => false,
         }

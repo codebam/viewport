@@ -432,6 +432,15 @@ impl ViewportState {
         if let Some(command) = file.startup.as_deref() {
             self.startup = Some(command.to_owned());
         }
+        // Kept rather than applied: the process environment was written once
+        // at startup and must not be written again now that threads exist.
+        // `child_display_env` hands these to the next program started, so a
+        // reload still reaches it. Sorted so the order is reproducible.
+        if let Some(env) = file.env {
+            let mut env: Vec<_> = env.into_iter().collect();
+            env.sort();
+            self.session_env = env;
+        }
         if let Some(url) = file.fallback {
             self.fallback_url = Some(url);
         }

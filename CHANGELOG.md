@@ -70,6 +70,19 @@ to summarise rather than to duplicate.
   what `workspace_auto_back_and_forth` did with a switch to where you already
   are.
 
+### Added
+- A top-level `env` block sets environment variables for the session and every
+  program it starts. It is applied before any backend opens, so the compositor
+  itself sees it, and handed explicitly to each child so a value changed on
+  `reload` reaches the next program. The `gpu`, `pixel_format` and `cross_gpu`
+  keys and their flags still win for the variables they own.
+- Bindings carry three more flags, written as pseudo-modifiers the way `locked`
+  already was. `release+` fires on the key coming up rather than going down,
+  `non_consuming+` (or `transparent+`) runs the action and still lets the key,
+  button or scroll through, and `ignore_mods+` matches whatever modifiers are
+  held. The two halves of a chord do not shadow each other, so one chord can do
+  one thing on press and another on release.
+
 ### Changed
 - VRR's desired state no longer walks every window's whole surface tree — popups
   and subsurfaces included — once per output per frame. `Off` and `Always` are

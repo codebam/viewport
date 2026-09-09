@@ -246,6 +246,32 @@ fn run() -> Result<()> {
         config.layout = Some(layout.to_owned());
     }
 
+    // The session's environment, set before any backend is opened so that the
+    // compositor itself sees it as well as everything it starts. A variable a
+    // command-line flag owns is left to that flag: the flag is the more
+    // deliberate of the two, and the flag's value is the one already in the
+    // environment here.
+    //
+    // SAFETY: still single-threaded. No backend is up, no worker has been
+    // spawned, and this is the same window `--renderer` and `--pixel-format`
+    // use below.
+    if let Some(env) = config.env.as_ref() {
+        let from_flag: [(&str, &str); 4] = [
+            ("--renderer", "VIEWPORT_RENDERER"),
+            ("--pixel-format", "VIEWPORT_PIXEL_FORMAT"),
+            ("--gpu", "VIEWPORT_GPU"),
+            ("--cross-gpu", "VIEWPORT_CROSS_GPU"),
+        ];
+        for (key, value) in env {
+            let owned = from_flag
+                .iter()
+                .any(|(flag, owned)| *owned == key && args.iter().any(|argument| argument == flag));
+            if !owned {
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
+    }
+
     // The scanout bit depth, resolved here and carried in the environment
     // because the DRM device picks its formats while it is being opened —
     // before there is a state to read a setting out of. `--renderer` takes the

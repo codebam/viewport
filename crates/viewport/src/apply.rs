@@ -396,7 +396,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         // to open things or drive the sink through wpctl. Same spawn path a
         // keybinding's `exec` uses; the shell composes the exact line.
         Request::ShellExec { command } => {
-            crate::input::spawn(&command);
+            crate::input::spawn_with_env(&command, &state.child_display_env());
         }
 
         // Re-sample the status bar now, for anything that changed something it
@@ -1670,12 +1670,13 @@ mod tests {
         ));
         let free = ModifiersState::default();
         assert!(
-            crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "resize", false)
+            crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "resize", false, false)
                 .is_some(),
             "the resize-mode binding for h is gone"
         );
         assert!(
-            crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "", false).is_some()
+            crate::binding::match_binding(&bindings, &free, keysyms::KEY_h, "", false, false)
+                .is_some()
         );
 
         // Wheel and button bindings carry keysym 0, because each is drawn on

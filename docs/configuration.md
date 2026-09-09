@@ -87,6 +87,19 @@ Typed volume and brightness actions read the resulting level back and show the
 OSD; an equivalent `exec` changes the device but cannot provide that feedback.
 `background` is the wallpaper terminal's only way in — see below.
 
+`env` sets environment variables for the session and everything it starts:
+
+```jsonc
+"env": { "MOZ_ENABLE_WAYLAND": "1", "QT_QPA_PLATFORM": "wayland" }
+```
+
+They are set before any backend opens, so the compositor itself sees them, and
+handed explicitly to every program the session launches — a binding's `exec`,
+the terminal, the menu, a locker — so a value changed on `reload` reaches the
+next program started. The `gpu`, `pixel_format` and `cross_gpu` keys and their
+command-line flags win for the variables they own, because those validate and a
+typo there should be a message rather than a session on the wrong card.
+
 **Runtime** — the control socket. `config.gaps`, `config.border`,
 `config.wallpaper`, `config.dark_mode` and `output.configure` change the
 compositor's copy of the configuration and re-announce it, without touching
@@ -234,6 +247,27 @@ opens a terminal stays blocked. `locked` may appear anywhere in the modifier
 chain: `locked+Mod4+q` and `Mod4+locked+q` are the same binding. A `locked`
 binding and a non-`locked` binding on the same chord do not shadow each other:
 one fires while locked, the other while unlocked.
+
+Three more flags are written the same way, anywhere before the key:
+
+- `release+` fires on the key coming up rather than going down — Hyprland's
+  `bindr`. The two halves do not shadow each other, so the same chord can do
+  one thing on press and another on release.
+- `non_consuming+` (also spelled `transparent+`) runs the action and still
+  lets the key through to the focused client or the shell — Hyprland's
+  `bindn`/`bindt`. The same for a mouse button or a wheel notch.
+- `ignore_mods+` matches whatever modifiers are held, named or not — Hyprland's
+  `bindi`. `ignore_mods+q=close` fires on plain `q`, on `Shift+q` and on
+  `Mod4+q` alike, which is what makes it different from leaving the modifiers
+  off the chord.
+
+```json
+"binds": {
+  "release+Mod4+Shift+t": "shell push-to-talk.stop",
+  "non_consuming+Mod4+Mouse1": "shell bar.tap",
+  "ignore_mods+q": "close"
+}
+```
 
 Touchpad swipes and pinches may run the same actions as keybindings through the
 top-level `gestures` object:

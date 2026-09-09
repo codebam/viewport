@@ -107,6 +107,25 @@ pub struct Binding {
     /// the lock screen. A binding without this flag is forwarded to the lock
     /// screen's surface instead, so the password is not stolen by a binding.
     pub locked: bool,
+    /// Fire on the key's release rather than its press.
+    ///
+    /// Written `release+`, Hyprland's `bindr`. For an action that belongs to
+    /// the end of a gesture — push-to-talk, a hold — and for a chord whose
+    /// press is wanted by the application as well.
+    pub release: bool,
+    /// Fire without consuming: the key also reaches whatever it would have.
+    ///
+    /// Written `non_consuming+` (or `transparent+`, Hyprland's older name).
+    /// The action runs and the key still goes to the focused client, or to the
+    /// shell. A binding that wants to watch a chord without taking it.
+    pub non_consuming: bool,
+    /// Match whatever modifiers are held, not only the ones named.
+    ///
+    /// Written `ignore_mods+`, Hyprland's `bindi`. The chord names a key and
+    /// the named modifiers are not required — but they are also not forbidden,
+    /// which is what makes it different from leaving them out: `ignore_mods+q`
+    /// fires on plain `q`, on `Shift+q` and on `Mod4+q` alike.
+    pub ignore_mods: bool,
 }
 
 /// The direction a scroll-wheel binding matches.
@@ -144,6 +163,15 @@ impl Binding {
         // file it came from read the same way round.
         if self.locked {
             chord.push_str("locked+");
+        }
+        if self.release {
+            chord.push_str("release+");
+        }
+        if self.non_consuming {
+            chord.push_str("non_consuming+");
+        }
+        if self.ignore_mods {
+            chord.push_str("ignore_mods+");
         }
         if self.modifiers.logo {
             chord.push_str("Mod4+");
@@ -248,6 +276,9 @@ pub fn parse(spec: &str) -> Option<Binding> {
 pub fn parse_chord(chord: &str) -> Option<Binding> {
     let mut modifiers = Modifiers::default();
     let mut locked = false;
+    let mut release = false;
+    let mut non_consuming = false;
+    let mut ignore_mods = false;
     let mut rest = chord;
 
     // Left to right, stopping at the last '+': the key may itself be '+'.
@@ -258,6 +289,12 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
             "alt" | "mod1" => modifiers.alt = true,
             "mod4" | "super" | "logo" => modifiers.logo = true,
             "locked" => locked = true,
+            // The bind flags, spelled as pseudo-modifiers the way `locked`
+            // is: they belong to the binding, not to the key, and a chord is
+            // where a config file already writes the ones it has.
+            "release" => release = true,
+            "non_consuming" | "transparent" => non_consuming = true,
+            "ignore_mods" => ignore_mods = true,
             // An unknown modifier is not a key with a stray plus in front of
             // it; treating it as one would bind something arbitrary.
             _ => return None,
@@ -299,6 +336,9 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         action: Action::Shell(String::new()),
         mode: String::new(),
         locked,
+        release,
+        non_consuming,
+        ignore_mods,
     })
 }
 
@@ -749,33 +789,57 @@ pub fn defaults(terminal: &str, menu: Option<&str>, layout: &str) -> Vec<Binding
 /// When `locked` is true (the session is locked), only bindings flagged
 /// `locked: true` are considered — all others are forwarded to the lock
 /// screen. When unlocked, all bindings match regardless of the flag.
+///
+/// `release` selects the half of the key event: a `release+` binding matches
+/// only the key coming up, an ordinary one only the key going down. The two
+/// do not shadow each other, so the same chord can do one thing on press and
+/// another on release.
+///
+/// The action alone, which is what a test usually wants; the input path uses
+/// [`find_binding`] because it has to read `non_consuming` too.
+#[cfg(test)]
 pub fn match_binding<'a>(
     bindings: &'a [Binding],
     modifiers: &ModifiersState,
     keysym: u32,
     mode: &str,
     locked: bool,
+    release: bool,
 ) -> Option<&'a Action> {
+    find_binding(bindings, modifiers, keysym, mode, locked, release).map(|binding| &binding.action)
+}
+
+/// The binding a chord fires, with its flags.
+///
+/// [`match_binding`] is the action alone, which is what almost every caller
+/// wants; this is for the ones that have to look at how the binding asked to
+/// be handled — `non_consuming`, today.
+pub fn find_binding<'a>(
+    bindings: &'a [Binding],
+    modifiers: &ModifiersState,
+    keysym: u32,
+    mode: &str,
+    locked: bool,
+    release: bool,
+) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
-    bindings
-        .iter()
-        .find(|binding| {
-            // Only this mode's bindings. A mode is a second keymap rather than
-            // an addition to the first: `h` resizes in resize mode and moves
-            // focus outside it, and matching both would do whichever came
-            // first in the table.
-            // A key binding and not a mouse one. A button or wheel binding
-            // carries `keysym: 0`, and an unmapped keycode produces exactly
-            // that — so without this every NoSymbol press fired whatever
-            // `Mod4+Mouse4` was bound to.
-            binding.mode == mode
-                && binding.modifiers == wanted
-                && binding.keysym == keysym
-                && binding.button.is_none()
-                && binding.wheel.is_none()
-                && (!locked || binding.locked)
-        })
-        .map(|binding| &binding.action)
+    bindings.iter().find(|binding| {
+        // Only this mode's bindings. A mode is a second keymap rather than
+        // an addition to the first: `h` resizes in resize mode and moves
+        // focus outside it, and matching both would do whichever came
+        // first in the table.
+        // A key binding and not a mouse one. A button or wheel binding
+        // carries `keysym: 0`, and an unmapped keycode produces exactly
+        // that — so without this every NoSymbol press fired whatever
+        // `Mod4+Mouse4` was bound to.
+        binding.mode == mode
+            && binding.release == release
+            && (binding.ignore_mods || binding.modifiers == wanted)
+            && binding.keysym == keysym
+            && binding.button.is_none()
+            && binding.wheel.is_none()
+            && (!locked || binding.locked)
+    })
 }
 
 /// The action a pressed mouse button fires, if any.
@@ -783,6 +847,7 @@ pub fn match_binding<'a>(
 /// The same matcher as [`match_binding`], but for a button and not a key:
 /// modifiers are compared against the keyboard's state, and a binding whose
 /// `button` is `None` (a chord) can never match a button.
+#[cfg(test)]
 pub fn match_button<'a>(
     bindings: &'a [Binding],
     modifiers: &ModifiersState,
@@ -790,22 +855,31 @@ pub fn match_button<'a>(
     mode: &str,
     locked: bool,
 ) -> Option<&'a Action> {
+    find_button(bindings, modifiers, button, mode, locked).map(|binding| &binding.action)
+}
+
+/// The binding a pressed mouse button fires, with its flags.
+pub fn find_button<'a>(
+    bindings: &'a [Binding],
+    modifiers: &ModifiersState,
+    button: u32,
+    mode: &str,
+    locked: bool,
+) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
-    bindings
-        .iter()
-        .find(|binding| {
-            binding.mode == mode
-                && binding.modifiers == wanted
-                && binding.button == Some(button)
-                && (!locked || binding.locked)
-        })
-        .map(|binding| &binding.action)
+    bindings.iter().find(|binding| {
+        binding.mode == mode
+            && (binding.ignore_mods || binding.modifiers == wanted)
+            && binding.button == Some(button)
+            && (!locked || binding.locked)
+    })
 }
 
 /// The action a scroll up or down fires, if any.
 ///
 /// The same matcher as [`match_button`], but for a wheel direction. A binding
 /// whose `wheel` is `None` (a chord or a button) can never match a scroll.
+#[cfg(test)]
 pub fn match_wheel<'a>(
     bindings: &'a [Binding],
     modifiers: &ModifiersState,
@@ -813,16 +887,24 @@ pub fn match_wheel<'a>(
     mode: &str,
     locked: bool,
 ) -> Option<&'a Action> {
+    find_wheel(bindings, modifiers, wheel, mode, locked).map(|binding| &binding.action)
+}
+
+/// The binding a scroll fires, with its flags.
+pub fn find_wheel<'a>(
+    bindings: &'a [Binding],
+    modifiers: &ModifiersState,
+    wheel: Wheel,
+    mode: &str,
+    locked: bool,
+) -> Option<&'a Binding> {
     let wanted = Modifiers::from_state(modifiers);
-    bindings
-        .iter()
-        .find(|binding| {
-            binding.mode == mode
-                && binding.modifiers == wanted
-                && binding.wheel == Some(wheel)
-                && (!locked || binding.locked)
-        })
-        .map(|binding| &binding.action)
+    bindings.iter().find(|binding| {
+        binding.mode == mode
+            && (binding.ignore_mods || binding.modifiers == wanted)
+            && binding.wheel == Some(wheel)
+            && (!locked || binding.locked)
+    })
 }
 
 /// The chord that always leaves, added when nothing else does.
@@ -849,8 +931,9 @@ pub fn match_wheel<'a>(
 /// makes, written once.
 fn shadows(earlier: &Binding, binding: &Binding) -> bool {
     earlier.locked == binding.locked
+        && earlier.release == binding.release
         && earlier.mode == binding.mode
-        && earlier.modifiers == binding.modifiers
+        && (earlier.ignore_mods || earlier.modifiers == binding.modifiers)
         && earlier.keysym == binding.keysym
         && earlier.button.is_none()
         && earlier.wheel.is_none()
@@ -972,6 +1055,9 @@ mod tests {
                 action: action.clone(),
                 mode: String::new(),
                 locked: false,
+                release: false,
+                non_consuming: false,
+                ignore_mods: false,
             };
             assert_eq!(parse_action(&binding.action_text()), action);
         }
@@ -1122,8 +1208,81 @@ mod tests {
             shift: true,
             ..Default::default()
         };
-        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "", false).is_some());
-        assert!(match_binding(&bindings, &shifted, keysyms::KEY_q, "", false).is_none());
+        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "", false, false).is_some());
+        assert!(match_binding(&bindings, &shifted, keysyms::KEY_q, "", false, false).is_none());
+    }
+
+    #[test]
+    fn a_release_binding_is_the_other_half_of_the_key() {
+        // `release+` is Hyprland's `bindr`. The two halves do not shadow each
+        // other, so the same chord can do one thing going down and another
+        // coming up.
+        let press = parse("Mod4+q=close").unwrap();
+        let release = parse("release+Mod4+q=exit").unwrap();
+        assert!(!press.release);
+        assert!(release.release);
+        let bindings = vec![press, release];
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            match_binding(&bindings, &held, keysyms::KEY_q, "", false, false),
+            Some(&Action::Close)
+        );
+        assert_eq!(
+            match_binding(&bindings, &held, keysyms::KEY_q, "", false, true),
+            Some(&Action::Exit)
+        );
+    }
+
+    #[test]
+    fn an_ignore_mods_binding_matches_whatever_is_held() {
+        // `ignore_mods+` is Hyprland's `bindi`. The named modifiers are not
+        // required — and, unlike leaving them off, not forbidden either.
+        let bindings = vec![parse("ignore_mods+Mod4+q=close").unwrap()];
+        for held in [
+            ModifiersState::default(),
+            ModifiersState {
+                shift: true,
+                ..Default::default()
+            },
+            ModifiersState {
+                logo: true,
+                ctrl: true,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                match_binding(&bindings, &held, keysyms::KEY_q, "", false, false),
+                Some(&Action::Close),
+                "{held:?} should still match an ignore_mods binding"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bind_flags_spell_back_to_themselves() {
+        // `chord()` is what `bind.list` shows, and it has to round-trip
+        // through the parser or a listing cannot be typed back in. The
+        // `transparent` spelling is accepted as the older name for
+        // `non_consuming` and comes back as the newer one.
+        for spec in [
+            "release+Mod4+q=close",
+            "non_consuming+Mod4+q=close",
+            "transparent+Mod4+q=close",
+            "ignore_mods+Mod4+q=close",
+            "locked+release+non_consuming+ignore_mods+Mod4+q=close",
+        ] {
+            let binding = parse(spec).expect(spec);
+            let again = parse_chord(&binding.chord()).expect("round trip");
+            assert_eq!(again.locked, binding.locked, "{spec}");
+            assert_eq!(again.release, binding.release, "{spec}");
+            assert_eq!(again.non_consuming, binding.non_consuming, "{spec}");
+            assert_eq!(again.ignore_mods, binding.ignore_mods, "{spec}");
+            assert_eq!(again.modifiers, binding.modifiers, "{spec}");
+            assert_eq!(again.keysym, binding.keysym, "{spec}");
+        }
     }
 
     #[test]
@@ -1168,7 +1327,7 @@ mod tests {
         // The key binding has no button, so no button can match it.
         assert!(match_button(std::slice::from_ref(&key), &held, 0x113, "", false).is_none());
         // And the button binding has keysym 0, not q.
-        assert!(match_binding(&[button], &held, keysyms::KEY_q, "", false).is_none());
+        assert!(match_binding(&[button], &held, keysyms::KEY_q, "", false, false).is_none());
     }
 
     #[test]
@@ -1186,7 +1345,7 @@ mod tests {
             logo: true,
             ..Default::default()
         };
-        assert!(match_binding(&bindings, &held, 0, "", false).is_none());
+        assert!(match_binding(&bindings, &held, 0, "", false, false).is_none());
     }
 
     #[test]
@@ -1312,17 +1471,18 @@ mod tests {
         ];
         let plain = ModifiersState::default();
 
-        let outside = match_binding(&bindings, &plain, keysyms::KEY_h, "", false).expect("outside");
+        let outside =
+            match_binding(&bindings, &plain, keysyms::KEY_h, "", false, false).expect("outside");
         assert_eq!(outside, &Action::Shell("layout.focus left".to_owned()));
 
-        let inside =
-            match_binding(&bindings, &plain, keysyms::KEY_h, "resize", false).expect("inside");
+        let inside = match_binding(&bindings, &plain, keysyms::KEY_h, "resize", false, false)
+            .expect("inside");
         assert_eq!(inside, &Action::Shell("layout.resize left".to_owned()));
 
         // And a mode with nothing bound in it swallows nothing: the key
         // simply does not match, rather than falling back to the default
         // keymap, which is what makes a mode a mode.
-        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "resize", false).is_none());
+        assert!(match_binding(&bindings, &plain, keysyms::KEY_q, "resize", false, false).is_none());
     }
 
     #[test]
@@ -1664,6 +1824,7 @@ mod exit_tests {
                     b.keysym,
                     "",
                     false,
+                    b.release,
                 ) == Some(&Action::Exit)
         })
     }

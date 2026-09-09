@@ -484,6 +484,24 @@ pub struct File {
     pub terminal: Option<String>,
     pub menu: Option<String>,
     pub startup: Option<String>,
+
+    /// Environment variables for this session and everything it starts.
+    ///
+    /// Hyprland's `env`, and the gap it filled was real: the variables this
+    /// desktop sets for itself — `XDG_CURRENT_DESKTOP`, the portal's
+    /// `WAYLAND_DISPLAY` — were not adjustable, and neither was anything a
+    /// toolkit needs to be told (`MOZ_ENABLE_WAYLAND`, `QT_QPA_PLATFORM`, an
+    /// `EDITOR`). Applied before any backend is opened, so the compositor
+    /// itself sees them, and passed explicitly to every child rather than
+    /// left to inheritance, so a value changed on reload reaches the next
+    /// program started.
+    ///
+    /// The dedicated `gpu`, `pixel_format` and `cross_gpu` keys still win for
+    /// the variables they own, and so does the matching command-line flag:
+    /// those validate, and a typo there is a message rather than a session
+    /// running on the wrong card.
+    pub env: Option<std::collections::HashMap<String, String>>,
+
     pub layout: Option<String>,
     /// User layout scripts, keyed by the name they register with the shell.
     /// Relative paths are resolved beside this config file by [`load`].
@@ -1532,6 +1550,23 @@ mod tests {
             Some(true)
         );
         assert_eq!(file.gestures.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_session_environment_is_a_map_of_names_to_values() {
+        // Hyprland's `env`, and the shape matters: the whole point is a
+        // variable a toolkit reads, so an absent block is no variables and a
+        // present one is exactly what it says — no `NAME=VALUE` string to
+        // split, which is where a value containing an `=` would go wrong.
+        let absent: File = serde_json::from_str("{}").expect("should parse");
+        assert!(absent.env.is_none());
+
+        let file: File =
+            serde_json::from_str(r#"{"env": {"MOZ_ENABLE_WAYLAND": "1", "EDITOR": "hx"}}"#)
+                .expect("should parse");
+        let env = file.env.expect("the block is present");
+        assert_eq!(env.get("MOZ_ENABLE_WAYLAND").map(String::as_str), Some("1"));
+        assert_eq!(env.get("EDITOR").map(String::as_str), Some("hx"));
     }
 
     #[test]
