@@ -437,6 +437,13 @@ button, the scroll wheel, a touchpad gesture or a tablet pen. Typing does not,
 deliberately — someone writing with the mouse pushed aside is exactly who asked
 for this, and a cursor that came back on every keystroke would never leave.
 
+`cursor.hide_on_key_press` is the other side of that, Hyprland's
+`hide_on_key_press`: true puts the image away on the next keystroke and brings
+it back on the next pointer motion. Absent is off. Set both and the cursor
+leaves when either is idle and when either is used, which is what a desk that
+wants it gone while it is being typed on — a fullscreen video, a terminal —
+rather than only while it is not asks for.
+
 Only the drawn image goes. The pointer has not moved, keeps its focus, and
 clients are told nothing, so a hidden cursor cannot make a page think the mouse
 left it.
@@ -515,11 +522,16 @@ See [`data/shell/shell.md`](../data/shell/shell.md).
 
 `keyboard.layout`, `keyboard.variant` and `keyboard.options` are xkb's, spelled
 as `setxkbmap` spells them, and they are the first thing anyone outside a US
-layout needs:
+layout needs. `keyboard.rules` and `keyboard.model` name the xkb rules file and
+the keyboard model for the desks that have a reason to — an old keyboard whose
+quirks a model describes, or a layout shipped in a rules file of its own.
+Absent lets xkb choose, which is what everything else wants:
 
 ```jsonc
 {
   "keyboard": {
+    "rules": "evdev",
+    "model": "pc105",
     "layout": "de",
     "variant": "nodeadkeys",
     "options": "ctrl:nocaps,compose:ralt",

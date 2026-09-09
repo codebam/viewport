@@ -58,6 +58,13 @@ pub struct KeyboardConfig {
     pub layout: Option<String>,
     pub variant: Option<String>,
     pub options: Option<String>,
+    /// The xkb rules file to read, by name (`"evdev"` is the usual one). Absent
+    /// lets xkb choose, which is what every desktop that does not have a
+    /// reason to name one does.
+    pub rules: Option<String>,
+    /// The xkb model. Absent lets xkb choose, which is right for everything
+    /// that is not a keyboard old enough for the difference to matter.
+    pub model: Option<String>,
     pub repeat_rate: Option<i32>,
     pub repeat_delay: Option<i32>,
 }
@@ -85,6 +92,15 @@ pub struct CursorConfig {
     /// `follow_mouse` is on. Absent is 0 (every motion triggers a focus
     /// check).
     pub follow_mouse_threshold: Option<f64>,
+    /// Hide the cursor when a key is pressed, and bring it back on the next
+    /// pointer motion. Absent is off.
+    ///
+    /// Hyprland's `cursor:hide_on_key_press`, and useful for the same reason
+    /// its `hide_after_ms` here is: a cursor sitting in the middle of a
+    /// fullscreen video or a terminal is a thing you look at instead of the
+    /// thing you are reading. This one is immediate rather than a deadline,
+    /// which is what makes it work while typing.
+    pub hide_on_key_press: Option<bool>,
 }
 
 /// Settings libinput applies to one device.
@@ -1649,6 +1665,16 @@ mod tests {
         let file: File =
             serde_json::from_str(r#"{"group":{"auto_group":true}}"#).expect("should parse");
         assert_eq!(file.group.auto_group, Some(true));
+    }
+
+    #[test]
+    fn the_keyboard_block_names_xkb_rules_and_model() {
+        let file: File =
+            serde_json::from_str(r#"{"keyboard":{"rules":"evdev","model":"pc105","layout":"de"}}"#)
+                .expect("should parse");
+        assert_eq!(file.keyboard.rules.as_deref(), Some("evdev"));
+        assert_eq!(file.keyboard.model.as_deref(), Some("pc105"));
+        assert_eq!(file.keyboard.layout.as_deref(), Some("de"));
     }
 
     #[test]

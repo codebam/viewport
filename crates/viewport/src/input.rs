@@ -1542,6 +1542,16 @@ impl ViewportState {
                     }
                 }
 
+                // A key press puts the cursor away when the config file asks
+                // for it. Here rather than inside the filter: the filter is
+                // borrowed and only decides what to do with the key, and this
+                // is about the pointer image, which is nobody's decision but
+                // the pointer's. The next motion brings it back through
+                // `cursor_activity`.
+                if pressed && self.cursor_hide.key_press() {
+                    self.needs_render = true;
+                }
+
                 // Tell the focused client about a modifier it did not see
                 // change.
                 //

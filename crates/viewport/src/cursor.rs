@@ -399,6 +399,9 @@ pub enum Tick {
 pub struct Hide {
     /// How long without pointer input before the image goes. `None` is off.
     after: Option<Duration>,
+    /// Hide on the next key press rather than after a deadline. Hyprland's
+    /// `cursor:hide_on_key_press`.
+    on_key_press: bool,
     /// When the pointer was last used.
     since: Instant,
     hidden: bool,
@@ -408,6 +411,7 @@ impl Default for Hide {
     fn default() -> Self {
         Self {
             after: None,
+            on_key_press: false,
             since: Instant::now(),
             hidden: false,
         }
@@ -425,7 +429,10 @@ impl Hide {
         self.after = ms
             .filter(|ms| *ms > 0)
             .map(|ms| Duration::from_millis(ms as u64));
-        if self.after.is_none() && self.hidden {
+        // Only the deadline that hid it can bring it back here; a cursor hidden
+        // by a key press is brought back by the next motion, which is not this
+        // function's to undo.
+        if self.after.is_none() && !self.on_key_press && self.hidden {
             self.hidden = false;
             return true;
         }
@@ -433,9 +440,38 @@ impl Hide {
         false
     }
 
-    /// Whether anything here needs a timer at all.
+    /// Whether a key press should hide the image. Returns whether the setting
+    /// changed, which is what a reload that turns it off has to redraw for.
+    pub fn set_on_key_press(&mut self, on: bool) -> bool {
+        if self.on_key_press == on {
+            return false;
+        }
+        self.on_key_press = on;
+        // Turning it off while the image is hidden would otherwise leave a
+        // cursor that nothing is willing to bring back until the pointer moves
+        // or the deadline fires.
+        if !on && self.after.is_none() && self.hidden {
+            self.hidden = false;
+            return true;
+        }
+        false
+    }
+
+    /// A key was pressed. Returns whether the image went away, which is damage
+    /// nothing else would report.
+    pub fn key_press(&mut self) -> bool {
+        if !self.on_key_press || self.hidden {
+            return false;
+        }
+        self.hidden = true;
+        true
+    }
+
+    /// Whether anything here can hide the image at all — a deadline, or a key
+    /// press. `cursor_activity` uses this to decide whether a pointer move has
+    /// anything to bring back.
     pub fn wanted(&self) -> bool {
-        self.after.is_some()
+        self.after.is_some() || self.on_key_press
     }
 
     /// How long the deadline is, or `None` when there is none.
@@ -671,6 +707,31 @@ mod tests {
         // And does not ask for a redraw every tick for as long as it stays
         // still, which is a compositor that never sleeps.
         assert_eq!(hide.tick(Duration::from_secs(30)), Tick::Nothing);
+    }
+
+    #[test]
+    fn a_key_press_hides_the_pointer_when_asked() {
+        // The other half of the deadline: hidden while typing rather than
+        // while idle. Off until asked for, like everything here.
+        let mut hide = Hide::default();
+        assert!(!hide.wanted());
+        assert!(!hide.key_press());
+
+        assert!(!hide.set_on_key_press(true));
+        assert!(hide.wanted(), "a key press is a way to hide it");
+        assert!(hide.key_press());
+        assert!(hide.hidden());
+        // A second press is not damage; the image is already gone.
+        assert!(!hide.key_press());
+        // Motion brings it back, as it does for the deadline.
+        assert!(hide.activity());
+        assert!(!hide.hidden());
+        // And turning the setting off while it is hidden brings it back too,
+        // because nothing else would.
+        assert!(hide.key_press());
+        assert!(hide.set_on_key_press(false));
+        assert!(!hide.hidden());
+        assert!(!hide.wanted());
     }
 
     #[test]

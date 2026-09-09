@@ -690,6 +690,14 @@ impl ViewportState {
             // else would ever bring it back.
             self.needs_render = true;
         }
+        if self
+            .cursor_hide
+            .set_on_key_press(file.cursor.hide_on_key_press.unwrap_or(false))
+        {
+            // Same again: turning the key-press rule off while the image is
+            // hidden leaves nothing else willing to bring it back.
+            self.needs_render = true;
+        }
         // Focus follows the pointer: applied from `cursor.follow_mouse` and
         // `cursor.follow_mouse_threshold`. The threshold resets when the
         // feature is toggled off and on, so the first motion after enabling
@@ -709,10 +717,11 @@ impl ViewportState {
         let keyboard = &file.keyboard;
         if keyboard != &crate::config::KeyboardConfig::default() {
             let xkb = smithay::input::keyboard::XkbConfig {
+                rules: keyboard.rules.as_deref().unwrap_or(""),
+                model: keyboard.model.as_deref().unwrap_or(""),
                 layout: keyboard.layout.as_deref().unwrap_or(""),
                 variant: keyboard.variant.as_deref().unwrap_or(""),
                 options: keyboard.options.clone(),
-                ..Default::default()
             };
             // C's defaults, which are sway's (`src/main.c`): 25 a second after
             // 200ms.
