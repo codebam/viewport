@@ -1419,6 +1419,12 @@ of the windows, so those clicks reach the bar rather than dragging what is
 behind it. The cost is the few pixels of a window that has been moved under the
 floating bar: grab it anywhere else.
 
+The floating bar is glass: the compositor blurs the windows behind it, which is
+the only way a bar that is up only while Mod4 is held can show what is under it
+rather than an opaque strip. `"bar_blur": false` leaves it flat instead — the
+windows stay sharp and no framebuffer effect is drawn for it. The key does
+nothing to a docked or hidden bar, which have no windows behind them to blur.
+
 ## The clock, and the calendar under it
 
 What the clock module says, and the month grid a click on it opens.

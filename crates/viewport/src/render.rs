@@ -453,9 +453,23 @@ where
         // user-data lookup.
         let effects_available = renderer.background_effects_available();
         for (id, crop, blur) in &frame.overlay {
+            let Some(element) = shell_element(renderer, shell, id.clone()) else {
+                break;
+            };
+            // Cropped away to nothing is a notification on another monitor,
+            // not a fault.
+            if let Some(cropped) = CropRenderElement::from_element(element, scale, *crop) {
+                elements.push(OutputElement::from(cropped));
+            }
             // The glass under the page: blur the windows behind this piece of
-            // shell before its own pixels go over. The shell is not a client
+            // shell, then let its own pixels go over. The shell is not a client
             // and cannot ask for itself, so the region came over the socket.
+            //
+            // Pushed *after* the crop, not before: this list is front to back,
+            // so the effect must come later to sit underneath. An effect pushed
+            // first is drawn last, captures the texture above it, and blurs the
+            // bar's own text. The client path in `render_surface_tree_with_effect`
+            // orders a surface and its effect the same way round.
             if let Some((blur_id, commit)) = blur.as_ref().filter(|_| effects_available) {
                 elements.push(OutputElement::from(
                     crate::background_effect::BackgroundEffectRenderElement::for_shell(
@@ -464,14 +478,6 @@ where
                         *commit,
                     ),
                 ));
-            }
-            let Some(element) = shell_element(renderer, shell, id.clone()) else {
-                break;
-            };
-            // Cropped away to nothing is a notification on another monitor,
-            // not a fault.
-            if let Some(cropped) = CropRenderElement::from_element(element, scale, *crop) {
-                elements.push(OutputElement::from(cropped));
             }
         }
     }

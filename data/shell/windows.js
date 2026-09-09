@@ -977,6 +977,18 @@ function applyBarMode(mode) {
   relayoutAll();
 }
 
+/* Whether the floating `auto` bar asks the compositor to blur the windows
+   behind it. The blur is a framebuffer effect carried on the bar's overlay
+   rectangle, not a CSS filter; false drops it and leaves the bar flat. Docked
+   and hidden bars blur nothing regardless, so a relayout is only needed when
+   the setting actually changed. */
+function applyBarBlur(blur) {
+  const next = blur !== false;
+  if (next === barBlur) return;
+  barBlur = next;
+  relayoutAll();
+}
+
 function toggleBar() {
   const output = outputs.get(activeOutputName());
   if (!output) return;

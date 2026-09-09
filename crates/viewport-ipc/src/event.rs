@@ -666,6 +666,15 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bar: Option<String>,
 
+    /// Whether the floating `auto` bar blurs the windows behind it. Always
+    /// present rather than optional, like `dark_mode`: the compositor has an
+    /// answer even when the config file says nothing, and a shell left to
+    /// guess would either draw glass a desk asked it not to or an opaque bar
+    /// where the desk wanted glass. False leaves the bar flat; the docked and
+    /// hidden modes blur nothing either way.
+    #[serde(default = "yes")]
+    pub bar_blur: bool,
+
     /// The keymap as it actually stands, so the shell can show it.
     ///
     /// The bindings live here and nowhere else — a few chords exist only in one
@@ -1704,6 +1713,7 @@ mod tests {
             tutorial: false,
             binds: Vec::new(),
             bar: None,
+            bar_blur: true,
             rules: None,
             theme: None,
             gaps: None,
@@ -1729,6 +1739,24 @@ mod tests {
         assert!(value.get("gaps").is_none());
         assert!(value.get("border").is_none());
         assert_eq!(value["layout"], "tiling");
+    }
+
+    #[test]
+    fn bar_blur_defaults_on_and_can_be_turned_off() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "layout": "tiling",
+            "logo": true,
+            "tutorial": true
+        }))
+        .expect("minimal config");
+        assert!(
+            config.bar_blur,
+            "absent is the glass the bar has always been"
+        );
+
+        config.bar_blur = false;
+        let value = json(&Event::Config(Box::new(config)));
+        assert_eq!(value["bar_blur"], false);
     }
 
     #[test]
@@ -1795,6 +1823,7 @@ mod tests {
             tutorial: true,
             binds: Vec::new(),
             bar: None,
+            bar_blur: true,
             rules: None,
             theme: None,
             gaps: None,
@@ -1851,6 +1880,7 @@ mod tests {
             tutorial: true,
             binds: Vec::new(),
             bar: None,
+            bar_blur: true,
             rules: None,
             theme: None,
             gaps: Some(Gaps {
@@ -1905,6 +1935,7 @@ mod tests {
             tutorial: true,
             binds: Vec::new(),
             bar: None,
+            bar_blur: true,
             rules: None,
             theme: None,
             gaps: None,
@@ -1936,6 +1967,7 @@ mod tests {
             tutorial: false,
             binds: Vec::new(),
             bar: Some("top".into()),
+            bar_blur: true,
             rules: Some(serde_json::json!([{"app_id": "mpv", "floating": true}])),
             theme: None,
             gaps: None,
@@ -2093,6 +2125,7 @@ mod tests {
                 tutorial: false,
                 binds: Vec::new(),
                 bar: None,
+                bar_blur: true,
                 rules: None,
                 theme: None,
                 gaps: None,

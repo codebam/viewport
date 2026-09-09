@@ -5461,6 +5461,15 @@ if (mode === 'scrolling') {
   check('and asks for the windows behind it to be blurred',
     floating().every((r) => r.blur === true));
 
+  /* `bar_blur: false` is a flat bar: the same floating rectangle, without the
+     framebuffer effect the compositor would draw under it. */
+  emit({ type: 'config', layout: mode, bar: 'auto', bar_blur: false });
+  check('bar_blur false drops the blur request',
+    floating().every((r) => r.blur !== true));
+  emit({ type: 'config', layout: mode, bar: 'auto', bar_blur: true });
+  check('and turning it back on asks for the blur again',
+    floating().every((r) => r.blur === true));
+
   emit({ type: 'modifiers', logo: false });
   check('letting go hides it again', barHidden());
   check('and stops it being drawn at all', floating().length === 0);

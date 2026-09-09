@@ -12,6 +12,13 @@ to summarise rather than to duplicate.
 ## [Unreleased]
 
 ### Fixed
+- The floating bar's blur no longer blurs the bar itself. The overlay's
+  framebuffer effect was pushed *before* the shell texture in the render list,
+  which is front to back, so it rendered on top of the bar and captured the
+  bar's own pixels — workspace numbers, window titles and widgets came out
+  smeared. It is now pushed after the texture, so it captures the windows
+  underneath and the bar is drawn sharp over it, the same order the
+  client-surface path already uses.
 - Notifications are drawn again on a monitor that is not fullscreen. Popup
   suppression asked whether *any* workspace in the session held a fullscreen
   window rather than whether the workspace the message was about to be drawn on
@@ -95,6 +102,10 @@ to summarise rather than to duplicate.
   framebuffer-effect element a client's request would under that piece of the
   shell's texture. The floating (`auto`) bar uses it, so the windows under the
   bar are glass rather than an opaque strip.
+- `"bar_blur": false` leaves the floating `auto` bar flat. The blur is a
+  compositor framebuffer effect, so a desk that would rather not pay for it —
+  or would rather see the windows under the bar sharply — can turn it off
+  without giving up `bar: auto`. Docked and hidden bars never blurred.
 - A top-level `env` block sets environment variables for the session and every
   program it starts. It is applied before any backend opens, so the compositor
   itself sees it, and handed explicitly to each child so a value changed on

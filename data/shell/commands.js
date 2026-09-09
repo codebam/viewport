@@ -614,6 +614,10 @@ window.addEventListener('viewport', (event) => {
       applyGroup(message.group);
       applyWorkspaceRules(message.workspaces);
       applyBorder(message.border);
+      /* Whether the floating bar is glass or flat, before the mode that decides
+         whether there is a floating bar to apply it to. Absent is glass, which
+         is what a config file that says nothing has always got. */
+      applyBarBlur(message.bar_blur);
       applyBarMode(message.bar);
       applyBarWidgets(message.bar_widgets);
       applyBarItems(message.bar_items);

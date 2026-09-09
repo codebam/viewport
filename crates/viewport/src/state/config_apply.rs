@@ -133,6 +133,9 @@ impl ViewportState {
         if let Some(bar) = file.bar {
             self.config.bar = Some(bar);
         }
+        if let Some(bar_blur) = file.bar_blur {
+            self.config.bar_blur = bar_blur;
+        }
         if let Some(configured) = file.layer_rules {
             match crate::layer::Rules::compile(configured) {
                 Ok(rules) => {

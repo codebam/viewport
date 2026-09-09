@@ -910,10 +910,11 @@ function relayoutAll() {
     const barFloats = barMode === 'auto' && onScreen;
     /* A floating bar is glass: the windows under it are blurred, because a
        bar that is only up while Mod4 is held has nothing behind it to draw
-       an opaque background over. A docked bar sits on the wallpaper and
-       blurs nothing. */
+       an opaque background over. `bar_blur: false` in the config file leaves
+       it flat instead, and a docked bar sits on the wallpaper and blurs
+       nothing either way. */
     setOverlay(`bar:${name}`, barFloats ? output.barEl : null,
-      { blur: barFloats });
+      { blur: barFloats && barBlur });
     renderBar(name);
   }
 

@@ -128,6 +128,10 @@ fn view_query_answers_with_the_config() {
     // Unset members are omitted, not null.
     assert!(config.get("bar").is_none());
     assert!(config.get("rules").is_none());
+    // Always present, like `dark_mode`: the compositor has an answer even when
+    // the file says nothing, and absent here is the glass the bar has always
+    // been.
+    assert_eq!(config["bar_blur"], true);
 }
 
 #[test]
@@ -138,7 +142,11 @@ fn a_config_file_reaches_the_shell() {
     let dir = std::env::temp_dir().join("viewport-config-integration");
     std::fs::create_dir_all(dir.join("viewport")).expect("mkdir");
     let path = dir.join("viewport/config.json");
-    std::fs::write(&path, r#"{"layout":"scrolling","logo":false,"bar":"auto"}"#).expect("write");
+    std::fs::write(
+        &path,
+        r#"{"layout":"scrolling","logo":false,"bar":"auto","bar_blur":false}"#,
+    )
+    .expect("write");
 
     let compositor = Compositor::builder("config-file")
         .env("XDG_CONFIG_HOME", &dir)
@@ -150,6 +158,7 @@ fn a_config_file_reaches_the_shell() {
     assert_eq!(config["layout"], "scrolling");
     assert_eq!(config["logo"], false);
     assert_eq!(config["bar"], "auto");
+    assert_eq!(config["bar_blur"], false);
     // Not in the file, so still the built-in.
     assert_eq!(config["tutorial"], true);
 

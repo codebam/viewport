@@ -1617,6 +1617,9 @@ impl ViewportState {
                 // read and there is nothing yet to describe.
                 binds: Vec::new(),
                 bar: None,
+                // Glass until a config file asks for a flat bar; see
+                // `config::File::bar_blur`.
+                bar_blur: true,
                 rules: None,
                 theme: None,
                 gaps: None,

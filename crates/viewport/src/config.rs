@@ -614,6 +614,15 @@ pub struct File {
     pub logo: Option<bool>,
     pub tutorial: Option<bool>,
     pub bar: Option<String>,
+    /// Whether the floating `auto` bar blurs the windows behind it.
+    ///
+    /// Absent is on, which is what the bar has always done: under `bar:
+    /// "auto"` the bar is only up while Mod4 is held, so there is nothing
+    /// opaque behind it and the windows it covers are glass. False leaves it
+    /// flat — the windows under it stay sharp and the compositor draws no
+    /// framebuffer effect for it. The docked and hidden modes blur nothing
+    /// whatever this says, so it only matters for `bar: "auto"`.
+    pub bar_blur: Option<bool>,
 
     /// Whether the compositor claims the system tray.
     ///

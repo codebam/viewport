@@ -136,6 +136,11 @@ const physicalOutputs = new Map(); // name -> physical head info, including mirr
    or 'auto', which reveals it only while Mod4 is held. 'auto' exists for OLED
    panels, where a bar in the same pixels for hours is the thing that burns in. */
 let barMode = 'visible';
+/* Whether the floating `auto` bar asks the compositor to blur the windows
+   behind it. From `bar_blur` in the config file; absent is on, which is the
+   glass the bar has always been. Only the floating bar reads it — a docked or
+   hidden bar has nothing under it to blur. */
+let barBlur = true;
 let logoHeld = false;
 /* Every open window. This is the only structure keyed by view id: anything
  * else a window needs is a field on its record, so dropping the record drops
