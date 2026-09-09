@@ -7303,6 +7303,20 @@ if (mode === 'scrolling') {
   check('and the element carries both',
     sized.el.style.minWidth === '400px' && sized.el.style.maxWidth === '900px');
 
+  /* Hyprland's `tearing` and `idle_inhibit` effects: the shell tells the
+     compositor, which is the only side that can act on either. */
+  emit({ type: 'config', layout: mode, rules: [
+    { app_id: 'tear-me', tearing: true, idle_inhibit: true },
+  ] });
+  const policyMark = sent.length;
+  open(79, 'tear-me');
+  check('a tearing rule sends view.tearing',
+    sent.slice(policyMark).some((m) => m.type === 'view.tearing'
+      && m.id === 79 && m.tearing === true));
+  check('an idle_inhibit rule sends view.idle_inhibit',
+    sent.slice(policyMark).some((m) => m.type === 'view.idle_inhibit'
+      && m.id === 79 && m.inhibit === true));
+
   /* The rules above are not the harness's; put them back for anything after. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }

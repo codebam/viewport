@@ -1971,13 +1971,21 @@ window with a parent, the same pair the compositor floats for. `class`,
 and a rule that names one is only matched when the window's answer agrees.
 
 The effects this shell can apply are the workspace, floating and its rect,
-`pinned`, `pseudotile`, `swallow`, `capture`, `opacity`, `focus`, `animation`
-and a size floor and ceiling. `focus: false` opens a window without taking the
-keyboard — a launcher, or a picture-in-picture window that should appear
-without interrupting. `animation: false` gives it the reduced-motion treatment:
-no fade, but it still appears. `min_width` / `min_height` raise the client's
-own floor and `max_width` / `max_height` cap it, all in logical pixels; zero or
-absent leaves the client's answer.
+`pinned`, `pseudotile`, `swallow`, `capture`, `opacity`, `focus`, `animation`,
+`tearing`, `idle_inhibit` and a size floor and ceiling. `focus: false` opens a
+window without taking the keyboard — a launcher, or a picture-in-picture window
+that should appear without interrupting. `animation: false` gives it the
+reduced-motion treatment: no fade, but it still appears. `min_width` /
+`min_height` raise the client's own floor and `max_width` / `max_height` cap
+it, all in logical pixels; zero or absent leaves the client's answer.
+
+`tearing: true` asks the compositor to present the window as soon as a frame
+is ready, the same as `wp-tearing-control-v1` does when the client asks; it is
+granted only when the window covers its output and nothing is layered over it,
+and never while the session is locked or the overview is up. `idle_inhibit:
+true` keeps the session awake for as long as the window is mapped, beside the
+protocol and `org.freedesktop.ScreenSaver` inhibitors the compositor already
+honours.
 
 Rules may be named for runtime control. A rule with a `name` field can be
 toggled from a keybinding or from the socket:

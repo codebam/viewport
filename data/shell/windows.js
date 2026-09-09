@@ -353,6 +353,10 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
    * reload, including an old denial whose rule may just have been removed. */
   view.ruleCapture = typeof rule?.capture === 'boolean' ? rule.capture : true;
   send({ type: 'view.capture', id, capture: view.ruleCapture });
+  /* Hyprland's `tearing` and `idle_inhibit` rule effects. Both are current
+     policy, resolved whenever a rule matches, the same as capture. */
+  send({ type: 'view.tearing', id, tearing: rule?.tearing === true });
+  send({ type: 'view.idle_inhibit', id, inhibit: rule?.idle_inhibit === true });
   const ruleOpacity = Number.isFinite(rule?.opacity) && rule.opacity >= 0
     ? rule.opacity : 1;
   view.ruleOpacity = ruleOpacity;
@@ -494,6 +498,10 @@ function reapplyWindowRule(id) {
     view.ruleOpacity = opacity;
     send({ type: 'view.opacity_rule', id, opacity });
   }
+  /* Unconditional, like capture: the compositor keeps the last value, and a
+     rule that stopped matching has to be able to turn it back off. */
+  send({ type: 'view.tearing', id, tearing: rule?.tearing === true });
+  send({ type: 'view.idle_inhibit', id, inhibit: rule?.idle_inhibit === true });
 
   const signature = JSON.stringify(rule ?? null);
   if (signature === view.ruleSignature) return;

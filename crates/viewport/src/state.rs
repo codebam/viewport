@@ -2050,8 +2050,11 @@ impl ViewportState {
         }
         // Nothing has asked, so nothing can be granted. Checked before the
         // output geometry and the layer map because this runs every frame and
-        // the answer is almost always no.
-        if !self.tearing_state.any_wants_tearing() {
+        // the answer is almost always no. A window rule can ask too, which is
+        // why the view list is part of the question.
+        if !self.tearing_state.any_wants_tearing()
+            && !self.views.iter().any(|view| view.rule_tearing)
+        {
             return false;
         }
         let Some(area) = self.space.output_geometry(output) else {
@@ -2086,8 +2089,21 @@ impl ViewportState {
             covering = Some(window);
         }
 
+        let Some(covering) = covering else {
+            return false;
+        };
+        // A rule is enough on its own: it is the shell saying the user asked
+        // for this window, where `wp-tearing-control-v1` is the client asking.
+        if self
+            .views
+            .iter()
+            .any(|view| view.window == *covering && view.rule_tearing)
+        {
+            return true;
+        }
         covering
-            .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
+            .wl_surface()
+            .map(|surface| surface.into_owned())
             .map(|surface| self.tearing_state.wants_tearing(&surface))
             .unwrap_or(false)
     }
@@ -2493,10 +2509,14 @@ impl ViewportState {
     pub fn refresh_idle_inhibit(&mut self) {
         use smithay::utils::IsAlive as _;
         self.idle_inhibitors.retain(|surface| surface.alive());
-        // Either list is enough. A film inhibits over the bus and a full-screen
-        // game over Wayland, and a session that honoured only the protocol
-        // would blank under the first of those — which is most of them.
-        let inhibited = !self.idle_inhibitors.is_empty() || self.bus_inhibitors.inhibited();
+        // Any of the three is enough. A film inhibits over the bus and a
+        // full-screen game over Wayland, and a session that honoured only the
+        // protocol would blank under the first of those — which is most of
+        // them. A window rule is the third: the user saying a window should
+        // keep the session awake whether or not the client asked.
+        let inhibited = !self.idle_inhibitors.is_empty()
+            || self.bus_inhibitors.inhibited()
+            || self.views.iter().any(|view| view.rule_idle_inhibit);
         self.idle.set_inhibited(inhibited);
         self.idle_notifier_state.set_is_inhibited(inhibited);
     }

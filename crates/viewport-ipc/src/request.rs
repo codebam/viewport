@@ -140,6 +140,25 @@ pub enum Request {
         capture: bool,
     },
 
+    /// The current first-matching rule asks for tearing on this window,
+    /// Hyprland's `tearing` effect. Required, so a malformed rule cannot
+    /// silently grant it.
+    #[serde(rename = "view.tearing")]
+    ViewTearing {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+        tearing: bool,
+    },
+
+    /// The current first-matching rule keeps the session awake, Hyprland's
+    /// `idle_inhibit` effect. Required for the same reason.
+    #[serde(rename = "view.idle_inhibit")]
+    ViewIdleInhibit {
+        #[serde(deserialize_with = "view_id")]
+        id: u32,
+        inhibit: bool,
+    },
+
     /// Ask for `config` and one `view.added` per mapped window.
     #[serde(rename = "view.query")]
     ViewQuery,

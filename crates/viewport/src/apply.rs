@@ -166,6 +166,24 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             }
         }
 
+        Request::ViewTearing { id, tearing } => {
+            if let Some(view) = state.views.get_mut(id) {
+                view.rule_tearing = tearing;
+            }
+        }
+
+        Request::ViewIdleInhibit { id, inhibit } => {
+            let Some(view) = state.views.get_mut(id) else {
+                return;
+            };
+            if view.rule_idle_inhibit != inhibit {
+                view.rule_idle_inhibit = inhibit;
+                // The inhibitor list is what the idle timer reads, so it has
+                // to be recomputed the moment a rule changes it.
+                state.refresh_idle_inhibit();
+            }
+        }
+
         Request::ViewQuery => {
             state.notify_config();
             state.notify(&viewport_ipc::Event::ScreencastActive {

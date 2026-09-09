@@ -157,6 +157,15 @@ pub struct View {
     /// Separate from `opacity`, which layout and fade tweens overwrite.
     pub rule_opacity: f32,
 
+    /// The current first-matching rule asks for tearing, Hyprland's `tearing`
+    /// effect. Consulted by `output_wants_tearing` alongside the client's own
+    /// `wp-tearing-control-v1` request.
+    pub rule_tearing: bool,
+    /// The current first-matching rule keeps the session awake, Hyprland's
+    /// `idle_inhibit` effect. Consulted by `refresh_idle_inhibit` alongside the
+    /// protocol and bus inhibitors.
+    pub rule_idle_inhibit: bool,
+
     /// The last surface size that did not match the rectangle it was given,
     /// so the mismatch is said once rather than per frame.
     pub last_mismatch: Option<(i32, i32)>,
@@ -530,6 +539,8 @@ impl Views {
             corner_id: smithay::backend::renderer::element::Id::new(),
             opacity: 1.0,
             rule_opacity: 1.0,
+            rule_tearing: false,
+            rule_idle_inhibit: false,
             configured: None,
             foreign: None,
         });

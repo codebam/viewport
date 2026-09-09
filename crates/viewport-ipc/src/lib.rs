@@ -136,6 +136,8 @@ fn is_known_type(name: &str) -> bool {
             | "view.opacity"
             | "view.opacity_rule"
             | "view.capture"
+            | "view.tearing"
+            | "view.idle_inhibit"
             | "view.query"
             | "shell.focus"
             | "shell.overview"
