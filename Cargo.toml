@@ -62,7 +62,7 @@ viewport-web = { path = "crates/viewport-web" }
 # there, one bumping the revision here — and `cargo test --workspace` no longer
 # runs its tests, which run in its own CI instead. See the `[patch]` at the
 # bottom of this file for the other half of the arrangement.
-viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "8c6ea7ebde6a0644480adad7a55be3e91dc60c46" }
+viewport-vulkan = { git = "https://github.com/codebam/viewport-vulkan.git", rev = "cc95d95d4a169d3ef25a3dfc61ae93723274c3dd" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -98,18 +98,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # that is the kind Rust gives EACCES. It dropped out of the rebase, which is the
 # arrangement above working rather than a patch being lost.
 #
-# The previous tip is tagged pre-rebase-b2cc4c51 over there — and kept as the
-# explicit-sync-scanout-2026-09-04 branch — because a revision no ref reaches
-# is one GitHub may collect, and older checkouts of this compositor pin it.
-# (pre-rebase-b98f667e, pre-rebase-09de0d99, pre-rebase-b6e5bf02 and
-# pre-rebase-a8f1c00 are the four before that.)
+# The previous tip is tagged pre-rebase-d64a9abe over there, because a revision
+# no ref reaches is one GitHub may collect, and older checkouts of this
+# compositor pin it. (pre-rebase-b2cc4c51, pre-rebase-b98f667e,
+# pre-rebase-09de0d99, pre-rebase-b6e5bf02 and pre-rebase-a8f1c00 are the ones
+# before that.)
 #
-# This pass rebased onto upstream d4bb0de4, six commits on from the last base:
-# an X11 property forward, two clippy passes, a winit 0.31-beta.3 bump and the
-# rand::RngExt bench. All four patches applied unchanged — `git range-diff`
-# shows `=` for each.
+# This pass rebased onto upstream 0ff00983, two commits on from the last base:
+# a spelling fix in the getting-started guide and a README system-dependencies
+# list. Both are documentation, so all four patches applied unchanged — `git
+# range-diff` shows `=` for each — and this is a pin bump rather than a change
+# to the fork's delta.
 git = "https://github.com/codebam/smithay.git"
-rev = "d64a9abee81ff5fd4f340a1ecc3d9c23f967d38c"
+rev = "9d0e365048ea9b38f02085ad7c378c81e619b54d"
 default-features = false
 
 # The other half of moving the renderer out of this workspace.
@@ -134,7 +135,7 @@ default-features = false
 # is what makes this a redirect and not a downgrade — rebase the fork before
 # bumping either pin, not after.
 [patch."https://github.com/Smithay/smithay"]
-smithay = { git = "https://github.com/codebam/smithay.git", rev = "d64a9abee81ff5fd4f340a1ecc3d9c23f967d38c" }
+smithay = { git = "https://github.com/codebam/smithay.git", rev = "9d0e365048ea9b38f02085ad7c378c81e619b54d" }
 
 [profile.release]
 debug = 1
