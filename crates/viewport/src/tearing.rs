@@ -58,6 +58,15 @@ impl TearingControlState {
         self.wants_tearing.iter().any(|other| other == surface)
     }
 
+    /// Whether any surface has asked for asynchronous presentation.
+    ///
+    /// [`crate::state::ViewportState::output_wants_tearing`] runs once per
+    /// output per frame, and the answer is almost always no. This lets it
+    /// return before walking the space and locking the output's layer map.
+    pub fn any_wants_tearing(&self) -> bool {
+        !self.wants_tearing.is_empty()
+    }
+
     /// Whether a control object for this surface is alive.
     fn bound(&self, surface: &WlSurface) -> bool {
         self.bound.iter().any(|other| other == surface)

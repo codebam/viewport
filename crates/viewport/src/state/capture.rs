@@ -79,8 +79,12 @@ impl ViewportState {
             let Some(location) = self.space.element_location(window) else {
                 continue;
             };
+            // The view's scale and clip, read once: both helpers below need
+            // them, and resolving each separately was three index lookups per
+            // window per pointer motion.
+            let (scale, clip) = self.view_scale_clip(window);
             // Not the part of it that is cropped away. See `clipped_out`.
-            if self.clipped_out(window, pos) {
+            if self.clipped_out_with(window, pos, scale, clip) {
                 continue;
             }
             // Where the surface is drawn, not where the window is mapped.
@@ -98,7 +102,7 @@ impl ViewportState {
             // at twice its distance from the corner, which is a pointer that
             // works in the top-left of a window and misses by more the further
             // across it you go.
-            let unscaled = self.unscaled(window, pos);
+            let unscaled = self.unscaled_with(window, pos, scale);
             let render_location = location - window.geometry().loc;
             if let Some((surface, at)) =
                 window.surface_under(unscaled - render_location.to_f64(), WindowSurfaceType::ALL)
@@ -181,7 +185,8 @@ impl ViewportState {
             .elements()
             .rev()
             .find(|window| {
-                if self.clipped_out(window, pos) {
+                let (scale, clip) = self.view_scale_clip(window);
+                if self.clipped_out_with(window, pos, scale, clip) {
                     return false;
                 }
                 // In the window's own coordinates, so that a window merely
@@ -189,7 +194,7 @@ impl ViewportState {
                 // covers. The bounding box is the full size the `Space` holds
                 // it at; against the raw pointer position it claims the screen
                 // around a thumbnail as well as the thumbnail.
-                let pos = self.unscaled(window, pos);
+                let pos = self.unscaled_with(window, pos, scale);
                 let Some(bbox) = self.space.element_bbox(window) else {
                     return false;
                 };
@@ -222,18 +227,33 @@ impl ViewportState {
     /// So the clip bounds input as well as drawing. The two have to agree —
     /// what is not on the screen cannot be clicked — and the clip is the only
     /// thing that knows where a window really is.
-    /// What the shell asked this window to be *drawn* at, 1.0 for almost
-    /// everything.
-    fn draw_scale(&self, window: &smithay::desktop::Window) -> f64 {
-        use smithay::wayland::seat::WaylandFocus;
+    /// The scale the shell asked this window to be drawn at and the clip it
+    /// gave it, read from the view once.
+    ///
+    /// `clipped_out` and `unscaled` are each called per window per hit test,
+    /// and each looked the view up again — three index lookups per window per
+    /// pointer motion for two values that are the same for all three. 1.0 and
+    /// no clip for a window with no view yet, and for a scale that is not a
+    /// positive finite number.
+    fn view_scale_clip(
+        &self,
+        window: &smithay::desktop::Window,
+    ) -> (f64, Option<viewport_ipc::Box>) {
+        use smithay::wayland::seat::WaylandFocus as _;
 
-        window
+        let Some(view) = window
             .wl_surface()
             .as_deref()
             .and_then(|surface| self.views.find_by_surface(surface))
-            .map(|view| view.scale)
-            .filter(|scale| scale.is_finite() && *scale > 0.0)
-            .unwrap_or(1.0)
+        else {
+            return (1.0, None);
+        };
+        let scale = if view.scale.is_finite() && view.scale > 0.0 {
+            view.scale
+        } else {
+            1.0
+        };
+        (scale, view.clip)
     }
 
     /// A point on the screen, in the coordinates of a window drawn smaller than
@@ -261,7 +281,17 @@ impl ViewportState {
         window: &smithay::desktop::Window,
         pos: Point<f64, Logical>,
     ) -> Point<f64, Logical> {
-        let scale = self.draw_scale(window);
+        let (scale, _) = self.view_scale_clip(window);
+        self.unscaled_with(window, pos, scale)
+    }
+
+    /// [`Self::unscaled`] with the scale already resolved.
+    fn unscaled_with(
+        &self,
+        window: &smithay::desktop::Window,
+        pos: Point<f64, Logical>,
+        scale: f64,
+    ) -> Point<f64, Logical> {
         if (scale - 1.0).abs() < f64::EPSILON {
             return pos;
         }
@@ -276,14 +306,19 @@ impl ViewportState {
     }
 
     pub fn clipped_out(&self, window: &smithay::desktop::Window, pos: Point<f64, Logical>) -> bool {
-        use smithay::wayland::seat::WaylandFocus;
+        let (scale, clip) = self.view_scale_clip(window);
+        self.clipped_out_with(window, pos, scale, clip)
+    }
 
-        let Some(clip) = window
-            .wl_surface()
-            .as_deref()
-            .and_then(|surface| self.views.find_by_surface(surface))
-            .and_then(|view| view.clip)
-        else {
+    /// [`Self::clipped_out`] with the scale and clip already resolved.
+    fn clipped_out_with(
+        &self,
+        window: &smithay::desktop::Window,
+        pos: Point<f64, Logical>,
+        scale: f64,
+        clip: Option<viewport_ipc::Box>,
+    ) -> bool {
+        let Some(clip) = clip else {
             // No clip means nothing was cropped: the whole window is on
             // screen, which is every window on an unscrolled workspace.
             return false;
@@ -291,7 +326,7 @@ impl ViewportState {
         /* The clip is in the window's own coordinates — the shell divides the
         thumbnail scale back out before sending it — so a point on a shrunken
         window has to come back the same way before it is compared. */
-        let pos = self.unscaled(window, pos);
+        let pos = self.unscaled_with(window, pos, scale);
         !crate::views::clip_covers(clip, pos.x, pos.y)
     }
 

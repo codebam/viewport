@@ -2013,6 +2013,12 @@ impl ViewportState {
         if self.locked || self.overview {
             return false;
         }
+        // Nothing has asked, so nothing can be granted. Checked before the
+        // output geometry and the layer map because this runs every frame and
+        // the answer is almost always no.
+        if !self.tearing_state.any_wants_tearing() {
+            return false;
+        }
         let Some(area) = self.space.output_geometry(output) else {
             return false;
         };

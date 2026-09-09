@@ -15,11 +15,12 @@
 // entry in nine AUR packages, to do two things this can do itself. What it
 // would have given for free is the theme lookup, so that is written out below.
 //
-// Playing is asynchronous by construction: `play` decodes and streams on a
-// thread of its own and returns immediately. That is not a nicety. It is
-// called on the D-Bus thread while the sender blocks waiting for its
+// Playing is asynchronous by construction: `play` hands the sound to a worker
+// thread through a bounded queue and returns immediately. That is not a nicety.
+// It is called on the D-Bus thread while the sender blocks waiting for its
 // notification id, so anything slower would be every notifying application
-// stalled for the length of a bark.
+// stalled for the length of a bark. The queue is bounded so that a burst cannot
+// start threads without limit; past it the newest sound is dropped.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
@@ -197,9 +198,28 @@ impl Cache {
 }
 
 /// Plays sounds, and remembers the ones it has played.
+///
+/// One worker thread, fed through a bounded queue, rather than a thread per
+/// sound. A notification burst — or a sender that asks for a sound in a loop —
+/// otherwise starts an OS thread and a fresh PipeWire client for each one, with
+/// nothing bounding how many exist at once; the queue drops instead.
+///
+/// Dropping a `Player` closes the queue, which ends the worker once the sound
+/// it is on finishes. The thread is detached rather than joined: a sound may be
+/// waiting out `ROUTING_GRACE`, and quitting the compositor must not wait
+/// thirty seconds for a notification beep.
 pub struct Player {
-    shared: Arc<Shared>,
+    /// Sounds waiting for the worker. Bounded, and `play` never blocks: it
+    /// runs on the D-Bus thread while the sender waits for its notification id.
+    queue: Option<std::sync::mpsc::SyncSender<Sound>>,
 }
+
+/// How many sounds may wait for the worker before new ones are dropped.
+///
+/// A notification sound is a second or two, so this is a burst a person could
+/// actually produce; past it the desktop is making noise faster than anyone
+/// can listen, and the newest sound is the one worth playing.
+const MAX_QUEUED_SOUNDS: usize = 16;
 
 struct Shared {
     /// Decoded files, by the path they were decoded from.
@@ -216,43 +236,57 @@ struct Shared {
 }
 
 impl Player {
-    /// Check that there is a sound server to play through, and prepare to.
+    /// Check that there is a sound server to play through, and start the worker.
     ///
     /// `None` when there is not — a headless session, a machine with no
     /// PipeWire. That is a desktop that makes no noise, which is what it did
     /// before, so it is logged and not an error. The connection made here is
-    /// only the question being asked: each sound opens its own, because each
-    /// one lives on a thread of its own and dies with it.
+    /// only the question being asked; the worker opens the stream it plays
+    /// through, one at a time.
     pub fn new() -> Option<Self> {
         pw::init();
         if let Err(e) = connect() {
             tracing::info!("no notification sounds: {e}");
             return None;
         }
-        Some(Self {
-            shared: Arc::new(Shared {
-                decoded: Mutex::new(Cache::new()),
-            }),
-        })
+
+        let shared = Arc::new(Shared {
+            decoded: Mutex::new(Cache::new()),
+        });
+        let (queue, inbox) = std::sync::mpsc::sync_channel(MAX_QUEUED_SOUNDS);
+        let worker_shared = shared.clone();
+        // The handle is dropped here, which detaches the thread: it lives
+        // until the last sender is gone, and nothing waits on it.
+        if let Err(e) = std::thread::Builder::new()
+            .name("viewport-sound".to_owned())
+            .spawn(move || {
+                // Ends when the last `Player` drops its sender.
+                while let Ok(sound) = inbox.recv() {
+                    if let Err(e) = worker_shared.run(&sound) {
+                        tracing::warn!("could not play {sound:?}: {e}");
+                    }
+                }
+            })
+        {
+            tracing::warn!("could not start the sound thread: {e}");
+            return None;
+        }
+
+        Some(Self { queue: Some(queue) })
     }
 
     /// Start a sound and return.
     ///
-    /// Everything — resolving the name, reading the file, decoding it, and the
-    /// PipeWire loop that plays it — happens on a thread this spawns. See the
-    /// module comment for why none of it may happen here.
+    /// Resolving the name, reading the file, decoding it, and the PipeWire loop
+    /// that plays it all happen on the worker. See the module comment for why
+    /// none of it may happen here. A full queue drops the sound rather than
+    /// blocking the caller.
     pub fn play(&self, sound: &Sound) {
-        let shared = self.shared.clone();
-        let sound = sound.clone();
-        let spawned = std::thread::Builder::new()
-            .name("viewport-sound".to_owned())
-            .spawn(move || {
-                if let Err(e) = shared.run(&sound) {
-                    tracing::warn!("could not play {sound:?}: {e}");
-                }
-            });
-        if let Err(e) = spawned {
-            tracing::warn!("could not start a sound thread: {e}");
+        let Some(queue) = self.queue.as_ref() else {
+            return;
+        };
+        if queue.try_send(sound.clone()).is_err() {
+            tracing::debug!("dropped {sound:?}: the sound queue is full");
         }
     }
 }

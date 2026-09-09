@@ -3175,12 +3175,15 @@ impl ViewportState {
             return;
         };
 
-        let outputs: Vec<_> = self
-            .space
-            .outputs()
-            .filter_map(|o| self.space.output_geometry(o))
-            .collect();
-        let mut pos = crate::cursor::clamp(&outputs, from, from + delta);
+        // Walked rather than collected: this is the pointer-motion path, and
+        // `clamp` reads the geometries in one pass.
+        let mut pos = crate::cursor::clamp(
+            self.space
+                .outputs()
+                .filter_map(|o| self.space.output_geometry(o)),
+            from,
+            from + delta,
+        );
 
         // Confinement: still moves, but may not leave the region the client
         // nominated — a windowed game, or a map widget.

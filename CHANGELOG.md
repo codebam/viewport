@@ -91,6 +91,38 @@ to summarise rather than to duplicate.
   A message larger than one 4 KiB read was re-scanned from the start on every
   chunk, which is quadratic in the message size — a 1 MiB `shell.overlay` cost
   on the order of a hundred million byte comparisons.
+- The shell's command queue coalesces pointer motion and axis. The web thread
+  drains only between GLib iterations, so a pointer moving while WebKit is
+  inside a long task accumulated one queue entry per event and replayed a stale
+  path once it caught up; only the latest position before the next event
+  matters, and any other command seals it in place so a motion before a button
+  press is still delivered before it. The message mailbox the page posts into
+  is capped as well, dropping the oldest rather than growing without bound.
+- Notification sounds are played by one worker thread through a bounded queue
+  instead of a fresh thread and PipeWire client per sound. A burst could
+  otherwise start threads and bus clients without limit; the queue drops the
+  newest once it is full rather than blocking the D-Bus thread.
+- NetworkManager's saved connections are cached instead of re-read on every
+  property signal. `read` runs for every `PropertiesChanged` — most of which
+  are a single access point's strength moving — and rebuilding the list cost a
+  `ListConnections` plus a `GetSettings` per saved connection each time, almost
+  always to be discarded by the unchanged-snapshot comparison. Opening the
+  picker clears the cache so its one-click-join flags are fresh.
+- The shell indexes leaves by `treeGeneration` instead of walking every
+  workspace on every `findLeaf`. `workspaceOf` is called once per window per
+  geometry pass — several times a frame — which made the walk quadratic in the
+  number of windows. An entry is believed only while the parent it names still
+  holds the leaf under the root it names, so a missed generation bump costs a
+  walk rather than a wrong answer.
+- `output_wants_tearing` returns before walking the space and locking the
+  output's layer map when no surface has asked to tear, which is the common
+  case and runs once per output per frame.
+- Hit testing resolves a window's scale and clip once instead of three times.
+  `surface_under` and `window_under` called `clipped_out` and `unscaled`, and
+  each looked the view up again — three index lookups per window per pointer
+  motion for two values.
+- `cursor::clamp` reads the output geometries in one pass and allocates
+  nothing, instead of collecting them into a `Vec` on every pointer motion.
 
 ## [0.2.0] - 2026-09-06
 

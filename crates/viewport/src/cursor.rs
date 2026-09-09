@@ -307,27 +307,43 @@ const ALIASES: &[&[&str]] = &[
 /// A pointer is not clamped to a rectangle but to the outputs themselves, or
 /// it can be moved into the gap between two monitors of different heights and
 /// vanish. Clamping per output keeps it on a screen someone can see.
-pub fn clamp(
-    outputs: &[smithay::utils::Rectangle<i32, Logical>],
+///
+/// Takes an iterator rather than a slice because this runs on every pointer
+/// motion — a thousand times a second on a gaming mouse — and collecting the
+/// geometries into a `Vec` first was a heap allocation per event for an answer
+/// that can be read in one pass.
+pub fn clamp<I>(
+    outputs: I,
     from: Point<f64, Logical>,
     to: Point<f64, Logical>,
-) -> Point<f64, Logical> {
-    if outputs.is_empty() {
-        return to;
+) -> Point<f64, Logical>
+where
+    I: Iterator<Item = smithay::utils::Rectangle<i32, Logical>>,
+{
+    let mut first: Option<smithay::utils::Rectangle<i32, Logical>> = None;
+    let mut origin: Option<smithay::utils::Rectangle<i32, Logical>> = None;
+    for output in outputs {
+        first.get_or_insert(output);
+        let logical = output.to_f64();
+        // Already on an output: nothing to do.
+        if logical.contains(to) {
+            return to;
+        }
+        if origin.is_none() && logical.contains(from) {
+            origin = Some(output);
+        }
     }
-    // Already on an output: nothing to do.
-    if outputs.iter().any(|o| o.to_f64().contains(to)) {
+
+    let Some(fallback) = first else {
+        // No outputs: there is nothing to clamp against.
         return to;
-    }
+    };
 
     // Otherwise the nearest point on the output the pointer came from, so a
     // move that runs off an edge slides along it rather than jumping to
-    // another monitor.
-    let origin = outputs
-        .iter()
-        .find(|o| o.to_f64().contains(from))
-        .or_else(|| outputs.first())
-        .expect("checked non-empty");
+    // another monitor. The first output when the pointer started outside every
+    // screen, which is where a fresh session begins.
+    let origin = origin.unwrap_or(fallback);
 
     let max_x = (origin.loc.x + origin.size.w) as f64 - 1.0;
     let max_y = (origin.loc.y + origin.size.h) as f64 - 1.0;
@@ -560,7 +576,7 @@ mod tests {
     #[test]
     fn a_pointer_on_an_output_is_left_alone() {
         let to = Point::from((100.0, 100.0));
-        assert_eq!(clamp(&outputs(), (50.0, 50.0).into(), to), to);
+        assert_eq!(clamp(outputs().into_iter(), (50.0, 50.0).into(), to), to);
     }
 
     #[test]
@@ -568,17 +584,25 @@ mod tests {
         // The monitors are side by side, so this is inside the second one and
         // must not be pulled back.
         let to = Point::from((3000.0, 700.0));
-        assert_eq!(clamp(&outputs(), (2000.0, 700.0).into(), to), to);
+        assert_eq!(clamp(outputs().into_iter(), (2000.0, 700.0).into(), to), to);
     }
 
     #[test]
     fn a_pointer_leaving_every_output_stays_on_the_one_it_left() {
         // Off the right edge of the layout.
-        let clamped = clamp(&outputs(), (5000.0, 700.0).into(), (6000.0, 700.0).into());
+        let clamped = clamp(
+            outputs().into_iter(),
+            (5000.0, 700.0).into(),
+            (6000.0, 700.0).into(),
+        );
         assert_eq!(clamped, Point::from((5119.0, 700.0)));
 
         // Off the top.
-        let clamped = clamp(&outputs(), (100.0, 10.0).into(), (100.0, -50.0).into());
+        let clamped = clamp(
+            outputs().into_iter(),
+            (100.0, 10.0).into(),
+            (100.0, -50.0).into(),
+        );
         assert_eq!(clamped, Point::from((100.0, 0.0)));
     }
 
@@ -587,7 +611,7 @@ mod tests {
         // Nothing to clamp to, and refusing to move would pin the pointer at
         // the origin for the whole session.
         let to = Point::from((10.0, 10.0));
-        assert_eq!(clamp(&[], (0.0, 0.0).into(), to), to);
+        assert_eq!(clamp(std::iter::empty(), (0.0, 0.0).into(), to), to);
     }
 
     #[test]

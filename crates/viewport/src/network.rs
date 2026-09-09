@@ -228,7 +228,23 @@ struct Worker {
     /// compositor has not asked for one since the picker opened. See
     /// [`Worker::scanning`].
     scan_asked: Option<i64>,
+    /// Saved wireless connections by SSID, and when they were read.
+    ///
+    /// Rebuilding this costs one `ListConnections` plus a `GetSettings` per
+    /// connection, and `read` runs on every NetworkManager property signal —
+    /// most of which are a single access point's strength moving. The cache
+    /// bounds that to one rebuild per [`KNOWN_TTL`], and opening the picker
+    /// clears it so the list is fresh when it matters.
+    known: HashMap<String, zvariant::OwnedObjectPath>,
+    known_at: Option<std::time::Instant>,
 }
+
+/// How long [`Worker::known`] is believed without re-reading NetworkManager.
+///
+/// A saved connection can be edited in place — same object path, new SSID — and
+/// nothing this worker subscribes to says so, so the cache expires rather than
+/// living until the picker reopens.
+const KNOWN_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Worker {
     fn new(
@@ -243,6 +259,8 @@ impl Worker {
             security: HashMap::new(),
             error: None,
             scan_asked: None,
+            known: HashMap::new(),
+            known_at: None,
         }
     }
 
@@ -257,6 +275,12 @@ impl Worker {
                         // because a scan takes a couple of seconds and a
                         // picker that showed nothing until it finished would
                         // look broken every time it opened.
+                        //
+                        // The saved connections are re-read too: the picker is
+                        // where their one-click-join flag is shown, and a
+                        // connection added since it was last open should not
+                        // wait out the cache.
+                        self.known_at = None;
                         self.refresh();
                         self.scan();
                     } else {
@@ -476,11 +500,24 @@ impl Worker {
     /// that has to ask for a passphrase first, and it is also how a known
     /// network is activated: the connection object is what
     /// `ActivateConnection` takes.
-    fn known_networks(&self) -> HashMap<String, zvariant::OwnedObjectPath> {
+    ///
+    /// Cached, because the answer changes only when a connection is added,
+    /// removed or edited, and this is called on every NetworkManager property
+    /// signal. Cloned rather than borrowed because the caller needs `&mut
+    /// self` to read the access points, and a map of saved networks is small
+    /// next to the `GetSettings` round trip per connection it replaces.
+    fn known_networks(&mut self) -> HashMap<String, zvariant::OwnedObjectPath> {
+        if self.known_at.is_some_and(|at| at.elapsed() < KNOWN_TTL) {
+            return self.known.clone();
+        }
+
         let mut known = HashMap::new();
         let Some(settings) = self.proxy(SETTINGS_PATH, "org.freedesktop.NetworkManager.Settings")
         else {
-            return known;
+            // Settings is unavailable but the daemon is not: keep the last
+            // answer rather than telling the picker no network is saved, which
+            // would make every row look like it needs a passphrase.
+            return self.known.clone();
         };
         let connections: Vec<zvariant::OwnedObjectPath> =
             settings.call("ListConnections", &()).unwrap_or_default();
@@ -505,7 +542,10 @@ impl Worker {
                 known.insert(ssid, path);
             }
         }
-        known
+
+        self.known = known;
+        self.known_at = Some(std::time::Instant::now());
+        self.known.clone()
     }
 
     /// Ask the radio to look around.
@@ -571,7 +611,12 @@ impl Worker {
     /// classified it when the list was read — which is how the connection
     /// document knows to ask for SAE on a WPA3 network rather than trying the
     /// passphrase against a scheme the network does not speak.
-    fn connect(&self, ssid: &str, passphrase: Option<&str>, security: &str) -> Result<(), String> {
+    fn connect(
+        &mut self,
+        ssid: &str,
+        passphrase: Option<&str>,
+        security: &str,
+    ) -> Result<(), String> {
         let manager = self
             .proxy(MANAGER_PATH, NM)
             .ok_or_else(|| "NetworkManager is not answering".to_owned())?;

@@ -43,13 +43,39 @@ function* walk(node, parent = null) {
   for (const child of node.children) yield* walk(child, node);
 }
 
-function findLeaf(id) {
+/* Leaf positions, keyed by `treeGeneration`. `findLeaf` walks every workspace
+ * and every leaf, and `workspaceOf` is called once per window per geometry
+ * pass — several times a frame while the layout is being measured, which makes
+ * a full walk per call quadratic in the number of windows. Every structural
+ * change bumps `treeGeneration`, so the index is rebuilt when it moves.
+ *
+ * The generation alone is not trusted: an entry is believed only while the
+ * parent it names still holds the leaf under the root it names, so a change
+ * that forgot to bump costs a walk rather than a wrong answer. That is the
+ * same rule the compositor's own surface index uses, and for the same reason. */
+let leafIndex = new Map();
+let leafIndexGeneration = -1;
+
+function rebuildLeafIndex() {
+  leafIndex.clear();
   for (const [n, root] of workspaces) {
     for (const [leaf, parent] of walk(root)) {
-      if (leaf.id === id) return { leaf, parent, workspace: n };
+      leafIndex.set(leaf.id, { leaf, parent, workspace: n, root });
     }
   }
-  return null;
+  leafIndexGeneration = treeGeneration;
+}
+
+function findLeaf(id) {
+  const cached = leafIndexGeneration === treeGeneration
+    ? leafIndex.get(id) : null;
+  if (cached && cached.leaf.id === id &&
+      cached.parent.children.includes(cached.leaf) &&
+      workspaces.get(cached.workspace) === cached.root) {
+    return cached;
+  }
+  rebuildLeafIndex();
+  return leafIndex.get(id) ?? null;
 }
 
 function leavesOf(n) {

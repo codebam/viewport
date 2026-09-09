@@ -61,6 +61,13 @@ pub struct Pending {
 /// A queue rather than a direct call because the callbacks run inside WebKit,
 /// underneath a calloop dispatch that already holds the compositor state
 /// mutably. Reaching back in from there would alias it.
+///
+/// The message queue is capped: a page that emits without bound while the
+/// compositor is blocked would otherwise grow the shell process without limit.
+/// The oldest are dropped, because a shell that is this far behind has already
+/// lost the frame they describe. See [`Mailbox::messages`].
+const MAX_MAILBOX_MESSAGES: usize = 8192;
+
 #[derive(Default)]
 pub struct Mailbox {
     /// Wakes the event loop once something has been posted. Without it a
@@ -73,7 +80,15 @@ pub struct Mailbox {
     pub frame: Option<Pending>,
     /// Messages from the page, in order. Order matters here — the shell's
     /// layout messages are a sequence, not a state.
-    pub messages: Vec<String>,
+    ///
+    /// A `VecDeque` so that the overflow safety valve below is O(1). The
+    /// compositor drains this every event-loop turn; the cap exists for a page
+    /// that emits without bound while the compositor is blocked, not for
+    /// anything normal.
+    pub messages: VecDeque<String>,
+    /// Messages dropped because the mailbox was at [`MAX_MAILBOX_MESSAGES`].
+    /// Reported once per drain rather than once per message.
+    dropped: u64,
     /// Frames superseded before anything drew them. Their buffers are not in
     /// use by anyone, so they go straight back to WebKit's pool — but the
     /// callback that dropped them cannot reach the display, which is why they
@@ -164,14 +179,59 @@ unsafe impl Sync for Context {}
 
 /// The queue the compositor posts into and the web thread drains.
 struct Commands {
-    queue: Mutex<VecDeque<Command>>,
+    queue: Mutex<Queue>,
     context: Context,
+}
+
+/// What the web thread still has to do, with pointer motion coalesced.
+///
+/// The web thread drains only between GLib iterations, and WebKit can be inside
+/// a long synchronous task or a slow frame while the pointer keeps moving. One
+/// queue entry per motion event would then grow without bound and replay a
+/// stale path once it caught up; only the latest position before the next
+/// event matters, so motions and axes replace rather than append. They are
+/// sealed — pushed in order — by any other command, so a motion that happened
+/// before a button press is still delivered before it.
+#[derive(Default)]
+struct Queue {
+    commands: VecDeque<Command>,
+    pending_motion: Option<Command>,
+    pending_axis: Option<Command>,
+}
+
+impl Queue {
+    fn push(&mut self, command: Command) {
+        match command {
+            Command::PointerMotion { .. } => self.pending_motion = Some(command),
+            Command::PointerAxis { .. } => self.pending_axis = Some(command),
+            command => {
+                self.seal();
+                self.commands.push_back(command);
+            }
+        }
+    }
+
+    /// Push the coalesced pointer events, so whatever follows them keeps its
+    /// order relative to them.
+    fn seal(&mut self) {
+        if let Some(motion) = self.pending_motion.take() {
+            self.commands.push_back(motion);
+        }
+        if let Some(axis) = self.pending_axis.take() {
+            self.commands.push_back(axis);
+        }
+    }
+
+    fn drain(&mut self) -> Vec<Command> {
+        self.seal();
+        self.commands.drain(..).collect()
+    }
 }
 
 impl Commands {
     fn send(&self, command: Command) {
         if let Ok(mut queue) = self.queue.lock() {
-            queue.push_back(command);
+            queue.push(command);
         }
         // Wakes a `g_main_context_iteration` that is blocked in poll. This is
         // the whole reason no GSource is needed for the command channel:
@@ -244,7 +304,14 @@ impl MessageSink for Messages {
         // `view.layout` the desktop never applies, so it waits rather than
         // vanish.
         if let Ok(mut mailbox) = self.0.lock() {
-            mailbox.messages.push(json.to_owned());
+            // Drop the oldest rather than the newest: a page this far behind
+            // is describing a desktop that has moved on, and the newest
+            // message is the one closest to where it is now.
+            if mailbox.messages.len() >= MAX_MAILBOX_MESSAGES {
+                mailbox.messages.pop_front();
+                mailbox.dropped += 1;
+            }
+            mailbox.messages.push_back(json.to_owned());
             if let Some(ping) = mailbox.ping.as_ref() {
                 ping.ping();
             }
@@ -387,7 +454,7 @@ impl Shell {
         let context = Context(unsafe { g_main_context_new() });
         anyhow::ensure!(!context.0.is_null(), "g_main_context_new returned NULL");
         let commands = Arc::new(Commands {
-            queue: Mutex::new(VecDeque::new()),
+            queue: Mutex::new(Queue::default()),
             context,
         });
 
@@ -571,7 +638,16 @@ impl Shell {
     pub fn take_messages(&self) -> Vec<String> {
         self.mailbox
             .try_lock()
-            .map(|mut mailbox| std::mem::take(&mut mailbox.messages))
+            .map(|mut mailbox| {
+                if mailbox.dropped > 0 {
+                    tracing::warn!(
+                        "the shell's message mailbox overflowed; {} message(s) were dropped",
+                        mailbox.dropped
+                    );
+                    mailbox.dropped = 0;
+                }
+                std::mem::take(&mut mailbox.messages).into_iter().collect()
+            })
             .unwrap_or_default()
     }
 
@@ -702,7 +778,7 @@ fn web_thread(
         unsafe { g_main_context_iteration(context, 1) };
 
         let drained: Vec<Command> = match commands.queue.lock() {
-            Ok(mut queue) => queue.drain(..).collect(),
+            Ok(mut queue) => queue.drain(),
             Err(_) => break,
         };
         for command in drained {
@@ -918,5 +994,90 @@ mod tests {
         assert!(!Termination::TerminatedByApi.is_recoverable());
         assert!(Termination::Crashed.is_recoverable());
         assert!(Termination::ExceededMemoryLimit.is_recoverable());
+    }
+
+    fn motion(x: f64) -> Command {
+        Command::PointerMotion {
+            time: 0,
+            x,
+            y: 0.0,
+            modifiers: 0,
+        }
+    }
+
+    #[test]
+    fn pointer_motion_coalesces_to_the_newest() {
+        // A stalled web process must not accumulate one entry per motion
+        // event: only the latest position before the next event matters.
+        let mut queue = Queue::default();
+        for i in 0..100 {
+            queue.push(motion(i as f64));
+        }
+        let drained = queue.drain();
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(drained[0], Command::PointerMotion { x: 99.0, .. }));
+    }
+
+    #[test]
+    fn a_button_seals_the_motion_before_it() {
+        // The motion happened before the press, so it must be delivered
+        // before it even though it was coalesced.
+        let mut queue = Queue::default();
+        queue.push(motion(1.0));
+        queue.push(Command::PointerButton {
+            time: 0,
+            x: 0.0,
+            y: 0.0,
+            button: 0x110,
+            pressed: true,
+            modifiers: 0,
+        });
+        queue.push(motion(2.0));
+        let drained = queue.drain();
+        assert_eq!(drained.len(), 3);
+        assert!(matches!(drained[0], Command::PointerMotion { x: 1.0, .. }));
+        assert!(matches!(drained[1], Command::PointerButton { .. }));
+        assert!(matches!(drained[2], Command::PointerMotion { x: 2.0, .. }));
+    }
+
+    #[test]
+    fn motion_and_axis_do_not_evict_each_other() {
+        let mut queue = Queue::default();
+        queue.push(motion(1.0));
+        queue.push(Command::PointerAxis {
+            time: 0,
+            x: 0.0,
+            y: 0.0,
+            dx: 0.0,
+            dy: 3.0,
+            precise: false,
+            modifiers: 0,
+        });
+        let drained = queue.drain();
+        assert_eq!(drained.len(), 2);
+        assert!(drained
+            .iter()
+            .any(|command| matches!(command, Command::PointerMotion { .. })));
+        assert!(drained
+            .iter()
+            .any(|command| matches!(command, Command::PointerAxis { .. })));
+    }
+
+    #[test]
+    fn the_message_mailbox_drops_the_oldest_rather_than_growing_without_bound() {
+        let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+        let mut sink = Messages(mailbox.clone());
+        for i in 0..MAX_MAILBOX_MESSAGES + 10 {
+            sink.message(&format!("m{i}"));
+        }
+        let held = mailbox.lock().unwrap();
+        assert_eq!(held.messages.len(), MAX_MAILBOX_MESSAGES);
+        // The ten oldest went; the newest stayed.
+        assert_eq!(held.messages.front().map(String::as_str), Some("m10"));
+        assert_eq!(
+            held.messages.back().map(String::as_str),
+            Some(format!("m{}", MAX_MAILBOX_MESSAGES + 9).as_str())
+        );
+        assert_eq!(held.dropped, 10);
     }
 }
