@@ -49,6 +49,9 @@ use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 use super::portal::{release_session, Message, SessionObject, Sessions, Started as CastStarted};
 
+/// Where every portal object this compositor serves lives on the bus.
+const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
+
 /// The devices the interface knows about, as it numbers them.
 pub const DEVICE_KEYBOARD: u32 = 1;
 pub const DEVICE_POINTER: u32 = 2;
@@ -458,12 +461,13 @@ impl RemoteDesktop {
             return (RESPONSE_FAILED, HashMap::new());
         }
         let path = OwnedObjectPath::from(session_handle);
-        let (devices, types) = {
+        let (devices, types, clipboard) = {
             let shared = self.sessions.lock().unwrap();
             match shared.sessions.get(&path) {
                 Some(session) => (
                     session.wanted_devices,
                     session.sources_selected.then_some(session.types),
+                    session.clipboard,
                 ),
                 None => return (RESPONSE_FAILED, HashMap::new()),
             }
@@ -531,12 +535,13 @@ impl RemoteDesktop {
 
         let mut results: HashMap<String, OwnedValue> = HashMap::new();
         results.insert("devices".to_owned(), OwnedValue::from(started.devices));
-        // What the application may not do, said explicitly. The frontend reads
-        // an absent key as false, but an application reading the results
-        // dictionary sees the difference between "no" and "this compositor did
-        // not think about it", and a remote session pasting into the machine
-        // is the kind of thing that should be a stated no.
-        results.insert("clipboard_enabled".to_owned(), OwnedValue::from(false));
+        // Said explicitly either way. The frontend reads an absent key as
+        // false, but an application reading the results dictionary sees the
+        // difference between "no" and "this compositor did not think about it",
+        // and a remote session pasting into the machine is the kind of thing
+        // that should be a stated answer. True only when the session asked
+        // through `RequestClipboard` before Start.
+        results.insert("clipboard_enabled".to_owned(), OwnedValue::from(clipboard));
 
         if let Some(cast) = started.cast {
             // Described exactly as ScreenCast.Start describes it, because it
@@ -865,6 +870,264 @@ impl RemoteDesktop {
     }
 }
 
+/// The `org.freedesktop.impl.portal.Clipboard` object.
+///
+/// A session created by RemoteDesktop or InputCapture asks for clipboard
+/// access here; this interface creates no sessions of its own. The data itself
+/// is the compositor's clipboard history, so every method is a question for
+/// the compositor thread or a message to it — the bus thread never touches the
+/// selection, and a client that has the clipboard open does not have to be
+/// reachable from here.
+///
+/// Text only, like the history: an image or a file list has nowhere to be read
+/// back from, and the remote-desktop protocol has a separate file-transfer
+/// portal for files.
+pub struct Clipboard {
+    sender: smithay::reexports::calloop::channel::Sender<Message>,
+    sessions: Sessions,
+}
+
+impl Clipboard {
+    pub fn new(
+        sender: smithay::reexports::calloop::channel::Sender<Message>,
+        sessions: Sessions,
+    ) -> Self {
+        Self { sender, sessions }
+    }
+
+    fn called_by_frontend(&self, header: &zbus::message::Header<'_>) -> bool {
+        super::portal::called_by_frontend(&self.sessions, "clipboard", header)
+    }
+
+    /// Whether the session asked for the clipboard and was granted it.
+    fn granted(&self, path: &OwnedObjectPath) -> bool {
+        self.sessions
+            .lock()
+            .unwrap()
+            .sessions
+            .get(path)
+            .is_some_and(|session| session.clipboard)
+    }
+}
+
+#[zbus::interface(name = "org.freedesktop.impl.portal.Clipboard")]
+impl Clipboard {
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        1
+    }
+
+    /// The application wants the clipboard for this session.
+    ///
+    /// Called before Start; the answer is the `clipboard_enabled` field of
+    /// that call's results, not this one's — the interface defines it as
+    /// one-way.
+    async fn request_clipboard(
+        &self,
+        session_handle: ObjectPath<'_>,
+        _options: HashMap<String, OwnedValue>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) {
+        if !self.called_by_frontend(&header) {
+            return;
+        }
+        let path = OwnedObjectPath::from(session_handle);
+        if let Some(session) = self.sessions.lock().unwrap().sessions.get_mut(&path) {
+            session.clipboard = true;
+            tracing::debug!("clipboard: {path} asked for access");
+        }
+    }
+
+    /// The remote session now owns the clipboard, offering `mime_types`.
+    ///
+    /// The data itself arrives through `SelectionWrite`; this is the
+    /// advertisement, and the `SelectionOwnerChanged` signal is what tells the
+    /// frontend to read it back when the local side pastes.
+    async fn set_selection(
+        &self,
+        session_handle: ObjectPath<'_>,
+        options: HashMap<String, OwnedValue>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+    ) {
+        if !self.called_by_frontend(&header) {
+            return;
+        }
+        let path = OwnedObjectPath::from(session_handle);
+        let mimes = mime_types(&options);
+        {
+            let mut shared = self.sessions.lock().unwrap();
+            let Some(session) = shared.sessions.get_mut(&path) else {
+                return;
+            };
+            if !session.clipboard {
+                return;
+            }
+            session.clipboard_mimes = mimes.clone();
+            session.clipboard_owner = true;
+        }
+        tracing::debug!("clipboard: {path} now owns {mimes:?}");
+        emit_owner_changed(server, &path, &mimes, true).await;
+    }
+
+    /// The application is pasting; hand it what the local selection holds.
+    async fn selection_read(
+        &self,
+        session_handle: ObjectPath<'_>,
+        _mime_type: &str,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+        if !self.called_by_frontend(&header) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "that is not the portal frontend".to_owned(),
+            ));
+        }
+        let path = OwnedObjectPath::from(session_handle);
+        if !self.granted(&path) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "this session was not granted the clipboard".to_owned(),
+            ));
+        }
+
+        // The selection lives on the compositor thread, so it is asked for
+        // rather than read.
+        let (sender, receiver) = async_channel::bounded(1);
+        self.sender
+            .send(Message::ClipboardRead { reply: sender })
+            .map_err(|_| zbus::fdo::Error::Failed("the compositor is not listening".to_owned()))?;
+        let text = receiver
+            .recv()
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("the compositor did not answer".to_owned()))?
+            .unwrap_or_default();
+
+        // A pipe the application reads: this end is written on a thread,
+        // because the application may not read it for as long as it likes and
+        // this is the bus connection the rest of the desktop shares.
+        let (read, write) = smithay::reexports::rustix::pipe::pipe()
+            .map_err(|e| zbus::fdo::Error::Failed(format!("no pipe for the clipboard: {e}")))?;
+        if let Err(e) = std::thread::Builder::new()
+            .name("clipboard-read".to_owned())
+            .spawn(move || {
+                use std::io::Write as _;
+                let mut file = std::fs::File::from(write);
+                let _ = file.write_all(text.as_bytes());
+            })
+        {
+            tracing::warn!("clipboard: could not start a writer: {e}");
+            return Err(zbus::fdo::Error::Failed(
+                "could not start a writer".to_owned(),
+            ));
+        }
+        Ok(zvariant::OwnedFd::from(read))
+    }
+
+    /// The application is answering a `SelectionTransfer`; hand it a pipe to
+    /// write the data into.
+    async fn selection_write(
+        &self,
+        session_handle: ObjectPath<'_>,
+        _serial: u32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<zvariant::OwnedFd> {
+        if !self.called_by_frontend(&header) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "that is not the portal frontend".to_owned(),
+            ));
+        }
+        let path = OwnedObjectPath::from(session_handle);
+        if !self.granted(&path) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "this session was not granted the clipboard".to_owned(),
+            ));
+        }
+
+        let (read, write) = smithay::reexports::rustix::pipe::pipe()
+            .map_err(|e| zbus::fdo::Error::Failed(format!("no pipe for the clipboard: {e}")))?;
+        let sender = self.sender.clone();
+        if let Err(e) = std::thread::Builder::new()
+            .name("clipboard-write".to_owned())
+            .spawn(move || {
+                use std::io::Read as _;
+                let file = std::fs::File::from(read);
+                let mut buffer = Vec::new();
+                // Bounded by reading, as the history is: a remote that offers
+                // more than the cap still has its first quarter-megabyte kept.
+                let _ = file
+                    .take(crate::clipboard::MAX_BYTES as u64)
+                    .read_to_end(&mut buffer);
+                let text = String::from_utf8_lossy(&buffer).into_owned();
+                let _ = sender.send(Message::ClipboardSet { text });
+            })
+        {
+            tracing::warn!("clipboard: could not start a reader: {e}");
+            return Err(zbus::fdo::Error::Failed(
+                "could not start a reader".to_owned(),
+            ));
+        }
+        Ok(zvariant::OwnedFd::from(write))
+    }
+
+    /// The application has finished writing the selection, or failed to.
+    ///
+    /// The reader thread `SelectionWrite` started is what records the data:
+    /// closing the write end is the EOF it waits for, and `success` false only
+    /// means the bytes are whatever arrived before it gave up.
+    async fn selection_write_done(
+        &self,
+        _session_handle: ObjectPath<'_>,
+        _serial: u32,
+        _success: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) {
+        let _ = header;
+    }
+
+    /// The local selection changed, and the session may now offer it.
+    #[zbus(signal)]
+    async fn selection_owner_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        session_handle: ObjectPath<'_>,
+        options: HashMap<String, Value<'_>>,
+    ) -> zbus::Result<()>;
+
+    /// A local paste wants what the remote session is offering.
+    #[zbus(signal)]
+    async fn selection_transfer(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        session_handle: ObjectPath<'_>,
+        mime_type: &str,
+        serial: u32,
+    ) -> zbus::Result<()>;
+}
+
+fn mime_types(options: &HashMap<String, OwnedValue>) -> Vec<String> {
+    options
+        .get("mime_types")
+        .and_then(|value| <Vec<String>>::try_from(value.clone()).ok())
+        .unwrap_or_default()
+}
+
+async fn emit_owner_changed(
+    server: &zbus::ObjectServer,
+    session: &OwnedObjectPath,
+    mimes: &[String],
+    owner: bool,
+) {
+    let Ok(interface) = server.interface::<_, Clipboard>(OBJECT_PATH).await else {
+        return;
+    };
+    let mut options: HashMap<String, Value<'_>> = HashMap::new();
+    options.insert("mime_types".to_owned(), Value::from(mimes.to_vec()));
+    options.insert("session_is_owner".to_owned(), Value::from(owner));
+    if let Err(e) =
+        Clipboard::selection_owner_changed(interface.signal_emitter(), session.as_ref(), options)
+            .await
+    {
+        tracing::warn!("clipboard: could not emit SelectionOwnerChanged: {e}");
+    }
+}
+
 /// How far a discrete scroll of this many notches goes, on each axis.
 ///
 /// Split out from the handler so the arithmetic can be tested without a seat:
@@ -897,6 +1160,32 @@ pub fn discrete_v120(steps: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_advertised_mime_types_come_out_of_the_options() {
+        // `SetSelection` puts them under `mime_types`, as an array of strings.
+        // Anything else — absent, the wrong type — is a session offering
+        // nothing, which is not an error and not worth refusing the call over.
+        let mut options: HashMap<String, OwnedValue> = HashMap::new();
+        options.insert(
+            "mime_types".to_owned(),
+            Value::from(vec![
+                "text/plain;charset=utf-8".to_owned(),
+                "UTF8_STRING".to_owned(),
+            ])
+            .try_to_owned()
+            .expect("a string array holds no file descriptor"),
+        );
+        assert_eq!(
+            mime_types(&options),
+            vec!["text/plain;charset=utf-8", "UTF8_STRING"]
+        );
+        assert!(mime_types(&HashMap::new()).is_empty());
+
+        let mut wrong: HashMap<String, OwnedValue> = HashMap::new();
+        wrong.insert("mime_types".to_owned(), OwnedValue::from(7u32));
+        assert!(mime_types(&wrong).is_empty());
+    }
 
     /// Every event names the device it would have come from. One that named
     /// the wrong one would be a session granted a mouse and allowed to type,

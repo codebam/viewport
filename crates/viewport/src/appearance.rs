@@ -191,6 +191,10 @@ impl Appearance {
         // same pair.
         let remote =
             crate::screencast::remote::RemoteDesktop::new(closer.clone(), sessions.clone());
+        // The clipboard interface, on the same session table and channel for
+        // the same reason: a remote-desktop session asks for it before Start
+        // and the grant is a field on the row that call already reads.
+        let clipboard = crate::screencast::remote::Clipboard::new(closer.clone(), sessions.clone());
         let input_capture = crate::input_capture::InputCapture::new(
             closer.clone(),
             sessions.clone(),
@@ -201,6 +205,7 @@ impl Appearance {
             .serve_at(OBJECT_PATH, portal)?
             .serve_at(OBJECT_PATH, screencast)?
             .serve_at(OBJECT_PATH, remote)?
+            .serve_at(OBJECT_PATH, clipboard)?
             .serve_at(OBJECT_PATH, input_capture)?
             .serve_at(OBJECT_PATH, screenshot)?
             .serve_at(OBJECT_PATH, inhibit)?

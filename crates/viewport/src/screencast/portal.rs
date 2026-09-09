@@ -123,6 +123,19 @@ pub enum Message {
     Close {
         node: u32,
     },
+    /// The Clipboard interface asking what the local selection holds.
+    ///
+    /// The selection is compositor state, so the bus thread cannot read it;
+    /// the answer comes back on `reply` with the newest text the history has,
+    /// or `None` when there is none to offer.
+    ClipboardRead {
+        reply: async_channel::Sender<Option<String>>,
+    },
+    /// Text the remote desktop put on the clipboard, to become the local
+    /// selection.
+    ClipboardSet {
+        text: String,
+    },
 }
 
 /// What a client needs to receive the stream.
@@ -222,6 +235,19 @@ pub struct Session {
     /// typing is injecting nothing.
     pub(super) wanted_devices: u32,
     pub(super) granted_devices: u32,
+    /// Whether this session asked for clipboard access, and was granted it.
+    ///
+    /// `RequestClipboard` sets it before Start, and Start answers
+    /// `clipboard_enabled` from it. Every other Clipboard method checks it, so
+    /// a session that never asked cannot read or write the selection.
+    pub(super) clipboard: bool,
+    /// The mime types this session's `SetSelection` advertised, so
+    /// `SelectionOwnerChanged` can name them back.
+    pub(super) clipboard_mimes: Vec<String>,
+    /// Whether this session, rather than the compositor, is the clipboard
+    /// owner — set by `SetSelection` and cleared when the local side takes it
+    /// back.
+    pub(super) clipboard_owner: bool,
     /// Whether this session has been handed a libei socket.
     ///
     /// Kept so that closing a session that has one says so, and closing one

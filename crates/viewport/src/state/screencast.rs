@@ -963,6 +963,28 @@ impl ViewportState {
                 generation,
             } => self.revoke_input_capture(&session, generation, true),
             Message::Close { node } => self.stop_cast(node),
+            Message::ClipboardRead { reply } => {
+                // The compositor's own selection first — a paste out of the
+                // history — then the newest entry, which is what a client's
+                // copy recorded. Both are text; an image or a file list has
+                // nowhere to be read back from here.
+                let text = self.clipboard.current().or_else(|| {
+                    self.clipboard
+                        .entries()
+                        .first()
+                        .map(|entry| entry.text.clone())
+                });
+                let _ = reply.try_send(text);
+            }
+            Message::ClipboardSet { text } => {
+                if self.clipboard.record(text) {
+                    self.notify_clipboard();
+                }
+                // The compositor takes the selection so a local client can
+                // paste what the remote copied. The application that copied it
+                // is not on this machine, so the history is the only owner.
+                self.offer_clipboard();
+            }
         }
     }
 

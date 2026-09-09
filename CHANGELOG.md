@@ -71,6 +71,13 @@ to summarise rather than to duplicate.
   are.
 
 ### Added
+- The remote-desktop clipboard works. `org.freedesktop.impl.portal.Clipboard` is
+  served, `RequestClipboard` is answered through `Start`'s `clipboard_enabled`
+  field, and `SelectionRead`/`SelectionWrite`/`SelectionWriteDone` bridge text
+  between the remote session and the compositor's clipboard history — so a
+  remote desktop can paste what was copied locally and the local side can paste
+  what the remote copied. Text only, like the history itself; input-capture
+  sessions still answer false.
 - `outputs.<name>.icc` loads a monitor's calibration from an ICC profile. Only
   the `vcgt` tag is read — the table a profiler stored for the video card — and
   it is composed under any client gamma ramp, so a night-light client and a

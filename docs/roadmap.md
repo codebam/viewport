@@ -52,14 +52,13 @@ The sender EI server and the receiver used by InputCapture are both done —
 `docs/protocols.md` for how their opposite directions differ. One piece around
 remote sessions is not.
 
-**No clipboard for a remote session.** `Start` answers `clipboard_enabled`
-with a stated false, and `org.freedesktop.portal.Clipboard` is the interface
-that would make it true. Somebody driving this machine from another one
-therefore cannot paste into it, which for a remote-support tool is the second
-thing tried after the pointer. It is its own portal interface and its own
-consent question — reading the desk's clipboard is not the same permission as
-typing into it — which is why it is a list entry and not a line in the
-existing one.
+**The clipboard for a remote session is in, for remote desktop.** The
+`org.freedesktop.impl.portal.Clipboard` interface is served, `RequestClipboard`
+is answered through `Start`'s `clipboard_enabled` field, and text is bridged
+through the compositor's clipboard history in both directions. It is still its
+own consent question — reading the desk's clipboard is not the same permission
+as typing into it — so a session only gets it when it asks, and an
+input-capture session is not offered it yet.
 
 ## A protocol found by the same sweep
 

@@ -32,7 +32,7 @@ use viewport_ipc::event::ClipboardEntry;
 /// screen. This is generous for that and small enough that a run of them costs
 /// nothing; a client that offers a hundred megabytes of text is offering
 /// something nobody is going to paste into a picker.
-const MAX_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_BYTES: usize = 256 * 1024;
 
 /// How many entries are kept unless the configuration says otherwise.
 const DEFAULT_LIMIT: usize = 25;
