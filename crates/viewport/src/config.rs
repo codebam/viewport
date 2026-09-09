@@ -727,7 +727,7 @@ pub struct File {
 
     /// The whole keymap. Presence means "these and no built-ins", which is why
     /// an empty `"binds": {}` is meaningful — it asks for none at all.
-    pub binds: Option<std::collections::HashMap<String, Option<String>>>,
+    pub binds: Option<std::collections::HashMap<String, BindValue>>,
 
     /// Changes to the built-in keymap rather than a replacement for it.
     ///
@@ -740,7 +740,41 @@ pub struct File {
     /// default is removed rather than replaced. Without it there is no way to
     /// say "this chord must reach the application", because leaving it out is
     /// exactly what asks for the built-in back.
-    pub binds_override: Option<std::collections::HashMap<String, Option<String>>>,
+    pub binds_override: Option<std::collections::HashMap<String, BindValue>>,
+}
+
+/// What a `binds` entry says: an action, or an action with the extras a richer
+/// binding carries.
+///
+/// The string form is what almost every config writes. The object form is
+/// Hyprland's `bindd`, which needs somewhere to put a description that a
+/// `chord=action` string has no room for — and which the shell's key list and
+/// `bind.list` show in place of the raw action.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum BindValue {
+    /// The action alone. `null` claims the chord and does nothing with it.
+    Action(Option<String>),
+    /// An action with a description.
+    Detail(BindDetail),
+}
+
+/// The object form of a `binds` entry.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct BindDetail {
+    /// The action. Absent or null claims the chord and does nothing.
+    pub action: Option<String>,
+    /// Shown instead of the action, wherever a binding is listed.
+    pub description: Option<String>,
+}
+
+/// One parsed `binds` entry: the `chord=action` string the binding parser
+/// takes, and the description that travels beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindSpec {
+    pub spec: String,
+    pub description: Option<String>,
 }
 
 /// `$XDG_CONFIG_HOME/viewport/config.json`, or `~/.config` (`src/config.c:76`).
@@ -846,19 +880,25 @@ fn layout_extension_url(value: &str, config_path: &Path) -> anyhow::Result<Strin
 /// `binds` replaces the defaults and `binds_override` layers over them, but
 /// both produce the same `chord=action` strings — the difference is only
 /// whether the defaults were added first, which is the caller's business.
-pub fn bind_specs(binds: &std::collections::HashMap<String, Option<String>>) -> Vec<String> {
-    let mut specs: Vec<String> = binds
+pub fn bind_specs(binds: &std::collections::HashMap<String, BindValue>) -> Vec<BindSpec> {
+    let mut specs: Vec<BindSpec> = binds
         .iter()
-        .map(|(chord, action)| {
+        .map(|(chord, value)| {
+            let (action, description) = match value {
+                BindValue::Action(action) => (action.as_deref(), None),
+                BindValue::Detail(detail) => (detail.action.as_deref(), detail.description.clone()),
+            };
             // A null unbinds: the chord is claimed and does nothing, so the
             // built-in does not come back.
-            let action = action.as_deref().unwrap_or("none");
-            format!("{chord}={action}")
+            BindSpec {
+                spec: format!("{chord}={}", action.unwrap_or("none")),
+                description,
+            }
         })
         .collect();
     // A HashMap has no order and bindings are matched first-wins, so without
     // this the same file could produce different behaviour between runs.
-    specs.sort();
+    specs.sort_by(|a, b| a.spec.cmp(&b.spec));
     specs
 }
 
@@ -1801,8 +1841,39 @@ mod tests {
             serde_json::from_str(r#"{"binds_override":{"Mod4+d":null,"Mod4+Return":"exec foot"}}"#)
                 .expect("should parse");
         let specs = bind_specs(file.binds_override.as_ref().unwrap());
-        assert!(specs.contains(&"Mod4+d=none".to_owned()));
-        assert!(specs.contains(&"Mod4+Return=exec foot".to_owned()));
+        assert!(specs.iter().any(|s| s.spec == "Mod4+d=none"));
+        assert!(specs.iter().any(|s| s.spec == "Mod4+Return=exec foot"));
+        assert!(specs.iter().all(|s| s.description.is_none()));
+    }
+
+    #[test]
+    fn a_bind_can_carry_a_description() {
+        // Hyprland's `bindd`: the object form is the only place a binding can
+        // explain itself, and it travels beside the spec rather than in it.
+        let file: File = serde_json::from_str(
+            r#"{"binds":{
+                "Mod4+Return":"exec foot",
+                "Mod4+d":{"action":"exec wmenu-run -i","description":"open the menu"},
+                "Mod4+q":{"description":"claimed, but does nothing"}
+            }}"#,
+        )
+        .expect("should parse");
+        let specs = bind_specs(file.binds.as_ref().unwrap());
+        let described = |chord: &str| {
+            specs
+                .iter()
+                .find(|s| s.spec.starts_with(&format!("{chord}=")))
+                .and_then(|s| s.description.clone())
+        };
+        assert_eq!(described("Mod4+Return"), None);
+        assert_eq!(described("Mod4+d").as_deref(), Some("open the menu"));
+        assert_eq!(
+            described("Mod4+q").as_deref(),
+            Some("claimed, but does nothing")
+        );
+        // An object with no action claims the chord and does nothing, exactly
+        // as a null does.
+        assert!(specs.iter().any(|s| s.spec == "Mod4+q=none"));
     }
 
     #[test]
@@ -1825,7 +1896,7 @@ mod tests {
         .unwrap();
         let specs = bind_specs(file.binds.as_ref().unwrap());
         let mut sorted = specs.clone();
-        sorted.sort();
+        sorted.sort_by(|a, b| a.spec.cmp(&b.spec));
         assert_eq!(specs, sorted);
     }
 

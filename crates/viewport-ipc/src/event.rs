@@ -1477,6 +1477,10 @@ pub struct Bind {
     /// `"resize"` for the chords that only fire inside resize mode.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub mode: String,
+    /// What the binding is for, when the config file said. Hyprland's `bindd`,
+    /// and shown in place of the action wherever bindings are listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

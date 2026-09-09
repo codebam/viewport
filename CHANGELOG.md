@@ -76,6 +76,10 @@ to summarise rather than to duplicate.
   itself sees it, and handed explicitly to each child so a value changed on
   `reload` reaches the next program. The `gpu`, `pixel_format` and `cross_gpu`
   keys and their flags still win for the variables they own.
+- A `binds` entry may be an object with an `action` and a `description` —
+  Hyprland's `bindd`. The description is shown instead of the raw action in the
+  tutorial on an empty desktop and in `bind.list`; an object with no `action`
+  claims the chord and does nothing, as a `null` does.
 - Bindings carry five more flags, written as pseudo-modifiers the way `locked`
   already was. `release+` fires on the key coming up rather than going down,
   `non_consuming+` (or `transparent+`) runs the action and still lets the key,

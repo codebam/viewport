@@ -142,6 +142,13 @@ pub struct Binding {
     /// chord carry two meanings — a tap and a hold. The key is kept from the
     /// client for the whole hold, so the two do not both see it.
     pub long_press: bool,
+    /// What the binding is for, shown instead of the action wherever bindings
+    /// are listed. Hyprland's `bindd`.
+    ///
+    /// Not part of the chord: it comes from the config file's object form, so
+    /// a binding parsed from a `chord=action` string — `bind.add`, the
+    /// defaults — has none.
+    pub description: Option<String>,
 }
 
 /// The direction a scroll-wheel binding matches.
@@ -367,6 +374,7 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         ignore_mods,
         repeating,
         long_press,
+        description: None,
     })
 }
 
@@ -1088,6 +1096,7 @@ mod tests {
                 ignore_mods: false,
                 repeating: false,
                 long_press: false,
+                description: None,
             };
             assert_eq!(parse_action(&binding.action_text()), action);
         }

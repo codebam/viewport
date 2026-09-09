@@ -6125,7 +6125,7 @@ if (mode === 'scrolling') {
      the case someone is most likely to be reading it. */
   {
     emit({ type: 'config', layout: mode, binds: [
-      { chord: 'Mod4+Return', action: 'exec foot' },
+      { chord: 'Mod4+Return', action: 'exec foot', description: 'open a terminal' },
       { chord: 'Mod4+Shift+q', action: 'close' },
       { chord: 'Mod4+bracketleft', action: 'shell canvas.pan left' },
       { chord: 'h', action: 'shell layout.resize left', mode: 'resize' },
@@ -6140,7 +6140,9 @@ if (mode === 'scrolling') {
       rows.length === 3);
     check('with the chord and what it does, both as a config file spells them',
       rows[0].children[0].textContent === 'Mod4+Return'
-      && rows[0].children[1].textContent === 'exec foot');
+      && rows[0].children[1].textContent === 'open a terminal');
+    check('a binding with no description still shows its action',
+      rows[1].children[1].textContent === 'close');
     check('a binding mode is left out: its keys are not live right now',
       [...rows].every((row) =>
         row.children[0].textContent !== 'h'));

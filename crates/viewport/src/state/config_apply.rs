@@ -814,19 +814,23 @@ impl ViewportState {
         // Overrides go in front: bindings are matched first-wins, so a chord
         // the file claims shadows the default without the default needing to
         // be removed.
+        // The description travels beside the `chord=action` string rather than
+        // inside it, so it is attached after the parse — the parser has no
+        // room for it and `bind.add` has none to give.
+        fn parse_specs(
+            specs: Vec<crate::config::BindSpec>,
+        ) -> impl Iterator<Item = crate::binding::Binding> {
+            specs.into_iter().filter_map(|spec| {
+                let mut binding = crate::binding::parse(&spec.spec)?;
+                binding.description = spec.description;
+                Some(binding)
+            })
+        }
         if let Some(over) = file.binds_override.as_ref() {
-            bindings.extend(
-                crate::config::bind_specs(over)
-                    .iter()
-                    .filter_map(|spec| crate::binding::parse(spec)),
-            );
+            bindings.extend(parse_specs(crate::config::bind_specs(over)));
         }
         match file.binds.as_ref() {
-            Some(binds) => bindings.extend(
-                crate::config::bind_specs(binds)
-                    .iter()
-                    .filter_map(|spec| crate::binding::parse(spec)),
-            ),
+            Some(binds) => bindings.extend(parse_specs(crate::config::bind_specs(binds))),
             None => bindings.extend(crate::binding::defaults(
                 &terminal,
                 menu.as_deref(),

@@ -1343,7 +1343,11 @@ function renderKeybinds() {
       const chord = document.createElement('kbd');
       chord.textContent = bind.chord;
       const what = document.createElement('span');
-      what.textContent = bind.action;
+      /* A binding's own description when the config file gave one — Hyprland's
+         `bindd` — and the raw action otherwise, which is what every binding
+         without one still shows. */
+      what.textContent = typeof bind.description === 'string'
+        && bind.description.trim() !== '' ? bind.description : bind.action;
 
       row.append(chord, what);
       el.append(row);

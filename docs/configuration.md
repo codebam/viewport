@@ -856,6 +856,21 @@ chord underneath that no config file can take away.
 Both accept the same `CHORD: ACTION` entries, and a chord written twice takes
 its last definition. `data/config.example.json` is a fuller starting point.
 
+An entry may also be an object, which is how a binding explains itself —
+Hyprland's `bindd`. `action` is the action the string form would carry, and
+`description` is shown instead of the raw action wherever bindings are listed:
+the tutorial on an empty desktop, and `bind.list` on the socket. An object with
+no `action` claims the chord and does nothing, exactly as a `null` does.
+
+```json
+{
+  "binds_override": {
+    "Mod4+Return": { "action": "exec foot", "description": "open a terminal" },
+    "Mod4+d": null
+  }
+}
+```
+
 Anything you bind beats a built-in for the same chord regardless of which key it
 came from, and `--bind` on the command line beats both.
 

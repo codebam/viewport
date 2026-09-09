@@ -3347,6 +3347,7 @@ impl ViewportState {
                 chord: binding.chord(),
                 action: binding.action_text(),
                 mode: binding.mode.clone(),
+                description: binding.description.clone(),
             })
             .collect();
         let event = Event::Config(Box::new(config));
