@@ -908,7 +908,12 @@ function relayoutAll() {
      * the top few pixels of a window that has been moved under the bar, which
      * can still be grabbed anywhere else in it. */
     const barFloats = barMode === 'auto' && onScreen;
-    setOverlay(`bar:${name}`, barFloats ? output.barEl : null);
+    /* A floating bar is glass: the windows under it are blurred, because a
+       bar that is only up while Mod4 is held has nothing behind it to draw
+       an opaque background over. A docked bar sits on the wallpaper and
+       blurs nothing. */
+    setOverlay(`bar:${name}`, barFloats ? output.barEl : null,
+      { blur: barFloats });
     renderBar(name);
   }
 

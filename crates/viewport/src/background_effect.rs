@@ -379,6 +379,34 @@ struct VulkanEffectCache {
 }
 
 impl BackgroundEffectRenderElement {
+    /// A blur region of the shell, which is a buffer and not a client.
+    ///
+    /// The same geometry and region arithmetic as a client's request, with the
+    /// surface metadata replaced by what came over the socket. `commit` is the
+    /// shell's overlay counter, so a moved rectangle repaints what was under
+    /// the old one.
+    pub(crate) fn for_shell(
+        id: Id,
+        requested: Rectangle<i32, Physical>,
+        commit: CommitCounter,
+    ) -> Self {
+        let geometry = expand_blur_geometry(requested);
+        Self {
+            id,
+            commit,
+            geometry,
+            alpha: 1.0,
+            regions: vec![Rectangle::new(
+                (
+                    requested.loc.x - geometry.loc.x,
+                    requested.loc.y - geometry.loc.y,
+                )
+                    .into(),
+                (requested.size.w, requested.size.h).into(),
+            )],
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(requested: Rectangle<i32, Physical>) -> Self {
         let geometry = expand_blur_geometry(requested);

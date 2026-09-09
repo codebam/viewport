@@ -71,6 +71,17 @@ to summarise rather than to duplicate.
   are.
 
 ### Added
+- `ext-background-effect-v1` is advertised on DRM again, through the Vulkan
+  renderer. `VulkanFrame` grew `FrameContext`, a render-pass-safe capture into a
+  downsampled offscreen image, and a nine-tap blur pipeline — the same kernel
+  the GLES path runs — so the DRM backend offers the global when its renderer
+  can draw the blur. Nested and headless sessions already had it; on real
+  hardware no client got it at all before this.
+- The shell's own chrome can blur the windows behind it. An `OverlayRect` sent
+  in `shell.overlay` may carry `blur: true`, and the compositor draws the same
+  framebuffer-effect element a client's request would under that piece of the
+  shell's texture. The floating (`auto`) bar uses it, so the windows under the
+  bar are glass rather than an opaque strip.
 - A top-level `env` block sets environment variables for the session and every
   program it starts. It is applied before any backend opens, so the compositor
   itself sees it, and handed explicitly to each child so a value changed on

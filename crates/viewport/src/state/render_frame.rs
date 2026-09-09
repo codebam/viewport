@@ -562,7 +562,13 @@ impl ViewportState {
                 // of them and the others carry on as they were.
                 local.intersection(visible)?;
                 let id = self.shell_overlay_ids.get(at)?.clone();
-                Some((id, local.to_f64().to_physical(scale).to_i32_round()))
+                // A blur region keeps the same id as the overlay it sits under,
+                // so the two move together and the tracker sees one element.
+                let blur = self
+                    .shell_overlay_blur
+                    .contains(rect)
+                    .then_some(self.shell_overlay_commit);
+                Some((id, local.to_f64().to_physical(scale).to_i32_round(), blur))
             })
             .collect();
 

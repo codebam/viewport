@@ -470,7 +470,7 @@ const overlays = new Map();
    is lost by declining: while the bar is visible Mod4 is down, and the
    compositor keeps those clicks for the gesture rather than forwarding them
    here. */
-function setOverlay(name, el, { passthrough = false } = {}) {
+function setOverlay(name, el, { passthrough = false, blur = false } = {}) {
   const rect = el?.getBoundingClientRect();
   if (!rect || rect.width < 1 || rect.height < 1) {
     if (!overlays.delete(name)) return;
@@ -481,12 +481,17 @@ function setOverlay(name, el, { passthrough = false } = {}) {
       width: Math.round(rect.width),
       height: Math.round(rect.height),
       passthrough,
+      /* The compositor blurs the windows behind this rectangle before drawing
+         the page's own pixels over it — the shell's half of
+         `ext-background-effect-v1`, which a page cannot ask for itself. */
+      blur,
     };
     const previous = overlays.get(name);
     if (previous
       && previous.x === next.x && previous.y === next.y
       && previous.width === next.width && previous.height === next.height
-      && previous.passthrough === next.passthrough) {
+      && previous.passthrough === next.passthrough
+      && previous.blur === next.blur) {
       return;
     }
     overlays.set(name, next);

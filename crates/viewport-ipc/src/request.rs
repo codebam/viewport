@@ -1035,6 +1035,16 @@ pub struct OverlayRect {
     /// the compositor keeps for the gesture and never forwards to the shell.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub passthrough: bool,
+    /// Blur the windows behind this rectangle, the way a client does through
+    /// `ext-background-effect-v1`.
+    ///
+    /// The shell is not a client and cannot ask for itself: it is one buffer
+    /// the compositor draws, and the part that floats over the windows has no
+    /// blur-region metadata of its own. This is that metadata, for the pieces
+    /// of the page that are meant to be glass — the bar, a notification, a
+    /// dialog.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blur: bool,
 }
 
 /// One of the shell's workspaces, as an outside client sees it.
@@ -1289,7 +1299,7 @@ mod tests {
             parse(
                 r#"{"type":"shell.overlay","rects":[
                     {"x":0,"y":0,"width":300,"height":120},
-                    {"x":0,"y":0,"width":1920,"height":30,"passthrough":true}]}"#
+                    {"x":0,"y":0,"width":1920,"height":30,"passthrough":true,"blur":true}]}"#
             ),
             Request::ShellOverlay {
                 rects: vec![
@@ -1299,6 +1309,7 @@ mod tests {
                         width: 300,
                         height: 120,
                         passthrough: false,
+                        blur: false,
                     },
                     OverlayRect {
                         x: 0,
@@ -1306,6 +1317,7 @@ mod tests {
                         width: 1920,
                         height: 30,
                         passthrough: true,
+                        blur: true,
                     },
                 ],
             }

@@ -76,6 +76,10 @@ smithay::backend::renderer::element::render_elements! {
     Cursor=MemoryRenderBufferRenderElement<R>,
     /// Opaque replacement for a window whose rule forbids capture.
     Redaction=SolidColorRenderElement,
+    /// The blur behind a piece of shell that asked to be glass. A shell region
+    /// is not a surface, so it cannot ride inside `SurfaceElement` the way a
+    /// client's blur does.
+    BackgroundEffect=BackgroundEffectRenderElement,
 }
 
 smithay::backend::renderer::element::render_elements! {
@@ -245,7 +249,15 @@ pub struct Frame {
     /// draws can be in front: the same texture, once per rectangle, cropped to
     /// the piece that belongs on top. A notification and a chooser can be up
     /// at the same time, which is why it is a list.
-    pub overlay: Vec<(Id, Rectangle<i32, Physical>)>,
+    ///
+    /// The third element is the commit to blur the windows behind this
+    /// rectangle with, when the shell asked for that. It rides beside the
+    /// rectangle rather than in a list of its own so the two cannot come apart.
+    pub overlay: Vec<(
+        Id,
+        Rectangle<i32, Physical>,
+        Option<smithay::backend::renderer::utils::CommitCounter>,
+    )>,
     pub cursor: Cursor,
     /// The magnified region, when the magnifier is on and the pointer is on
     /// this output. See [`crate::magnify`] — the short version is that this
@@ -428,7 +440,23 @@ where
     // which window to share cannot be behind the windows it is asking about,
     // and the shell has no way to be in front on its own.
     if let Some(shell) = frame.shell.as_ref() {
-        for (id, crop) in &frame.overlay {
+        // Asked once for the whole list rather than per rectangle: the answer
+        // cannot change between them, and on the render path the call is a
+        // user-data lookup.
+        let effects_available = renderer.background_effects_available();
+        for (id, crop, blur) in &frame.overlay {
+            // The glass under the page: blur the windows behind this piece of
+            // shell before its own pixels go over. The shell is not a client
+            // and cannot ask for itself, so the region came over the socket.
+            if let Some(commit) = blur.filter(|_| effects_available) {
+                elements.push(OutputElement::from(
+                    crate::background_effect::BackgroundEffectRenderElement::for_shell(
+                        id.clone(),
+                        *crop,
+                        commit,
+                    ),
+                ));
+            }
             let Some(element) = shell_element(renderer, shell, id.clone()) else {
                 break;
             };

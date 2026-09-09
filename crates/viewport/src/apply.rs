@@ -238,8 +238,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             } else {
                 Default::default()
             };
-            // The chooser is a dialog: it is there to be clicked.
-            state.set_shell_overlays(rects.clone(), rects);
+            // The chooser is a dialog: it is there to be clicked, and it is
+            // drawn over whatever it is asking about — so it blurs that too.
+            state.set_shell_overlays(rects.clone(), rects.clone(), rects);
         }
 
         Request::ShellOverlay { rects } => {
@@ -263,6 +264,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                             (rect.width, rect.height).into(),
                         ),
                         rect.passthrough,
+                        rect.blur,
                     )
                 })
                 .collect();
@@ -270,11 +272,16 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // ones that did not ask to be seen through take the pointer.
             let hits = placed
                 .iter()
-                .filter(|(_, passthrough)| !passthrough)
-                .map(|(rect, _)| *rect)
+                .filter(|(_, passthrough, _)| !passthrough)
+                .map(|(rect, _, _)| *rect)
                 .collect();
-            let all = placed.into_iter().map(|(rect, _)| rect).collect();
-            state.set_shell_overlays(all, hits);
+            let blur = placed
+                .iter()
+                .filter(|(_, _, blur)| *blur)
+                .map(|(rect, _, _)| *rect)
+                .collect();
+            let all = placed.into_iter().map(|(rect, _, _)| rect).collect();
+            state.set_shell_overlays(all, hits, blur);
         }
 
         Request::ShellOverview { active } => {

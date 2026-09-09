@@ -628,6 +628,16 @@ pub struct ViewportState {
     /// revealed by the same modifier every window gesture is on, so a strip of
     /// screen it floats over would otherwise stop answering clicks.
     pub shell_overlay_hits: Vec<smithay::utils::Rectangle<i32, Logical>>,
+    /// The ones that asked to be glass: the windows behind them are blurred
+    /// before the shell's own pixels are drawn over. The shell is not a client
+    /// and cannot request `ext-background-effect-v1`, so this is where its
+    /// blur regions live — see `OverlayRect::blur`.
+    pub shell_overlay_blur: Vec<smithay::utils::Rectangle<i32, Logical>>,
+    /// Bumped whenever the overlay list changes, so a blur element's damage
+    /// tracker sees a new commit and repaints what moved. One counter for all
+    /// of them: a change to any rectangle damages the blur behind every one,
+    /// which is a frame the desktop was redrawing anyway.
+    pub shell_overlay_commit: smithay::backend::renderer::utils::CommitCounter,
 
     /// The pointer image: the client's own surface where one is set, the
     /// theme's otherwise. Nothing draws a cursor unless this says what.
@@ -1740,6 +1750,8 @@ impl ViewportState {
             shell_overlay_ids: Vec::new(),
             shell_overlays: Vec::new(),
             shell_overlay_hits: Vec::new(),
+            shell_overlay_blur: Vec::new(),
+            shell_overlay_commit: smithay::backend::renderer::utils::CommitCounter::default(),
 
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             tablet_cursor_status: None,

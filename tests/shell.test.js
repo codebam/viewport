@@ -5458,6 +5458,8 @@ if (mode === 'scrolling') {
   check('the revealed bar is drawn over the windows', floating().length > 0);
   check('and takes the pointer, so its buttons can be clicked',
     floating().every((r) => r.passthrough !== true));
+  check('and asks for the windows behind it to be blurred',
+    floating().every((r) => r.blur === true));
 
   emit({ type: 'modifiers', logo: false });
   check('letting go hides it again', barHidden());

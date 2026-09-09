@@ -516,6 +516,7 @@ impl ViewportState {
         &mut self,
         rects: Vec<smithay::utils::Rectangle<i32, Logical>>,
         hits: Vec<smithay::utils::Rectangle<i32, Logical>>,
+        blur: Vec<smithay::utils::Rectangle<i32, Logical>>,
     ) {
         // A cap rather than trust: the list comes over the control socket, and
         // the render elements it becomes are walked on every frame. A client
@@ -537,10 +538,17 @@ impl ViewportState {
             });
             return;
         }
-        if self.shell_overlays == rects && self.shell_overlay_hits == hits {
+        if self.shell_overlays == rects
+            && self.shell_overlay_hits == hits
+            && self.shell_overlay_blur == blur
+        {
             return;
         }
         self.shell_overlay_hits = hits;
+        self.shell_overlay_blur = blur;
+        // The blur elements key their damage on this; a moved rectangle is a
+        // new commit so what was under the old one is repainted.
+        self.shell_overlay_commit.increment();
         // What is under the pointer just changed without the pointer moving,
         // and the pointer's focus is only worked out when it moves.
         //

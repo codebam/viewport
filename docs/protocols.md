@@ -90,19 +90,22 @@ texels in total. A region accepts at most 256 add/subtract operations and 1,024
 resolved rectangles. Requests past those bounds draw without blur rather than
 allocating unbounded compositor memory or GPU work.
 
-The global is created after the GLES context reports framebuffer blits and the
-blur shader compiles. A GLES 2 context therefore gets no global. The DRM backend
-gets no global either, including on a card that happened to fall back to GLES:
-its renderer is selected independently per card, Vulkan is preferred, cards can
-be mixed, and a later output can hotplug onto another renderer. A compositor-wide
-global cannot honestly promise an effect that only some of those outputs draw.
+The global is created after the renderer proves it can run the effect. GLES
+proves it by blitting the framebuffer and compiling the blur shader, so a GLES 2
+context gets no global. Vulkan has the capture and the pipeline built in, so any
+`VulkanRenderer` can run it. The DRM backend advertises the global when its
+renderer is one of those — a card that fell back to GLES says so through its own
+check, and a card whose renderer cannot draw the blur does not advertise it.
 
 The built-in shell is not such a surface. Both the in-process WPE view and the
 out-of-process shell hand the compositor a DMA-BUF which is rendered as one
 `render::Shell` texture; no `wl_surface` survives in that element for this
-protocol to extend. Ordinary Wayland clients can request blur now. Giving the
-shell's own translucent chrome the same effect still needs blur-region metadata
-to travel with its frame and a framebuffer-effect element around that texture.
+protocol to extend. The parts of the page that float over the windows — the
+`auto` bar, a notification, a dialog — carry their blur region in
+`shell.overlay` instead: an `OverlayRect` with `blur: true` becomes the same
+framebuffer-effect element a client's request would, drawn immediately under
+that piece of the shell's texture. Ordinary Wayland clients and the shell's own
+chrome therefore get the same blur.
 
 Capture uses the same effect elements as the displayed frame. Private windows
 are replaced with black before anything above them captures the framebuffer.
@@ -113,15 +116,14 @@ While locked, frame construction returns the lock surface and pointer before it
 can reach any desktop element, so a lock surface requesting blur can sample only
 the black lock framebuffer, never the desktop underneath.
 
-Vulkan support belongs in `viewport-vulkan`, not in a protocol flag here. Its
-`VulkanFrame` currently offers neither `FrameContext` nor `BlitFrame`, so a
-`RenderElement::capture_framebuffer` implementation cannot copy the active
-render target into a sampleable image. It also has no renderer operation or
-pipeline for applying a blur to that image. Supporting the protocol on DRM
-requires both pieces: a render-pass-safe active-frame copy with synchronization,
-and a blur operation producing a texture that `render_texture_from_to` can draw.
-After that, Viewport must preflight the operation on every DRM renderer and keep
-the global absent whenever any active or newly hotplugged renderer lacks it.
+Vulkan support lives in `viewport-vulkan`: `VulkanFrame::capture_to` closes the
+render pass, blits the active target into a quarter-resolution offscreen image
+and reopens the pass with `LOAD`, and `draw_background_blur` samples that image
+through a nine-tap pipeline — the same kernel the GLES path runs. `FrameContext`
+is implemented so an effect can allocate its target mid-frame. The global is
+decided once, from the primary renderer; a renderer that hotplugs in later and
+cannot draw the blur answers `background_effects_available()` false, so its
+effect elements are no-ops rather than a promise it cannot keep.
 
 ## Hardware video
 
