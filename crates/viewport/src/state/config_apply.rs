@@ -705,6 +705,12 @@ impl ViewportState {
             // hidden leaves nothing else willing to bring it back.
             self.needs_render = true;
         }
+        if self
+            .cursor_hide
+            .set_on_touch(file.cursor.hide_on_touch.unwrap_or(false))
+        {
+            self.needs_render = true;
+        }
         // Focus follows the pointer: applied from `cursor.follow_mouse` and
         // `cursor.follow_mouse_threshold`. The threshold resets when the
         // feature is toggled off and on, so the first motion after enabling

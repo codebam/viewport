@@ -456,10 +456,11 @@ for this, and a cursor that came back on every keystroke would never leave.
 
 `cursor.hide_on_key_press` is the other side of that, Hyprland's
 `hide_on_key_press`: true puts the image away on the next keystroke and brings
-it back on the next pointer motion. Absent is off. Set both and the cursor
+it back on the next pointer motion. `cursor.hide_on_touch` does the same for a
+finger on a touch screen. Absent is off for both. Set them and the cursor
 leaves when either is idle and when either is used, which is what a desk that
-wants it gone while it is being typed on — a fullscreen video, a terminal —
-rather than only while it is not asks for.
+wants it gone while it is being typed on or touched — a fullscreen video, a
+terminal — rather than only while it is not asks for.
 
 Only the drawn image goes. The pointer has not moved, keeps its focus, and
 clients are told nothing, so a hidden cursor cannot make a page think the mouse

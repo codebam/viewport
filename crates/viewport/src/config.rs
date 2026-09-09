@@ -101,6 +101,10 @@ pub struct CursorConfig {
     /// thing you are reading. This one is immediate rather than a deadline,
     /// which is what makes it work while typing.
     pub hide_on_key_press: Option<bool>,
+    /// The same for a touch, Hyprland's `cursor:hide_on_touch`. A finger on a
+    /// touch screen is a pointer already; the arrow beside it is not being
+    /// used and does not need to be drawn.
+    pub hide_on_touch: Option<bool>,
 }
 
 /// Settings libinput applies to one device.

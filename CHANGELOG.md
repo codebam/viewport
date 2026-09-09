@@ -96,9 +96,10 @@ to summarise rather than to duplicate.
   thing on press and another on release.
 - `cursor.hide_on_key_press` puts the cursor away on the next keystroke and
   brings it back on the next pointer motion — Hyprland's setting of the same
-  name, and the opposite half of the existing `hide_after_ms`. `keyboard.rules`
-  and `keyboard.model` name the xkb rules file and keyboard model beside the
-  layout, variant and options that were already there.
+  name, and the opposite half of the existing `hide_after_ms`.
+  `cursor.hide_on_touch` does the same for a finger on a touch screen.
+  `keyboard.rules` and `keyboard.model` name the xkb rules file and keyboard
+  model beside the layout, variant and options that were already there.
 - Named special workspaces, Hyprland's `special:NAME`. A rule can send a window
   to one, `special.toggle NAME` shows or hides that space as an overlay on the
   active output, and `special.move NAME` sends the focused window there. The

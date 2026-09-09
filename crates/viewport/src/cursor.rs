@@ -402,6 +402,9 @@ pub struct Hide {
     /// Hide on the next key press rather than after a deadline. Hyprland's
     /// `cursor:hide_on_key_press`.
     on_key_press: bool,
+    /// Hide on the next touch. Hyprland's `cursor:hide_on_touch`, and the
+    /// same idea for a desk that is being touched rather than typed on.
+    on_touch: bool,
     /// When the pointer was last used.
     since: Instant,
     hidden: bool,
@@ -412,6 +415,7 @@ impl Default for Hide {
         Self {
             after: None,
             on_key_press: false,
+            on_touch: false,
             since: Instant::now(),
             hidden: false,
         }
@@ -430,9 +434,9 @@ impl Hide {
             .filter(|ms| *ms > 0)
             .map(|ms| Duration::from_millis(ms as u64));
         // Only the deadline that hid it can bring it back here; a cursor hidden
-        // by a key press is brought back by the next motion, which is not this
-        // function's to undo.
-        if self.after.is_none() && !self.on_key_press && self.hidden {
+        // by a key press or a touch is brought back by the next motion, which
+        // is not this function's to undo.
+        if self.after.is_none() && !self.on_key_press && !self.on_touch && self.hidden {
             self.hidden = false;
             return true;
         }
@@ -447,31 +451,61 @@ impl Hide {
             return false;
         }
         self.on_key_press = on;
-        // Turning it off while the image is hidden would otherwise leave a
-        // cursor that nothing is willing to bring back until the pointer moves
-        // or the deadline fires.
-        if !on && self.after.is_none() && self.hidden {
+        self.unhide_if_nothing_can()
+    }
+
+    /// The same for a touch. Hyprland's `cursor:hide_on_touch`.
+    pub fn set_on_touch(&mut self, on: bool) -> bool {
+        if self.on_touch == on {
+            return false;
+        }
+        self.on_touch = on;
+        self.unhide_if_nothing_can()
+    }
+
+    /// A key was pressed. Returns whether the image went away, which is damage
+    /// nothing else would report.
+    pub fn key_press(&mut self) -> bool {
+        if !self.on_key_press {
+            return false;
+        }
+        self.hide_now()
+    }
+
+    /// A finger touched the screen. The same contract as [`Self::key_press`].
+    pub fn touch(&mut self) -> bool {
+        if !self.on_touch {
+            return false;
+        }
+        self.hide_now()
+    }
+
+    /// Whether anything here can hide the image at all — a deadline, a key
+    /// press or a touch. `cursor_activity` uses this to decide whether a
+    /// pointer move has anything to bring back.
+    pub fn wanted(&self) -> bool {
+        self.after.is_some() || self.on_key_press || self.on_touch
+    }
+
+    /// Turning the last trigger off while the image is hidden leaves nothing
+    /// willing to bring it back until the pointer moves or the deadline fires,
+    /// so it comes back now. Returns whether it did.
+    fn unhide_if_nothing_can(&mut self) -> bool {
+        if !self.wanted() && self.hidden {
             self.hidden = false;
             return true;
         }
         false
     }
 
-    /// A key was pressed. Returns whether the image went away, which is damage
-    /// nothing else would report.
-    pub fn key_press(&mut self) -> bool {
-        if !self.on_key_press || self.hidden {
+    /// Put the image away once. Returns whether it changed anything; a second
+    /// trigger while it is already gone is not damage.
+    fn hide_now(&mut self) -> bool {
+        if self.hidden {
             return false;
         }
         self.hidden = true;
         true
-    }
-
-    /// Whether anything here can hide the image at all — a deadline, or a key
-    /// press. `cursor_activity` uses this to decide whether a pointer move has
-    /// anything to bring back.
-    pub fn wanted(&self) -> bool {
-        self.after.is_some() || self.on_key_press
     }
 
     /// How long the deadline is, or `None` when there is none.
@@ -732,6 +766,22 @@ mod tests {
         assert!(hide.set_on_key_press(false));
         assert!(!hide.hidden());
         assert!(!hide.wanted());
+    }
+
+    #[test]
+    fn a_touch_hides_the_pointer_when_asked() {
+        // The touch-screen half of the same setting, and it shares the
+        // `wanted()` answer with the key-press one so a pointer move brings
+        // the image back either way.
+        let mut hide = Hide::default();
+        assert!(!hide.touch());
+        assert!(!hide.set_on_touch(true));
+        assert!(hide.wanted());
+        assert!(hide.touch());
+        assert!(hide.hidden());
+        assert!(!hide.touch(), "already gone is not damage again");
+        assert!(hide.activity());
+        assert!(!hide.hidden());
     }
 
     #[test]

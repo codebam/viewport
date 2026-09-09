@@ -2507,6 +2507,12 @@ impl ViewportState {
             // touch — and one that does not is better served by nothing than
             // by a pointer that teleports to wherever a finger landed.
             InputEvent::TouchDown { event, .. } => {
+                // A finger is the pointer already; the arrow beside it is not
+                // being used, so `cursor.hide_on_touch` puts it away. Motion
+                // brings it back through `cursor_activity`.
+                if self.cursor_hide.touch() {
+                    self.needs_render = true;
+                }
                 let Some(position) = self.touch_position(&event) else {
                     return;
                 };
