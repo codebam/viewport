@@ -565,15 +565,14 @@ impl ViewportState {
         // the shell into a client is what turned "checked on every click" into
         // "checked on every motion", and this is the half that went missing.
         self.refresh_pointer_focus();
-        while self.shell_overlay_ids.len() < rects.len() {
-            self.shell_overlay_ids
-                .push(smithay::backend::renderer::element::Id::new());
-        }
-        // And the other half of "kept by position": ids past the end of the
-        // list they belong to are not kept by anything. Shrunk rather than
-        // drained-and-reminted, so a list that oscillates in length does not
-        // churn new ids — and new full-frame damage — every time it dips.
-        self.shell_overlay_ids.truncate(rects.len());
+        // Ids kept by position, both lists, so an overlay that stays put keeps
+        // its element identity — and the blur element never shares one with the
+        // texture it sits under. See `shell_overlay_blur_ids`.
+        fit_overlay_ids(
+            &mut self.shell_overlay_ids,
+            &mut self.shell_overlay_blur_ids,
+            rects.len(),
+        );
         self.shell_overlays = rects;
         // The stack changed without anything committing, and a desktop nobody
         // is touching produces no damage of its own — so without this the
@@ -660,5 +659,61 @@ impl ViewportState {
             .max()
             .map(|refresh| std::time::Duration::from_nanos(1_000_000_000_000 / refresh))
             .unwrap_or_else(|| std::time::Duration::from_millis(16))
+    }
+}
+
+/// Keep two id lists the same length as a rectangle list, by position.
+///
+/// Growing mints only the ids that are missing, and shrinking drops the ones
+/// past the end rather than draining and re-minting: a list that oscillates in
+/// length would otherwise churn new element ids — and new full-frame damage —
+/// every time it dips. The overlay ids and the blur ids are fitted together so
+/// they cannot drift out of step, but they are separate lists because an effect
+/// and the texture drawn over it must never share an id. See
+/// [`ViewportState::shell_overlay_blur_ids`].
+fn fit_overlay_ids(
+    overlay: &mut Vec<smithay::backend::renderer::element::Id>,
+    blur: &mut Vec<smithay::backend::renderer::element::Id>,
+    len: usize,
+) {
+    while overlay.len() < len {
+        overlay.push(smithay::backend::renderer::element::Id::new());
+    }
+    while blur.len() < len {
+        blur.push(smithay::backend::renderer::element::Id::new());
+    }
+    overlay.truncate(len);
+    blur.truncate(len);
+}
+
+#[cfg(test)]
+mod overlay_id_tests {
+    use super::fit_overlay_ids;
+
+    /// The bug this guards: the blur element and the shell texture sharing an
+    /// id, which made Smithay's damage tracker call `capture_framebuffer` on
+    /// the texture — a type with no such override — and panic on the first
+    /// frame the floating bar was up.
+    #[test]
+    fn the_blur_ids_never_collide_with_the_overlay_ids() {
+        let mut overlay = Vec::new();
+        let mut blur = Vec::new();
+        fit_overlay_ids(&mut overlay, &mut blur, 4);
+        assert_eq!(overlay.len(), 4);
+        assert_eq!(blur.len(), 4);
+        for id in &overlay {
+            assert!(!blur.contains(id), "an overlay id was reused for a blur");
+        }
+
+        // Kept by position: a shrink and a regrow must not remint the ids that
+        // survived, or every overlay would damage the whole screen each time
+        // the list changed length.
+        let first = overlay[0].clone();
+        let first_blur = blur[0].clone();
+        fit_overlay_ids(&mut overlay, &mut blur, 1);
+        fit_overlay_ids(&mut overlay, &mut blur, 3);
+        assert_eq!(overlay[0], first);
+        assert_eq!(blur[0], first_blur);
+        assert!(!overlay.contains(&first_blur));
     }
 }

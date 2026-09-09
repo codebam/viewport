@@ -615,6 +615,16 @@ pub struct ViewportState {
     /// list is that long: a render element whose id changes every frame tells
     /// the damage tracker everything is new.
     pub shell_overlay_ids: Vec<smithay::backend::renderer::element::Id>,
+    /// The ids for the blur elements behind the glass overlays.
+    ///
+    /// Separate from `shell_overlay_ids`, and it has to be: the damage tracker
+    /// keys `needs_capture` on the id, so an effect and the shell texture drawn
+    /// over it sharing one id makes the tracker ask the *texture* to capture
+    /// the framebuffer. A texture element has no `capture_framebuffer` of its
+    /// own, so that is the `unimplemented!()` in Smithay's default — a panic on
+    /// the first frame the floating bar is up. Same stability rule as the
+    /// overlay ids: one per rectangle, kept by position.
+    pub shell_overlay_blur_ids: Vec<smithay::backend::renderer::element::Id>,
     /// Where the shell drew something that has to be above the windows, in the
     /// layout's own coordinates.
     ///
@@ -1752,6 +1762,7 @@ impl ViewportState {
             shell_rate_mark: None,
             shell_rate_verbose: std::env::var_os("VIEWPORT_SHELL_RATE").is_some(),
             shell_overlay_ids: Vec::new(),
+            shell_overlay_blur_ids: Vec::new(),
             shell_overlays: Vec::new(),
             shell_overlay_hits: Vec::new(),
             shell_overlay_blur: Vec::new(),

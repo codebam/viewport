@@ -562,12 +562,17 @@ impl ViewportState {
                 // of them and the others carry on as they were.
                 local.intersection(visible)?;
                 let id = self.shell_overlay_ids.get(at)?.clone();
-                // A blur region keeps the same id as the overlay it sits under,
-                // so the two move together and the tracker sees one element.
-                let blur = self
-                    .shell_overlay_blur
-                    .contains(rect)
-                    .then_some(self.shell_overlay_commit);
+                // The blur gets its own id, not the overlay's. The damage
+                // tracker keys `needs_capture` on the id, and an effect sharing
+                // one with the texture drawn over it makes the tracker ask the
+                // texture to capture the framebuffer — which a texture element
+                // cannot do. See `shell_overlay_blur_ids`.
+                let blur = if self.shell_overlay_blur.contains(rect) {
+                    let blur_id = self.shell_overlay_blur_ids.get(at)?.clone();
+                    Some((blur_id, self.shell_overlay_commit))
+                } else {
+                    None
+                };
                 Some((id, local.to_f64().to_physical(scale).to_i32_round(), blur))
             })
             .collect();

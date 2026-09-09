@@ -208,6 +208,18 @@ pub struct WindowFrame {
     pub overlay_rounded: Option<(Rectangle<i32, Physical>, i32)>,
 }
 
+/// One piece of the shell drawn above the windows, and the blur under it.
+///
+/// The first id names the shell texture; the optional pair is the blur effect
+/// under it — its own id, and the commit its damage is keyed on. The blur id is
+/// never the overlay's: the damage tracker keys `needs_capture` by id, so
+/// sharing one would ask the shell texture to capture the framebuffer.
+pub type OverlayElement = (
+    Id,
+    Rectangle<i32, Physical>,
+    Option<(Id, smithay::backend::renderer::utils::CommitCounter)>,
+);
+
 /// What one output should show.
 ///
 /// Worked out without a renderer, so the compositor's state is read once and
@@ -250,14 +262,10 @@ pub struct Frame {
     /// the piece that belongs on top. A notification and a chooser can be up
     /// at the same time, which is why it is a list.
     ///
-    /// The third element is the commit to blur the windows behind this
-    /// rectangle with, when the shell asked for that. It rides beside the
+    /// The third element is the blur to draw under this rectangle, when the
+    /// shell asked for that; see [`OverlayElement`]. It rides beside the
     /// rectangle rather than in a list of its own so the two cannot come apart.
-    pub overlay: Vec<(
-        Id,
-        Rectangle<i32, Physical>,
-        Option<smithay::backend::renderer::utils::CommitCounter>,
-    )>,
+    pub overlay: Vec<OverlayElement>,
     pub cursor: Cursor,
     /// The magnified region, when the magnifier is on and the pointer is on
     /// this output. See [`crate::magnify`] — the short version is that this
@@ -448,12 +456,12 @@ where
             // The glass under the page: blur the windows behind this piece of
             // shell before its own pixels go over. The shell is not a client
             // and cannot ask for itself, so the region came over the socket.
-            if let Some(commit) = blur.filter(|_| effects_available) {
+            if let Some((blur_id, commit)) = blur.as_ref().filter(|_| effects_available) {
                 elements.push(OutputElement::from(
                     crate::background_effect::BackgroundEffectRenderElement::for_shell(
-                        id.clone(),
+                        blur_id.clone(),
                         *crop,
-                        commit,
+                        *commit,
                     ),
                 ));
             }
