@@ -1758,6 +1758,20 @@ impl ViewportState {
                     ) {
                         let consuming = !bound.non_consuming;
                         let action = bound.action.clone();
+                        let click = bound.click;
+                        let drag = bound.drag;
+                        if click || drag {
+                            // Held until the release decides. The button is
+                            // kept from the client either way; what the two
+                            // flags choose is whether the release runs the
+                            // action or does nothing.
+                            self.pending_click.insert(
+                                event.button_code(),
+                                (action, pointer.current_location(), click),
+                            );
+                            suppress_button(event.button_code());
+                            return;
+                        }
                         self.handle_action(Action::Bound(action));
                         if consuming {
                             // Not forwarded: the button was bound, and handing
@@ -1769,6 +1783,23 @@ impl ViewportState {
                         // `non_consuming+`: the action has run, and the button
                         // goes on to the client like any other.
                     }
+                } else if let Some((action, from, click)) =
+                    self.pending_click.remove(&event.button_code())
+                {
+                    // A `click+` or `drag+` binding: the distance between the
+                    // press and the release is the whole question. The press
+                    // was kept, so the release goes with it.
+                    let at = pointer.current_location();
+                    let moved = ((at.x - from.x).powi(2) + (at.y - from.y).powi(2)).sqrt();
+                    let fires = if click {
+                        moved <= self.drag_threshold
+                    } else {
+                        moved > self.drag_threshold
+                    };
+                    if fires {
+                        self.handle_action(Action::Bound(action));
+                    }
+                    return;
                 } else if release_suppressed(event.button_code()) {
                     // The other half of the same chord. Matching again would
                     // answer the wrong question — the modifier is usually let

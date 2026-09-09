@@ -773,6 +773,11 @@ pub struct File {
     /// say "this chord must reach the application", because leaving it out is
     /// exactly what asks for the built-in back.
     pub binds_override: Option<std::collections::HashMap<String, BindValue>>,
+
+    /// How far the pointer may move between a press and its release before a
+    /// `click+` binding stops being a click and a `drag+` one starts. Absent
+    /// is 5 logical pixels, which is Hyprland's default.
+    pub drag_threshold: Option<f64>,
 }
 
 /// What a `binds` entry says: an action, or an action with the extras a richer
@@ -1903,6 +1908,14 @@ mod tests {
         assert!(specs.iter().any(|s| s.spec == "Mod4+d=none"));
         assert!(specs.iter().any(|s| s.spec == "Mod4+Return=exec foot"));
         assert!(specs.iter().all(|s| s.description.is_none()));
+    }
+
+    #[test]
+    fn the_drag_threshold_is_a_top_level_number() {
+        let file: File = serde_json::from_str(r#"{"drag_threshold":12}"#).expect("should parse");
+        assert_eq!(file.drag_threshold, Some(12.0));
+        let absent: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(absent.drag_threshold, None);
     }
 
     #[test]

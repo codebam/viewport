@@ -852,6 +852,17 @@ impl ViewportState {
         }
         crate::binding::guarantee_an_exit(&mut bindings);
         self.bindings = bindings;
+        if let Some(threshold) = file.drag_threshold {
+            if threshold.is_finite() && threshold >= 0.0 {
+                self.drag_threshold = threshold;
+            } else {
+                tracing::warn!(
+                    "drag_threshold {threshold} is not a finite non-negative number; \
+                     keeping {}",
+                    self.drag_threshold
+                );
+            }
+        }
     }
 
     /// How many empty ticks before the barrier clock stops. A second at sixty

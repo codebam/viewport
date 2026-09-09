@@ -265,7 +265,7 @@ chain: `locked+Mod4+q` and `Mod4+locked+q` are the same binding. A `locked`
 binding and a non-`locked` binding on the same chord do not shadow each other:
 one fires while locked, the other while unlocked.
 
-Six more flags are written the same way, anywhere before the key:
+Eight more flags are written the same way, anywhere before the key:
 
 - `release+` fires on the key coming up rather than going down — Hyprland's
   `bindr`. The two halves do not shadow each other, so the same chord can do
@@ -288,6 +288,10 @@ Six more flags are written the same way, anywhere before the key:
   mode, not only the one it is written in — Hyprland's `submap_universal`. A
   mode is otherwise a second keymap; this is the one chord that means the same
   thing everywhere.
+- `click+` and `drag+` are for a mouse button, and fire on the release rather
+  than the press: `click+` only if the pointer moved at most `drag_threshold`
+  logical pixels, `drag+` only if it moved further. Hyprland's `bindc` and a
+  button `bindm`. The threshold is a top-level key, absent 5.
 
 ```json
 "binds": {
@@ -296,7 +300,8 @@ Six more flags are written the same way, anywhere before the key:
   "ignore_mods+q": "close",
   "repeating+XF86AudioRaiseVolume": "volume 5",
   "long_press+Mod4+Return": "shell launcher",
-  "universal+XF86AudioMute": "volume mute"
+  "universal+XF86AudioMute": "volume mute",
+  "click+Mod4+Mouse4": "shell workspace.next"
 }
 ```
 

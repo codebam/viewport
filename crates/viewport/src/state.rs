@@ -460,6 +460,16 @@ pub struct ViewportState {
     /// time and stops when the release has taken the entry away.
     pub repeating_held: std::collections::HashMap<u32, crate::binding::Action>,
 
+    /// Buttons waiting to decide `click+` or `drag+` on release: the action,
+    /// where the pointer was when the button went down, and which of the two
+    /// the binding is.
+    pub pending_click:
+        std::collections::HashMap<u32, (crate::binding::Action, Point<f64, Logical>, bool)>,
+
+    /// How far the pointer may move between a press and its release before a
+    /// `click+` binding stops being a click. Hyprland's `drag_threshold`.
+    pub drag_threshold: f64,
+
     /// Keybindings. Almost all of them are passthroughs to the shell.
     pub bindings: Vec<crate::binding::Binding>,
     /// Configured discrete gestures and the captured sequence in progress.
@@ -1684,6 +1694,8 @@ impl ViewportState {
             deferred_bindings: Vec::new(),
             long_press_pending: std::collections::HashMap::new(),
             repeating_held: std::collections::HashMap::new(),
+            pending_click: std::collections::HashMap::new(),
+            drag_threshold: 5.0,
             bindings: crate::binding::defaults(
                 &std::env::var("VIEWPORT_TERMINAL").unwrap_or_else(|_| "foot".to_owned()),
                 std::env::var("VIEWPORT_MENU").ok().as_deref(),

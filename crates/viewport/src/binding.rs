@@ -156,6 +156,15 @@ pub struct Binding {
     /// moves focus outside it. A universal binding is the one that means the
     /// same thing everywhere — a media key, or the chord that leaves.
     pub universal: bool,
+    /// Fire on the release only if the pointer barely moved. Hyprland's
+    /// `bindc`, against the same threshold `drag` uses.
+    ///
+    /// The button is held from the client either way; what the two decide is
+    /// whether the release runs the action or does nothing.
+    pub click: bool,
+    /// Fire on the release only if the pointer moved past the threshold.
+    /// Hyprland's `bindm` as a button gesture rather than a window drag.
+    pub drag: bool,
 }
 
 /// The direction a scroll-wheel binding matches.
@@ -211,6 +220,12 @@ impl Binding {
         }
         if self.universal {
             chord.push_str("universal+");
+        }
+        if self.click {
+            chord.push_str("click+");
+        }
+        if self.drag {
+            chord.push_str("drag+");
         }
         if self.modifiers.logo {
             chord.push_str("Mod4+");
@@ -321,6 +336,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
     let mut repeating = false;
     let mut long_press = false;
     let mut universal = false;
+    let mut click = false;
+    let mut drag = false;
     let mut rest = chord;
 
     // Left to right, stopping at the last '+': the key may itself be '+'.
@@ -340,6 +357,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
             "repeating" | "repeat" => repeating = true,
             "long_press" | "longpress" => long_press = true,
             "universal" | "submap_universal" => universal = true,
+            "click" => click = true,
+            "drag" => drag = true,
             // An unknown modifier is not a key with a stray plus in front of
             // it; treating it as one would bind something arbitrary.
             _ => return None,
@@ -388,6 +407,8 @@ pub fn parse_chord(chord: &str) -> Option<Binding> {
         long_press,
         description: None,
         universal,
+        click,
+        drag,
     })
 }
 
@@ -1111,6 +1132,8 @@ mod tests {
                 long_press: false,
                 description: None,
                 universal: false,
+                click: false,
+                drag: false,
             };
             assert_eq!(parse_action(&binding.action_text()), action);
         }
@@ -1329,7 +1352,9 @@ mod tests {
             "long_press+Mod4+q=close",
             "universal+Mod4+q=close",
             "submap_universal+Mod4+q=close",
-            "locked+release+non_consuming+ignore_mods+repeating+long_press+universal+Mod4+q=close",
+            "click+Mod4+Mouse1=close",
+            "drag+Mod4+Mouse1=close",
+            "locked+release+non_consuming+ignore_mods+repeating+long_press+universal+click+Mod4+q=close",
         ] {
             let binding = parse(spec).expect(spec);
             let again = parse_chord(&binding.chord()).expect("round trip");
@@ -1340,6 +1365,8 @@ mod tests {
             assert_eq!(again.repeating, binding.repeating, "{spec}");
             assert_eq!(again.long_press, binding.long_press, "{spec}");
             assert_eq!(again.universal, binding.universal, "{spec}");
+            assert_eq!(again.click, binding.click, "{spec}");
+            assert_eq!(again.drag, binding.drag, "{spec}");
             assert_eq!(again.modifiers, binding.modifiers, "{spec}");
             assert_eq!(again.keysym, binding.keysym, "{spec}");
         }
