@@ -1059,7 +1059,7 @@ fn input_identifier(vendor: u32, product: u32, name: &str) -> String {
     format!("{vendor:04x}:{product:04x}:{name}")
 }
 
-fn merged_input_config(
+pub(crate) fn merged_input_config(
     configs: &HashMap<String, crate::config::InputConfig>,
     identifier: &str,
 ) -> crate::config::InputConfig {
@@ -1085,6 +1085,8 @@ fn merged_input_config(
         accel_profile,
         click_method,
         scroll_method,
+        scroll_factor,
+        emulate_discrete_scroll,
     );
     config
 }

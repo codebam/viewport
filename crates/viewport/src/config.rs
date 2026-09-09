@@ -128,6 +128,18 @@ pub struct InputConfig {
     pub click_method: Option<String>,
     /// `none`, `two_finger`, `edge`, or `on_button_down`.
     pub scroll_method: Option<String>,
+    /// What a scroll is multiplied by. Absent is 1.0, and Hyprland's
+    /// `input:scroll_factor` is the same number.
+    ///
+    /// Applied to the continuous amount and the discrete steps alike, so a
+    /// wheel and a touchpad on the same device move together. A negative value
+    /// reverses the direction; zero is refused, because a scroll that goes
+    /// nowhere looks like a broken device.
+    pub scroll_factor: Option<f64>,
+    /// Send discrete (wheel-like) steps for a touchpad's continuous scroll.
+    /// Hyprland's `emulate_discrete_scroll`, for a client that only reads the
+    /// discrete value.
+    pub emulate_discrete_scroll: Option<bool>,
 }
 
 /// The `magnify` block: the screen magnifier's step and its ceiling.
@@ -1741,6 +1753,17 @@ mod tests {
         assert_eq!(rule.persistent, Some(true));
         assert_eq!(rule.default_name.as_deref(), Some("code"));
         assert_eq!(rule.on_created_empty.as_deref(), Some("rio"));
+    }
+
+    #[test]
+    fn a_device_can_scale_its_scroll_and_emulate_wheel_steps() {
+        let file: File = serde_json::from_str(
+            r#"{"input":{"*":{"scroll_factor":0.5,"emulate_discrete_scroll":true}}}"#,
+        )
+        .expect("should parse");
+        let device = &file.input.as_ref().expect("input block")["*"];
+        assert_eq!(device.scroll_factor, Some(0.5));
+        assert_eq!(device.emulate_discrete_scroll, Some(true));
     }
 
     #[test]

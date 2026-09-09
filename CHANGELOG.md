@@ -94,6 +94,10 @@ to summarise rather than to duplicate.
   the key is held, and `long_press+` fires only after a half-second hold. The
   two halves of a chord do not shadow each other, so one chord can do one
   thing on press and another on release.
+- Per-device `scroll_factor` and `emulate_discrete_scroll`. The factor
+  multiplies the continuous amount and the discrete steps alike, so a wheel
+  and a touchpad on the same device move together; the emulation synthesizes
+  wheel-like steps for a touchpad that only reports a continuous amount.
 - `cursor.hide_on_key_press` puts the cursor away on the next keystroke and
   brings it back on the next pointer motion — Hyprland's setting of the same
   name, and the opposite half of the existing `hide_after_ms`.

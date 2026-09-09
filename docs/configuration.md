@@ -344,9 +344,16 @@ as `input added` when a device appears:
 Available fields are `tap`, `tap_drag`, `natural_scroll`, `left_handed`,
 `middle_emulation`, `disable_while_typing`, `accel_speed` (from -1 to 1),
 `accel_profile` (`adaptive` or `flat`), `click_method` (`button_areas` or
-`clickfinger`), and `scroll_method` (`none`, `two_finger`, `edge`, or
-`on_button_down`). Unsupported settings are logged and ignored. Settings apply
-when a device appears and again on config reload.
+`clickfinger`), `scroll_method` (`none`, `two_finger`, `edge`, or
+`on_button_down`), `scroll_factor` and `emulate_discrete_scroll`. Unsupported
+settings are logged and ignored. Settings apply when a device appears and again
+on config reload.
+
+`scroll_factor` multiplies both the continuous amount and the discrete steps a
+device sends — Hyprland's `input:scroll_factor`, which is the number a touchpad
+usually wants below 1. Zero is refused and a negative value reverses the
+direction. `emulate_discrete_scroll` sends wheel-like steps for a touchpad that
+only reports a continuous amount, for a client that reads nothing else.
 
 Asking for the workspace you are already on takes you back to the one before
 it, so `Mod4+2` pressed twice from workspace 1 goes to 2 and then back to 1 —

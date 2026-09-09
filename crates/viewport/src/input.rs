@@ -11,7 +11,7 @@
 // and cannot go stale mid-animation.
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as _, Event, GestureBeginEvent,
     GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend,
     InputEvent, InputTime, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     PointerMotionEvent, TouchEvent,
@@ -1981,12 +1981,30 @@ impl ViewportState {
 
             InputEvent::PointerAxis { event, .. } => {
                 let source = event.source();
+                // The two settings libinput cannot carry on the device itself.
+                // A scroll factor is applied to the events as they arrive, so
+                // the merged config is read here. The identifier is built the
+                // same way the backend builds it — `usb_id` hands back
+                // (product, vendor), while the config spells vendor first.
+                let device = event.device();
+                let identifier = match device.usb_id() {
+                    Some((product, vendor)) => {
+                        format!("{vendor:04x}:{product:04x}:{}", device.name())
+                    }
+                    None => device.name(),
+                };
+                let input = self.input_config_for(&identifier);
+                let factor = input
+                    .scroll_factor
+                    .filter(|factor| factor.is_finite() && *factor != 0.0)
+                    .unwrap_or(1.0);
+                let emulate = input.emulate_discrete_scroll.unwrap_or(false);
                 let horizontal = event.amount(Axis::Horizontal).unwrap_or_else(|| {
                     event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0
-                });
+                }) * factor;
                 let vertical = event.amount(Axis::Vertical).unwrap_or_else(|| {
                     event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0
-                });
+                }) * factor;
 
                 // A scroll binding — `Mod4+WheelUp=shell workspace.next`. Only a
                 // physical wheel, not a touchpad: two-finger scroll is the
@@ -2020,17 +2038,29 @@ impl ViewportState {
                     }
                 }
 
+                // A wheel's discrete steps are scaled with the same factor.
+                // `emulate_discrete_scroll` synthesizes them from a touchpad's
+                // continuous amount, one notch per fifteen pixels — the same
+                // ratio the continuous fallback above uses.
+                let discrete = |axis: Axis, amount: f64| -> Option<i32> {
+                    if let Some(value) = event.amount_v120(axis) {
+                        return Some((value * factor).round() as i32);
+                    }
+                    (emulate && source == AxisSource::Finger)
+                        .then(|| (amount * 120.0 / 15.0).round() as i32)
+                };
+
                 let mut frame = AxisFrame::new(event.time()).source(source);
                 if horizontal != 0.0 {
                     frame = frame.value(Axis::Horizontal, horizontal);
-                    if let Some(discrete) = event.amount_v120(Axis::Horizontal) {
-                        frame = frame.v120(Axis::Horizontal, discrete as i32);
+                    if let Some(steps) = discrete(Axis::Horizontal, horizontal) {
+                        frame = frame.v120(Axis::Horizontal, steps);
                     }
                 }
                 if vertical != 0.0 {
                     frame = frame.value(Axis::Vertical, vertical);
-                    if let Some(discrete) = event.amount_v120(Axis::Vertical) {
-                        frame = frame.v120(Axis::Vertical, discrete as i32);
+                    if let Some(steps) = discrete(Axis::Vertical, vertical) {
+                        frame = frame.v120(Axis::Vertical, steps);
                     }
                 }
                 if source == AxisSource::Finger {

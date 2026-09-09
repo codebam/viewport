@@ -3209,6 +3209,16 @@ impl ViewportState {
         }
     }
 
+    /// The libinput settings that apply to a device, by its config identifier.
+    ///
+    /// The same merge the backend uses when it configures a device: the `*`
+    /// entry first, then the exact one. The pointer axis path needs it for the
+    /// settings libinput cannot carry on the device itself — a scroll factor
+    /// is applied to the events, not programmed into the device.
+    pub fn input_config_for(&self, identifier: &str) -> crate::config::InputConfig {
+        crate::udev::merged_input_config(&self.input_config, identifier)
+    }
+
     /// The environment a spawned child needs that it cannot inherit.
     ///
     /// DISPLAY, when Xwayland is up. It used to be written into this process's
