@@ -7278,6 +7278,29 @@ if (mode === 'scrolling') {
   open(75, 'tiled', { parent: 70 });
   check('a tiled window with a parent is not modal', workspaceOf(75) !== 9);
 
+  /* The shell-side effects: focus, animation and min/max size. */
+  emit({ type: 'config', layout: mode, rules: [
+    { app_id: 'no-focus', focus: false },
+    { app_id: 'still', animation: false },
+    { app_id: 'sized', min_width: 400, min_height: 300,
+      max_width: 900, max_height: 700 },
+  ] });
+  const focusMark = sent.length;
+  open(76, 'no-focus');
+  check('a focus:false rule opens the window without focusing it',
+    !sent.slice(focusMark).some((m) => m.type === 'view.focus' && m.id === 76));
+  open(77, 'still');
+  check('an animation:false rule is remembered on the view',
+    globalThis.__shell.views.get(77).noAnimation === true);
+  open(78, 'sized');
+  const sized = globalThis.__shell.views.get(78);
+  check('minsize raises the window floor',
+    sized.minWidth === 400 && sized.minHeight === 300);
+  check('maxsize is kept as the window ceiling',
+    sized.maxWidth === 900 && sized.maxHeight === 700);
+  check('and the element carries both',
+    sized.el.style.minWidth === '400px' && sized.el.style.maxWidth === '900px');
+
   /* The rules above are not the harness's; put them back for anything after. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }

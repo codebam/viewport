@@ -509,7 +509,10 @@ function fadeIn(id) {
   const resting = typeof solarRestingOpacity === 'function'
     ? solarRestingOpacity(id) : 1;
 
-  if (reducedMotion()) {
+  /* A rule can take the animation off one window — Hyprland's `animation`
+     effect — and it gets the reduced-motion answer: no journey, but it still
+     arrives. */
+  if (reducedMotion() || views.get(id)?.noAnimation) {
     /* No journey, but it still has to arrive. Reduced motion asks for nothing
        to move, not for every cold window to open at full brightness and stay
        there until something else happens to cause a relayout. */

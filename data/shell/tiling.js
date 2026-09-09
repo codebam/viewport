@@ -467,7 +467,11 @@ function renderTree(node) {
     if (!active) {
       view.el.style.flexGrow = String(node.weight ?? 1);
       Object.assign(view.el.style, {
-        width: '', height: '', maxWidth: '', maxHeight: '',
+        width: '', height: '',
+        /* A rule's `maxsize` is the window's ceiling wherever the layout puts
+           it; empty is the layout's own. `minsize` likewise. */
+        maxWidth: view.maxWidth > 0 ? `${view.maxWidth}px` : '',
+        maxHeight: view.maxHeight > 0 ? `${view.maxHeight}px` : '',
         minWidth: view.minWidth > 0 ? `${view.minWidth}px` : '',
         minHeight: view.minHeight > 0 ? `${view.minHeight}px` : '',
       });

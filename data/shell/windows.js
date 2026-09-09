@@ -330,6 +330,25 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   const rule = ruleFor(app_id, title, tag, openingWorkspace,
     { xwayland: Boolean(xwayland), modal: Boolean(parent) && floating });
   const view = views.get(id);
+  /* Hyprland's `animation` rule effect: this window opens and closes without
+     the fade every other one gets. Kept on the view because fadeIn is also
+     called on the way back from the overview and from a workspace switch. */
+  view.noAnimation = rule?.animation === false;
+  /* Hyprland's `minsize` / `maxsize`, as numbers. They are the window's own
+     floor and ceiling, laid over whatever the client asked for; zero or
+     absent leaves the client's answer. */
+  const ruleMinWidth = Number.isFinite(rule?.min_width) ? rule.min_width : 0;
+  const ruleMinHeight = Number.isFinite(rule?.min_height) ? rule.min_height : 0;
+  if (ruleMinWidth > 0) view.minWidth = Math.max(view.minWidth, ruleMinWidth);
+  if (ruleMinHeight > 0) view.minHeight = Math.max(view.minHeight, ruleMinHeight);
+  view.maxWidth = Number.isFinite(rule?.max_width) && rule.max_width > 0
+    ? rule.max_width : 0;
+  view.maxHeight = Number.isFinite(rule?.max_height) && rule.max_height > 0
+    ? rule.max_height : 0;
+  if (view.minWidth > 0) el.style.minWidth = `${view.minWidth}px`;
+  if (view.minHeight > 0) el.style.minHeight = `${view.minHeight}px`;
+  if (view.maxWidth > 0) el.style.maxWidth = `${view.maxWidth}px`;
+  if (view.maxHeight > 0) el.style.maxHeight = `${view.maxHeight}px`;
   /* Replay must resolve permission too: compositor state survives a shell
    * reload, including an old denial whose rule may just have been removed. */
   view.ruleCapture = typeof rule?.capture === 'boolean' ? rule.capture : true;
@@ -357,8 +376,11 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      taken there. */
   const focusIt = () => {
     /* A pinned window is on screen like any other and is worth focusing; a
-       hidden special is not. */
-    if (!replay && !view.minimized && (special === null || special === 'pinned')
+       hidden special is not. Hyprland's `focus` rule effect can refuse the
+       focus outright, which is how a launcher or a picture-in-picture window
+       opens without stealing the keyboard. */
+    if (!replay && !view.minimized && rule?.focus !== false
+        && (special === null || special === 'pinned')
         && target === output.workspace) {
       send({ type: 'view.focus', id });
     }

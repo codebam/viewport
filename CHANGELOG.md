@@ -104,7 +104,9 @@ to summarise rather than to duplicate.
   `class`, `initial_class` and `initial_title` take the same `contains`,
   `equals` and `regex` conditions, and `xwayland` and `modal` take a boolean.
   The compositor now says whether a window is an X11 client, which the page
-  cannot work out for itself; `modal` is a floating window with a parent.
+  cannot work out for itself; `modal` is a floating window with a parent. The
+  shell-side effects gained `focus: false`, `animation: false` and
+  `min_width` / `min_height` / `max_width` / `max_height`.
 - A `motion` block tunes the shell's animation without shipping a stylesheet.
   `duration`, `slow` and `ease` land on the `--anim`, `--anim-slow` and
   `--ease` custom properties every transition and tween already runs on, and
