@@ -64,7 +64,7 @@ then regenerate the `.SRCINFO`, since that is what the AUR displays.
 
 | recipe | built | how |
 | --- | --- | --- |
-| `viewport-{webkitgtk,wpe,chromium}` | yes | they built the v0.2.0 artifacts, which the release carries |
+| `viewport-{webkitgtk,wpe,chromium}` | yes | they built the v0.3.0 artifacts, which the release carries |
 | `viewport-{webkitgtk,wpe,chromium}-bin` | yes | built against those artifacts: the sums check, and the tree that comes out matches the source package's file for file apart from the license directory the recipe renames |
 | `viewport-chromium-git` | yes | `0.1.5.r1.gf5fe7d2`, so `pkgver()` and the branch fetch work |
 | `viewport-{webkitgtk,wpe}-git` | no | identical to `viewport-chromium-git` apart from the engine, which their source twins prove |
