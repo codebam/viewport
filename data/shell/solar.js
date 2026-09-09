@@ -442,6 +442,13 @@ function planSolar() {
        own system and its cold windows belong in its own margin. */
     const companion = (solarField === 'lagrange' && name === active)
       ? solarCompanionOf(name) : null;
+    /* Only hold the outer windows back when the companion can actually take
+       them. Parking needs it to be running solar too, and `solarCompanionOf`
+       only asks that it be empty — a second monitor showing an empty tiling
+       workspace qualifies, but would place none of what was held back, so
+       every cold window disappeared from both plans. */
+    const canPark = companion !== null
+      && layoutModeOf(outputs.get(companion)?.workspace) === 'solar';
 
     const { here, spilled } = solarPlacements({
       ids,
@@ -449,13 +456,12 @@ function planSolar() {
       area,
       hot: sun === focusedId,
       spin: solarSpins.get(output.workspace) ?? 0,
-      holdOuter: companion !== null,
+      holdOuter: canPark,
     });
 
     plan.get(name).push(...here);
 
-    if (companion && layoutModeOf(outputs.get(companion)?.workspace) === 'solar'
-        && spilled.length > 0) {
+    if (canPark && spilled.length > 0) {
       const field = solarAreaOf(outputs.get(companion));
       plan.get(companion).push(...solarLagrangePlacements(spilled, field));
     }

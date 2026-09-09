@@ -705,6 +705,7 @@ fn run() -> Result<()> {
                 // drawn, screenshot files the portal has long since handed
                 // out. Both hold memory or disk until someone lets go.
                 state.reap_pending_copies();
+                state.reap_pending_capture_frames();
                 state.reap_screenshot_temps();
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
                     std::time::Duration::from_secs(1),

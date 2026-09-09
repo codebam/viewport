@@ -365,6 +365,11 @@ impl ViewportState {
     /// front buffer holds whatever was last flipped, which for an idle screen
     /// is a frame of unknown age — for a screenshot that is the difference
     /// between the current desktop and one from a minute ago.
+    ///
+    /// Portal screenshots are served here too, before the screencopy queue is
+    /// even looked at: they are a different protocol with no `pending_copies`
+    /// entry of their own, so the early return below must not skip them. The
+    /// call is a length check when nothing is waiting.
     pub fn service_screencopy<R, B>(&mut self, output: &Output, renderer: &mut R)
     where
         R: Renderer
@@ -380,6 +385,8 @@ impl ViewportState {
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
+        self.service_portal_screenshots::<R, B>(output, renderer);
+
         if self.pending_copies.is_empty() {
             return;
         }
@@ -409,8 +416,6 @@ impl ViewportState {
                 }
             }
         }
-
-        self.service_portal_screenshots::<R, B>(output, renderer);
     }
 
     /// Serve pending portal screenshot requests on `output`.
@@ -451,7 +456,14 @@ impl ViewportState {
                     size: (1920, 1080).into(),
                     refresh: 60_000,
                 });
-            let region = smithay::utils::Rectangle::new((0, 0).into(), mode.size);
+            // The transform is part of the size: `read_output_pixels` renders
+            // into `transform_size(mode.size)`, so a 90°/270° output has a
+            // framebuffer the other way round. Asking to read back the
+            // untransformed mode and encoding the result at that size is what
+            // made a portal screenshot of a rotated monitor cropped on one
+            // axis. `service_image_capture` already does this.
+            let size = output.current_transform().transform_size(mode.size);
+            let region = smithay::utils::Rectangle::new((0, 0).into(), size);
             match self.read_output_pixels::<R, B>(output, region, true, renderer) {
                 Ok(pixels) => {
                     // The encoding and the writing belong to nobody's frame:
@@ -460,7 +472,7 @@ impl ViewportState {
                     // short-lived thread does both and answers the portal from
                     // there — once, whichever way it goes, because exactly one
                     // `try_send` sits on each path out of it.
-                    let size = mode.size;
+                    //
                     // Named here rather than in the thread, so the path is
                     // written down for the housekeeping tick before anything
                     // can fail: the file is taken back either way. See
@@ -578,6 +590,32 @@ impl ViewportState {
             tracing::debug!(
                 "reaped {} screencopy request(s) whose output or client is gone",
                 before - self.pending_copies.len()
+            );
+        }
+    }
+
+    /// Drop image-capture frames that can no longer be served.
+    ///
+    /// [`Self::service_image_capture`] runs once per output and serves a frame
+    /// only on a pass for a screen its target is on. A window that has since
+    /// closed, or an output that has been unplugged, matches no pass at all —
+    /// so the frame sat here holding the client's buffer for the rest of the
+    /// session, the client waited for a `ready` that could never come, and
+    /// `release_capture_scratch` refused to free the capture pool because the
+    /// queue was non-empty. Dropping the `Frame` fails it, which is what the
+    /// protocol asks for when a source goes away mid-capture.
+    pub fn reap_pending_capture_frames(&mut self) {
+        let before = self.pending_capture_frames.len();
+        let views = &self.views;
+        let live_outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        self.pending_capture_frames.retain(|(target, _frame)| match target {
+            CaptureTarget::Window(id) => views.get(*id).is_some(),
+            CaptureTarget::Output(output) => live_outputs.iter().any(|other| other == output),
+        });
+        if self.pending_capture_frames.len() != before {
+            tracing::debug!(
+                "reaped {} image-capture frame(s) whose window or output is gone",
+                before - self.pending_capture_frames.len()
             );
         }
     }

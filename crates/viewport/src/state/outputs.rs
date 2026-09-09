@@ -57,6 +57,19 @@ impl ViewportState {
         use smithay::wayland::compositor::{TraversalAction, with_surface_tree_downward};
         use smithay::wayland::content_type::ContentTypeSurfaceCachedState;
 
+        // The configured mode alone answers for these two, so the surface
+        // tree is not walked at all. That matters because this runs once per
+        // output per frame: on the default `Off` desktop every window's whole
+        // surface tree — popups and subsurfaces included — was locked and read
+        // sixty times a second for a boolean that could not change the answer.
+        let configured = self.configured_vrr(&target.name());
+        if matches!(
+            configured,
+            viewport_ipc::event::VrrMode::Off | viewport_ipc::event::VrrMode::Always
+        ) {
+            return crate::output_topology::vrr_effective(configured, false, false);
+        }
+
         let source = self.mirror_source(target);
         let geometry = self.space.output_geometry(&source);
         let mut fullscreen = false;
@@ -86,11 +99,7 @@ impl ViewportState {
                 );
             }
         }
-        crate::output_topology::vrr_effective(
-            self.configured_vrr(&target.name()),
-            fullscreen,
-            game_or_video,
-        )
+        crate::output_topology::vrr_effective(configured, fullscreen, game_or_video)
     }
 
     /// Apply only when this physical target's desired state transitions.

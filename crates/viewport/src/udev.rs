@@ -3673,7 +3673,10 @@ impl ViewportState {
             }
         }
 
-        if !self.pending_copies.is_empty() || !self.pending_capture_frames.is_empty() {
+        if !self.pending_copies.is_empty()
+            || !self.pending_capture_frames.is_empty()
+            || !self.pending_screenshots.is_empty()
+        {
             {
                 self.service_screencopy::<_, <R as Captures>::Buffer>(output, renderer);
                 self.service_image_capture::<_, <R as Captures>::Buffer>(output, renderer);

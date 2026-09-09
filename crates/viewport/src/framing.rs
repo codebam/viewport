@@ -15,6 +15,12 @@ pub const MAX_PENDING: usize = 1 << 20;
 #[derive(Debug, Default)]
 pub struct Framer {
     buf: Vec<u8>,
+    /// How much of the front of `buf` has already been looked at and found to
+    /// hold no newline. A message larger than one read arrives in pieces, and
+    /// without this every piece re-scanned the whole prefix, which is
+    /// quadratic in the message size — a 1 MiB `shell.overlay` in 4 KiB reads
+    /// cost on the order of a hundred million byte comparisons.
+    scanned: usize,
 }
 
 /// What the caller should do after feeding a chunk.
@@ -52,7 +58,7 @@ impl Framer {
 
         let mut messages = Vec::new();
         let mut start = 0;
-        for i in 0..self.buf.len() {
+        for i in self.scanned..self.buf.len() {
             if self.buf[i] != b'\n' {
                 continue;
             }
@@ -64,6 +70,9 @@ impl Framer {
         if start > 0 {
             self.buf.drain(..start);
         }
+        // Everything left in the buffer was just looked at, whether or not a
+        // newline was found; the next chunk only has to scan what it adds.
+        self.scanned = self.buf.len();
 
         Framed::Messages(messages)
     }
@@ -123,6 +132,23 @@ mod tests {
         let done = messages(framer.push(b"first\nsecond\nthi"));
         assert_eq!(done, vec![b"first".to_vec(), b"second".to_vec()]);
         assert_eq!(framer.pending(), 3);
+    }
+
+    #[test]
+    fn a_message_split_across_many_chunks_is_assembled_once() {
+        // The path the scan offset exists for. The bytes before the offset are
+        // known to hold no newline, so only the new chunk is walked; the
+        // message must still come back whole, once, when its newline arrives.
+        let body = vec![b'x'; 64 * 1024];
+        let mut framer = Framer::new();
+        for piece in body.chunks(4096) {
+            assert!(messages(framer.push(piece)).is_empty());
+        }
+        assert_eq!(framer.pending(), body.len());
+
+        let done = messages(framer.push(b"\n"));
+        assert_eq!(done, vec![body]);
+        assert_eq!(framer.pending(), 0);
     }
 
     #[test]

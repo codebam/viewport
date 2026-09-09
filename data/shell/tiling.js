@@ -134,8 +134,13 @@ function findParentOf(node, target) {
 }
 
 /* Drop empty splits and inline single-child ones, so the tree does not
- * accumulate meaningless nesting as windows come and go. */
-function collapse(node, isRoot = false) {
+ * accumulate meaningless nesting as windows come and go.
+ *
+ * `workspace` is the workspace `node` is the root of, needed only for the
+ * root guard below: `layoutModeOf()` with no argument answers for the
+ * *rendering* workspace, and a window closing on a background workspace was
+ * therefore collapsed under the foreground's layout mode. */
+function collapse(node, isRoot = false, workspace = null) {
   if (node.type === 'leaf') return;
 
   /* Explicit arrow: forEach would otherwise pass the index as `isRoot` and
@@ -148,7 +153,7 @@ function collapse(node, isRoot = false) {
      root's children *are* the columns, so a single column holding three windows
      would be flattened into three columns. */
   if (node.children.length === 1 && node.children[0].type === 'split' &&
-      !(isRoot && layoutModeOf() === 'scrolling')) {
+      !(isRoot && layoutModeOf(workspace ?? undefined) === 'scrolling')) {
     const only = node.children[0];
     node.dir = only.dir;
     node.children = only.children;
@@ -167,7 +172,7 @@ function removeLeaf(id) {
   if (!found) return;
   found.parent.children =
     found.parent.children.filter((c) => c.id !== id);
-  collapse(workspaces.get(found.workspace), true);
+  collapse(workspaces.get(found.workspace), true, found.workspace);
 }
 
 /* Insert next to the focused window, splitting in the pending direction —
@@ -238,7 +243,7 @@ function moveLeaf(id, direction) {
         [parent.children[index], parent.children[target]] =
           [parent.children[target], parent.children[index]];
       }
-      collapse(root, true);
+      collapse(root, true, workspace);
       return true;
     }
   }
@@ -248,7 +253,7 @@ function moveLeaf(id, direction) {
     const parentIndex = grandparent.children.indexOf(parent);
     parent.children.splice(index, 1);
     grandparent.children.splice(parentIndex + (forward ? 1 : 0), 0, leaf);
-    collapse(root, true);
+    collapse(root, true, workspace);
     return true;
   }
 
@@ -276,7 +281,7 @@ function moveContainer(container, direction) {
     if (target >= 0 && target < parent.children.length) {
       [parent.children[index], parent.children[target]] =
         [parent.children[target], parent.children[index]];
-      collapse(root, true);
+      collapse(root, true, ws);
       relayoutAll();
       return true;
     }
@@ -287,7 +292,7 @@ function moveContainer(container, direction) {
     const parentIndex = grandparent.children.indexOf(parent);
     parent.children.splice(index, 1);
     grandparent.children.splice(parentIndex + (forward ? 1 : 0), 0, container);
-    collapse(root, true);
+    collapse(root, true, ws);
     relayoutAll();
     return true;
   }

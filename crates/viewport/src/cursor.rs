@@ -68,10 +68,16 @@ impl Cursor {
 }
 
 /// Every cursor that has been asked for, loaded once.
+///
+/// Keyed by name and then by scale so a lookup can borrow the name it was
+/// asked with. A single `(String, i32)` key meant `load` built a `String` on
+/// every call — and it is called once per frame to draw the pointer, so a
+/// still desktop allocated and hashed a name sixty times a second to find a
+/// cursor that was already loaded.
 pub struct Theme {
     name: String,
     size: u32,
-    loaded: HashMap<(String, i32), Option<Cursor>>,
+    loaded: HashMap<String, HashMap<i32, Option<Cursor>>>,
 }
 
 impl Theme {
@@ -127,12 +133,21 @@ impl Theme {
     /// `left_ptr` and one with only `default` are both common — so a miss on
     /// the requested name is not the same as having no cursor.
     fn load(&mut self, name: &str, scale: i32) -> Option<&Cursor> {
-        let key = (name.to_owned(), scale);
-        if !self.loaded.contains_key(&key) {
+        if !self
+            .loaded
+            .get(name)
+            .is_some_and(|by_scale| by_scale.contains_key(&scale))
+        {
             let cursor = self.load_uncached(name, scale);
-            self.loaded.insert(key.clone(), cursor);
+            self.loaded
+                .entry(name.to_owned())
+                .or_default()
+                .insert(scale, cursor);
         }
-        self.loaded.get(&key).and_then(|c| c.as_ref())
+        self.loaded
+            .get(name)
+            .and_then(|by_scale| by_scale.get(&scale))
+            .and_then(|c| c.as_ref())
     }
 
     /// The themes to look in, in order.

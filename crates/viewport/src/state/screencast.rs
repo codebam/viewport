@@ -169,16 +169,16 @@ impl ViewportState {
             return;
         }
 
-        // The streams that take a buffer the GPU drew into, first and one at a
-        // time. Each is composited straight into the memory the consumer will
-        // read, so there is nothing to share between them and nothing to copy.
-        self.draw_into_casts(output, renderer);
-
         // What each share names right now. Resolved once and reused, because a
         // following source is answered from focus and the answer must not
         // change between deciding to composite and deciding who receives it —
         // that is a frame handed to the wrong stream at the wrong size.
         let targets = self.cast_targets_now();
+
+        // The streams that take a buffer the GPU drew into, first and one at a
+        // time. Each is composited straight into the memory the consumer will
+        // read, so there is nothing to share between them and nothing to copy.
+        self.draw_into_casts(output, renderer, &targets);
 
         // Then the ones that need pixels in shared memory. One composite and
         // one readback serves every client watching this output.
@@ -543,8 +543,12 @@ impl ViewportState {
     /// screen back off the GPU and writes it out again — fifteen megabytes a
     /// frame at 1440p, thirty times a second — and this one draws where the
     /// consumer is already looking.
-    fn draw_into_casts<R>(&mut self, output: &Output, renderer: &mut R)
-    where
+    fn draw_into_casts<R>(
+        &mut self,
+        output: &Output,
+        renderer: &mut R,
+        targets: &[Option<crate::screencast::Target>],
+    ) where
         R: Renderer
             + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
             + smithay::backend::renderer::ImportAll
@@ -556,13 +560,11 @@ impl ViewportState {
     {
         const RATE: std::time::Duration = std::time::Duration::from_millis(33);
 
-        // What each share names right now, before the casts are taken out of
-        // the state: resolving a following source needs the state, and this
-        // borrows it immutably while `self.casts` is still there to line up
-        // with.
-        let targets = self.cast_targets_now();
-        // Whether a share of the whole desk is this output's job, worked out
-        // for the same reason.
+        // What each share names was resolved by the caller and handed in, so
+        // the answer is the same one the delivery below uses; resolving it
+        // again here is how a frame goes to the wrong stream at the wrong
+        // size. Whether a share of the whole desk is this output's job is
+        // worked out for the same reason.
         let desk_is_ours = self.desk_capture_output().as_ref() == Some(output);
 
         // Both taken out for the duration: compositing needs the whole state,
@@ -986,6 +988,10 @@ impl ViewportState {
                         window_id: None,
                         reply,
                     });
+                // An idle desktop draws nothing, and a screenshot of an idle
+                // desktop is the ordinary case. Without a frame there is no
+                // `service_screencopy` pass to serve the request on.
+                self.needs_render = true;
             }
         }
     }

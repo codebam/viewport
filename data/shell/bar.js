@@ -1056,9 +1056,13 @@ function syncMprisWidget(el) {
   const player = mprisPlayer;
   if (!player) {
     /* Nothing playing: the widget collapses through `.module:empty`, exactly
-       as a disk widget with no mount does. */
+       as a disk widget with no mount does. The cached parts go with the
+       children: leaving them behind would have `need` hand back detached
+       nodes the next time a player appears, so the widget stayed empty for
+       the rest of the session. */
     if (el.children.length) el.replaceChildren();
     if (el.textContent !== '') el.textContent = '';
+    el._mpris = undefined;
     return;
   }
 
@@ -1068,18 +1072,21 @@ function syncMprisWidget(el) {
     if (node === undefined) {
       node = parts[key] = document.createElement(tag);
       node.className = className;
-      el.append(node);
     }
+    /* Appended when missing as well as when new: anything that clears the
+       widget out from under the cache detaches the node, and writing into a
+       detached element is a widget that silently stops updating. */
+    if (node.parentNode !== el) el.append(node);
     return node;
   };
 
   /* Order matters and the elements are appended once, so they are built in
-     the order they are drawn: cover, previous, play, next, then the text. */
-  const cover = player.art ? need('cover', 'img', 'mpris-art') : parts.cover;
-  if (cover) {
-    if (player.art && cover.src !== player.art) cover.src = player.art;
-    if (cover.hidden !== !player.art) cover.hidden = !player.art;
-  }
+     the order they are drawn: cover, previous, play, next, then the text. The
+     cover is created even with no art, and hidden, so that art arriving on a
+     later update is drawn in front of the text rather than after it. */
+  const cover = need('cover', 'img', 'mpris-art');
+  if (player.art && cover.src !== player.art) cover.src = player.art;
+  if (cover.hidden !== !player.art) cover.hidden = !player.art;
 
   const previous = need('previous', 'button', 'mpris-button');
   setModule(previous, '󰒮');

@@ -1361,15 +1361,24 @@ impl ViewportState {
                             // terminal that stops opening — the desk's own
                             // keymap is not something a portal call may
                             // change. See `crate::shortcuts`.
-                            if let Some(fired) = state.shortcut_for(modifiers, unmodified) {
-                                state.suppressed_keys.push(keysym);
-                                state.shortcuts_to_announce.push((true, fired.clone()));
-                                // Remembered by the key it arrived on, because
-                                // the release is matched by keysym and carries
-                                // nothing else to identify it — and by then the
-                                // modifiers may already be up.
-                                state.shortcuts_held.push((keysym.raw(), fired));
-                                return FilterResult::Intercept(Some(Action::Swallow));
+                            //
+                            // Not while locked: a grant can run a command or
+                            // drive push-to-talk, and the session is not the
+                            // user's to hand that to. The key falls through to
+                            // the lock screen below, exactly as a non-`locked`
+                            // binding does — the `match_binding` gate is not
+                            // enough here because this path precedes it.
+                            if !state.locked {
+                                if let Some(fired) = state.shortcut_for(modifiers, unmodified) {
+                                    state.suppressed_keys.push(keysym);
+                                    state.shortcuts_to_announce.push((true, fired.clone()));
+                                    // Remembered by the key it arrived on, because
+                                    // the release is matched by keysym and carries
+                                    // nothing else to identify it — and by then the
+                                    // modifiers may already be up.
+                                    state.shortcuts_held.push((keysym.raw(), fired));
+                                    return FilterResult::Intercept(Some(Action::Swallow));
+                                }
                             }
 
                             match crate::binding::match_binding(

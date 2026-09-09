@@ -3125,6 +3125,48 @@ if (mode === 'tiling') {
     Object.assign(home, JSON.parse(shape));
     emit({ type: 'view.focused', id: firstWindow });
   }
+
+  /* A close on a background workspace collapses that workspace's own tree. The
+     root guard asks the layout mode so it does not inline a scrolling
+     workspace's only column — but it asked with no workspace, which answers for
+     the one being rendered, so a close behind a tiling workspace flattened the
+     column into the root and the stack became side-by-side columns. */
+  {
+    const sh = globalThis.__shell;
+    const away = 12;
+    sh.workspacePolicyForTest.runtime.set(away, { layout: 'scrolling' });
+
+    const back = sh.outputs.get(sh.activeOutput).workspace;
+    emit({ type: 'shell.command', command: 'workspace.switch', args: [String(away)] });
+    for (const id of [310, 311]) {
+      emit({ type: 'view.added', id, title: `s${id}`, app_id: 'stack',
+        output: 'DP-1', min_width: 0, min_height: 0, floating: false,
+        width: 800, height: 600 });
+    }
+    /* One column holding both windows: the shape a scrolling root must keep. */
+    sh.workspaces.set(away, {
+      type: 'split', dir: 'horizontal', weight: 1, layout: 'split', active: 0,
+      children: [{
+        type: 'split', dir: 'vertical', weight: 1, layout: 'split', active: 0,
+        children: [
+          { type: 'leaf', id: 310, weight: 1 },
+          { type: 'leaf', id: 311, weight: 1 },
+        ],
+      }],
+    });
+
+    emit({ type: 'shell.command', command: 'workspace.switch', args: [String(back)] });
+    emit({ type: 'view.removed', id: 310 });
+
+    const root = sh.workspaces.get(away);
+    check('a close on a background scrolling workspace keeps its column',
+      root?.children?.length === 1 && root.children[0].type === 'split');
+    check('and the surviving window is still inside that column',
+      root?.children?.[0]?.children?.some((c) => c.id === 311) === true);
+
+    emit({ type: 'view.removed', id: 311 });
+    sh.workspacePolicyForTest.runtime.delete(away);
+  }
 } else if (mode === 'scrolling') {
   const before = sent.length;
   emit({ type: 'shell.command', command: 'layout.focus', args: ['left'] });
@@ -5727,6 +5769,19 @@ if (mode === 'scrolling') {
     emit({ type: 'mpris.update', player: null });
     check('and a player that exits takes the widget off the bar',
       parts().length === 0 && el.textContent === '');
+
+    /* And a player that comes back is drawn again. The widget keeps its parts
+       in `el._mpris` and updates them in place; clearing the children above
+       used to leave that cache pointing at detached nodes, so every later
+       update wrote into nothing and the widget stayed blank for the session. */
+    emit({ type: 'mpris.update', player: { id: 'mpv', title: 'Rhubarb',
+      artist: 'Aphex Twin', album: '', status: 'playing', art: '',
+      can_go_next: true, can_go_previous: false, can_pause: true,
+      can_play: true } });
+    const labelAgain = parts().find((n) => n._classes.has('mpris-label'));
+    check('a player that comes back is drawn again rather than into detached nodes',
+      labelAgain?.textContent === 'Rhubarb — Aphex Twin' &&
+      parts().filter((n) => n._classes.has('mpris-button')).length === 3);
     emit({ type: 'config', layout: mode });
   }
 

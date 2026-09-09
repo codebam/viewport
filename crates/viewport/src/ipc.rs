@@ -411,9 +411,14 @@ impl Ipc {
 
     /// Ask about writability for any client a write came up short on.
     ///
-    /// The ids are collected first so that [`Self::arm_writer`] — which mutates
-    /// `self.clients` — does not conflict with the iterator.
+    /// The `any` first so the ordinary case — every write completed, which is
+    /// nearly all of them — costs a scan and no allocation. Only when one has
+    /// a backlog are the ids collected, because [`Self::arm_writer`] mutates
+    /// `self.clients` and so cannot run inside the iterator.
     fn arm_writers(&mut self) {
+        if !self.clients.values().any(Client::wants_writable) {
+            return;
+        }
         let ids: Vec<u64> = self
             .clients
             .iter()

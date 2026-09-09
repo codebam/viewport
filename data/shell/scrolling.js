@@ -205,12 +205,18 @@ function renderStrip(root, output, area = null) {
   }
   /* Never scroll past either end of the strip. */
   scroll = Math.max(0, Math.min(scroll, Math.max(0, offset - area.width)));
+  /* Whether this workspace already had an offset, read before the map is
+     written below: after `set` the answer is always yes and the strip
+     animates in from zero instead of appearing where it belongs. */
+  const hadOffset = scrollOffsets.has(workspace);
   scrollOffsets.set(workspace, scroll);
 
   /* The strip element is new every render, so it would simply appear already
      scrolled. Start it where the last one ended and move it in the same frame
-     the windows are flipped, so the two animations run together. */
-  const previous = scrollOffsets.has(workspace) ? lastScroll : scroll;
+     the windows are flipped, so the two animations run together. A workspace
+     being drawn for the first time has no last one, so it starts at its final
+     offset rather than sliding in from the left. */
+  const previous = hadOffset ? lastScroll : scroll;
   strip.style.transform = `translateX(${-(dragging ? scroll : previous)}px)`;
   strip.dataset.scroll = String(scroll);
   if (dragging) strip.classList.add('dragging');
@@ -412,7 +418,10 @@ function renderOverview(output, list) {
          clicking a workspace on the right monitor means you want it there. */
       setOverview(false);
       setActiveOutput(output.name);
-      switchWorkspace(output.name, n);
+      /* The workspace already showing is not a switch: `switchWorkspace`
+         treats "already there" as auto-back-and-forth and would take you to
+         the previous workspace instead of just closing the overview. */
+      if (output.workspace !== n) switchWorkspace(output.name, n);
     });
     grid.append(cell);
   }

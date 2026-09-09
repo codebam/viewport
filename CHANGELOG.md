@@ -24,6 +24,73 @@ to summarise rather than to duplicate.
   (`fullscreenOn(output.workspace)`), and a window's claim is cleared by id on
   the close and client-unfullscreen paths so it cannot outlive the window or
   follow it to a workspace the entry was never updated for.
+- Portal screenshots are answered again. `service_screencopy` returned early
+  when the `zwlr_screencopy` queue was empty — which is the ordinary case —
+  before it reached `service_portal_screenshots`, and the DRM backend only
+  called it at all when a screencopy or image-copy request was waiting. With no
+  unrelated capture client in flight, an `org.freedesktop.impl.portal.Screenshot`
+  request sat in `pending_screenshots` until the portal frontend timed out. The
+  portal half is now served first, the DRM gate includes `pending_screenshots`,
+  and `handle_screenshot` marks the desktop dirty so an idle output renders the
+  frame the screenshot is taken from.
+- A portal screenshot of a rotated or flipped output is the right way up. The
+  region and the encoded size were taken from the untransformed mode while
+  `read_output_pixels` renders into `transform_size(mode.size)`, so on a
+  90°/270° monitor the readback was cropped on one axis. It now uses the
+  transform, as the image-copy path already did.
+- Image-copy capture frames whose window has closed or whose output has been
+  unplugged are failed rather than held for the rest of the session. Nothing
+  served them once their target left every output pass, so the client's buffer
+  was pinned, the client waited for a `ready` that could never come, and the
+  capture buffer pool could not be released. `reap_pending_capture_frames` runs
+  on the housekeeping tick beside the screencopy reap.
+- Portal-granted global shortcuts no longer fire while the session is locked.
+  The `locked` flag added in the previous commit gates the configured bindings
+  through `match_binding`, but the global-shortcut path is matched before that
+  and was left open — a grant that launches a command or drives push-to-talk
+  ran at the lock screen and swallowed the key instead of forwarding it. It is
+  skipped while locked, and the key reaches the lock screen as before.
+- The media widget draws again after a player exits and returns. Clearing the
+  widget detached its cached elements but left `el._mpris` pointing at them, so
+  every later update wrote into detached nodes and the widget stayed blank for
+  the session. The cache is cleared with the children, a node is re-appended if
+  it is detached, and the cover is created up front and hidden rather than
+  appended after the text when art arrives late.
+- Closing a window on a background scrolling workspace keeps that workspace's
+  column. `collapse` asked `layoutModeOf()` with no workspace, which answers for
+  the one being rendered, so a close on a scrolling workspace behind a tiling
+  one inlined its only column into the root and turned a stack into side-by-side
+  columns. The workspace is threaded through from each caller.
+- The first frame of a scrolling strip no longer slides in from the left. The
+  code read `scrollOffsets.has(workspace)` after writing the map, so the branch
+  that starts a new strip at its final offset was dead. It is read before the
+  write now.
+- Clicking the overview thumbnail of the workspace an output is already showing
+  closes the overview instead of switching to the previous workspace, which is
+  what `workspace_auto_back_and_forth` did with a switch to where you already
+  are.
+
+### Changed
+- VRR's desired state no longer walks every window's whole surface tree — popups
+  and subsurfaces included — once per output per frame. `Off` and `Always` are
+  answered by the configured mode alone, which is the default desktop; the
+  traversal now only runs for the modes whose answer actually depends on
+  fullscreen or content type.
+- A screencast's targets are resolved once per output frame. `draw_into_casts`
+  resolved them itself and `feed_casts` resolved them again, cloning output
+  handles each time, so the comment claiming a single resolution was not true
+  of the code. The list is resolved once and handed to both.
+- The IPC writability sweep allocates only when a client actually has a backlog.
+  The `any` guard that made the common case a scan and no allocation was removed
+  by the previous performance pass; it is back, with the single collection pass
+  kept for the case that needs it.
+- Cursor lookups no longer build a `String` key on every frame. The cache is
+  keyed by name and then by scale, so a frame that draws the pointer looks up
+  the already-loaded cursor by the borrowed name it was asked with.
+- The IPC framer remembers how much of its accumulator it has already scanned.
+  A message larger than one 4 KiB read was re-scanned from the start on every
+  chunk, which is quadratic in the message size — a 1 MiB `shell.overlay` cost
+  on the order of a hundred million byte comparisons.
 
 ## [0.2.0] - 2026-09-06
 

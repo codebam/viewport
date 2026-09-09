@@ -237,7 +237,7 @@ function dropUnclaimedSlots() {
         removed = true;
       }
     }
-    if (removed) collapse(root, true);
+    if (removed) collapse(root, true, n);
   }
   treeGeneration++;
   relayoutAll();
