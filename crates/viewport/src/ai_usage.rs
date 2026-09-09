@@ -132,11 +132,14 @@ fn worker(
     commands: mpsc::Sender<Command>,
     events: smithay::reexports::calloop::channel::Sender<Message>,
 ) {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(REQUEST_TIMEOUT)
-        .timeout_read(REQUEST_TIMEOUT)
-        .timeout_write(REQUEST_TIMEOUT)
-        .build();
+    // ureq 3 replaced the per-phase timeouts with one end-to-end one. That is a
+    // tighter bound than the three it replaces — a server dribbling bytes
+    // slowly used to get 15s each for connect, read and write, and now gets 15s
+    // for the whole call — which is what `REQUEST_TIMEOUT` was there to say.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .build()
+        .into();
     let mut accounts = Vec::new();
     let mut last = Vec::new();
     let mut login_active = false;
@@ -258,7 +261,7 @@ fn fetch(agent: &ureq::Agent, account: &Account) -> Result<Usage, String> {
     let (token, account_id, own_openai_auth) = credentials(agent, account)?;
     match fetch_with(agent, account, &token, account_id.as_deref()) {
         Err(FetchError::Http(error))
-            if own_openai_auth && matches!(error.as_ref(), ureq::Error::Status(401, _)) =>
+            if own_openai_auth && matches!(error.as_ref(), ureq::Error::StatusCode(401)) =>
         {
             let auth = refresh_openai_auth(agent, &load_openai_auth()?)?;
             fetch_with(
@@ -295,7 +298,7 @@ fn fetch_with(
     let mut request = match account.provider {
         AiProvider::Claude => {
             let url = "https://api.anthropic.com/api/oauth/usage";
-            agent.get(url).set("anthropic-beta", "oauth-2025-04-20")
+            agent.get(url).header("anthropic-beta", "oauth-2025-04-20")
         }
         AiProvider::Openai => {
             let url = "https://chatgpt.com/backend-api/wham/usage";
@@ -306,17 +309,18 @@ fn fetch_with(
             agent.get(url)
         }
     };
-    request = request.set("Authorization", &format!("Bearer {token}"));
+    request = request.header("Authorization", format!("Bearer {token}"));
     if account.provider == AiProvider::Openai {
         if let Some(id) = account_id {
-            request = request.set("ChatGPT-Account-Id", id);
+            request = request.header("ChatGPT-Account-Id", id);
         }
     }
-    let response = request
+    let mut response = request
         .call()
         .map_err(|error| FetchError::Http(Box::new(error)))?;
     let body = response
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|error| FetchError::Body(error.to_string()))?;
     parse(account.provider, &body).map_err(FetchError::Body)
 }
@@ -538,9 +542,9 @@ fn current_openai_auth(agent: &ureq::Agent) -> Result<OpenAiAuth, String> {
 }
 
 fn refresh_openai_auth(agent: &ureq::Agent, prior: &OpenAiAuth) -> Result<OpenAiAuth, String> {
-    let response = agent
+    let mut response = agent
         .post(&format!("{OPENAI_ISSUER}/oauth/token"))
-        .send_form(&[
+        .send_form([
             ("grant_type", "refresh_token"),
             ("client_id", OPENAI_CLIENT_ID),
             ("refresh_token", prior.refresh_token.as_str()),
@@ -548,7 +552,8 @@ fn refresh_openai_auth(agent: &ureq::Agent, prior: &OpenAiAuth) -> Result<OpenAi
         .map_err(|error| format!("refreshing OpenAI OAuth: {error}"))?;
     let value: Value = serde_json::from_str(
         &response
-            .into_string()
+            .body_mut()
+            .read_to_string()
             .map_err(|error| format!("refreshing OpenAI OAuth: {error}"))?,
     )
     .map_err(|error| format!("refreshing OpenAI OAuth: {error}"))?;
@@ -576,14 +581,15 @@ fn openai_login(
     agent: &ureq::Agent,
     events: &smithay::reexports::calloop::channel::Sender<Message>,
 ) -> Result<(), String> {
-    let response = agent
+    let mut response = agent
         .post(&format!("{OPENAI_ISSUER}/api/accounts/deviceauth/usercode"))
-        .set("Content-Type", "application/json")
-        .send_string(&format!(r#"{{"client_id":"{OPENAI_CLIENT_ID}"}}"#))
+        .header("Content-Type", "application/json")
+        .send(format!(r#"{{"client_id":"{OPENAI_CLIENT_ID}"}}"#))
         .map_err(|error| format!("starting OpenAI OAuth: {error}"))?;
     let value: Value = serde_json::from_str(
         &response
-            .into_string()
+            .body_mut()
+            .read_to_string()
             .map_err(|error| format!("starting OpenAI OAuth: {error}"))?,
     )
     .map_err(|error| format!("starting OpenAI OAuth: {error}"))?;
@@ -618,19 +624,22 @@ fn openai_login(
     let code = loop {
         let response = agent
             .post(&format!("{OPENAI_ISSUER}/api/accounts/deviceauth/token"))
-            .set("Content-Type", "application/json")
-            .send_string(&format!(
+            .header("Content-Type", "application/json")
+            .send(format!(
                 r#"{{"device_auth_id":{},"user_code":{}}}"#,
                 serde_json::to_string(&device_auth_id).unwrap(),
                 serde_json::to_string(&user_code).unwrap()
             ));
         match response {
-            Ok(response) => {
-                let body = response.into_string().map_err(|error| error.to_string())?;
+            Ok(mut response) => {
+                let body = response
+                    .body_mut()
+                    .read_to_string()
+                    .map_err(|error| error.to_string())?;
                 break serde_json::from_str::<Value>(&body)
                     .map_err(|error| format!("finishing OpenAI OAuth: {error}"))?;
             }
-            Err(ureq::Error::Status(403 | 404, _))
+            Err(ureq::Error::StatusCode(403 | 404))
                 if started.elapsed() < Duration::from_secs(15 * 60) =>
             {
                 std::thread::sleep(Duration::from_secs(interval));
@@ -639,25 +648,23 @@ fn openai_login(
         }
     };
 
-    let response = agent
+    let authorization_code = required_text(&code, "authorization_code")?;
+    let code_verifier = required_text(&code, "code_verifier")?;
+    let redirect_uri = format!("{OPENAI_ISSUER}/deviceauth/callback");
+    let mut response = agent
         .post(&format!("{OPENAI_ISSUER}/oauth/token"))
-        .send_form(&[
+        .send_form([
             ("grant_type", "authorization_code"),
-            ("code", required_text(&code, "authorization_code")?.as_str()),
-            (
-                "redirect_uri",
-                &format!("{OPENAI_ISSUER}/deviceauth/callback"),
-            ),
+            ("code", authorization_code.as_str()),
+            ("redirect_uri", redirect_uri.as_str()),
             ("client_id", OPENAI_CLIENT_ID),
-            (
-                "code_verifier",
-                required_text(&code, "code_verifier")?.as_str(),
-            ),
+            ("code_verifier", code_verifier.as_str()),
         ])
         .map_err(|error| format!("exchanging OpenAI OAuth code: {error}"))?;
     let tokens: Value = serde_json::from_str(
         &response
-            .into_string()
+            .body_mut()
+            .read_to_string()
             .map_err(|error| format!("exchanging OpenAI OAuth code: {error}"))?,
     )
     .map_err(|error| format!("exchanging OpenAI OAuth code: {error}"))?;

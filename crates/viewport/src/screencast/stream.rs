@@ -550,7 +550,7 @@ impl Arrival {
 /// thread loop is what xdg-desktop-portal-wlr uses for the same reason: every
 /// call into it takes the loop's own lock, so frames can be handed over from
 /// wherever the renderer happens to be.
-/// The `Rc` variants throughout: pipewire-rs 0.9 splits every object into an
+/// The `Rc` variants throughout: pipewire-rs splits every object into an
 /// owning `Box` form and a reference-counted `Rc` one, and a stream has to hold
 /// the core alive, so the core has to be shared rather than owned here.
 pub struct Pipewire {

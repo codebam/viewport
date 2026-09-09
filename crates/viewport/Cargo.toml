@@ -20,7 +20,7 @@ viewport-ipc.workspace = true
 viewport-web.workspace = true
 viewport-vulkan.workspace = true
 anyhow.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 serde.workspace = true
 serde_json.workspace = true
 regex = "1"
@@ -28,7 +28,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 # Authenticated usage APIs for the optional AI bar widget. Requests run on the
 # widget's worker thread, never on the compositor loop.
-ureq = { version = "2.12", default-features = false, features = ["tls"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api", "p2p"] }
 zvariant = "5"
 # For one type: the bit flags a bus name is asked for with. zbus takes them as
@@ -46,7 +46,7 @@ reis = { version = "0.7", features = ["calloop"] }
 # And notification sounds, which go out through the same library — see
 # src/sound.rs. That is why there is no libcanberra here: playing a short
 # sound is a PipeWire stream, and this compositor already links PipeWire.
-pipewire = "0.9"
+pipewire = "0.10"
 # Decoding the sound a notification plays. Pure Rust, and only the formats a
 # sound theme actually ships: Vorbis in Ogg is what every `.oga` in
 # /usr/share/sounds is, and the rest are `.wav`.
