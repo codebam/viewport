@@ -3038,7 +3038,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "viewport"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3070,7 +3070,7 @@ dependencies = [
 
 [[package]]
 name = "viewport-ipc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3079,7 +3079,7 @@ dependencies = [
 
 [[package]]
 name = "viewport-shell-bridge"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -3089,7 +3089,7 @@ dependencies = [
 
 [[package]]
 name = "viewport-shell-chromium"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "rustix 1.1.4",
@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "viewport-shell-gtk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3116,7 +3116,7 @@ dependencies = [
 
 [[package]]
 name = "viewport-shell-servoshell"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -3142,7 +3142,7 @@ dependencies = [
 
 [[package]]
 name = "viewport-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cc",
