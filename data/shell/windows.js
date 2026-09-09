@@ -233,7 +233,7 @@ function moveByDelta(id, dx, dy) {
 
 function addView({ id, title, app_id, tag, output: outputName, min_width, min_height,
     floating, minimized = false, parent, ancestors, width, height, replay,
-    xwayland = false }) {
+    xwayland = false, content = 'none' }) {
   /* view.added is replayed on load and on view.query, so the same view
    * legitimately arrives more than once. */
   if (views.has(id)) return;
@@ -271,8 +271,10 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   const openingWorkspace = replay ? null : output.workspace;
   views.set(id, {
     el, viewport, title, app_id, tag: tag ?? null, box: null,
-    /* X11 under Xwayland. Only a rule can read it; see ruleFor. */
+    /* X11 under Xwayland, and what the client says it is showing. Only a rule
+       can read either; see ruleFor. */
     xwayland: Boolean(xwayland),
+    content: content || 'none',
     naturalWidth: width, naturalHeight: height,
     /* What the client says it will not go below, kept as numbers as well as on
        the element. The element carries them so flexbox enforces them, which is
@@ -328,7 +330,7 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      the window goes straight where it belongs rather than appearing in one
      place and jumping to another. */
   const rule = ruleFor(app_id, title, tag, openingWorkspace,
-    { xwayland: Boolean(xwayland), modal: Boolean(parent) && floating });
+    { xwayland: Boolean(xwayland), modal: Boolean(parent) && floating, content });
   const view = views.get(id);
   /* Hyprland's `animation` rule effect: this window opens and closes without
      the fade every other one gets. Kept on the view because fadeIn is also
@@ -486,7 +488,8 @@ function reapplyWindowRule(id) {
   const view = views.get(id);
   if (!view) return;
   const rule = ruleFor(view.app_id, view.title, view.tag, view.openingWorkspace,
-    { xwayland: view.xwayland, modal: view.parent != null && isFloating(id) });
+    { xwayland: view.xwayland, modal: view.parent != null && isFloating(id),
+      content: view.content });
   const capture = typeof rule?.capture === 'boolean' ? rule.capture : true;
   if (view.ruleCapture !== capture) {
     view.ruleCapture = capture;

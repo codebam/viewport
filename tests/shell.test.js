@@ -7317,6 +7317,23 @@ if (mode === 'scrolling') {
     sent.slice(policyMark).some((m) => m.type === 'view.idle_inhibit'
       && m.id === 79 && m.inhibit === true));
 
+  /* Hyprland's `content` matcher, from `wp_content_type_v1`. It can change
+     while the window is open, through `view.props`. */
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { content: 'game' }, workspace: 6 },
+  ] });
+  open(83, 'game', { content: 'game' });
+  check('a content matcher sees the declared type', workspaceOf(83) === 6);
+  open(84, 'not-a-game', { content: 'none' });
+  check('and does not match a different one', workspaceOf(84) !== 6);
+  open(85, 'starts-plain');
+  check('a window with no content type is not matched', workspaceOf(85) !== 6);
+  emit({ type: 'view.props', id: 85, title: 'starts-plain',
+    app_id: 'starts-plain', content: 'game' });
+  check('a later view.props re-resolves the rule', workspaceOf(85) === 6);
+  /* The ids are reused by the stylesheet section below, so they have to go. */
+  for (const id of [83, 84, 85]) emit({ type: 'view.removed', id });
+
   /* The rules above are not the harness's; put them back for anything after. */
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }

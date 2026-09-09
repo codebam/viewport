@@ -1969,6 +1969,11 @@ window with a parent, the same pair the compositor floats for. `class`,
 `initial_class` and `initial_title` take the same `contains` / `equals` /
 `regex` conditions as the fields above; `xwayland` and `modal` take a boolean,
 and a rule that names one is only matched when the window's answer agrees.
+`content` matches what the client declares through `wp_content_type_v1` —
+`"game"`, `"video"`, `"photo"` or `"none"` (`"image"` is accepted for
+`"photo"`). Unlike the others it can change while the window is open, and the
+compositor re-sends `view.props` when it does, so a game that starts playing
+is matched then rather than only at map time.
 
 The effects this shell can apply are the workspace, floating and its rect,
 `pinned`, `pseudotile`, `swallow`, `capture`, `opacity`, `focus`, `animation`,

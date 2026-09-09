@@ -112,6 +112,9 @@ pub struct View {
     /// restoring a layout would match on. Nothing does yet; it is kept because
     /// the client is entitled to be remembered by it.
     pub tag: Option<String>,
+    /// The `wp_content_type_v1` value last announced to the shell, so a commit
+    /// that did not change it costs nothing. See [`Self::content_type`].
+    pub content: String,
     /// The frame the shell drew, when it has to be drawn above the windows
     /// underneath this one — see `ViewLayout::frame`.
     pub frame: Option<Box>,
@@ -209,6 +212,7 @@ impl View {
             min_height,
             replay,
             xwayland: self.window.x11_surface().is_some(),
+            content: self.content_type().to_owned(),
             floating: self.wants_floating(),
             minimized: self.minimized,
             parent,
@@ -231,6 +235,48 @@ impl View {
             return Some(toplevel.wl_surface().clone());
         }
         self.window.x11_surface().and_then(|x11| x11.wl_surface())
+    }
+
+    /// What the client says it is showing, from `wp_content_type_v1`.
+    ///
+    /// `"game"`, `"video"`, `"photo"` or `"none"`, as the protocol spells
+    /// them. A game is the one that changes what the compositor should do —
+    /// VRR, tearing — and a window rule can match it. The whole surface tree
+    /// is walked because the type is set on the surface that paints, which is
+    /// not always the toplevel.
+    pub fn content_type(&self) -> &'static str {
+        use smithay::reexports::wayland_protocols::wp::content_type::v1::server::wp_content_type_v1::Type;
+        use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+        use smithay::wayland::content_type::ContentTypeSurfaceCachedState;
+
+        let Some(surface) = self.surface() else {
+            return "none";
+        };
+        // Game wins over the rest, then video, then photo: a tree can carry
+        // more than one declaration and the most demanding one is the one the
+        // answer is for.
+        let mut found = Type::None;
+        with_surface_tree_downward(
+            &surface,
+            (),
+            |_, _, _| TraversalAction::DoChildren(()),
+            |_, states, _| {
+                let mut state = states.cached_state.get::<ContentTypeSurfaceCachedState>();
+                match state.current().content_type() {
+                    Type::Game => found = Type::Game,
+                    Type::Video if found != Type::Game => found = Type::Video,
+                    Type::Photo if found == Type::None => found = Type::Photo,
+                    _ => {}
+                }
+            },
+            |_, _, _| true,
+        );
+        match found {
+            Type::Game => "game",
+            Type::Video => "video",
+            Type::Photo => "photo",
+            _ => "none",
+        }
     }
 
     /// The identity of that surface, without handing out the surface itself.
@@ -532,6 +578,7 @@ impl Views {
             scale: 1.0,
             clip: None,
             tag: None,
+            content: "none".to_owned(),
             frame: None,
             floating: false,
             square: false,

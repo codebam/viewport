@@ -228,6 +228,10 @@ impl ViewportState {
         }
 
         xdg_shell::handle_commit(self, surface);
+        // `wp_content_type_v1` changes on a commit rather than through a
+        // request, so this is where a window that starts playing a video is
+        // noticed. Only the change is sent on.
+        self.notify_content_change(surface);
         // A layer surface has no size until it is arranged, and will not paint
         // until it has been configured.
         self.layer_commit(surface);

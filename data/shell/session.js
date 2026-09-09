@@ -637,6 +637,14 @@ function ruleFor(appId, title, tag, openingWorkspace = null, extra = {}) {
         matched = true;
         if (Boolean(rule.match.modal) !== Boolean(extra.modal)) return false;
       }
+      /* `content` is `wp_content_type_v1`: game, video, photo or none.
+         Hyprland spells photo `image`, so both are accepted. */
+      if (rule.match.content !== undefined) {
+        matched = true;
+        const wanted = String(rule.match.content).toLowerCase();
+        const content = extra.content || 'none';
+        if ((wanted === 'image' ? 'photo' : wanted) !== content) return false;
+      }
       if (rule.match.workspace !== undefined) {
         matched = true;
         if (!Number.isInteger(rule.match.workspace)

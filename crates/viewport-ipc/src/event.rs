@@ -48,6 +48,11 @@ pub enum Event {
         /// against the older message sees exactly what it saw before.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon: Option<String>,
+        /// What the client says it is showing, from `wp_content_type_v1`:
+        /// `"game"`, `"video"`, `"photo"` or `"none"`. Hyprland's `content`
+        /// matcher, and it changes while a window is open.
+        #[serde(default = "content_none")]
+        content: String,
     },
 
     /// The window this one is a dialog of has changed, or arrived late.
@@ -607,6 +612,12 @@ pub struct ViewAdded {
     #[serde(default)]
     pub xwayland: bool,
 
+    /// What the client says it is showing, from `wp_content_type_v1`:
+    /// `"game"`, `"video"`, `"photo"` or `"none"`. Hyprland's `content`
+    /// matcher. Updated later through `view.props` when it changes.
+    #[serde(default = "content_none")]
+    pub content: String,
+
     /// Dialogs and fixed-size windows want floating rather than tiling. The
     /// compositor can see the signals — a parent toplevel, an X11 window type —
     /// and the shell cannot.
@@ -888,6 +899,11 @@ pub struct WorkspaceRule {
 
 fn yes() -> bool {
     true
+}
+
+/// A message from before `content` existed means the client declared nothing.
+fn content_none() -> String {
+    "none".to_owned()
 }
 
 fn osk_auto() -> String {
@@ -1621,6 +1637,7 @@ mod tests {
             min_height: 0,
             replay: false,
             xwayland: false,
+            content: "none".into(),
             floating: false,
             minimized: false,
             parent: None,
@@ -1666,6 +1683,7 @@ mod tests {
             min_height: 0,
             replay: false,
             xwayland: false,
+            content: "none".into(),
             floating: true,
             minimized: false,
             parent: Some(1),
@@ -2045,6 +2063,7 @@ mod tests {
                 min_height: 0,
                 replay: true,
                 xwayland: false,
+                content: "none".into(),
                 floating: false,
                 minimized: false,
                 parent: None,
@@ -2059,6 +2078,7 @@ mod tests {
                 app_id: String::new(),
                 tag: None,
                 icon: None,
+                content: "none".into(),
             }),
             json(&Event::ViewConfigured {
                 id: 1,

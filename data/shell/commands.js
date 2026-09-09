@@ -791,6 +791,9 @@ window.addEventListener('viewport', (event) => {
         view.title = message.title;
         view.app_id = message.app_id;
         if (message.tag !== undefined) view.tag = message.tag;
+        /* `wp_content_type_v1` can change while a window is open — a video
+           starts playing — and a rule that matches it is resolved again. */
+        if (typeof message.content === 'string') view.content = message.content;
         reapplyWindowRule(message.id);
         renderBars();
       }

@@ -528,6 +528,9 @@ impl ViewportState {
         self.foreign_management_state.update(id, &title, &app_id);
         let icon = view.icon.clone();
         let tag = view.tag.clone();
+        // Read here, before the mutable borrow below: the content type walks
+        // the surface tree, which needs the view.
+        let content = view.content_type().to_owned();
         let capture_allowed = crate::config::initially_allows_capture(
             self.config.rules.as_ref(),
             &app_id,
@@ -545,8 +548,30 @@ impl ViewportState {
             app_id,
             tag,
             icon,
+            content,
         };
         self.notify(&event);
+    }
+
+    /// Tell the shell if a window's `wp_content_type_v1` changed.
+    ///
+    /// The type is not a request and does not come through `notify_props`'s
+    /// other callers: it changes on a commit, so a window that starts playing
+    /// a video is noticed here. The whole props event is sent, which is what
+    /// makes the shell re-run its rules and resolve a `content` matcher.
+    pub(crate) fn notify_content_change(&mut self, surface: &WlSurface) {
+        let Some(view) = self.views.find_by_surface(surface) else {
+            return;
+        };
+        let content = view.content_type();
+        if view.content == content {
+            return;
+        }
+        let id = view.id;
+        if let Some(view) = self.views.get_mut(id) {
+            view.content = content.to_owned();
+        }
+        self.notify_props(surface);
     }
 
     /// Set the state a client asked for and tell the shell.
