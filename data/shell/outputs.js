@@ -205,7 +205,10 @@ function syncOutputs(list) {
     view.specialOutput = fallback;
     const output = outputs.get(fallback);
     if (output) floating.workspace = output.workspace;
-    if (view.special === 'scratchpad') view.specialHidden = true;
+    /* A pinned window is visible on whatever output it lands on; every other
+       special is hidden when the output it was shown on goes away, so it does
+       not reappear somewhere it was never toggled onto. */
+    if (view.special && view.special !== 'pinned') view.specialHidden = true;
   }
 
   relayoutAll();

@@ -1930,6 +1930,23 @@ its assigned output across numbered workspace switches; `window.pin.toggle`
 changes that state. Scratchpad and pinned windows do not appear in overview or
 participate in canvas placement.
 
+`workspace: "special:NAME"` is Hyprland's named special, and the scratchpad is
+just the one called `scratchpad` — the bare spelling above is kept because it
+is what every existing config and chord says. A window ruled onto a named
+special starts hidden, and it is toggled by name:
+
+```sh
+viewport msg -t shell.command --command special.toggle --args notes
+viewport msg -t shell.command --command special.move --args notes
+```
+
+`special.toggle NAME` shows or hides that space as an overlay on the active
+output; with no argument it does nothing, because a name is the whole point.
+`special.move NAME` sends the focused window there, hidden like the
+scratchpad. Named specials are saved in `session.json` with the window, so a
+restart brings them back where they were — still hidden until toggled, and
+still on the output they were shown on.
+
 `pseudotile: true` reserves the ordinary full tiled slot but centres the client
 at the rule's `width` and `height`, or its natural size where either is absent.
 The client is capped by the slot. Pseudotiling is ignored while a window is

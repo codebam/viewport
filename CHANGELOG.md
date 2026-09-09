@@ -82,6 +82,12 @@ to summarise rather than to duplicate.
   button or scroll through, and `ignore_mods+` matches whatever modifiers are
   held. The two halves of a chord do not shadow each other, so one chord can do
   one thing on press and another on release.
+- Named special workspaces, Hyprland's `special:NAME`. A rule can send a window
+  to one, `special.toggle NAME` shows or hides that space as an overlay on the
+  active output, and `special.move NAME` sends the focused window there. The
+  bare `scratchpad` is the same space under the name its chord already used, so
+  existing configs are unchanged; a named special is saved with the window and
+  restored hidden.
 - A `group` block controls what a new window does when it opens from inside a
   tabbed or stacked container. `auto_group: true` joins it, `false` splits
   beside it, and absent keeps the historical axis rule. `group.lock` locks the

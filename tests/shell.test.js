@@ -7342,6 +7342,41 @@ if (mode !== 'scrolling') {
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES, group: {} });
 }
 
+/* --- named specials -----------------------------------------------------
+ *
+ * Hyprland's `special:NAME`. A window ruled onto one starts hidden; it is
+ * toggled onto the active output by name, and `special.move` sends the focused
+ * window there. The bare `scratchpad` is `special:scratchpad` under the name
+ * its chord uses. */
+{
+  const open = (id, app) => emit({ type: 'view.added', id, title: app,
+    app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+
+  emit({ type: 'config', layout: mode, rules: [
+    { match: { app_id: 'notes' }, workspace: 'special:notes',
+      width: 500, height: 400 },
+  ] });
+  open(120, 'notes');
+  const notes = globalThis.__shell.views.get(120);
+  check('special:NAME opens a named special hidden',
+    notes.special === 'notes' && notes.specialHidden && notes.el.hidden);
+  emit({ type: 'shell.command', command: 'special.toggle', args: ['notes'] });
+  check('special.toggle shows the named special',
+    !notes.specialHidden && !notes.el.hidden);
+  emit({ type: 'shell.command', command: 'special.toggle', args: ['notes'] });
+  check('special.toggle hides it again', notes.specialHidden && notes.el.hidden);
+
+  open(121, 'movable');
+  emit({ type: 'view.focused', id: 121 });
+  emit({ type: 'shell.command', command: 'special.move', args: ['notes'] });
+  check('special.move sends the focused window to the named special',
+    globalThis.__shell.views.get(121).special === 'notes'
+      && globalThis.__shell.views.get(121).specialHidden);
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
+}
+
 /* --- the stylesheet ----------------------------------------------------
  *
  * A window is a border and a hole, and both of them are CSS. Nothing above

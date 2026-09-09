@@ -91,7 +91,8 @@ function serialiseSession() {
       ...(view.pseudotile ? { pseudotile: view.pseudotile } : {}),
       ...(view.special ? { special: view.special } : {}),
       ...(view.specialOutput ? { output: view.specialOutput } : {}),
-      ...(view.special === 'scratchpad' ? { hidden: view.specialHidden !== false } : {}),
+      ...(view.special && view.special !== 'pinned'
+        ? { hidden: view.specialHidden !== false } : {}),
     });
   }
   for (const [name, output] of outputs) {
@@ -584,6 +585,20 @@ function ruleValueMatches(value, condition) {
     }
   }
   return false;
+}
+
+/* The special a rule's `workspace` names, or null for an ordinary workspace.
+ *
+ * Hyprland's `special:NAME`, plus the one name this has always had: the bare
+ * `"scratchpad"`, which is `special:scratchpad` by another spelling and stays
+ * the name the default chord toggles. `pinned` is not a workspace name here —
+ * it is the `pinned` rule effect — so it is not in this function. */
+function specialName(rule) {
+  if (!rule || typeof rule.workspace !== 'string') return null;
+  if (rule.workspace === 'scratchpad') return 'scratchpad';
+  if (!rule.workspace.startsWith('special:')) return null;
+  const name = rule.workspace.slice('special:'.length).trim();
+  return name === '' ? null : name;
 }
 
 function ruleFor(appId, title, tag, openingWorkspace = null, extra = {}) {

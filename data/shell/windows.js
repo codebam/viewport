@@ -89,7 +89,7 @@ function dissolveSwallow(id) {
 function trySwallow(id, ancestors, rule, compositorFloating) {
   const child = views.get(id);
   if (!child || compositorFloating || child.parent != null || rule?.swallow === false
-      || rule?.floating === true || rule?.workspace === 'scratchpad'
+      || rule?.floating === true || specialName(rule) !== null
       || rule?.pinned === true || Number.isFinite(rule?.workspace)
       || (layoutModeOf() !== 'tiling' && layoutModeOf() !== 'scrolling')) return false;
 
@@ -345,8 +345,10 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
   }
   const target = rule && Number.isFinite(rule.workspace)
     ? rule.workspace : output.workspace;
-  const special = rule?.workspace === 'scratchpad'
-    ? 'scratchpad' : (rule?.pinned === true ? 'pinned' : null);
+  /* A named special from `special:NAME`, the historical bare `scratchpad`, or
+     a pinned window. `pinned` is not a special in the toggling sense — it is
+     visible on its output — so it is kept as its own name. */
+  const special = specialName(rule) ?? (rule?.pinned === true ? 'pinned' : null);
 
   /* A window you just opened should be the one you are typing into, however it
      was started — a keybinding, a launcher, a link handler. The exceptions are
@@ -354,7 +356,9 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
      one on another workspace was an instruction to leave it there, not to be
      taken there. */
   const focusIt = () => {
-    if (!replay && !view.minimized && special !== 'scratchpad'
+    /* A pinned window is on screen like any other and is worth focusing; a
+       hidden special is not. */
+    if (!replay && !view.minimized && (special === null || special === 'pinned')
         && target === output.workspace) {
       send({ type: 'view.focus', id });
     }
@@ -364,7 +368,10 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     const view = views.get(id);
     view.special = special;
     view.specialOutput = name;
-    view.specialHidden = special === 'scratchpad';
+    /* A named special starts hidden, like the scratchpad: it is a space you
+       toggle onto the screen, not one it opens on. A pinned window is the
+       exception, which is the whole of what pinned means. */
+    view.specialHidden = special !== null && special !== 'pinned';
     insertLeaf(target, id);
     setFloating(id, true, Number.isFinite(rule.width) && Number.isFinite(rule.height)
       ? { x: rule.x ?? 0, y: rule.y ?? 0, width: rule.width, height: rule.height }
@@ -384,7 +391,8 @@ function addView({ id, title, app_id, tag, output: outputName, min_width, min_he
     view.pseudotile = floatSlot.pseudotile ?? view.pseudotile;
     view.special = floatSlot.special ?? null;
     view.specialOutput = outputs.has(floatSlot.output) ? floatSlot.output : name;
-    view.specialHidden = view.special === 'scratchpad' ? floatSlot.hidden !== false : false;
+    view.specialHidden = view.special && view.special !== 'pinned'
+      ? floatSlot.hidden !== false : false;
     insertLeaf(floatSlot.workspace, id);
     setFloating(id, true, floatSlot);
     fadeIn(id);
@@ -475,9 +483,10 @@ function reapplyWindowRule(id) {
     ? ensureWorkspace(rule.workspace) : null;
   if (target !== null) changed = moveViewToWorkspace(id, target) || changed;
 
-  if (rule.workspace === 'scratchpad') {
-    if (view.special !== 'scratchpad') {
-      view.special = 'scratchpad';
+  const special = specialName(rule);
+  if (special !== null) {
+    if (view.special !== special) {
+      view.special = special;
       view.specialOutput = hostOfWorkspace(workspaceOf(id)) ?? activeOutputName();
       view.specialHidden = true;
       if (!isFloating(id)) setFloating(id, true);
@@ -546,7 +555,9 @@ function setSpecial(id, special, hide = false) {
 
   view.special = special;
   view.specialOutput = outputName;
-  view.specialHidden = special === 'scratchpad' && hide;
+  /* `pinned` is never hidden; every other special is hidden when `hide` says
+     so, which is how it is moved to and then toggled onto the screen. */
+  view.specialHidden = special !== 'pinned' && hide;
   if (!isFloating(id)) setFloating(id, true);
   view.floating.workspace = output.workspace;
   relayoutAll();
@@ -554,9 +565,9 @@ function setSpecial(id, special, hide = false) {
   return true;
 }
 
-function toggleScratchpad(tag = null) {
+function toggleSpecial(name, tag = null) {
   const candidates = [...specialEntries()].filter(([, , view]) =>
-    view.special === 'scratchpad' && (!tag || view.tag === tag));
+    view.special === name && (!tag || view.tag === tag));
   const entry = candidates.find(([, , view]) => !view.specialHidden)
     ?? candidates[0];
   if (!entry) return;
@@ -578,9 +589,9 @@ function toggleScratchpad(tag = null) {
   saveSession();
 }
 
-function moveToScratchpad() {
+function moveToSpecial(name) {
   if (focusedId == null) return;
-  if (setSpecial(focusedId, 'scratchpad', true)) focusFirstOn(activeOutputName());
+  if (setSpecial(focusedId, name, true)) focusFirstOn(activeOutputName());
 }
 
 function togglePinned() {

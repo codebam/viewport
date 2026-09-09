@@ -49,11 +49,21 @@ function handleShellCommand(command, args) {
     case 'window.pseudotile.toggle':
       togglePseudotile(focusedId);
       break;
+    /* The default special, by the name every config and chord already uses. */
     case 'scratchpad.toggle':
-      toggleScratchpad(arg || null);
+      toggleSpecial('scratchpad', arg || null);
       break;
     case 'scratchpad.move':
-      moveToScratchpad();
+      moveToSpecial('scratchpad');
+      break;
+    /* A named special — Hyprland's `special:NAME`. `toggle` shows it as an
+       overlay on the active output or hides it again; `move` sends the focused
+       window there, where it starts hidden like the scratchpad. */
+    case 'special.toggle':
+      if (arg) toggleSpecial(arg, null);
+      break;
+    case 'special.move':
+      if (arg) moveToSpecial(arg);
       break;
     case 'window.pin.toggle':
       togglePinned();
