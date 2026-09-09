@@ -7282,6 +7282,66 @@ if (mode === 'scrolling') {
   emit({ type: 'config', layout: mode, rules: HARNESS_RULES });
 }
 
+/* --- groups -------------------------------------------------------------
+ *
+ * `group:auto_group` decides whether a window opened from inside a tabbed or
+ * stacked container joins it. Unset keeps the historical axis rule; true
+ * joins; false splits beside. `group.lock` refuses even with auto_group on —
+ * Hyprland's `deny_from_group` for the whole container. The scrolling strip
+ * has no tabs, so there is nothing to join there. */
+if (mode !== 'scrolling') {
+  const views = globalThis.__shell.views;
+  const outs = globalThis.__shell.outputs;
+  const workspaceOf = globalThis.__shell.workspaceOfForTest;
+  const busy = new Set([...views.keys()].map((id) => workspaceOf(id)));
+  const shown = new Set([...outs.values()].map((o) => o.workspace));
+  const free = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    .filter((n) => !busy.has(n) && !shown.has(n));
+  check('groups found a workspace of its own', free.length >= 1);
+  const home = free[0];
+
+  const open = (id, app) => emit({ type: 'view.added', id, title: app,
+    app_id: app, output: 'DP-1', min_width: 0, min_height: 0,
+    floating: false, width: 800, height: 600 });
+  const findGroup = (node) => {
+    if (!node || node.type === 'leaf') return null;
+    if (node.layout === 'tabbed' || node.layout === 'stacked') return node;
+    for (const child of node.children) {
+      const found = findGroup(child);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  emit({ type: 'shell.command', command: 'workspace.switch',
+    args: [String(home)] });
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { auto_group: true } });
+  open(100, 'a');
+  emit({ type: 'view.focused', id: 100 });
+  emit({ type: 'shell.command', command: 'layout.tabbed', args: [] });
+  open(101, 'b');
+  check('auto_group on joins the focused group',
+    findGroup(globalThis.__shell.workspaces.get(home))?.children.length === 2);
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { auto_group: false } });
+  emit({ type: 'view.focused', id: 100 });
+  open(102, 'c');
+  check('auto_group off splits beside the group',
+    findGroup(globalThis.__shell.workspaces.get(home))?.children.length === 2);
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES,
+    group: { auto_group: true } });
+  emit({ type: 'view.focused', id: 100 });
+  emit({ type: 'shell.command', command: 'group.lock', args: [] });
+  open(103, 'd');
+  check('a locked group refuses even with auto_group on',
+    findGroup(globalThis.__shell.workspaces.get(home))?.children.length === 2);
+
+  emit({ type: 'config', layout: mode, rules: HARNESS_RULES, group: {} });
+}
+
 /* --- the stylesheet ----------------------------------------------------
  *
  * A window is a border and a hole, and both of them are CSS. Nothing above

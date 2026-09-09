@@ -35,6 +35,25 @@ function workspaceRoot(n) {
   return workspaces.get(n);
 }
 
+/* Whether a window opened from inside a tabbed or stacked container joins it
+ * rather than splitting beside it. Hyprland's `group:auto_group`.
+ *
+ * `null` is "the config file said nothing", which keeps the behaviour this has
+ * always had — join when the group's axis matches the pending split, wrap
+ * otherwise. `true` always joins and `false` always splits beside, so setting
+ * the key is what changes anything. See insertLeaf. */
+let autoGroupEnabled = null;
+
+function applyGroup(group) {
+  if (group === undefined || group === null) return;
+  if (typeof group.auto_group === 'boolean') autoGroupEnabled = group.auto_group;
+}
+
+/* A tabbed or stacked container. The one child shown is `active`. */
+function isGroup(node) {
+  return node != null && (node.layout === 'tabbed' || node.layout === 'stacked');
+}
+
 function* walk(node, parent = null) {
   if (node.type === 'leaf') {
     yield [node, parent];
@@ -228,6 +247,30 @@ function insertLeaf(workspace, id) {
 
   const { parent } = anchor;
   const index = parent.children.findIndex((c) => c.id === focusedId);
+
+  /* A tabbed or stacked parent is a group. `auto_group` decides whether the
+     new window becomes another tab or splits beside the group, and a locked
+     group refuses either way — Hyprland's `deny_from_group`, said once for
+     the whole container by `group.lock`. Unset leaves the historical rule
+     below to answer, which is what keeps a config that never mentions groups
+     behaving exactly as it did. */
+  if (isGroup(parent) && (parent.locked || autoGroupEnabled !== null)) {
+    if (!parent.locked && autoGroupEnabled === true) {
+      parent.children.splice(index + 1, 0, leaf);
+      return;
+    }
+    const grandparent = findParentOf(root, parent);
+    const wrapper = newSplit(pendingSplit);
+    wrapper.children = [parent, leaf];
+    if (grandparent) {
+      grandparent.children[grandparent.children.indexOf(parent)] = wrapper;
+    } else {
+      /* The group is the workspace root; the wrapper becomes the root and
+         the group its first child. */
+      workspaces.set(workspace, wrapper);
+    }
+    return;
+  }
 
   if (parent.dir === pendingSplit || parent.children.length === 1) {
     parent.dir = pendingSplit;

@@ -273,6 +273,25 @@ pub struct MotionConfig {
     pub ease: Option<String>,
 }
 
+/// The `group` block: how tabbed and stacked containers take new windows.
+///
+/// A tabbed or stacked container *is* a group here — one child on screen, the
+/// rest behind a strip of titles — so this is the one setting Hyprland's
+/// `group:auto_group` maps to. The shell owns the tree, and the compositor has
+/// no groups at all, so the whole block is carried across rather than acted
+/// on here.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct GroupConfig {
+    /// Whether a window opened from inside a group joins it.
+    ///
+    /// Absent is off, which is Hyprland's default and what this has always
+    /// effectively done when the group's axis did not match the pending split:
+    /// a new window splits beside the group rather than becoming another tab.
+    /// On, it joins — the behaviour `group:auto_group = true` asks for.
+    pub auto_group: Option<bool>,
+}
+
 /// Compositor-side opacity multipliers.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -663,6 +682,7 @@ pub struct File {
     pub border: BorderConfig,
     pub opacity: OpacityConfig,
     pub motion: MotionConfig,
+    pub group: GroupConfig,
     pub notifications: NotificationsConfig,
 
     /// The bar clock's locale and format; see [`ClockConfig`]. Absent leaves
@@ -1617,6 +1637,18 @@ mod tests {
         assert_eq!(file.motion.duration, Some(90.0));
         assert_eq!(file.motion.slow, Some(140.0));
         assert_eq!(file.motion.ease.as_deref(), Some("steps(4)"));
+    }
+
+    #[test]
+    fn the_group_block_names_one_boolean() {
+        // Absent leaves the shell's own axis rule, so a config that never
+        // mentions groups behaves exactly as it did.
+        let absent: File = serde_json::from_str("{}").expect("should parse");
+        assert_eq!(absent.group, GroupConfig::default());
+
+        let file: File =
+            serde_json::from_str(r#"{"group":{"auto_group":true}}"#).expect("should parse");
+        assert_eq!(file.group.auto_group, Some(true));
     }
 
     #[test]

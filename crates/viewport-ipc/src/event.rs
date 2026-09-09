@@ -712,6 +712,11 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion: Option<Motion>,
 
+    /// How tabbed and stacked containers take new windows, carried to the
+    /// shell, which owns the tree. Absent is the shell's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<Group>,
+
     /// The bar clock's locale and format, carried from the config file to the
     /// shell, which formats the module and the calendar under it from them.
     /// Absent means the shell decides for itself, which is the locale the
@@ -929,6 +934,18 @@ pub struct Motion {
     pub slow: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ease: Option<String>,
+}
+
+/// How tabbed and stacked containers take new windows, as `group` in the
+/// config file, carried to the shell.
+///
+/// The shell owns the tree, so this is carried rather than acted on. `None`
+/// means the key was absent and the shell's own default stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Group {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_group: Option<bool>,
 }
 
 /// The bar clock's locale and format, as `clock` in the config file, carried
@@ -1660,6 +1677,7 @@ mod tests {
             border: None,
             opacity: None,
             motion: None,
+            group: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1751,6 +1769,7 @@ mod tests {
             }),
             opacity: None,
             motion: None,
+            group: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1806,6 +1825,7 @@ mod tests {
             border: None,
             opacity: None,
             motion: None,
+            group: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1855,6 +1875,7 @@ mod tests {
             border: None,
             opacity: None,
             motion: None,
+            group: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -1885,6 +1906,7 @@ mod tests {
             border: None,
             opacity: None,
             motion: None,
+            group: None,
             clock: None,
             bar_widgets: None,
             bar_items: None,
@@ -2039,6 +2061,7 @@ mod tests {
                 border: None,
                 opacity: None,
                 motion: None,
+                group: None,
                 clock: None,
                 bar_widgets: None,
                 bar_items: None,

@@ -82,6 +82,11 @@ to summarise rather than to duplicate.
   button or scroll through, and `ignore_mods+` matches whatever modifiers are
   held. The two halves of a chord do not shadow each other, so one chord can do
   one thing on press and another on release.
+- A `group` block controls what a new window does when it opens from inside a
+  tabbed or stacked container. `auto_group: true` joins it, `false` splits
+  beside it, and absent keeps the historical axis rule. `group.lock` locks the
+  focused container against new windows — Hyprland's `deny_from_group` for the
+  whole container — and toggles back.
 - Window rules match Hyprland's vocabulary beyond `app_id` and `title`:
   `class`, `initial_class` and `initial_title` take the same `contains`,
   `equals` and `regex` conditions, and `xwayland` and `modal` take a boolean.

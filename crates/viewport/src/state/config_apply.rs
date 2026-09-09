@@ -270,6 +270,14 @@ impl ViewportState {
             }
             self.config.motion = Some(motion);
         }
+        if file.group != crate::config::GroupConfig::default() {
+            // Nothing to validate: one boolean, and the shell decides what a
+            // group is. Carried whole, so an absent key leaves whatever the
+            // shell had rather than resetting it.
+            self.config.group = Some(viewport_ipc::event::Group {
+                auto_group: file.group.auto_group,
+            });
+        }
         if file.opacity != crate::config::OpacityConfig::default() {
             let mut opacity = self.config.opacity.clone().unwrap_or_default();
             for (name, value, target) in [

@@ -1581,6 +1581,9 @@ impl ViewportState {
                 // The shell's own stylesheet pace, until a config file says
                 // otherwise.
                 motion: None,
+                // Off: a new window splits beside a group unless asked to
+                // join it.
+                group: None,
                 // Nothing said about the clock, which is the shell deciding
                 // for itself: the locale the engine runs under and the hour
                 // that locale writes.

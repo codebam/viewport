@@ -1959,6 +1959,37 @@ decisions. Capture denials are also matched conservatively in the compositor so
 a shell that has not answered or has crashed cannot expose a private window;
 the shell sends its full workspace-aware resolution back afterwards.
 
+## Groups
+
+A tabbed or stacked container is a group: one window on screen, the rest behind
+a strip of titles. `Mod4+w` and `Mod4+s` make one out of the container the
+focused window is in.
+
+```jsonc
+{
+  "group": { "auto_group": true }
+}
+```
+
+`auto_group` decides what happens when a window opens from inside a group.
+Absent keeps the behaviour this has always had — the new window joins when the
+group's axis matches the pending split and splits beside it otherwise. `true`
+always joins, so `Mod4+Return` in a tabbed container adds another tab; `false`
+always splits beside the group, which is Hyprland's default.
+
+`group.lock` from a binding or the socket locks the focused container against
+new windows; the same command unlocks it:
+
+```sh
+viewport msg -t shell.command --command group.lock
+```
+
+A locked group refuses a new window even when `auto_group` is on, which is
+Hyprland's `deny_from_group` said once for the whole container. Nothing happens
+on a plain split, which has no tabs to protect. The lock is not saved across a
+reload: it is a property of the container, and the tree is rebuilt from the
+session file.
+
 ## Layout models
 
 `"layout"` in the config file picks which one the shell runs.

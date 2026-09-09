@@ -61,6 +61,19 @@ function handleShellCommand(command, args) {
     case 'window.focus_parent':
       focusParent();
       break;
+    /* Lock the container the focused window is in against new arrivals, or
+       unlock it. Hyprland's `deny_from_group`, and the half of it that can be
+       a chord — the rule matcher is the other. Nothing happens on a plain
+       split, which has no tabs to protect. */
+    case 'group.lock': {
+      if (focusedId == null) break;
+      const parent = findLeaf(focusedId)?.parent;
+      if (isGroup(parent)) {
+        parent.locked = !parent.locked;
+        relayoutAll();
+      }
+      break;
+    }
     case 'rule.toggle': {
       const name = arg;
       if (!name) break;
@@ -586,6 +599,9 @@ window.addEventListener('viewport', (event) => {
          `--anim-slow` and `--ease`, plus the switch the system's
          reduced-motion setting also throws. Absent leaves the stylesheet. */
       applyMotion(message.motion);
+      /* Whether a new window joins the tabbed container it was opened from.
+         Absent leaves the shell's own axis rule. */
+      applyGroup(message.group);
       applyWorkspaceRules(message.workspaces);
       applyBorder(message.border);
       applyBarMode(message.bar);
