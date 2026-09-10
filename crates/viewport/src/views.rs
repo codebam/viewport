@@ -730,10 +730,12 @@ impl Views {
 /// monitor beside it, and a click there belongs to whatever is really drawn
 /// under the pointer. See `ViewportState::clipped_out`.
 pub fn clip_covers(clip: Box, x: f64, y: f64) -> bool {
-    x >= clip.x as f64
-        && y >= clip.y as f64
-        && x < (clip.x + clip.width) as f64
-        && y < (clip.y + clip.height) as f64
+    // The clip arrives from the shell unvalidated, so its far edge is added
+    // wide: `clip.x + clip.width` overflows `i32` on values a `view.layout`
+    // message is free to send.
+    let right = clip.x as i64 + clip.width as i64;
+    let bottom = clip.y as i64 + clip.height as i64;
+    x >= clip.x as f64 && y >= clip.y as f64 && x < right as f64 && y < bottom as f64
 }
 
 #[cfg(test)]
@@ -766,6 +768,29 @@ mod tests {
 
         // The far edge is exclusive: a point on it is the first pixel outside.
         assert!(!clip_covers(clip, 2520.0, 540.0));
+    }
+
+    #[test]
+    fn an_extreme_clip_does_not_overflow_its_far_edge() {
+        // A `view.layout` message may send anything, and `clip.x + clip.width`
+        // used to overflow `i32` on these — a panic in a debug build.
+        let clip = Box {
+            x: i32::MAX,
+            y: i32::MAX,
+            width: i32::MAX,
+            height: i32::MAX,
+        };
+        assert!(!clip_covers(clip, 0.0, 0.0));
+        assert!(clip_covers(clip, 3.0e9, 3.0e9));
+
+        // A rectangle whose far edge wraps past the near one covers nothing.
+        let clip = Box {
+            x: i32::MIN,
+            y: i32::MIN,
+            width: i32::MAX,
+            height: i32::MAX,
+        };
+        assert!(!clip_covers(clip, 0.0, 0.0));
     }
 
     // The surface index, exercised over stand-in keys.

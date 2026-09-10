@@ -36,7 +36,7 @@ and the JavaScript shell suites under `tests/`.
   clears the grab. Fix: finish/clear the drag and `resize_surface` in
   `toplevel_destroyed`, and guard `unset` with `alive()`.
 
-- [ ] **5. `clip_covers` adds untrusted `i32`s unchecked.**
+- [x] **5. `clip_covers` adds untrusted `i32`s unchecked.**
   `views.rs:735` (`clip.x + clip.width`) overflows on a shell-supplied
   `view.layout` clip: debug panic, release misroutes the pointer. Fix: compute
   the bounds with `saturating_add`/`i64`.
