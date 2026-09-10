@@ -136,7 +136,18 @@ impl SelectionHandler for ViewportState {
             }
             // Ours, out of the history, and already in memory.
             crate::clipboard::Owner::History => {
-                let Some(text) = self.clipboard.current() else {
+                // `current` is the entry the picker handed over. A selection
+                // the compositor took because a remote session copied fills
+                // the history but not that field, so fall back to the newest
+                // entry — otherwise a local paste after a remote copy had
+                // nothing to serve.
+                let text = self.clipboard.current().or_else(|| {
+                    self.clipboard
+                        .entries()
+                        .first()
+                        .map(|entry| entry.text.clone())
+                });
+                let Some(text) = text else {
                     return;
                 };
                 crate::clipboard::serve(text, fd);
