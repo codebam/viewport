@@ -745,27 +745,13 @@ impl ViewportState {
 
     /// A pointer motion from the control socket rather than from libinput.
     ///
-    /// The same three calls the libinput path makes, in the same order, so a
-    /// scripted click and a real one are the same event by the time anything
-    /// sees it.
+    /// Through `pointer_absolute_to`, so a scripted move is subject to the same
+    /// pointer constraints, clamping and drag tracking as a tablet's absolute
+    /// one. The three calls this used to make directly skipped them, which
+    /// meant a remote-control tool could move the cursor a client had locked
+    /// and hand it an absolute position the lock exists to withhold.
     pub fn inject_pointer(&mut self, x: f64, y: f64) {
-        let Some(pointer) = self.seat.get_pointer() else {
-            return;
-        };
-        let location = (x, y).into();
-        let under = self.surface_under(location);
-        let serial = SERIAL_COUNTER.next_serial();
-        let time = InputTime::now();
-        pointer.motion(
-            self,
-            under,
-            &smithay::input::pointer::MotionEvent {
-                location,
-                serial,
-                time,
-            },
-        );
-        pointer.frame(self);
+        self.pointer_absolute_to((x, y).into(), InputTime::now());
         self.needs_render = true;
         self.cursor_activity();
     }
@@ -1292,6 +1278,16 @@ impl ViewportState {
                     time,
                     |state, modifiers, handle| {
                         let keysym = handle.modified_sym();
+                        // The key this event is *about*, with the modifiers
+                        // taken off. `modified_sym` differs between a press and
+                        // its release when a modifier is let go first — Shift
+                        // then q gives `Q` on the way down and `q` on the way up
+                        // — so every piece of bookkeeping paired across the two
+                        // halves is keyed by this, and `keysym` is left to the
+                        // places that want the symbol as typed.
+                        let unmodified_sym =
+                            handle.raw_latin_sym_or_raw_current_sym().unwrap_or(keysym);
+                        let unmodified = unmodified_sym.raw();
                         if pressed {
                             // The compositor's own chords first: those have to
                             // work even when a binding table is broken.
@@ -1304,7 +1300,7 @@ impl ViewportState {
                             if inhibited {
                                 match shortcut(modifiers, keysym) {
                                     Some(action @ Action::SwitchVt(_)) => {
-                                        state.suppressed_keys.push(keysym);
+                                        state.suppressed_keys.push(unmodified_sym);
                                         return FilterResult::Intercept(Some(action));
                                     }
                                     _ => return FilterResult::Forward,
@@ -1318,7 +1314,7 @@ impl ViewportState {
                             // is a password typed into a terminal the user is
                             // not looking at.
                             if state.picker.is_some() {
-                                state.suppressed_keys.push(keysym);
+                                state.suppressed_keys.push(unmodified_sym);
                                 let pick = match keysym {
                                     Keysym::Escape => Some(Pick::Cancel),
                                     Keysym::Return | Keysym::KP_Enter | Keysym::space => {
@@ -1347,18 +1343,13 @@ impl ViewportState {
                                 // Remembered so the release is swallowed too;
                                 // a client that saw only the release would
                                 // think the key was stuck.
-                                state.suppressed_keys.push(keysym);
+                                state.suppressed_keys.push(unmodified_sym);
                                 return FilterResult::Intercept(Some(action));
                             }
-                            // The *unmodified* keysym. A chord is written
-                            // "Mod4+Shift+q" — the shift is in the modifiers,
-                            // and the key is still q. Matching the modified
-                            // symbol would look for Q and never find it, so
-                            // every shifted binding would be dead.
-                            let unmodified = handle
-                                .raw_latin_sym_or_raw_current_sym()
-                                .map(|sym| sym.raw())
-                                .unwrap_or_else(|| keysym.raw());
+                            // The *unmodified* keysym, computed above: a chord
+                            // is written "Mod4+Shift+q", and the key is still
+                            // q. Matching the modified symbol would look for Q
+                            // and never find it.
 
                             // A global shortcut, but only after everything
                             // above has declined the key. An application that
@@ -1376,13 +1367,13 @@ impl ViewportState {
                             // enough here because this path precedes it.
                             if !state.locked {
                                 if let Some(fired) = state.shortcut_for(modifiers, unmodified) {
-                                    state.suppressed_keys.push(keysym);
+                                    state.suppressed_keys.push(unmodified_sym);
                                     state.shortcuts_to_announce.push((true, fired.clone()));
-                                    // Remembered by the key it arrived on, because
-                                    // the release is matched by keysym and carries
-                                    // nothing else to identify it — and by then the
-                                    // modifiers may already be up.
-                                    state.shortcuts_held.push((keysym.raw(), fired));
+                                    // Remembered by the key it arrived on — the
+                                    // unmodified one, because the release is
+                                    // matched by it and by then the modifiers
+                                    // may already be up.
+                                    state.shortcuts_held.push((unmodified, fired));
                                     return FilterResult::Intercept(Some(Action::Swallow));
                                 }
                             }
@@ -1408,12 +1399,12 @@ impl ViewportState {
                                     // kept from the client for the whole hold
                                     // so a tap cannot do both.
                                     if long_press {
-                                        state.suppressed_keys.push(keysym);
-                                        state.arm_long_press(keysym.raw(), action);
+                                        state.suppressed_keys.push(unmodified_sym);
+                                        state.arm_long_press(unmodified, action);
                                         FilterResult::Intercept(Some(Action::Swallow))
                                     } else if repeating {
-                                        state.suppressed_keys.push(keysym);
-                                        state.arm_repeating(keysym.raw(), action.clone());
+                                        state.suppressed_keys.push(unmodified_sym);
+                                        state.arm_repeating(unmodified, action.clone());
                                         if non_consuming {
                                             state.deferred_bindings.push(action);
                                             FilterResult::Forward
@@ -1428,7 +1419,7 @@ impl ViewportState {
                                         state.deferred_bindings.push(action);
                                         FilterResult::Forward
                                     } else {
-                                        state.suppressed_keys.push(keysym);
+                                        state.suppressed_keys.push(unmodified_sym);
                                         FilterResult::Intercept(Some(Action::Bound(action)))
                                     }
                                 }
@@ -1445,7 +1436,7 @@ impl ViewportState {
                                     if state.locked {
                                         return FilterResult::Forward;
                                     }
-                                    state.suppressed_keys.push(keysym);
+                                    state.suppressed_keys.push(unmodified_sym);
                                     FilterResult::Intercept(Some(Action::Web(WebKey {
                                         keycode: handle.raw_code().raw() + 8,
                                         keysym: keysym.raw(),
@@ -1465,11 +1456,13 @@ impl ViewportState {
                             // A held `long_press+` or `repeating+` binding
                             // ends here: taking it out is what cancels the
                             // hold and stops the repeat.
-                            state.long_press_pending.remove(&keysym.raw());
-                            state.repeating_held.remove(&keysym.raw());
+                            state.long_press_pending.remove(&unmodified);
+                            state.repeating_held.remove(&unmodified);
                             let mut result = FilterResult::Forward;
-                            if let Some(at) =
-                                state.suppressed_keys.iter().position(|k| *k == keysym)
+                            if let Some(at) = state
+                                .suppressed_keys
+                                .iter()
+                                .position(|k| *k == unmodified_sym)
                             {
                                 state.suppressed_keys.remove(at);
                                 // The other half of a global shortcut. A
@@ -1481,7 +1474,7 @@ impl ViewportState {
                                 if let Some(at) = state
                                     .shortcuts_held
                                     .iter()
-                                    .position(|(code, _)| *code == keysym.raw())
+                                    .position(|(code, _)| *code == unmodified)
                                 {
                                     let (_, fired) = state.shortcuts_held.remove(at);
                                     state.shortcuts_to_announce.push((false, fired));
@@ -1985,13 +1978,13 @@ impl ViewportState {
                 // down.
                 let pressed = state == ButtonState::Pressed;
                 let on_shell = shell_gets_button(
-                    self.pointer_grabbed_by_shell,
+                    !self.shell_grabbed_buttons.is_empty(),
                     self.surface_under(pointer.current_location()).is_none(),
                     pressed,
                 );
                 if on_shell && self.shell_is_up() {
-                    if pressed {
-                        self.pointer_grabbed_by_shell = true;
+                    if pressed && !self.shell_grabbed_buttons.contains(&event.button_code()) {
+                        self.shell_grabbed_buttons.push(event.button_code());
                     }
                     let at = pointer.current_location();
                     self.shell_pointer_button(
@@ -2002,7 +1995,10 @@ impl ViewportState {
                     );
                 }
                 if !pressed {
-                    self.pointer_grabbed_by_shell = false;
+                    // Only the button that came up: another may still be down
+                    // over the page, and the grab belongs to it until then.
+                    self.shell_grabbed_buttons
+                        .retain(|button| *button != event.button_code());
                 }
 
                 pointer.button(
@@ -3010,7 +3006,7 @@ impl ViewportState {
         // While the shell holds the pointer it gets every position, wherever
         // the cursor has got to: that is what makes a drag survive crossing
         // onto a window.
-        let on_shell = on_shell || self.pointer_grabbed_by_shell;
+        let on_shell = on_shell || !self.shell_grabbed_buttons.is_empty();
         if !on_shell && !self.pointer_on_shell {
             return;
         }

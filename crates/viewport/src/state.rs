@@ -981,14 +981,18 @@ pub struct ViewportState {
     /// when the pointer leaves it, or a `:hover` stays lit under whatever the
     /// pointer moved on to.
     pub pointer_on_shell: bool,
-    /// A button pressed on the shell holds the pointer until it is released.
+    /// Buttons pressed on the shell hold the pointer until they are released.
     ///
     /// Without it, dragging the divider between two windows breaks the moment
     /// the cursor crosses onto a window: hit-testing would start routing motion
     /// to that client and the shell would never see the rest of the drag.
     /// Wayland gives clients an implicit grab for exactly this reason
     /// (`src/input.c:237`).
-    pub pointer_grabbed_by_shell: bool,
+    ///
+    /// A list rather than a flag: two buttons can be down over the page at
+    /// once, and clearing the grab on the first release left the page holding
+    /// the second button for ever.
+    pub shell_grabbed_buttons: Vec<u32>,
     /// The chooser that is up, while an application is waiting to be told what
     /// it may share.
     pub picker: Option<crate::screencast::Picker>,
@@ -1832,7 +1836,7 @@ impl ViewportState {
             keyboard_config: crate::config::KeyboardConfig::default(),
             pointer_drag: None,
             pointer_on_shell: false,
-            pointer_grabbed_by_shell: false,
+            shell_grabbed_buttons: Vec::new(),
             picker: None,
             next_pick: 1,
             pending_shares: Vec::new(),
