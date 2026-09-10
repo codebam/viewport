@@ -10,7 +10,7 @@ and the JavaScript shell suites under `tests/`.
 
 ## High — crashes reachable from a client or the shell
 
-- [ ] **1. `CaptureOutputRegion` on a removed output panics the compositor.**
+- [x] **1. `CaptureOutputRegion` on a removed output panics the compositor.**
   `crates/viewport/src/screencopy.rs:173` returns without initialising the
   `new_id` frame, which wayland-backend treats as a fatal bug. The sibling
   `CaptureOutput` arm at `:124` gets it right. Fix: init a placeholder

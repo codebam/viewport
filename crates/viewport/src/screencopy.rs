@@ -132,16 +132,7 @@ where
                     let frame = data_init.init(
                         frame,
                         FrameState {
-                            output: Output::new(
-                                "gone".to_owned(),
-                                smithay::output::PhysicalProperties {
-                                    size: (0, 0).into(),
-                                    subpixel: smithay::output::Subpixel::Unknown,
-                                    make: String::new(),
-                                    model: String::new(),
-                                    serial_number: String::new(),
-                                },
-                            ),
+                            output: gone_output(),
                             region: Rectangle::default(),
                             overlay_cursor: false,
                             copied: Mutex::new(true),
@@ -171,6 +162,22 @@ where
                 height,
             } => {
                 let Some(output) = Output::from_resource(&output) else {
+                    // An output that has gone since the client looked it up.
+                    // This arm carries a `new_id` frame, so returning without
+                    // initialising it is not "do nothing" — wayland-backend
+                    // treats a created object with no data as a fatal error.
+                    // The frame is initialised and failed, exactly as the
+                    // `CaptureOutput` arm above does.
+                    let frame = data_init.init(
+                        frame,
+                        FrameState {
+                            output: gone_output(),
+                            region: Rectangle::default(),
+                            overlay_cursor: overlay_cursor != 0,
+                            copied: Mutex::new(true),
+                        },
+                    );
+                    frame.failed();
                     return;
                 };
                 // The same transformed size `CaptureOutput` uses: the client
@@ -311,6 +318,24 @@ pub fn finish(frame: &ZwlrScreencopyFrameV1, region: Rectangle<i32, Physical>, w
         (secs & 0xffff_ffff) as u32,
         now.subsec_nanos(),
     );
+}
+
+/// An output that stands in for one that has gone.
+///
+/// A `FrameState` needs an output whether or not anything will be copied into
+/// it. Frames carrying this one are failed before they leave the request arm,
+/// so none of its fields are ever read.
+fn gone_output() -> Output {
+    Output::new(
+        "gone".to_owned(),
+        smithay::output::PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: smithay::output::Subpixel::Unknown,
+            make: String::new(),
+            model: String::new(),
+            serial_number: String::new(),
+        },
+    )
 }
 
 /// The part of the requested rectangle that lies on an output of `size`.
