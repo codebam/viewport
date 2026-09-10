@@ -36,6 +36,14 @@ pub const BUFFERS: usize = 3;
 /// What PipeWire calls a stream that has not been given a node yet.
 const INVALID_NODE: u32 = u32::MAX;
 
+/// The largest shared-memory frame this will allocate for a stream.
+///
+/// The size comes from the source, which for a window is geometry the client
+/// declared, so it is not trusted arithmetic: this bound is what keeps a
+/// `stride * height` product from wrapping into a huge allocation or panicking
+/// inside PipeWire's callback. 512 MiB is far past an 8K frame.
+const MAX_SHARED_BYTES: i64 = 512 << 20;
+
 /// Where stream identities come from.
 ///
 /// A counter rather than anything derived from the stream, because the point
@@ -73,13 +81,15 @@ struct Layout {
 
 impl Layout {
     fn of(target: &Dmabuf) -> Option<Self> {
-        let stride = target.strides().next()? as i32;
+        let stride = i32::try_from(target.strides().next()?).ok()?;
         let offset = target.offsets().next()?;
         Some(Self {
             modifier: u64::from(target.format().modifier),
             stride,
             offset,
-            size: stride as u32 * target.height(),
+            // Checked: the driver's stride is whatever it says, and the packed
+            // product overflowed `u32` on a size a client could ask for.
+            size: (stride as u32).checked_mul(target.height())?,
         })
     }
 }
@@ -360,8 +370,20 @@ impl Stream {
             return;
         };
         tracing::debug!("screencast: filling a buffer");
-        let stride = size.w * 4;
-        let wanted = (stride * size.h) as usize;
+        // Wide, and bounded: `w * 4 * h` overflows `i32` on a size a client
+        // is free to declare, and the product is used as a byte count.
+        let stride = (size.w as i64) * 4;
+        let wanted = stride * size.h as i64;
+        if stride <= 0 || wanted <= 0 || wanted > MAX_SHARED_BYTES {
+            tracing::warn!(
+                "screencast: refusing an implausible frame size {}x{}",
+                size.w,
+                size.h
+            );
+            return;
+        }
+        let stride = stride as i32;
+        let wanted = wanted as usize;
 
         {
             let Some(data) = buffer.datas_mut().first_mut() else {
@@ -959,8 +981,21 @@ unsafe fn attach_shared(
 ) {
     use smithay::reexports::rustix::{fs, mm};
 
-    let stride = size.w.max(1) * 4;
-    let len = (stride * size.h.max(1)) as usize;
+    // Wide, and bounded: the size is client-influenced and this runs inside
+    // PipeWire's callback, where an overflow panic aborts the process rather
+    // than unwinding.
+    let stride = (size.w.max(1) as i64) * 4;
+    let len = stride * size.h.max(1) as i64;
+    if len <= 0 || len > MAX_SHARED_BYTES {
+        tracing::warn!(
+            "screencast: refusing an implausible shared buffer {}x{}",
+            size.w,
+            size.h
+        );
+        return;
+    }
+    let stride = stride as i32;
+    let len = len as usize;
 
     let fd = match fs::memfd_create("viewport-screencast", fs::MemfdFlags::CLOEXEC) {
         Ok(fd) => fd,
@@ -1135,10 +1170,20 @@ fn buffer_params(size: Size<i32, Physical>, dmabuf: Option<Layout>) -> anyhow::R
     // otherwise. Telling a consumer the packed width for a buffer the driver
     // padded is a picture that shears further with every row.
     let (stride, total) = match dmabuf {
-        Some(layout) => (layout.stride, layout.size as i32),
+        Some(layout) => (
+            layout.stride,
+            i32::try_from(layout.size)
+                .map_err(|_| anyhow::anyhow!("a stream buffer larger than i32"))?,
+        ),
         None => {
-            let stride = size.w.max(1) * 4;
-            (stride, stride * size.h.max(1))
+            // Wide, and bounded by the same limit the allocation uses.
+            let stride = (size.w.max(1) as i64) * 4;
+            let total = stride * size.h.max(1) as i64;
+            anyhow::ensure!(
+                total > 0 && total <= MAX_SHARED_BYTES,
+                "a stream buffer of {total} bytes is larger than this will allocate"
+            );
+            (stride as i32, total as i32)
         }
     };
     // Built from the raw keys rather than a typed enum: the binding has names
