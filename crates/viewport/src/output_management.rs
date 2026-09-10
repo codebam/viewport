@@ -141,40 +141,34 @@ impl OutputManagementState {
         self.managers
             .retain(|(manager, data)| manager.is_alive() && !data.lock().unwrap().stopped);
 
+        let serial = self.serial;
         for (manager, data) in &self.managers {
-            let Some(client) = manager.client() else {
-                continue;
-            };
-            let mut data = data.lock().unwrap();
-
-            // Old objects first. A client is told they are gone before it is
-            // shown their replacements, or it cannot tell which set it is
-            // looking at.
-            for mode in data.modes.drain(..) {
-                mode.finished();
-            }
-            for head in data.heads.drain(..) {
-                head.finished();
-            }
-
-            for entry in heads {
-                let Ok(head) = client.create_resource::<ZwlrOutputHeadV1, HeadData, D>(
-                    dh,
-                    manager.version(),
-                    HeadData {
-                        name: entry.output.name(),
-                    },
-                ) else {
-                    continue;
-                };
-                manager.head(&head);
-                let modes = advertise_head::<D>(dh, &client, manager, &head, entry);
-                data.modes.extend(modes);
-                data.heads.push(head);
-            }
-
-            manager.done(self.serial);
+            send_heads::<D>(dh, manager, data, heads, serial);
         }
+    }
+
+    /// Tell one manager the current state, and no other.
+    ///
+    /// For a client that has just bound: it knows nothing and has no
+    /// configuration in flight, so it is given the state at the serial already
+    /// current. Re-advertising to everyone here — which is what `advertise`
+    /// does — finished and rebuilt every other client's head objects and
+    /// cancelled the configuration one of them was holding, for a manager that
+    /// had changed nothing.
+    fn advertise_to<D>(
+        &mut self,
+        dh: &DisplayHandle,
+        manager: &ZwlrOutputManagerV1,
+        data: &Arc<Mutex<ManagerData>>,
+        heads: &[Head],
+    ) where
+        D: Dispatch<ZwlrOutputHeadV1, HeadData> + Dispatch<ZwlrOutputModeV1, ModeData> + 'static,
+    {
+        if self.serial == 0 {
+            self.serial = 1;
+        }
+        let serial = self.serial;
+        send_heads::<D>(dh, manager, data, heads, serial);
     }
 
     /// Whether a configuration built against `serial` is still describing the
@@ -182,6 +176,49 @@ impl OutputManagementState {
     fn current(&self, serial: u32) -> bool {
         self.serial == serial
     }
+}
+
+/// Send one manager the whole head list, at `serial`.
+fn send_heads<D>(
+    dh: &DisplayHandle,
+    manager: &ZwlrOutputManagerV1,
+    data: &Arc<Mutex<ManagerData>>,
+    heads: &[Head],
+    serial: u32,
+) where
+    D: Dispatch<ZwlrOutputHeadV1, HeadData> + Dispatch<ZwlrOutputModeV1, ModeData> + 'static,
+{
+    let Some(client) = manager.client() else {
+        return;
+    };
+    let mut data = data.lock().unwrap();
+
+    // Old objects first. A client is told they are gone before it is shown
+    // their replacements, or it cannot tell which set it is looking at.
+    for mode in data.modes.drain(..) {
+        mode.finished();
+    }
+    for head in data.heads.drain(..) {
+        head.finished();
+    }
+
+    for entry in heads {
+        let Ok(head) = client.create_resource::<ZwlrOutputHeadV1, HeadData, D>(
+            dh,
+            manager.version(),
+            HeadData {
+                name: entry.output.name(),
+            },
+        ) else {
+            continue;
+        };
+        manager.head(&head);
+        let modes = advertise_head::<D>(dh, &client, manager, &head, entry);
+        data.modes.extend(modes);
+        data.heads.push(head);
+    }
+
+    manager.done(serial);
 }
 
 /// Send one head's state, and the mode objects it needs.
@@ -331,10 +368,12 @@ where
             .push((manager.clone(), data.clone()));
 
         // A client that has just bound knows nothing, so it is told everything
-        // — which is the same message the rest of them get, at the same
-        // serial, because a configuration is only valid against the newest.
+        // — at the serial already current, and to itself alone: a client
+        // binding must not cancel the configuration another one is holding.
         let heads = state.current_heads();
-        state.output_management_state().advertise::<D>(dh, &heads);
+        state
+            .output_management_state()
+            .advertise_to::<D>(dh, &manager, &data, &heads);
     }
 }
 
