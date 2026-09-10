@@ -380,6 +380,23 @@ impl Watcher {
         let (service, path) = if service.starts_with('/') {
             (sender, service)
         } else {
+            // A bus name, which the sender has to actually own. Without this
+            // any session client could register another application's name —
+            // or invent names that are never released — and fill the tray,
+            // and the shell, with rows that never go away.
+            let Ok(proxy) = zbus::fdo::DBusProxy::new(emitter.connection()).await else {
+                return;
+            };
+            let Ok(name) = zbus::names::BusName::try_from(service.as_str()) else {
+                return;
+            };
+            match proxy.get_name_owner(name).await {
+                Ok(owner) if owner.as_str() == sender => {}
+                _ => {
+                    tracing::debug!("tray: {service} is not owned by {sender}");
+                    return;
+                }
+            }
             (service, DEFAULT_PATH.to_owned())
         };
         if service.is_empty() {
