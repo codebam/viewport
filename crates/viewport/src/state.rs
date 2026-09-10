@@ -2363,14 +2363,8 @@ impl ViewportState {
             crate::watchdog::TIMEOUT.as_millis()
         );
 
-        let (width, height) = self.layout_size();
-        let origin = self
-            .space
-            .outputs()
-            .filter_map(|output| self.space.output_geometry(output))
-            .map(|geometry| (geometry.loc.x, geometry.loc.y))
-            .min()
-            .unwrap_or((0, 0));
+        let layout = self.layout_size();
+        let origin = (layout.loc.x, layout.loc.y);
 
         let ids: Vec<u32> = self
             .views
@@ -2380,7 +2374,7 @@ impl ViewportState {
             .collect();
 
         for placed in
-            crate::watchdog::columns(&ids, (origin.0, origin.1, width as i32, height as i32))
+            crate::watchdog::columns(&ids, (origin.0, origin.1, layout.size.w, layout.size.h))
         {
             // Through the ordinary layout path, so a window ends up configured
             // and mapped exactly as the shell would have done it.
@@ -2418,22 +2412,46 @@ impl ViewportState {
         }
     }
 
-    /// The size of everything, which is what the shell spans.
+    /// The bounding rectangle of every output, which is what the shell spans.
+    ///
+    /// The origin is the top-left of the leftmost/topmost output, not `(0, 0)`:
+    /// a monitor arranged to the left of the first one lives at a negative
+    /// coordinate, and a shell whose rectangle started at zero would not cover
+    /// it. The far edge is added wide, because `output.configure` accepts any
+    /// `x`/`y` and `loc + size` overflows `i32` on values it is free to send.
     ///
     /// Not gated on the web engine: the layout watchdog needs it too, and a
     /// compositor built without a shell still has outputs to lay windows out
     /// across.
-    pub fn layout_size(&self) -> (u32, u32) {
-        let size = self.space.outputs().fold((0i32, 0i32), |acc, output| {
-            match self.space.output_geometry(output) {
-                Some(geometry) => (
-                    acc.0.max(geometry.loc.x + geometry.size.w),
-                    acc.1.max(geometry.loc.y + geometry.size.h),
-                ),
-                None => acc,
-            }
-        });
-        (size.0.max(0) as u32, size.1.max(0) as u32)
+    pub fn layout_size(&self) -> Rectangle<i32, Logical> {
+        let (mut min, mut max) = ((i32::MAX, i32::MAX), (i32::MIN, i32::MIN));
+        let mut any = false;
+        for output in self.space.outputs() {
+            let Some(geometry) = self.space.output_geometry(output) else {
+                continue;
+            };
+            any = true;
+            min.0 = min.0.min(geometry.loc.x);
+            min.1 = min.1.min(geometry.loc.y);
+            max.0 = max.0.max(
+                (geometry.loc.x as i64 + geometry.size.w as i64)
+                    .min(i32::MAX as i64)
+                    .max(i32::MIN as i64) as i32,
+            );
+            max.1 = max.1.max(
+                (geometry.loc.y as i64 + geometry.size.h as i64)
+                    .min(i32::MAX as i64)
+                    .max(i32::MIN as i64) as i32,
+            );
+        }
+        if !any || min.0 > max.0 || min.1 > max.1 {
+            return Rectangle::default();
+        }
+        let size = (
+            (max.0 as i64 - min.0 as i64).min(i32::MAX as i64) as i32,
+            (max.1 as i64 - min.1 as i64).min(i32::MAX as i64) as i32,
+        );
+        Rectangle::new(min.into(), size.into())
     }
 
     /// How fast the shell is painting, as a rate rather than a total.

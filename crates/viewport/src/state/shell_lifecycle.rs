@@ -218,7 +218,7 @@ impl ViewportState {
 
         let size = self.layout_size();
         anyhow::ensure!(
-            size.0 > 0 && size.1 > 0,
+            size.size.w > 0 && size.size.h > 0,
             "the shell needs an output to size itself against"
         );
 
@@ -602,8 +602,8 @@ impl ViewportState {
     /// WebKit paints nothing into a view with no size, so without this the
     /// page loads, runs, talks to the compositor — and never produces a frame.
     pub fn resize_shell(&mut self) {
-        let (width, height) = self.layout_size();
-        if width == 0 || height == 0 {
+        let layout = self.layout_size();
+        if layout.size.w == 0 || layout.size.h == 0 {
             return;
         }
         // What the screens now imply, which for a `--url` session can be a

@@ -508,8 +508,7 @@ impl ViewportState {
             .outputs()
             .filter_map(|output| self.space.output_geometry(output))
             .collect();
-        let (width, height) = self.layout_size();
-        let layout = Rectangle::from_size((width as i32, height as i32).into());
+        let layout = self.layout_size();
         plan_shells(
             self.requested_url().as_deref(),
             &screens,
@@ -625,8 +624,8 @@ impl ViewportState {
     /// it gets one monitor's worth instead, which is the whole point of it
     /// being a second process.
     pub fn configure_client_shell(&mut self) {
-        let (width, height) = self.layout_size();
-        if width == 0 || height == 0 {
+        let layout = self.layout_size();
+        if layout.size.w == 0 || layout.size.h == 0 {
             return;
         }
         // Regions first: an output that came or went changes what each page

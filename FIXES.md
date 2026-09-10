@@ -41,7 +41,7 @@ and the JavaScript shell suites under `tests/`.
   `view.layout` clip: debug panic, release misroutes the pointer. Fix: compute
   the bounds with `saturating_add`/`i64`.
 
-- [ ] **6. `layout_size` overflows and ignores negative outputs.**
+- [x] **6. `layout_size` overflows and ignores negative outputs.**
   `state.rs:2418-2427` adds `loc.x + size.w` unchecked and floors at `(0,0)`,
   so `output.configure` with a huge `x` overflows and a monitor at `x < 0`
   falls outside the shell region. Fix: track min and max in `i64`
