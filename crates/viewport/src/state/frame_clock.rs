@@ -87,7 +87,13 @@ impl ViewportState {
         for layer in smithay::desktop::layer_map_for_output(output).layers() {
             layer.send_frame(output, at, throttle, |_, _| Some(output.clone()));
         }
-        for lock in self.lock_surfaces.values() {
+        // As in `released_barriers`: a locker that has exited leaves surfaces
+        // that no longer exist, and walking one panics.
+        for lock in self
+            .lock_surfaces
+            .values()
+            .filter(|lock| smithay::utils::IsAlive::alive(lock.wl_surface()))
+        {
             smithay::desktop::utils::send_frames_surface_tree(
                 lock.wl_surface(),
                 output,

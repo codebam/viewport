@@ -182,7 +182,15 @@ impl ViewportState {
         for layer in smithay::desktop::layer_map_for_output(output).layers() {
             layer.with_surfaces(&release);
         }
-        for lock in self.lock_surfaces.values() {
+        // A locker that exited leaves its surfaces behind until the next
+        // housekeeping tick, and a destroyed `WlSurface` has no user data to
+        // walk — `with_surfaces_surface_tree` would panic on it. Only the
+        // live ones are released.
+        for lock in self
+            .lock_surfaces
+            .values()
+            .filter(|lock| smithay::utils::IsAlive::alive(lock.wl_surface()))
+        {
             with_surfaces_surface_tree(lock.wl_surface(), &release);
         }
         for surface in self.shell_client_surfaces() {

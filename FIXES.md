@@ -22,7 +22,7 @@ and the JavaScript shell suites under `tests/`.
   (`on_gpu_removed` clears `lease_state`). Fix: answer with an empty state
   instead of panicking; never abort a dispatch.
 
-- [ ] **3. Dead lock surfaces are walked on every vblank.**
+- [x] **3. Dead lock surfaces are walked on every vblank.**
   `state/frame_barriers.rs:185` and `state/frame_clock.rs:90` walk
   `lock_surfaces` without an `alive()` check. Smithay's session-lock
   `destroyed` sets `Defunct` without calling `unlock()`, so a disconnected
