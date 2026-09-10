@@ -71,7 +71,7 @@ and the JavaScript shell suites under `tests/`.
   `viewport-shell-cef/src/main.rs:523` has the same fault with `QUEUE`. Fix:
   drain and evaluate on `Page.loadEventFired`.
 
-- [ ] **11. `click+`/`drag+` leak `SUPPRESSED_BUTTONS`, sticking the next click.**
+- [x] **11. `click+`/`drag+` leak `SUPPRESSED_BUTTONS`, sticking the next click.**
   `input.rs:1772` suppresses, but the release is consumed by the
   `pending_click` branch (`:1786`) before `release_suppressed`. Fix: release
   the suppression there.

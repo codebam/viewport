@@ -1799,6 +1799,13 @@ impl ViewportState {
                     if fires {
                         self.handle_action(Action::Bound(action));
                     }
+                    // The press put this button in `SUPPRESSED_BUTTONS`, and
+                    // this branch is the only place its release will ever be
+                    // seen. Forgetting it here left the entry behind, and the
+                    // *next* ordinary release of the same button was swallowed
+                    // by the branch below — a client told a button came up that
+                    // never went down.
+                    release_suppressed(event.button_code());
                     return;
                 } else if release_suppressed(event.button_code()) {
                     // The other half of the same chord. Matching again would
