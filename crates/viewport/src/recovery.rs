@@ -867,17 +867,16 @@ impl ViewportState {
             device.stepped_at = None;
             device.settle = 0;
             device.offline_since = Some(std::time::Instant::now());
-            // The lease global goes with the card. It advertises a DRM node
-            // the kernel has unregistered, and a client that binds it is
-            // offered connectors on hardware that is not there — and would be
-            // handed an fd for a minor that may since have been given to
-            // something else. Dropping the state withdraws the global; a
-            // request already in flight lands in `drm_lease_state`, which
-            // answers with an empty state rather than aborting the session.
-            //
-            // A new one is made when the card comes back, on whichever node it
-            // comes back as. See `install_device`.
-            device.lease_state = None;
+            // The lease global goes with the card in the sense that nothing
+            // new can be leased from it: the node the kernel unregistered is
+            // not one a client should be handed. The state is kept rather
+            // than dropped, because dropping it does not withdraw the global
+            // — `DrmLeaseState::drop` never calls `remove_global` — and a
+            // request already in flight for that global has to be answered.
+            // `drm_lease_state` in `handlers/mod.rs` finds this state by node
+            // and refuses the lease for want of connectors; a replacement is
+            // made when the card comes back, on whichever node it comes back
+            // as. See `install_device`.
         }
         // The card is expected straight back after a bus reset, so the first
         // retry is soon. If it never comes the backoff takes over.

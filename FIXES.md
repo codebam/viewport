@@ -16,7 +16,7 @@ and the JavaScript shell suites under `tests/`.
   `CaptureOutput` arm at `:124` gets it right. Fix: init a placeholder
   `FrameState` (`copied` set) and `frame.failed()` before returning.
 
-- [ ] **2. DRM lease request after GPU removal panics.**
+- [x] **2. DRM lease request after GPU removal panics.**
   `crates/viewport/src/handlers/mod.rs:1423` panics when
   `DrmLeaseState::new_with_filter` fails, which is exactly the removed-GPU case
   (`on_gpu_removed` clears `lease_state`). Fix: answer with an empty state

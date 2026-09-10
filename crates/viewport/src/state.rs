@@ -431,6 +431,14 @@ pub struct ViewportState {
     /// The DRM backend, when running on real hardware rather than nested.
     pub udev: Option<crate::udev::Udev>,
 
+    /// An empty drm-lease state for a request that outlives its card.
+    ///
+    /// A card that goes away keeps its own state (see
+    /// `recovery::on_gpu_removed`), so this is only reached for a node no
+    /// registered card owns. It is built once and kept, because a lease
+    /// global cannot be withdrawn and requests for a dead node keep arriving.
+    pub lease_fallback: Option<Box<smithay::wayland::drm_lease::DrmLeaseState>>,
+
     /// The headless backend's virtual outputs, when there is one.
     ///
     /// `Some` under `--headless` and nowhere else, which is what makes it the
@@ -1716,6 +1724,7 @@ impl ViewportState {
             overview: false,
             active_output: None,
             udev: None,
+            lease_fallback: None,
             headless: None,
             suppressed_keys: Vec::new(),
             deferred_bindings: Vec::new(),
