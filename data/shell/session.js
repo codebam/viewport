@@ -134,7 +134,11 @@ function reviveNode(node) {
   split.weight = node.weight ?? 1;
   split.active = node.active ?? 0;
   if (node.width !== undefined) split.width = node.width;
-  split.children = (node.children ?? []).map(reviveNode);
+  split.children = (node.children ?? []).map(reviveNode)
+    /* A split with no children is a tree nothing can walk: it has no leaf to
+       focus, so a hand-edited or truncated session file that contains one
+       crashed the scrolling layout's firstOf/gestureSettle. */
+    .filter((child) => child.type !== 'split' || child.children.length > 0);
   return split;
 }
 
@@ -178,6 +182,11 @@ function restoreSession(text) {
       const root = newSplit('horizontal');
       root.children = [revived];
       revived = root;
+    }
+    /* A root with nothing under it is a workspace nothing can be placed in;
+       leaving it unset lets workspaceRoot build the usual empty one. */
+    if (revived && revived.type === 'split' && revived.children.length === 0) {
+      revived = null;
     }
     if (revived) workspaces.set(workspace, revived);
   }
@@ -284,6 +293,14 @@ function claimSlot(id, app, tag = null) {
  * specification says they must not expire on their own, and an application
  * marking something critical has usually decided it needs an answer. */
 const NOTIFICATION_TIMEOUT_MS = 5000;
+
+/* How many popups may be on screen at once.
+ *
+ * A sender can make one permanent with `urgency: 2` or `timeout: 0`, and
+ * nothing else bounds how many it sends, so a spamming client would grow the
+ * page's heap and the shell's overlay rectangles without limit. Past this the
+ * oldest goes, which is what the notification daemons do. */
+const MAX_NOTIFICATION_POPUPS = 8;
 
 /* Which output a notification belongs to — the one showing the window of the
  * app that sent it.
@@ -451,6 +468,14 @@ function showNotification(message) {
   const critical = (message.urgency ?? 1) >= 2;
   const ms = timeout > 0 ? timeout
     : (timeout === 0 || critical ? 0 : NOTIFICATION_TIMEOUT_MS);
+
+  /* The oldest goes before this one is registered: a permanent popup is a
+     thing a sender can ask for, but not an unbounded number of them. */
+  while (notifications.size >= MAX_NOTIFICATION_POPUPS) {
+    const oldest = notifications.keys().next().value;
+    if (oldest === undefined) break;
+    dropNotification(oldest, true);
+  }
 
   notifications.set(message.id, {
     el,
@@ -843,7 +868,11 @@ function gestureSettle() {
   if (landed === null) landed = root.children[root.children.length - 1];
   if (!landed) return;
 
-  const id = landed.type === 'leaf' ? landed.id : [...walk(landed)][0][0].id;
+  /* An empty column has no leaf to focus. Reviving prunes those, but a tree
+     can still be emptied by a live command between renders. */
+  const first = landed.type === 'leaf' ? null : [...walk(landed)][0];
+  if (landed.type !== 'leaf' && !first) return;
+  const id = landed.type === 'leaf' ? landed.id : first[0].id;
   send({ type: 'view.focus', id });
   relayoutAll();
 }
@@ -914,8 +943,12 @@ function scrollFocus(direction) {
     return;
   }
 
-  const firstOf = (column) =>
-    column.type === 'leaf' ? column.id : [...walk(column)][0][0].id;
+  /* The first leaf of a column, or null for one with nothing under it. */
+  const firstOf = (column) => {
+    if (column.type === 'leaf') return column.id;
+    const first = [...walk(column)][0];
+    return first ? first[0].id : null;
+  };
 
   /* Step through every window on the strip, in strip order, wrapping at the
      ends. Mod4+Tab, which the compositor answers itself where every window is
@@ -937,8 +970,8 @@ function scrollFocus(direction) {
   }
 
   if (direction === 'first' || direction === 'last') {
-    send({ type: 'view.focus',
-      id: firstOf(columns[direction === 'first' ? 0 : columns.length - 1]) });
+    const id = firstOf(columns[direction === 'first' ? 0 : columns.length - 1]);
+    if (id != null) send({ type: 'view.focus', id });
     return;
   }
 
