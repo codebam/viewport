@@ -17,6 +17,12 @@ use crate::session;
 use crate::state::ViewportState;
 use crate::views::NO_VIEW;
 
+/// How many bindings the `bind.add` message may grow the list to.
+///
+/// The defaults and a hand-written keymap are well under this; it exists so a
+/// page that only ever adds cannot make every key press walk an unbounded list.
+const MAX_RUNTIME_BINDINGS: usize = 1024;
+
 /// Whether carrying this request out would move the keyboard.
 ///
 /// The three that set focus outright. Everything else either does not touch the
@@ -703,7 +709,21 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         Request::BindAdd { chord, action } => {
             // Runtime binds from the shell are additive and expendable; the
             // ones that must survive a broken shell are the defaults.
-            if !install_binding(&mut state.bindings, &chord, &action) {
+            //
+            // Bounded: every one is walked on every key press, so a page that
+            // only ever adds grows both the list and the per-keystroke cost for
+            // the life of the session. A chord that replaces an existing one is
+            // always allowed — that is how a runtime bind is taken back.
+            let replaces =
+                crate::binding::parse(&format!("{chord}={action}")).is_some_and(|binding| {
+                    state
+                        .bindings
+                        .iter()
+                        .any(|existing| same_chord(existing, &binding))
+                });
+            if !replaces && state.bindings.len() >= MAX_RUNTIME_BINDINGS {
+                reject(state, "bind.add", "too many runtime bindings");
+            } else if !install_binding(&mut state.bindings, &chord, &action) {
                 reject(state, "bind.add", &format!("{chord}={action}"));
             }
         }
