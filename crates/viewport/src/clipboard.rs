@@ -146,9 +146,17 @@ impl Clipboard {
         let Some(reader) = self.reader.clone() else {
             return;
         };
+        // A client can offer a selection as often as it likes, and each offer
+        // is a pipe it may never write to. Past a handful in flight the new
+        // one is dropped rather than allowed to pin another thread and fd.
+        let Some(live) = LiveThread::acquire() else {
+            tracing::warn!("too many clipboard reads in flight; dropping this copy");
+            return;
+        };
         let spawned = std::thread::Builder::new()
             .name("clipboard".to_owned())
             .spawn(move || {
+                let _live = live;
                 let mut file = std::fs::File::from(read);
                 let mut buffer = Vec::new();
                 // Bounded, and bounded by *reading* rather than by asking how
@@ -195,10 +203,12 @@ impl Clipboard {
         if text.trim().is_empty() {
             return false;
         }
-        // Our own paste coming back round. Cleared once it has: the next copy
-        // of the same text is a real one, made by a person pressing a key.
-        if self.ours.as_deref() == Some(text.as_str()) {
-            self.ours = None;
+        // Our own paste coming back round. Taken here rather than only when
+        // the text matches: the compositor's own selection is never read back
+        // — Smithay reports only a client-set one — so `ours` would otherwise
+        // stay set until the next identical copy, which was then dropped.
+        let ours = self.ours.take();
+        if ours.as_deref() == Some(text.as_str()) {
             return false;
         }
         // Copying the same thing twice moves it to the top rather than filling
@@ -261,6 +271,35 @@ pub fn offered_mimes() -> Vec<String> {
     TEXT_MIMES.iter().map(|mime| (*mime).to_owned()).collect()
 }
 
+/// How many clipboard reader and writer threads may be live at once.
+///
+/// Both are started from a client's request and both block on a pipe the other
+/// end controls: a client that offers a selection and never writes, or asks to
+/// paste and never reads, would otherwise leave one thread and one fd per
+/// request behind. Eight is far more than a desktop does at once.
+const MAX_THREADS: usize = 8;
+
+static LIVE_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A slot in [`LIVE_THREADS`], released when the thread that holds it ends.
+struct LiveThread;
+
+impl LiveThread {
+    fn acquire() -> Option<Self> {
+        if LIVE_THREADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 > MAX_THREADS {
+            LIVE_THREADS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        }
+        Some(Self)
+    }
+}
+
+impl Drop for LiveThread {
+    fn drop(&mut self) {
+        LIVE_THREADS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Hand text to a client that is pasting.
 ///
 /// On a thread, because the other end of this pipe is a program that may not
@@ -268,9 +307,14 @@ pub fn offered_mimes() -> Vec<String> {
 /// that, so the write blocks until the client gets round to it. That is fine
 /// on a thread and is a frozen desktop anywhere else.
 pub fn serve(text: String, fd: std::os::unix::io::OwnedFd) {
+    let Some(live) = LiveThread::acquire() else {
+        tracing::warn!("too many clipboard writers in flight; dropping the paste");
+        return;
+    };
     let spawned = std::thread::Builder::new()
         .name("clipboard-write".to_owned())
         .spawn(move || {
+            let _live = live;
             let mut file = std::fs::File::from(fd);
             // The error is dropped rather than logged: a client that asks for
             // the selection and exits before reading it closes the pipe, and
