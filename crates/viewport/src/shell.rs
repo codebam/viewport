@@ -628,8 +628,14 @@ impl Shell {
     }
 
     /// Wake the event loop whenever the page posts something.
+    ///
+    /// A blocking lock, unlike the frame path: this is handed over once, from
+    /// `start_shell`, and a `try_lock` that lost the race to a page already
+    /// posting left the ping unset for the life of the page — every message it
+    /// sent then sat in the mailbox, which is a desktop quietly running on the
+    /// watchdog's fallback layout.
     pub fn wake_with(&self, ping: smithay::reexports::calloop::ping::Ping) {
-        if let Ok(mut mailbox) = self.mailbox.try_lock() {
+        if let Ok(mut mailbox) = self.mailbox.lock() {
             mailbox.ping = Some(ping);
         }
     }
