@@ -93,36 +93,36 @@ and the JavaScript shell suites under `tests/`.
   `state/config_apply.rs:444` drops config-file outputs for monitors the panel
   never touched. Fixed together with (7) by a per-key merge.
 
-- [ ] **15. `view.close` is a no-op for X11 windows.**
+- [x] **15. `view.close` is a no-op for X11 windows.**
   `apply.rs:130` only calls `toplevel()`. Fix: fall back to `x11_surface()`,
   as `input.rs:2843` already does.
 
-- [ ] **16. `initially_allows_capture` fails open on an unsupported regex.**
+- [x] **16. `initially_allows_capture` fails open on an unsupported regex.**
   `config.rs:1643` returns `false` when the Rust regex crate rejects a
   JS-valid pattern (lookbehind), so a `capture: false` rule stops matching and
   privacy fails open. Fix: treat a build failure as a possible match.
 
-- [ ] **17. Local paste after a remote copy serves nothing.**
+- [x] **17. Local paste after a remote copy serves nothing.**
   `state/screencast.rs:979` records then offers `Owner::History`, but
   `send_selection` serves `clipboard.current()` (`ours`), which `record` never
   sets. Fix: fall back to the newest entry when serving history.
 
-- [ ] **18. `Clipboard::ours` is never cleared.**
+- [x] **18. `Clipboard::ours` is never cleared.**
   `clipboard.rs:200` only clears it if the same text is recorded again, but
   Smithay never reads the compositor's own selection back, so the next
   identical copy is silently dropped. Fix: treat the first client selection
   after a paste as real (`ours.take()` at the top of `record`).
 
-- [ ] **19. Notification `owners` grows without bound.**
+- [x] **19. Notification `owners` grows without bound.**
   `notification.rs:296` inserts per id and only removes on close; history
   eviction never prunes it and ids are monotonic. Fix: drop the owner when the
   history evicts its entry.
 
-- [ ] **20. The tray trusts a caller-supplied service name.**
+- [x] **20. The tray trusts a caller-supplied service name.**
   `tray.rs:373-397` registers arbitrary bus names without checking the sender
   owns them. Fix: for the name form, require `NameHasOwner`/owner == sender.
 
-- [ ] **21. Clipboard reads spawn unbounded threads/fds.**
+- [x] **21. Clipboard reads spawn unbounded threads/fds.**
   `clipboard.rs:145` starts a detached reader (and `serve` a writer) per
   request with no timeout or concurrency bound. Fix: drop/replace a previous
   outstanding capture and bound concurrent writers.
