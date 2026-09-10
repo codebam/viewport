@@ -76,13 +76,13 @@ and the JavaScript shell suites under `tests/`.
   `pending_click` branch (`:1786`) before `release_suppressed`. Fix: release
   the suppression there.
 
-- [ ] **12. Input capture leaves held keys held in the seat.**
+- [x] **12. Input capture leaves held keys held in the seat.**
   `input_capture.rs:1137-1144,1238` moves held keys to `suppressed_keys` and
   then swallows their releases without feeding the seat, so modifiers stick and
   the key is dead afterwards. Fix: feed the release through
   `keyboard.input_intercept(..., |_,_,_| ())`.
 
-- [ ] **13. A key held across capture activation never gets its release locally.**
+- [x] **13. A key held across capture activation never gets its release locally.**
   `input_capture.rs:1241-1249` consumes the transition with
   `update_input_capture_key` and then forwards a second time; Smithay has no
   holder left and forwards nothing. Fix: do not consume it — return `false`.

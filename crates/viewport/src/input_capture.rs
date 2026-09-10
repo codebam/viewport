@@ -1134,11 +1134,40 @@ impl crate::state::ViewportState {
             })
     }
 
+    /// Let go, in the seat, of keys a capture was holding.
+    ///
+    /// `captured_keys` are XKB keycodes; the seat's `input` takes evdev ones,
+    /// eight apart. The release is intercepted, so it clears the seat's
+    /// pressed set without being forwarded to a client — the physical release
+    /// that will follow is swallowed into `suppressed_keys`, and nothing else
+    /// would ever clear it.
+    fn release_seat_keys(&mut self, keys: impl IntoIterator<Item = u32>) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        for code in keys {
+            keyboard.input::<(), _>(
+                self,
+                smithay::input::keyboard::Keycode::new(code.saturating_add(8)),
+                KeyState::Released,
+                SERIAL_COUNTER.next_serial(),
+                smithay::backend::input::InputTime::now(),
+                |_, _, _| FilterResult::Intercept(()),
+            );
+        }
+    }
+
     pub fn deactivate_input_capture(&mut self) {
         let Some(active) = self.input_capture_connections.active.take() else {
             return;
         };
         self.input_capture_connections.modifiers = None;
+        // The keys the capture was still holding: let go of them in the seat
+        // before their physical releases are swallowed. Every press went into
+        // the seat with the event intercepted, so a key left there keeps its
+        // modifier alive into the next local keystroke and absorbs its own next
+        // press.
+        self.release_seat_keys(active.captured_keys.iter().copied());
         self.input_capture_connections
             .suppressed_keys
             .extend(active.captured_keys);
@@ -1244,7 +1273,13 @@ impl crate::state::ViewportState {
                     .as_mut()
                     .is_some_and(|active| active.ignored_keys.remove(&code))
                 {
-                    self.update_input_capture_key::<I>(event);
+                    // A key that was already down when capture began: its press
+                    // went to the local client, so its release has to as well.
+                    // Feeding it through `update_input_capture_key` consumed
+                    // the transition with an `Intercept`, and the
+                    // `process_input_event` this returns into then found no
+                    // holder and forwarded nothing — the client that saw the
+                    // press never saw the key come back up.
                     return false;
                 }
             }
