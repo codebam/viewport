@@ -414,7 +414,10 @@ impl Worker {
         Some(MprisPlayer {
             // The bus name without the prefix, which is what a player calls
             // itself: `spotify`, `mpv`, `firefox.instance_1_15`.
-            id: name.trim_start_matches(PREFIX).to_owned(),
+            // `strip_prefix`, not `trim_start_matches`: the latter strips every
+            // repetition, so a bus name that repeats the prefix yields an id
+            // whose controls are addressed to a different player.
+            id: name.strip_prefix(PREFIX).unwrap_or(name).to_owned(),
             title,
             artist,
             album: text("xesam:album"),
