@@ -1640,7 +1640,12 @@ fn capture_value_matches(value: &str, condition: &serde_json::Value) -> bool {
             }
         }
     }
-    regex.build().is_ok_and(|regex| regex.is_match(value))
+    // A pattern the Rust regex crate cannot compile may still be one the
+    // shell's engine accepts — lookaround, backreferences — so refusing to
+    // match it here would let a `capture: false` rule fail open during the
+    // window before the shell answers, or after it has crashed. Treat the
+    // failure as a possible match.
+    regex.build().map_or(true, |regex| regex.is_match(value))
 }
 
 fn contains_ignoring_case(value: &str, wanted: &str) -> bool {
