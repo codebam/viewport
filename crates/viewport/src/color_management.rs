@@ -544,6 +544,16 @@ impl Dispatch<WpColorManagementSurfaceV1, WlSurface> for ViewportState {
         _display: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
+        use wp_color_management_surface_v1::Error;
+
+        // The surface is gone: the object is inert, and every request on an
+        // inert object is the protocol error rather than silence. The render
+        // path guards with `alive()`; this did not.
+        if !smithay::utils::IsAlive::alive(&surface) {
+            object.post_error(Error::Inert, "the surface of this object is destroyed");
+            return;
+        }
+
         match request {
             wp_color_management_surface_v1::Request::SetImageDescription {
                 image_description,
