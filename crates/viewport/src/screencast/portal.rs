@@ -928,7 +928,18 @@ pub struct SessionObject {
 #[zbus::interface(name = "org.freedesktop.impl.portal.Session")]
 impl SessionObject {
     /// The application has stopped sharing.
-    async fn close(&self, #[zbus(object_server)] server: &zbus::ObjectServer) {
+    async fn close(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+    ) {
+        // Only the frontend, like every other method on a session: the session
+        // bus is reachable by every process, and a peer that knows a session
+        // path could otherwise tear down another application's share and its
+        // input-capture grants.
+        if !called_by_frontend(&self.sessions, "session", &header) {
+            return;
+        }
         tracing::debug!("portal: the frontend closed session {}", self.path);
         let closed = self.sessions.lock().unwrap().sessions.remove(&self.path);
         // Both things a row can hold die with it — the stream and, for a
