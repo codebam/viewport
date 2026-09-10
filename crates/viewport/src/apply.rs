@@ -128,8 +128,18 @@ pub fn apply(state: &mut ViewportState, request: Request) {
         Request::ViewFocus { id } => focus_view(state, id),
 
         Request::ViewClose { id } => {
-            if let Some(toplevel) = state.views.get(id).and_then(|v| v.window.toplevel()) {
-                toplevel.send_close();
+            // An X11 window has no xdg toplevel, so `toplevel()` alone drops
+            // every XWayland client. The compositor's own Close binding gets
+            // this right in `input.rs`; a taskbar's close button and
+            // `viewport msg -t view.close` come through here.
+            if let Some(view) = state.views.get(id) {
+                if let Some(toplevel) = view.window.toplevel() {
+                    toplevel.send_close();
+                } else if let Some(x11) = view.window.x11_surface() {
+                    if let Err(e) = x11.close() {
+                        tracing::warn!("could not close X11 view {id}: {e}");
+                    }
+                }
             }
         }
 
