@@ -356,25 +356,29 @@ fn run() -> Result<()> {
             asked.is_some() || std::env::var_os("VIEWPORT_SHELL_BACKEND").is_some();
     }
 
-    state.apply_config(config);
-    // And then the runtime settings the settings panel wrote, over the top.
+    // The runtime settings the settings panel wrote, laid over the config file
+    // before it is applied.
     //
-    // Over the top of the config file rather than under it, which is the only
-    // ordering a panel can be built on: the last thing somebody did in the UI
-    // is what they meant, and a file they edited three months ago quietly
-    // winning would make the panel a thing that appears to work and does not.
-    // The escape hatch is that the overlay is one small file with only the
-    // keys that were set in it — delete it, or delete a line out of it, and
-    // the config file is back in charge. See `crate::settings`.
+    // Over the config file rather than under it, which is the only ordering a
+    // panel can be built on: the last thing somebody did in the UI is what
+    // they meant, and a file they edited three months ago quietly winning
+    // would make the panel a thing that appears to work and does not. The
+    // escape hatch is that the overlay is one small file with only the keys
+    // that were set in it — delete it, or delete a line out of it, and the
+    // config file is back in charge. See `crate::settings`.
+    //
+    // Merged into the parsed file rather than applied as a second one, because
+    // an `apply_config` over the top resets every field the overlay does not
+    // name — `tray`, `terminal` and the whole `binds` keymap among them.
     //
     // Still under the command line, because everything below this point is,
     // and a flag is the most deliberate thing there is: `--wallpaper` on the
     // command line has to beat a saved one or it means nothing.
     if let Some(path) = config_path.as_deref().map(settings::path) {
-        match config::load(&path) {
+        match settings::load(&path) {
             Ok(Some(overlay)) => {
                 tracing::info!("loaded the saved settings from {}", path.display());
-                state.apply_config(overlay);
+                settings::apply(&mut config, &overlay);
             }
             Ok(None) => {}
             // Not fatal, unlike a broken config file. Nobody wrote this by
@@ -385,6 +389,7 @@ fn run() -> Result<()> {
             Err(e) => tracing::warn!("{e}; ignoring the saved settings"),
         }
     }
+    state.apply_config(config);
     // The colour scheme as it now stands, so the shell can draw the switch in
     // the position it is really in. Set here rather than inside `apply_config`
     // because a config file that says nothing about it still has an answer —

@@ -520,7 +520,7 @@ impl ViewportState {
             "the configuration file changed: reloading {}",
             path.display()
         );
-        let file = match crate::config::load(&path) {
+        let mut file = match crate::config::load(&path) {
             Ok(Some(file)) => file,
             Ok(None) => return,
             Err(e) => {
@@ -528,18 +528,21 @@ impl ViewportState {
                 return;
             }
         };
-        self.apply_config(file);
-        // And the saved settings back over the top, in the order startup
-        // applies them. Without this, editing one line of the config file
-        // would silently drop everything the settings panel had ever set —
-        // the panel's changes would survive a restart and not survive a save
-        // in an editor, which is the more confusing half of the two.
+        // The saved settings, laid over the file before it is applied — the
+        // same order startup applies them. Without this, editing one line of
+        // the config file would silently drop everything the settings panel
+        // had ever set: the panel's changes would survive a restart and not
+        // survive a save in an editor, which is the more confusing half of the
+        // two. Merged rather than applied as a second file, because an
+        // `apply_config` over the top resets every field the overlay does not
+        // name.
         let overlay_path = crate::settings::path(&path);
-        match crate::config::load(&overlay_path) {
-            Ok(Some(overlay)) => self.apply_config(overlay),
+        match crate::settings::load(&overlay_path) {
+            Ok(Some(overlay)) => crate::settings::apply(&mut file, &overlay),
             Ok(None) => {}
             Err(e) => tracing::warn!("{e}; keeping the settings already in effect"),
         }
+        self.apply_config(file);
         self.notify_config();
     }
 }

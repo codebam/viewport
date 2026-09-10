@@ -35,9 +35,10 @@
 // writes it, and nothing else does. The three properties that buys:
 //
 //   - the config file is never touched, so nobody's comments die;
-//   - the layering is the one that already exists — the overlay is parsed as a
-//     `config::File` and handed to `apply_config`, which has always meant "only
-//     the keys present", so there is no second code path deciding what wins;
+//   - the layering is the one that already exists — the overlay's keys are
+//     laid over the parsed config file by [`apply`] before the one
+//     `apply_config`, so only the keys present take effect and there is no
+//     second code path deciding what wins;
 //   - a config file edited by hand still loses to the overlay, which is the
 //     right way round for a panel: the last thing you did in the UI is what
 //     you meant. Deleting `settings.json` puts the file back in charge, which
@@ -50,7 +51,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The overlay file that goes beside a config file.
 ///
@@ -69,7 +70,7 @@ pub fn path(config_path: &Path) -> PathBuf {
 /// back as a [`crate::config::File`], which is a superset of this — see the
 /// round-trip test at the bottom, which is what stops a key here from drifting
 /// out of the shape the config file reader expects.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Overlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dark_mode: Option<bool>,
@@ -110,7 +111,7 @@ pub struct Overlay {
 /// than states. Saving a resolved 2560x1440@240 as `max_refresh: true` would
 /// be writing down the question instead of the answer, and the answer changes
 /// when the monitor does.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OutputOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -176,6 +177,89 @@ pub fn save(path: &Path, overlay: &Overlay) -> anyhow::Result<()> {
         anyhow::anyhow!("{}: {e}", path.display())
     })?;
     Ok(())
+}
+
+/// Read the overlay written by [`save`], if it is there.
+pub fn load(path: &Path) -> anyhow::Result<Option<Overlay>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("{}: {e}", path.display())),
+    }
+}
+
+/// Lay the overlay's keys over a loaded config file.
+///
+/// Only the keys the overlay holds: absence means "leave what the file said",
+/// which is the whole reason this is a merge rather than a second
+/// `apply_config`. Applying it as a `File` of its own reset every field the
+/// overlay did not name — `tray`, `terminal` and the whole `binds` keymap
+/// among them — so one trip through the settings panel silently discarded a
+/// hand-written configuration.
+pub fn apply(into: &mut crate::config::File, overlay: &Overlay) {
+    if let Some(value) = overlay.dark_mode {
+        into.dark_mode = Some(value);
+    }
+    if let Some(value) = overlay.wallpaper.as_ref() {
+        into.wallpaper = Some(value.clone());
+    }
+    if let Some(value) = overlay.wallpaper_mode.as_ref() {
+        into.wallpaper_mode = Some(value.clone());
+    }
+    if let Some(gaps) = overlay.gaps.as_ref() {
+        if let Some(value) = gaps.inner {
+            into.gaps.inner = Some(value);
+        }
+        if let Some(value) = gaps.outer {
+            into.gaps.outer = Some(value);
+        }
+        if let Some(value) = gaps.smart {
+            into.gaps.smart = Some(value);
+        }
+    }
+    if let Some(border) = overlay.border.as_ref() {
+        if let Some(value) = border.radius {
+            into.border.radius = Some(value);
+        }
+        if let Some(value) = border.width {
+            into.border.width = Some(value);
+        }
+        if let Some(value) = border.smart {
+            into.border.smart = Some(value);
+        }
+    }
+    // Per monitor, not the whole map: the overlay holds only the monitors the
+    // panel touched, and a config-file block for an untouched one has to
+    // survive.
+    for (name, monitor) in &overlay.outputs {
+        let entry = into.outputs.entry(name.clone()).or_default();
+        if let Some(value) = monitor.enabled {
+            entry.enabled = Some(value);
+        }
+        if let Some(value) = monitor.mode.as_ref() {
+            entry.mode = Some(value.clone());
+        }
+        if let Some(value) = monitor.scale {
+            entry.scale = Some(value);
+        }
+        if let Some(value) = monitor.transform.as_ref() {
+            entry.transform = Some(value.clone());
+        }
+        if let Some(value) = monitor.x {
+            entry.x = Some(value);
+        }
+        if let Some(value) = monitor.y {
+            entry.y = Some(value);
+        }
+        if let Some(value) = monitor.mirror.as_ref() {
+            entry.mirror = Some(value.clone());
+        }
+        if let Some(value) = monitor.vrr {
+            entry.vrr = Some(value);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -298,5 +382,56 @@ mod tests {
         assert!(!file.with_extension("json.tmp").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The overlay is a patch, not a second config file.
+    ///
+    /// Applying it as one reset every field it did not name — `tray`, the
+    /// terminal and the whole `binds` keymap — so a single save from the
+    /// settings panel discarded a hand-written configuration.
+    #[test]
+    fn the_overlay_layers_over_the_file_without_resetting_it() {
+        let mut base = crate::config::File {
+            tray: Some(false),
+            terminal: Some("kitty".to_owned()),
+            binds: Some(std::collections::HashMap::new()),
+            ..Default::default()
+        };
+        base.outputs.insert(
+            "DP-2".to_owned(),
+            crate::config::OutputConfig {
+                scale: Some(2.0),
+                ..Default::default()
+            },
+        );
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "DP-1".to_owned(),
+            OutputOverlay {
+                scale: Some(1.5),
+                ..Default::default()
+            },
+        );
+        let overlay = Overlay {
+            gaps: Some(viewport_ipc::event::Gaps {
+                inner: Some(12),
+                outer: None,
+                smart: None,
+            }),
+            outputs,
+            ..Default::default()
+        };
+
+        apply(&mut base, &overlay);
+
+        // Keys the overlay did not name survive.
+        assert_eq!(base.tray, Some(false));
+        assert_eq!(base.terminal.as_deref(), Some("kitty"));
+        assert!(base.binds.is_some());
+        // The overlay's keys win.
+        assert_eq!(base.gaps.inner, Some(12));
+        // And a monitor it did not name keeps the file's block.
+        assert_eq!(base.outputs.get("DP-2").and_then(|o| o.scale), Some(2.0));
+        assert_eq!(base.outputs.get("DP-1").and_then(|o| o.scale), Some(1.5));
     }
 }

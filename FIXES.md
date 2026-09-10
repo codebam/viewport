@@ -49,7 +49,7 @@ and the JavaScript shell suites under `tests/`.
 
 ## High — broken behaviour
 
-- [ ] **7. The settings overlay is not a patch; it wipes config-file keys.**
+- [x] **7. The settings overlay is not a patch; it wipes config-file keys.**
   `settings.json` is applied as a second `config::File`
   (`main.rs:377`, `shell_watch.rs`) and `apply_config` resets `tray`,
   `terminal`, `binds`, notification/clipboard history, icon theme, `lid` and
@@ -89,7 +89,7 @@ and the JavaScript shell suites under `tests/`.
 
 ## Medium
 
-- [ ] **14. Overlay `outputs` replaces the whole map.**
+- [x] **14. Overlay `outputs` replaces the whole map.**
   `state/config_apply.rs:444` drops config-file outputs for monitors the panel
   never touched. Fixed together with (7) by a per-key merge.
 
