@@ -3,6 +3,18 @@
 // Hit testing and the output/window image capture paths.
 // Included as associated items of `ViewportState` by `state.rs`.
 
+/// The system monotonic clock, which is what a capture's `presentation_time`
+/// is in.
+///
+/// `start_time.elapsed()` is time since this compositor started, which is hours
+/// behind the clock a recorder compares against `wl_presentation` and vblank.
+fn monotonic_now() -> std::time::Duration {
+    let now = smithay::reexports::rustix::time::clock_gettime(
+        smithay::reexports::rustix::time::ClockId::Monotonic,
+    );
+    std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32)
+}
+
 impl ViewportState {
     /// What the pointer is over.
     ///
@@ -741,7 +753,7 @@ impl ViewportState {
             match result {
                 Ok(()) => {
                     tracing::debug!("image capture: a frame of view {id}");
-                    let now = self.start_time.elapsed();
+                    let now = monotonic_now();
                     // Normal, unlike an output. A window is not rotated by the
                     // screen it happens to be on — `read_window_pixels` draws
                     // it upright — so telling a client the screen's transform
@@ -784,7 +796,7 @@ impl ViewportState {
                 Ok(()) => {
                     // Debug, not info: a recorder asks sixty times a second.
                     tracing::debug!("image capture: a frame of {}", frame_output.name());
-                    let now = self.start_time.elapsed();
+                    let now = monotonic_now();
                     // The output's own transform, not Normal. The copy is
                     // composited the way the output is composited, so a client
                     // that is told Normal on a rotated or flipped monitor
