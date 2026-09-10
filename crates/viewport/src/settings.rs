@@ -165,17 +165,41 @@ pub fn save(path: &Path, overlay: &Overlay) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
     text.push('\n');
 
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, text)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", temporary.display()))?;
+    // Unique per save: a fixed name collides for two savers, and one rename
+    // would then move the other's half-written file into place.
+    let temporary = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("settings"),
+        std::process::id()
+    ));
+    // Written, flushed and synced before the rename, which is what announces
+    // it: without the sync a crash can leave the rename durable and the bytes
+    // it points at not, which is an empty `settings.json` — fatal for
+    // `--config`, and the exact failure the temp file exists to prevent.
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(&temporary)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", temporary.display()))?;
+        file.write_all(text.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|e| anyhow::anyhow!("{}: {e}", temporary.display()))?;
+    }
     std::fs::rename(&temporary, path).map_err(|e| {
         // The temporary is cleaned up here rather than left behind: a rename
         // that failed is usually a read-only or full filesystem, and leaving a
-        // `settings.json.tmp` next to the config file is a puzzle for whoever
-        // finds it later.
+        // temporary next to the config file is a puzzle for whoever finds it
+        // later.
         let _ = std::fs::remove_file(&temporary);
         anyhow::anyhow!("{}: {e}", path.display())
     })?;
+    // The directory entry too, so the rename itself is durable.
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 
