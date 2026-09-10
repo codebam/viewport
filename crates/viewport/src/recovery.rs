@@ -604,7 +604,7 @@ impl ViewportState {
         // as far as the seat is concerned, and takes cleanly.
         let render = crate::udev::client_render_node(&card);
         let opened = crate::udev::open_device(&mut udev.session, &card, &render);
-        let (manager, mut renderer, gbm, notifier) = match opened {
+        let (manager, mut renderer, gbm, notifier, seat_fd) = match opened {
             Ok(parts) => parts,
             Err(e) => {
                 // Not an error: a card that is mid-reset is expected to refuse,
@@ -691,6 +691,7 @@ impl ViewportState {
             renderer,
             gbm,
             manager,
+            seat_fd: Some(seat_fd),
             surfaces: std::collections::HashMap::new(),
             online: true,
             bus: bus_id(&card),
@@ -709,8 +710,22 @@ impl ViewportState {
             // Assigning over the slot is what drops the old device — its
             // manager, its renderer and its GBM device all go here, and with
             // them the fd that was pinning a card the kernel had already
-            // unregistered.
-            Some(slot) => udev.devices[slot] = device,
+            // unregistered. Its seat fd is released first: dropping it only
+            // closes the dup, and the session remembers the device by the
+            // number it names.
+            Some(slot) => {
+                use smithay::backend::session::Session as _;
+                let old = udev
+                    .devices
+                    .get_mut(slot)
+                    .and_then(|device| device.seat_fd.take());
+                if let Some(old) = old {
+                    if let Err(e) = udev.session.close(old) {
+                        tracing::warn!("could not release the replaced drm device: {e}");
+                    }
+                }
+                udev.devices[slot] = device;
+            }
             None => udev.devices.push(device),
         }
 

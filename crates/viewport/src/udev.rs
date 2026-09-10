@@ -498,6 +498,12 @@ pub struct Device {
     /// by then the device that made it is inside the manager.
     pub gbm: GbmDevice<DrmDeviceFd>,
     pub manager: Manager,
+    /// The session's fd for this device, kept so the session can release it.
+    ///
+    /// `Session::open` remembers the device by this number; only `Session::close`
+    /// forgets it, and nothing else does — not even dropping the `DrmDeviceFd`,
+    /// which closes a dup. Left unheld, every open leaked a logind reference.
+    pub seat_fd: Option<std::os::unix::io::OwnedFd>,
     pub surfaces: HashMap<crtc::Handle, Surface>,
     /// What a client should allocate against for a surface being shown on this
     /// GPU.
@@ -1410,7 +1416,8 @@ pub fn init(
     );
 
     let mut session = session;
-    let (manager, mut renderer, gbm, drm_notifier) = open_device(&mut session, &card, &render)?;
+    let (manager, mut renderer, gbm, drm_notifier, seat_fd) =
+        open_device(&mut session, &card, &render)?;
 
     // `ext-background-effect-v1` is offered only where the renderer can draw
     // the blur behind a surface. Vulkan has a blur pipeline built in; GLES has
@@ -1556,6 +1563,7 @@ pub fn init(
             renderer,
             gbm,
             manager,
+            seat_fd: Some(seat_fd),
             surfaces: HashMap::new(),
             online: true,
             bus: crate::recovery::bus_id(&card),
@@ -1614,7 +1622,7 @@ pub fn init(
             break;
         };
         match open_device(&mut udev.session, other, &other_render) {
-            Ok((manager, mut renderer, gbm, notifier)) => {
+            Ok((manager, mut renderer, gbm, notifier, seat_fd)) => {
                 let index = udev.devices.len();
                 udev.devices.push(Device {
                     node: *other,
@@ -1623,6 +1631,7 @@ pub fn init(
                     renderer,
                     gbm,
                     manager,
+                    seat_fd: Some(seat_fd),
                     surfaces: HashMap::new(),
                     online: true,
                     bus: crate::recovery::bus_id(other),
@@ -1878,6 +1887,11 @@ pub fn lease_state_for(
 }
 
 /// Open the DRM device and build everything that hangs off it.
+///
+/// The session's own fd is handed back with the rest: the session releases a
+/// device by the number it was given, so something has to keep that number
+/// alive until the device goes. Dropping the only copy left the session's map
+/// entry behind, and logind's reference with it.
 pub fn open_device(
     session: &mut LibSeatSession,
     card: &DrmNode,
@@ -1887,6 +1901,7 @@ pub fn open_device(
     Gpu,
     GbmDevice<DrmDeviceFd>,
     smithay::backend::drm::DrmDeviceNotifier,
+    std::os::unix::io::OwnedFd,
 )> {
     let path = card
         .dev_path()
@@ -1894,45 +1909,78 @@ pub fn open_device(
 
     // Through the session rather than open(2): that is what makes this work
     // without being root, and what lets the fd be revoked on VT switch.
-    let fd = session
+    let seat_fd = session
         .open(
             &path,
             OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
         )
         .map_err(|e| anyhow!("opening {}: {e}", path.display()))?;
-    let fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
-    // Atomic modesetting. The legacy path cannot express a commit that changes
-    // several planes at once, which is the whole point of using DrmCompositor.
-    let (drm, notifier) = DrmDevice::new(fd.clone(), true).context("creating the drm device")?;
-    let gbm = GbmDevice::new(fd).context("creating the gbm device")?;
+    // The device holds a dup, so the session's fd stays ours to hand back and
+    // to release. The dup is the same open file description, so every DRM
+    // operation is unchanged.
+    let dup = match seat_fd.try_clone() {
+        Ok(dup) => dup,
+        Err(e) => {
+            let _ = session.close(seat_fd);
+            return Err(anyhow!("duplicating {}: {e}", path.display()));
+        }
+    };
+    let fd = DrmDeviceFd::new(DeviceFd::from(dup));
 
-    let renderer = build_renderer(&gbm, render)?;
-    let render_formats = renderer.dmabuf_formats();
+    let built = (|| -> Result<(
+        Manager,
+        Gpu,
+        GbmDevice<DrmDeviceFd>,
+        smithay::backend::drm::DrmDeviceNotifier,
+    )> {
+        // Atomic modesetting. The legacy path cannot express a commit that
+        // changes several planes at once, which is the whole point of using
+        // DrmCompositor.
+        let (drm, notifier) = DrmDevice::new(fd.clone(), true).context("creating the drm device")?;
+        let gbm = GbmDevice::new(fd).context("creating the gbm device")?;
 
-    // SCANOUT as well as RENDERING: these buffers go to the display
-    // controller, and a buffer allocated without it may not be scannable.
-    let allocator = GbmAllocator::new(
-        gbm.clone(),
-        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
-    );
+        let renderer = build_renderer(&gbm, render)?;
+        let render_formats = renderer.dmabuf_formats();
 
-    // The exporter turns a rendered buffer into a DRM framebuffer handle. It
-    // takes the node so it can tell a buffer allocated here from one imported
-    // from another GPU.
-    let exporter = GbmFramebufferExporter::new(gbm.clone(), (*render).into());
-    let gbm_kept = gbm.clone();
+        // SCANOUT as well as RENDERING: these buffers go to the display
+        // controller, and a buffer allocated without it may not be scannable.
+        let allocator = GbmAllocator::new(
+            gbm.clone(),
+            GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+        );
 
-    let manager = DrmOutputManager::new(
-        drm,
-        allocator,
-        exporter,
-        Some(gbm),
-        scanout_formats().iter().copied(),
-        render_formats,
-    );
+        // The exporter turns a rendered buffer into a DRM framebuffer handle.
+        // It takes the node so it can tell a buffer allocated here from one
+        // imported from another GPU.
+        let exporter = GbmFramebufferExporter::new(gbm.clone(), (*render).into());
+        let gbm_kept = gbm.clone();
 
-    Ok((manager, renderer, gbm_kept, notifier))
+        let manager = DrmOutputManager::new(
+            drm,
+            allocator,
+            exporter,
+            Some(gbm),
+            scanout_formats().iter().copied(),
+            render_formats,
+        );
+
+        Ok((manager, renderer, gbm_kept, notifier))
+    })();
+
+    match built {
+        Ok((manager, renderer, gbm_kept, notifier)) => {
+            Ok((manager, renderer, gbm_kept, notifier, seat_fd))
+        }
+        Err(e) => {
+            // The session still holds this device; release it before the fd
+            // that names it goes away.
+            if let Err(close) = session.close(seat_fd) {
+                tracing::warn!("could not release the drm device after a failed open: {close}");
+            }
+            Err(e)
+        }
+    }
 }
 
 /// A renderer for one GPU, on a GBM device that is already open.
@@ -2289,16 +2337,31 @@ impl ViewportState {
         // exercises that path, which is why nothing caught this: the test is
         // headless and the bug is DRM's.
         //
-        // Collected before anything is touched, because unmapping needs `self`
-        // and the loop below is holding `udev`.
+        // Collected and removed here, before any CRTC is looked for: the
+        // `DrmOutput` dropping is what frees the CRTC, and `ids()` reads the
+        // surfaces map. Removing them later in the pass left a repurposed
+        // connector unable to take the one its neighbour had just given up.
         let live: std::collections::HashSet<connector::Handle> =
             connectors.iter().map(|info| info.handle()).collect();
-        let gone: Vec<(crtc::Handle, Output)> = udev.devices[index]
-            .surfaces
-            .iter()
-            .filter(|(_, surface)| !live.contains(&surface.connector))
-            .map(|(crtc, surface)| (*crtc, surface.output.clone()))
-            .collect();
+        let mut gone: Vec<(
+            Output,
+            Option<smithay::reexports::wayland_server::backend::GlobalId>,
+        )> = Vec::new();
+        {
+            let surfaces = &mut udev.devices[index].surfaces;
+            let dead: Vec<crtc::Handle> = surfaces
+                .iter()
+                .filter(|(_, surface)| !live.contains(&surface.connector))
+                .map(|(crtc, _)| *crtc)
+                .collect();
+            for crtc in dead {
+                if let Some(surface) = surfaces.remove(&crtc) {
+                    gone.push((surface.output.clone(), surface.global));
+                }
+                // `surface` drops here, and with it the `DrmOutput` that was
+                // holding the CRTC.
+            }
+        }
 
         // CRTCs already driving something *on this device*. Without this the
         // second monitor gets handed the first one's CRTC, and the "already in
@@ -2651,24 +2714,17 @@ impl ViewportState {
             self.render(crtc);
         }
 
-        // And drop the ones that went away, now that `udev` is no longer
-        // borrowed and the space can be reached.
+        // And finish the ones that went away, now that `udev` is no longer
+        // borrowed and the space can be reached. Their surfaces — and so their
+        // CRTCs — were already dropped before the connector loop.
         //
         // Order matters against the loop above: a connector that vanished and
         // came back between two scans is not in `gone`, because `live` is read
         // from this same pass — so nothing here can remove an output the pass
         // just created.
-        for (crtc, output) in gone {
-            let global = self
-                .udev
-                .as_mut()
-                .and_then(|udev| udev.devices[index].surfaces.get_mut(&crtc))
-                .and_then(|surface| surface.global.take());
+        for (output, global) in gone {
             if let Some(global) = global {
                 self.display_handle.remove_global::<Self>(global);
-            }
-            if let Some(udev) = self.udev.as_mut() {
-                udev.devices[index].surfaces.remove(&crtc);
             }
             self.space.unmap_output(&output);
             self.output_removed(&output.name());
@@ -3419,18 +3475,31 @@ impl ViewportState {
         // about to be queued reaches the screen.
         let wants_tearing = wants_tearing && !surface.refuses_tearing;
         if surface.tearing != wants_tearing {
-            surface.tearing = wants_tearing;
             let honoured = surface
                 .drm_output
                 .with_compositor(|compositor| compositor.set_allow_tearing(wants_tearing));
+            // What the display accepted, not what was asked for:
+            // `set_allow_tearing(true)` answers `false` on a panel that cannot
+            // tear, and `surface.tearing` is what selects primary-plane-only
+            // scanout — so recording the request rather than the answer took
+            // the overlay and cursor planes away for a feature that would
+            // never happen, and bypassed the composite-everything diagnostic.
+            surface.tearing = wants_tearing && honoured;
+            if wants_tearing && !honoured {
+                let vrr = surface
+                    .drm_output
+                    .with_compositor(|compositor| compositor.vrr_enabled());
+                surface.refuses_tearing = true;
+                surface.refused_under = Some((vrr, surface.output.current_mode()));
+            }
             tracing::info!(
                 "{}: tearing {}{}",
                 output.name(),
-                if wants_tearing { "on" } else { "off" },
-                if honoured {
-                    ""
-                } else {
+                if surface.tearing { "on" } else { "off" },
+                if wants_tearing && !honoured {
                     " (this display cannot, so it will not)"
+                } else {
+                    ""
                 }
             );
         }
