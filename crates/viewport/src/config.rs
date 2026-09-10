@@ -903,6 +903,27 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
             }
         }
     }
+    // A relative wallpaper path is beside the config file too, which the
+    // comment above already claimed it was: `wallpaper_value` resolves against
+    // the process's working directory, so a desktop started from anywhere but
+    // its own config directory lost the picture. A URL, a `~` path and a CSS
+    // value are all left alone.
+    if let Some(wallpaper) = file.wallpaper.as_mut() {
+        let trimmed = wallpaper.trim();
+        if !trimmed.is_empty()
+            && !trimmed.contains("://")
+            && !trimmed.starts_with('~')
+            && !looks_like_css(trimmed)
+            && Path::new(trimmed).is_relative()
+        {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                *wallpaper = parent.join(trimmed).to_string_lossy().into_owned();
+            }
+        }
+    }
     if let Some(rules) = file.layer_rules.as_ref() {
         crate::layer::Rules::compile(rules.clone())
             .map_err(|error| anyhow::anyhow!("{}: {error}", path.display()))?;
@@ -996,7 +1017,10 @@ pub fn parse_mode(text: &str) -> Option<(i32, i32, Option<i32>)> {
     let rate = match rate {
         Some(rate) => {
             let hz: f64 = rate.trim().parse().ok()?;
-            if hz <= 0.0 {
+            // Finite as well as positive: `NaN <= 0.0` is false, and `NaN as
+            // i32` is 0, which reads downstream as "any rate" rather than as
+            // the typo it is.
+            if !hz.is_finite() || hz <= 0.0 || hz > i32::MAX as f64 / 1000.0 {
                 return None;
             }
             Some((hz * 1000.0).round() as i32)
