@@ -174,15 +174,14 @@ and the JavaScript shell suites under `tests/`.
   `screencast/stream.rs:82,355,943,1121`. Fix: checked `i64`/`u64` arithmetic
   with a size bound.
 
-- [ ] **33. `SelectionTransfer` is never emitted.**
-  `screencast/remote.rs:1094` — local→remote paste can never request data.
-  Fix: emit it (and `SelectionOwnerChanged(false)`) from the local selection
-  path. **Not fixed.** The portal D-Bus thread owns the connection and object
-  server, and there is no compositor→portal channel to reach it from the
-  selection handler; adding one is a new piece of plumbing whose signal
-  sequence cannot be exercised here (it needs a real portal frontend). Left
-  as documented rather than guessed at, since remote→local paste works and a
-  wrong `SelectionTransfer` sequence would be worse than none.
+- [x] **33. `SelectionTransfer` is never emitted.**
+  `screencast/remote.rs:1094` — a remote copy never reached the local
+  clipboard. Fixed in `set_selection`: after `SelectionOwnerChanged(true)` it
+  now emits `SelectionTransfer` for the best text type the session offered,
+  with a fresh serial, from the bus thread that already holds the object
+  server. The frontend answers with `SelectionWrite`, whose reader already
+  records the data as the local selection. Covered by a test for the mime
+  choice and the serial.
 
 - [x] **34. Portal `Session.Close` skips the frontend check.**
   `screencast/portal.rs:931`. Fix: require `called_by_frontend` like the rest.
