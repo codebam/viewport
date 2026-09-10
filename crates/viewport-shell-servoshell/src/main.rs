@@ -113,6 +113,22 @@ const MAX_HEADER_LINES: usize = 100;
 /// newline is otherwise a line that grows until it has one.
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 
+/// How many bytes one request line may carry.
+///
+/// The same bound `MAX_HEADER_BYTES` puts on the headers, and for the same
+/// reason: the line is read before the token is checked, so any local process
+/// that can reach the loopback port could otherwise send a line with no newline
+/// in it and grow this `String` without limit.
+const MAX_REQUEST_LINE: usize = 8 * 1024;
+
+/// How many undelivered events the bridge may hold.
+///
+/// A page that never polls — the userscript did not run, the engine wedged —
+/// would otherwise accumulate every event the compositor sends for the rest of
+/// the session. The other backends cap this at a few hundred; this is generous
+/// for a page that is merely behind.
+const QUEUE_LIMIT: usize = 4096;
+
 /// Set from a signal handler when this process is asked to stop.
 ///
 /// The compositor closing the control socket is the ordinary end of a session
@@ -390,6 +406,20 @@ impl Queue {
         if matches!(item, Item::Reload) {
             state.reloaded_at = Some(state.end());
         }
+        // A page that stopped polling must not grow this for the life of the
+        // session. The oldest go, and `base` advances with them, so a page
+        // that does ask gets what is left rather than a gap it cannot see.
+        if state.items.len() >= QUEUE_LIMIT {
+            let drop = state.items.len() - QUEUE_LIMIT + 1;
+            state.items.drain(..drop);
+            state.base += drop;
+            if state.delivered < state.base {
+                state.delivered = state.base;
+            }
+            if state.reloaded_at.is_some_and(|at| at < state.base) {
+                state.reloaded_at = None;
+            }
+        }
         state.items.push(item);
         drop(state);
         self.changed.notify_all();
@@ -555,14 +585,24 @@ fn serve_one(
     bridge: &Bridge,
 ) -> Result<Flow> {
     let mut request_line = String::new();
-    if reader
-        .read_line(&mut request_line)
-        .context("reading a request")?
-        == 0
     {
-        // The page went away between requests, which is the ordinary end of a
-        // kept connection rather than a failure.
-        return Ok(Flow::Close);
+        // Bounded like the head below, and for the same reason: this line is
+        // read before the token is checked, so an endless one is a heap this
+        // process owns until the client stops.
+        let mut limited = (&mut *reader).take(MAX_REQUEST_LINE as u64);
+        if limited
+            .read_line(&mut request_line)
+            .context("reading a request")?
+            == 0
+        {
+            // The page went away between requests, which is the ordinary end of
+            // a kept connection rather than a failure.
+            return Ok(Flow::Close);
+        }
+        if !request_line.ends_with('\n') {
+            respond(stream, 414, "text/plain", "request line too long", false)?;
+            return Ok(Flow::Close);
+        }
     }
     let (method, target) = parse_request_line(&request_line)
         .ok_or_else(|| anyhow!("unparseable request line: {request_line:?}"))?;
