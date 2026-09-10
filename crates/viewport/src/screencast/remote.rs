@@ -955,7 +955,7 @@ impl Clipboard {
         }
         let path = OwnedObjectPath::from(session_handle);
         let mimes = mime_types(&options);
-        {
+        let stored = {
             let mut shared = self.sessions.lock().unwrap();
             let Some(session) = shared.sessions.get_mut(&path) else {
                 return;
@@ -965,9 +965,17 @@ impl Clipboard {
             }
             session.clipboard_mimes = mimes.clone();
             session.clipboard_owner = true;
-        }
+            session.clipboard_mimes.clone()
+        };
         tracing::debug!("clipboard: {path} now owns {mimes:?}");
-        emit_owner_changed(server, &path, &mimes, true).await;
+        emit_owner_changed(server, &path, &stored, true).await;
+
+        // And ask for the bytes. A session offering a type this side cannot
+        // read is told nothing further; one offering text is asked for it, and
+        // answers with `SelectionWrite`.
+        if let Some(mime) = transfer_mime(&stored) {
+            emit_selection_transfer(server, &path, &mime, next_transfer_serial()).await;
+        }
     }
 
     /// The application is pasting; hand it what the local selection holds.
@@ -1091,7 +1099,11 @@ impl Clipboard {
         options: HashMap<String, Value<'_>>,
     ) -> zbus::Result<()>;
 
-    /// A local paste wants what the remote session is offering.
+    /// Ask the frontend to transfer a remote session's selection to us.
+    ///
+    /// Emitted after `SetSelection` announces ownership: the frontend answers
+    /// by calling `SelectionWrite`, whose reader records the data as the local
+    /// selection. See [`emit_selection_transfer`].
     #[zbus(signal)]
     async fn selection_transfer(
         emitter: &zbus::object_server::SignalEmitter<'_>,
@@ -1106,6 +1118,54 @@ fn mime_types(options: &HashMap<String, OwnedValue>) -> Vec<String> {
         .get("mime_types")
         .and_then(|value| <Vec<String>>::try_from(value.clone()).ok())
         .unwrap_or_default()
+}
+
+/// The serial the next `SelectionTransfer` carries.
+///
+/// The frontend echoes it back in `SelectionWrite`, so it has to be unique per
+/// transfer. Zero is skipped because it is the value a caller might read as
+/// unset.
+static TRANSFER_SERIAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+fn next_transfer_serial() -> u32 {
+    loop {
+        let serial = TRANSFER_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if serial != 0 {
+            return serial;
+        }
+    }
+}
+
+/// Which of a session's offered types this compositor can actually read.
+///
+/// Text only, like the history: an image or a file list has nowhere to be read
+/// back from here, and the remote-desktop protocol has a separate file-transfer
+/// portal for files.
+fn transfer_mime(mimes: &[String]) -> Option<String> {
+    crate::clipboard::Clipboard::text_mime(mimes)
+}
+
+/// Ask the frontend for a remote session's selection.
+///
+/// `SetSelection` is only the advertisement; the frontend answers this by
+/// calling `SelectionWrite`, and nothing else ever pulls the remote's data into
+/// the local clipboard. Without it the signal was declared and never sent, so a
+/// remote copy never reached a local paste.
+async fn emit_selection_transfer(
+    server: &zbus::ObjectServer,
+    session: &OwnedObjectPath,
+    mime: &str,
+    serial: u32,
+) {
+    let Ok(interface) = server.interface::<_, Clipboard>(OBJECT_PATH).await else {
+        return;
+    };
+    if let Err(e) =
+        Clipboard::selection_transfer(interface.signal_emitter(), session.as_ref(), mime, serial)
+            .await
+    {
+        tracing::warn!("clipboard: could not emit SelectionTransfer: {e}");
+    }
 }
 
 async fn emit_owner_changed(
@@ -1185,6 +1245,26 @@ mod tests {
         let mut wrong: HashMap<String, OwnedValue> = HashMap::new();
         wrong.insert("mime_types".to_owned(), OwnedValue::from(7u32));
         assert!(mime_types(&wrong).is_empty());
+    }
+
+    /// What a `SelectionTransfer` is sent for, and with.
+    ///
+    /// The signal exists to pull the remote's bytes into the local clipboard,
+    /// and only text can be read back here; the serial has to be unique and
+    /// never zero, because the frontend echoes it back in `SelectionWrite`.
+    #[test]
+    fn a_transfer_asks_for_a_text_type_with_a_fresh_serial() {
+        assert_eq!(
+            transfer_mime(&["image/png".to_owned(), "text/plain".to_owned()]).as_deref(),
+            Some("text/plain")
+        );
+        assert_eq!(transfer_mime(&["image/png".to_owned()]), None);
+        assert_eq!(transfer_mime(&[]), None);
+
+        let first = next_transfer_serial();
+        let second = next_transfer_serial();
+        assert_ne!(first, 0, "zero reads as unset to a caller");
+        assert_ne!(first, second);
     }
 
     /// Every event names the device it would have come from. One that named
