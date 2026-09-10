@@ -246,6 +246,18 @@ impl ViewportState {
             }
             self.active_output = Some(output.name());
         }
+
+        // The active monitor may be the one that went. `output_for_new_view`
+        // hands this name to every new window, so one left dangling aims them
+        // at a monitor with nothing behind it. The DRM paths patch this at
+        // their call sites; doing it here covers the headless one too.
+        if self.active_output.as_deref() == Some(name) {
+            self.active_output = self
+                .space
+                .outputs()
+                .find(|output| output.name() != name)
+                .map(|output| output.name());
+        }
     }
 
     pub fn heads(&self) -> Vec<crate::output_management::Head> {
