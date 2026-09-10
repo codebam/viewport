@@ -125,6 +125,16 @@ enum Command {
     Enable(bool),
 }
 
+/// Whether an MPRIS refresh is already queued.
+///
+/// The signal rule matches any client's `PropertiesChanged` at the MPRIS
+/// path, so a flood would otherwise enqueue one `Refresh` — a `ListNames` and
+/// a round trip per player — per message, faster than the worker drains them.
+/// `dbus_util::pump` takes a plain `fn`, so this is a static rather than a
+/// captured flag; there is one MPRIS worker per process.
+static MPRIS_REFRESH_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc::Sender<Command> {
     let (commands, inbox) = mpsc::channel();
 
@@ -159,7 +169,9 @@ fn start(events: smithay::reexports::calloop::channel::Sender<Message>) -> mpsc:
                 "mpris-signals",
                 format!("type='signal',interface='org.freedesktop.DBus.Properties',path='{PATH}'"),
                 |_, commands| {
-                    let _ = commands.send(Command::Refresh);
+                    if !MPRIS_REFRESH_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                        let _ = commands.send(Command::Refresh);
+                    }
                 },
             ) {
                 tracing::warn!("media controls: could not follow players: {e:#}");
@@ -252,7 +264,10 @@ impl Worker {
                     }
                 }
                 _ if !self.enabled => {}
-                Command::Refresh => self.refresh(),
+                Command::Refresh => {
+                    MPRIS_REFRESH_PENDING.store(false, std::sync::atomic::Ordering::Release);
+                    self.refresh();
+                }
                 Command::Announce(name) => {
                     self.unresponsive.remove(&name);
                     self.refresh();
