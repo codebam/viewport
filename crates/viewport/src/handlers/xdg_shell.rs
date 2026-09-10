@@ -190,6 +190,28 @@ impl XdgShellHandler for ViewportState {
         self.space.unmap_elem(&window);
         self.views.remove(id);
 
+        // A resize or move in progress belongs to a surface that is going
+        // away. The grab is discarded by Smithay on the next pointer event
+        // because its focus is dead, but the compositor's own record has to go
+        // too or it names a view that no longer exists.
+        if self.pointer_drag.as_ref().is_some_and(|drag| drag.id == id) {
+            if self
+                .pointer_drag
+                .as_ref()
+                .is_some_and(|drag| drag.client_requested)
+            {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.unset_grab(
+                        self,
+                        smithay::utils::SERIAL_COUNTER.next_serial(),
+                        smithay::backend::input::InputTime::now(),
+                    );
+                }
+            } else {
+                self.finish_pointer_drag();
+            }
+        }
+
         // The seat keeps a destroyed surface as its keyboard focus unless it
         // is told otherwise, and keystrokes then go nowhere until something
         // is clicked — which reads as the keyboard being dead.
@@ -916,6 +938,12 @@ impl PointerGrab<ViewportState> for ClientDragGrab {
     fn unset(&mut self, data: &mut ViewportState) {
         data.finish_pointer_drag();
         if let Some(surface) = self.resize_surface.as_ref() {
+            // The client can be gone by the time Smithay discards the grab,
+            // and it discards it precisely because the focus surface died. A
+            // pending state on a destroyed surface has no data to touch.
+            if !smithay::utils::IsAlive::alive(surface.wl_surface()) {
+                return;
+            }
             surface.with_pending_state(|state| {
                 state.states.unset(xdg_toplevel::State::Resizing);
             });

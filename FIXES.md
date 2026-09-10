@@ -30,7 +30,7 @@ and the JavaScript shell suites under `tests/`.
   vblank panics in `lock_user_data(...).unwrap()`. `render_frame.rs:605`
   already guards. Fix: filter to alive surfaces in both walks.
 
-- [ ] **4. xdg resize grab `unset` touches a destroyed toplevel.**
+- [x] **4. xdg resize grab `unset` touches a destroyed toplevel.**
   `handlers/xdg_shell.rs:916` calls `with_pending_state` on `resize_surface`
   when Smithay discards a grab whose focus died. `toplevel_destroyed` never
   clears the grab. Fix: finish/clear the drag and `resize_surface` in
