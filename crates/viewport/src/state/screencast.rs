@@ -124,7 +124,7 @@ impl ViewportState {
     /// Stop sharing whatever a session was showing.
     pub fn stop_cast(&mut self, node: u32) {
         let before = self.casts.len();
-        self.casts.retain(|cast| cast.stream.node_id != node);
+        self.casts.retain(|cast| cast.stream.node_id() != node);
         if self.casts.len() != before {
             tracing::info!("stopped sharing on pipewire node {node}");
         }
@@ -338,7 +338,10 @@ impl ViewportState {
     /// with focus nowhere. Dropping the event is the right answer to both:
     /// guessing at a position would click on whatever happened to be under it.
     pub fn remote_point(&self, node: u32, x: f64, y: f64) -> Option<Point<f64, Logical>> {
-        let cast = self.casts.iter().find(|cast| cast.stream.node_id == node)?;
+        let cast = self
+            .casts
+            .iter()
+            .find(|cast| cast.stream.node_id() == node)?;
         let target = self.resolve_cast(&cast.source)?;
         let rect = self.target_rect(&target)?;
         let size = self.target_size(&target)?;

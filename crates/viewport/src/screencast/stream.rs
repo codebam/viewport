@@ -134,11 +134,13 @@ pub struct Stream {
     last: Option<std::time::Instant>,
     /// The node a client connects to, which is what the portal hands back
     /// over D-Bus. `u32::MAX` until the daemon names the stream, which it
-    /// does on its own clock; anything that needs the truth asks
-    /// [`Stream::arrival`] rather than reading this. The comparisons made
-    /// against it — matching a `Close` to its stream — are only ever made
-    /// with real node numbers, so the placeholder never matches by accident.
-    pub node_id: u32,
+    /// does on its own clock.
+    ///
+    /// Shared with the [`Arrival`], so the moment the `done` event names the
+    /// stream this follows: `stop_cast` matches a `Close` to its stream by
+    /// this number, and a value that was only ever written at birth meant no
+    /// share could ever be stopped.
+    node_id: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// An identity for the stream while it is the only one of its kind.
     ///
     /// The node cannot stand in: until it arrives, every unfinished stream
@@ -173,6 +175,12 @@ impl Stream {
     /// The story of this stream being named, to wait on or answer from.
     pub fn arrival(&self) -> Arrival {
         self.arrival.clone()
+    }
+
+    /// The PipeWire node the daemon named this stream, or `u32::MAX` until it
+    /// has.
+    pub fn node_id(&self) -> u32 {
+        self.node_id.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Hand one frame to whoever is watching.
@@ -427,6 +435,10 @@ pub enum Arrived {
 #[derive(Clone)]
 pub struct Arrival {
     inner: Arc<std::sync::Mutex<ArrivalInner>>,
+    /// The node, readable without the lock so the compositor's own record of
+    /// a share can follow it. `u32::MAX` until [`Arrival::announced`] names
+    /// it, and left there when the share is refused.
+    node: Arc<std::sync::atomic::AtomicU32>,
 }
 
 /// What one side fills in and the other reads.
@@ -455,7 +467,13 @@ impl Arrival {
                 node: None,
                 waiting: Vec::new(),
             })),
+            node: Arc::new(std::sync::atomic::AtomicU32::new(INVALID_NODE)),
         }
+    }
+
+    /// The shared node cell, for whatever keeps its own record of the stream.
+    pub(crate) fn shared_node(&self) -> Arc<std::sync::atomic::AtomicU32> {
+        self.node.clone()
     }
 
     /// Promise to answer with the node, the moment there is one.
@@ -527,6 +545,7 @@ impl Arrival {
             return;
         }
         inner.node = Some(node);
+        self.node.store(node, std::sync::atomic::Ordering::Relaxed);
         let waiting = std::mem::take(&mut inner.waiting);
         drop(inner);
         if node != INVALID_NODE {
@@ -853,7 +872,7 @@ impl Pipewire {
             .register();
 
         Ok(Stream {
-            node_id: INVALID_NODE,
+            node_id: arrival.shared_node(),
             id: next_stream_id(),
             arrival,
             _done_listener: done_listener,
@@ -1349,6 +1368,22 @@ mod tests {
 
         assert_eq!(*heard.lock().unwrap(), vec![41]);
         assert_eq!(arrival.status(), Arrived::Now(41));
+    }
+
+    /// The cell the compositor's own stream record shares follows the
+    /// announcement, so `stop_cast` can match a `Close` to its stream.
+    #[test]
+    fn the_shared_node_follows_the_announcement() {
+        let arrival = Arrival::new();
+        let shared = arrival.shared_node();
+        assert_eq!(
+            shared.load(std::sync::atomic::Ordering::Relaxed),
+            INVALID_NODE
+        );
+
+        arrival.announced(41);
+
+        assert_eq!(shared.load(std::sync::atomic::Ordering::Relaxed), 41);
     }
 
     /// A promise made of an answer already in hand is kept on the spot,

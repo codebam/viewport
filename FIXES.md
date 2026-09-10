@@ -57,7 +57,7 @@ and the JavaScript shell suites under `tests/`.
   discards a hand-written `binds` keymap. Fix: merge the overlay into the
   loaded `File` before the single `apply_config`, so absence means "leave it".
 
-- [ ] **8. `Stream::node_id` is write-once.**
+- [x] **8. `Stream::node_id` is write-once.**
   `screencast/stream.rs:141,856` never stores the real PipeWire node, so
   `stop_cast` (`state/screencast.rs:127`) never removes a cast (share leaks,
   DMA-BUFs stay pinned) and `remote_point` (`:341`) always fails, so remote
