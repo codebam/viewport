@@ -50,6 +50,13 @@ pub enum CloseReason {
     ByRequest = 3,
 }
 
+/// How many notification owners are remembered before the oldest are dropped.
+///
+/// A ceiling, not a working set: a session with this many live notifications
+/// is one where an owner that falls back to broadcasting its close signal is
+/// not the problem. See the insert in `notify` for why nothing else prunes it.
+const MAX_OWNERS: usize = 4096;
+
 /// The half of the service the compositor keeps.
 pub struct Notifications {
     /// Signals back to D-Bus: a notification the user acted on or dismissed.
@@ -301,6 +308,19 @@ impl Server {
                 // close, and that is what it always was.
                 if let Some(sender) = sender {
                     owners.insert(id, sender);
+                    // Bounded. Nothing else prunes an id the shell never
+                    // dismisses — history eviction does not call back here,
+                    // and a sender that disconnects says nothing — so a client
+                    // that only ever sends would grow this map, and the
+                    // strings in it, for the life of the session. Ids are
+                    // monotonic, so the smallest are the oldest.
+                    if owners.len() > MAX_OWNERS * 2 {
+                        let mut ids: Vec<u32> = owners.keys().copied().collect();
+                        ids.sort_unstable();
+                        for old in ids.into_iter().take(owners.len() - MAX_OWNERS) {
+                            owners.remove(&old);
+                        }
+                    }
                 }
                 id
             }
