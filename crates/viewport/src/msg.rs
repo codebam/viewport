@@ -1236,7 +1236,12 @@ fn newest_socket(runtime: &Path) -> Option<PathBuf> {
     let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     for entry in std::fs::read_dir(runtime).ok()?.flatten() {
         let path = entry.path();
-        let name = path.file_name()?.to_str()?;
+        // A name this process cannot read is not one of ours; skipping it is
+        // not the same as giving up on the directory, which is what the `?`
+        // here used to do.
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
         if !name.starts_with("viewport-") || !name.ends_with(".sock") {
             continue;
         }
