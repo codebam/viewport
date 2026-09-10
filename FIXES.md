@@ -67,7 +67,7 @@ and the JavaScript shell suites under `tests/`.
   `viewport-shell-chromium/src/main.rs:205` re-enables `ready` on
   `Page.loadEventFired` without draining `queued`. Fix: drain there.
 
-- [ ] **10. CEF backend strands events queued during a reload.**
+- [x] **10. CEF backend strands events queued during a reload.**
   `viewport-shell-cef/src/main.rs:523` has the same fault with `QUEUE`. Fix:
   drain and evaluate on `Page.loadEventFired`.
 

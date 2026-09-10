@@ -511,7 +511,7 @@ wrap_dev_tools_message_observer! {
         /// being called, which is the page talking.
         fn on_dev_tools_event(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             method: Option<&CefString>,
             params: Option<&[u8]>,
         ) {
@@ -523,6 +523,21 @@ wrap_dev_tools_message_observer! {
             if method.as_deref() == Some("Page.loadEventFired") {
                 let present = BROWSER.with(|slot| slot.borrow().is_some());
                 READY.store(present, Ordering::SeqCst);
+                // And hand over what arrived while the document was loading.
+                // `install_bridge` drains only on first window creation, which
+                // a reload does not produce, so without this every event sent
+                // across a reload stayed in the queue for ever.
+                if present {
+                    let waiting: Vec<String> = QUEUE
+                        .lock()
+                        .map(|mut queue| queue.drain(..).collect())
+                        .unwrap_or_default();
+                    if let Some(browser) = browser {
+                        for json in waiting {
+                            evaluate(browser, &viewport_ipc::js::dispatch(&json));
+                        }
+                    }
+                }
                 return;
             }
             if method.as_deref() != Some("Runtime.bindingCalled") {
