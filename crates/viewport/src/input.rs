@@ -641,7 +641,7 @@ impl ViewportState {
         };
         // evdev codes are offset by 8 from xkb's, which is the difference
         // between what libinput reports and what a keymap is written against.
-        let code = smithay::input::keyboard::Keycode::new(keycode + 8);
+        let code = smithay::input::keyboard::Keycode::new(keycode.saturating_add(8));
         let action = keyboard.input::<Option<Action>, _>(
             self,
             code,
@@ -2975,7 +2975,7 @@ impl ViewportState {
             self.keyboard_config.repeat_delay.unwrap_or(200).max(1) as u64,
         );
         let interval = std::time::Duration::from_millis(
-            (1000 / self.keyboard_config.repeat_rate.unwrap_or(25).max(1)) as u64,
+            (1000 / self.keyboard_config.repeat_rate.unwrap_or(25).max(1)).max(1) as u64,
         );
         let timer = Timer::from_duration(delay);
         let result = self
