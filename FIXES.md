@@ -63,7 +63,7 @@ and the JavaScript shell suites under `tests/`.
   DMA-BUFs stay pinned) and `remote_point` (`:341`) always fails, so remote
   absolute pointer/touch input is dead. Fix: store the announced node.
 
-- [ ] **9. Chromium backend strands events queued during a reload.**
+- [x] **9. Chromium backend strands events queued during a reload.**
   `viewport-shell-chromium/src/main.rs:205` re-enables `ready` on
   `Page.loadEventFired` without draining `queued`. Fix: drain there.
 

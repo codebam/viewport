@@ -204,6 +204,18 @@ fn run(browser: &mut Browser, options: &Options) -> Result<()> {
                 // let messages flow again.
                 if message.get("method").and_then(Value::as_str) == Some("Page.loadEventFired") {
                     ready = session.is_some();
+                    // The new document is up, so the events that arrived while
+                    // it was loading can go to it. The attach branch above
+                    // drains only on first attach, which a reload does not
+                    // produce, so without this every `config`,
+                    // `output.layout` and `session.restore` replay sent across
+                    // a reload sat in the queue for the life of the process.
+                    if let Some(session) = session.as_deref() {
+                        for json in queued.drain(..) {
+                            let script = viewport_ipc::js::dispatch(&json);
+                            browser.evaluate(&mut next_id, session, &script)?;
+                        }
+                    }
                     continue;
                 }
 
