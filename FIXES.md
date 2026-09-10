@@ -127,23 +127,23 @@ and the JavaScript shell suites under `tests/`.
   request with no timeout or concurrency bound. Fix: drop/replace a previous
   outstanding capture and bound concurrent writers.
 
-- [ ] **22. Unfiltered MPRIS signals feed an unbounded queue.**
+- [x] **22. Unfiltered MPRIS signals feed an unbounded queue.**
   `mpris.rs:156` matches only interface/path, and the channel is unbounded.
   Fix: coalesce refreshes (`try_send` on a bounded channel / an atomic flag).
 
-- [ ] **23. `Shell::wake_with` can lose the ping silently.**
+- [x] **23. `Shell::wake_with` can lose the ping silently.**
   `shell.rs:631` uses `try_lock` once. Fix: blocking `lock()`, or retry.
 
-- [ ] **24. `inject_pointer` bypasses pointer constraints.**
+- [x] **24. `inject_pointer` bypasses pointer constraints.**
   `input.rs:751` skips `pointer_constraint`, clamping and drag tracking that
   `pointer_absolute_to` (`:2731`) does. Fix: route through
   `pointer_absolute_to`.
 
-- [ ] **25. The shell pointer grab is cleared by any button release.**
+- [x] **25. The shell pointer grab is cleared by any button release.**
   `input.rs:1997` clears one flag on every release. Fix: track the button that
   set the grab and clear only on its release.
 
-- [ ] **26. Press/release pairing uses `modified_sym()`.**
+- [x] **26. Press/release pairing uses `modified_sym()`.**
   `input.rs:1294,1468` can miss when Shift is released first: stray key-up,
   uncancelled long-press, a `repeating+` timer that never stops. Fix: key the
   bookkeeping by the unmodified symbol.
