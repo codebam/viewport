@@ -626,7 +626,10 @@ where
             }
             zwlr_output_configuration_head_v1::Request::SetScale { scale } => {
                 once!(change.scale, AlreadySet);
-                if scale <= 0.0 {
+                // Finite as well as positive: `NaN <= 0.0` is false, and a
+                // NaN scale poisons every `fractional_scale` computation for
+                // the output.
+                if !scale.is_finite() || scale <= 0.0 {
                     head.post_error(
                         zwlr_output_configuration_head_v1::Error::InvalidScale,
                         "a scale must be positive",
