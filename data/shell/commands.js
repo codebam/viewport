@@ -13,6 +13,16 @@
  * Commands forwarded from the compositor
  * --------------------------------------------------------------------- */
 
+/* One word quoted for /bin/sh.
+ *
+ * A URL interpolated into a shell line has to be quoted for the shell and not
+ * for JSON: JSON.stringify leaves `$`, backticks and backslashes alone, and
+ * `$(...)` is expanded inside double quotes. Single quotes are the one quoting
+ * the shell cannot misread; a quote inside is closed, escaped and reopened. */
+function shQuote(word) {
+  return `'${String(word).replace(/'/g, "'\\''")}'`;
+}
+
 function handleShellCommand(command, args) {
   const arg = args[0];
   const n = Number(arg);
@@ -891,7 +901,7 @@ window.addEventListener('viewport', (event) => {
     case 'ai.auth':
       aiAuth.set(message.provider, message);
       if (message.state === 'pending' && message.url) {
-        send({ type: 'shell.exec', command: `xdg-open ${JSON.stringify(message.url)}` });
+        send({ type: 'shell.exec', command: `xdg-open ${shQuote(message.url)}` });
       }
       renderBarsWidgets();
       break;
