@@ -87,6 +87,13 @@ const BRIDGE_HOST: &str = "viewport-ipc.invalid";
 /// for a taskbar, a screen reader, a log.
 const APP_ID: &str = "dev.viewport.shell";
 
+/// How many compositor events the reader thread may hand over undelivered.
+///
+/// The reader must never block — the compositor drops a shell that stops
+/// reading — and the event loop can be busy with a slow relayout, so past this
+/// the overflow is dropped rather than queued for ever.
+const INBOUND_LIMIT: usize = 512;
+
 /// A line's worth of winit scroll, in pixels. Servo's own port uses these.
 const LINE_HEIGHT: f32 = 38.0;
 const LINE_WIDTH: f32 = 38.0;
@@ -116,16 +123,20 @@ fn main() -> Result<()> {
     let proxy = event_loop.create_proxy();
 
     // The compositor first, so that a page which loads immediately does not
-    // send its first message into a socket nobody has opened.
-    let (tx, lines) = mpsc::channel();
+    // send its first message into a socket nobody has opened. Bounded: the
+    // reader thread must not block, and an event loop busy with a relayout
+    // must not let it grow this for the life of the session.
+    let (tx, lines) = mpsc::sync_channel(INBOUND_LIMIT);
     let out = {
         let proxy = proxy.clone();
         viewport_shell_bridge::connect(&options.socket, move |line| {
-            if tx.send(line).is_ok() {
+            if tx.try_send(line).is_ok() {
                 // The event loop is asleep until something wakes it, and a
                 // layout event that arrives on a quiet desktop is exactly the
                 // case that matters.
                 let _ = proxy.send_event(Wake::Compositor);
+            } else {
+                tracing::warn!("the shell's incoming queue is full; dropping a message");
             }
         })?
     };

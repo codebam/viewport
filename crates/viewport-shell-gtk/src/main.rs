@@ -309,14 +309,17 @@ fn bridge(
     options: &Options,
     app: &gtk::Application,
 ) -> Result<()> {
-    // The reader thread cannot touch the view, so lines cross onto the GTK
-    // main context here. glib's own channel was removed in 0.18; this is what
-    // the gtk-rs book replaced it with.
-    let (in_tx, in_rx) = async_channel::unbounded::<Line>();
+    // Bounded like the outbound queue: a UI thread that is busy with a
+    // relayout or a reload must not let the reader thread grow this for the
+    // life of the session. The reader cannot block — the compositor would
+    // then drop the whole shell — so an overflow is dropped.
+    let (in_tx, in_rx) = async_channel::bounded::<Line>(QUEUE_LIMIT);
     let out = viewport_shell_bridge::connect(&options.socket, move |line| {
         // A closed channel means the loop below has already stopped, which is
         // to say the process is on its way out.
-        let _ = in_tx.send_blocking(line);
+        if in_tx.try_send(line).is_err() {
+            tracing::warn!("the shell's incoming queue is full; dropping a message");
+        }
     })?;
 
     manager.connect_script_message_received(Some("viewport"), move |_, value| {
