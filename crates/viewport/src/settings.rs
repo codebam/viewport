@@ -71,6 +71,7 @@ pub fn path(config_path: &Path) -> PathBuf {
 /// round-trip test at the bottom, which is what stops a key here from drifting
 /// out of the shape the config file reader expects.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Overlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dark_mode: Option<bool>,
@@ -112,6 +113,7 @@ pub struct Overlay {
 /// be writing down the question instead of the answer, and the answer changes
 /// when the monitor does.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OutputOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -404,6 +406,35 @@ mod tests {
         );
         // And nothing left behind from the atomic write.
         assert!(!file.with_extension("json.tmp").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What `save` writes is what `load` reads.
+    ///
+    /// The reader is a different derive from the writer, and `outputs` is a
+    /// plain map rather than an `Option`, so a missing key is a parse error
+    /// unless the struct has `#[serde(default)]` — which it did not, and the
+    /// saved settings were then silently ignored at startup.
+    #[test]
+    fn a_saved_overlay_reads_back() {
+        let dir =
+            std::env::temp_dir().join(format!("viewport-overlay-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("viewport/settings.json");
+
+        save(&file, &full()).expect("should write");
+        let read = load(&file).expect("should load").expect("should be there");
+        assert_eq!(read.dark_mode, Some(false));
+        assert_eq!(read.gaps.as_ref().and_then(|gaps| gaps.inner), Some(12));
+        assert_eq!(
+            read.outputs.get("DP-1").and_then(|output| output.scale),
+            Some(1.25)
+        );
+        // And a missing file is not an error.
+        assert!(load(&dir.join("viewport/absent.json"))
+            .expect("missing is fine")
+            .is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
