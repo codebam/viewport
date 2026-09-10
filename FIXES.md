@@ -148,91 +148,96 @@ and the JavaScript shell suites under `tests/`.
   uncancelled long-press, a `repeating+` timer that never stops. Fix: key the
   bookkeeping by the unmodified symbol.
 
-- [ ] **27. Tearing is recorded even when the display refused it.**
+- [x] **27. Tearing is recorded even when the display refused it.**
   `udev.rs:3421` sets `surface.tearing` regardless of `honoured`, flipping
   frame flags to primary-only. Fix: only set it when honoured, and latch the
   refusal.
 
-- [ ] **28. Removing the active headless output leaves `active_output` dangling.**
+- [x] **28. Removing the active headless output leaves `active_output` dangling.**
   `headless.rs:344` does not do the fallback the DRM paths do. Fix: apply it in
   `output_removed`.
 
-- [ ] **29. CRTCs of just-unplugged outputs stay reserved for the scan.**
+- [x] **29. CRTCs of just-unplugged outputs stay reserved for the scan.**
   `udev.rs:2316` builds `taken` from all surfaces before `gone` is removed at
   `:2661`. Fix: process `gone` before the connector loop.
 
-- [ ] **30. The seat device is opened and never released.**
+- [x] **30. The seat device is opened and never released.**
   `udev.rs:1897` leaks the libseat device on every open, including failures.
   Fix: keep the fd and `session.close` it when the slot is replaced or the open
   fails.
 
-- [ ] **31. servoshell reads the request line unbounded before the token check.**
+- [x] **31. servoshell reads the request line unbounded before the token check.**
   `viewport-shell-servoshell/src/main.rs:557`; also its event queue is
   uncapped (`:388`). Fix: bound the request line and the queue.
 
-- [ ] **32. Unchecked `stride * height` on a client-influenced stream size.**
+- [x] **32. Unchecked `stride * height` on a client-influenced stream size.**
   `screencast/stream.rs:82,355,943,1121`. Fix: checked `i64`/`u64` arithmetic
   with a size bound.
 
 - [ ] **33. `SelectionTransfer` is never emitted.**
   `screencast/remote.rs:1094` — local→remote paste can never request data.
   Fix: emit it (and `SelectionOwnerChanged(false)`) from the local selection
-  path.
+  path. **Not fixed.** The portal D-Bus thread owns the connection and object
+  server, and there is no compositor→portal channel to reach it from the
+  selection handler; adding one is a new piece of plumbing whose signal
+  sequence cannot be exercised here (it needs a real portal frontend). Left
+  as documented rather than guessed at, since remote→local paste works and a
+  wrong `SelectionTransfer` sequence would be worse than none.
 
-- [ ] **34. Portal `Session.Close` skips the frontend check.**
+- [x] **34. Portal `Session.Close` skips the frontend check.**
   `screencast/portal.rs:931`. Fix: require `called_by_frontend` like the rest.
 
-- [ ] **35. `ext-image-copy-capture` uses process uptime for `presentation_time`.**
+- [x] **35. `ext-image-copy-capture` uses process uptime for `presentation_time`.**
   `state/capture.rs:744,787`. Fix: `clock_gettime(CLOCK_MONOTONIC)`.
 
-- [ ] **36. A second output-management bind cancels the first client's config.**
+- [x] **36. A second output-management bind cancels the first client's config.**
   `output_management.rs:132` bumps the serial unconditionally. Fix: bump only
   when the head set changed.
 
 ## Low
 
-- [ ] **37. `commands.js` builds a shell command with `JSON.stringify`.**
+- [x] **37. `commands.js` builds a shell command with `JSON.stringify`.**
   `data/shell/commands.js:894`. Fix: pass the URL as an argv token instead of
   a shell line.
 
-- [ ] **38. `inject_key` does `keycode + 8` on an unvalidated `u32`.**
+- [x] **38. `inject_key` does `keycode + 8` on an unvalidated `u32`.**
   `input.rs:644`. Fix: `saturating_add`.
 
-- [ ] **39. `arm_repeating` can compute a zero interval.**
+- [x] **39. `arm_repeating` can compute a zero interval.**
   `input.rs:2974`. Fix: clamp the interval to at least 1 ms.
 
-- [ ] **40. `msg.rs` discovery aborts on a non-UTF-8 directory entry.**
+- [x] **40. `msg.rs` discovery aborts on a non-UTF-8 directory entry.**
   `msg.rs:1239`. Fix: `continue` instead of `?`.
 
-- [ ] **41. `bind.add` is uncapped and O(n²).**
+- [x] **41. `bind.add` is uncapped and O(n²).**
   `apply.rs:693,1640`. Fix: cap the runtime-binding count.
 
-- [ ] **42. `settings::save` never fsyncs and uses a fixed temp name.**
+- [x] **42. `settings::save` never fsyncs and uses a fixed temp name.**
   `settings.rs:167`. Fix: write, `sync_all`, rename, fsync the directory; unique
   temp name.
 
-- [ ] **43. Relative `wallpaper` resolves against cwd.**
+- [x] **43. Relative `wallpaper` resolves against cwd.**
   `config.rs:1195`. Fix: resolve relative to the config file, like `icc`.
 
-- [ ] **44. `parse_mode` accepts `NaN`/`inf`.**
+- [x] **44. `parse_mode` accepts `NaN`/`inf`.**
   `config.rs:996`. Fix: require finite and positive; use the same parser as
   `pick_mode`.
 
-- [ ] **45. `SetScale` accepts `NaN`.**
+- [x] **45. `SetScale` accepts `NaN`.**
   `output_management.rs:590`. Fix: `!scale.is_finite() || scale <= 0.0`.
 
-- [ ] **46. MPRIS `trim_start_matches(PREFIX)` strips repeated prefixes.**
+- [x] **46. MPRIS `trim_start_matches(PREFIX)` strips repeated prefixes.**
   `mpris.rs:402`. Fix: `strip_prefix`.
 
-- [ ] **47. `wp_color_management_surface_v1` never posts `inert`.**
+- [x] **47. `wp_color_management_surface_v1` never posts `inert`.**
   `color_management.rs:548`. Fix: `is_alive()` guard before `with_states`.
 
-- [ ] **48. A session file with a nested empty split crashes the scrolling layout.**
+- [x] **48. A session file with a nested empty split crashes the scrolling layout.**
   `data/shell/session.js:846,918`. Fix: prune empty splits on revive.
 
-- [ ] **49. Notification popups have no cap and can be permanent.**
+- [x] **49. Notification popups have no cap and can be permanent.**
   `data/shell/session.js:450`. Fix: cap the visible stack.
 
-- [ ] **50. GTK/Servo buffer inbound events in unbounded channels.**
+- [x] **50. GTK/Servo buffer inbound events in unbounded channels.**
   `viewport-shell-gtk/src/main.rs:315`, `viewport-shell-servo/src/main.rs:120`.
   Fix: bounded channel.
