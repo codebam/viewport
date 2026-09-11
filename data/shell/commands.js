@@ -54,16 +54,16 @@ function wallpaperVideoUrl(value) {
     ? value : null;
 }
 
-/* Play a video as the desktop background, or stop and unload the one that was
- * playing when `url` is null.
+/* Play a video as one output's desktop background, or stop and unload the
+ * one it was playing when `url` is null.
  *
- * The element is hidden and empty in the markup; this is the only thing that
- * fills it. `src` is compared first so that a config message about something
- * else — a gap, a border, a theme — does not restart the film from its first
- * frame every time it arrives, which is exactly what a desk would look like
- * while somebody adjusted it. */
-function applyWallpaperMedia(url) {
-  const media = document.getElementById('wallpaper-media');
+ * There is one media element per output desktop, because one element across
+ * the page is one film cropped by the seam between two monitors. This is the
+ * only thing that fills any of them. `src` is compared first so that a config
+ * message about something else — a gap, a border, a theme — does not restart
+ * the film from its first frame every time it arrives, which is exactly what a
+ * desk would look like while somebody adjusted it. */
+function applyWallpaperMediaTo(media, url) {
   /* A custom shell need not have the element: the still-picture half of this
      event is all it has to honour for the compositor's config to be right. */
   if (!media) return;
@@ -98,16 +98,61 @@ function applyWallpaperMedia(url) {
   if (typeof media.play === 'function') {
     const playing = media.play();
     /* Autoplay can still be refused. There is no console to say so in a web
-       view, so the element is hidden and what remains is the desktop colour
-       behind it: a desktop is still a desktop, rather than a rectangle of
-       nothing that no setting can explain. The source is compared first
-       because a second wallpaper can arrive while this play is pending, and
-       its refusal must not hide the one that replaced it. */
+       view, so the element is left showing its own background colour: a
+       desktop is still a desktop, rather than a rectangle of nothing that no
+       setting can explain. It must not be hidden — a film's page and desktop
+       are transparent so the negative-z element can show through, and hiding
+       it would leave nothing there. The source is compared first because a
+       second wallpaper can arrive while this play is pending, and its refusal
+       must not disturb the one that replaced it. */
     if (playing && typeof playing.catch === 'function') {
       playing.catch(() => {
-        if (media.getAttribute('src') === url) media.hidden = true;
+        if (media.getAttribute('src') === url) media.hidden = false;
       });
     }
+  }
+}
+
+/* Copy the page-level wallpaper state onto one output's own desktop. The
+ * root classes are what an older shell and an output that has not been built
+ * yet read; the desktop classes are what lets the wallpaper rules match an
+ * output's own element without walking up to `html`, which matters while a
+ * desktop is being built in a detached subtree. */
+function syncOutputWallpaper(output) {
+  const el = output?.el;
+  if (!el) return;
+  const root = document.documentElement;
+  el.classList.toggle('wallpaper', root.classList.contains('wallpaper'));
+  el.classList.toggle('wallpaper-video',
+    root.classList.contains('wallpaper-video'));
+  for (const mode of WALLPAPER_MODES) {
+    el.classList.toggle(`wallpaper-${mode}`,
+      root.classList.contains(`wallpaper-${mode}`));
+  }
+}
+
+/* Every media element currently drawing a film: one per output desktop, plus
+ * the page-level element a custom shell may have kept. The output elements are
+ * the real ones; the id is a fallback for a shell that has not moved to the
+ * per-output markup. */
+function wallpaperMediaElements() {
+  const elements = [];
+  for (const output of outputs.values()) {
+    if (output.wallpaperEl && !elements.includes(output.wallpaperEl)) {
+      elements.push(output.wallpaperEl);
+    }
+  }
+  const page = document.getElementById('wallpaper-media');
+  if (page && !elements.includes(page)) elements.push(page);
+  return elements;
+}
+
+/* Apply one film URL to every output, or unload every element when it is
+ * null. The still-picture half of the config is CSS and needs no equivalent:
+ * each `.desktop` carries the background rules itself. */
+function applyWallpaperMedia(url) {
+  for (const media of wallpaperMediaElements()) {
+    applyWallpaperMediaTo(media, url);
   }
 }
 
@@ -796,9 +841,16 @@ window.addEventListener('viewport', (event) => {
         }
         /* The media element follows the same value, and null stops whatever
            was playing: a picture, a colour, no wallpaper and a terminal
-           behind the page all mean there is no film on this desktop. */
+           behind the page all mean there is no film on this desktop. The
+           setting is kept before the elements are driven because a monitor
+           that arrives later has to be given the same source. */
+        wallpaperVideoSrc = video;
         applyWallpaperMedia(video);
         root.classList.toggle('wallpaper', value !== null);
+        /* A film is the one wallpaper the page does not paint itself: its
+           `.desktop` and the page behind it are made transparent so the
+           negative-z element under the output's own children is visible. */
+        root.classList.toggle('wallpaper-video', video !== null);
         if (image !== null) {
           root.style.setProperty('--wallpaper', image);
         } else {
@@ -821,6 +873,10 @@ window.addEventListener('viewport', (event) => {
           root.classList.toggle(`wallpaper-${mode}`,
             fitted && message.wallpaper_mode === mode);
         }
+        /* The root class is enough for a desktop that is still under `html`;
+           copying it onto each output's own element is what lets the same
+           rules match when the element is handled on its own. */
+        for (const output of outputs.values()) syncOutputWallpaper(output);
       }
       /* Absent means on, matching the compositor's own default: only an
          explicit false keeps focus on the monitor it is on. */

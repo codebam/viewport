@@ -131,6 +131,10 @@ const OUTPUT_WORKSPACE = {
 
 const outputs = new Map(); // name -> desktop elements + workspace + barHidden
 const physicalOutputs = new Map(); // name -> physical head info, including mirrors/off
+/* The film currently set as the wallpaper, or null when there is not one.
+ * The media element is per output, but the setting is one value, so it lives
+ * here where a desktop created by a later output.layout can be given it. */
+let wallpaperVideoSrc = null;
 
 /* How the bar behaves, from the config file: 'visible' always, 'hidden' never,
    or 'auto', which reveals it only while Mod4 is held. 'auto' exists for OLED

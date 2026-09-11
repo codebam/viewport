@@ -157,9 +157,13 @@ html, body {
   color: var(--text);
 }
 
-body {
+body,
+.desktop {
   /* The compositor clears to transparent and the web view is the bottom
-     layer, so this gradient is the actual desktop background.
+     layer, so this gradient is the actual desktop background. It is on
+     every output's own desktop as well as the page: one gradient across the
+     whole canvas has the same seam a wallpaper does, so with no wallpaper
+     each monitor gets its own fallback.
 
      The first layer is a vignette and is listed first because that is what
      puts it on top: it pulls the corners back down towards --bg so the two
@@ -182,6 +186,14 @@ body {
  * there is one, so the gradient above can be replaced rather than drawn under
  * a picture that may not cover the screen.
  *
+ * The page is one canvas spanning every monitor, so a `body` background is
+ * one picture across the whole desk: on two screens the middle of the image is
+ * the seam between them, and neither screen gets the whole of it. Each output
+ * has its own absolutely-positioned `.desktop`, sized to that monitor, so the
+ * picture goes on those instead and every screen fits its own copy. `body`
+ * carries the same declarations as a fallback for a custom shell with no
+ * per-output element.
+ *
  * `--bg` stays behind the image on purpose: it is what shows in the letterbox
  * of `fit`, around a `center` picture smaller than the screen, and for the
  * moment between the page being sized and the file being decoded. */
@@ -190,7 +202,9 @@ body {
  * also be correct in a browser and is unreadable in a cascade: it resets four
  * other properties silently, and one of them is the colour the letterbox of
  * `fit` is made of. */
-html.wallpaper body {
+html.wallpaper body,
+html.wallpaper .desktop,
+.desktop.wallpaper {
   /* One of the two custom properties is set and the other is not: a picture
      is an image, a colour is a colour, and each falls back to what the desktop
      would have drawn without it — `none` for the image, so a colour is not
@@ -209,55 +223,92 @@ html.wallpaper body {
  * only in the size and the repeat, so each is one line rather than a repeat of
  * the whole shorthand — a second copy of the layer list is a second place for
  * `--bg` to be forgotten. */
-html.wallpaper-fit body { background-size: contain; }
-html.wallpaper-stretch body { background-size: 100% 100%; }
-html.wallpaper-center body { background-size: auto; }
-html.wallpaper-tile body { background-size: auto; background-repeat: repeat; }
+html.wallpaper-fit body,
+html.wallpaper-fit .desktop,
+.desktop.wallpaper-fit { background-size: contain; }
+html.wallpaper-stretch body,
+html.wallpaper-stretch .desktop,
+.desktop.wallpaper-stretch { background-size: 100% 100%; }
+html.wallpaper-center body,
+html.wallpaper-center .desktop,
+.desktop.wallpaper-center { background-size: auto; }
+html.wallpaper-tile body,
+html.wallpaper-tile .desktop,
+.desktop.wallpaper-tile { background-size: auto; background-repeat: repeat; }
 
 /* The moving wallpaper: a video, from the same `wallpaper` setting that names
  * a picture.
  *
  * CSS has no `background-image` an engine plays, so a film is an element of
- * its own, placed under everything the desktop draws. The page is one canvas
- * across every monitor, so one element across the whole of it is the same
- * wallpaper `background-size: cover` paints — not one copy per output.
+ * its own, placed under everything its output's desktop draws. There is one
+ * element inside every `.desktop`, not one across the page: a single fixed
+ * element spans every monitor, so each screen shows only its half of the film.
+ * The per-output element is sized to that output by its absolutely-positioned
+ * desktop, which is what makes every screen play the whole of it.
  *
- * It sits at `z-index: -1`, above the `body` background it falls back to and
- * below every piece of the shell: the desktops are ordinary positioned
- * elements and paint over a negative-z-index sibling. It takes no pointer
- * events either, because the desktop underneath still owns a right click and
- * a drag across the wallpaper.
+ * It sits at `z-index: -1`, below every piece of the shell it belongs to: the
+ * desktop it lives in paints no background while a film is in force, so the
+ * negative-z element shows through, and the desktop's ordinary positioned
+ * children paint over it. It takes no pointer events either, because the
+ * desktop underneath still owns a right click and a drag across the
+ * wallpaper.
  *
  * The element is in the markup from the start, hidden, so a desktop that has
  * never named a video has somewhere to put nothing. The `[hidden]` rule is
- * spelled out because the id selector here is more specific than the user
+ * spelled out because the class selector here is more specific than the user
  * agent's own. */
-#wallpaper-media {
+#wallpaper-media,
+.wallpaper-media {
   display: block;
-  position: fixed;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
   object-position: center;
-  background: transparent;
+  /* The colour of the letterbox when `fit` leaves one: the desktop behind a
+     film is transparent so the negative-z element can show through, and the
+     element's own background is what remains around its frame. */
+  background-color: var(--wallpaper-color, var(--bg));
   pointer-events: none;
   z-index: -1;
 }
-#wallpaper-media[hidden] { display: none; }
+#wallpaper-media { position: fixed; }
+.wallpaper-media { position: absolute; }
+#wallpaper-media[hidden],
+.wallpaper-media[hidden] { display: none; }
 
 /* The same five fittings as the background above, one `object-fit` each.
  * `fill` is the default in the rule above and needs no class. */
-html.wallpaper-fit #wallpaper-media { object-fit: contain; }
-html.wallpaper-stretch #wallpaper-media { object-fit: fill; }
-html.wallpaper-center #wallpaper-media { object-fit: none; }
+html.wallpaper-fit #wallpaper-media,
+html.wallpaper-fit .wallpaper-media,
+.wallpaper-fit .wallpaper-media { object-fit: contain; }
+html.wallpaper-stretch #wallpaper-media,
+html.wallpaper-stretch .wallpaper-media,
+.wallpaper-stretch .wallpaper-media { object-fit: fill; }
+html.wallpaper-center #wallpaper-media,
+html.wallpaper-center .wallpaper-media,
+.wallpaper-center .wallpaper-media { object-fit: none; }
 
 /* `tile` repeats a still picture, and a film has no still frame to repeat.
  * The video fills the screen instead, which is the nearest thing to what the
  * mode asks a moving image to do. The setting is not refused: a wallpaper
  * cycler can name a fitting and a picture independently, and the fitting is
  * documented as a picture's. */
-html.wallpaper-tile #wallpaper-media { object-fit: cover; }
+html.wallpaper-tile #wallpaper-media,
+html.wallpaper-tile .wallpaper-media,
+.wallpaper-tile .wallpaper-media { object-fit: cover; }
+
+/* A film is its element, not a desktop background: both the page and the
+ * output's desktop are transparent so the negative-z element is visible under
+ * the shell's own children. The element carries the fallback colour itself.
+ * Longhands, not the `background` shorthand, so the image and the colour are
+ * both cleared without depending on source order to undo the gradient. */
+html.wallpaper-video body,
+html.wallpaper-video .desktop,
+.desktop.wallpaper-video {
+  background-image: none;
+  background-color: transparent;
+}
 
 /* Something is behind the page: `background_terminal` is on and the compositor
    is drawing a terminal underneath this document.
@@ -272,6 +323,12 @@ html.wallpaper-tile #wallpaper-media { object-fit: cover; }
  * gradient over the whole screen, and a terminal read through one is a
  * terminal with dim corners. */
 html.behind body { background: transparent; }
+/* The fallback gradient now lives on each desktop too, so a terminal behind
+ * the page has to clear that copy as well as the body's. */
+html.behind .desktop {
+  background-image: none;
+  background-color: transparent;
+}
 
 /* Positioned per output from JS, in layout coordinates. */
 .desktop {

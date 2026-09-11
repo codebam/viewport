@@ -74,6 +74,12 @@ function syncOutputs(list) {
         name: info.name,
         el,
         windowsEl: el.querySelector('.windows'),
+        /* The film element this output's desktop carries, if it has one. A
+           config message can arrive before the monitor does, so the source it
+           should be playing is applied below rather than in the handler that
+           named it. */
+        wallpaperEl: el.querySelector('.wallpaper-media')
+          || el.querySelector('video'),
         /* Notifications stack in this output's own corner — the shell draws
            each one over the output of the window it came from, not over some
            global one. */
@@ -100,6 +106,9 @@ function syncOutputs(list) {
         barShown: false,
         workspace: 0,
       };
+      /* Both names are the same element: the media helpers read the short
+         one, and the record reads the longer spelling of what it is. */
+      output.wallpaperMediaEl = output.wallpaperEl;
       el.dataset.output = info.name;
       /* The network module answers a click by opening the network picker, the
          way the battery widget opens the profile list. Wired here because this
@@ -129,6 +138,16 @@ function syncOutputs(list) {
       el.addEventListener('mouseenter', () => setActiveOutput(info.name));
       outputsEl.append(el);
       outputs.set(info.name, output);
+      /* A film set before this output existed still belongs on it. The helper
+         lives with the rest of the wallpaper handling in commands.js; a
+         custom shell without one simply leaves the element empty. */
+      if (typeof syncOutputWallpaper === 'function') {
+        syncOutputWallpaper(output);
+      }
+      if (output.wallpaperEl
+          && typeof applyWallpaperMediaTo === 'function') {
+        applyWallpaperMediaTo(output.wallpaperEl, wallpaperVideoSrc);
+      }
       output.workspace = startingWorkspace(info.name);
       if (activeOutput === null) activeOutput = info.name;
     }
@@ -183,6 +202,13 @@ function syncOutputs(list) {
 
   for (const [name, output] of outputs) {
     if (seen.has(name)) continue;
+    /* A film on a monitor that is being unplugged has nowhere left to draw:
+       stop it and release the decoder instead of leaving it playing for a
+       removed element. */
+    if (output.wallpaperEl
+        && typeof applyWallpaperMediaTo === 'function') {
+      applyWallpaperMediaTo(output.wallpaperEl, null);
+    }
     output.el.remove();
     outputs.delete(name);
     if (statusOsdOutput === name) {
