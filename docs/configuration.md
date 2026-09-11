@@ -592,14 +592,16 @@ Chords are separate: `binds` names them by keysym, so the same binding follows
 the layout rather than the key's position. See [Changing some of the keymap, or
 all of it](#changing-some-of-the-keymap-or-all-of-it).
 
-## A picture as the wallpaper
+## A picture or a film as the wallpaper
 
 `wallpaper` names what to draw as the desktop background, and `wallpaper_mode`
-says how a picture is fitted to the screen.
+says how it is fitted to the screen. It is usually a picture; it can be a video
+file, played as an animated one — see [Animated wallpapers](#animated-wallpapers)
+below.
 
 ```jsonc
 {
-  "wallpaper": "~/Pictures/wall.png",  // a path, or a URL of its own
+  "wallpaper": "~/Pictures/wall.png",  // a path or URL, picture or video
   "wallpaper_mode": "fill",            // fill, fit, stretch, center or tile
 }
 ```
@@ -638,7 +640,8 @@ $ viewport msg -t config.wallpaper --mode tile      # the picture stays
 $ viewport msg -t config.wallpaper --path ''        # and this removes it
 ```
 
-The five fittings, which are `background-size` under the skin:
+The five fittings, which are `background-size` under the skin for a picture
+and `object-fit` for a video:
 
 | mode | what it does |
 | --- | --- |
@@ -661,15 +664,41 @@ the flag — never a background that silently does not change, which is the one
 failure worth engineering against here.
 
 A consequence: the picture is loaded by whichever engine draws the shell, so it
-can be any format that engine reads — PNG, JPEG, WebP, SVG, an animated GIF —
-and a `https://` URL works as well as a path. A custom shell has to honour
-`wallpaper` in the `config` event; the shipped one does.
+can be any format that engine reads — PNG, JPEG, WebP, SVG, an animated GIF or
+an animated WebP — and a `https://` URL works as well as a path. A custom shell
+has to honour `wallpaper` in the `config` event; the shipped one does.
 
-**A terminal wins over a picture.** With `background_terminal` on, the page
-goes transparent so the terminal behind it can be seen, and a picture in the
-page would be painted straight over it. Nothing is refused — the setting is
-simply not in force while a terminal is behind — so turning the terminal off
-brings the picture back.
+### Animated wallpapers
+
+An animated picture needs nothing special said about it: a GIF (or an animated
+WebP or APNG) is a picture, the engine animates a `background-image` of one,
+and all five fittings apply as they do to a still. That animation is the
+engine's, so a minimal decoder that does not run one shows its first frame;
+the setting has still done exactly what it says.
+
+A video cannot be a `background-image`, so the shipped shell plays it on an
+element of its own, under everything the desktop draws. `wallpaper` names one
+the same way it names a picture, and the extension picks the element: `.mp4`,
+`.m4v`, `.mov`, `.webm`, `.ogv` or `.mkv`. It is played muted and looping, with
+no controls, and it cannot take input meant for the desktop.
+
+`fill` is the default; `fit`, `stretch` and `center` mean what they mean for a
+picture. `tile` is the one that does not carry over — repeating a film would be
+a grid of decoders out of step with each other — so a video in `tile` fills the
+screen. That is the nearest a screen can come to what the mode asks a moving
+image to do. The mode is otherwise a picture's and is not refused, because a
+wallpaper cycler sets the fitting and the file independently.
+
+The codec, like the picture format above, is the engine's. `webkitgtk` and
+Chromium are built with the common ones; an engine without a decoder shows the
+desktop colour behind the element rather than a frame.
+
+**A terminal wins over anything in the page.** With `background_terminal` on,
+the page goes transparent so the terminal behind it can be seen, and a picture
+or a film in the page would be painted straight over it. Nothing is refused —
+the setting is simply not in force while a terminal is behind, and the shell
+stops and unloads a video for as long as it is — so turning the terminal off
+brings the picture back and starts the film again.
 
 **A wallpaper program still wins over both**, per screen, in the way described
 below: swaybg and the rest draw on the background layer, which is over the
@@ -1004,7 +1033,7 @@ Precedence is flags > config file > defaults.
 --watch-shell                reload the shell when its files change
 --watch-config               reload the configuration file when it changes
 --background-terminal [CMD]  a terminal for a wallpaper, running CMD if one is given
---wallpaper PATH             a picture for the desktop background, over the config file
+--wallpaper PATH             a picture or video for the desktop background, over the config file
 --wallpaper-mode NAME        how it is fitted: fill, fit, stretch, center or tile
 --socket PATH                the control socket, instead of the one named after the display
 --exit-after SECS            stop after this long, in case stopping is what is broken

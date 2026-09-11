@@ -11,6 +11,19 @@ to summarise rather than to duplicate.
 
 ## [Unreleased]
 
+### Added
+- Animated wallpapers. A GIF — or an animated WebP or APNG — is a
+  `background-image` the engine animates by itself, with all five fittings
+  including `tile`; the shell tests now pin that path down. A video cannot be
+  a `background-image`, so the shipped shell plays a `.mp4`, `.m4v`, `.mov`,
+  `.webm`, `.ogv` or `.mkv` in a muted, looping `<video>` under the desktop:
+  `fill`, `fit`, `stretch` and `center` become `object-fit`, `tile` fills the
+  screen because a film has no still frame to repeat, and a terminal behind
+  the page stops and unloads the film instead of leaving a decoder running
+  where nothing can be seen. Which codecs actually play is the engine's, as
+  with any picture format. A config event about something else does not
+  restart the film, and switching back to a picture unloads it.
+
 ## [0.3.0] - 2026-09-09
 
 ### Fixed

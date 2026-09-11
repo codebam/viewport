@@ -23,6 +23,94 @@ function shQuote(word) {
   return `'${String(word).replace(/'/g, "'\\''")}'`;
 }
 
+/* The extensions the shell plays as a moving wallpaper.
+ *
+ * A video is the one wallpaper the page cannot draw as a CSS background:
+ * there is no `url()` an engine plays, and `object-fit` lives on a media
+ * element rather than on a `background-image`. The list is by extension
+ * because that is all a resolved URL carries — the compositor checks the
+ * file, not the container — and a codec the engine cannot decode shows the
+ * desktop colour where the film would be, the same as an unsupported image
+ * does. */
+const WALLPAPER_VIDEO_EXTENSIONS = new Set([
+  'mp4', 'm4v', 'mov', 'webm', 'ogv', 'mkv',
+]);
+
+/* What a resolved wallpaper URL names, when it names a video.
+ *
+ * CSS values are never films, however they are spelled: `url(/pic/loop.mp4)`
+ * is a picture the engine is asked for and not something this can play, and a
+ * gradient has no file at all. A URL's extension is read without its query or
+ * fragment, because a server that hands a film out usually appends a token to
+ * it. Returns the URL itself, or null for "draw it as a picture". */
+function wallpaperVideoUrl(value) {
+  if (/^(url\(|[a-z-]*gradient\()/i.test(value)) return null;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return null;
+  const path = value.split('#')[0].split('?')[0];
+  const slash = path.lastIndexOf('/');
+  const dot = path.lastIndexOf('.');
+  if (dot <= slash) return null;
+  return WALLPAPER_VIDEO_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
+    ? value : null;
+}
+
+/* Play a video as the desktop background, or stop and unload the one that was
+ * playing when `url` is null.
+ *
+ * The element is hidden and empty in the markup; this is the only thing that
+ * fills it. `src` is compared first so that a config message about something
+ * else — a gap, a border, a theme — does not restart the film from its first
+ * frame every time it arrives, which is exactly what a desk would look like
+ * while somebody adjusted it. */
+function applyWallpaperMedia(url) {
+  const media = document.getElementById('wallpaper-media');
+  /* A custom shell need not have the element: the still-picture half of this
+     event is all it has to honour for the compositor's config to be right. */
+  if (!media) return;
+  const previous = media.getAttribute('src');
+  if (url === null) {
+    if (previous === null) {
+      media.hidden = true;
+      return;
+    }
+    if (typeof media.pause === 'function') media.pause();
+    media.removeAttribute('src');
+    media.hidden = true;
+    /* Dropping the source is not enough for every engine: `load()` is what
+       makes it stop decoding, release the buffer and let the file go. */
+    if (typeof media.load === 'function') media.load();
+    return;
+  }
+  if (previous !== url) {
+    media.setAttribute('src', url);
+    if (typeof media.load === 'function') media.load();
+  }
+  media.hidden = false;
+  /* Muted and looping are not a choice here: a desktop that made noise would
+     be a bug, and one that stopped after a few seconds would be a broken
+     wallpaper. Both are stated again in script because an engine that only
+     begins autoplay for an already-muted element must see it muted before
+     the source is played, not after. */
+  media.autoplay = true;
+  media.muted = true;
+  media.loop = true;
+  media.playsInline = true;
+  if (typeof media.play === 'function') {
+    const playing = media.play();
+    /* Autoplay can still be refused. There is no console to say so in a web
+       view, so the element is hidden and what remains is the desktop colour
+       behind it: a desktop is still a desktop, rather than a rectangle of
+       nothing that no setting can explain. The source is compared first
+       because a second wallpaper can arrive while this play is pending, and
+       its refusal must not hide the one that replaced it. */
+    if (playing && typeof playing.catch === 'function') {
+      playing.catch(() => {
+        if (media.getAttribute('src') === url) media.hidden = true;
+      });
+    }
+  }
+}
+
 function handleShellCommand(command, args) {
   const arg = args[0];
   const n = Number(arg);
@@ -661,15 +749,21 @@ window.addEventListener('viewport', (event) => {
          which is every desktop that has not asked for one. */
       document.documentElement.classList.toggle('behind',
         message.background_terminal === true);
-      /* The desktop background: a picture the compositor resolved to a URL, or
-         a CSS value it passed through — `#1a1b26`, `rgb(...)`, a gradient.
+      /* The desktop background: a picture the compositor resolved to a URL,
+         a video it resolved the same way, or a CSS value it passed through —
+         `#1a1b26`, `rgb(...)`, a gradient.
 
-         Which of the two decides which property it lands on, because a colour
-         is not an image: a `background-image` of `#1a1b26` is nothing at all,
-         and the desktop would come up black with the setting apparently
-         ignored. Absent takes the class off and the shipped gradient comes
-         back — that is what an empty `wallpaper` in the config file and
-         `--path ''` over the socket both arrive as. */
+         A video is the one that cannot be a `background-image`: CSS has no
+         `url()` an engine plays. It goes to the media element instead, and
+         the picture properties are left empty so the two ways of drawing a
+         desktop are never both in force.
+
+         Everything else is classified by which property it lands on, because
+         a colour is not an image: a `background-image` of `#1a1b26` is
+         nothing at all, and the desktop would come up black with the setting
+         apparently ignored. Absent takes the class off and the shipped
+         gradient comes back — that is what an empty `wallpaper` in the config
+         file and `--path ''` over the socket both arrive as. */
       {
         const root = document.documentElement;
         /* A terminal behind the page wins over anything in it: the two cannot
@@ -681,13 +775,17 @@ window.addEventListener('viewport', (event) => {
           && message.wallpaper.trim() !== ''
           && message.background_terminal !== true
           ? message.wallpaper.trim() : null;
+        /* A GIF — or an animated WebP or APNG — is a picture and stays one:
+           the engine animates a `background-image` of it, which keeps all
+           five fittings, `tile` included. Only a video needs the element. */
+        const video = value !== null ? wallpaperVideoUrl(value) : null;
         /* An image is a `url()` or a gradient of any kind; a URL of its own is
            wrapped, quoted, because a resolved path is percent-encoded but may
            still hold a bracket or a comma that an unquoted url() would end at.
            Everything else is a colour. */
         let image = null;
         let colour = null;
-        if (value !== null) {
+        if (value !== null && video === null) {
           if (/^(url\(|[a-z-]*gradient\()/i.test(value)) {
             image = value;
           } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
@@ -696,6 +794,10 @@ window.addEventListener('viewport', (event) => {
             colour = value;
           }
         }
+        /* The media element follows the same value, and null stops whatever
+           was playing: a picture, a colour, no wallpaper and a terminal
+           behind the page all mean there is no film on this desktop. */
+        applyWallpaperMedia(video);
         root.classList.toggle('wallpaper', value !== null);
         if (image !== null) {
           root.style.setProperty('--wallpaper', image);
@@ -711,10 +813,13 @@ window.addEventListener('viewport', (event) => {
            rest of the shell's styling, and all four removed first so switching
            mode does not leave the last one on. `fill` is the default and has
            no class of its own; a colour has nothing to fit, so it gets none of
-           them either. */
+           them either. A video does: the classes land on `object-fit`, which
+           is the media element's way of saying what `background-size` says
+           for a picture. */
+        const fitted = image !== null || video !== null;
         for (const mode of WALLPAPER_MODES) {
           root.classList.toggle(`wallpaper-${mode}`,
-            image !== null && message.wallpaper_mode === mode);
+            fitted && message.wallpaper_mode === mode);
         }
       }
       /* Absent means on, matching the compositor's own default: only an

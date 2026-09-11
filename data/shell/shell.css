@@ -214,6 +214,51 @@ html.wallpaper-stretch body { background-size: 100% 100%; }
 html.wallpaper-center body { background-size: auto; }
 html.wallpaper-tile body { background-size: auto; background-repeat: repeat; }
 
+/* The moving wallpaper: a video, from the same `wallpaper` setting that names
+ * a picture.
+ *
+ * CSS has no `background-image` an engine plays, so a film is an element of
+ * its own, placed under everything the desktop draws. The page is one canvas
+ * across every monitor, so one element across the whole of it is the same
+ * wallpaper `background-size: cover` paints — not one copy per output.
+ *
+ * It sits at `z-index: -1`, above the `body` background it falls back to and
+ * below every piece of the shell: the desktops are ordinary positioned
+ * elements and paint over a negative-z-index sibling. It takes no pointer
+ * events either, because the desktop underneath still owns a right click and
+ * a drag across the wallpaper.
+ *
+ * The element is in the markup from the start, hidden, so a desktop that has
+ * never named a video has somewhere to put nothing. The `[hidden]` rule is
+ * spelled out because the id selector here is more specific than the user
+ * agent's own. */
+#wallpaper-media {
+  display: block;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  background: transparent;
+  pointer-events: none;
+  z-index: -1;
+}
+#wallpaper-media[hidden] { display: none; }
+
+/* The same five fittings as the background above, one `object-fit` each.
+ * `fill` is the default in the rule above and needs no class. */
+html.wallpaper-fit #wallpaper-media { object-fit: contain; }
+html.wallpaper-stretch #wallpaper-media { object-fit: fill; }
+html.wallpaper-center #wallpaper-media { object-fit: none; }
+
+/* `tile` repeats a still picture, and a film has no still frame to repeat.
+ * The video fills the screen instead, which is the nearest thing to what the
+ * mode asks a moving image to do. The setting is not refused: a wallpaper
+ * cycler can name a fitting and a picture independently, and the fitting is
+ * documented as a picture's. */
+html.wallpaper-tile #wallpaper-media { object-fit: cover; }
+
 /* Something is behind the page: `background_terminal` is on and the compositor
    is drawing a terminal underneath this document.
  *

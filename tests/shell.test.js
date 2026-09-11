@@ -259,6 +259,22 @@ const calendarEl = new El('div');
    what it sends are only visible if the element the shell drew into is the one
    the test reads back. */
 const lockEl = new El('div');
+/* And the moving wallpaper's video element, on the same terms: which URL it
+   was given, whether it is hidden and whether it is playing are only visible
+   if the element the shell drives is the one the test reads back. The media
+   methods are not in the generic stub because nothing else in the shell is a
+   media element; they record what they were asked to do, which is the part
+   this harness can check. */
+const wallpaperMediaEl = new El('video');
+wallpaperMediaEl.id = 'wallpaper-media';
+wallpaperMediaEl._playing = false;
+wallpaperMediaEl._loads = 0;
+wallpaperMediaEl.play = function () {
+  this._playing = true;
+  return { catch() {} };
+};
+wallpaperMediaEl.pause = function () { this._playing = false; };
+wallpaperMediaEl.load = function () { this._loads++; };
 const desktopTemplate = { content: { cloneNode: () => buildDesktop() } };
 const windowTemplate = { content: { cloneNode: () => buildWindow() } };
 
@@ -297,6 +313,7 @@ global.document = {
     osk: oskEl,
     calendar: calendarEl,
     lock: lockEl,
+    'wallpaper-media': wallpaperMediaEl,
     'desktop-template': desktopTemplate,
     'window-template': windowTemplate,
   }[id]),
@@ -525,6 +542,10 @@ const EXPORTS = ';globalThis.__shell = { views, workspaces, outputs, scrollOffse
   + ' applyClockForTest: applyClock,'
   + ' calendarFirstDayForTest: calendarFirstDay,'
   + ' get lockEl() { return lockEl; },'
+  /* What the shell makes of a wallpaper URL: whether it is a film to play
+     rather than a picture to draw, which is the one decision the page makes
+     about the setting and is a pure function. */
+  + ' wallpaperVideoForTest: wallpaperVideoUrl,'
   /* The keyboard's own idea of Shift and which page it is on, which nothing
      drawn on the page says directly — a test reading capitalisation off a
      rendered key would be testing toUpperCase rather than the shell. */
@@ -7713,6 +7734,93 @@ if (mode !== 'scrolling') {
       wallpaper: 'file:///pic/wall.png' });
     check('a background terminal is not painted over by a wallpaper',
       !wallpaperOf().includes('url('));
+
+    /* The wallpaper, when it moves. A GIF is a picture and the engine
+       animates a `background-image` of it, fittings and all; a video cannot
+       be one, so it gets an element of its own to play in. */
+    const videoFor = globalThis.__shell.wallpaperVideoForTest;
+    check('a film is named by its extension',
+      videoFor('file:///pic/loop.mp4') === 'file:///pic/loop.mp4'
+      && videoFor('https://host/clip.WEBM') === 'https://host/clip.WEBM'
+      && videoFor('file:///pic/clip.mkv') === 'file:///pic/clip.mkv');
+    check('a query or fragment is not part of the extension',
+      videoFor('https://host/loop.mp4?token=abc#t=3') !== null
+      && videoFor('https://host/loop') === null);
+    check('a picture and a CSS value are never a film',
+      videoFor('file:///pic/wall.png') === null
+      && videoFor('#1a1b26') === null
+      && videoFor('linear-gradient(#000, #fff)') === null
+      && videoFor('url(/pic/loop.mp4)') === null);
+
+    /* The cascade needs the element under the document element, as the real
+       markup has it under `body`. */
+    wallpaperMediaEl.parentElement = documentElement;
+    const mediaSrc = () => wallpaperMediaEl.getAttribute('src');
+    const loads = () => wallpaperMediaEl._loads;
+
+    /* The animated picture stays on the background path. This is the half
+       that makes GIFs work: the engine's own animation runs a background
+       image, and `tile` — which a video element cannot do — keeps working. */
+    emit({ type: 'config', layout: mode,
+      wallpaper: 'file:///pic/anim.gif', wallpaper_mode: 'tile' });
+    check('an animated picture is still the desktop background',
+      wallpaperOf().includes('url("file:///pic/anim.gif")')
+      && sheet.value(body, 'background-repeat') === 'repeat'
+      && wallpaperMediaEl.hidden);
+
+    emit({ type: 'config', layout: mode,
+      wallpaper: 'file:///pic/loop.mp4', wallpaper_mode: 'fit' });
+    check('a video goes to the media element, not to a url()',
+      mediaSrc() === 'file:///pic/loop.mp4'
+      && !wallpaperMediaEl.hidden && wallpaperMediaEl._playing);
+    check('and it is muted and looping, because a wallpaper is not a concert',
+      wallpaperMediaEl.autoplay === true && wallpaperMediaEl.muted === true
+      && wallpaperMediaEl.loop === true && wallpaperMediaEl.playsInline === true);
+    check('and the picture the page would have drawn is gone',
+      wallpaperOf() === 'none');
+    check('and the fitting is on the element, where object-fit lives',
+      sheet.value(wallpaperMediaEl, 'object-fit') === 'contain');
+
+    const afterStart = loads();
+    emit({ type: 'config', layout: mode,
+      wallpaper: 'file:///pic/loop.mp4', wallpaper_mode: 'fill' });
+    check('a fitting change does not restart the film',
+      afterStart > 0 && loads() === afterStart
+      && mediaSrc() === 'file:///pic/loop.mp4'
+      && wallpaperMediaEl._playing);
+    check('and fill is the default, which needs no fitting class',
+      sheet.value(wallpaperMediaEl, 'object-fit') === 'cover');
+
+    /* `tile` is a picture's mode; on a film it fills the screen rather than
+       leaving the desktop colour around a single frame. */
+    emit({ type: 'config', layout: mode,
+      wallpaper: 'file:///pic/loop.mp4', wallpaper_mode: 'tile' });
+    check('tile on a film fills the screen rather than repeating it',
+      sheet.value(wallpaperMediaEl, 'object-fit') === 'cover');
+
+    /* A terminal behind the page wins, and it wins by unloading: a film
+       nobody can see is still a decoder and a core. */
+    emit({ type: 'config', layout: mode, background_terminal: true,
+      wallpaper: 'file:///pic/loop.mp4' });
+    check('a background terminal stops and unloads the film',
+      mediaSrc() === null && wallpaperMediaEl.hidden
+      && !wallpaperMediaEl._playing);
+
+    emit({ type: 'config', layout: mode, background_terminal: false,
+      wallpaper: 'file:///pic/loop.mp4' });
+    check('and taking it away starts the film again',
+      mediaSrc() === 'file:///pic/loop.mp4'
+      && !wallpaperMediaEl.hidden && wallpaperMediaEl._playing);
+
+    emit({ type: 'config', layout: mode, wallpaper: 'file:///pic/wall.png' });
+    check('a picture stops the film rather than hiding it behind one',
+      mediaSrc() === null && wallpaperMediaEl.hidden
+      && !wallpaperMediaEl._playing
+      && wallpaperOf().includes('url("file:///pic/wall.png")'));
+
+    check('and the film element is behind everything and takes no input',
+      sheet.value(wallpaperMediaEl, 'pointer-events') === 'none'
+      && sheet.value(wallpaperMediaEl, 'z-index') === '-1');
 
     /* And back to where this section found the desktop: a config event is the
        whole configuration, so leaving one of these in force would hand the

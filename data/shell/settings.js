@@ -473,12 +473,12 @@ function settingsWallpaper() {
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'settings-text';
-  input.placeholder = '~/Pictures/wall.png, #1a1b26, or empty for none';
-  /* What the compositor resolved, which for a picture is a `file://` URL
-     rather than the path that was typed. Shown as it is rather than turned
-     back into a path: it is what the desktop is actually loading, and a panel
-     that pretty-printed it would be showing something the compositor never
-     said. A CSS value — a colour, a gradient — comes back as written. */
+  input.placeholder = '~/Pictures/wall.png, ~/Videos/loop.mp4, #1a1b26, or empty for none';
+  /* What the compositor resolved, which for a file is a `file://` URL rather
+     than the path that was typed. Shown as it is rather than turned back into
+     a path: it is what the desktop is actually loading, picture or video, and
+     a panel that pretty-printed it would be showing something the compositor
+     never said. A CSS value — a colour, a gradient — comes back as written. */
   input.value = typeof shellConfig.wallpaper === 'string'
     ? shellConfig.wallpaper : '';
 

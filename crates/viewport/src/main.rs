@@ -1416,7 +1416,7 @@ const OPTIONS: &[Opt] = &[
     Opt {
         flag: "--wallpaper",
         value: "PATH",
-        what: "a picture for the desktop background, over the config file",
+        what: "a picture or video for the desktop background, over the config file",
     },
     Opt {
         flag: "--wallpaper-mode",

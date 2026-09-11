@@ -800,26 +800,29 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background_terminal: bool,
 
-    /// An image to draw as the desktop background, as a URL the page can load
-    /// — `file://` for the ordinary case of a picture on disk.
+    /// A picture or a video to draw as the desktop background, as a URL the
+    /// page can load — `file://` for the ordinary case of a file on disk.
     ///
     /// The same reasoning as `background_terminal`, one step further: the
     /// shell's `body` *is* the wallpaper, so the only thing that can put an
     /// image there is the page itself. The compositor resolves the path,
     /// checks it exists and encodes it; what arrives here is ready to go
-    /// inside a CSS `url()`.
+    /// inside a CSS `url()`, or to be played by the page when the URL names a
+    /// video. Which of the two is the shell's decision, made from the
+    /// extension.
     ///
     /// Absent is the shell's own gradient, which is what a desktop that has
-    /// never been given a picture shows.
+    /// never been given a wallpaper shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallpaper: Option<String>,
 
-    /// How that image is fitted to the screen: `"fill"`, `"fit"`,
+    /// How that wallpaper is fitted to the screen: `"fill"`, `"fit"`,
     /// `"stretch"`, `"center"` or `"tile"`. Absent means `"fill"`.
     ///
     /// Carried separately from the URL rather than folded into it because the
-    /// two change independently — a mode is switched while trying a picture
-    /// out, and swapping the picture keeps the mode.
+    /// two change independently — a mode is switched while trying a wallpaper
+    /// out, and swapping the file keeps the mode. A video cannot repeat, so
+    /// `"tile"` fills the screen when the shell is playing one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallpaper_mode: Option<String>,
 

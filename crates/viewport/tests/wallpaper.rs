@@ -25,32 +25,60 @@ fn a_picture(name: &str) -> PathBuf {
     path
 }
 
-/// `--wallpaper` reaches the shell as a URL it can load.
-#[test]
-fn a_wallpaper_from_the_command_line_reaches_the_shell() {
-    let picture = a_picture("wall.png");
+/// Start with `--wallpaper path --wallpaper-mode mode` and return the config
+/// the shell was sent.
+///
+/// The flags, the connect and the first `config` event are the same preamble
+/// in every test below; a second copy of it is a second thing to keep in step.
+fn config_for_wallpaper(name: &str, path: &std::path::Path, mode: &str) -> serde_json::Value {
     let compositor = Compositor::start_with_args(
-        "wallpaper-flag",
+        name,
         &[
             "--wallpaper",
-            &picture.to_string_lossy(),
+            &path.to_string_lossy(),
             "--wallpaper-mode",
-            "fit",
+            mode,
         ],
     );
     let mut client = compositor.connect();
-    let config = client.config();
+    client.config()
+}
 
+/// Assert the config carries a path as a URL, which is what the page loads.
+fn assert_wallpaper_url(config: &serde_json::Value, path: &std::path::Path) {
     // A URL and not the path that was typed: the page puts this straight in a
-    // `url()`, and a bare path there loads nothing.
+    // `url()`, and a bare path there loads nothing. A video is the same — the
+    // page reads the extension off the end of it.
     assert_eq!(
         config["wallpaper"].as_str(),
-        Some(format!("file://{}", picture.display()).as_str()),
+        Some(format!("file://{}", path.display()).as_str()),
         "{config}"
     );
-    assert_eq!(config["wallpaper_mode"].as_str(), Some("fit"), "{config}");
+}
 
-    let _ = std::fs::remove_file(&picture);
+/// Assert the config carries the fitting that was asked for.
+fn assert_wallpaper_mode(config: &serde_json::Value, mode: &str) {
+    assert_eq!(config["wallpaper_mode"].as_str(), Some(mode), "{config}");
+}
+
+/// `--wallpaper` reaches the shell as a URL it can load, picture or video.
+///
+/// A video goes the same way as a picture here: the compositor decodes
+/// neither, and the page decides what to play from the URL's extension, so
+/// what this pins down is that a `.mp4` is not refused for not being an image
+/// and that the mode travels with it exactly as it does for a `.png`.
+#[test]
+fn a_wallpaper_from_the_command_line_reaches_the_shell() {
+    for (name, tag, mode) in [
+        ("wall.png", "wallpaper-flag", "fit"),
+        ("loop.mp4", "wallpaper-video", "center"),
+    ] {
+        let file = a_picture(name);
+        let config = config_for_wallpaper(tag, &file, mode);
+        assert_wallpaper_url(&config, &file);
+        assert_wallpaper_mode(&config, mode);
+        let _ = std::fs::remove_file(&file);
+    }
 }
 
 /// A desktop nobody has given a picture says nothing about one.

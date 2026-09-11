@@ -17,6 +17,28 @@
   the tree, never the geometry directly.
 -->
 
+<!--
+  The moving wallpaper, when the configured one is a video. It is empty and
+  hidden until `commands.js` sees a `wallpaper` URL whose extension is one the
+  page can play; when it does, the element is pointed at the file and every
+  other wallpaper property is cleared, so a film and a `background-image` are
+  never both in force.
+
+  A GIF needs no element: the engine animates an animated `background-image`
+  on `body`, which is also where the five fittings live. See `shell.css` beside
+  `#wallpaper-media` for where this one sits and why it cannot take input.
+
+  `autoplay` and `muted` are the page's promise and the engine's policy: a
+  wallpaper that made noise would be a bug, and desktop videos are refused by
+  engines that only allow silent autoplay. The script also calls `play()`,
+  because a source arriving over the message bridge is not a gesture and some
+  engines want the call even when the attribute is there. `playsinline` is the
+  same promise for engines that would otherwise take the whole screen.
+  `preload` is about when the bytes are fetched, not whether they play.
+-->
+<video id="wallpaper-media" hidden autoplay muted loop playsinline
+       preload="auto" tabindex="-1" aria-hidden="true"></video>
+
 <div id="outputs"></div>
 
 <!--

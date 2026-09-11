@@ -566,19 +566,24 @@ pub struct File {
     /// `crate::background`, which explains why that is deliberate and not a
     /// missing feature.
     pub background_terminal: Option<BackgroundTerminal>,
-    /// An image to draw as the wallpaper: a path, or a URL of its own.
+    /// An image or a video to draw as the wallpaper: a path, or a URL of its
+    /// own.
     ///
     /// The shell paints the desktop background, so this is carried across to
-    /// it rather than drawn here — see `crate::state::apply_config`. An empty
-    /// string is "no wallpaper", which is how a file takes one away again
-    /// without the key having to be a nullable string that also means absent.
+    /// it rather than drawn here — see `crate::state::apply_config`. A video
+    /// is recognised by the shell from the URL's extension and played in an
+    /// element of its own; the compositor's part is the same either way. An
+    /// empty string is "no wallpaper", which is how a file takes one away
+    /// again without the key having to be a nullable string that also means
+    /// absent.
     pub wallpaper: Option<String>,
-    /// How that image is fitted to the screen: `fill`, `fit`, `stretch`,
+    /// How that wallpaper is fitted to the screen: `fill`, `fit`, `stretch`,
     /// `center` or `tile`. Absent is `fill`, which is what a wallpaper is
     /// almost always meant to do.
     ///
     /// The names are stylix's `imageScalingMode`, so a themed NixOS session
-    /// can hand its setting over unchanged. See [`parse_wallpaper_mode`].
+    /// can hand its setting over unchanged. A video cannot repeat, so the
+    /// shell fills the screen for `tile`; see [`parse_wallpaper_mode`].
     pub wallpaper_mode: Option<String>,
     /// Which engine draws the shell: `wpe`, `webkitgtk`, `chromium`, `cef`,
     /// `servo` or `servoshell`.
@@ -1115,14 +1120,16 @@ pub fn shell_url(value: &str) -> anyhow::Result<String> {
 }
 
 /// What `wallpaper`, `--wallpaper` and `config.wallpaper` were given: a
-/// picture, or a colour to paint the desktop instead.
+/// picture or a video, or a colour to paint the desktop instead.
 ///
-/// A picture is named the way `--url` is — a path, usually, because that is
-/// what a file manager and a theme generator both hand you — and reaches the
-/// shell as a URL in a CSS `background-image`. So the resolution is identical,
-/// down to the encoding: a wallpaper under `~/Pictures/Wall Papers` is not a
-/// URI until its space is `%20`, and unencoded the page silently draws its own
-/// gradient instead.
+/// A picture or video is named the way `--url` is — a path, usually, because
+/// that is what a file manager and a theme generator both hand you — and
+/// reaches the shell as a URL. So the resolution is identical, down to the
+/// encoding: a wallpaper under `~/Pictures/Wall Papers` is not a URI until its
+/// space is `%20`, and unencoded the page silently draws its own gradient
+/// instead. What the shell does with the URL — `url()` for a picture, a media
+/// element for a video — is the page's business and does not change how the
+/// file is found.
 ///
 /// A CSS value is passed through untouched. Not every wallpaper is a
 /// photograph: `#1a1b26` is what somebody with a colour scheme wants, and a
@@ -1234,13 +1241,14 @@ fn resolve_url(value: &str, named: &str) -> anyhow::Result<String> {
     ))
 }
 
-/// How a wallpaper image is fitted to the screen.
+/// How a wallpaper picture is fitted to the screen.
 ///
 /// The five names are stylix's `imageScalingMode`, spelled exactly as it
 /// spells them, because a NixOS desktop themed by stylix hands this setting
 /// straight across and a second vocabulary for the same five behaviours is a
 /// translation table somebody has to write. sway's `output bg` uses four of
-/// the five under other names; those are accepted as aliases.
+/// the five under other names; those are accepted as aliases. The mode reaches
+/// a video too; `tile` fills the screen there, see `WALLPAPER_MODES`.
 pub const WALLPAPER_MODES: [&str; 5] = ["fill", "fit", "stretch", "center", "tile"];
 
 /// What `wallpaper_mode`, `--wallpaper-mode` and `config.wallpaper` accept.
