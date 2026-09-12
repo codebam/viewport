@@ -325,15 +325,13 @@ impl View {
 
     /// The client's minimum size, so the shell can refuse to shrink a window
     /// past what it accepts. Zero on an axis means unconstrained.
+    ///
+    /// The minimum half of [`Self::size_bounds`], and for the same reason it
+    /// has to know both protocols: a shell told zero for a window that has a
+    /// minimum will shrink it to nothing, and an X11 client with a
+    /// `WM_NORMAL_HINTS` minimum was told exactly that.
     pub fn min_size(&self) -> (i32, i32) {
-        let Some(surface) = self.surface() else {
-            return (0, 0);
-        };
-        with_states(&surface, |states| {
-            let mut guard = states.cached_state.get::<SurfaceCachedState>();
-            let min = guard.current().min_size;
-            (min.w, min.h)
-        })
+        self.size_bounds().0
     }
 
     /// What a floating window should open at.
@@ -417,35 +415,41 @@ impl View {
             if x11.is_override_redirect() {
                 return true;
             }
-        }
+        } else if let Some(toplevel) = self.window.toplevel() {
+            // A parent toplevel means a dialog.
+            if toplevel.parent().is_some() {
+                return true;
+            }
 
-        let Some(toplevel) = self.window.toplevel() else {
-            return false;
-        };
-
-        // A parent toplevel means a dialog.
-        if toplevel.parent().is_some() {
-            return true;
-        }
-
-        // xdg-dialog-v1, where a client says it plainly rather than leaving it
-        // to be inferred. Modal counts the same as dialog here: both are
-        // windows that came up to be dealt with and go away, and neither
-        // belongs in a tiling column.
-        use smithay::wayland::shell::xdg::dialog::ToplevelDialogHint;
-        if self
-            .role_attribute(|attrs| attrs.dialog_hint)
-            .is_some_and(|hint| {
-                matches!(hint, ToplevelDialogHint::Dialog | ToplevelDialogHint::Modal)
-            })
-        {
-            return true;
+            // xdg-dialog-v1, where a client says it plainly rather than leaving
+            // it to be inferred. Modal counts the same as dialog here: both are
+            // windows that came up to be dealt with and go away, and neither
+            // belongs in a tiling column.
+            use smithay::wayland::shell::xdg::dialog::ToplevelDialogHint;
+            if self
+                .role_attribute(|attrs| attrs.dialog_hint)
+                .is_some_and(|hint| {
+                    matches!(hint, ToplevelDialogHint::Dialog | ToplevelDialogHint::Modal)
+                })
+            {
+                return true;
+            }
         }
 
         // A window that cannot be resized. Tiling it means either breaking the
         // layout or asking a client to do something it has said it will not,
         // and what a client means by a fixed size is almost always a dialog:
         // an about box, a preferences panel, a password prompt.
+        //
+        // This is the *only* signal some of them give. Steam's updater is the
+        // one that made that concrete: SDL gives it `WM_CLASS`, a title and
+        // `WM_NORMAL_HINTS`, and an `_NET_WM_WINDOW_TYPE` of `NORMAL` — the
+        // type that means "an ordinary window", which says nothing about being
+        // a dialog — and no `WM_TRANSIENT_FOR` at all, so type, transient and
+        // override-redirect all leave the one size it will accept as the whole
+        // of what it is asking for. It used to be tiled, because this check sat
+        // below an xdg-only early return and an X11 window never reached it,
+        // and because the bounds it read were xdg-only even when it did.
         let (min, max) = self.size_bounds();
         if min.0 > 0 && min.1 > 0 && min == max {
             return true;
@@ -456,7 +460,30 @@ impl View {
 
     /// What the client will accept, as (minimum, maximum). Zero for "no
     /// opinion", which is what the protocol uses.
+    ///
+    /// Two stores, because the two protocols keep this in different places. An
+    /// xdg-toplevel writes it into the surface's cached state, which is where
+    /// `set_min_size`/`set_max_size` land; an X11 client sets `WM_NORMAL_HINTS`
+    /// and Xwayland keeps the parsed hints on the window. Reading only the
+    /// cached state answered "no opinion" for *every* X11 window — so a
+    /// fixed-size dialog was asked to resize, refused, and sat at its natural
+    /// size inside a tile built for something else.
     fn size_bounds(&self) -> ((i32, i32), (i32, i32)) {
+        // An X11 window's hints, already converted out of server pixels by the
+        // window manager, so the arithmetic that follows is in the same logical
+        // space as the shell's rectangles.
+        if let Some(x11) = self.window.x11_surface() {
+            let min = x11
+                .min_size()
+                .map(|size| (size.w, size.h))
+                .unwrap_or((0, 0));
+            let max = x11
+                .max_size()
+                .map(|size| (size.w, size.h))
+                .unwrap_or((0, 0));
+            return (min, max);
+        }
+
         let Some(surface) = self.surface() else {
             return ((0, 0), (0, 0));
         };

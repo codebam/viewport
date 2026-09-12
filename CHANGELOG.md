@@ -35,6 +35,22 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- A fixed-size X11 window floats rather than being tiled. Steam's self-updater
+  is the window that made this concrete: SDL gives it `WM_CLASS`, a title, a
+  `WM_NORMAL_HINTS` whose minimum and maximum are the same 320×140, and an
+  `_NET_WM_WINDOW_TYPE` of `NORMAL` — the type that means "an ordinary window",
+  which says nothing about being a dialog — with no `WM_TRANSIENT_FOR`, so the
+  one size it will accept is the whole of what it says about itself.
+  `wants_floating` read type,
+  transient and size, but its size check sat below an xdg-only early return,
+  and the bounds it compared came from the surface's xdg cached state, which is
+  empty for every X11 client. Both answered "no opinion", so the updater was
+  tiled into a column built for something else, Xwayland resized it to the
+  tile, and the client painted its 320×140 of content into one corner of it.
+  The check is reached by either protocol now and an X11 window's bounds come
+  from Xwayland's parsed `WM_NORMAL_HINTS` — which also means `view.added`'s
+  `min_width`/`min_height`, zero for every X11 window until now, say what the
+  client accepts.
 - An X11 window that paints before Xwayland has paired it with a surface is
   announced anyway. The window arrives over the X11 connection and the surface
   it paints into over the Wayland one, and nothing orders the two against each

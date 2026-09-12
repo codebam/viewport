@@ -595,7 +595,8 @@ pub struct ViewAdded {
     pub output: String,
 
     /// So the shell can refuse to shrink a window past what its client accepts.
-    /// Zero for anything that is not an xdg-toplevel.
+    /// Zero on an axis when the client has no opinion, which is most X11
+    /// windows and many xdg ones.
     pub min_width: i32,
     pub min_height: i32,
 
