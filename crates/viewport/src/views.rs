@@ -588,6 +588,15 @@ pub struct Views {
     views: Vec<View>,
     /// Surface to position in `views`. See `Index`.
     by_surface: Index<ObjectId>,
+    /// Id to position in `views` — the second key into the same list.
+    ///
+    /// Two indexes rather than a map keyed both ways: both name a position in
+    /// the one `Vec`, so they stay in step through the same rules — `insert`
+    /// only appends, so no cached position moves, and `remove` clears both. A
+    /// slot that goes stale anyway is harmless: `Index::find` rechecks the item
+    /// at the cached position before believing it, so a stale slot can cost a
+    /// walk, never a wrong answer.
+    by_id: Index<u32>,
 }
 
 impl Views {
@@ -598,6 +607,7 @@ impl Views {
             next_id: 1,
             views: Vec::new(),
             by_surface: Index::default(),
+            by_id: Index::default(),
         }
     }
 
@@ -639,21 +649,24 @@ impl Views {
     }
 
     pub fn remove(&mut self, id: u32) -> Option<View> {
-        let index = self.views.iter().position(|v| v.id == id)?;
+        let index = self.by_id.find(&self.views, &id, |v| Some(v.id))?;
         // Everything after it slides down one. The cached positions would
         // still be checked before they were believed, so this is not what
-        // keeps the lookup honest — it is what keeps it fast, and what stops
-        // the map growing a dead entry per closed window.
+        // keeps the lookups honest — it is what keeps them fast, and what stops
+        // each map growing a dead entry per closed window.
         self.by_surface.clear();
+        self.by_id.clear();
         Some(self.views.remove(index))
     }
 
     pub fn get(&self, id: u32) -> Option<&View> {
-        self.views.iter().find(|v| v.id == id)
+        let at = self.by_id.find(&self.views, &id, |v| Some(v.id))?;
+        self.views.get(at)
     }
 
     pub fn get_mut(&mut self, id: u32) -> Option<&mut View> {
-        self.views.iter_mut().find(|v| v.id == id)
+        let at = self.by_id.find(&self.views, &id, |v| Some(v.id))?;
+        self.views.get_mut(at)
     }
 
     /// The view a dialog belongs to, if it belongs to one.
