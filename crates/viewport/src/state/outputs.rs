@@ -158,15 +158,23 @@ impl ViewportState {
 
     pub fn configure_mirror(&mut self, sink: &Output, source: Option<&str>) -> Result<(), String> {
         let sink_name = sink.name();
+        // An empty source means detach, which is the same thing as having no
+        // mapping. Comparing that against the mapping already in place is what
+        // makes a reload that did not touch this head skip the teardown and
+        // recreation of its wl_output global below.
+        let source = source.filter(|name| !name.is_empty());
+        if self.output_mirrors.get(&sink_name).map(String::as_str) == source {
+            return Ok(());
+        }
         let mut wanted = self.output_mirrors.clone();
-        match source.filter(|name| !name.is_empty()) {
+        match source {
             Some(source) => { wanted.insert(sink_name.clone(), source.to_owned()); }
             None => { wanted.remove(&sink_name); }
         }
         let present: std::collections::HashSet<_> = self.physical_outputs().into_iter().map(|o| o.name()).collect();
         crate::output_topology::validate(&wanted, &present, |name| self.output_gpu(name))?;
 
-        if let Some(source_name) = source.filter(|name| !name.is_empty()) {
+        if let Some(source_name) = source {
             let source_output = self.any_output_by_name(source_name).ok_or_else(|| format!("mirror source {source_name} does not exist"))?;
             if !self.output_is_enabled(&source_output) || self.output_mirrors.contains_key(source_name) {
                 return Err(format!("mirror source {source_name} is not an enabled logical output"));
@@ -222,6 +230,10 @@ impl ViewportState {
     /// Repair topology after unplug. A surviving sink is promoted to the old
     /// source's logical position; other sinks follow it.
     pub fn output_removed(&mut self, name: &str) {
+        // A monitor plugged back in is a new head as far as the first-request
+        // rule is concerned; its old name must not make the first request a
+        // no-op.
+        self.output_configure_applied.remove(name);
         let old_position = self.output_memory.get(name).map(|m| (m.x, m.y));
         let enabled: std::collections::HashSet<String> = self
             .physical_outputs()

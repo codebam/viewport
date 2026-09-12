@@ -273,6 +273,15 @@ pub struct ViewportState {
     pub output_memory: std::collections::HashMap<String, RememberedOutput>,
     /// Physical mirror sinks keyed by sink connector, naming direct sources.
     pub output_mirrors: std::collections::HashMap<String, String>,
+    /// Which outputs have had an `output.configure` applied since they appeared.
+    ///
+    /// The first request for a head is not a no-op however well it matches the
+    /// live state: it is what tells the shell and output-management clients the
+    /// head exists and starts its frame clock. `output_configure` uses this to
+    /// tell that first run from a repeat, and `apply_output_config` uses it to
+    /// decide whether a file entry that changes nothing may be skipped.
+    /// Dropped when the output goes, so a monitor plugged back in is new again.
+    pub output_configure_applied: std::collections::HashSet<String>,
     /// Explicit per-head VRR policies. Heads absent here use the legacy global
     /// `adaptive_sync` default.
     pub output_vrr: std::collections::HashMap<String, viewport_ipc::event::VrrMode>,
@@ -1707,6 +1716,7 @@ impl ViewportState {
             input_config: std::collections::HashMap::new(),
             output_memory: std::collections::HashMap::new(),
             output_mirrors: std::collections::HashMap::new(),
+            output_configure_applied: std::collections::HashSet::new(),
             output_vrr: std::collections::HashMap::new(),
             output_vrr_effective: std::collections::HashMap::new(),
             output_vrr_wanted: std::collections::HashMap::new(),
@@ -2963,10 +2973,12 @@ impl ViewportState {
         // into effect, not somebody at a panel changing their mind.
         let was_replay = std::mem::replace(&mut self.output_config_replay, true);
         for (name, want) in &outputs {
-            if self.any_output_by_name(name).is_none() {
+            // Cloned, so the borrow of the physical head ends before the
+            // requests below borrow the whole state again.
+            let Some(output) = self.any_output_by_name(name) else {
                 // Not plugged in. Kept, because it may be later.
                 continue;
-            }
+            };
             let mode = want.mode.as_deref().and_then(|text| {
                 let parsed = crate::config::parse_mode(text);
                 if parsed.is_none() {
@@ -3006,24 +3018,44 @@ impl ViewportState {
                 x: want.x,
                 y: want.y,
             };
-            tracing::info!("configuring {name} from the config file");
-            crate::apply::apply(self, viewport_ipc::Request::OutputConfigure(request));
+
+            // What the file asks for against what the head is already doing.
+            // The same comparison runs inside `output.configure`, so this only
+            // decides whether the request is worth sending; when it is sent for
+            // a field that did change, it is applied once.
+            let configure_differs =
+                !crate::apply::output_configure_matches_live(self, &output, &request);
+            // The first request for a head is not a no-op however exactly it
+            // matches: it is what tells the shell and output-management clients
+            // the head is there, and what asks for its first frame.
+            let first_application = !self.output_configure_applied.contains(name);
+            let hdr_differs = want.hdr.is_some_and(|hdr| self.hdr_enabled(name) != hdr);
+
+            if first_application || configure_differs {
+                tracing::info!("configuring {name} from the config file");
+                crate::apply::apply(self, viewport_ipc::Request::OutputConfigure(request));
+            }
 
             // HDR is its own message, because turning it on is a colour change
             // rather than a mode change and the two are answered differently.
+            // Sent when it differs, or on the first application — an unchanged
+            // screen must not pay for the two atomic commits a `set_hdr` costs.
             if let Some(hdr) = want.hdr {
-                crate::apply::apply(
-                    self,
-                    viewport_ipc::Request::OutputHdr {
-                        name: Some(name.clone()),
-                        enabled: Some(hdr),
-                    },
-                );
+                if first_application || hdr_differs {
+                    crate::apply::apply(
+                        self,
+                        viewport_ipc::Request::OutputHdr {
+                            name: Some(name.clone()),
+                            enabled: Some(hdr),
+                        },
+                    );
+                }
             }
 
             // The monitor profile's calibration ramp, if the file has one.
             // Loaded here rather than where the output is created so a reload
-            // picks up an edited profile.
+            // picks up an edited profile — including a reload that changed
+            // nothing else, which is why this is outside the no-op checks above.
             if let Some(icc) = want.icc.as_deref() {
                 self.load_output_icc(name, icc);
             }
@@ -3035,6 +3067,12 @@ impl ViewportState {
                 continue;
             };
             if self.any_output_by_name(name).is_none() {
+                continue;
+            }
+            if self.output_mirrors.get(name).map(String::as_str) == Some(source.as_str()) {
+                // Already scanning out of that source. `configure_mirror`
+                // would skip rebuilding the sink's global too, but skipping it
+                // here avoids the request altogether.
                 continue;
             }
             crate::apply::apply(

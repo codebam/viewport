@@ -58,6 +58,14 @@ impl ViewportState {
             anyhow::bail!("no such output");
         };
 
+        // The surface's own flag is what this function records its decision in,
+        // so a request for the state the output already holds is a no-op — and
+        // does not pay for the two atomic commits below. A reload that leaves
+        // the HDR setting alone used to program it again on every head.
+        if udev.surface(crtc).is_some_and(|surface| surface.hdr == enabled) {
+            return Ok(());
+        }
+
         // The card this screen is on. A connector handle means nothing on any
         // other, so asking the primary about a monitor plugged into the second
         // card either finds nothing — and reports a display that does support

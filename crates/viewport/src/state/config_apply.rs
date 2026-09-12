@@ -466,11 +466,24 @@ impl ViewportState {
             for name in stale_mirrors {
                 if let Some(output) = self.any_output_by_name(&name) {
                     let _ = self.configure_mirror(&output, None);
+                    // The sink is back in the layout and out of the mirror
+                    // group, but nothing has introduced it in that role. The
+                    // per-output request that used to — skipped as a no-op
+                    // now that the mapping is behind it — is what told the
+                    // shell and remembered the sink's new position, so make
+                    // the next one take the first-application path.
+                    self.output_configure_applied.remove(&name);
                 }
             }
             for name in stale_vrr {
                 self.output_vrr.remove(&name);
                 self.output_vrr_wanted.remove(&name);
+                // The head now follows the global default rather than the
+                // policy it had, and the request that used to carry that news
+                // to the shell is skipped as a no-op now that the map is
+                // already cleared. Let it take the first-application path so
+                // the layout still hears about the change.
+                self.output_configure_applied.remove(&name);
             }
             self.output_config = file.outputs;
             // Carried out here too, and not left for the next hotplug: the
@@ -761,8 +774,17 @@ impl ViewportState {
         // The keymap, if the file names one. Replacing the keyboard is how
         // this is set — there is no way to change the layout of one that
         // already exists — so it happens before any client has seen a seat.
+        //
+        // A reload that leaves the block alone must leave the seat alone too:
+        // `add_keyboard` recompiles the XKB keymap and replaces the keyboard
+        // even when only repeat_delay or repeat_rate changed, because Smithay
+        // has no setter that would change those on the existing one. The block
+        // recorded as last successfully applied is what tells those apart, and
+        // the default is still skipped as it always was.
         let keyboard = &file.keyboard;
-        if keyboard != &crate::config::KeyboardConfig::default() {
+        if keyboard != &crate::config::KeyboardConfig::default()
+            && keyboard != &self.keyboard_config
+        {
             let xkb = smithay::input::keyboard::XkbConfig {
                 rules: keyboard.rules.as_deref().unwrap_or(""),
                 model: keyboard.model.as_deref().unwrap_or(""),

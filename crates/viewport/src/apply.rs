@@ -6,11 +6,11 @@
 // computed every rectangle, and the compositor's job is to put the surface
 // where it was told and otherwise stay out of the way.
 
-use smithay::output::{Mode as OutputMode, Scale};
+use smithay::output::{Mode as OutputMode, Output, Scale};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Transform as SmithayTransform, SERIAL_COUNTER};
 
-use viewport_ipc::request::OutputConfigure;
+use viewport_ipc::request::{ModeRequest, OutputConfigure};
 use viewport_ipc::{Event, Request, Transform};
 
 use crate::session;
@@ -1434,6 +1434,105 @@ pub fn focus_view(state: &mut ViewportState, id: u32) {
     state.notify_focus(id);
 }
 
+/// The modeline a `mode` request resolves to, if it names one.
+///
+/// An exact modeline the display advertised wins; a custom one is the fallback
+/// for unusual panels. A request with no refresh (`0`) takes the first
+/// advertised mode at that size, which is not necessarily the one being driven
+/// now — so this is also what tells "any rate at this size" from "already
+/// there" for the no-op checks below.
+fn resolve_output_mode(output: &Output, requested: ModeRequest) -> Option<OutputMode> {
+    let exact = output.modes().into_iter().find(|m| {
+        m.size.w == requested.width
+            && m.size.h == requested.height
+            && (requested.refresh == 0 || m.refresh == requested.refresh)
+    });
+    exact.or_else(|| {
+        (requested.width > 0 && requested.height > 0 && requested.refresh > 0).then(|| OutputMode {
+            size: (requested.width, requested.height).into(),
+            refresh: requested.refresh,
+        })
+    })
+}
+
+/// Whether `config` would leave `output` exactly as it already is.
+///
+/// Only the fields the request names are compared: an absent field is an
+/// instruction to leave that one alone, not a request to reset it. A request
+/// to switch off a screen that is already off is the whole request, because
+/// `output_configure` returns from its disabled branch before reading any other
+/// field — that first branch still owes the layout tell, which is why the
+/// caller asks about the first application separately.
+pub(crate) fn output_configure_matches_live(
+    state: &ViewportState,
+    output: &Output,
+    config: &OutputConfigure,
+) -> bool {
+    if config.enabled == Some(false) {
+        return !state.output_is_enabled(output);
+    }
+
+    let resolved_mode = config
+        .mode
+        .and_then(|requested| resolve_output_mode(output, requested));
+    if let Some(mode) = resolved_mode {
+        // Preferred as well as current: naming a mode also makes it the
+        // advertised preferred one, so a head whose current mode matches but
+        // whose preferred mode does not still has that repair coming.
+        if output.current_mode() != Some(mode) || output.preferred_mode() != Some(mode) {
+            return false;
+        }
+    }
+    if let Some(scale) = config.scale {
+        if output.current_scale().fractional_scale() != scale {
+            return false;
+        }
+    }
+    if let Some(transform) = config.transform {
+        if output.current_transform() != to_smithay_transform(transform) {
+            return false;
+        }
+    }
+    // The map `output_configure` writes, not `configured_vrr`: a request that
+    // pins the policy this head already has is a change even when the global
+    // `adaptive_sync` default happens to give the same effective answer.
+    let wanted_vrr = config.vrr.or(config.adaptive_sync.map(|enabled| {
+        if enabled {
+            viewport_ipc::event::VrrMode::Always
+        } else {
+            viewport_ipc::event::VrrMode::Off
+        }
+    }));
+    if let Some(vrr) = wanted_vrr {
+        if state.output_vrr.get(&output.name()) != Some(&vrr) {
+            return false;
+        }
+    }
+    if config.x.is_some() || config.y.is_some() {
+        let Some(geometry) = state.space.output_geometry(output) else {
+            // The path below maps the output at the requested position, so an
+            // unmapped one is work even when the numbers agree with whatever
+            // it carries while dark.
+            return false;
+        };
+        if config.x.is_some_and(|x| x != geometry.loc.x)
+            || config.y.is_some_and(|y| y != geometry.loc.y)
+        {
+            return false;
+        }
+    }
+
+    // A mode, a scale or a rotation maps an output that is switched off back
+    // into the space as it applies, so one of those named for an unmapped
+    // output is work even when its value matches what the output carries.
+    let geometry_named =
+        resolved_mode.is_some() || config.scale.is_some() || config.transform.is_some();
+    if !state.output_is_enabled(output) && (geometry_named || config.enabled == Some(true)) {
+        return false;
+    }
+    true
+}
+
 fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     // Including one that is already off, or it can never be turned back on:
     // a disabled output is unmapped from the space, and `output_by_name` only
@@ -1525,6 +1624,17 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         );
         return;
     }
+    // Whether the mapping this request names differs from the one in place.
+    // `mirror` is the one field whose change is applied before the no-op check
+    // below; `configure_mirror` skips the teardown and rebuild when it does
+    // not change, but the tail after a change still has to run.
+    let previous_mirror = state.output_mirrors.get(&config.name).cloned();
+    let wanted_mirror = config
+        .mirror
+        .as_deref()
+        .filter(|source| !source.is_empty())
+        .map(str::to_owned);
+    let mirror_changed = config.mirror.is_some() && previous_mirror != wanted_mirror;
     if let Some(source) = config.mirror.as_deref() {
         if let Err(e) = state.configure_mirror(&output, Some(source)) {
             reject(state, "output.configure", &e);
@@ -1561,11 +1671,26 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
         return;
     }
 
-    // Everything above this point refuses; everything below it changes the
-    // hardware. So this is where the change becomes provisional and where the
-    // monitor is written down as one somebody has an opinion about — after the
-    // last `return` that means "nothing happened", and before the first line
-    // that means something did.
+    // A request that names nothing different from what the output is already
+    // doing is not a reason to send `wl_output.done`, re-arrange the layers,
+    // reset the DRM buffers if the shape moved, or tell every client the layout
+    // changed. The first request for an output is never treated as a no-op
+    // whatever it says: it is what introduces the head to the shell and
+    // output-management clients, which a head that came up exactly as the file
+    // asks still needs.
+    let first_application = !state.output_configure_applied.contains(&config.name);
+    if !mirror_changed
+        && !first_application
+        && output_configure_matches_live(state, &output, &config)
+    {
+        return;
+    }
+
+    // Everything above this point refuses or returns without doing anything;
+    // everything below it changes the hardware. So this is where the change
+    // becomes provisional and where the monitor is written down as one
+    // somebody has an opinion about — after the last `return` that means
+    // "nothing happened", and before the first line that means something did.
     //
     // Which fields count: a mode, a scale, a rotation or the power. Those are
     // the four that can leave a person looking at a screen they can no longer
@@ -1618,6 +1743,7 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
             state.notify_output_layout();
             state.advertise_outputs();
             state.needs_render = true;
+            state.output_configure_applied.insert(config.name.clone());
             return;
         }
         state.set_output_enabled(&output, enabled);
@@ -1639,23 +1765,9 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     // mode so unusual panels stay configurable. The fallback needs a refresh:
     // the kernel takes a whole modeline, and a custom mode with none of its
     // own was a silent no-op waiting to be programmed.
-    let mode = config.mode.and_then(|requested| {
-        let exact = output.modes().into_iter().find(|m| {
-            m.size.w == requested.width
-                && m.size.h == requested.height
-                && (requested.refresh == 0 || m.refresh == requested.refresh)
-        });
-        exact.or(
-            if requested.width > 0 && requested.height > 0 && requested.refresh > 0 {
-                Some(OutputMode {
-                    size: (requested.width, requested.height).into(),
-                    refresh: requested.refresh,
-                })
-            } else {
-                None
-            },
-        )
-    });
+    let mode = config
+        .mode
+        .and_then(|requested| resolve_output_mode(&output, requested));
 
     // Refused above when non-positive, so what is left is taken as given.
     let scale = config.scale.map(Scale::Fractional);
@@ -1702,6 +1814,7 @@ fn output_configure(state: &mut ViewportState, config: OutputConfigure) {
     state.notify_output_layout();
     state.advertise_outputs();
     state.needs_render = true;
+    state.output_configure_applied.insert(config.name.clone());
 }
 
 /// What the shell is told an output is turned to.
