@@ -353,18 +353,21 @@ impl ViewportState {
         }
         // Nested has no crtcs; that backend redraws continuously and takes
         // what it needs from the same shared frame description.
-        let crtcs: Vec<_> = self
-            .udev
-            .as_ref()
-            .map(|udev| {
-                udev.ids()
-                    .into_iter()
-                    .filter(|id| all || some.contains(id))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for crtc in crtcs {
-            self.render(crtc);
+        if all {
+            // Every output has something new. One list is enough: `render`
+            // borrows `self` mutably, so the borrow of `udev` has to end
+            // before the loop.
+            let crtcs = self.udev.as_ref().map(|udev| udev.ids()).unwrap_or_default();
+            for crtc in crtcs {
+                self.render(crtc);
+            }
+        } else {
+            // The dirty set is already owned and names exactly this frame's
+            // outputs, so consume it directly. `render` drops a stale
+            // `OutputId` on its own lookup, so no filtering is needed here.
+            for crtc in some {
+                self.render(crtc);
+            }
         }
     }
 
