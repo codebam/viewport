@@ -160,7 +160,7 @@ impl CompositorHandler for ViewportState {
         crate::layer::clear_owner(surface);
         crate::layer::clear_popup(surface);
         if was_pointer_focus {
-            self.refresh_pointer_focus();
+            let _ = self.refresh_pointer_focus();
         }
     }
 }
