@@ -1385,10 +1385,13 @@ fn view_layout(state: &mut ViewportState, mut layout: viewport_ipc::request::Vie
     state.needs_colour_notify = true;
 
     // And the taskbars: a window that crossed onto another monitor belongs in
-    // a different monitor's list now. Owed like the rest — `settle` diffs the
-    // whole set once per batch of messages, and an unchanged window sends
-    // nothing.
-    state.needs_foreign_outputs = true;
+    // a different monitor's list now. Owed like the rest, but per view:
+    // `settle` asks about only the views a run of `view.layout` messages named,
+    // and `set_outputs` diffs each against what it last sent, so an unchanged
+    // window sends nothing. See `foreign_outputs_dirty`.
+    if !state.foreign_outputs_dirty.contains(&layout.id) {
+        state.foreign_outputs_dirty.push(layout.id);
+    }
 }
 
 pub fn focus_view(state: &mut ViewportState, id: u32) {
