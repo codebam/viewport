@@ -916,6 +916,9 @@ function relayoutAll() {
     setOverlay(`bar:${name}`, barFloats ? output.barEl : null,
       { blur: barFloats && barBlur });
     renderBar(name);
+    /* A bar that has just come back on screen asks for its periodic jobs again
+       at once: their timers were cleared while it was hidden. */
+    if (revealed) onBarReveal();
   }
 
   /* Windows a fade was just started on, so that anything else with an opinion
@@ -1010,6 +1013,15 @@ function relayoutAll() {
      the FLIP above would have forced anyway and no longer does. */
   if (isGesturing()) reportAllGeometry();
   pumpGeometry();
+
+  /* With no outputs at all the bar loop above ran no render, so a monitor
+     being unplugged would leave the clock or weather timer armed for a bar
+     that no longer exists. Re-evaluate both — a no-op whenever a bar is still
+     there, because renderBar() has just done the same. */
+  if (outputs.size === 0) {
+    armClockTick();
+    armWeatherRefresh();
+  }
 }
 
 /* Claim only what the active layout can consume. Repeated relayouts are the

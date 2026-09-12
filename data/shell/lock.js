@@ -59,7 +59,7 @@ let lockBusy = false;
    clock tick to leave alone. */
 let lockInputEl = null;
 /* The clock elements, one per output, so the tick can write them without
-   rebuilding the screen once a second. */
+   rebuilding the screen on every tick. */
 let lockClockEls = [];
 
 /* Whether the lock screen is up. Read by bar.js's tick and by commands.js. */
@@ -84,6 +84,9 @@ function applySessionLock(generation, canAuthenticate) {
      pickers. See the `:root.locked` rule in shell.css. */
   document.documentElement?.classList?.add('locked');
   renderLockScreen();
+  /* The lock clock is minute-precision, and a session with no bar clock and
+     no calendar would otherwise have no reason to keep the one tick armed. */
+  armClockTick();
   lockAnnounceDrawn(generation);
 }
 
@@ -98,6 +101,9 @@ function applySessionUnlock() {
   lockEl.replaceChildren();
   lockEl.hidden = true;
   document.documentElement?.classList?.remove('locked');
+  /* The lock's claim on the tick is over; a visible bar clock (or an open
+     calendar) takes it back if it needs one. */
+  armClockTick();
   /* The keyboard came up for the password box and has no reason to stay. A
      desk with a hardware keyboard never saw it; a desk without one is looking
      at half its screen taken by a keyboard over a desktop it can now use. */
@@ -172,11 +178,12 @@ function lockDateText() {
   });
 }
 
-/* The one-second tick, called from bar.js's own so an idle machine has one
+/* Called from bar.js's one boundary-scheduled tick so an idle machine has one
  * timer rather than two — see the note on `renderClocks` there, and the rule
- * in shell.md that nothing here repeats for ever. Writes text and nothing
- * else: rebuilding the screen once a second would take the focus off the
- * password box every second, which is unusable. */
+ * in shell.md that nothing here repeats for ever. It is minute-precision by
+ * construction, and the scheduler arms a minute boundary while a lock is up.
+ * Writes text and nothing else: rebuilding the screen once a minute would take
+ * the focus off the password box each time, which is unusable. */
 function renderLockClocks() {
   if (!lockIsUp()) return;
   const time = lockTimeText();

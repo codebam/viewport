@@ -54,11 +54,11 @@ const CLOCK_MONTHS_LONG = ['January', 'February', 'March', 'April', 'May',
 /* Built formatters, keyed by locale and options.
  *
  * `Intl.DateTimeFormat` is not cheap to construct — it resolves a locale and
- * loads its data — and clockText() runs once a second for as long as the
- * session is up, on a desk that is otherwise asleep. A format string can ask
- * for half a dozen of them in one pass. Building each one once and keeping it
- * is the difference between a clock and a clock that costs measurable CPU to
- * stand still.
+ * loads its data — and clockText() runs for as long as the session is up, on
+ * every boundary the displayed format turns over (and whenever the cache has
+ * been invalidated). A format string can ask for half a dozen of them in one
+ * pass. Building each one once and keeping it is the difference between a
+ * clock and a clock that costs measurable CPU to stand still.
  *
  * Bounded by the number of distinct option shapes this file asks for, which is
  * a handful; cleared when the config changes so a locale nobody is using any
@@ -73,8 +73,8 @@ const clockFormatters = new Map();
  * nulls from the compositor either; there is no constant on that side to send.
  *
  * A locale is checked here rather than trusted, because a malformed language
- * tag makes `Intl.DateTimeFormat` throw a RangeError — once a second, from a
- * timer, for the rest of the session, taking the clock with it. */
+ * tag makes `Intl.DateTimeFormat` throw a RangeError — from the clock's own
+ * tick, for the rest of the session, taking the clock with it. */
 function applyClock(clock) {
   const next = { locale: null, hour12: null, format: null };
   if (clock && typeof clock === 'object') {
@@ -87,11 +87,17 @@ function applyClock(clock) {
   }
   clockConfig = next;
   clockFormatters.clear();
+  /* The cached text was formatted for the old format; it is not a right answer
+     for the new one even if the minute has not turned over. */
+  clockInvalidateTextCache();
   /* The bar first, because a config arriving mid-session is a reload and the
      clock on screen is the old one until something redraws it. The calendar
      only if it is up — its month names came from the locale that just
      changed. */
   renderClocks();
+  /* The format also decides the tick's precision: seconds shown means the next
+     second, a minute clock the next minute. */
+  armClockTick();
   if (calendarOpen) renderCalendar();
 }
 
@@ -199,6 +205,59 @@ function clockText(now = new Date()) {
     ...clockHourOptions(),
   });
   return `󰥔 ${text ?? clockFallbackText(now)}`;
+}
+
+/* Whether the visible clock can change inside a minute, which is what decides
+ * whether the one periodic tick is armed for the next second or the next
+ * minute.
+ *
+ * The list is the conversions whose expansion carries seconds: `%S`, the
+ * compound `%T`, the locale's own `%X` and `%c` (both built from Intl's
+ * medium time style), and `%s` for the epoch. `%r` is a standard locale
+ * time-with-seconds conversion; clockConversion passes it through today, but
+ * if it ever grows one the tick has to follow it rather than freeze the
+ * visible second for a minute. The default (no `format`) asks for hour and
+ * minute only. */
+const CLOCK_SECONDS_CONVERSIONS = 'STXcrs';
+
+function clockShowsSeconds() {
+  const format = clockConfig.format;
+  if (format === null) return false;
+  /* Walk the escapes rather than regex-match: `%%S` is the literal `%S` and
+     not a seconds field. */
+  for (let i = 0; i + 1 < format.length; i++) {
+    if (format[i] !== '%') continue;
+    i++;
+    if (format[i] === '%') continue;
+    if (CLOCK_SECONDS_CONVERSIONS.includes(format[i])) return true;
+  }
+  return false;
+}
+
+/* The last formatted clock text and the boundary bucket it was made for.
+ * clockText() is not free — an options object, a formatter key, a Map lookup
+ * and an Intl format — and a minute clock used to run it once a second plus
+ * once per status sample for a string that changes once a minute. One cache
+ * serves every output, because every output shows the same clock, and
+ * applyClock clears it when the format it was built from changes. */
+const clockTextCache = { bucket: -1, text: '' };
+
+/* The clock's text for `now`, formatted at most once per boundary the format
+ * can display. */
+function clockTextCached(now = new Date()) {
+  const unit = clockShowsSeconds() ? 1000 : 60000;
+  const bucket = Math.floor(now.getTime() / unit);
+  if (clockTextCache.bucket !== bucket) {
+    clockTextCache.bucket = bucket;
+    clockTextCache.text = clockText(now);
+  }
+  return clockTextCache.text;
+}
+
+/* On a config change the format may have changed, and the cached string is
+ * no longer an answer for it even if the current minute has not turned. */
+function clockInvalidateTextCache() {
+  clockTextCache.bucket = -1;
 }
 
 /* The clock for an engine that could not format one: the exact string this
@@ -407,6 +466,9 @@ function toggleCalendar(anchor = null) {
      be trusted, which is the opposite of what a glance at a clock is for. */
   calendarMonth = null;
   renderCalendar();
+  /* The grid changes again at local midnight; arm the one tick for it while
+     the calendar is up. */
+  armClockTick();
 }
 
 function closeCalendar() {
@@ -418,6 +480,9 @@ function closeCalendar() {
   calendarEl.replaceChildren();
   calendarEl.hidden = true;
   setOverlay('calendar', null);
+  /* Midnight is the calendar's only claim on the tick; re-evaluate without
+     it. */
+  armClockTick();
 }
 
 /* The clock module on the output being looked at, for an opening that came
@@ -677,7 +742,7 @@ function calendarDayKey(date) {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
-/* Called from the clock's own tick, once a second.
+/* Called from the clock's own boundary-scheduled tick.
  *
  * Almost always nothing: it compares two short strings and returns. What it is
  * for is the calendar left open across midnight, which would otherwise go on
