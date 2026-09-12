@@ -97,7 +97,7 @@ impl WlrLayerShellHandler for ViewportState {
             if cleaned {
                 self.notify_output_layout();
                 self.needs_render = true;
-                self.refresh_pointer_focus();
+                let _ = self.refresh_pointer_focus();
             }
             return;
         };
@@ -118,7 +118,7 @@ impl WlrLayerShellHandler for ViewportState {
         // The space it reserved is usable again.
         self.notify_output_layout();
         self.needs_render = true;
-        self.refresh_pointer_focus();
+        let _ = self.refresh_pointer_focus();
     }
 
     fn new_popup(
@@ -164,7 +164,7 @@ impl ViewportState {
         tracing::debug!("layer rules: refreshed {mapped} mapped surfaces; {changed} changed");
         self.needs_render = true;
         if stacking_changed {
-            self.refresh_pointer_focus();
+            let _ = self.refresh_pointer_focus();
         }
     }
 
@@ -233,7 +233,7 @@ impl ViewportState {
         }
         self.needs_render = true;
         if changed || pointer_stack_changed {
-            self.refresh_pointer_focus();
+            let _ = self.refresh_pointer_focus();
         }
     }
 

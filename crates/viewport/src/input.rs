@@ -802,7 +802,7 @@ impl ViewportState {
             return;
         };
         if pressed && !pointer.is_grabbed() {
-            self.refresh_pointer_focus();
+            let _ = self.refresh_pointer_focus();
         }
         if tracing::enabled!(tracing::Level::DEBUG) {
             let focus = pointer.current_focus();
@@ -1016,19 +1016,29 @@ impl ViewportState {
             frame = frame.stop(Axis::Horizontal).stop(Axis::Vertical);
         }
 
-        let at = pointer.current_location();
-        if self.surface_under(at).is_none() && self.shell_is_up() {
-            // The shell reads this as "precise": a scroll worth animating
-            // rather than one to step a page at a time. That is a property of
-            // being continuous, not of being a finger — a remote touchpad
-            // scroll was reaching the page claiming every tick was a detent.
-            self.shell_pointer_axis(
-                at,
-                horizontal,
-                vertical,
-                source == AxisSource::Continuous,
-                time.millis(),
-            );
+        // Only the in-process backend has a page to scroll: elsewhere
+        // `shell_is_up` is false and `shell_pointer_axis` has no body, so the
+        // hit test is compiled out rather than walking the window stack for an
+        // answer nothing reads. In the build that does have a page,
+        // `shell_is_up` runs first so the test only happens when a page could
+        // actually receive the scroll.
+        #[cfg(feature = "wpe")]
+        {
+            let at = pointer.current_location();
+            if self.shell_is_up() && self.surface_under(at).is_none() {
+                // The shell reads this as "precise": a scroll worth animating
+                // rather than one to step a page at a time. That is a property
+                // of being continuous, not of being a finger — a remote
+                // touchpad scroll was reaching the page claiming every tick
+                // was a detent.
+                self.shell_pointer_axis(
+                    at,
+                    horizontal,
+                    vertical,
+                    source == AxisSource::Continuous,
+                    time.millis(),
+                );
+            }
         }
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -1727,7 +1737,7 @@ impl ViewportState {
                 // place_below or role destruction cannot receive one stale
                 // click before ordinary pointer motion repairs focus.
                 if state == ButtonState::Pressed && !pointer.is_grabbed() {
-                    self.refresh_pointer_focus();
+                    let _ = self.refresh_pointer_focus();
                 }
                 let serial = SERIAL_COUNTER.next_serial();
 
@@ -2160,20 +2170,42 @@ impl ViewportState {
                 let Some(pointer) = self.seat.get_pointer() else {
                     return;
                 };
+                // Keep the hit test `refresh_pointer_focus` has to run: the
+                // question below is the same one, at the same position, and
+                // `surface_under` walks the whole window stack.
+                #[cfg(feature = "wpe")]
+                let under = if !pointer.is_grabbed() {
+                    self.refresh_pointer_focus()
+                } else {
+                    // A grab suppressed the refresh, so nothing has asked
+                    // where this position lands yet.
+                    self.surface_under(pointer.current_location())
+                };
+                #[cfg(not(feature = "wpe"))]
                 if !pointer.is_grabbed() {
-                    self.refresh_pointer_focus();
+                    // Without `wpe` no shell can receive the scroll, so the
+                    // hit test has no reader; the refresh is still what keeps
+                    // pointer focus describing the desktop under it.
+                    let _ = self.refresh_pointer_focus();
                 }
-                // Scrolling the shell: the taskbar, the notification list, and
-                // a chooser longer than the screen.
-                let at = pointer.current_location();
-                if self.surface_under(at).is_none() && self.shell_is_up() {
-                    self.shell_pointer_axis(
-                        at,
-                        horizontal,
-                        vertical,
-                        source == AxisSource::Finger,
-                        event.time().millis(),
-                    );
+                // Scrolling the shell: the taskbar, the notification list,
+                // and a chooser longer than the screen. Compiled out without
+                // `wpe` — no page, and `shell_pointer_axis` has no body there
+                // — so the hit test above is never asked in builds that cannot
+                // use its answer. With a page, `shell_is_up` goes first so a
+                // shell that is down does not cost a window-stack walk.
+                #[cfg(feature = "wpe")]
+                {
+                    let at = pointer.current_location();
+                    if self.shell_is_up() && under.is_none() {
+                        self.shell_pointer_axis(
+                            at,
+                            horizontal,
+                            vertical,
+                            source == AxisSource::Finger,
+                            event.time().millis(),
+                        );
+                    }
                 }
                 pointer.axis(self, frame);
                 pointer.frame(self);
@@ -3107,6 +3139,11 @@ impl ViewportState {
         let _ = (at, button, pressed, time);
     }
 
+    /// A scroll sent to the page under the pointer.
+    ///
+    /// Only the in-process backend has a page to forward it to: the callers
+    /// are compiled out without `wpe`, which leaves this unreferenced there.
+    #[cfg_attr(not(feature = "wpe"), allow(dead_code))]
     fn shell_pointer_axis(
         &mut self,
         at: Point<f64, Logical>,

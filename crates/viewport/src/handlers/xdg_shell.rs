@@ -249,7 +249,7 @@ impl XdgShellHandler for ViewportState {
         crate::layer::clear_owner(surface.wl_surface());
         crate::layer::clear_popup(surface.wl_surface());
         self.needs_render = true;
-        self.refresh_pointer_focus();
+        let _ = self.refresh_pointer_focus();
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {

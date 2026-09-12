@@ -572,7 +572,7 @@ impl ViewportState {
         // the shell was not a surface and could not be a pointer focus. Moving
         // the shell into a client is what turned "checked on every click" into
         // "checked on every motion", and this is the half that went missing.
-        self.refresh_pointer_focus();
+        let _ = self.refresh_pointer_focus();
         // Ids kept by position, both lists, so an overlay that stays put keeps
         // its element identity — and the blur element never shares one with the
         // texture it sits under. See `shell_overlay_blur_ids`.

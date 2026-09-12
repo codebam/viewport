@@ -2544,17 +2544,20 @@ impl ViewportState {
     /// Wayland compositor says "the same pointer, somewhere else in the
     /// stack": clients receive leave and enter as they should, and one that
     /// tracks the pointer sees no jump because there is none.
-    pub fn refresh_pointer_focus(&mut self) {
-        let Some(pointer) = self.seat.get_pointer() else {
-            return;
-        };
+    ///
+    /// Hands back what the motion found. This is the same hit test a caller
+    /// like the axis path would otherwise run again at the same position, and
+    /// `surface_under` walks the whole window stack — so the answer travels
+    /// with the call that has to compute it anyway.
+    pub fn refresh_pointer_focus(&mut self) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let pointer = self.seat.get_pointer()?;
         let location = pointer.current_location();
         let under = self.surface_under(location);
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         let time = smithay::backend::input::InputTime::now();
         pointer.motion(
             self,
-            under,
+            under.clone(),
             &smithay::input::pointer::MotionEvent {
                 location,
                 serial,
@@ -2562,6 +2565,7 @@ impl ViewportState {
             },
         );
         pointer.frame(self);
+        under
     }
 
     /// Sample the machine and tell the shell.

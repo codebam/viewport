@@ -355,7 +355,7 @@ pub fn apply(state: &mut ViewportState, request: Request) {
             // Every click belongs to the shell while the overview is up and to
             // the windows again when it is down, and neither transition
             // involves the pointer moving. Same reason as `set_shell_overlays`.
-            state.refresh_pointer_focus();
+            let _ = state.refresh_pointer_focus();
             if active {
                 // To the desktop page where the shell is a client: the overview
                 // is drawn by the shell and driven from the keyboard, so keys

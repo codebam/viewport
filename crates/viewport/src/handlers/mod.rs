@@ -280,7 +280,7 @@ impl smithay::wayland::input_method::InputMethodHandler for ViewportState {
 
     fn popup_repositioned(&mut self, _surface: smithay::wayland::input_method::PopupSurface) {
         self.needs_render = true;
-        self.refresh_pointer_focus();
+        let _ = self.refresh_pointer_focus();
     }
 
     fn dismiss_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
@@ -293,7 +293,7 @@ impl smithay::wayland::input_method::InputMethodHandler for ViewportState {
         );
         if dismissed.is_ok() {
             self.needs_render = true;
-            self.refresh_pointer_focus();
+            let _ = self.refresh_pointer_focus();
         }
     }
 

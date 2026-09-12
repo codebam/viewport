@@ -1355,7 +1355,10 @@ impl crate::state::ViewportState {
                         session.barriers.iter().map(move |barrier| (path, barrier))
                     })
                     .filter(|(_, barrier)| crosses(**barrier, from, to))
-                    .min_by_key(|(path, barrier)| (path.as_str().to_owned(), barrier.id))
+                    // Borrowed rather than an owned copy per barrier: the
+                    // key also carries the id, and this runs on every pointer
+                    // motion against every barrier in every session.
+                    .min_by_key(|(path, barrier)| (path.as_str(), barrier.id))
                     .map(|(path, barrier)| (path.clone(), barrier.id))
             };
             let Some((session, barrier)) = trigger else {
