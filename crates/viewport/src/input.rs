@@ -3533,8 +3533,12 @@ impl ViewportState {
         pointer.frame(self);
         self.drag_to(pos);
         self.shell_pointer_motion(pos, on_shell, time.millis());
-        // The cursor moved, and nothing else would draw it.
-        self.needs_render = true;
+        // The cursor moved, and only the screens it moved between can have
+        // changed. Ask for exactly those, unless the mapping cannot be
+        // trusted; see `mark_pointer_outputs_dirty`.
+        if !self.mark_pointer_outputs_dirty(pointer.is_grabbed(), from, pos) {
+            self.needs_render = true;
+        }
 
         // Focus follows the pointer: give the keyboard to whichever window
         // the pointer is now over, subject to the distance threshold. Not
@@ -3573,6 +3577,54 @@ impl ViewportState {
                 self.follow_mouse_pos = Some(pos);
             }
         }
+    }
+
+    /// Ask for a frame on just the screens a pointer motion changed.
+    ///
+    /// A cursor is drawn on every output whose geometry contains the pointer
+    /// and nowhere else, so moving it can only damage the screen it left —
+    /// which has to erase the old image — and the screen it landed on, which
+    /// has to draw the new. The line this replaces set `needs_render` instead,
+    /// which `render_if_needed` turns into a frame on *every* output, so a
+    /// 1000 Hz mouse recomposited the whole desk for a cursor that is on one
+    /// screen (two, for the frame it crosses a seam).
+    ///
+    /// `mark_output_dirty` names an output this backend can render and also
+    /// dirties the mirror sinks fed from it — a sink is not in the `Space`,
+    /// so the point lookup above cannot see it. It falls back to `needs_render`
+    /// itself for an output with no CRTC.
+    ///
+    /// Returns false when asking for every output is the safe answer: a
+    /// nested or headless session has no crtcs to name; a grab or a shell drag
+    /// may have something besides the cursor moving with the motion; and a
+    /// motion whose endpoints name no screen at all is not a cursor picture
+    /// this can promise to repair.
+    fn mark_pointer_outputs_dirty(
+        &mut self,
+        grabbed: bool,
+        from: Point<f64, Logical>,
+        to: Point<f64, Logical>,
+    ) -> bool {
+        if self.udev.is_none()
+            || grabbed
+            || self.pointer_drag.is_some()
+            || !self.shell_grabbed_buttons.is_empty()
+        {
+            return false;
+        }
+        // Cloned before marking: `mark_output_dirty` needs the state mutably
+        // and `output_under` borrows the `Space`.
+        let outputs: Vec<_> = [from, to]
+            .into_iter()
+            .flat_map(|at| self.space.output_under(at).cloned())
+            .collect();
+        if outputs.is_empty() {
+            return false;
+        }
+        for output in &outputs {
+            self.mark_output_dirty(output);
+        }
+        true
     }
 
     /// Give the keyboard to whatever window a finger or a pen tip landed on.
