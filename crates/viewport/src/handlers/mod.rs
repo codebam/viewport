@@ -578,6 +578,18 @@ impl smithay::wayland::image_copy_capture::ImageCopyCaptureHandler for ViewportS
         self.capture_sessions.retain(|held| **held != session);
     }
 
+    /// The frame object went away before the copy was served.
+    ///
+    /// The client is gone, or it destroyed a frame it is no longer waiting
+    /// on. Its `Frame` would otherwise stay in `pending_capture_frames`,
+    /// pinning the client's `wl_buffer` and keeping the capture pool from
+    /// being released. The reference names the same protocol object, which
+    /// is what `Frame`'s equality with `FrameRef` compares.
+    fn frame_aborted(&mut self, frame: smithay::wayland::image_copy_capture::FrameRef) {
+        self.pending_capture_frames
+            .retain(|(_, pending)| pending != &frame);
+    }
+
     fn frame(
         &mut self,
         session: &smithay::wayland::image_copy_capture::SessionRef,

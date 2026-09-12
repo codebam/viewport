@@ -733,11 +733,13 @@ fn run() -> Result<()> {
                 // And the wallpaper terminal, on the same terms.
                 state.check_background_terminal();
                 // And the things whose owner is gone but which nothing else
-                // notices: screencopy requests for outputs that stopped being
-                // drawn, screenshot files the portal has long since handed
-                // out. Both hold memory or disk until someone lets go.
+                // notices: screencopy, image-copy and portal screenshot
+                // requests for outputs that stopped being drawn, and
+                // screenshot files the portal has long since handed out. All
+                // hold memory or disk until someone lets go.
                 state.reap_pending_copies();
                 state.reap_pending_capture_frames();
+                state.reap_pending_screenshots();
                 state.reap_screenshot_temps();
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
                     std::time::Duration::from_secs(1),
