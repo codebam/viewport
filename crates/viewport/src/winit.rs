@@ -332,19 +332,27 @@ pub fn init(
                         // Screenshots, while the renderer is in hand. After the
                         // draw so a client that asked during this frame is served
                         // with what the frame shows rather than the one before it.
-                        state.service_screencopy::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-                            &output, renderer,
-                        );
-                        state.service_image_capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-                            &output, renderer,
-                        );
-                        // No allocator here, so a resized source is renegotiated
-                        // onto shared memory — which is what a nested session was
-                        // using in any case.
-                        state.resize_casts(|_| Vec::new());
-                        state.feed_casts::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
-                            &output, renderer,
-                        );
+                        //
+                        // A readback waits on the renderer's shared queue from
+                        // this thread, so hold it back while a carried client
+                        // fence may be ahead of it there. The output has already
+                        // been drawn; only capture is skipped for this pass.
+                        if state.capture_service_ready() {
+                            state.service_screencopy::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                                &output, renderer,
+                            );
+                            state.service_image_capture::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                                &output, renderer,
+                            );
+                            // No allocator here, so a resized source is renegotiated
+                            // onto shared memory — which is what a nested session was
+                            // using in any case.
+                            state.resize_casts(|_| Vec::new());
+                            state
+                                .feed_casts::<_, smithay::backend::renderer::gles::GlesRenderbuffer>(
+                                    &output, renderer,
+                                );
+                        }
                         true
                     }
                     Err(e) => {

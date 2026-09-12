@@ -16,6 +16,82 @@ fn monotonic_now() -> std::time::Duration {
 }
 
 impl ViewportState {
+    /// Whether a capture is waiting for pixels this compositor still has to
+    /// composite and read back.
+    ///
+    /// Cheap on purpose: this is asked once per explicit-acquire commit, which
+    /// a client painting in IMMEDIATE mode makes thousands of times a second.
+    pub fn capture_wants_fences_blocked(&self) -> bool {
+        !self.casts.is_empty()
+            || !self.pending_copies.is_empty()
+            || !self.pending_capture_frames.is_empty()
+            || !self.pending_screenshots.is_empty()
+    }
+
+    /// Whether capture work may run now, or has to wait for a carried fence.
+    ///
+    /// A capture readback (`read_output_pixels`, `render_*_into`) waits on the
+    /// renderer's shared queue from this thread. A client acquire point that
+    /// was carried rather than blocked may already be ahead of that queue
+    /// entry, and waiting on it here would freeze input and every output until
+    /// the client caught up. So while capture is active, any carried point
+    /// that has not signalled holds capture back for this pass.
+    ///
+    /// With nothing waiting on pixels this is true without touching the map.
+    /// Otherwise entries that have signalled are dropped, and if one is still
+    /// outstanding a single one-shot retry is armed; false means "skip capture
+    /// now", while the caller still renders the output.
+    pub fn capture_service_ready(&mut self) -> bool {
+        if !self.capture_wants_fences_blocked() {
+            return true;
+        }
+
+        self.carried_acquire_points.retain(|_surface, point| {
+            match point.timeline().query_signalled_point() {
+                // A timeline only moves forward: latest >= point means this
+                // fence has signalled.
+                Ok(latest) if latest >= point.point() => false,
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::debug!(
+                        "capture: dropping an acquire point that cannot be queried: {e}"
+                    );
+                    false
+                }
+            }
+        });
+        if self.carried_acquire_points.is_empty() {
+            return true;
+        }
+
+        self.arm_capture_retry();
+        false
+    }
+
+    /// Wake the loop once, a frame from now, to try capture again.
+    ///
+    /// A gate that refuses capture also skips the pass that would have
+    /// serviced it, and a still desktop has no reason to render again. This is
+    /// what brings the retry around; the bool keeps one render that services
+    /// many outputs from arming one timer per output.
+    fn arm_capture_retry(&mut self) {
+        if self.capture_retry_armed {
+            return;
+        }
+
+        let timer =
+            smithay::reexports::calloop::timer::Timer::from_duration(self.frame_interval());
+        let inserted = self.loop_handle.insert_source(timer, |_, _, state: &mut Self| {
+            state.capture_retry_armed = false;
+            state.needs_render = true;
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        });
+        match inserted {
+            Ok(_) => self.capture_retry_armed = true,
+            Err(e) => tracing::warn!("capture service retry: {e}"),
+        }
+    }
+
     /// Forget every explicit `view.capture` answer and re-derive the
     /// conservative one.
     ///

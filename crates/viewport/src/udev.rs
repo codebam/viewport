@@ -3740,34 +3740,43 @@ impl ViewportState {
         // whole compositor as well as the renderer, and the renderer lives
         // inside it — a copy composites the desktop, which is everything.
         // Anything sharing this screen, fed from the frame just drawn.
-        if !self.casts.is_empty() {
-            {
-                // Before the frames: a source that has resized needs the
-                // format agreed again, and the buffers for it come from this
-                // renderer — which is why this is here and not inside
-                // `feed_casts`. The state does not hold the renderer while it
-                // is lent out, so anything reaching for `self.udev` in there
-                // finds nothing.
-                // Allocated through the renderer in hand, because the state
-                // does not hold it while it is lent out: reaching for
-                // `self.udev` in there finds nothing, and a resize answered
-                // with no buffers is the DMA-BUF offer withdrawn — a share
-                // dropped onto the readback path for the rest of the session
-                // by one resize. Only Vulkan can allocate them; GLES answers
-                // with none, which is the shared-memory path a nested session
-                // was on anyway.
-                self.resize_casts(|size| renderer.cast_targets(size));
-                self.feed_casts::<_, <R as Captures>::Buffer>(output, renderer);
+        //
+        // A capture readback waits on the renderer's shared queue from this
+        // thread, so it must not run while a carried client fence may be ahead
+        // of it there: that wait would freeze input and every output until the
+        // client caught up. `capture_service_ready` refuses for this pass (and
+        // arms one retry) until the fence signals; the output's render above
+        // has already happened, so only capture is skipped here.
+        if self.capture_service_ready() {
+            if !self.casts.is_empty() {
+                {
+                    // Before the frames: a source that has resized needs the
+                    // format agreed again, and the buffers for it come from this
+                    // renderer — which is why this is here and not inside
+                    // `feed_casts`. The state does not hold the renderer while it
+                    // is lent out, so anything reaching for `self.udev` in there
+                    // finds nothing.
+                    // Allocated through the renderer in hand, because the state
+                    // does not hold it while it is lent out: reaching for
+                    // `self.udev` in there finds nothing, and a resize answered
+                    // with no buffers is the DMA-BUF offer withdrawn — a share
+                    // dropped onto the readback path for the rest of the session
+                    // by one resize. Only Vulkan can allocate them; GLES answers
+                    // with none, which is the shared-memory path a nested session
+                    // was on anyway.
+                    self.resize_casts(|size| renderer.cast_targets(size));
+                    self.feed_casts::<_, <R as Captures>::Buffer>(output, renderer);
+                }
             }
-        }
 
-        if !self.pending_copies.is_empty()
-            || !self.pending_capture_frames.is_empty()
-            || !self.pending_screenshots.is_empty()
-        {
+            if !self.pending_copies.is_empty()
+                || !self.pending_capture_frames.is_empty()
+                || !self.pending_screenshots.is_empty()
             {
-                self.service_screencopy::<_, <R as Captures>::Buffer>(output, renderer);
-                self.service_image_capture::<_, <R as Captures>::Buffer>(output, renderer);
+                {
+                    self.service_screencopy::<_, <R as Captures>::Buffer>(output, renderer);
+                    self.service_image_capture::<_, <R as Captures>::Buffer>(output, renderer);
+                }
             }
         }
 
