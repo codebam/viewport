@@ -2462,7 +2462,7 @@ impl ViewportState {
                     *dx += event.delta().x;
                     *dy += event.delta().y;
                     let (dx, dy) = (*dx, *dy);
-                    self.notify(&viewport_ipc::Event::GestureUpdate {
+                    self.pending_gesture = Some(viewport_ipc::Event::GestureUpdate {
                         kind: viewport_ipc::GestureKind::Swipe,
                         dx,
                         dy,
@@ -2572,7 +2572,7 @@ impl ViewportState {
                     *scale = event.scale();
                     *rotation += event.rotation();
                     let (dx, dy, scale, rotation) = (*dx, *dy, *scale, *rotation);
-                    self.notify(&viewport_ipc::Event::GestureUpdate {
+                    self.pending_gesture = Some(viewport_ipc::Event::GestureUpdate {
                         kind: viewport_ipc::GestureKind::Pinch,
                         dx,
                         dy,

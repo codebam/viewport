@@ -487,6 +487,17 @@ pub struct ViewportState {
     /// Gesture kinds the shell currently owns as live sequences.
     pub live_gestures: Vec<viewport_ipc::GestureCaptureSpec>,
     pub gesture: Option<crate::input::GestureState>,
+    /// The newest cumulative live-gesture update, waiting for the end of the
+    /// event-loop turn.
+    ///
+    /// A touchpad reports at 100-250 Hz, and every update costs a JSON encode,
+    /// a write per shell client and one JS evaluation in the shell. The
+    /// payload is cumulative since the matching `GestureBegin`, so only the
+    /// last update before a frame can be observed — each new one replaces this
+    /// instead of being sent on its own. `notify` drains it before every other
+    /// event and the main loop drains it once per turn; see
+    /// [`ViewportState::flush_pending_gesture`].
+    pub pending_gesture: Option<viewport_ipc::Event>,
 
     /// Stops the outer GLib loop. calloop's own signal only ends the inner
     /// dispatch, so quitting has to go through this when the web engine is
@@ -1796,6 +1807,7 @@ impl ViewportState {
             gestures: Vec::new(),
             live_gestures: Vec::new(),
             gesture: None,
+            pending_gesture: None,
             #[cfg(feature = "wpe")]
             shell_ping: None,
             capture: None,
