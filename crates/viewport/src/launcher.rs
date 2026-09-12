@@ -516,9 +516,17 @@ pub fn icon_url(name: &str, theme: &str) -> Option<String> {
     if name.is_empty() {
         return None;
     }
-    let path = crate::icon::lookup(name, None, theme, ICON_SIZE)?;
-    let url = crate::icon::data_url(&path)?;
-    (url.len() <= MAX_ICON_URL).then_some(url)
+    // In candidate order, not just the best one: a scalable SVG is the best
+    // match at every size and can still be too large for the message cap,
+    // where the 48-pixel PNG behind it is a few kilobytes and the icon the
+    // row should have. Before this, a gap-sized app like GParted fell back to
+    // a letter despite a perfectly good PNG in the theme.
+    crate::icon::candidates(name, None, theme, ICON_SIZE)
+        .into_iter()
+        .find_map(|path| {
+            let url = crate::icon::data_url(&path)?;
+            (url.len() <= MAX_ICON_URL).then_some(url)
+        })
 }
 
 /// One row of an answer: the application, and its icon as the page draws it.

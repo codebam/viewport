@@ -36,21 +36,24 @@ const MAX_FILE: u64 = 512 * 1024;
 /// manager fills.
 const MAX_DEPTH: usize = 3;
 
-/// Open `path` for reading without following a symlink at the final component,
-/// and without blocking on a FIFO that has no writer.
+/// Open `path` for reading without blocking on a FIFO that has no writer.
 ///
-/// `O_NONBLOCK` is not about reading regular files — it is ignored there. It
-/// is what keeps an `open` on a FIFO from waiting for a writer that may never
-/// come; the `file_type` check on the open descriptor then refuses it. The
-/// metadata that decides what the path really is comes from the descriptor,
-/// not from the name, so a path swapped between the check and the read cannot
-/// name a different inode.
+/// Symlinks are followed on purpose: NixOS assembles an icon theme as a union
+/// of store paths, so the size directories, the category directories and every
+/// icon under them are links. What the hardening actually needs is not "no
+/// links" but "no unexpected inode": the decision is made from the descriptor
+/// after it is open, [`data_url`] refuses anything that is not a regular file,
+/// reads no further than the size cap, and checks that the bytes are the image
+/// the extension claims. A theme that links `icon.png` at an ssh key is
+/// refused by the content check; a link at a FIFO cannot block because
+/// `O_NONBLOCK` keeps `open` from waiting for a writer, and is refused because
+/// the descriptor is not a regular file.
 #[cfg(unix)]
 fn open_icon(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt as _;
     std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .custom_flags(libc::O_NONBLOCK)
         .open(path)
 }
 
@@ -59,10 +62,70 @@ fn open_icon(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
 
+/// Whether the bytes really are the format the extension names.
+///
+/// The extension is not evidence. `lookup` follows symlinks again because a
+/// package-manager theme is built from them, and it can also hand back an
+/// absolute path an application chose, so a file named `icon.png` may be
+/// anything at all. Without this, a theme link from `icon.png` to an ssh key
+/// would be read whole, base64'd, and delivered to the shell — which is the
+/// leak the symlink refusal was added for, achieved without a symlink at all
+/// if an application names the key directly. Checked on the bytes after the
+/// bounded read, so it costs a handful of comparisons per icon.
+fn content_matches(extension: &str, bytes: &[u8]) -> bool {
+    match extension {
+        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpg" | "jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        "bmp" => bytes.starts_with(b"BM"),
+        "avif" => avif_magic(bytes),
+        "svg" => svg_magic(bytes),
+        // gzip-compressed SVG; no browser draws it, but the old behaviour is
+        // a data URL rather than a refusal, so it stays and is checked.
+        "svgz" => bytes.starts_with(&[0x1f, 0x8b]),
+        _ => false,
+    }
+}
+
+/// An ISO base media file whose brands name AVIF, not merely `mif1`.
+fn avif_magic(bytes: &[u8]) -> bool {
+    if bytes.len() < 16 || &bytes[4..8] != b"ftyp" {
+        return false;
+    }
+    let brand = |b: &[u8]| b == b"avif" || b == b"avis";
+    // The major brand, or any compatible brand: a file written as `mif1`
+    // with `avif` in its compatible list is a valid AVIF.
+    brand(&bytes[8..12]) || bytes[16..].chunks_exact(4).any(brand)
+}
+
+/// Whether text looks like an SVG document rather than a renamed secret.
+///
+/// SVG is text, so there is no fixed signature: a BOM, whitespace, an XML
+/// declaration, a doctype or a comment may precede the root element. Only the
+/// prologue is scanned, and the root must appear in it — an unrelated XML
+/// file with an `.svg` name is not a picture and is not sent.
+fn svg_magic(bytes: &[u8]) -> bool {
+    let text = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    let Some(start) = text.iter().position(|b| !b.is_ascii_whitespace()) else {
+        return false;
+    };
+    let text = &text[start..];
+    if text.starts_with(b"<svg") {
+        return true;
+    }
+    if text.starts_with(b"<?xml") || text.starts_with(b"<!DOCTYPE") || text.starts_with(b"<!--") {
+        let head = &text[..text.len().min(4096)];
+        return head.windows(4).any(|window| window == &b"<svg"[..]);
+    }
+    false
+}
+
 /// An icon file as a `data:` URL, or nothing where it cannot be read or is not
 /// a format a browser shows.
 pub fn data_url(path: &Path) -> Option<String> {
-    let mime = match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    let mime = match extension.as_str() {
         "png" => "image/png",
         "svg" | "svgz" => "image/svg+xml",
         // Not for icons — a theme holds none of these — but for cover art,
@@ -91,6 +154,10 @@ pub fn data_url(path: &Path) -> Option<String> {
     (&file).take(MAX_FILE + 1).read_to_end(&mut bytes).ok()?;
     if bytes.len() as u64 > MAX_FILE {
         tracing::debug!("{}: icon grew past the {MAX_FILE} byte cap", path.display());
+        return None;
+    }
+    if !content_matches(&extension, &bytes) {
+        tracing::debug!("{}: contents are not {mime}", path.display());
         return None;
     }
     Some(format!("data:{mime};base64,{}", base64(&bytes)))
@@ -124,7 +191,8 @@ pub(crate) const MAX_ART: u64 = 8 << 20;
 /// felt like speaking on the session bus, and a format that can carry
 /// markup has no business arriving that way.
 pub fn art_data_url(path: &Path) -> Option<String> {
-    let mime = match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    let mime = match extension.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
@@ -155,6 +223,10 @@ pub fn art_data_url(path: &Path) -> Option<String> {
         tracing::debug!("{}: cover art grew past the cap", path.display());
         return None;
     }
+    if !content_matches(&extension, &bytes) {
+        tracing::debug!("{}: contents are not {mime}", path.display());
+        return None;
+    }
     Some(format!("data:{mime};base64,{}", base64(&bytes)))
 }
 
@@ -174,7 +246,15 @@ pub fn png_data_url(bytes: &[u8]) -> Option<String> {
     Some(format!("data:image/png;base64,{}", base64(bytes)))
 }
 
-/// Where an icon name resolves to, searching the installed themes.
+/// Every theme path that answers for `name`, best candidate first.
+///
+/// [`lookup`] is the one-answer form and is what most callers want. This is
+/// for a caller that has a budget: the closest icon is not always the one it
+/// can use. A scalable SVG scores best at every size and is the right answer
+/// for a tray, but one large document is tens of kilobytes of base64 in a
+/// single message, and a 48-pixel PNG a couple of candidates down may be the
+/// icon that actually fits. The order is the score order, and ties keep the
+/// order the themes were searched in.
 ///
 /// `theme_path` is the item's own `IconThemePath` — the property an
 /// application that ships its own icons sets, and the reason a tray icon can
@@ -185,9 +265,9 @@ pub fn png_data_url(bytes: &[u8]) -> Option<String> {
 /// The named theme is searched before `hicolor`, and `hicolor` is always
 /// searched: it is where a package installs an icon that belongs to no theme,
 /// and skipping it is how an icon that plainly exists is reported missing.
-pub fn lookup(name: &str, theme_path: Option<&str>, theme: &str, size: u32) -> Option<PathBuf> {
+pub fn candidates(name: &str, theme_path: Option<&str>, theme: &str, size: u32) -> Vec<PathBuf> {
     if name.is_empty() {
-        return None;
+        return Vec::new();
     }
 
     // An absolute path is not a name. Applications do send one — it is not in
@@ -196,19 +276,15 @@ pub fn lookup(name: &str, theme_path: Option<&str>, theme: &str, size: u32) -> O
     // "/opt/foo/icon.png" in every icon directory on the machine.
     let direct = Path::new(name);
     if direct.is_absolute()
-        && std::fs::symlink_metadata(direct)
+        && std::fs::metadata(direct)
             .map(|meta| meta.is_file())
             .unwrap_or(false)
     {
-        return Some(direct.to_path_buf());
+        return vec![direct.to_path_buf()];
     }
 
-    let mut best: Option<(u32, PathBuf)> = None;
-    let mut consider = |found: PathBuf, score: u32| {
-        if best.as_ref().is_none_or(|(current, _)| score < *current) {
-            best = Some((score, found));
-        }
-    };
+    let mut found: Vec<(u32, PathBuf)> = Vec::new();
+    let mut consider = |path: PathBuf, score: u32| found.push((score, path));
 
     if let Some(dir) = theme_path {
         walk(Path::new(dir), name, size, 0, &mut consider);
@@ -221,7 +297,14 @@ pub fn lookup(name: &str, theme_path: Option<&str>, theme: &str, size: u32) -> O
         // many older applications still put their only icon.
         walk(&base, name, size, MAX_DEPTH, &mut consider);
     }
-    best.map(|(_, path)| path)
+    // Stable, so equal scores stay in the order the themes were searched.
+    found.sort_by_key(|(score, _)| *score);
+    found.into_iter().map(|(_, path)| path).collect()
+}
+
+/// Where an icon name resolves to, searching the installed themes.
+pub fn lookup(name: &str, theme_path: Option<&str>, theme: &str, size: u32) -> Option<PathBuf> {
+    candidates(name, theme_path, theme, size).into_iter().next()
 }
 
 /// The directories icon themes are installed into, most specific first.
@@ -241,6 +324,59 @@ fn bases() -> Vec<PathBuf> {
     dirs
 }
 
+/// Whether a symlinked directory is one the icon-theme layout names.
+///
+/// A package-manager theme is a union of links, and following all of them
+/// would let one link to `/` turn a lookup into a walk of the machine. The
+/// layout has a fixed vocabulary — a size directory, `scalable`, `symbolic`,
+/// or a category — and a link is descended into only when its name is in it.
+/// A real directory is not restricted: it is material inside the theme the
+/// caller asked for, not an indirection somewhere else.
+fn theme_component(name: &str) -> bool {
+    const CATEGORIES: &[&str] = &[
+        "actions",
+        "animations",
+        "apps",
+        "categories",
+        "devices",
+        "emblems",
+        "emotes",
+        "filesystems",
+        "intl",
+        "legacy",
+        "mimetypes",
+        "notifications",
+        "panel",
+        "places",
+        "preferences",
+        "shortcuts",
+        "status",
+        "stock",
+        "ui",
+    ];
+    if CATEGORIES.contains(&name) {
+        return true;
+    }
+    if name == "scalable" || name == "symbolic" {
+        return true;
+    }
+    if let Some(rest) = name
+        .strip_prefix("scalable@")
+        .or_else(|| name.strip_prefix("symbolic@"))
+    {
+        return !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit());
+    }
+    // 48x48, 128x128@2 and the like.
+    let Some((width, rest)) = name.split_once('x') else {
+        return false;
+    };
+    let height = rest.split_once('@').map_or(rest, |(height, _)| height);
+    !width.is_empty()
+        && !height.is_empty()
+        && width.bytes().all(|b| b.is_ascii_digit())
+        && height.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Walk one theme directory, offering every `name.png` and `name.svg` under it.
 ///
 /// The score handed to `consider` is how far the icon is from the size asked
@@ -254,20 +390,30 @@ fn walk(dir: &Path, name: &str, want: u32, depth: usize, consider: &mut impl FnM
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(kind) = entry.file_type() else {
+        // Follows links: a package-manager theme is made of them. What the
+        // hardening wanted is not refused here — the open and the content
+        // check below are where an unexpected inode is stopped. FIFOs,
+        // devices and sockets report as neither file nor directory and are
+        // skipped before anything opens them.
+        let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
-        if kind.is_dir() {
-            if depth < MAX_DEPTH {
-                walk(&path, name, want, depth + 1, consider);
+        if meta.is_dir() {
+            if depth >= MAX_DEPTH {
+                continue;
             }
+            if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                let Some(component) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if !theme_component(component) {
+                    continue;
+                }
+            }
+            walk(&path, name, want, depth + 1, consider);
             continue;
         }
-        // A theme full of symlinks is either a package manager's cleverness
-        // or a way to make the compositor read a file it was never meant to;
-        // neither belongs in an icon. FIFOs, devices and sockets are refused
-        // here too, before anything opens them.
-        if !kind.is_file() {
+        if !meta.is_file() {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -673,6 +819,53 @@ mod tests {
         assert!(pixmap_url(&pixmaps, 22).is_none());
     }
 
+    /// AVIF may name its brand as the major brand or among the compatible
+    /// ones; either is a picture, and neither is a renamed secret.
+    #[test]
+    fn avif_brands_are_recognised() {
+        let mut file = vec![0u8; 32];
+        file[4..8].copy_from_slice(b"ftyp");
+        file[8..12].copy_from_slice(b"avif");
+        assert!(avif_magic(&file));
+
+        file[8..12].copy_from_slice(b"mif1");
+        file[16..20].copy_from_slice(b"avif");
+        assert!(avif_magic(&file));
+
+        file[16..20].copy_from_slice(b"heic");
+        assert!(!avif_magic(&file));
+        assert!(!avif_magic(b"ftypavif"));
+    }
+
+    /// The best candidate is the scalable one; the size-matched PNGs follow
+    /// so a caller with a message budget can fall to the one that fits.
+    #[test]
+    fn candidates_are_scored_best_first() {
+        let dir = scratch_dir("candidates");
+        for (size, name) in [
+            ("48x48", "viewport-test-cand.png"),
+            ("22x22", "viewport-test-cand.png"),
+            ("scalable", "viewport-test-cand.svg"),
+        ] {
+            let where_ = dir.join(size).join("apps");
+            std::fs::create_dir_all(&where_).expect("the layout");
+            std::fs::write(where_.join(name), b"x").expect("the icon");
+        }
+
+        let found = candidates(
+            "viewport-test-cand",
+            Some(dir.to_str().unwrap()),
+            "hicolor",
+            48,
+        );
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert!(found[0].ends_with("scalable/apps/viewport-test-cand.svg"));
+        assert!(found[1].ends_with("48x48/apps/viewport-test-cand.png"));
+        assert!(found[2].ends_with("22x22/apps/viewport-test-cand.png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The size in a theme path, which is how the closest icon is chosen.
     #[test]
     fn a_theme_path_says_what_size_it_holds() {
@@ -717,49 +910,114 @@ mod tests {
         dir
     }
 
-    /// A symlink is not the file it points at. Once only the name was read,
-    /// so a theme — which is a directory a package manager fills — could name
-    /// any file on the machine and have it base64'd into a shell message.
+    /// A symlinked icon resolves — a package-manager theme is links all the
+    /// way down — but a link to a regular file that is not an image does not,
+    /// because the bytes are checked against the extension before anything is
+    /// sent to the shell.
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_icon_is_refused_at_the_final_component() {
+    fn a_symlinked_image_resolves_but_a_symlinked_secret_does_not() {
         use std::os::unix::fs::symlink;
 
         let dir = scratch_dir("symlink");
-        let target = dir.join("target.png");
-        std::fs::write(&target, b"not really a png").expect("the target");
+        let target = dir.join("real-icon.png");
+        std::fs::write(&target, png(1, 1, &[0, 0, 0, 0])).expect("the target");
         let link = dir.join("viewport-test-icon.png");
         symlink(&target, &link).expect("the symlink");
 
-        assert_eq!(data_url(&link), None);
-        assert_eq!(art_data_url(&link), None);
+        assert!(data_url(&link).is_some());
+        assert!(art_data_url(&link).is_some());
         assert_eq!(
             lookup(
                 "viewport-test-icon",
                 Some(dir.to_str().unwrap()),
                 "hicolor",
                 22
-            ),
-            None
-        );
-        assert!(lookup(link.to_str().unwrap(), None, "hicolor", 22).is_none());
-
-        // The regular file beside it still resolves, so the walk is skipping
-        // the link rather than the whole directory.
-        let regular = dir.join("viewport-test-regular.png");
-        std::fs::write(&regular, b"png").expect("the regular icon");
-        assert_eq!(
-            lookup(
-                "viewport-test-regular",
-                Some(dir.to_str().unwrap()),
-                "hicolor",
-                22
             )
             .as_deref(),
-            Some(regular.as_path())
+            Some(link.as_path())
         );
 
+        // A regular file that is not a PNG, named as one: a theme must not be
+        // able to base64 a key into a shell message through the name alone.
+        let secret = dir.join("secret");
+        std::fs::write(&secret, b"-----BEGIN OPENSSH PRIVATE KEY-----\n").expect("the secret");
+        let liar = dir.join("viewport-test-secret.png");
+        symlink(&secret, &liar).expect("the second symlink");
+        assert_eq!(data_url(&liar), None);
+        assert_eq!(art_data_url(&liar), None);
+
+        // The absolute-path arm follows links too, and then fails the same
+        // content check rather than reading the file out.
+        assert_eq!(
+            lookup(liar.to_str().unwrap(), None, "hicolor", 22).as_deref(),
+            Some(liar.as_path())
+        );
+        assert_eq!(data_url(liar.as_path()), None);
+
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The NixOS union layout: the size directory and the icon file are links
+    /// into the store, and a lookup has to arrive at the file through both.
+    #[cfg(unix)]
+    #[test]
+    fn a_package_manager_union_theme_resolves() {
+        use std::os::unix::fs::symlink;
+
+        let root = scratch_dir("union");
+        let store = scratch_dir("union-store");
+        let store_size = store.join("48x48/apps");
+        std::fs::create_dir_all(&store_size).expect("the store layout");
+        std::fs::write(
+            store_size.join("nixos-test-icon.png"),
+            png(1, 1, &[0, 0, 0, 0]),
+        )
+        .expect("the store icon");
+
+        let theme = root.join("hicolor");
+        std::fs::create_dir_all(&theme).expect("the theme root");
+        symlink(store.join("48x48"), theme.join("48x48")).expect("the size link");
+        // A file link beside the real one: the path the walk finds is a link,
+        // and the icon has to be read through it.
+        symlink(
+            store.join("48x48/apps/nixos-test-icon.png"),
+            store_size.join("nixos-test-link.png"),
+        )
+        .expect("the file link");
+
+        let found = lookup(
+            "nixos-test-link",
+            Some(theme.to_str().unwrap()),
+            "hicolor",
+            48,
+        )
+        .expect("the union icon");
+        assert!(found.ends_with("48x48/apps/nixos-test-link.png"));
+        assert!(
+            data_url(&found).is_some(),
+            "the linked image must be served"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&store);
+    }
+
+    /// Only the layout's own names are followed when a directory is a link,
+    /// so a theme cannot point the walk at the machine root.
+    #[test]
+    fn only_theme_layout_directory_links_are_followed() {
+        assert!(theme_component("48x48"));
+        assert!(theme_component("128x128@2"));
+        assert!(theme_component("scalable"));
+        assert!(theme_component("scalable@2"));
+        assert!(theme_component("apps"));
+        assert!(theme_component("status"));
+        assert!(!theme_component(""));
+        assert!(!theme_component(".."));
+        assert!(!theme_component("not-a-theme-component"));
+        assert!(!theme_component("48x"));
+        assert!(!theme_component("x48"));
     }
 
     /// A FIFO named `icon.png` used to block the compositor worker inside
@@ -800,11 +1058,15 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("a scratch directory");
 
         let at_cap = dir.join("at-cap.png");
-        std::fs::write(&at_cap, vec![0u8; MAX_FILE as usize]).expect("the at-cap file");
+        let mut at_cap_bytes = vec![0u8; MAX_FILE as usize];
+        at_cap_bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        std::fs::write(&at_cap, at_cap_bytes).expect("the at-cap file");
         assert!(data_url(&at_cap).is_some());
 
         let over_cap = dir.join("over-cap.png");
-        std::fs::write(&over_cap, vec![0u8; MAX_FILE as usize + 1]).expect("the over-cap file");
+        let mut over_bytes = vec![0u8; MAX_FILE as usize + 1];
+        over_bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        std::fs::write(&over_cap, over_bytes).expect("the over-cap file");
         assert_eq!(data_url(&over_cap), None);
 
         let _ = std::fs::remove_dir_all(&dir);
