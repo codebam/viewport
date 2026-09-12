@@ -174,6 +174,9 @@ pub fn apply(state: &mut ViewportState, request: Request) {
                 return;
             };
             tracing::debug!("view {id}: capture policy set to {capture}");
+            // An explicit answer, so identity changes stop re-deriving the
+            // conservative default over the top of it. See `capture_resolved`.
+            view.capture_resolved = true;
             if view.capture_allowed != capture {
                 view.capture_allowed = capture;
                 // Capture is serviced from a render pass. Wake an idle backend

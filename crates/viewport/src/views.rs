@@ -99,7 +99,23 @@ pub struct View {
     pub minimized: bool,
     /// Whether capture paths may include this window. Window rules can turn it
     /// off after the view is announced; ordinary windows remain capturable.
+    ///
+    /// Re-derived conservatively when the window's identity changes, but only
+    /// until the policy is resolved — see [`Self::capture_resolved`].
     pub capture_allowed: bool,
+    /// Whether an explicit `view.capture` has resolved this window's policy:
+    /// the shell's rule answer, or a `viewport msg -t view.capture`.
+    ///
+    /// Until it is set, every identity change re-derives `capture_allowed`
+    /// conservatively — the fail-closed answer the compositor gives while the
+    /// shell is starting or has not spoken for this window. Once it is set,
+    /// that answer stands: a title that happens to match a `capture: false`
+    /// rule must not silently undo a permission somebody granted, and the
+    /// shell sends a new `view.capture` when the rules really change. Without
+    /// this, `viewport msg -t view.capture --capture true` was reverted to
+    /// false the next time the client changed its title, which Chromium does
+    /// constantly.
+    pub capture_resolved: bool,
     /// Stable renderer identity for the black rectangle substituted into a
     /// capture when `capture_allowed` is false.
     pub capture_redaction_id: smithay::backend::renderer::element::Id,
@@ -601,6 +617,7 @@ impl Views {
             visible: true,
             minimized: false,
             capture_allowed: true,
+            capture_resolved: false,
             capture_redaction_id: smithay::backend::renderer::element::Id::new(),
             scale: 1.0,
             clip: None,

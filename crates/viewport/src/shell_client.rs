@@ -1014,6 +1014,11 @@ impl ViewportState {
         // killing the shell is not a way past the lock.
         self.forget_lock_screen();
         self.shell_clients.remove(at);
+        // The answers this shell gave are no longer worth anything: it is not
+        // here to re-resolve a window whose identity changes. Fall back to the
+        // conservative rule — a private window cannot be exposed by a shell
+        // crash. See `forget_capture_answers`.
+        self.forget_capture_answers();
         self.shell_frames = 0;
         self.needs_render = true;
 

@@ -553,13 +553,19 @@ impl ViewportState {
         // Read here, before the mutable borrow below: the content type walks
         // the surface tree, which needs the view.
         let content = view.content_type().to_owned();
+        // Whether an explicit `view.capture` has already answered for this
+        // window. Read before the mutable borrow below. A re-derived denial
+        // only applies until the shell — or a `viewport msg -t view.capture` —
+        // has said what the policy really is; otherwise a title Chromium
+        // changes while loading keeps undoing a permission that was granted.
+        let capture_resolved = view.capture_resolved;
         let capture_allowed = crate::config::initially_allows_capture(
             self.config.rules.as_ref(),
             &app_id,
             &title,
             tag.as_deref(),
         );
-        if !capture_allowed {
+        if !capture_resolved && !capture_allowed {
             if let Some(view) = self.views.get_mut(id) {
                 view.capture_allowed = false;
             }

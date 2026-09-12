@@ -104,6 +104,9 @@ export WAYLAND_DISPLAY="$display"
 
 paint_args=("$app_id" "$width" "$height" "$margin" "$body" "$edge")
 [ "$content" = popup ] && paint_args+=(popup)
+# The private run needs to change the window's identity after the grant has
+# been made; `retitle` makes SIGUSR1 do that. See tests/paint-client.c.
+[ "$privacy" = private ] && paint_args+=(retitle)
 "$paint_client" "${paint_args[@]}" >"$workdir/paint.log" 2>&1 &
 paint_pid=$!
 
@@ -205,6 +208,38 @@ if [ "$status" -eq 0 ] && [ "$privacy" = private ]; then
 	else
 		echo "FAIL could not make the private test window capturable" >&2
 		status=2
+	fi
+	# The grant has to outlive an identity change. Chromium retitles constantly
+	# while a page loads, and the compositor used to re-derive the conservative
+	# `capture: false` answer from the rules on every title, app-id, tag, icon or
+	# content change, so an explicit `view.capture true` was turned back off
+	# "shortly later". SIGUSR1 makes the window retitle; `view.query` confirms the
+	# compositor saw the new title before the capture is asked for again, so this
+	# cannot pass by racing ahead of the change.
+	if [ "$status" -eq 0 ]; then
+		kill -USR1 "$paint_pid" 2>/dev/null
+		retitled=
+		for _ in $(seq 1 100); do
+			if "$viewport" msg \
+					--socket "$XDG_RUNTIME_DIR/viewport-$display.sock" \
+					-t view.query 2>/dev/null \
+					| grep -q 'viewport-capture-retitled'; then
+				retitled=yes
+				break
+			fi
+			sleep 0.05
+		done
+		if [ -z "$retitled" ]; then
+			echo "FAIL the compositor never saw the window's new title, so the" >&2
+			echo "     identity change that revokes the grant was never made" >&2
+			status=2
+		else
+			"$capture_client" --output-has "$body"
+			status=$?
+			if [ "$status" -ne 0 ]; then
+				echo "FAIL the capture grant did not survive a title change" >&2
+			fi
+		fi
 	fi
 fi
 

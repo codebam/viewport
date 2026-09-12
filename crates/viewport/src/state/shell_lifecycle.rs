@@ -540,6 +540,10 @@ impl ViewportState {
         if self.shells.get(page).is_none() {
             return;
         }
+        // The engine is gone whether or not it comes back, so the `view.capture`
+        // answers it gave have to go with it: nothing else re-resolves a window
+        // whose identity changes while it is down. See `forget_capture_answers`.
+        self.forget_capture_answers();
         if !reason.is_recoverable() {
             tracing::warn!("not restarting shell {page}: {reason}");
             return;

@@ -137,7 +137,7 @@ Also accepted on the UNIX socket, which speaks the same message set.
 | `view.close` | `id` |
 | `view.opacity` | `id`, `opacity` (0–1) |
 | `view.opacity_rule` | `id`, non-negative `opacity` multiplier — stable window-rule policy, separate from animation opacity |
-| `view.capture` | `id`, `capture` (required boolean) — changes whether capture paths may include this window; windows allow capture by default |
+| `view.capture` | `id`, `capture` (required boolean) — changes whether capture paths may include this window; windows allow capture by default. The answer is explicit and stands until the next `view.capture`: a later title, app-id or tag change does not re-derive a conservative denial over it, and neither does a config reload. Losing the shell (its process dying, or the embedded web process) forgets these answers and falls back to the conservative rule until a shell speaks again |
 | `view.query` | — replays `config` and a `view.added` for every mapped window |
 | `shell.focus` | — |
 | `background.focus` | — (toggles the keyboard onto the wallpaper terminal and back) |

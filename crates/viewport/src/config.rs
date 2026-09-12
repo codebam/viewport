@@ -1582,6 +1582,9 @@ pub fn parse_xwayland_scale(value: &XwaylandScaleSetting) -> anyhow::Result<Xway
 /// rule starts the view private. Workspace predicates are deliberately treated
 /// as possible matches here because only the shell knows the opening workspace;
 /// its later `view.capture` answer may safely make the result less conservative.
+///
+/// A shell that is lost has the answers it gave forgotten, so this is asked
+/// again for each window (`ViewportState::forget_capture_answers`).
 pub fn initially_allows_capture(
     rules: Option<&serde_json::Value>,
     app_id: &str,

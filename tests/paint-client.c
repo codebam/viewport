@@ -16,6 +16,8 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -55,6 +57,12 @@ struct paint_client {
 	bool pulse;
 	bool popup;
 	int pulse_phase;
+
+	/* Change the title when sent SIGUSR1. The harness drives the timing, so
+	 * the identity change can be made after an explicit capture grant and the
+	 * grant proved to survive it. */
+	bool retitle;
+	const char *retitle_to;
 
 	bool drawing;
 	bool closed;
@@ -354,12 +362,23 @@ static const struct xdg_toplevel_listener xdg_toplevel_listener = {
 	.close = handle_toplevel_close,
 };
 
+/* The harness's request to change the title, which is what an identity change
+ * looks like from the compositor's side. A flag rather than work in the
+ * handler: the display is woken by the signal and the loop below does it. */
+static volatile sig_atomic_t retitle_requested = 0;
+
+static void handle_sigusr1(int sig)
+{
+	(void)sig;
+	retitle_requested = 1;
+}
+
 int main(int argc, char *argv[])
 {
-	if (argc != 7 && argc != 8) {
+	if (argc < 7) {
 		fprintf(stderr,
 			"usage: %s APP_ID WIDTH HEIGHT MARGIN BODY_ARGB EDGE_ARGB "
-			"[pulse|popup]\n"
+			"[pulse] [popup] [retitle]\n"
 			"\n"
 			"Paints a WIDTH x HEIGHT window in BODY_ARGB inside a surface\n"
 			"grown by MARGIN on every side and painted EDGE_ARGB, the way a\n"
@@ -367,9 +386,27 @@ int main(int argc, char *argv[])
 			"\n"
 			"With `pulse`, changes its own width every frame, so the shell\n"
 			"has to lay the whole workspace out again each time. With `popup`,\n"
-			"draws a transparent blur popup over a sharp colour boundary.\n",
+			"draws a transparent blur popup over a sharp colour boundary.\n"
+			"With `retitle`, changes its title when sent SIGUSR1, so a harness\n"
+			"can produce an identity change on timing of its own choosing.\n",
 			argv[0]);
 		return 2;
+	}
+
+	/* Each mode is a separate flag, so a caller may ask for more than one
+	 * (a private run whose window both draws a popup and retitles). */
+	bool pulse = false, popup = false, retitle = false;
+	for (int i = 7; i < argc; i++) {
+		if (strcmp(argv[i], "pulse") == 0) {
+			pulse = true;
+		} else if (strcmp(argv[i], "popup") == 0) {
+			popup = true;
+		} else if (strcmp(argv[i], "retitle") == 0) {
+			retitle = true;
+		} else {
+			fprintf(stderr, "unknown mode %s\n", argv[i]);
+			return 2;
+		}
 	}
 
 	struct paint_client client = {
@@ -379,8 +416,10 @@ int main(int argc, char *argv[])
 		.margin = atoi(argv[4]),
 		.body = (uint32_t)strtoul(argv[5], NULL, 16),
 		.edge = (uint32_t)strtoul(argv[6], NULL, 16),
-		.pulse = argc == 8 && strcmp(argv[7], "pulse") == 0,
-		.popup = argc == 8 && strcmp(argv[7], "popup") == 0,
+		.pulse = pulse,
+		.popup = popup,
+		.retitle = retitle,
+		.retitle_to = "viewport-capture-retitled",
 	};
 
 	if (client.width <= 0 || client.height <= 0 || client.margin < 0) {
@@ -392,6 +431,12 @@ int main(int argc, char *argv[])
 	if (display == NULL) {
 		fprintf(stderr, "cannot connect to WAYLAND_DISPLAY\n");
 		return 1;
+	}
+
+	if (client.retitle) {
+		struct sigaction action = { .sa_handler = handle_sigusr1 };
+		sigemptyset(&action.sa_mask);
+		sigaction(SIGUSR1, &action, NULL);
 	}
 
 	struct wl_registry *registry = wl_display_get_registry(display);
@@ -427,8 +472,44 @@ int main(int argc, char *argv[])
 
 	wl_surface_commit(client.surface);
 
-	while (!client.closed && wl_display_dispatch(display) != -1) {
+	while (!client.closed) {
 		/* Keep the window up until killed; the harness drives the timing. */
+		if (retitle_requested) {
+			retitle_requested = 0;
+			xdg_toplevel_set_title(client.xdg_toplevel, client.retitle_to);
+			wl_surface_commit(client.surface);
+			puts("retitled");
+			fflush(stdout);
+		}
+		/* Wait with a timeout rather than blocking inside
+		 * `wl_display_dispatch`: libwayland retries a signal-interrupted poll
+		 * by itself, so a client that has stopped drawing for any reason — an
+		 * occluded window, a paused frame loop — would never come back to
+		 * notice the flag above. The timeout is what makes the check run. */
+		while (wl_display_prepare_read(display) != 0) {
+			if (wl_display_dispatch_pending(display) == -1) {
+				client.closed = true;
+				break;
+			}
+		}
+		if (client.closed) {
+			break;
+		}
+		wl_display_flush(display);
+		struct pollfd pfd = { .fd = wl_display_get_fd(display),
+			.events = POLLIN };
+		int ready = poll(&pfd, 1, 50);
+		if (ready > 0) {
+			if (wl_display_read_events(display) == -1 ||
+					wl_display_dispatch_pending(display) == -1) {
+				client.closed = true;
+			}
+		} else {
+			wl_display_cancel_read(display);
+			if (ready < 0 && errno != EINTR) {
+				client.closed = true;
+			}
+		}
 	}
 
 	wl_display_disconnect(display);

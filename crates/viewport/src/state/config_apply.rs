@@ -150,10 +150,17 @@ impl ViewportState {
         if file.rules.is_some() {
             self.config.rules = file.rules;
             // A reload may introduce a denial for an already mapped window.
-            // Tighten immediately; only the shell's full workspace-aware
-            // resolution is allowed to relax this conservative answer.
+            // Tighten immediately, but only for a window whose policy the
+            // shell has not resolved yet: one that already carries an explicit
+            // answer is the shell's — or a `viewport msg -t view.capture`'s —
+            // to change, and a reload re-resolves through the shell anyway.
+            // See `capture_resolved`.
             let rules = self.config.rules.clone();
-            for view in self.views.views_mut().filter(|view| view.mapped) {
+            for view in self
+                .views
+                .views_mut()
+                .filter(|view| view.mapped && !view.capture_resolved)
+            {
                 if !crate::config::initially_allows_capture(
                     rules.as_ref(),
                     &view.app_id(),

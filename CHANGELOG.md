@@ -35,6 +35,17 @@ to summarise rather than to duplicate.
   second against 43 to 48); see `docs/benchmarks.md`.
 
 ### Fixed
+- `viewport msg -t view.capture --capture true` is no longer reverted. The
+  compositor re-derived a conservative `capture: false` answer on every title,
+  app-id, tag, icon or content change (`notify_props`) and on config reload, so
+  an explicit grant was undone the next time the window's identity changed —
+  which Chromium does constantly while loading a page. A window now carries
+  whether a `view.capture` has resolved it, and the conservative re-derivation
+  stops once it has: the answer stands until another `view.capture` arrives,
+  and the shell still re-resolves on the changes that matter. Losing a shell —
+  its process dying, or the embedded web process — drops those resolutions and
+  the conservative rule stands again, so the fail-closed answer does not go
+  with the shell that gave it.
 - A fixed-size X11 window floats rather than being tiled. Steam's self-updater
   is the window that made this concrete: SDL gives it `WM_CLASS`, a title, a
   `WM_NORMAL_HINTS` whose minimum and maximum are the same 320×140, and an

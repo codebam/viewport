@@ -16,6 +16,48 @@ fn monotonic_now() -> std::time::Duration {
 }
 
 impl ViewportState {
+    /// Forget every explicit `view.capture` answer and re-derive the
+    /// conservative one.
+    ///
+    /// Called when a shell is lost — its process died, or the embedded web
+    /// process did. An answer is only worth anything while the thing that gave
+    /// it is around to give another: the shell re-resolves `view.capture` on
+    /// every change that matters, and with the shell gone nothing would
+    /// re-resolve a window whose title or app id later comes to match a
+    /// `capture: false` rule. Dropping back to `initially_allows_capture`
+    /// restores the fail-closed answer for every window the shell had spoken
+    /// for, until a shell comes back and speaks again. A grant made by hand
+    /// with `viewport msg -t view.capture` is forgotten here too, on purpose:
+    /// this is the safe direction, and the message can simply be sent again.
+    ///
+    /// Every resolved window is dropped, not only those on a lost page's own
+    /// outputs. Which page answered for a window is not tracked, and
+    /// over-denying until the remaining shell next speaks is the side to err
+    /// on.
+    pub fn forget_capture_answers(&mut self) {
+        let rules = self.config.rules.clone();
+        let mut changed = false;
+        for view in self.views.views_mut().filter(|view| view.capture_resolved) {
+            view.capture_resolved = false;
+            if view.capture_allowed
+                && !crate::config::initially_allows_capture(
+                    rules.as_ref(),
+                    &view.app_id(),
+                    &view.title(),
+                    view.tag.as_deref(),
+                )
+            {
+                view.capture_allowed = false;
+                changed = true;
+            }
+        }
+        if changed {
+            // The redaction is drawn, not merely decided: a window that has to
+            // go private now is one a frame already on screen still shows.
+            self.needs_render = true;
+        }
+    }
+
     /// What the pointer is over.
     ///
     /// Falls through to nothing when no window is under it, which in the

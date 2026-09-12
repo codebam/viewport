@@ -2100,9 +2100,13 @@ taskbar label, is outside the window and is not hidden. Capture is allowed by
 default, and a non-boolean value is ignored.
 
 The compositor passes the rules to the shell. Layout actions remain shell
-decisions. Capture denials are also matched conservatively in the compositor so
-a shell that has not answered or has crashed cannot expose a private window;
-the shell sends its full workspace-aware resolution back afterwards.
+decisions. Capture denials are also matched conservatively in the compositor,
+so privacy fails closed while the shell is starting and again if the shell is
+lost: losing a shell makes the compositor forget the answers that shell gave
+and fall back to this conservative match until a shell speaks for each window
+again. An explicit `view.capture` — the shell's reply, or one sent by hand with
+`viewport msg -t view.capture` — stands until the next one, so a later title,
+app ID or tag change does not re-derive a denial over a grant.
 
 ## Groups
 
