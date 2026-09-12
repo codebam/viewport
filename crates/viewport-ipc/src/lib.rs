@@ -76,11 +76,20 @@ impl ParseError {
 
 /// Parse one message from the shell.
 ///
-/// The staged checks exist to reproduce the C build's error messages exactly,
-/// which is what makes the existing shell tests a usable oracle. A plain
-/// `serde_json::from_str::<Request>` would collapse all four failures into one
-/// unrecognisable serde string.
+/// A valid message is parsed once, straight into [`Request`]; only when that
+/// fails does the staged path below run. That path exists to reproduce the C
+/// build's error messages exactly, which is what makes the existing shell
+/// tests a usable oracle. A plain `serde_json::from_str::<Request>` error would
+/// collapse all four failures into one unrecognisable serde string.
 pub fn parse(bytes: &[u8]) -> Result<Request, ParseError> {
+    // Fast path: the common case is a valid request, and it can be decoded
+    // straight into what dispatch needs. The staged checks below are the
+    // error-message oracle, so they can wait for a failure — which is what
+    // keeps a successful request from being decoded twice.
+    if let Ok(request) = serde_json::from_slice::<Request>(bytes) {
+        return Ok(request);
+    }
+
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| ParseError::Malformed {
             message: e.to_string(),
@@ -94,13 +103,14 @@ pub fn parse(bytes: &[u8]) -> Result<Request, ParseError> {
         .ok_or(ParseError::MissingType)?
         .to_owned();
 
-    // From the bytes again rather than from the parsed value. `from_value`
-    // would deep-clone the whole document per dispatch — up to the framing
-    // cap, sixty times a second, for a shell that lays everything out on
-    // every frame — purely so the staged checks above could keep it alive
-    // long enough to name the type in an error. They only need the name, and
-    // that is already owned. Nothing is lost by reading the bytes a second
-    // time: `from_slice` reports the line and column of a bad body where
+    // The staged path is the oracle for *why* a message was rejected, so it
+    // runs only after the fast path above has already rejected the bytes. From
+    // the bytes again rather than from the parsed value. `from_value` would
+    // deep-clone the whole document per rejected message — up to the framing
+    // cap — purely so the staged checks above could keep it alive long enough
+    // to name the type in an error. They only need the name, and that is
+    // already owned. Nothing is lost by reading the bytes a second time:
+    // `from_slice` reports the line and column of a bad body where
     // `from_value`, which has no positions to point at, reports neither.
     serde_json::from_slice(bytes).map_err(|e| {
         // serde cannot tell "no such variant" from "that variant, malformed",
@@ -364,6 +374,36 @@ mod tests {
         assert_eq!(
             parse(br#"{"type":"view.close","id":12}"#).unwrap(),
             Request::ViewClose { id: 12 }
+        );
+    }
+
+    /// The fast path's main customer is `view.layout`, the message the shell
+    /// sends for every window on every frame. A full body must still land on
+    /// exactly the value the staged path used to produce.
+    #[test]
+    fn a_valid_full_request_parses_in_one_pass() {
+        let raw = br#"{"type":"view.layout","id":3,"x":10,"y":20,"width":800,"height":600,"scale":0.5,"clip":{"height":40},"floating":true}"#;
+        assert_eq!(
+            parse(raw).unwrap(),
+            Request::ViewLayout(request::ViewLayout {
+                id: 3,
+                box_: geometry::PartialBox {
+                    x: Some(10),
+                    y: Some(20),
+                    width: Some(800),
+                    height: Some(600),
+                },
+                scale: Some(0.5),
+                clip: Some(geometry::PartialBox {
+                    x: None,
+                    y: None,
+                    width: None,
+                    height: Some(40),
+                }),
+                frame: None,
+                floating: true,
+                square: false,
+            })
         );
     }
 }

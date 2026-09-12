@@ -435,6 +435,15 @@ impl Ipc {
     /// `ViewportState::notify` for the WebKit delivery that must keep
     /// receiving private events regardless of the socket's clients.
     pub fn broadcast(&mut self, event: &Event) {
+        // Nothing to send to. In a WPE session this is the normal state — the
+        // shell is in-process, and the delivery that reaches it is
+        // `ViewportState::notify`'s post, not this socket — so serialising
+        // here would be work done once for nobody. The sweep and writer
+        // arming below are both no-ops on an empty map; there is no side
+        // effect to preserve ahead of the return.
+        if self.clients.is_empty() {
+            return;
+        }
         let Ok(mut text) = viewport_ipc::to_string(event) else {
             tracing::error!("could not serialise {event:?}");
             return;
