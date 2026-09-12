@@ -45,6 +45,13 @@ impl ViewportState {
         if !was_active {
             self.notify(&viewport_ipc::Event::ScreencastActive { active: true });
         }
+        // The first frame goes out now rather than a period from now: nothing
+        // has been shared yet, so there is no rate to keep and a viewer is
+        // looking at a black rectangle. `pace_casts` starts the clock that
+        // brings the second one round.
+        self.cast_due = None;
+        self.needs_render = true;
+        self.pace_casts();
         Ok(BegunCast {
             arrival,
             stream_id,
@@ -135,6 +142,186 @@ impl ViewportState {
         if before > 0 && self.casts.is_empty() {
             self.notify(&viewport_ipc::Event::ScreencastActive { active: false });
         }
+        // Which also takes the deadline with it: a clock left armed for a
+        // share nobody is watching is a desktop that never settles.
+        self.pace_casts();
+    }
+
+    /// How often a share is worth a frame of its own.
+    ///
+    /// Compositing and reading back a screen is a full frame off the GPU —
+    /// fifteen megabytes at 1440p — and doing it at the compositor's own rate
+    /// made the desktop lag while a share was open. Thirty a second is what a
+    /// screen share is watched at.
+    ///
+    /// One constant rather than one per call site: the four deliveries in
+    /// `feed_casts_from` and the one in `draw_into_casts` have to agree on the
+    /// rate, or a share is composited by one of them and handed over by
+    /// another that thinks it is not due yet.
+    pub(crate) const CAST_RATE: std::time::Duration = std::time::Duration::from_millis(33);
+
+    /// How often a share that has not started yet is worth looking at.
+    ///
+    /// Its consumer connects on its own clock: PipeWire leaves the stream
+    /// paused until something reads it, and that can be long after the
+    /// compositor drew the frame the share started with. A still desktop has
+    /// nothing else to bring the question round, so it gets asked — slowly,
+    /// because until the answer changes there is nothing to composite.
+    pub(crate) const CAST_START_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+    /// Ask for the next share frame on the share's own clock.
+    ///
+    /// This replaces `needs_render = true`, which asked for a frame on the
+    /// *panel's* clock — the next turn of the frame clock, which on a 240Hz
+    /// screen is four milliseconds away. A share wants one every thirty-three.
+    /// What the difference cost was a frame built for every monitor on the
+    /// desk eight times more often than any of them was shared, and thrown
+    /// away by the damage tracker seven times out of eight.
+    ///
+    /// The old line was also only reached on a turn where a frame was actually
+    /// due, so the turn after it found the gate shut, asked for nothing, and
+    /// let the clock stop. A still desktop therefore delivered exactly one
+    /// frame of a share and then nothing until the mouse moved — the freeze
+    /// that line was written to prevent, arrived at from the other side.
+    ///
+    /// Idempotent, and safe to call from a render pass that served nothing: a
+    /// deadline already in the future is left where it is.
+    pub(crate) fn pace_casts(&mut self) {
+        let reading = self.casts.iter().any(|cast| cast.stream.is_streaming());
+        let starting = self.casts.iter().any(|cast| !cast.stream.has_drawn());
+        if !reading && !starting {
+            // Nobody is watching and nobody is about to. A share whose consumer
+            // has gone away — a closed tab whose session the frontend has not
+            // got round to closing — is the case the `streaming` flag was added
+            // to stop paying for, and waking a settled desktop thirty times a
+            // second to be refused a frame is paying for it again.
+            self.cast_due = None;
+            return;
+        }
+        let now = std::time::Instant::now();
+        // Already scheduled, and not yet due.
+        if self.cast_due.is_some_and(|at| at > now) {
+            return;
+        }
+        // Overdue, or nothing was scheduled. One period from now, so a pass
+        // that could not composite — a flip already in the air, an output that
+        // has gone — costs the share one frame rather than the whole chain.
+        let rate = if reading {
+            Self::CAST_RATE
+        } else {
+            Self::CAST_START_POLL
+        };
+        let due = now + rate;
+        self.cast_due = Some(due);
+        self.arm_cast_tick(due.saturating_duration_since(now));
+    }
+
+    /// Arm the screen-share tick, which is what brings the next frame round on
+    /// a desktop nothing else is happening on.
+    ///
+    /// Its own timerfd rather than the frame clock's. The frame clock wakes at
+    /// the panel's rate to invite clients to paint, and a share's deadline is
+    /// eight times further out on a 240Hz screen: arming that clock for the
+    /// share would either tick it too often or hold a client's invitation
+    /// behind the share until the deadline passed. Neither clock has to know
+    /// about the other this way.
+    fn arm_cast_tick(&mut self, interval: std::time::Duration) {
+        // A one-shot timerfd armed for zero is a timerfd *disarmed* — a zero
+        // `it_value` is how the kernel is told to stop it — so a deadline that
+        // has already arrived would be a share that never ticks again.
+        let interval = interval.max(std::time::Duration::from_millis(1));
+        if self.cast_timer.is_none() {
+            self.cast_timer = self.create_tick("screen share", Self::cast_tick);
+        }
+        if Self::arm_tick("screen share", self.cast_timer.as_ref(), interval) {
+            return;
+        }
+        // No timerfd. Fall back on asking for a frame the way this used to,
+        // which is the panel's rate rather than the share's and so costs more
+        // than it should — but a share that stutters is worse than one that is
+        // expensive, and this is the branch that has no timer at all.
+        self.needs_render = true;
+        self.arm_frame_clock();
+    }
+
+    /// The screen-share clock's tick: draw whatever a share is served from.
+    fn cast_tick(&mut self) {
+        // Cleared first, so that the render below — which reaches `feed_casts`,
+        // which reaches `pace_casts` — is free to schedule the next one.
+        self.cast_due = None;
+        if self.casts.is_empty() {
+            return;
+        }
+        self.mark_cast_outputs_dirty();
+        self.render_if_needed();
+        let _ = self.display_handle.flush_clients();
+        // Whatever the render did, the next frame is owed. A pass that was
+        // skipped — a flip still in the air, a screen that has gone off — never
+        // reached `feed_casts`, and a share whose deadline is only ever set
+        // from inside a successful composite is one that stops on the first
+        // frame it could not draw.
+        self.pace_casts();
+    }
+
+    /// Ask for a frame on the outputs a share is actually served from.
+    ///
+    /// Rather than `needs_render`, which asks for every output on the desk. A
+    /// share of one monitor is not a reason to redraw the others, and redrawing
+    /// an output is what invites every client on it to paint again — which on
+    /// the monitor holding the recorder means the recorder repainting its own
+    /// preview, thirty times a second, for a picture nobody is sharing.
+    fn mark_cast_outputs_dirty(&mut self) {
+        let targets = self.cast_targets_now();
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        let mut marked = false;
+        for output in outputs {
+            if !self.cast_served_by(&output, &targets) {
+                continue;
+            }
+            // A nested or headless session has no crtcs to name, and redraws
+            // from its own timer; `render_if_needed` takes what it needs from
+            // the same shared description either way.
+            let Some(id) = self.udev.as_ref().and_then(|udev| udev.id_of(&output)) else {
+                continue;
+            };
+            self.dirty_outputs.insert(id);
+            marked = true;
+        }
+        // No output could be named — nested, headless, or a share whose source
+        // has gone. Ask the blunt way rather than not at all.
+        if !marked {
+            self.needs_render = true;
+        }
+    }
+
+    /// Whether `output` is the screen any of these shares is served from.
+    ///
+    /// The same three answers the deliveries in `feed_casts_from` give
+    /// themselves, asked up front: a share of one output is that output's
+    /// work, a share of the whole desk belongs to whichever output
+    /// `desk_capture_output` nominates, and a share of a window belongs to the
+    /// output `window_cast_served_by` nominates, so that a window straddling
+    /// two screens is composited once and not twice.
+    fn cast_served_by(
+        &self,
+        output: &Output,
+        targets: &[Option<crate::screencast::Target>],
+    ) -> bool {
+        use crate::screencast::Target;
+        let desk_is_ours = self.desk_capture_output().as_ref() == Some(output);
+        targets.iter().any(|target| match target {
+            Some(Target::Output(shared)) => shared == output,
+            Some(Target::AllOutputs) => desk_is_ours,
+            Some(Target::Window(id)) => self
+                .views
+                .get(*id)
+                .and_then(|view| self.space.element_geometry(&view.window))
+                .is_some_and(|geometry| self.window_cast_served_by(geometry, output)),
+            // A share that names nothing right now — a followed window that
+            // has lost focus — is nobody's work, and leaving the last frame up
+            // is what `resolve_cast` already decided on.
+            None => false,
+        })
     }
 
     /// Hand this output's frame to anything sharing it.
@@ -158,32 +345,76 @@ impl ViewportState {
             return;
         }
 
-        // What a share is worth asking the renderer for.
-        //
-        // Compositing and reading back a screen is a full frame off the GPU —
-        // fifteen megabytes at 1440p — and doing it at the compositor's own
-        // rate made the desktop lag while a share was open. Thirty a second
-        // is what a screen share is watched at.
-        const RATE: std::time::Duration = std::time::Duration::from_millis(33);
-        if !self.casts.iter().any(|cast| cast.stream.wants_frame(RATE)) {
-            return;
-        }
-
         // What each share names right now. Resolved once and reused, because a
         // following source is answered from focus and the answer must not
         // change between deciding to composite and deciding who receives it —
         // that is a frame handed to the wrong stream at the wrong size.
         let targets = self.cast_targets_now();
 
+        // Whether this screen is the one a share that is due is served from.
+        //
+        // Asked of every output's render pass, and the answer used to be the
+        // same on all of them: the gate was "does any share want a frame",
+        // with nothing about *which screen* the share was of. Every pass that
+        // answered yes then asked for a frame of the whole desk, so recording
+        // one monitor redrew the others too — and redrawing an output is what
+        // invites every client on it to paint again, which for the monitor
+        // holding the recorder means the recorder repainting its own preview
+        // thirty times a second for a picture nobody was sharing.
+        //
+        // The work below already knew which output served which share, one
+        // predicate at a time; this is the same three predicates asked before
+        // the work rather than inside it.
+        let serves = self.casts.iter().any(|cast| cast.stream.wants_frame(Self::CAST_RATE))
+            && self.cast_served_by(output, &targets);
+        if serves {
+            self.feed_casts_from(output, renderer, &targets);
+        }
+
+        // Keep drawing while anything is watching — on the share's own clock.
+        //
+        // Rendering is driven by damage, and a desktop nobody is touching
+        // produces none — so the compositor drew one frame, handed it over,
+        // and stopped. A share is a stream: the viewer needs a frame whether
+        // or not this end has changed, and one that stops arriving reads as a
+        // frozen screen rather than a still one.
+        self.pace_casts();
+    }
+
+    /// The frames a share is fed, once it is known this output serves one.
+    ///
+    /// Split out of [`Self::feed_casts`] so that the question "is this screen
+    /// anybody's business" is asked once and answered before any of this runs,
+    /// rather than being re-derived inside each of the four deliveries below.
+    fn feed_casts_from<R, B>(
+        &mut self,
+        output: &Output,
+        renderer: &mut R,
+        targets: &[Option<crate::screencast::Target>],
+    ) where
+        R: Renderer
+            + Bind<B>
+            + Bind<smithay::backend::allocator::dmabuf::Dmabuf>
+            + Offscreen<B>
+            + ExportMem
+            + smithay::backend::renderer::ImportAll
+            + smithay::backend::renderer::ImportMem
+            + smithay::backend::renderer::ImportDma
+            + crate::background_effect::BackgroundEffectRenderer,
+        // Held between frames; see `capture_scratch`.
+        B: 'static,
+        <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
+        <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
+    {
         // The streams that take a buffer the GPU drew into, first and one at a
         // time. Each is composited straight into the memory the consumer will
         // read, so there is nothing to share between them and nothing to copy.
-        self.draw_into_casts(output, renderer, &targets);
+        self.draw_into_casts(output, renderer, targets);
 
         // Then the ones that need pixels in shared memory. One composite and
         // one readback serves every client watching this output.
         let watching_output = self.casts.iter().zip(targets.iter()).any(|(cast, target)| {
-            cast.stream.wants_frame(RATE)
+            cast.stream.wants_frame(Self::CAST_RATE)
                 && !cast.stream.uses_dmabuf()
                 && matches!(target, Some(crate::screencast::Target::Output(o)) if o == output)
         });
@@ -198,7 +429,7 @@ impl ViewportState {
                 // hard to follow.
                 match self.read_output_pixels::<R, B>(output, region, true, renderer) {
                     Ok(pixels) => self.push_to_casts(
-                        &targets,
+                        targets,
                         |target| {
                             matches!(target, crate::screencast::Target::Output(o) if o == output)
                         },
@@ -213,14 +444,14 @@ impl ViewportState {
         // Then the whole desk, if anything is watching it — once per frame
         // rather than once per monitor, on whichever output does the work.
         let watching_desk = self.casts.iter().zip(targets.iter()).any(|(cast, target)| {
-            cast.stream.wants_frame(RATE)
+            cast.stream.wants_frame(Self::CAST_RATE)
                 && !cast.stream.uses_dmabuf()
                 && matches!(target, Some(crate::screencast::Target::AllOutputs))
         });
         if watching_desk && self.desk_capture_output().as_ref() == Some(output) {
             match self.read_desk_pixels::<R, B>(renderer) {
                 Ok((pixels, size)) => self.push_to_casts(
-                    &targets,
+                    targets,
                     |target| matches!(target, crate::screencast::Target::AllOutputs),
                     &pixels,
                     size,
@@ -241,7 +472,7 @@ impl ViewportState {
             .casts
             .iter()
             .zip(targets.iter())
-            .filter(|(cast, _)| cast.stream.wants_frame(RATE) && !cast.stream.uses_dmabuf())
+            .filter(|(cast, _)| cast.stream.wants_frame(Self::CAST_RATE) && !cast.stream.uses_dmabuf())
             .filter_map(|(_, target)| match target {
                 Some(crate::screencast::Target::Window(id)) => Some(*id),
                 _ => None,
@@ -262,7 +493,7 @@ impl ViewportState {
             }
             match self.read_window_pixels::<R, B>(id, renderer) {
                 Ok((pixels, size)) => self.push_to_casts(
-                    &targets,
+                    targets,
                     |target| matches!(target, crate::screencast::Target::Window(other) if *other == id),
                     &pixels,
                     size,
@@ -270,15 +501,6 @@ impl ViewportState {
                 Err(e) => tracing::warn!("could not read a window for a screencast: {e}"),
             }
         }
-
-        // Keep drawing while anything is watching.
-        //
-        // Rendering is driven by damage, and a desktop nobody is touching
-        // produces none — so the compositor drew one frame, handed it over,
-        // and stopped. A share is a stream: the viewer needs a frame whether
-        // or not this end has changed, and one that stops arriving reads as a
-        // frozen screen rather than a still one.
-        self.needs_render = true;
     }
 
     /// What a source names right now.
@@ -561,8 +783,6 @@ impl ViewportState {
         <R as smithay::backend::renderer::RendererSuper>::TextureId: Clone + Send + Sync + 'static,
         <R as smithay::backend::renderer::RendererSuper>::Error: Send + Sync + 'static,
     {
-        const RATE: std::time::Duration = std::time::Duration::from_millis(33);
-
         // What each share names was resolved by the caller and handed in, so
         // the answer is the same one the delivery below uses; resolving it
         // again here is how a frame goes to the wrong stream at the wrong
@@ -576,7 +796,7 @@ impl ViewportState {
         let pipewire = self.pipewire.take();
         if let Some(pipewire) = pipewire.as_ref() {
             for (cast, target) in casts.iter_mut().zip(targets.iter()) {
-                if !cast.stream.uses_dmabuf() || !cast.stream.wants_frame(RATE) {
+                if !cast.stream.uses_dmabuf() || !cast.stream.wants_frame(Self::CAST_RATE) {
                     continue;
                 }
                 match target {
@@ -1888,6 +2108,8 @@ impl ViewportState {
         if before > 0 && self.casts.is_empty() {
             self.notify(&viewport_ipc::Event::ScreencastActive { active: false });
         }
+        // As in `stop_cast`: the deadline goes with the last share.
+        self.pace_casts();
     }
 
     /// Say what is being shared in terms that outlive it.

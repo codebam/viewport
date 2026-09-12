@@ -34,6 +34,21 @@ to summarise rather than to duplicate.
   remains the lightest desktop measured and the slowest to paint (14 frames a
   second against 43 to 48); see `docs/benchmarks.md`.
 
+### Fixed
+- A screen share no longer redraws every monitor on the desk. `feed_casts`
+  asked every output's render pass for a frame — its gate was "does any share
+  want a frame", with nothing about which screen the share was of — and the
+  line that kept a share flowing set `needs_render`, which draws all of them.
+  Sharing one screen therefore redrew the others, and a redraw is what invites
+  every client on an output to paint again, so a recorder on a second monitor
+  repainted its own preview thirty times a second for a picture nobody was
+  sharing. That line was also the only thing keeping a share alive, and it was
+  reached only on a turn where a frame was due: a still desk showed one frame
+  of a share and then froze until the mouse moved, which is the freeze the
+  comment above it says it exists to prevent. The deadline is the share's own
+  now, on a timer of its own, and only the output a share is served from is
+  asked to draw.
+
 ## [0.3.0] - 2026-09-09
 
 ### Fixed

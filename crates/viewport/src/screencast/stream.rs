@@ -198,6 +198,27 @@ impl Stream {
     /// A frame is dropped rather than queued when the consumer has not
     /// returned a buffer: a screen share that falls behind should show the
     /// newest frame late, not every frame later still.
+    /// Whether a consumer is actually reading this stream right now.
+    ///
+    /// [`Self::wants_frame`] refuses a frame in this state too, but it refuses
+    /// for two reasons at once — "nobody is watching" and "one went out a
+    /// moment ago" — and anything deciding whether to keep a clock running has
+    /// to be told them apart.
+    pub fn is_streaming(&self) -> bool {
+        self.streaming.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether a frame has been drawn for this stream at least once.
+    ///
+    /// Drawn rather than delivered: `with_target` and `push` both stamp the
+    /// attempt before they know whether a buffer was there to fill. What it is
+    /// for is telling a share that has not started yet from one that started
+    /// and whose consumer has since gone away — see
+    /// [`crate::state::ViewportState::pace_casts`].
+    pub fn has_drawn(&self) -> bool {
+        self.last.is_some()
+    }
+
     /// Whether it is worth compositing a frame for this stream at all.
     pub fn wants_frame(&self, rate: std::time::Duration) -> bool {
         if !self.streaming.load(std::sync::atomic::Ordering::Relaxed) {

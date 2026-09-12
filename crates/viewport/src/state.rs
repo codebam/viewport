@@ -1154,6 +1154,15 @@ pub struct ViewportState {
     /// damage, and no damage is what stops the clock. So a request is
     /// remembered across one tick.
     pub frame_pending: bool,
+    /// When the next screen-share frame is due.
+    ///
+    /// A share is a stream: it needs a frame whether or not anything on the
+    /// desktop has changed, and rendering is otherwise driven by damage. So
+    /// the share carries its own deadline, and `cast_timer` wakes for it.
+    /// On the share's clock rather than the panel's, which is what makes the
+    /// difference between thirty composites a second and two hundred and
+    /// forty — see [`ViewportState::pace_casts`].
+    pub cast_due: Option<std::time::Instant>,
     /// The timer the frame clock is armed on, once it has been created.
     ///
     /// A timerfd rather than one of calloop's own timers. calloop keeps those
@@ -1168,6 +1177,12 @@ pub struct ViewportState {
     /// The timer the barrier tick is armed on. Same reasoning, and the same
     /// consequence for getting it wrong: see [`ViewportState::arm_barrier_tick`].
     pub barrier_timer: Option<std::os::fd::OwnedFd>,
+    /// The timer the screen-share tick is armed on, and the same reasoning
+    /// once more. A share has to keep delivering frames on a desktop nothing
+    /// is happening on, and this is the only thing that will wake it: damage
+    /// does not arrive, so neither does a vblank, and the frame clock belongs
+    /// to clients waiting to be invited. See [`ViewportState::pace_casts`].
+    pub cast_timer: Option<std::os::fd::OwnedFd>,
     /// The timer the GPU watchdog is armed on. Same reasoning again, and here
     /// it matters most: this tick is the fallback for a desktop where the
     /// vblank chain and the frame clock have both stopped, which is exactly the
@@ -1898,8 +1913,10 @@ impl ViewportState {
             frame_clock: false,
             frame_clock_at: None,
             frame_pending: false,
+            cast_due: None,
             frame_timer: None,
             barrier_timer: None,
+            cast_timer: None,
             gpu_timer: None,
             gpu_watch: false,
             config_file_path: None,
