@@ -36,6 +36,29 @@ const MAX_FILE: u64 = 512 * 1024;
 /// manager fills.
 const MAX_DEPTH: usize = 3;
 
+/// Open `path` for reading without following a symlink at the final component,
+/// and without blocking on a FIFO that has no writer.
+///
+/// `O_NONBLOCK` is not about reading regular files — it is ignored there. It
+/// is what keeps an `open` on a FIFO from waiting for a writer that may never
+/// come; the `file_type` check on the open descriptor then refuses it. The
+/// metadata that decides what the path really is comes from the descriptor,
+/// not from the name, so a path swapped between the check and the read cannot
+/// name a different inode.
+#[cfg(unix)]
+fn open_icon(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_icon(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
 /// An icon file as a `data:` URL, or nothing where it cannot be read or is not
 /// a format a browser shows.
 pub fn data_url(path: &Path) -> Option<String> {
@@ -51,12 +74,25 @@ pub fn data_url(path: &Path) -> Option<String> {
         // one. Nothing is better than a broken image element.
         _ => return None,
     };
-    let size = std::fs::metadata(path).ok()?.len();
+    let file = open_icon(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() {
+        tracing::debug!("{}: icon path is not a regular file", path.display());
+        return None;
+    }
+    let size = meta.len();
     if size > MAX_FILE {
         tracing::debug!("{}: {size} bytes is too large for an icon", path.display());
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
+    // One byte past the cap, so a file that grew after the metadata check is
+    // detected rather than read to the end.
+    let mut bytes = Vec::new();
+    (&file).take(MAX_FILE + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_FILE {
+        tracing::debug!("{}: icon grew past the {MAX_FILE} byte cap", path.display());
+        return None;
+    }
     Some(format!("data:{mime};base64,{}", base64(&bytes)))
 }
 
@@ -97,7 +133,7 @@ pub fn art_data_url(path: &Path) -> Option<String> {
         "avif" => "image/avif",
         _ => return None,
     };
-    let file = std::fs::File::open(path).ok()?;
+    let file = open_icon(path).ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() {
         tracing::debug!("{}: cover art that is not a file", path.display());
@@ -112,9 +148,13 @@ pub fn art_data_url(path: &Path) -> Option<String> {
         return None;
     }
     // Bounded by the take even where the size above was measured against a
-    // file that has since grown.
+    // file that has since grown; one byte past the cap says which happened.
     let mut bytes = Vec::new();
-    (&file).take(MAX_ART).read_to_end(&mut bytes).ok()?;
+    (&file).take(MAX_ART + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_ART {
+        tracing::debug!("{}: cover art grew past the cap", path.display());
+        return None;
+    }
     Some(format!("data:{mime};base64,{}", base64(&bytes)))
 }
 
@@ -155,7 +195,11 @@ pub fn lookup(name: &str, theme_path: Option<&str>, theme: &str, size: u32) -> O
     // treating it as a theme key means searching for a file called
     // "/opt/foo/icon.png" in every icon directory on the machine.
     let direct = Path::new(name);
-    if direct.is_absolute() && direct.is_file() {
+    if direct.is_absolute()
+        && std::fs::symlink_metadata(direct)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+    {
         return Some(direct.to_path_buf());
     }
 
@@ -217,6 +261,13 @@ fn walk(dir: &Path, name: &str, want: u32, depth: usize, consider: &mut impl FnM
             if depth < MAX_DEPTH {
                 walk(&path, name, want, depth + 1, consider);
             }
+            continue;
+        }
+        // A theme full of symlinks is either a package manager's cleverness
+        // or a way to make the compositor read a file it was never meant to;
+        // neither belongs in an icon. FIFOs, devices and sockets are refused
+        // here too, before anything opens them.
+        if !kind.is_file() {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -653,5 +704,109 @@ mod tests {
         let file = std::env::current_exe().expect("this test binary");
         let found = lookup(file.to_str().unwrap(), None, "hicolor", 22);
         assert_eq!(found.as_deref(), Some(file.as_path()));
+    }
+
+    /// A scratch directory of this test binary's own, so a symlink or a FIFO
+    /// can be made without touching anything real.
+    #[cfg(unix)]
+    fn scratch_dir(label: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("viewport-icon-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    /// A symlink is not the file it points at. Once only the name was read,
+    /// so a theme — which is a directory a package manager fills — could name
+    /// any file on the machine and have it base64'd into a shell message.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_icon_is_refused_at_the_final_component() {
+        use std::os::unix::fs::symlink;
+
+        let dir = scratch_dir("symlink");
+        let target = dir.join("target.png");
+        std::fs::write(&target, b"not really a png").expect("the target");
+        let link = dir.join("viewport-test-icon.png");
+        symlink(&target, &link).expect("the symlink");
+
+        assert_eq!(data_url(&link), None);
+        assert_eq!(art_data_url(&link), None);
+        assert_eq!(
+            lookup(
+                "viewport-test-icon",
+                Some(dir.to_str().unwrap()),
+                "hicolor",
+                22
+            ),
+            None
+        );
+        assert!(lookup(link.to_str().unwrap(), None, "hicolor", 22).is_none());
+
+        // The regular file beside it still resolves, so the walk is skipping
+        // the link rather than the whole directory.
+        let regular = dir.join("viewport-test-regular.png");
+        std::fs::write(&regular, b"png").expect("the regular icon");
+        assert_eq!(
+            lookup(
+                "viewport-test-regular",
+                Some(dir.to_str().unwrap()),
+                "hicolor",
+                22
+            )
+            .as_deref(),
+            Some(regular.as_path())
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A FIFO named `icon.png` used to block the compositor worker inside
+    /// `open` with no writer ever coming. It is refused before any read.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_like_an_icon_is_refused() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let dir = scratch_dir("fifo");
+        let fifo = dir.join("viewport-test-icon.png");
+        let path = CString::new(fifo.as_os_str().as_bytes()).expect("a path");
+        let made = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
+
+        assert_eq!(data_url(&fifo), None);
+        assert_eq!(art_data_url(&fifo), None);
+        assert_eq!(
+            lookup(
+                "viewport-test-icon",
+                Some(dir.to_str().unwrap()),
+                "hicolor",
+                22
+            ),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The size cap is the boundary, not an approximation: a file that is one
+    /// byte over is refused however its extension advertises it.
+    #[test]
+    fn an_icon_at_the_size_cap_is_accepted_and_one_over_is_not() {
+        let dir = std::env::temp_dir().join(format!("viewport-icon-size-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+
+        let at_cap = dir.join("at-cap.png");
+        std::fs::write(&at_cap, vec![0u8; MAX_FILE as usize]).expect("the at-cap file");
+        assert!(data_url(&at_cap).is_some());
+
+        let over_cap = dir.join("over-cap.png");
+        std::fs::write(&over_cap, vec![0u8; MAX_FILE as usize + 1]).expect("the over-cap file");
+        assert_eq!(data_url(&over_cap), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

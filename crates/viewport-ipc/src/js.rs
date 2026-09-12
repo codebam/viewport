@@ -15,6 +15,101 @@
 // which engine is installed, which is the one thing a second backend must not
 // introduce.
 
+/// The environment variable that opts a session into loading its shell from
+/// an origin that is not a local file: or loopback.
+///
+/// The page-to-compositor bridge is privileged — a message from it can run a
+/// command — so a remote page is only trusted when somebody deliberately said
+/// so for this run.
+pub const ALLOW_REMOTE_SHELL_ENV: &str = "VIEWPORT_ALLOW_REMOTE_SHELL";
+
+/// Whether this process was told it may load its shell from a remote origin.
+pub fn remote_shell_allowed() -> bool {
+    matches!(std::env::var(ALLOW_REMOTE_SHELL_ENV), Ok(value) if value == "1")
+}
+
+/// Whether the bridge may speak for a document at `url`.
+///
+/// Allowed by default: `file:` and loopback `http(s)` — `localhost`,
+/// `127.0.0.1` and `[::1]`, with or without a port. Every other origin is
+/// allowed only when [`ALLOW_REMOTE_SHELL_ENV`] is `1`, because a message
+/// from this bridge can run a command as the user.
+///
+/// This is deliberately a string classifier rather than URL parsing: it is
+/// small, has no dependencies, and is shared by the compositor's startup
+/// check and every shell backend's runtime check.
+pub fn shell_url_allowed(url: &str) -> bool {
+    remote_shell_allowed() || is_local_shell_url(url)
+}
+
+/// The same origin policy without the environment override, for the tests.
+fn is_local_shell_url(url: &str) -> bool {
+    let url = url.trim();
+    if url.is_empty() {
+        return false;
+    }
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return false;
+    };
+    match scheme.to_ascii_lowercase().as_str() {
+        "file" => {
+            // `file:///path` and `file:/path` are local. A `file://host/path`
+            // with a real host is a UNC-style remote path on some platforms,
+            // so only an empty or loopback authority is allowed.
+            let rest = rest.strip_prefix("//").unwrap_or(rest);
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+            if authority.is_empty() {
+                // `file:///path` leaves one leading slash; `file:////host/share`
+                // leaves two, which is a UNC path on the platforms that have
+                // them. An empty authority must not be used to smuggle that
+                // form past the host check.
+                return !rest.starts_with("//");
+            }
+            authority_is_loopback(authority)
+        }
+        "http" | "https" => {
+            // `http:/foo` is not a URL a browser will load; refusing it here
+            // costs nothing and keeps the authority parser from seeing junk.
+            let rest = rest.strip_prefix("//").unwrap_or("");
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+            authority_is_loopback(authority)
+        }
+        _ => false,
+    }
+}
+
+/// Whether an authority component is exactly a loopback host.
+///
+/// Userinfo is refused outright: `http://localhost@evil.example/` has an
+/// origin of `evil.example`, and a classifier that looked for `localhost`
+/// anywhere before the path would let it through.
+fn authority_is_loopback(authority: &str) -> bool {
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        let Some((host, tail)) = bracketed.split_once(']') else {
+            return false;
+        };
+        if !host.eq_ignore_ascii_case("::1") {
+            return false;
+        }
+        return tail.is_empty() || tail.strip_prefix(':').is_some_and(valid_port);
+    }
+    match authority.split_once(':') {
+        Some((host, port)) => loopback_host(host) && valid_port(port),
+        None => loopback_host(authority),
+    }
+}
+
+fn loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1"
+}
+
+fn valid_port(port: &str) -> bool {
+    !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// Quote a string as a JavaScript literal.
 ///
 /// The message is interpolated into a script, so anything that could end the
@@ -69,6 +164,12 @@ pub fn dispatch(json: &str) -> String {
 pub const BRIDGE_SHIM: &str = r#"
 (function () {
   'use strict';
+  /* This bridge is a privileged channel: a message from it can run a command.
+   * It is for the shell document itself, never for a frame inside it, so it
+   * is not installed where it cannot be trusted. */
+  if (window.top !== window) {
+    return;
+  }
   if (window.webkit && window.webkit.messageHandlers &&
       window.webkit.messageHandlers.viewport) {
     return;
@@ -89,6 +190,59 @@ pub const BRIDGE_SHIM: &str = r#"
   window.webkit = window.webkit || {};
   window.webkit.messageHandlers = window.webkit.messageHandlers || {};
   window.webkit.messageHandlers.viewport = handler;
+})();
+"#;
+
+/// A script injected at document start into every frame, before the page's
+/// own scripts.
+///
+/// WebKit creates `window.webkit.messageHandlers.viewport` in subframes too,
+/// and the native `script-message-received` signal carries no frame identity,
+/// so a handler installed by a page inside an iframe could reach the
+/// compositor. The top document may keep the real handler; every subframe has
+/// it replaced with a no-op before that frame's scripts run.
+pub const SUBFRAME_GUARD: &str = r#"
+(function () {
+  'use strict';
+  if (window.top === window) {
+    return;
+  }
+  try {
+    var handlers = window.webkit && window.webkit.messageHandlers;
+    if (!handlers || !handlers.viewport) {
+      return;
+    }
+    var disabled = {
+      postMessage: function () {
+        console.error('viewport: the page bridge is top-frame only; this is a subframe');
+      },
+    };
+    /* Replace the whole handler where the property allows it, and fall back
+     * to replacing the method on the handler object. WebKit creates these as
+     * ordinary JS properties, but a frame that cannot be guarded must still
+     * not stop the document from running. */
+    try {
+      Object.defineProperty(handlers, 'viewport', {
+        value: disabled,
+        writable: false,
+        configurable: false,
+      });
+      return;
+    } catch (e) {
+    }
+    try {
+      handlers.viewport = disabled;
+      return;
+    } catch (e) {
+    }
+    try {
+      handlers.viewport.postMessage = disabled.postMessage;
+    } catch (e) {
+    }
+  } catch (e) {
+    /* The native handler, when it is still there, is additionally dropped by
+     * each backend's origin policy. Nothing here may throw into the page. */
+  }
 })();
 "#;
 
@@ -141,6 +295,50 @@ mod tests {
     #[test]
     fn the_shim_stringifies_objects_like_webkit_did() {
         assert!(BRIDGE_SHIM.contains("JSON.stringify(message)"));
+    }
+
+    #[test]
+    fn the_shim_returns_before_installing_anything_in_a_subframe() {
+        // The whole security property of the shim: an iframe gets no bridge.
+        assert!(BRIDGE_SHIM.contains("window.top !== window"));
+    }
+
+    #[test]
+    fn the_subframe_guard_replaces_the_native_handler() {
+        assert!(SUBFRAME_GUARD.contains("window.top === window"));
+        assert!(SUBFRAME_GUARD.contains("messageHandlers"));
+        assert!(SUBFRAME_GUARD.contains("Object.defineProperty"));
+    }
+
+    #[test]
+    fn file_and_loopback_origins_are_local() {
+        for url in [
+            "file:///usr/share/viewport/shell/index.html",
+            "http://localhost:3000/",
+            "https://localhost/",
+            "http://127.0.0.1:8080/shell",
+            "http://[::1]:3000",
+            "https://[::1]",
+        ] {
+            assert!(is_local_shell_url(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn remote_and_deceptive_origins_are_not_local() {
+        for url in [
+            "https://example.com/",
+            "http://localhost.evil.example/",
+            "http://evil.example/?localhost",
+            "http://localhost@evil.example/",
+            "http://127.0.0.1.evil.example/",
+            "http://127.0.0.2/",
+            "data:text/html,<script>",
+            "/usr/share/viewport/shell/index.html",
+            "",
+        ] {
+            assert!(!is_local_shell_url(url), "{url}");
+        }
     }
 
     /// The shape both engines have to produce, spelled out.

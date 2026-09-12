@@ -13,6 +13,7 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{anyhow, Result};
 
@@ -20,6 +21,16 @@ use crate::wpe::Display;
 
 type GType = usize;
 type GBool = i32;
+
+/// `WebKitUserContentInjectedFrames`: all frames, so the guard script can
+/// disable the handler in subframes. Values are from the public headers and
+/// have been stable across WebKit 2.x.
+const WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES: i32 = 0;
+/// `WebKitUserScriptInjectionTime`: before the page's own scripts run.
+const WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START: i32 = 0;
+
+/// Whether a refused page-to-compositor message has already been logged.
+static DROP_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// `GValue` is `{ GType; union[2] }` — 24 bytes on a 64-bit target.
 ///
@@ -84,6 +95,15 @@ extern "C" {
         name: *const c_char,
         world_name: *const c_char,
     ) -> GBool;
+    fn webkit_user_script_new(
+        source: *const c_char,
+        injected_frames: i32,
+        injection_time: i32,
+        allow_list: *const *const c_char,
+        block_list: *const *const c_char,
+    ) -> *mut c_void;
+    fn webkit_user_script_unref(script: *mut c_void);
+    fn webkit_user_content_manager_add_script(manager: *mut c_void, script: *mut c_void);
     fn webkit_web_view_load_uri(view: *mut c_void, uri: *const c_char);
     fn webkit_web_view_reload_bypass_cache(view: *mut c_void);
     fn webkit_web_view_get_uri(view: *mut c_void) -> *const c_char;
@@ -169,12 +189,22 @@ pub trait CrashSink: Send {
     fn terminated(&mut self, reason: Termination);
 }
 
+/// What the `script-message-received` signal handler needs.
+///
+/// The signal carries no frame identity, so the handler is given the view too
+/// and asks it for the current main-frame URI. The pointer is set immediately
+/// after the view exists, before the handler can possibly fire.
+struct MessageContext {
+    sink: Box<Box<dyn MessageSink>>,
+    view: *mut c_void,
+}
+
 /// A WebKit web view rendering into our WPE display.
 pub struct WebView {
     view: *mut c_void,
     manager: *mut c_void,
     // Kept alive as long as the signal handler can fire.
-    _sink: Box<Box<dyn MessageSink>>,
+    _messages: Box<MessageContext>,
     _crash: Box<Box<dyn CrashSink>>,
     // The display must outlive the view.
     //
@@ -207,8 +237,13 @@ impl WebView {
             return Err(anyhow!(message));
         }
 
-        let mut sink = Box::new(sink);
-        let user = &mut *sink as *mut Box<dyn MessageSink> as *mut c_void;
+        let mut messages = Box::new(MessageContext {
+            // Double-boxed so the trait object is one thin pointer that
+            // survives being cast through `void *`.
+            sink: Box::new(sink),
+            view: std::ptr::null_mut(),
+        });
+        let user = &mut *messages as *mut MessageContext as *mut c_void;
 
         let mut crash = Box::new(crash);
         let crash_user = &mut *crash as *mut Box<dyn CrashSink> as *mut c_void;
@@ -232,6 +267,31 @@ impl WebView {
             {
                 g_object_unref(manager);
                 return Err(anyhow!("could not register the script message handler"));
+            }
+
+            // The native handler exists in subframes as well, and the signal
+            // that delivers its messages says nothing about which frame sent
+            // one. This replaces the handler in every subframe before that
+            // frame's own scripts run. It is the same guard the GTK shell
+            // installs with webkit6's `UserScript`.
+            let guard_source = CString::new(viewport_ipc::js::SUBFRAME_GUARD)
+                .expect("the guard script contains no nul byte");
+            let guard = webkit_user_script_new(
+                guard_source.as_ptr(),
+                WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+                WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+                std::ptr::null(),
+                std::ptr::null(),
+            );
+            if guard.is_null() {
+                tracing::warn!(
+                    "could not build the subframe bridge guard; relying on the URI policy"
+                );
+            } else {
+                webkit_user_content_manager_add_script(manager, guard);
+                // The manager holds its own reference; this is the reference
+                // `webkit_user_script_new` handed over.
+                webkit_user_script_unref(guard);
             }
 
             // Detailed signal: only messages for our handler name.
@@ -276,6 +336,10 @@ impl WebView {
                 return Err(anyhow!("the web view could not be created"));
             }
 
+            // The signal handler is connected already, but cannot fire until
+            // the page exists; point it at the view before that is possible.
+            messages.view = view;
+
             // Connected on the view rather than the content manager, because
             // this is the view's signal — and only once the view exists, which
             // is why it is here and not up with the message handler.
@@ -302,7 +366,7 @@ impl WebView {
             Ok(Self {
                 view,
                 manager,
-                _sink: sink,
+                _messages: messages,
                 _crash: crash,
                 _display: display,
             })
@@ -310,7 +374,16 @@ impl WebView {
     }
 
     /// Load a URL, replacing whatever is showing.
+    ///
+    /// The origin policy is enforced here as well as in the compositor's URL
+    /// resolution, because this is the in-process engine: a page loaded past
+    /// the policy is a page whose messages could run commands.
     pub fn load(&self, uri: &str) -> Result<()> {
+        anyhow::ensure!(
+            viewport_ipc::js::shell_url_allowed(uri),
+            "refusing to load a non-loopback shell from {uri}; set {}=1 to allow a remote origin",
+            viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+        );
         let uri = CString::new(uri).map_err(|_| anyhow!("the URL contains a nul byte"))?;
         // SAFETY: `view` is valid and the string outlives the call.
         unsafe { webkit_web_view_load_uri(self.view, uri.as_ptr()) };
@@ -330,8 +403,27 @@ impl WebView {
         self.evaluate(&viewport_ipc::js::dispatch(json))
     }
 
+    /// Whether events may be evaluated into the document currently showing.
+    ///
+    /// `None` is the moment before the first load; the URL that load was given
+    /// already passed the policy, so events waiting for the page are fine.
+    /// Once a document exists it has to pass the same policy: a page that
+    /// navigated or redirected to a remote origin must not be handed the
+    /// desktop's clipboard, notifications or session state.
+    fn current_origin_allowed(&self) -> bool {
+        match self.uri() {
+            Some(uri) => viewport_ipc::js::shell_url_allowed(&uri),
+            None => true,
+        }
+    }
+
     /// Run a script in the page.
     pub fn evaluate(&self, script: &str) -> Result<()> {
+        if !self.current_origin_allowed() {
+            return Err(anyhow!(
+                "the current page is not a file:/loopback shell origin; event dropped"
+            ));
+        }
         let script = CString::new(script).map_err(|_| anyhow!("the script contains a nul byte"))?;
         // SAFETY: -1 means "nul-terminated"; the remaining pointers are
         // optional and null here, and no callback is registered because
@@ -370,6 +462,10 @@ impl WebView {
     /// Reload, ignoring the HTTP cache. The escape hatch for a shell being
     /// edited live.
     pub fn reload(&self) {
+        if !self.current_origin_allowed() {
+            tracing::warn!("refusing to reload a page that left the allowed shell origin");
+            return;
+        }
         // SAFETY: `view` is valid.
         unsafe { webkit_web_view_reload_bypass_cache(self.view) };
     }
@@ -419,7 +515,21 @@ impl std::fmt::Debug for WebView {
     }
 }
 
+/// The current main-frame URI, copied before WebKit can navigate again.
+unsafe fn current_main_uri(view: *mut c_void) -> Option<String> {
+    let uri = webkit_web_view_get_uri(view);
+    if uri.is_null() {
+        return None;
+    }
+    Some(CStr::from_ptr(uri).to_string_lossy().into_owned())
+}
+
 /// The `script-message-received` handler.
+///
+/// WebKit does not say which frame sent the message, so the subframe guard
+/// script and this origin check are the two available controls: the view's URI
+/// is the main frame's, re-read for every message, so navigating away from an
+/// allowed origin revokes the bridge immediately.
 unsafe extern "C" fn on_script_message(
     _manager: *mut c_void,
     value: *mut c_void,
@@ -431,6 +541,26 @@ unsafe extern "C" fn on_script_message(
 
     // A panic must not unwind into C.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let messages = &mut *(user as *mut MessageContext);
+        if messages.view.is_null() {
+            return;
+        }
+        let allowed = current_main_uri(messages.view)
+            .as_deref()
+            .map(viewport_ipc::js::shell_url_allowed)
+            .unwrap_or(false);
+        if !allowed {
+            if !DROP_WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    "dropping a page-to-compositor message: the main frame's URI is not \
+                     a file:/loopback origin, or the document has gone away; set {}=1 \
+                     to allow a remote shell",
+                    viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+                );
+            }
+            return;
+        }
+
         // Accept either a JSON string or a live object, so page authors can
         // call postMessage({...}) without stringifying by hand — same as the
         // C build.
@@ -444,8 +574,7 @@ unsafe extern "C" fn on_script_message(
         }
 
         if let Ok(json) = CStr::from_ptr(text).to_str() {
-            let sink = &mut *(user as *mut Box<dyn MessageSink>);
-            sink.message(json);
+            messages.sink.message(json);
         }
         g_free(text as *mut c_void);
     }));

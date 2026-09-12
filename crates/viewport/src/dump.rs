@@ -248,12 +248,30 @@ pub fn shell_frame(
     Ok(())
 }
 
+/// A debug dump is not worth an output nobody can describe: this is well past
+/// any real monitor, so a larger number is a broken size rather than a reason
+/// to allocate gigabytes.
+const MAX_DUMP_DIMENSION: u32 = 32768;
+
+/// The most PPM bytes a dump may build. Writing a quarter-gigabyte of debug
+/// image can turn a compositor that is already misbehaving into one that is
+/// out of memory, which hides the bug the dump exists to show.
+const MAX_DUMP_BYTES: usize = 256 << 20;
+
 /// Binary PPM: three bytes a pixel and a nine-byte header, which every image
 /// viewer reads and which needs no encoder.
 fn write_ppm(path: &std::path::Path, width: u32, height: u32, pixels: &[u8]) -> Result<()> {
     use std::io::Write as _;
 
-    let mut out = Vec::with_capacity(pixels.len() / 4 * 3 + 32);
+    if width == 0 || height == 0 || width > MAX_DUMP_DIMENSION || height > MAX_DUMP_DIMENSION {
+        anyhow::bail!("refusing to write a {width}x{height} debug dump");
+    }
+    let needed = pixels.len() / 4 * 3 + 32;
+    if needed > MAX_DUMP_BYTES {
+        anyhow::bail!("refusing to write a {needed}-byte debug dump (limit {MAX_DUMP_BYTES})");
+    }
+
+    let mut out = Vec::with_capacity(needed);
     out.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
     // ARGB8888 is named from the least significant byte up, so in memory the
     // order is B, G, R, A.
@@ -261,9 +279,30 @@ fn write_ppm(path: &std::path::Path, width: u32, height: u32, pixels: &[u8]) -> 
         out.extend_from_slice(&[chunk[2], chunk[1], chunk[0]]);
     }
 
-    std::fs::File::create(path)
-        .with_context(|| format!("creating {}", path.display()))?
-        .write_all(&out)
+    // Debug dumps are named by an environment variable and read by whoever
+    // set it; 0600 keeps them out of other local users' reach like every other
+    // file of the user's desktop. `File::create` otherwise means 0666 & umask.
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // A symlink at a debug-dump path is not a file this session created,
+        // so it must not be followed and truncated.
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        // `mode` is only applied when the file is created; a dump left over
+        // from an earlier run must not keep whatever mode it had.
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    let mut file = file;
+    file.write_all(&out)
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }

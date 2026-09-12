@@ -1346,6 +1346,20 @@ type DeskElements<R> = (
     smithay::utils::Size<i32, smithay::utils::Physical>,
 );
 
+/// Whether a client is a native client rather than a sandboxed one.
+///
+/// A sandbox is asking the compositor to keep something from its own client,
+/// and it must not be able to hand that same client a way around the sandbox:
+/// input injection, data control, session locking, layer surfaces and capture
+/// are all capabilities a sandboxed application has no way to be trusted with.
+/// A client with no `security_context` — including the compositor's own shell
+/// connection — is the unconfined side of the wall.
+pub(crate) fn trusted_native(client: &smithay::reexports::wayland_server::Client) -> bool {
+    client
+        .get_data::<ClientState>()
+        .is_none_or(|data| data.security_context.is_none())
+}
+
 impl ViewportState {
     pub fn new(
         event_loop: &mut EventLoop<'static, Self>,
@@ -1375,7 +1389,10 @@ impl ViewportState {
         let pointer_warp_state =
             smithay::wayland::pointer_warp::PointerWarpManager::new::<Self>(&dh);
         let layer_shell_state =
-            smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh);
+            smithay::wayland::shell::wlr_layer::WlrLayerShellState::new_with_filter::<Self, _>(
+                &dh,
+                trusted_native,
+            );
         let screencopy_state = crate::screencopy::ScreencopyState::new::<Self>(&dh);
         let output_management_state =
             crate::output_management::OutputManagementState::new::<Self>(&dh);
@@ -1388,16 +1405,11 @@ impl ViewportState {
         // current xdg-desktop-portal looks for these first.
         let image_capture_source_state =
             smithay::wayland::image_capture_source::ImageCaptureSourceState::new();
-        let direct_capture_allowed = |client: &smithay::reexports::wayland_server::Client| {
-            client
-                .get_data::<ClientState>()
-                .is_none_or(|data| data.security_context.is_none())
-        };
         let output_capture_source_state =
             smithay::wayland::image_capture_source::OutputCaptureSourceState::new_with_filter::<
                 Self,
                 _,
-            >(&dh, direct_capture_allowed);
+            >(&dh, trusted_native);
         // Windows as well as screens. The picker in a browser's "share your
         // screen" dialogue lists both, and a client that binds this manager
         // and finds nothing behind it has no way to offer the second.
@@ -1405,21 +1417,21 @@ impl ViewportState {
             smithay::wayland::image_capture_source::ToplevelCaptureSourceState::new_with_filter::<
                 Self,
                 _,
-            >(&dh, direct_capture_allowed);
+            >(&dh, trusted_native);
         let image_copy_capture_state =
             smithay::wayland::image_copy_capture::ImageCopyCaptureState::new_with_filter::<Self, _>(
                 &dh,
-                direct_capture_allowed,
+                trusted_native,
             );
         // Input methods. Three protocols that only work together: the
         // application says where its text is going through text-input, the
         // input method reads that and sends back what was composed, and
         // virtual-keyboard is how an on-screen keyboard turns a tap into a key.
         //
-        // Any client may be an input method here. Restricting it needs a
-        // notion of a privileged client, which this compositor does not have —
-        // and a filter that everything passes is worse than none, because it
-        // reads as though it were deciding something.
+        // Both inject input into whatever has focus, so they are for the
+        // desktop's own input method and not for a sandboxed client: a
+        // sandbox asking the compositor for a keyboard is asking to type
+        // outside the box the user put it in.
         // Tearing, for a full-screen game that would rather have the newest
         // frame part-drawn than the previous one whole.
         let tearing_state = crate::tearing::TearingControlState::new::<Self>(&dh);
@@ -1445,11 +1457,11 @@ impl ViewportState {
         let input_method_state = smithay::wayland::input_method::InputMethodManagerState::new::<
             Self,
             _,
-        >(&dh, |_client| true);
+        >(&dh, trusted_native);
         let virtual_keyboard_state =
             smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState::new::<Self, _>(
                 &dh,
-                |_client| true,
+                trusted_native,
             );
         // A client that names its cursor rather than drawing one. Without it a
         // GTK application shows the pointer it inherited from whatever it last
@@ -1470,7 +1482,7 @@ impl ViewportState {
             smithay::wayland::selection::wlr_data_control::DataControlState::new::<Self, _>(
                 &dh,
                 Some(&primary_selection_state),
-                |_| true,
+                trusted_native,
             );
         // The newer clipboard-manager protocol beside the wlroots one. Both
         // do the same job and clients are moving between them: cliphist and
@@ -1480,7 +1492,7 @@ impl ViewportState {
             smithay::wayland::selection::ext_data_control::DataControlState::new::<Self, _>(
                 &dh,
                 Some(&primary_selection_state),
-                |_| true,
+                trusted_native,
             );
         let idle_inhibit_state =
             smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(&dh);
@@ -1498,7 +1510,9 @@ impl ViewportState {
         let fractional_scale_state =
             smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<Self>(&dh);
         let foreign_toplevel_state =
-            smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
+            smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new_with_filter::<
+                Self,
+            >(&dh, trusted_native);
         let pointer_constraints_state =
             smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(&dh);
         let relative_pointer_state =
@@ -1506,10 +1520,10 @@ impl ViewportState {
         let session_lock_state =
             smithay::wayland::session_lock::SessionLockManagerState::new::<Self, _>(
                 &dh,
-                // Every client may ask. Restricting it to a privileged few is
-                // for a compositor that has a notion of privilege; this one
-                // does not, and refusing here would only mean no locker works.
-                |_| true,
+                // The lock covers every screen, and a sandboxed client must
+                // not be able to put its surface over the session: the locker
+                // is the desktop's own, not an application's.
+                trusted_native,
             );
         let xdg_activation_state =
             smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);

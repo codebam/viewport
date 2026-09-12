@@ -27,6 +27,8 @@ use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 
+use crate::state::trusted_native;
+
 /// Version 3: `parent` arrived there, and a taskbar that cannot see which
 /// window a dialogue belongs to lists it as though it were its own program.
 const VERSION: u32 = 3;
@@ -331,6 +333,13 @@ where
                 .publish::<D>(dh, &manager, id, &toplevel);
         }
     }
+
+    /// A window list is a map of what is running on the desktop. A sandboxed
+    /// client has no business reading one, let alone asking for the windows in
+    /// it to be closed or raised.
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        trusted_native(&client)
+    }
 }
 
 impl<D> Dispatch<ZwlrForeignToplevelManagerV1, (), D> for ForeignToplevelState
@@ -339,13 +348,17 @@ where
 {
     fn request(
         state: &mut D,
-        _client: &Client,
+        client: &Client,
         manager: &ZwlrForeignToplevelManagerV1,
         request: zwlr_foreign_toplevel_manager_v1::Request,
         _data: &(),
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        if !trusted_native(client) {
+            tracing::debug!("foreign-toplevel: ignoring a request from a sandboxed client");
+            return;
+        }
         if !matches!(request, zwlr_foreign_toplevel_manager_v1::Request::Stop) {
             return;
         }
@@ -363,13 +376,19 @@ where
 {
     fn request(
         state: &mut D,
-        _client: &Client,
+        client: &Client,
         _handle: &ZwlrForeignToplevelHandleV1,
         request: zwlr_foreign_toplevel_handle_v1::Request,
         data: &HandleData,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        if !trusted_native(client) {
+            tracing::debug!(
+                "foreign-toplevel: ignoring a management request from a sandboxed client"
+            );
+            return;
+        }
         match request {
             zwlr_foreign_toplevel_handle_v1::Request::Activate { .. } => {
                 state.activate_toplevel(data.id)

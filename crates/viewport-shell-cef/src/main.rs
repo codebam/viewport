@@ -23,6 +23,8 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::{c_char, CString};
+use std::io::Read as _;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -51,6 +53,147 @@ static OUT: OnceLock<viewport_shell_bridge::Sender> = OnceLock::new();
 /// when the page never arrives at all.
 static QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static READY: AtomicBool = AtomicBool::new(false);
+
+/// Whether a refused page-to-compositor message has already been logged.
+static DROP_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// The main frame and the execution context that belongs to it.
+///
+/// `Runtime.addBinding` installs the binding in every execution context of the
+/// page target, including subframes, and the injected shim only refuses to
+/// install `window.webkit` in a subframe. A message is therefore accepted only
+/// from the tracked default context of the main frame, and only while the main
+/// frame's URL passes the origin policy.
+static FRAME_GUARD: Mutex<FrameGuard> = Mutex::new(FrameGuard {
+    main_frame: None,
+    main_url: None,
+    main_context: None,
+    contexts: Vec::new(),
+});
+
+/// What the page's main frame is, and which context belongs to it.
+struct FrameGuard {
+    main_frame: Option<String>,
+    main_url: Option<String>,
+    main_context: Option<i64>,
+    /// The newest default context seen for each frame. `Runtime.enable` can
+    /// report contexts before `Page.getFrameTree` names the main frame.
+    contexts: Vec<(String, i64)>,
+}
+
+impl FrameGuard {
+    /// Fold a DevTools event in. Frame bookkeeping only; the event loop has
+    /// already decided what to do with the ones it cares about.
+    fn note_event(&mut self, method: &str, params: &[u8]) {
+        match method {
+            "Page.frameNavigated" => {
+                let Ok(value) = serde_json::from_slice::<Value>(params) else {
+                    return;
+                };
+                let Some(frame) = value.get("frame") else {
+                    return;
+                };
+                let top = match frame.get("parentId") {
+                    None | Some(Value::Null) => true,
+                    Some(_) => false,
+                };
+                if top {
+                    self.set_main_frame(frame);
+                    // A cross-document navigation replaces the default
+                    // context; fail closed until its context is announced.
+                    if let Some(frame_id) = self.main_frame.clone() {
+                        self.contexts.retain(|(id, _)| id != &frame_id);
+                    }
+                    self.main_context = None;
+                }
+            }
+            "Runtime.executionContextCreated" => {
+                let Ok(value) = serde_json::from_slice::<Value>(params) else {
+                    return;
+                };
+                let Some(context) = value.get("context") else {
+                    return;
+                };
+                let Some(aux) = context.get("auxData") else {
+                    return;
+                };
+                if aux.get("isDefault").and_then(Value::as_bool) != Some(true) {
+                    return;
+                }
+                let (Some(frame_id), Some(context_id)) = (
+                    aux.get("frameId").and_then(Value::as_str),
+                    context.get("id").and_then(Value::as_i64),
+                ) else {
+                    return;
+                };
+                self.contexts.retain(|(id, _)| id != frame_id);
+                self.contexts.push((frame_id.to_owned(), context_id));
+                if self.contexts.len() > 64 {
+                    self.contexts.remove(0);
+                }
+                if self.main_frame.as_deref() == Some(frame_id) {
+                    self.main_context = Some(context_id);
+                }
+            }
+            "Runtime.executionContextsCleared" => {
+                self.contexts.clear();
+                self.main_context = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Fold a `Page.getFrameTree` method result in. The result wrapper is the
+    /// same `{"frameTree": ...}` shape CDP returns from the method.
+    fn note_result(&mut self, result: &[u8]) {
+        let Ok(value) = serde_json::from_slice::<Value>(result) else {
+            return;
+        };
+        if let Some(frame) = value.pointer("/frameTree/frame") {
+            self.set_main_frame(frame);
+        }
+    }
+
+    fn set_main_frame(&mut self, frame: &Value) {
+        let Some(id) = frame.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        let url = frame.get("url").and_then(Value::as_str).unwrap_or("");
+        self.main_frame = Some(id.to_owned());
+        self.main_url = Some(url.to_owned());
+        self.main_context = self
+            .contexts
+            .iter()
+            .rev()
+            .find(|(context_frame, _)| context_frame == id)
+            .map(|(_, context)| *context);
+    }
+
+    /// Whether a binding call came from the main frame's own default context.
+    fn context_allows(&self, context: Option<i64>) -> bool {
+        match (self.main_context, context) {
+            (Some(main), Some(called)) => main == called,
+            _ => false,
+        }
+    }
+
+    /// Whether the main frame is on an origin the bridge may speak from.
+    fn url_allows(&self) -> bool {
+        match self.main_url.as_deref() {
+            Some(url) => viewport_ipc::js::shell_url_allowed(url),
+            None => false,
+        }
+    }
+
+    /// Whether a known main-frame URL passes the policy. `None` is false: the
+    /// initial queued events wait for `Page.getFrameTree`/`frameNavigated`
+    /// instead of being evaluated into a document whose origin is unknown.
+    fn url_known_allowed(&self) -> bool {
+        self.main_url
+            .as_deref()
+            .is_some_and(viewport_ipc::js::shell_url_allowed)
+    }
+}
 
 /// How many events may wait for a page that never arrives.
 const QUEUE_LIMIT: usize = 512;
@@ -97,6 +240,15 @@ fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().collect();
     let options = Options::parse(&argv)?;
 
+    // The compositor refuses a remote shell before starting this process; this
+    // is the same policy for a shell started by hand.
+    anyhow::ensure!(
+        viewport_ipc::js::shell_url_allowed(&options.url),
+        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
+        options.url,
+        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+    );
+
     // A cache directory of this process's own.
     //
     // Left unset, CEF uses one shared path for every instance and warns that
@@ -111,14 +263,25 @@ fn main() -> Result<()> {
     // The chromium backend has had a per-process profile from the start
     // (`--user-data-dir`), which is why it can be run beside a live session
     // and this could not.
-    let cache = std::env::temp_dir().join(format!("viewport-shell-cef-{}", std::process::id()));
-    std::fs::create_dir_all(&cache)
-        .with_context(|| format!("creating {}", cache.display()))?;
+    //
+    // Mode 0700 at a random suffix rather than a pid-only path with
+    // `create_dir_all`: a predictable name in `/tmp` is something another
+    // local user can pre-create, symlink or read, and this directory holds
+    // the renderer's profile and lock.
+    let cache = private_profile_dir("viewport-shell-cef")?;
 
     let settings = Settings {
         // No sandbox: the helper is a setuid binary and a nix store path
-        // cannot be one. The shell is a page this compositor shipped rather
-        // than the open web.
+        // cannot be one. That is a real reduction in process isolation and is
+        // kept deliberately, because removing the switch does not make
+        // Nix-built CEF able to sandbox; it makes it fail.
+        //
+        // The compensating controls are above and below: the shell URL must be
+        // a file: or loopback origin unless `VIEWPORT_ALLOW_REMOTE_SHELL=1`,
+        // the bridge refuses subframe execution contexts, and a navigation to
+        // an origin outside the policy revokes the bridge. A page from the
+        // open web is not loaded by default, so the unsandboxed renderer does
+        // not get one.
         no_sandbox: 1,
         root_cache_path: CefString::from(cache.to_string_lossy().as_ref()),
         cache_path: CefString::from(cache.to_string_lossy().as_ref()),
@@ -161,7 +324,11 @@ fn main() -> Result<()> {
     //                             window would be a client of a client and not
     //                             the desktop.
     //   --no-sandbox              the helper is a setuid binary and a nix store
-    //                             path cannot be one.
+    //                             path cannot be one. Kept because dropping
+    //                             it does not add a working sandbox on this
+    //                             build; see the Settings comment for the
+    //                             origin/top-frame controls that carry the
+    //                             security posture instead.
     //   --in-process-gpu          with a GPU process of its own, Chromium
     //                             segfaults on this compositor and falls back
     //                             to software, which is a buffer the shell
@@ -426,11 +593,19 @@ fn install_bridge(browser: &Browser) {
     // Kept, because dropping it removes the observer.
     OBSERVER.with(|slot| *slot.borrow_mut() = registration);
 
+    // Page first, so the frame tree is in place before execution contexts
+    // arrive; `Runtime.enable` is what starts those.
+    send(browser, &json!({"id": next_id(), "method": "Page.enable"}));
+    // The reply names the main frame. Execution contexts carry a frame id,
+    // and a subframe's default context is not the shell's.
+    send(
+        browser,
+        &json!({"id": next_id(), "method": "Page.getFrameTree"}),
+    );
     send(
         browser,
         &json!({"id": next_id(), "method": "Runtime.enable"}),
     );
-    send(browser, &json!({"id": next_id(), "method": "Page.enable"}));
     // The outbound half: a real function in the page that calls back out here.
     send(
         browser,
@@ -455,14 +630,54 @@ fn install_bridge(browser: &Browser) {
     // is too late for.
     evaluate(browser, viewport_ipc::js::BRIDGE_SHIM);
 
-    READY.store(true, Ordering::SeqCst);
-    let waiting: Vec<String> = QUEUE
+    // Ready only once the frame tree has named a main URL that passes the
+    // policy; until then queued events wait for the frame-tree result rather
+    // than being evaluated into a document whose origin is not yet known.
+    let allowed = FRAME_GUARD
         .lock()
-        .map(|mut q| q.drain(..).collect())
-        .unwrap_or_default();
-    for json in waiting {
-        evaluate(browser, &viewport_ipc::js::dispatch(&json));
+        .map(|guard| guard.url_known_allowed())
+        .unwrap_or(false);
+    READY.store(allowed, Ordering::SeqCst);
+    if allowed {
+        let waiting: Vec<String> = QUEUE
+            .lock()
+            .map(|mut q| q.drain(..).collect())
+            .unwrap_or_default();
+        for json in waiting {
+            evaluate(browser, &viewport_ipc::js::dispatch(&json));
+        }
     }
+}
+
+/// A fresh directory only this process can enter, under `/tmp`.
+///
+/// `DirBuilder::mode(0o700).create` is what makes the name safe: it fails when
+/// anything already exists there, so a directory or symlink another local user
+/// made at that path cannot be adopted. The random suffix is retried on
+/// collision.
+fn private_profile_dir(prefix: &str) -> Result<std::path::PathBuf> {
+    for _ in 0..8 {
+        let path = std::env::temp_dir().join(format!("{prefix}-{}", random_suffix()?));
+        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
+        }
+    }
+    Err(anyhow!(
+        "could not create a private {prefix} directory under {}",
+        std::env::temp_dir().display()
+    ))
+}
+
+/// 64 random bits, as hex, from the kernel's own source.
+fn random_suffix() -> Result<String> {
+    let mut bytes = [0u8; 8];
+    std::fs::File::open("/dev/urandom")
+        .context("opening /dev/urandom")?
+        .read_exact(&mut bytes)
+        .context("reading /dev/urandom")?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn next_id() -> i64 {
@@ -516,6 +731,14 @@ wrap_dev_tools_message_observer! {
             params: Option<&[u8]>,
         ) {
             let method = method.map(CefString::to_string);
+            // Track the main frame and its execution context before deciding
+            // anything about a message. This is what lets `bindingCalled`
+            // below tell the shell document from an iframe.
+            if let (Some(method), Some(params)) = (method.as_deref(), params) {
+                if let Ok(mut guard) = FRAME_GUARD.lock() {
+                    guard.note_event(method, params);
+                }
+            }
             // A document was replaced — a reload, or the shell navigating. The
             // shim is re-installed by `addScriptToEvaluateOnNewDocument` before
             // any of its scripts run, so this only has to let messages flow
@@ -528,13 +751,24 @@ wrap_dev_tools_message_observer! {
                 // a reload does not produce, so without this every event sent
                 // across a reload stayed in the queue for ever.
                 if present {
+                    let allowed = FRAME_GUARD
+                        .lock()
+                        .map(|guard| guard.url_known_allowed())
+                        .unwrap_or(false);
+                    READY.store(allowed, Ordering::SeqCst);
                     let waiting: Vec<String> = QUEUE
                         .lock()
                         .map(|mut queue| queue.drain(..).collect())
                         .unwrap_or_default();
                     if let Some(browser) = browser {
-                        for json in waiting {
-                            evaluate(browser, &viewport_ipc::js::dispatch(&json));
+                        if allowed {
+                            for json in waiting {
+                                evaluate(browser, &viewport_ipc::js::dispatch(&json));
+                            }
+                        } else if !waiting.is_empty() {
+                            tracing::warn!(
+                                "dropping queued compositor events: the shell left the allowed origin"
+                            );
                         }
                     }
                 }
@@ -557,8 +791,59 @@ wrap_dev_tools_message_observer! {
             let Some(payload) = params.get("payload").and_then(Value::as_str) else {
                 return;
             };
+            let context = params.get("executionContextId").and_then(Value::as_i64);
+            let allowed = match FRAME_GUARD.lock() {
+                Ok(guard) => guard.context_allows(context) && guard.url_allows(),
+                Err(_) => false,
+            };
+            if !allowed {
+                // Once, not per message: a subframe that keeps trying must
+                // not become the log.
+                if !DROP_WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "dropping a page-to-compositor message: it did not come from \
+                         the top frame's execution context, or the main frame's URL \
+                         is not a file:/loopback origin; set {}=1 to allow a remote shell",
+                        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+                    );
+                }
+                return;
+            }
             if let Some(out) = OUT.get() {
                 out.send(payload.to_owned());
+            }
+        }
+
+        /// A DevTools command result. `Page.getFrameTree` is the one whose
+        /// result names the main frame; the rest are not our business.
+        fn on_dev_tools_method_result(
+            &self,
+            _browser: Option<&mut Browser>,
+            _message_id: ::std::os::raw::c_int,
+            success: ::std::os::raw::c_int,
+            result: Option<&[u8]>,
+        ) {
+            if success == 0 {
+                return;
+            }
+            let Some(result) = result else {
+                return;
+            };
+            let mut known_allowed = false;
+            if let Ok(mut guard) = FRAME_GUARD.lock() {
+                guard.note_result(result);
+                known_allowed = guard.url_known_allowed();
+            }
+            if known_allowed && !READY.swap(true, Ordering::SeqCst) {
+                if let Some(browser) = _browser {
+                    let waiting: Vec<String> = QUEUE
+                        .lock()
+                        .map(|mut queue| queue.drain(..).collect())
+                        .unwrap_or_default();
+                    for json in waiting {
+                        evaluate(browser, &viewport_ipc::js::dispatch(&json));
+                    }
+                }
             }
         }
     }
@@ -592,7 +877,11 @@ wrap_task! {
                     }));
                     return;
                 }
-                if READY.load(Ordering::SeqCst) {
+                let allowed = FRAME_GUARD
+                    .lock()
+                    .map(|guard| guard.url_known_allowed())
+                    .unwrap_or(false);
+                if READY.load(Ordering::SeqCst) && allowed {
                     evaluate(browser, &viewport_ipc::js::dispatch(&self.json));
                 } else {
                     enqueue(self.json.clone());

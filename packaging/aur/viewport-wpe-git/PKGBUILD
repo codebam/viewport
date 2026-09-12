@@ -97,6 +97,9 @@ conflicts=('viewport'
            'viewport-chromium')
 options=('!lto')
 
+# A VCS source, deliberately: this is the development package and follows
+# `main`, so there is no immutable revision to name. makepkg skips checksums
+# for VCS sources; the moving branch is the point.
 source=("viewport::git+https://github.com/codebam/viewport.git")
 sha256sums=('SKIP')
 

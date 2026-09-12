@@ -57,6 +57,49 @@ pub enum CloseReason {
 /// not the problem. See the insert in `notify` for why nothing else prunes it.
 const MAX_OWNERS: usize = 4096;
 
+// Byte and entry ceilings on what a D-Bus client can make the compositor hold
+// and broadcast. A sender is any application on the session bus: its strings
+// are untrusted input, and without these an application could hand over a
+// notification whose app name, body or action list is as large as the bus lets
+// it be — then have every one of them kept in the history and re-serialised to
+// the shell on every notification.
+//
+// Truncation happens at ingestion, on UTF-8 character boundaries, so the
+// compositor never stores the oversized form at all. A cap that cuts a
+// multi-byte character is worse than the memory: the shell receives a string
+// that cannot be parsed as text.
+
+/// The most an `app_name` may contribute.
+const MAX_APP_NAME: usize = 256;
+/// The most a `summary` may contribute.
+const MAX_SUMMARY: usize = 1024;
+/// The most a `body` may contribute. Bodies are prose and get the most room.
+const MAX_BODY: usize = 16 * 1024;
+/// The most an action key may contribute.
+const MAX_ACTION_KEY: usize = 256;
+/// The most an action label may contribute.
+const MAX_ACTION_LABEL: usize = 256;
+/// The most actions that are kept. The flat D-Bus list has two strings each.
+const MAX_ACTIONS: usize = 64;
+/// The most an icon or art URL may contribute.
+const MAX_ART_URL: usize = 2048;
+
+/// A UTF-8-safe prefix of `text` no longer than `max` bytes.
+fn truncate(text: &str, max: usize, what: &str) -> String {
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    tracing::debug!(
+        "notification {what} truncated from {} to {end} bytes",
+        text.len()
+    );
+    text[..end].to_owned()
+}
+
 /// The half of the service the compositor keeps.
 pub struct Notifications {
     /// Signals back to D-Bus: a notification the user acted on or dismissed.
@@ -300,6 +343,24 @@ impl Server {
         // notifications — but a unique name is handed out by the bus itself.
         let sender = header.sender().map(|name| name.to_string());
 
+        // Caps before anything stores or forwards these. The D-Bus thread is
+        // handling a message from any application on the session bus, and this
+        // is the last place where the unbounded form is still ours to drop.
+        let app_name = truncate(&app_name, MAX_APP_NAME, "app name");
+        let icon = truncate(&app_icon, MAX_ART_URL, "icon");
+        let summary = truncate(&summary, MAX_SUMMARY, "summary");
+        let body = truncate(&body, MAX_BODY, "body");
+        let mut actions = actions;
+        if actions.len() > MAX_ACTIONS * 2 {
+            tracing::debug!(
+                "notification actions truncated from {} to {} strings \
+                 ({MAX_ACTIONS} actions)",
+                actions.len(),
+                MAX_ACTIONS * 2
+            );
+            actions.truncate(MAX_ACTIONS * 2);
+        }
+
         let id = match self.owners.lock() {
             Ok(mut owners) => {
                 let id = resolve_id(&self.next, &owners, replaces_id, sender.as_deref());
@@ -346,7 +407,7 @@ impl Server {
         let notification = Notification {
             id,
             app_name,
-            icon: app_icon,
+            icon,
             summary,
             body,
             urgency: urgency(&hints),
@@ -450,6 +511,40 @@ fn now() -> u64 {
 /// an ordinary desk and a few hundred kilobytes at the outside.
 pub const DEFAULT_HISTORY: usize = 50;
 
+/// The most entries the centre keeps even if the configuration asks for more.
+///
+/// `history_limit` is a preference, not a promise: a value with a malformed or
+/// hostile spelling used to put an unbounded `Vec` here, and every change
+/// cloned and re-serialised the whole thing. The byte ceiling below is the
+/// real bound; this one keeps the entry count sane for a list of tiny
+/// notifications.
+const MAX_HISTORY_ENTRIES: usize = 4096;
+
+/// The most notification payload bytes one history republish may carry.
+///
+/// The fields are each capped at ingestion, so this is a second ceiling for
+/// the sum of up to `MAX_HISTORY_ENTRIES` of them. Two megabytes is far more
+/// than a centre a person can scroll to, and it bounds both the clone
+/// [`viewport_ipc::Event::NotificationHistory`] needs and its serialisation.
+const MAX_HISTORY_BYTES: usize = 2 * 1024 * 1024;
+
+/// What one entry costs the history and a republish, close enough to bound it.
+///
+/// A fixed overhead stands in for the id and timestamps; the variable part is
+/// every byte of text the shell will be sent.
+fn notification_bytes(notification: &Notification) -> usize {
+    let actions: usize = notification
+        .actions
+        .iter()
+        .map(|action| action.key.len() + action.label.len())
+        .sum();
+    64 + notification.app_name.len()
+        + notification.icon.len()
+        + notification.summary.len()
+        + notification.body.len()
+        + actions
+}
+
 /// What was notified, kept after the popup has gone.
 ///
 /// A notification is a popup and then it is nothing: one that arrived over a
@@ -524,8 +619,17 @@ impl History {
     }
 
     fn trim(&mut self) {
-        if self.entries.len() > self.limit {
-            self.entries.truncate(self.limit);
+        // Newest first, so truncating the end drops the oldest.
+        let limit = self.limit.min(MAX_HISTORY_ENTRIES);
+        if self.entries.len() > limit {
+            self.entries.truncate(limit);
+        }
+        let mut bytes: usize = self.entries.iter().map(notification_bytes).sum();
+        while bytes > MAX_HISTORY_BYTES {
+            let Some(oldest) = self.entries.pop() else {
+                break;
+            };
+            bytes -= notification_bytes(&oldest);
         }
     }
 }
@@ -548,8 +652,8 @@ impl crate::state::ViewportState {
 fn parse_actions(flat: &[String]) -> Vec<NotificationAction> {
     flat.chunks_exact(2)
         .map(|pair| NotificationAction {
-            key: pair[0].clone(),
-            label: pair[1].clone(),
+            key: truncate(&pair[0], MAX_ACTION_KEY, "action key"),
+            label: truncate(&pair[1], MAX_ACTION_LABEL, "action label"),
         })
         .collect()
 }
@@ -1044,5 +1148,72 @@ mod tests {
         let mut hints = HashMap::new();
         hints.insert("urgency".to_owned(), zvariant::OwnedValue::from(2u32));
         assert_eq!(urgency(&hints), 2);
+    }
+
+    #[test]
+    fn truncation_never_splits_a_character() {
+        // `é` is two bytes; a two-byte cut through it would hand the shell a
+        // `String` that is not one.
+        assert_eq!(truncate("aé", 2, "test"), "a");
+        assert_eq!(truncate("aé", 3, "test"), "aé");
+        assert_eq!(truncate("short", 64, "test"), "short");
+    }
+
+    /// Every unbounded string a D-Bus sender chose reaches the compositor
+    /// capped, and no sender can make the action list grow past its entry cap.
+    #[test]
+    fn a_notification_is_capped_before_it_leaves_the_bus_thread() {
+        let (server, channel) = server();
+        let actions: Vec<String> = (0..MAX_ACTIONS * 2)
+            .map(|i| format!("{i}").repeat(1024))
+            .collect();
+        server
+            .notify(
+                "a".repeat(MAX_APP_NAME * 2),
+                0,
+                "i".repeat(MAX_ART_URL * 2),
+                "s".repeat(MAX_SUMMARY * 2),
+                "é".repeat(MAX_BODY),
+                actions,
+                HashMap::new(),
+                -1,
+                header(None),
+            )
+            .expect("the channel is alive");
+
+        let Message::Add(notification) = channel.try_recv().expect("a notification") else {
+            panic!("expected the add");
+        };
+        assert!(notification.app_name.len() <= MAX_APP_NAME);
+        assert!(notification.icon.len() <= MAX_ART_URL);
+        assert!(notification.summary.len() <= MAX_SUMMARY);
+        assert!(notification.body.len() <= MAX_BODY);
+        assert_eq!(notification.actions.len(), MAX_ACTIONS);
+        for action in &notification.actions {
+            assert!(action.key.len() <= MAX_ACTION_KEY);
+            assert!(action.label.len() <= MAX_ACTION_LABEL);
+        }
+    }
+
+    /// The history is bounded in bytes as well as entries: a configuration
+    /// that asks for more than [`MAX_HISTORY_ENTRIES`] or a sender that
+    /// maximises every field still cannot make one republish carry an
+    /// unbounded snapshot.
+    #[test]
+    fn the_history_is_bounded_by_bytes_not_only_by_its_limit() {
+        let mut history = History::default();
+        history.set_limit(usize::MAX);
+        for id in 1..=1000u32 {
+            let mut notification = kept(id, "x");
+            notification.body = "y".repeat(MAX_BODY);
+            assert!(history.record(&notification));
+        }
+        assert!(history.entries().len() <= MAX_HISTORY_ENTRIES);
+        let bytes: usize = history.entries().iter().map(notification_bytes).sum();
+        assert!(bytes <= MAX_HISTORY_BYTES, "{bytes} bytes kept");
+
+        // Newest first: the cap takes the oldest away, not the new one.
+        assert_eq!(history.entries().first().map(|n| n.id), Some(1000));
+        assert!(history.entries().last().is_some_and(|n| n.id > 1));
     }
 }

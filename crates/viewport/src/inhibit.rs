@@ -361,10 +361,11 @@ impl PortalInhibit {
         }
 
         self.registry
-            .hold_request(path.clone(), owner, app_id, &reason);
+            .hold_request(path.clone(), owner.clone(), app_id, &reason);
         let request = RequestObject {
             path: path.clone(),
             registry: self.registry.clone(),
+            owner,
         };
         if let Err(e) = server.at(&path, request).await {
             // The hold stands, but nothing can end it by hand — so end it
@@ -379,11 +380,29 @@ impl PortalInhibit {
 struct RequestObject {
     path: OwnedObjectPath,
     registry: Registry,
+    /// The unique bus name that created this request, which is the frontend
+    /// the hold was taken through. The session bus is reachable by every
+    /// process in the session, and a peer that knows the path must not be able
+    /// to release a screen hold it did not take.
+    owner: Option<String>,
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl RequestObject {
-    async fn close(&self, #[zbus(object_server)] server: &zbus::ObjectServer) {
+    async fn close(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+    ) {
+        let caller = header.sender().map(|name| name.to_string());
+        if self.owner != caller {
+            tracing::warn!(
+                "inhibit: refusing Close from {caller:?} for request {}, which belongs to {:?}",
+                self.path,
+                self.owner
+            );
+            return;
+        }
         match self.registry.release_request(&self.path) {
             Some(held) => tracing::info!("inhibit: {} released the screen", held.app),
             None => tracing::debug!("inhibit: request {} was already closed", self.path),

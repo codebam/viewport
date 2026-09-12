@@ -38,6 +38,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use smithay::input::keyboard::Keysym;
 use zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 use crate::screencast::portal::{called_by_frontend, Sessions};
@@ -45,6 +46,17 @@ use crate::screencast::portal::{called_by_frontend, Sessions};
 const RESPONSE_SUCCESS: u32 = 0;
 const RESPONSE_CANCELLED: u32 = 1;
 const RESPONSE_FAILED: u32 = 2;
+
+/// The most shortcuts one request may put in front of the person.
+///
+/// The picker draws one row per shortcut, and the list arrives over the bus
+/// from an application; without a cap an application can ask for a dialogue
+/// longer than the screen and make the person answering it scroll past a
+/// thousand rows that are all the same question. Past this many the extra
+/// requests are dropped rather than the whole list refused, because the
+/// shortcuts before the cap are still shortcuts somebody may want — and the
+/// frontend is told only what survived, which the interface already allows.
+const MAX_SHORTCUTS_PER_PICKER: usize = 64;
 
 const INTERFACE: &str = "org.freedesktop.impl.portal.GlobalShortcuts";
 const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
@@ -81,14 +93,19 @@ pub struct Granted {
 impl Granted {
     /// A request turned into something that can match a key, or nothing.
     ///
-    /// Two ways to get nothing, and both are the application's doing. A
-    /// trigger this keymap cannot parse — a chord naming a modifier that does
-    /// not exist, or a key xkb has never heard of — cannot be matched against
-    /// a press, so granting it would be agreeing to something that can never
-    /// happen. And an empty trigger is the portal's way of saying "you choose"
-    /// — which needs a shortcut editor to choose *in*, and there is none here;
-    /// a compositor that invented a chord instead would be handing out a key
-    /// nobody asked for and nobody can see.
+    /// Three ways to get nothing, and all of them are in the application's
+    /// hands. A trigger this keymap cannot parse — a chord naming a modifier
+    /// that does not exist, or a key xkb has never heard of — cannot be
+    /// matched against a press, so granting it would be agreeing to something
+    /// that can never happen. An empty trigger is the portal's way of saying
+    /// "you choose" — which needs a shortcut editor to choose *in*, and there
+    /// is none here; a compositor that invented a chord instead would be
+    /// handing out a key nobody asked for and nobody can see. And a
+    /// modifier-less printable key is refused: the shortcut fires while
+    /// somebody is typing into another window, so `a` alone would make an
+    /// approved application a keylogger. Printable keys need Ctrl, Alt or
+    /// Super held — a chord rather than a character — while function, media
+    /// and navigation keys are safe exactly because they never type anything.
     pub fn from_request(request: &Requested) -> Option<Self> {
         let binding = crate::binding::parse_chord(request.trigger.trim())?;
         // A key, not a mouse button or the wheel. `parse_chord` accepts those
@@ -98,6 +115,13 @@ impl Granted {
         if binding.keysym == 0 {
             return None;
         }
+        // Shift is not a guard: it only chooses which character a printable
+        // key produces, and the character is still somebody's password.
+        let command_modifier =
+            binding.modifiers.ctrl || binding.modifiers.alt || binding.modifiers.logo;
+        if Self::printable_keysym(binding.keysym) && !command_modifier {
+            return None;
+        }
         Some(Self {
             id: request.id.clone(),
             description: request.description.clone(),
@@ -105,6 +129,17 @@ impl Granted {
             modifiers: binding.modifiers,
             keysym: binding.keysym,
         })
+    }
+
+    /// Whether this keysym types a character.
+    ///
+    /// xkb answers this: a keysym that maps to a UTF-32 code point is a
+    /// character, and one that does not is a function, media, navigation or
+    /// modifier key. That covers the keypad digits and the Unicode ranges
+    /// without this file having to carry a table of keysyms and keep it true.
+    fn printable_keysym(keysym: u32) -> bool {
+        let codepoint = smithay::input::keyboard::xkb::keysym_to_utf32(Keysym::new(keysym));
+        char::from_u32(codepoint).is_some_and(|character| !character.is_control())
     }
 
     /// What the frontend is told about this shortcut.
@@ -399,6 +434,14 @@ fn describe(shortcuts: &[Granted]) -> Described {
         .collect()
 }
 
+/// Keep a request down to [`MAX_SHORTCUTS_PER_PICKER`], returning how many were
+/// dropped. The caller logs the count; nothing else needs to know.
+fn cap_picker_shortcuts<T>(shortcuts: &mut Vec<T>) -> usize {
+    let dropped = shortcuts.len().saturating_sub(MAX_SHORTCUTS_PER_PICKER);
+    shortcuts.truncate(MAX_SHORTCUTS_PER_PICKER);
+    dropped
+}
+
 #[zbus::interface(name = "org.freedesktop.impl.portal.GlobalShortcuts")]
 impl GlobalShortcuts {
     #[zbus(property, name = "version")]
@@ -434,6 +477,7 @@ impl GlobalShortcuts {
             path: path.clone(),
             sender: self.sender.clone(),
             apps: self.apps.clone(),
+            sessions: self.sessions.clone(),
         };
         if let Err(e) = server.at(&path, session).await {
             tracing::warn!("shortcuts: could not publish session {path}: {e}");
@@ -469,7 +513,7 @@ impl GlobalShortcuts {
             .cloned()
             .unwrap_or_default();
 
-        let requested: Vec<Requested> = shortcuts
+        let mut requested: Vec<Requested> = shortcuts
             .iter()
             .map(|(id, options)| Requested {
                 id: id.clone(),
@@ -477,6 +521,13 @@ impl GlobalShortcuts {
                 trigger: string(options, "preferred_trigger"),
             })
             .collect();
+        let dropped = cap_picker_shortcuts(&mut requested);
+        if dropped > 0 {
+            tracing::warn!(
+                "shortcuts: {app_id:?} asked for {} at once; only the first {MAX_SHORTCUTS_PER_PICKER} are considered",
+                requested.len() + dropped
+            );
+        }
 
         let (reply, answer) = async_channel::bounded(1);
         let granted = self
@@ -575,11 +626,22 @@ struct SessionObject {
     path: OwnedObjectPath,
     sender: smithay::reexports::calloop::channel::Sender<Message>,
     apps: Arc<Mutex<HashMap<OwnedObjectPath, String>>>,
+    /// The session table, only to check who is closing. The session bus is
+    /// reachable by every process in the session, and a peer that knows the
+    /// path must not be able to revoke another application's shortcuts.
+    sessions: Sessions,
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Session")]
 impl SessionObject {
-    async fn close(&self, #[zbus(object_server)] server: &zbus::ObjectServer) {
+    async fn close(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+    ) {
+        if !called_by_frontend(&self.sessions, "shortcuts session", &header) {
+            return;
+        }
         tracing::debug!("shortcuts: the frontend closed session {}", self.path);
         self.apps.lock().unwrap().remove(&self.path);
         let _ = self.sender.send(Message::Close {
@@ -646,6 +708,64 @@ mod tests {
     fn a_mouse_button_is_not_a_global_shortcut() {
         assert!(Granted::from_request(&requested("talk", "Mod4+Mouse4")).is_none());
         assert!(Granted::from_request(&requested("talk", "Mod4+WheelUp")).is_none());
+    }
+
+    /// A grant is a key that fires without focus. If it can be printable on
+    /// its own, an approved application can watch every character somebody
+    /// types anywhere — so a printable key without Ctrl, Alt or Super is not
+    /// a shortcut, it is a keylogger.
+    #[test]
+    fn a_modifierless_printable_key_is_not_a_global_shortcut() {
+        assert!(Granted::from_request(&requested("watch", "a")).is_none());
+        assert!(Granted::from_request(&requested("watch", "space")).is_none());
+        assert!(Granted::from_request(&requested("watch", "KP_1")).is_none());
+        // Shift changes which character comes out, not whether there is one.
+        assert!(Granted::from_request(&requested("watch", "Shift+a")).is_none());
+    }
+
+    /// The same key with a command modifier is a chord: pressing it is a
+    /// deliberate shortcut, not somebody typing into another window.
+    #[test]
+    fn a_printable_key_with_a_command_modifier_is_a_shortcut() {
+        for chord in ["Ctrl+a", "Alt+a", "LOGO+a"] {
+            assert!(
+                Granted::from_request(&requested("talk", chord)).is_some(),
+                "{chord}"
+            );
+        }
+    }
+
+    /// Keys that never type a character are safe without a modifier, and
+    /// refusing them would take away the push-to-talk and media shortcuts this
+    /// interface exists for.
+    #[test]
+    fn a_key_that_types_nothing_needs_no_modifier() {
+        for chord in ["F1", "Left", "XF86AudioMute", "XF86AudioPlay"] {
+            assert!(
+                Granted::from_request(&requested("play", chord)).is_some(),
+                "{chord}"
+            );
+        }
+    }
+
+    /// One request may not fill the picker. The extras are dropped, and the
+    /// ones that remain are the first the application asked for, in order.
+    #[test]
+    fn one_request_cannot_fill_the_picker() {
+        let mut shortcuts: Vec<Requested> = (0..MAX_SHORTCUTS_PER_PICKER + 7)
+            .map(|i| requested(&format!("s{i}"), "F1"))
+            .collect();
+        assert_eq!(cap_picker_shortcuts(&mut shortcuts), 7);
+        assert_eq!(shortcuts.len(), MAX_SHORTCUTS_PER_PICKER);
+        assert_eq!(shortcuts.first().map(|s| s.id.as_str()), Some("s0"));
+        let last = format!("s{}", MAX_SHORTCUTS_PER_PICKER - 1);
+        assert_eq!(shortcuts.last().map(|s| s.id.as_str()), Some(last.as_str()));
+
+        let mut exactly_a_full_picker: Vec<Requested> = (0..MAX_SHORTCUTS_PER_PICKER)
+            .map(|i| requested(&format!("s{i}"), "F1"))
+            .collect();
+        assert_eq!(cap_picker_shortcuts(&mut exactly_a_full_picker), 0);
+        assert_eq!(exactly_a_full_picker.len(), MAX_SHORTCUTS_PER_PICKER);
     }
 
     fn granted(id: &str, chord: &str) -> Granted {

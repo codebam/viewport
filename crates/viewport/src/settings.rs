@@ -156,7 +156,10 @@ pub struct OutputOverlay {
 /// that means.
 pub fn save(path: &Path, overlay: &Overlay) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?;
+        // A single-component relative path has no parent to create.
+        if !dir.as_os_str().is_empty() {
+            create_overlay_dir(dir).map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?;
+        }
     }
 
     // Pretty, with a trailing newline. This is a file a person will open to
@@ -167,10 +170,16 @@ pub fn save(path: &Path, overlay: &Overlay) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
     text.push('\n');
 
-    // Unique per save: a fixed name collides for two savers, and one rename
-    // would then move the other's half-written file into place.
+    // Unique per save: the pid separates processes and the counter separates
+    // two saves inside one, so a fixed name cannot be planted ahead of the
+    // open or collide with another saver's half-written file.
+    let unique = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(0);
     let temporary = path.with_file_name(format!(
-        ".{}.{}.tmp",
+        ".{}.{}.{unique:x}-{nanos:x}.tmp",
         path.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("settings"),
@@ -180,22 +189,24 @@ pub fn save(path: &Path, overlay: &Overlay) -> anyhow::Result<()> {
     // it: without the sync a crash can leave the rename durable and the bytes
     // it points at not, which is an empty `settings.json` — fatal for
     // `--config`, and the exact failure the temp file exists to prevent.
-    {
+    let written = (|| -> std::io::Result<()> {
         use std::io::Write as _;
-        let mut file = std::fs::File::create(&temporary)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", temporary.display()))?;
-        file.write_all(text.as_bytes())
-            .and_then(|()| file.sync_all())
-            .map_err(|e| anyhow::anyhow!("{}: {e}", temporary.display()))?;
+        let mut file = create_private_temp(&temporary)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(anyhow::anyhow!("{}: {e}", temporary.display()));
     }
-    std::fs::rename(&temporary, path).map_err(|e| {
+    if let Err(e) = std::fs::rename(&temporary, path) {
         // The temporary is cleaned up here rather than left behind: a rename
         // that failed is usually a read-only or full filesystem, and leaving a
         // temporary next to the config file is a puzzle for whoever finds it
         // later.
         let _ = std::fs::remove_file(&temporary);
-        anyhow::anyhow!("{}: {e}", path.display())
-    })?;
+        return Err(anyhow::anyhow!("{}: {e}", path.display()));
+    }
     // The directory entry too, so the rename itself is durable.
     if let Some(parent) = path.parent() {
         if let Ok(dir) = std::fs::File::open(parent) {
@@ -205,15 +216,89 @@ pub fn save(path: &Path, overlay: &Overlay) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Counter for temporary names, so two saves in the same nanosecond differ.
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Create `dir` if it is missing, with no group or other access when this call
+/// is the one that creates it. An existing directory is left as it is.
+fn create_overlay_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(0o700);
+    builder.create(dir)
+}
+
+/// Open a brand-new file only this user can read, refusing to follow a symlink
+/// at the final path component.
+fn create_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
+}
+
 /// Read the overlay written by [`save`], if it is there.
 pub fn load(path: &Path) -> anyhow::Result<Option<Overlay>> {
-    match std::fs::read_to_string(path) {
+    match read_bounded(path) {
         Ok(text) => serde_json::from_str(&text)
             .map(Some)
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(anyhow::anyhow!("{}: {e}", path.display())),
     }
+}
+
+/// The most overlay text this will read: a hand-written file is a few hundred
+/// bytes, and a larger one is not a settings panel's output. The cap is what
+/// keeps a FIFO or an enormous file in the config directory from blocking or
+/// exhausting startup. `O_NOFOLLOW` refuses a final symlink for the same
+/// reason.
+const MAX_OVERLAY_BYTES: usize = 1 << 20;
+
+fn read_bounded(path: &Path) -> std::io::Result<String> {
+    use std::io::Read as _;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // O_NONBLOCK so a FIFO at this path returns from open() instead of
+        // blocking startup before the regular-file check can refuse it.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    if metadata.len() > MAX_OVERLAY_BYTES as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "larger than the overlay cap",
+        ));
+    }
+    let mut text = String::new();
+    file.take(MAX_OVERLAY_BYTES as u64 + 1)
+        .read_to_string(&mut text)?;
+    if text.len() > MAX_OVERLAY_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "larger than the overlay cap",
+        ));
+    }
+    Ok(text)
 }
 
 /// Lay the overlay's keys over a loaded config file.
@@ -406,6 +491,75 @@ mod tests {
         );
         // And nothing left behind from the atomic write.
         assert!(!file.with_extension("json.tmp").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A saved overlay names windows and monitor arrangements, so it is no
+    /// more public than a saved layout: the newly created directory is 0700
+    /// and the file 0600, whatever the umask was.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_creates_private_files_and_leaves_existing_directories_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir =
+            std::env::temp_dir().join(format!("viewport-settings-modes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let nested = dir.join("viewport");
+        let file = nested.join("settings.json");
+
+        save(&file, &full()).expect("should write");
+        assert_eq!(
+            std::fs::metadata(&nested)
+                .expect("the created directory")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&file)
+                .expect("the overlay")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        // The unique temporary was renamed, not left beside the file.
+        assert_eq!(
+            std::fs::read_dir(&nested)
+                .expect("the directory")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+                .count(),
+            0
+        );
+
+        // Only a directory this call created is chmodded; one that was already
+        // there keeps the mode its owner chose.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&nested).expect("the existing directory");
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755))
+            .expect("setting the existing mode");
+        save(&file, &Overlay::default()).expect("should write into it");
+        assert_eq!(
+            std::fs::metadata(&nested)
+                .expect("the existing directory")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755,
+            "an existing directory must not be chmodded"
+        );
+        assert_eq!(
+            std::fs::metadata(&file)
+                .expect("the overlay")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

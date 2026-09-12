@@ -353,6 +353,13 @@ impl crate::foreign_toplevel::ForeignToplevelHandler for ViewportState {
     }
 
     fn activate_toplevel(&mut self, id: u32) {
+        // A locked session is not taking requests to move the keyboard. The
+        // same rule as the activation token below, and for the same reason:
+        // the next thing typed at a lock screen is a password.
+        if self.locked {
+            tracing::debug!("ignoring foreign-toplevel activation {id} while locked");
+            return;
+        }
         // Only a window that is actually on screen, as in `src/foreign.c:53`:
         // focusing one the shell has parked on another workspace would move
         // the keyboard somewhere the user cannot see.
@@ -1076,9 +1083,50 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for ViewportState {
     fn request_activation(
         &mut self,
         _token: smithay::wayland::xdg_activation::XdgActivationToken,
-        _data: smithay::wayland::xdg_activation::XdgActivationTokenData,
+        data: smithay::wayland::xdg_activation::XdgActivationTokenData,
         surface: WlSurface,
     ) {
+        // A lock screen is the only thing on the desk, and no token may put
+        // the keyboard behind it.
+        if self.locked {
+            tracing::debug!("ignoring an activation request while the session is locked");
+            return;
+        }
+
+        // A token is a capability handed from one process to another, and
+        // the compositor is the only place that can say who may hold it.
+        // Smithay has checked that the token exists; these gates are what it
+        // does not check.
+        //
+        // A token from the same client may activate its own surface. A token
+        // minted by a different process is also legitimate — that is how a
+        // launcher hands "this application may take focus" to the process it
+        // started — but it must carry the input serial the user's action
+        // produced, so a page cannot conjure one from nothing. Smithay does
+        // not verify the serial against the event that produced it, which is
+        // why the lock check above and the age check below are both needed.
+        let asking_client = surface.client().map(|client| client.id());
+        let same_client = data
+            .client_id
+            .as_ref()
+            .zip(asking_client.as_ref())
+            .is_some_and(|(token, asking)| token == asking);
+
+        // A serial is what ties the token to a real input event; one made
+        // without it is a token somebody conjured, not an answer to what the
+        // user just did. And it has to be recent: a token held for a minute
+        // is a stale claim about a moment that has passed. A same-client
+        // token may omit it (toolkits do when they self-activate), but a
+        // cross-client token may not.
+        if data.serial.is_none() && !same_client {
+            tracing::debug!("ignoring a cross-client activation token with no input serial");
+            return;
+        }
+        if data.timestamp.elapsed() > std::time::Duration::from_secs(10) {
+            tracing::debug!("ignoring a stale activation token");
+            return;
+        }
+
         let Some(view) = self.views.find_by_surface(&surface) else {
             return;
         };

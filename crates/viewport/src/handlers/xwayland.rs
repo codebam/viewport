@@ -39,6 +39,15 @@ use viewport_ipc::Event;
 
 use crate::state::ViewportState;
 
+/// The largest edge an unplaced X11 client may ask to be configured to.
+///
+/// A configure request carries `u32`; a client that sends a value above
+/// `i32::MAX` is not asking for a large window — the cast to the compositor's
+/// signed logical geometry would wrap it negative, and a negative size flows
+/// into layout and render as no sensible rectangle at all. 32768 is far past
+/// any real output.
+const MAX_X11_CONFIGURE_DIMENSION: u32 = 32768;
+
 /// The xwayland-shell protocol, which is how Xwayland tells the compositor
 /// that a wl_surface belongs to a given X window. Nothing to decide here but
 /// the one callback below; the state is the rest of it.
@@ -211,10 +220,10 @@ impl XwmHandler for ViewportState {
             .unwrap_or(false);
         if !placed {
             if let Some(w) = w {
-                geometry.size.w = w as i32;
+                geometry.size.w = w.min(MAX_X11_CONFIGURE_DIMENSION) as i32;
             }
             if let Some(h) = h {
-                geometry.size.h = h as i32;
+                geometry.size.h = h.min(MAX_X11_CONFIGURE_DIMENSION) as i32;
             }
         }
         if let Err(e) = window.configure(geometry) {

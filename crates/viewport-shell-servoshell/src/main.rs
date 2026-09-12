@@ -57,7 +57,7 @@
 // the token is.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -121,6 +121,21 @@ const MAX_HEADER_BYTES: usize = 64 * 1024;
 /// in it and grow this `String` without limit.
 const MAX_REQUEST_LINE: usize = 8 * 1024;
 
+/// How many bridge connections may be handled at once.
+///
+/// The page needs two — the long poll for events and a `send` in flight — and
+/// four leaves room for a reconnect overlapping either. Past it, the accepted
+/// socket is closed without a thread: a local process that opens connections
+/// in a loop must not turn into unbounded threads.
+const MAX_CONNECTIONS: usize = 4;
+
+/// Read and write timeout for one bridge connection.
+///
+/// A few seconds, because everything this server says is a response to a
+/// request the page just made. A peer that goes quiet mid-request — a slow
+/// connection attack by any other name — is closed rather than held.
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How many undelivered events the bridge may hold.
 ///
 /// A page that never polls — the userscript did not run, the engine wedged —
@@ -128,6 +143,12 @@ const MAX_REQUEST_LINE: usize = 8 * 1024;
 /// the session. The other backends cap this at a few hundred; this is generous
 /// for a page that is merely behind.
 const QUEUE_LIMIT: usize = 4096;
+
+/// Whether a tokenless bridge request has already been logged.
+///
+/// One line per process: a local process guessing tokens must not become the
+/// log, and the first refusal says everything the rest would.
+static TOKEN_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Set from a signal handler when this process is asked to stop.
 ///
@@ -170,6 +191,12 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     let options = Options::parse(&args)?;
+    anyhow::ensure!(
+        viewport_ipc::js::shell_url_allowed(&options.url),
+        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
+        options.url,
+        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+    );
 
     // Bound before the browser is started, because the port it is bound to is
     // baked into the script the browser is told to inject.
@@ -492,6 +519,79 @@ struct Bridge {
     out: viewport_shell_bridge::Sender,
 }
 
+/// A non-blocking permit counter for the bridge's connection threads.
+///
+/// `try_acquire` rather than a wait: the accept loop must never block on a
+/// slow or hostile peer, and an over-limit connection is closed where it is.
+#[derive(Default)]
+struct ConnectionLimit {
+    active: Mutex<usize>,
+}
+
+impl ConnectionLimit {
+    fn try_acquire(self: &Arc<Self>) -> Option<ConnectionPermit> {
+        let mut active = self.active.lock().ok()?;
+        if *active >= MAX_CONNECTIONS {
+            return None;
+        }
+        *active += 1;
+        Some(ConnectionPermit(self.clone()))
+    }
+}
+
+struct ConnectionPermit(Arc<ConnectionLimit>);
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.0.active.lock() {
+            *active = active.saturating_sub(1);
+        }
+    }
+}
+
+/// The uid that owns a connected loopback socket, from `/proc/net/tcp`.
+///
+/// Linux's `SO_PEERCRED` is an `AF_UNIX` facility: on an `AF_INET` socket it
+/// answers uid/gid `-1` rather than the peer's credentials, so a check against
+/// `geteuid` would reject the shell as well as an attacker. The same network
+/// namespace's `/proc/net/tcp` does carry the owning uid for a connected
+/// socket, which is what this reads. It is best-effort: if the table cannot be
+/// read (no procfs, a race in which the row is already gone) the token remains
+/// the access control, and `None` is returned rather than a wrong rejection.
+fn peer_uid(stream: &TcpStream) -> Option<u32> {
+    let local = ipv4_proc_key(stream.local_addr().ok()?)?;
+    let remote = ipv4_proc_key(stream.peer_addr().ok()?)?;
+    let table = std::fs::read_to_string("/proc/net/tcp").ok()?;
+    for line in table.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.get(1).copied() == Some(local.as_str())
+            && fields.get(2).copied() == Some(remote.as_str())
+        {
+            return fields.get(7).and_then(|uid| uid.parse().ok());
+        }
+    }
+    None
+}
+
+/// `127.0.0.1:80` as `/proc/net/tcp` spells it: little-endian IPv4 hex and a
+/// four-digit hex port.
+fn ipv4_proc_key(addr: SocketAddr) -> Option<String> {
+    match addr {
+        SocketAddr::V4(addr) => {
+            let octets = addr.ip().octets();
+            Some(format!(
+                "{:02X}{:02X}{:02X}{:02X}:{:04X}",
+                octets[3],
+                octets[2],
+                octets[1],
+                octets[0],
+                addr.port()
+            ))
+        }
+        SocketAddr::V6(_) => None,
+    }
+}
+
 /// 32 hex characters of `/dev/urandom`.
 ///
 /// Not a crate: this is the one random number this process needs, and the
@@ -506,6 +606,7 @@ fn token() -> Result<String> {
 }
 
 fn serve(listener: TcpListener, bridge: Arc<Bridge>) -> Result<()> {
+    let limit = Arc::new(ConnectionLimit::default());
     std::thread::Builder::new()
         .name("bridge".into())
         .spawn(move || {
@@ -516,6 +617,43 @@ fn serve(listener: TcpListener, bridge: Arc<Bridge>) -> Result<()> {
                         tracing::error!("accepting a bridge connection: {e}");
                         continue;
                     }
+                };
+
+                // Bound every way a connection can spend this process's
+                // resources before a thread is made for it. The timeouts are
+                // per socket; the permit caps concurrency; the uid check is
+                // the only peer identity a loopback TCP socket can offer on
+                // Linux. Any failure drops the socket here, with no thread.
+                if let Err(e) = stream.set_read_timeout(Some(SOCKET_TIMEOUT)) {
+                    tracing::warn!("could not set a read timeout on a bridge connection: {e}");
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+                if let Err(e) = stream.set_write_timeout(Some(SOCKET_TIMEOUT)) {
+                    tracing::warn!("could not set a write timeout on a bridge connection: {e}");
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+                let euid = unsafe { libc::geteuid() };
+                match peer_uid(&stream) {
+                    Some(uid) if uid != euid => {
+                        tracing::warn!(
+                            "refusing a bridge connection owned by uid {uid}; this session runs as {euid}"
+                        );
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        continue;
+                    }
+                    None => {
+                        tracing::debug!("could not establish the bridge peer's uid; using the token");
+                    }
+                    Some(_) => {}
+                }
+                let Some(permit) = limit.try_acquire() else {
+                    tracing::warn!(
+                        "the bridge already has {MAX_CONNECTIONS} connections; refusing another"
+                    );
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
                 };
                 // Nagle off, and this is the whole desktop's frame rate.
                 //
@@ -543,6 +681,9 @@ fn serve(listener: TcpListener, bridge: Arc<Bridge>) -> Result<()> {
                 if let Err(e) = std::thread::Builder::new()
                     .name("bridge-conn".into())
                     .spawn(move || {
+                        // Held for as long as this connection is handled; the
+                        // permit is released when the closure ends.
+                        let _permit = permit;
                         if let Err(e) = handle(stream, &bridge) {
                             tracing::debug!("a bridge connection ended: {e}");
                         }
@@ -706,7 +847,9 @@ fn serve_one(
     }
 
     if query_value(&target, "t").as_deref() != Some(bridge.token.as_str()) {
-        tracing::warn!("a request to {path} arrived without this session's token");
+        if !TOKEN_WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!("a request to {path} arrived without this session's token");
+        }
         // Not kept: whatever is on the other end is not the page, and it does
         // not get a socket to try the next guess down.
         //
@@ -918,11 +1061,46 @@ impl Drop for ScriptDir {
 /// every other backend delivers.
 fn bridge_script(port: u16, token: &str) -> String {
     let shim = viewport_ipc::js::BRIDGE_SHIM;
+    let allow_remote = viewport_ipc::js::remote_shell_allowed();
     format!(
         r#"(function () {{
   'use strict';
+
+  /* A frame inside the shell is not the shell. The userscript directory is
+     injected into every document, including a document the shell navigates
+     to, so this is also what keeps a disallowed origin from installing the
+     bridge after a navigation. */
+  if (window.top !== window) {{
+    return;
+  }}
+
   var ORIGIN = 'http://127.0.0.1:{port}';
   var TOKEN = '{token}';
+  var ALLOW_REMOTE = {allow_remote};
+
+  function bridgeOriginAllowed() {{
+    try {{
+      var location = window.location;
+      var protocol = (location.protocol || '').toLowerCase();
+      if (protocol === 'file:') {{
+        return true;
+      }}
+      if (protocol !== 'http:' && protocol !== 'https:') {{
+        return false;
+      }}
+      var host = (location.hostname || '').toLowerCase();
+      return host === 'localhost' || host === '127.0.0.1' ||
+             host === '::1' || host === '[::1]';
+    }} catch (e) {{
+      return false;
+    }}
+  }}
+
+  if (!ALLOW_REMOTE && !bridgeOriginAllowed()) {{
+    console.error('viewport: the bridge is disabled on this origin; ' +
+                  'set VIEWPORT_ALLOW_REMOTE_SHELL=1 to allow a remote shell');
+    return;
+  }}
 
   /* Outbound messages are batched to one request per task rather than one
      request each, and the reason is a measurement rather than tidiness: the
@@ -1032,7 +1210,11 @@ fn bridge_script(port: u16, token: &str) -> String {
   }}
   pump();
 }})();
-"#
+"#,
+        port = port,
+        token = token,
+        shim = shim,
+        allow_remote = allow_remote,
     )
 }
 
@@ -1459,6 +1641,17 @@ mod tests {
         let script = bridge_script(4321, "deadbeef");
         assert!(script.contains("http://127.0.0.1:4321"), "{script}");
         assert!(script.contains("'deadbeef'"), "{script}");
+    }
+
+    /// The userscript is injected into every document, including one the page
+    /// navigates to, so the script itself must refuse subframes and origins
+    /// outside the policy before it defines the sender.
+    #[test]
+    fn the_script_refuses_subframes_and_remote_origins() {
+        let script = bridge_script(4321, "secret");
+        assert!(script.contains("window.top !== window"), "{script}");
+        assert!(script.contains("bridgeOriginAllowed"), "{script}");
+        assert!(script.contains("127.0.0.1"), "{script}");
     }
 
     #[test]

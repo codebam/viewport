@@ -30,6 +30,8 @@ use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 
+use crate::state::trusted_native;
+
 /// One output's ramp: red, green and blue, each `size` entries.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ramp {
@@ -172,6 +174,12 @@ where
         + GammaControlHandler
         + 'static,
 {
+    /// A gamma ramp changes every pixel on a screen, and a sandboxed client is
+    /// not told the global exists.
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        trusted_native(&client)
+    }
+
     fn bind(
         _state: &mut D,
         _dh: &DisplayHandle,
@@ -193,13 +201,17 @@ where
 {
     fn request(
         state: &mut D,
-        _client: &Client,
+        client: &Client,
         _manager: &ZwlrGammaControlManagerV1,
         request: zwlr_gamma_control_manager_v1::Request,
         _data: &(),
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        if !trusted_native(client) {
+            tracing::debug!("gamma: ignoring a request from a sandboxed client");
+            return;
+        }
         let zwlr_gamma_control_manager_v1::Request::GetGammaControl { id, output } = request else {
             return;
         };
@@ -271,13 +283,17 @@ where
 {
     fn request(
         state: &mut D,
-        _client: &Client,
+        client: &Client,
         control: &ZwlrGammaControlV1,
         request: zwlr_gamma_control_v1::Request,
         data: &ControlData,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        if !trusted_native(client) {
+            tracing::debug!("gamma: ignoring a ramp from a sandboxed client");
+            return;
+        }
         let zwlr_gamma_control_v1::Request::SetGamma { fd } = request else {
             return;
         };

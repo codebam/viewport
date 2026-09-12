@@ -73,6 +73,26 @@ impl ViewportState {
         }
     }
 
+    /// Let go of every input grab before a lock screen takes the seat.
+    ///
+    /// An open popup holds a keyboard grab that keeps forwarding keys to its
+    /// menu and makes Smithay ignore a later `set_focus`; a lock that only
+    /// moved focus would leave the password going into whatever menu was
+    /// open. Pointer grabs are dropped for the same reason — a drag holding
+    /// the pointer would keep clicks away from the lock screen. The caller
+    /// sets focus again afterwards, so the focus a grab restores on the way
+    /// out is immediately replaced.
+    pub(crate) fn release_input_grabs(&mut self) {
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.unset_grab(self);
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            let time = smithay::backend::input::InputTime::now();
+            pointer.unset_grab(self, serial, time);
+        }
+    }
+
     /// Lock the session and ask the shell to draw the lock screen.
     ///
     /// The compositor takes the lock itself here rather than waiting for a
@@ -98,6 +118,12 @@ impl ViewportState {
         self.cancel_gesture();
         self.locked = true;
         self.suspend_input_capture();
+        // A popup's grab and an open portal chooser both outlive a focus
+        // move. Dropping the grabs first lets the lock screen take the seat,
+        // and cancelling the chooser answers its application and puts the
+        // keyboard nowhere (`restore_focus` refuses while locked).
+        self.release_input_grabs();
+        self.cancel_screencast_pick();
         self.locked_at = Some(std::time::Instant::now());
         self.lock_warned = false;
         self.lock_surfaces.clear();

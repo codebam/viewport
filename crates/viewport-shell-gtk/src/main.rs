@@ -111,6 +111,12 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     let options = Options::parse(&args)?;
+    anyhow::ensure!(
+        viewport_ipc::js::shell_url_allowed(&options.url),
+        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
+        options.url,
+        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+    );
 
     // GTK must not see our arguments. It parses what it recognises and
     // complains about the rest, and `--url` is not one of its.
@@ -151,6 +157,19 @@ fn activate(app: &gtk::Application, options: &Options) -> Result<()> {
     // `window.webkit.messageHandlers.viewport.postMessage` exist in the page.
     // `data/shell/state.js:13` looks it up by that exact path.
     manager.register_script_message_handler("viewport", None);
+
+    // WebKit installs the native handler in every frame, and the
+    // `script-message-received` signal does not say which frame sent one. This
+    // runs in every frame at document start and replaces the handler with a
+    // no-op in subframes, before that frame's own scripts can reach it.
+    let subframe_guard = webkit6::UserScript::new(
+        viewport_ipc::js::SUBFRAME_GUARD,
+        webkit6::UserContentInjectedFrames::AllFrames,
+        webkit6::UserScriptInjectionTime::Start,
+        &[],
+        &[],
+    );
+    manager.add_script(&subframe_guard);
 
     let view = webkit6::WebView::builder()
         .user_content_manager(&manager)
@@ -322,7 +341,29 @@ fn bridge(
         }
     })?;
 
+    // The signal says nothing about the sending frame, so the view's main
+    // frame URI is re-read for every message: a navigation away from an
+    // allowed origin revokes the bridge immediately, and the subframe guard
+    // script above keeps subframes from installing their own.
+    let policy_view = view.clone();
+    let warned = Rc::new(std::cell::Cell::new(false));
     manager.connect_script_message_received(Some("viewport"), move |_, value| {
+        let allowed = match policy_view.uri() {
+            Some(uri) => viewport_ipc::js::shell_url_allowed(&uri),
+            None => false,
+        };
+        if !allowed {
+            if !warned.replace(true) {
+                tracing::warn!(
+                    "dropping a page-to-compositor message: the main frame's URI is not \
+                     a file:/loopback origin, or the document has gone away; set {}=1 \
+                     to allow a remote shell",
+                    viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+                );
+            }
+            return;
+        }
+
         // The compositor accepts either a JSON string or a live object, so
         // page authors can call postMessage({...}) without stringifying by
         // hand (`src/web.c:63`). Preserve that.
@@ -403,8 +444,17 @@ fn bridge(
                         // to be a call into the engine it owned; out of
                         // process it has to travel like everything else.
                         if viewport_shell_bridge::is_reload(&json) {
-                            tracing::info!("reloading the shell");
-                            view.reload_bypass_cache();
+                            let allowed = view
+                                .uri()
+                                .is_some_and(|uri| viewport_ipc::js::shell_url_allowed(&uri));
+                            if allowed {
+                                tracing::info!("reloading the shell");
+                                view.reload_bypass_cache();
+                            } else {
+                                tracing::warn!(
+                                    "refusing to reload a page that left the allowed shell origin"
+                                );
+                            }
                             continue;
                         }
                         if loaded.get() {
@@ -440,6 +490,15 @@ fn bridge(
 /// WPE backend evaluates — the shell must not be able to tell which engine is
 /// underneath it from the message it receives.
 fn post(view: &webkit6::WebView, json: &str) {
+    // The inbound half checks the current URI on every message; the outbound
+    // half needs the same check, because a page that navigated to a remote
+    // origin would otherwise be handed the desktop's private events.
+    let allowed = view
+        .uri()
+        .is_some_and(|uri| viewport_ipc::js::shell_url_allowed(&uri));
+    if !allowed {
+        return;
+    }
     view.evaluate_javascript(
         &viewport_ipc::js::dispatch(json),
         None,

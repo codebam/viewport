@@ -53,6 +53,13 @@ impl SessionLockHandler for ViewportState {
         self.cancel_gesture();
         self.locked = true;
         self.suspend_input_capture();
+        // A popup's keyboard grab ignores a later `set_focus`, so the lock
+        // has to take it down before the locker can be typed into. An open
+        // portal chooser goes at the same time: it would otherwise sit
+        // hidden behind the lock screen and eat its password, and its own
+        // cancel path cannot put focus back while `locked` is set.
+        self.release_input_grabs();
+        self.cancel_screencast_pick();
         self.locked_at = Some(std::time::Instant::now());
         self.lock_warned = false;
         self.lock_surfaces.clear();
@@ -294,6 +301,30 @@ impl ViewportState {
     ///
     /// Called when one commits: focusing at `new_surface` would be too early,
     /// since the client has not acknowledged its size and has nothing to show.
+    /// Put the keyboard back on whichever screen owns the lock.
+    ///
+    /// The built-in lock is the shell; an external locker is whichever
+    /// `ext-session-lock-v1` surface is present. Used from the key path,
+    /// where a client may have installed a focus or a grab after the lock
+    /// started and the lock has to win that key before it is delivered.
+    pub(crate) fn refocus_lock(&mut self) {
+        if !self.locked {
+            return;
+        }
+        if self.lock_mode.is_built_in() {
+            self.focus_lock_shell();
+            return;
+        }
+        let surface = self
+            .lock_surfaces
+            .values()
+            .next()
+            .map(|lock| lock.wl_surface().clone());
+        if let Some(surface) = surface {
+            self.focus_lock_surface(&surface);
+        }
+    }
+
     pub fn focus_lock_surface(
         &mut self,
         surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,

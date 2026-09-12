@@ -12,6 +12,12 @@ window.webkit.messageHandlers.viewport.postMessage(JSON.stringify(msg));
 window.addEventListener('viewport', e => handle(e.detail));
 ```
 
+The bridge is privileged: a message from it can run a command, open a window,
+or drive the session. It is installed only in the page's top frame, and the
+page must be a `file:` or loopback `http(s)` URL unless the session was started
+with `VIEWPORT_ALLOW_REMOTE_SHELL=1`. A remote origin that needs that override
+should be one the session trusts with the same authority as the compositor.
+
 External tooling uses a UNIX socket of newline-delimited JSON:
 
 ```sh

@@ -41,6 +41,30 @@ use smithay::utils::{Logical, Point, Transform};
 /// turns it off without meaning to.
 const VERSION: u32 = 4;
 
+/// The furthest any edge of the logical layout may be from the origin.
+///
+/// Positions arrive as bare `i32`s. The layout's own arithmetic — most
+/// sharply the pointer clamp's `origin.loc + origin.size` — adds them
+/// together in `i32`, so a position allowed to sit at either end of the
+/// range turns a later pointer move into an overflow. Keeping every accepted
+/// layout inside this bound leaves an enormous virtual desktop while making
+/// those sums safe; a million pixels is far past any real arrangement.
+pub const MAX_LAYOUT_COORD: i32 = 1 << 20;
+
+/// The largest edge a client may ask for in `set_custom_mode`.
+///
+/// The protocol's `int` is the only other limit. A custom mode becomes a
+/// framebuffer size and a modeline downstream, where a value near `i32::MAX`
+/// either overflows before it gets there or is refused far too late.
+pub const MAX_MODE_DIM: i32 = 16384;
+
+/// The largest pixel count a client may ask for in `set_custom_mode`.
+///
+/// 64 Mi-pixels is well past 8K (about 33 Mi-pixels) and keeps
+/// `width * height` in a range every downstream byte-count calculation can
+/// hold.
+pub const MAX_MODE_PIXELS: i64 = 1 << 26;
+
 /// What an output looks like to a client, gathered before any resource is
 /// touched so the advertising code has no reason to reach into the compositor.
 #[derive(Debug, Clone)]
@@ -352,6 +376,16 @@ where
         + OutputManagementHandler
         + 'static,
 {
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        // Output management can move monitors, change their modes and turn
+        // them off. A sandboxed client has no business doing any of that,
+        // exactly as it has no business reaching screencopy; the portal and
+        // the desktop shell remain the ways to ask.
+        client
+            .get_data::<crate::state::ClientState>()
+            .is_none_or(|data| data.security_context.is_none())
+    }
+
     fn bind(
         state: &mut D,
         dh: &DisplayHandle,
@@ -603,6 +637,13 @@ where
                     );
                     return;
                 }
+                if !custom_mode_size_ok(width, height) {
+                    head.post_error(
+                        zwlr_output_configuration_head_v1::Error::InvalidCustomMode,
+                        "a custom mode is larger than the compositor will carry",
+                    );
+                    return;
+                }
                 change.mode = Some(OutputMode {
                     size: (width, height).into(),
                     refresh,
@@ -611,6 +652,19 @@ where
             }
             zwlr_output_configuration_head_v1::Request::SetPosition { x, y } => {
                 once!(change.position, AlreadySet);
+                if !layout_coord_ok(x) || !layout_coord_ok(y) {
+                    // wlr-output-management v4 has no `invalid_position`
+                    // error to name this at set time. The raw value is kept,
+                    // and `apply_output_configuration` refuses the whole
+                    // configuration before anything is stored, so the client
+                    // is told through the protocol's `failed` path and no
+                    // layout arithmetic ever sees the value.
+                    tracing::debug!(
+                        "output {}: position ({x}, {y}) is outside the accepted layout; \
+                         the configuration will fail validation",
+                        change.name
+                    );
+                }
                 change.position = Some((x, y).into());
             }
             zwlr_output_configuration_head_v1::Request::SetTransform { transform } => {
@@ -694,6 +748,44 @@ pub fn transform_from_wl(transform: wl_output::Transform) -> Transform {
     transform.into()
 }
 
+/// Whether a coordinate a client sent is inside the accepted layout.
+///
+/// `i64::from` before `abs`, because `i32::MIN.abs()` is itself an overflow —
+/// the same one this validation exists to keep out of the compositor.
+pub(crate) fn layout_coord_ok(value: i32) -> bool {
+    i64::from(value).abs() <= i64::from(MAX_LAYOUT_COORD)
+}
+
+/// Whether a whole output rectangle lies inside the accepted layout.
+///
+/// The far edge is checked as `|loc| + size <= bound`, so anything that later
+/// adds the location to the size — the pointer clamp does, in `i32` — cannot
+/// overflow, and neither can the arithmetic that unions the layout together.
+pub(crate) fn layout_rect_ok(x: i32, y: i32, width: i32, height: i32) -> bool {
+    if width <= 0 || height <= 0 {
+        return false;
+    }
+    let bound = i64::from(MAX_LAYOUT_COORD);
+    let x = i64::from(x);
+    let y = i64::from(y);
+    x.abs().saturating_add(i64::from(width)) <= bound
+        && y.abs().saturating_add(i64::from(height)) <= bound
+}
+
+/// Whether a custom mode's size is one the compositor is prepared to carry.
+///
+/// Both dimensions and their product are bounded: a mode is not just two ints
+/// on the wire, it is a framebuffer and a modeline.
+pub(crate) fn custom_mode_size_ok(width: i32, height: i32) -> bool {
+    width > 0
+        && height > 0
+        && width <= MAX_MODE_DIM
+        && height <= MAX_MODE_DIM
+        && i64::from(width)
+            .checked_mul(i64::from(height))
+            .is_some_and(|pixels| pixels <= MAX_MODE_PIXELS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,5 +810,55 @@ mod tests {
             let back: wl_output::Transform = ours.into();
             assert_eq!(back, wl);
         }
+    }
+
+    #[test]
+    fn layout_coordinates_are_bounded() {
+        assert!(layout_coord_ok(0));
+        assert!(layout_coord_ok(MAX_LAYOUT_COORD));
+        assert!(layout_coord_ok(-MAX_LAYOUT_COORD));
+        assert!(!layout_coord_ok(MAX_LAYOUT_COORD + 1));
+        assert!(!layout_coord_ok(i32::MIN));
+        assert!(!layout_coord_ok(i32::MAX));
+    }
+
+    #[test]
+    fn layout_rectangles_keep_their_far_edge_in_bounds() {
+        assert!(layout_rect_ok(0, 0, 1920, 1080));
+        assert!(layout_rect_ok(
+            MAX_LAYOUT_COORD - MAX_MODE_DIM,
+            0,
+            MAX_MODE_DIM,
+            10
+        ));
+        assert!(layout_rect_ok(
+            -(MAX_LAYOUT_COORD - MAX_MODE_DIM),
+            0,
+            MAX_MODE_DIM,
+            10
+        ));
+
+        // The origin is inside the bound but the far edge would not be.
+        assert!(!layout_rect_ok(MAX_LAYOUT_COORD, 0, 1, 1));
+        assert!(!layout_rect_ok(0, 0, 0, 1));
+        assert!(!layout_rect_ok(
+            i32::MIN,
+            i32::MIN,
+            MAX_MODE_DIM,
+            MAX_MODE_DIM
+        ));
+    }
+
+    #[test]
+    fn custom_modes_have_dimension_and_pixel_bounds() {
+        assert!(custom_mode_size_ok(1920, 1080));
+        assert!(custom_mode_size_ok(1, MAX_MODE_DIM));
+        assert!(!custom_mode_size_ok(0, 1080));
+        assert!(!custom_mode_size_ok(-1, 1080));
+        assert!(!custom_mode_size_ok(MAX_MODE_DIM + 1, 1));
+        assert!(!custom_mode_size_ok(1, MAX_MODE_DIM + 1));
+
+        // Both dimensions fit, but the product is past MAX_MODE_PIXELS.
+        assert!(!custom_mode_size_ok(MAX_MODE_DIM, MAX_MODE_DIM));
     }
 }

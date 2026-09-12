@@ -199,7 +199,7 @@ impl ViewportState {
             let location = source
                 .as_ref()
                 .and_then(|source| self.space.output_geometry(source))
-                .map(|geo| (geo.loc.x + geo.size.w, geo.loc.y))
+                .map(|geo| (geo.loc.x.saturating_add(geo.size.w), geo.loc.y))
                 .unwrap_or_default();
             self.map_output_at(sink, location);
             let global = sink.create_global::<Self>(&self.display_handle);
@@ -319,14 +319,72 @@ impl ViewportState {
         changes: &[crate::output_management::HeadChange],
         test_only: bool,
     ) -> bool {
+        use crate::output_management::{custom_mode_size_ok, layout_coord_ok, layout_rect_ok};
         use std::collections::HashSet;
 
-        let mut still_on: HashSet<String> = self
-            .heads()
-            .into_iter()
+        let current_heads = self.heads();
+        let mut still_on: HashSet<String> = current_heads
+            .iter()
             .filter(|head| head.enabled)
             .map(|head| head.output.name())
             .collect();
+
+        // The logical size an output has, or would have, under a change.
+        // Mirrors `Space::output_geometry`: the transformed mode size divided
+        // by the scale, rounded up. The pointer clamp sums exactly this
+        // rectangle later, so these are the numbers that have to be safe.
+        let projected_size = |output: &Output,
+                              change: Option<&crate::output_management::HeadChange>|
+         -> Option<(i32, i32)> {
+            let mode = change
+                .and_then(|change| change.mode)
+                .or_else(|| output.current_mode())?;
+            let transform = change
+                .and_then(|change| change.transform)
+                .unwrap_or_else(|| output.current_transform());
+            let scale = change
+                .and_then(|change| change.scale)
+                .unwrap_or_else(|| output.current_scale().fractional_scale());
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
+            let size = transform
+                .transform_size(mode.size)
+                .to_f64()
+                .to_logical(scale)
+                .to_i32_ceil();
+            Some((size.w, size.h))
+        };
+
+        // Every enabled rectangle as the configuration would leave it. The
+        // combined extent is what matters: one output inside the bound can
+        // still be pushed past it by a change to another, and the pointer
+        // clamp is only safe when every rectangle is.
+        let mut projected: Vec<(String, i32, i32, i32, i32)> = Vec::new();
+        for head in &current_heads {
+            if !head.enabled {
+                continue;
+            }
+            // No mode, no `Space::output_geometry` and so nothing the pointer
+            // clamp can be given; there is no extent to validate yet.
+            let Some((width, height)) = projected_size(&head.output, None) else {
+                continue;
+            };
+            if !layout_rect_ok(head.position.x, head.position.y, width, height) {
+                tracing::warn!(
+                    "{}: the current layout is outside the accepted bound",
+                    head.output.name()
+                );
+                return false;
+            }
+            projected.push((
+                head.output.name(),
+                head.position.x,
+                head.position.y,
+                width,
+                height,
+            ));
+        }
 
         for change in changes {
             let Some(output) = self.any_output_by_name(&change.name) else {
@@ -337,10 +395,32 @@ impl ViewportState {
                 still_on.insert(change.name.clone());
             } else {
                 still_on.remove(&change.name);
+                projected.retain(|entry| entry.0 != change.name);
+            }
+
+            if let Some(position) = change.position {
+                if !layout_coord_ok(position.x) || !layout_coord_ok(position.y) {
+                    tracing::warn!(
+                        "{}: position ({}, {}) is outside the accepted layout",
+                        change.name,
+                        position.x,
+                        position.y
+                    );
+                    return false;
+                }
             }
 
             if let Some(mode) = change.mode {
                 if mode.size.w <= 0 || mode.size.h <= 0 {
+                    return false;
+                }
+                if change.custom_mode && !custom_mode_size_ok(mode.size.w, mode.size.h) {
+                    tracing::warn!(
+                        "{}: refusing custom mode {}x{}",
+                        change.name,
+                        mode.size.w,
+                        mode.size.h
+                    );
                     return false;
                 }
                 // A mode the display never offered cannot be programmed on
@@ -359,8 +439,53 @@ impl ViewportState {
                     return false;
                 }
             }
-            if change.scale.is_some_and(|scale| scale <= 0.0) {
+            if change.scale.is_some_and(|scale| !scale.is_finite() || scale <= 0.0) {
                 return false;
+            }
+
+            if !change.enabled {
+                continue;
+            }
+
+            // A head that is on without a mode has no geometry for the
+            // layout to validate; setting one later validates it then.
+            let Some((width, height)) = projected_size(&output, Some(change)) else {
+                continue;
+            };
+            let (x, y) = if let Some(position) = change.position {
+                (position.x, position.y)
+            } else if let Some(existing) = projected.iter().find(|entry| entry.0 == change.name) {
+                (existing.1, existing.2)
+            } else if let Some(remembered) = self.output_memory.get(&change.name) {
+                // `set_output_enabled` puts a returning output back where it
+                // was remembered first; validate the position it will store.
+                (remembered.x, remembered.y)
+            } else {
+                // Otherwise it goes to the right of everything, as
+                // `set_output_enabled` does. This is i64 so a layout already
+                // at the bound is rejected rather than wrapped.
+                let x = projected
+                    .iter()
+                    .map(|(_, x, _, width, _)| {
+                        i64::from(*x).saturating_add(i64::from(*width))
+                    })
+                    .max()
+                    .unwrap_or(0);
+                (i32::try_from(x).unwrap_or(i32::MAX), 0)
+            };
+            if !layout_rect_ok(x, y, width, height) {
+                tracing::warn!(
+                    "{}: refusing {}x{} at ({x}, {y}), outside the accepted layout",
+                    change.name,
+                    width,
+                    height
+                );
+                return false;
+            }
+            if let Some(existing) = projected.iter_mut().find(|entry| entry.0 == change.name) {
+                *existing = (change.name.clone(), x, y, width, height);
+            } else {
+                projected.push((change.name.clone(), x, y, width, height));
             }
         }
 
@@ -614,7 +739,7 @@ impl ViewportState {
                         .space
                         .outputs()
                         .filter_map(|other| self.space.output_geometry(other))
-                        .map(|geometry| geometry.loc.x + geometry.size.w)
+                        .map(|geometry| geometry.loc.x.saturating_add(geometry.size.w))
                         .max()
                         .unwrap_or(0);
                     (x, 0)

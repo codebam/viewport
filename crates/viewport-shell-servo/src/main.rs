@@ -51,6 +51,7 @@
 // invisible. `crates/viewport/src/shell_backend.rs` is where that is decided.
 
 use std::cell::{Cell, RefCell};
+use std::io::Read as _;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 
@@ -115,6 +116,12 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     let options = Options::parse(&args)?;
+    anyhow::ensure!(
+        viewport_ipc::js::shell_url_allowed(&options.url),
+        "refusing to load a non-loopback shell from {}; set {}=1 to allow a remote origin",
+        options.url,
+        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+    );
     let url = Url::parse(&options.url).with_context(|| format!("{} is not a url", options.url))?;
 
     let event_loop = EventLoop::<Wake>::with_user_event()
@@ -200,6 +207,15 @@ struct Shell {
     webview: RefCell<Option<WebView>>,
     out: viewport_shell_bridge::Sender,
     lines: Receiver<Line>,
+    /// The per-run secret every outbound message must carry.
+    ///
+    /// The injected script embeds it, and `load_web_resource` refuses
+    /// anything addressed to the bridge host without it. A page cannot read
+    /// it out of the script's closure, so another local process — or a frame
+    /// whose script did not install the bridge — cannot forge a message.
+    bridge_token: String,
+    /// Whether a tokenless bridge request has already been logged.
+    warned_bad_token: Cell<bool>,
     /// Where the pointer is, because winit reports a button press without one
     /// and Servo wants a point on every mouse event.
     pointer: Cell<DevicePoint>,
@@ -236,7 +252,12 @@ impl ApplicationHandler<Wake> for App {
         shell.servo.spin_event_loop();
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: winit::window::WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
         let App::Running(shell) = self else {
             return;
         };
@@ -291,10 +312,14 @@ fn start(event_loop: &ActiveEventLoop, starting: &mut Starting) -> Result<Rc<She
         .build();
     servo.setup_logging();
 
+    // A secret for this run, injected into the page with the bridge script
+    // and required on every message that comes back.
+    let bridge_token = bridge_token()?;
+
     // Injected before the page's own scripts, which is what makes the bridge
     // exist by the time `data/shell/state.js` looks for it.
     let user_content = Rc::new(UserContentManager::new(&servo));
-    user_content.add_script(Rc::new(UserScript::new(bridge_script(), None)));
+    user_content.add_script(Rc::new(UserScript::new(bridge_script(&bridge_token), None)));
 
     let shell = Rc::new(Shell {
         window,
@@ -303,6 +328,8 @@ fn start(event_loop: &ActiveEventLoop, starting: &mut Starting) -> Result<Rc<She
         webview: RefCell::new(None),
         out: starting.out.clone(),
         lines: std::mem::replace(&mut starting.lines, mpsc::channel().1),
+        bridge_token,
+        warned_bad_token: Cell::new(false),
         pointer: Cell::new(DevicePoint::new(0.0, 0.0)),
         modifiers: Cell::new(ModifiersState::empty()),
     });
@@ -373,7 +400,8 @@ impl Shell {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = DevicePoint::new(position.x as f32, position.y as f32);
                 self.pointer.set(point);
-                webview.notify_input_event(InputEvent::MouseMove(MouseMoveEvent::new(point.into())));
+                webview
+                    .notify_input_event(InputEvent::MouseMove(MouseMoveEvent::new(point.into())));
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let action = match state {
@@ -432,6 +460,23 @@ impl WebViewDelegate for Shell {
         if url.host_str() != Some(BRIDGE_HOST) {
             return;
         }
+        // Every valid sender carries this run's token; a request without it
+        // is answered but not forwarded, because it did not come from the
+        // bridge script this process injected. The origin/top-frame check
+        // lives in that script for the same reason: `WebResourceLoad` does
+        // not say which frame or document issued the load, and the page is
+        // the only place that knows. This token is what makes the script's
+        // check load-bearing rather than advisory.
+        let token_ok = url
+            .query_pairs()
+            .any(|(key, value)| key == "t" && value.as_ref() == self.bridge_token);
+        if !token_ok {
+            if !self.warned_bad_token.replace(true) {
+                tracing::warn!("dropping a bridge request without this session's token: {url}");
+            }
+            load.intercept(WebResourceResponse::new(url)).finish();
+            return;
+        }
         // `batch=1` says `m` is a line per message, which is what a frame's
         // worth of them is sent as. See `bridge_script`.
         let batched = url
@@ -451,7 +496,12 @@ impl WebViewDelegate for Shell {
         load.intercept(WebResourceResponse::new(url)).finish();
     }
 
-    fn show_console_message(&self, _webview: WebView, _level: servo::ConsoleLogLevel, message: String) {
+    fn show_console_message(
+        &self,
+        _webview: WebView,
+        _level: servo::ConsoleLogLevel,
+        message: String,
+    ) {
         // The shell's own diagnostics, in the compositor's log, where
         // `~/viewport.log` already has everything else about this session.
         tracing::info!("shell console: {message}");
@@ -469,14 +519,73 @@ impl WebViewDelegate for Shell {
     }
 }
 
+/// Read a per-run secret from the kernel's random source.
+///
+/// 128 bits as hex. The injected script embeds it and `load_web_resource`
+/// requires it on every message, so a request that was not made by this
+/// process's bridge is dropped.
+fn bridge_token() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .context("opening /dev/urandom")?
+        .read_exact(&mut bytes)
+        .context("reading /dev/urandom")?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 /// The script that puts the compositor within reach of the page.
 ///
-/// `__viewport_send` first, because `BRIDGE_SHIM` looks for it and gives up
-/// loudly if it is not there.
-fn bridge_script() -> String {
+/// Three gates before it installs anything: it returns immediately in a
+/// subframe, it refuses a document whose own origin is not a file: or
+/// loopback origin, and every message it sends carries a token this run
+/// generated. `__viewport_send` is defined first, because `BRIDGE_SHIM` looks
+/// for it and gives up loudly if it is not there.
+///
+/// The origin check lives here rather than in `load_web_resource` because
+/// `WebResourceLoad` carries the requested URL but not the frame or document
+/// that asked for it. This script is the one place that knows both: it runs at
+/// document start for every document, and the fetch it builds is refused by
+/// the embedder unless it carries the token.
+fn bridge_script(token: &str) -> String {
+    let token_literal = viewport_ipc::js::string_literal(token);
+    let allow_remote = viewport_ipc::js::remote_shell_allowed();
     format!(
         r#"(function () {{
   'use strict';
+
+  /* A frame inside the shell is not the shell. This is also what keeps a
+     remote document from reaching the fetch below after a reload or a
+     navigation to an origin the policy does not allow. */
+  if (window.top !== window) {{
+    return;
+  }}
+
+  var TOKEN = {token_literal};
+  var ALLOW_REMOTE = {allow_remote};
+
+  function bridgeOriginAllowed() {{
+    try {{
+      var location = window.location;
+      var protocol = (location.protocol || '').toLowerCase();
+      if (protocol === 'file:') {{
+        return true;
+      }}
+      if (protocol !== 'http:' && protocol !== 'https:') {{
+        return false;
+      }}
+      var host = (location.hostname || '').toLowerCase();
+      return host === 'localhost' || host === '127.0.0.1' ||
+             host === '::1' || host === '[::1]';
+    }} catch (e) {{
+      return false;
+    }}
+  }}
+
+  if (!ALLOW_REMOTE && !bridgeOriginAllowed()) {{
+    console.error('viewport: the bridge is disabled on this origin; ' +
+                  'set VIEWPORT_ALLOW_REMOTE_SHELL=1 to allow a remote shell');
+    return;
+  }}
 
   /* Outbound messages are batched to one request per task rather than one
      request each, and the reason is a measurement rather than tidiness: the
@@ -495,9 +604,9 @@ fn bridge_script() -> String {
   function post(message, batched) {{
     /* Intercepted by the embedder before it reaches the network. `no-cors`
        so that no preflight is needed and no origin matters; the response is
-       an empty 200 nobody reads. */
+       an empty 200 nobody reads. The token is what the embedder checks. */
     fetch('http://{BRIDGE_HOST}/send?m=' + encodeURIComponent(message) +
-            (batched ? '&batch=1' : ''), {{
+            (batched ? '&batch=1' : '') + '&t=' + TOKEN, {{
       mode: 'no-cors',
       cache: 'no-store',
       keepalive: true,
@@ -541,9 +650,12 @@ fn bridge_script() -> String {
      whatever is still queued is sent while there is still a page to send it. */
   window.addEventListener('pagehide', flush);
   window.addEventListener('beforeunload', flush);
-}})();
+
 {shim}
+}})();
 "#,
+        token_literal = token_literal,
+        allow_remote = allow_remote,
         shim = viewport_ipc::js::BRIDGE_SHIM
     )
 }
@@ -650,7 +762,7 @@ mod tests {
     /// exist — and it has to come after the sender it wraps.
     #[test]
     fn the_script_defines_the_sender_before_it_is_wrapped() {
-        let script = bridge_script();
+        let script = bridge_script("test-token");
         let sender = script
             .find("window.__viewport_send")
             .expect("the sender is defined");
@@ -665,7 +777,7 @@ mod tests {
     /// nothing.
     #[test]
     fn the_script_addresses_the_host_the_delegate_intercepts() {
-        assert!(bridge_script().contains(&format!("http://{BRIDGE_HOST}/send?m=")));
+        assert!(bridge_script("test-token").contains(&format!("http://{BRIDGE_HOST}/send?m=")));
     }
 
     /// One request per task rather than one per message. A fetch each is the
@@ -673,10 +785,33 @@ mod tests {
     /// engine reaches without a compositor to talk to.
     #[test]
     fn the_script_batches_what_a_frame_produced() {
-        let script = bridge_script();
+        let script = bridge_script("test-token");
         assert!(script.contains("Promise.resolve().then(flush)"), "{script}");
         // And the flag the delegate splits on, or a batch arrives as one
         // message with newlines in it.
         assert!(script.contains("&batch=1"), "{script}");
+    }
+
+    /// The injected script is the only place that knows the frame and the
+    /// document, so it is where the top-frame and origin checks have to be.
+    #[test]
+    fn the_script_refuses_subframes_and_remote_origins() {
+        let script = bridge_script("test-token");
+        assert!(script.contains("window.top !== window"), "{script}");
+        assert!(script.contains("bridgeOriginAllowed"), "{script}");
+        assert!(script.contains("127.0.0.1"), "{script}");
+        assert!(script.contains("ALLOW_REMOTE"), "{script}");
+    }
+
+    /// The delegate refuses anything without the run's token, so the token
+    /// must actually be in the URL the script sends.
+    #[test]
+    fn the_script_carries_the_runs_token() {
+        let script = bridge_script("0123456789abcdef");
+        assert!(
+            script.contains("var TOKEN = \"0123456789abcdef\""),
+            "{script}"
+        );
+        assert!(script.contains("'&t=' + TOKEN"), "{script}");
     }
 }

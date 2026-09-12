@@ -564,6 +564,12 @@ pub enum BackgroundTerminal {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct File {
+    /// The page the desktop draws, as `--url` takes it: a path or a URL.
+    ///
+    /// Resolved like `--url` when the file is read, and subject to the same
+    /// origin policy — `file:` and loopback `http(s)` by default, a remote
+    /// origin only with `VIEWPORT_ALLOW_REMOTE_SHELL=1`. See
+    /// [`ensure_shell_url_allowed`].
     pub url: Option<String>,
     /// Whether `url` spans every monitor rather than taking the first and
     /// leaving the rest to the shipped desktop. See `shell_client::plan_shells`.
@@ -873,6 +879,17 @@ pub fn load(path: &Path) -> anyhow::Result<Option<File>> {
     // misplaced comma findable rather than "config is invalid".
     let mut file: File =
         serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    // The shell URL is privileged, and it can come from the config file just
+    // as it can from `--url`. Resolve it the same way and apply the same
+    // origin policy here, so a remote shell is refused at load with the file
+    // it came from named rather than later as a silent blank desktop.
+    if let Some(url) = file.url.take() {
+        let resolved =
+            resolve_url(&url, "url").map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        ensure_shell_url_allowed(&resolved, "url")
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        file.url = Some(resolved);
+    }
     if let Some(extensions) = file.layout_extensions.as_mut() {
         for (name, value) in extensions {
             anyhow::ensure!(
@@ -1151,8 +1168,32 @@ pub fn pick_mode(
 /// scheme is left alone apart from its spaces, because everything else in it
 /// may be deliberately encoded already and re-encoding would turn `%20` into
 /// `%2520`.
+///
+/// The resolved URL also has to pass [`ensure_shell_url_allowed`]: `file:` and
+/// loopback `http(s)` are always allowed, a remote origin only with
+/// `VIEWPORT_ALLOW_REMOTE_SHELL=1`. The page behind this URL can run commands
+/// through the shell bridge, so that is a decision somebody has to make for
+/// the session rather than one a typed URL makes by itself.
 pub fn shell_url(value: &str) -> anyhow::Result<String> {
-    resolve_url(value, "--url")
+    let resolved = resolve_url(value, "--url")?;
+    ensure_shell_url_allowed(&resolved, "--url")?;
+    Ok(resolved)
+}
+
+/// Refuse a shell URL whose origin has not been opted into.
+///
+/// `named` is what the caller called the value, so the message names the thing
+/// to fix — `--url`, `url`, or the shell a supervisor was about to start.
+pub fn ensure_shell_url_allowed(url: &str, named: &str) -> anyhow::Result<()> {
+    if viewport_ipc::js::shell_url_allowed(url) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{named}: {url} is not a file: or loopback http(s) shell URL. \
+         A remote page can run commands through the shell bridge, so set \
+         {}=1 to allow it for this run",
+        viewport_ipc::js::ALLOW_REMOTE_SHELL_ENV
+    )
 }
 
 /// What `wallpaper`, `--wallpaper` and `config.wallpaper` were given: a
@@ -2537,6 +2578,19 @@ mod tests {
             "http://localhost:8000/index.html"
         );
         assert!(shell_url("").is_err(), "nothing to load");
+    }
+
+    #[test]
+    fn a_non_loopback_shell_url_needs_the_override() {
+        if viewport_ipc::js::remote_shell_allowed() {
+            // The test process is running with the override; there is nothing
+            // to prove about the default.
+            return;
+        }
+        let error = shell_url("https://example.com/shell").expect_err("remote shell");
+        let message = error.to_string();
+        assert!(message.contains("VIEWPORT_ALLOW_REMOTE_SHELL"), "{message}");
+        assert!(message.contains("https://example.com/shell"), "{message}");
     }
 
     #[test]
