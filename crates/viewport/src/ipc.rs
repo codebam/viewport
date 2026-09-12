@@ -346,31 +346,10 @@ impl Ipc {
             )
             .map_err(|e| anyhow::anyhow!("insert control socket source: {e}"))?;
 
-        // A slow sweep after the clients the write path has killed, which no
-        // read callback will ever reap: a connection that was dropped for
-        // taking none of its backlog and then went silent is readable never,
-        // and only something on this side of the socket can take its entry,
-        // its fd and its sources back. The send paths sweep too, but they run
-        // when there is something to send — an idle session with one dead
-        // connection would otherwise hold it until the next event anywhere.
-        // One second, like the compositor's other housekeeping.
-        loop_handle
-            .insert_source(
-                smithay::reexports::calloop::timer::Timer::from_duration(
-                    std::time::Duration::from_secs(1),
-                ),
-                |_, _, state| {
-                    // A backlog with nothing watching it — a writability
-                    // source that could not be inserted — would otherwise sit
-                    // there until the next send. Push it and re-arm.
-                    state.ipc.flush_all();
-                    state.ipc.reap_clients();
-                    smithay::reexports::calloop::timer::TimeoutAction::ToDuration(
-                        std::time::Duration::from_secs(1),
-                    )
-                },
-            )
-            .map_err(|e| anyhow::anyhow!("insert control socket housekeeping timer: {e}"))?;
+        // The sweep that used to live here — retry an owed backlog and reap
+        // the clients the write path has killed — now runs from the
+        // compositor's own one-second housekeeping tick, which is already
+        // there and was doing this at the same period. See `Ipc::housekeep`.
 
         // For anything that would rather not assemble the path itself.
         unsafe { std::env::set_var("VIEWPORT_SOCKET", &path) };
@@ -708,6 +687,20 @@ impl Ipc {
         let loop_handle = self.loop_handle.clone();
         self.reap(&loop_handle);
     }
+
+    /// The slow sweep, run from the compositor's one-second housekeeping tick.
+    ///
+    /// This was a timer of its own on the same period. It is folded into the
+    /// tick that was already running rather than removed, because the
+    /// write-readiness fallback depends on it: a backlog with no writer
+    /// source — one that could not be inserted — would otherwise sit until
+    /// the next send. `flush_all` pushes it and re-arms, and `reap_clients`
+    /// takes back a connection the write path killed and that, being silent,
+    /// no read callback will ever notice.
+    pub fn housekeep(&mut self) {
+        self.flush_all();
+        self.reap_clients();
+    }
 }
 
 impl Drop for Ipc {
@@ -875,6 +868,15 @@ impl ViewportState {
                 dead: false,
             },
         );
+
+        // A shell has just connected with none of this session's status. The
+        // change-driven tick could stay quiet for a whole heartbeat, so send
+        // one now; `force_publish` makes the periodic path send it even when
+        // nothing the bar draws moved.
+        if supervised {
+            self.status.force_publish();
+            self.status_tick_periodic();
+        }
     }
 
     fn ipc_read(&mut self, id: u64, stream: &UnixStream) {

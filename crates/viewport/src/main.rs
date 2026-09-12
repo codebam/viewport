@@ -738,6 +738,10 @@ fn run() -> Result<()> {
                 // requests for outputs that stopped being drawn, and
                 // screenshot files the portal has long since handed out. All
                 // hold memory or disk until someone lets go.
+                // And the control socket, whose own one-second timer folded
+                // into this one: retry a backlog the write path could not
+                // finish and reap connections it killed. See `Ipc::housekeep`.
+                state.ipc.housekeep();
                 state.reap_pending_copies();
                 state.reap_pending_capture_frames();
                 state.reap_pending_screenshots();
@@ -1099,14 +1103,17 @@ fn run() -> Result<()> {
 
     // System statistics for the bar. Every two seconds, as in C
     // (`src/status.c:236`): the numbers are rates and averages, and sampling
-    // faster only makes them noisier.
+    // faster only makes them noisier. The tick publishes only when something
+    // the bar draws moved — plus a heartbeat, so a shell that has just
+    // connected is not waiting for a change to hear anything — and does not
+    // sample at all when the configured bar has no status module or widget.
     {
         let period = std::time::Duration::from_secs(2);
         let timer = smithay::reexports::calloop::timer::Timer::from_duration(period);
         event_loop
             .handle()
             .insert_source(timer, move |_, _, state| {
-                state.status_tick();
+                state.status_tick_periodic();
                 smithay::reexports::calloop::timer::TimeoutAction::ToDuration(period)
             })
             .map_err(|e| anyhow::anyhow!("inserting the status timer: {e}"))?;

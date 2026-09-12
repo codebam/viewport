@@ -106,6 +106,14 @@ impl Idle {
         self.inhibited = inhibited;
     }
 
+    /// Whether the last refresh found something holding idle off.
+    ///
+    /// Read by `idle_tick` so a refresh can be skipped while the policy is off
+    /// without leaving a released hold latched.
+    pub fn inhibited(&self) -> bool {
+        self.inhibited
+    }
+
     /// Whether the screens are currently blanked.
     ///
     /// Read by the tests, which is what checks that a deadline actually

@@ -407,7 +407,17 @@ impl ViewportState {
         };
         self.config.bar_items = bar_items;
         // One fold over what is drawn, and every sampler knows its job.
-        let mut sampled = Sampling::default();
+        //
+        // With no `bar_items` the shipped cpu/memory/load/disk/net modules are
+        // always there; an override has to name one — or a status-reading
+        // widget — to keep the status sampler running at all.
+        let mut sampled = Sampling {
+            status: file
+                .bar_items
+                .as_deref()
+                .is_none_or(bar_items_need_status),
+            ..Sampling::default()
+        };
         for widget in &drawn_widgets {
             let costs = widget.sampling();
             sampled.mounts.extend(costs.mounts);
@@ -417,7 +427,7 @@ impl ViewportState {
             sampled.battery |= costs.battery;
         }
         self.status
-            .configure(sampled.mounts, sampled.volume, sampled.mic);
+            .configure(sampled.mounts, sampled.volume, sampled.mic, sampled.status);
         // Following every media player on the session is worth doing only for
         // a bar that draws one, which is the same rule the audio sampling
         // above follows. The battery likewise, on the power worker's own
@@ -671,6 +681,11 @@ impl ViewportState {
                 lock_command: file.idle.lock_command,
             };
         }
+
+        // A reload can turn the idle policy on or off under a compositor that
+        // is not blanking on any deadline; refresh now rather than relying on
+        // the tick, which only does it while one of its triggers holds.
+        self.refresh_idle_inhibit();
 
         // The one answer to what locking means, worked out once per config
         // load rather than at each lock. Every path that locks — the idle

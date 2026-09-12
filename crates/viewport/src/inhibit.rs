@@ -14,7 +14,8 @@
 // policy off for everything.
 //
 // So both are answered here, and both end in the same place: one registry,
-// read once a second by the idle timer. What the two interfaces disagree about
+// read by the idle timer while the policy is on or a hold exists. What the two
+// interfaces disagree about
 // is only how a hold is named — a cookie for the screensaver interface, a
 // request object on the bus for the portal — and how it ends.
 //
@@ -59,8 +60,8 @@ const INHIBIT_IDLE: u32 = 8;
 /// What the bus thread tells the compositor.
 ///
 /// Only the one thing, because the registry itself is shared: the idle timer
-/// reads it directly once a second (`refresh_idle_inhibit`), so a hold taken
-/// or released needs no message at all. What cannot be read out of a table is
+/// reads it directly on its tick (`refresh_idle_inhibit`), so a hold taken or
+/// released needs no message at all. What cannot be read out of a table is
 /// somebody saying they are there.
 #[derive(Debug)]
 pub enum Message {

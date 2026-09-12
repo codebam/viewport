@@ -271,6 +271,10 @@ impl ViewportState {
             });
         }
         self.shells = started;
+        // A page that has just started has none of this session's status and
+        // no way to have been sent it yet; the next periodic tick is forced to
+        // publish even if the values happen to match the last sample.
+        self.status.force_publish();
         Ok(())
     }
 }
@@ -591,6 +595,10 @@ impl ViewportState {
         self.shell_announced = false;
         self.shells[page].announced = false;
         self.shells[page].size = None;
+        // The reloaded page starts with an empty status object, and the
+        // change-driven tick has no way to know; force the first sample after
+        // it so its bar is not blank until something happens to move.
+        self.status.force_publish();
 
         match self.shells[page].engine.restart() {
             // Unconditionally, because the size was just cleared: WebKit paints

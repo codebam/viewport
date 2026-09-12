@@ -10,7 +10,7 @@
 // The parsing is separated from the reading so it can be tested against real
 // /proc text rather than against whatever this machine happens to report.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// One sample, as the shell is told it.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -50,6 +50,142 @@ pub struct MountUsage {
     pub path: String,
     pub free: f64,
     pub total: f64,
+}
+
+/// A sample reduced to exactly what the shipped bar draws from it.
+///
+/// The sampler reads `/proc` and the worker runs `statvfs`/`wpctl` every two
+/// seconds whether or not anything moved. Publishing that sample wakes every
+/// shell engine for a JS evaluation, and an engine woken on an idle desktop is
+/// a composited frame — so the periodic tick compares this against the last
+/// sample it published and says nothing when the strings and percentages are
+/// the same. Every rule below mirrors `data/shell/bar.js`; where the shell
+/// rounds, this rounds, and where it hides a value this records that too.
+#[derive(Debug, Clone, PartialEq)]
+struct Displayed {
+    cpu: Option<i64>,
+    memory: Option<i64>,
+    /// `toFixed(2)` of the load module, stored as the hundredths it writes.
+    load: i64,
+    /// `formatBytes` of the root filesystem's free space, or `None` when the
+    /// disk module draws nothing.
+    disk_free: Option<DisplayedBytes>,
+    net_rx: DisplayedBytes,
+    net_tx: DisplayedBytes,
+    /// One entry per configured mount, in order, as the disk widget would find
+    /// them.
+    mounts: Vec<DisplayedMount>,
+    /// Rounded percent and mute state; `None` where the widget draws nothing.
+    volume: Option<(i64, bool)>,
+    mic: Option<(i64, bool)>,
+    // Brightness is deliberately absent: the only shipped drawing of it is the
+    // OSD, and an OSD sample is always published by the caller rather than
+    // compared here.
+}
+
+/// What `formatBytes` writes, as a comparable number rather than a string.
+///
+/// The shell uses `toFixed(1)` below ten and `Math.round` at or above it, so
+/// those are the two cases kept apart: a value that draws `9.9K` and one that
+/// draws `10K` must not compare equal merely because both have a `10` in them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayedBytes {
+    /// `'0B'`, which is also what a missing or non-finite figure writes.
+    Zero,
+    /// `n.toFixed(1)` followed by the unit, stored as the tenths it writes.
+    Tenths { unit: u8, tenths: i64 },
+    /// `Math.round(n)` followed by the unit, stored as that integer.
+    Rounded { unit: u8, rounded: i64 },
+}
+
+/// One configured mount as the disk widget writes it: the path it matched on
+/// and what it draws, or `None` when the widget stays hidden.
+#[derive(Debug, Clone, PartialEq)]
+struct DisplayedMount {
+    path: String,
+    text: Option<DisplayedBytes>,
+}
+
+impl Displayed {
+    fn of(sample: &Sample) -> Self {
+        Self {
+            cpu: display_percent(sample.cpu),
+            memory: display_percent(sample.memory),
+            // `toFixed(2)`: nearest hundredth, stored as the integer the
+            // module's text is made of.
+            load: (sample.load[0] * 100.0).round() as i64,
+            // `s.disk_free ? ... : ''` — zero and NaN are the hidden cases,
+            // while a negative figure is truthy and formats as "0B".
+            disk_free: if sample.disk_free == 0.0 || sample.disk_free.is_nan() {
+                None
+            } else {
+                Some(display_bytes(sample.disk_free))
+            },
+            net_rx: display_bytes(sample.net_rx),
+            net_tx: display_bytes(sample.net_tx),
+            mounts: sample.mounts.iter().map(displayed_mount).collect(),
+            volume: display_audio(sample.volume, sample.muted),
+            mic: display_audio(sample.mic_volume, sample.mic_muted),
+        }
+    }
+}
+
+fn displayed_mount(mount: &MountUsage) -> DisplayedMount {
+    DisplayedMount {
+        path: mount.path.clone(),
+        // The widget writes nothing at all when the mount could not be
+        // measured; `total > 0` is the shell's own test for that.
+        text: (mount.total > 0.0).then(|| display_bytes(mount.free)),
+    }
+}
+
+/// `formatBytes` from `data/shell/bar.js`, reduced to the number the widget
+/// actually writes plus its unit.
+///
+/// The numbers, rather than the formatted strings, are compared because Rust
+/// and JavaScript round exact halves differently when formatting (`toFixed`
+/// ties upwards, Rust's formatter ties to even); reducing to the written
+/// integer avoids a display difference hiding behind the two formatters.
+fn display_bytes(n: f64) -> DisplayedBytes {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    if !n.is_finite() || n <= 0.0 {
+        return DisplayedBytes::Zero;
+    }
+    let mut n = n;
+    let mut unit = 0u8;
+    while n >= 1024.0 && unit < (UNITS.len() - 1) as u8 {
+        n /= 1024.0;
+        unit += 1;
+    }
+    // `toFixed(1)` under ten, `Math.round` at and above it.
+    if n < 10.0 {
+        DisplayedBytes::Tenths {
+            unit,
+            tenths: (n * 10.0).round() as i64,
+        }
+    } else {
+        DisplayedBytes::Rounded {
+            unit,
+            rounded: n.round() as i64,
+        }
+    }
+}
+
+/// The CPU and memory modules' `Math.round`, with the `-1.0` sentinel and
+/// anything below it drawing nothing.
+fn display_percent(value: Option<f64>) -> Option<i64> {
+    let value = value?;
+    if value < 0.0 {
+        return None;
+    }
+    Some(value.round() as i64)
+}
+
+/// The volume and mic widgets: `Math.round(volume * 100)` plus the mute glyph,
+/// hidden until the compositor can report a volume.
+fn display_audio(volume: Option<f64>, muted: Option<bool>) -> Option<(i64, bool)> {
+    let volume = volume.filter(|volume| *volume >= 0.0)?;
+    Some(((volume * 100.0).round() as i64, muted.unwrap_or(false)))
 }
 
 /// Totals from `/proc/stat`, which are cumulative and only useful as a delta.
@@ -196,7 +332,6 @@ struct Job {
 }
 
 /// Samples the machine, keeping what it needs to turn counters into rates.
-#[derive(Default)]
 pub struct Status {
     cpu: CpuTimes,
     rx: u64,
@@ -219,19 +354,118 @@ pub struct Status {
     /// one tick old, and a bar showing a two-second-old volume is a bar; a
     /// compositor waiting two seconds for one is a freeze.
     slow: Slow,
+    /// Whether the shell's bar draws anything this sampler produces. False
+    /// lets the periodic tick return without reading `/proc` or queueing a
+    /// `statvfs`/`wpctl` job at all; `configure` sets it from the bar
+    /// configuration. True by default because an unconfigured sampler has
+    /// always sampled — only an explicit no-status bar turns it off.
+    wanted: bool,
+    /// What the last published sample looked like on screen, so the next tick
+    /// can tell whether there is anything to say.
+    published: Option<Displayed>,
+    /// When that was, for the heartbeat that keeps a freshly started or
+    /// restarted shell from having to wait for a change to get state.
+    published_at: Option<Instant>,
+    /// Set when a sample must go out even if the displayed values have not
+    /// moved: a shell has connected or restarted, or the bar configuration
+    /// changed under it.
+    force_publish: bool,
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Self {
+            cpu: CpuTimes::default(),
+            rx: 0,
+            tx: 0,
+            at: None,
+            mounts: Vec::new(),
+            want_volume: false,
+            want_mic: false,
+            jobs: None,
+            asked: false,
+            slow: Slow::default(),
+            // An unconfigured sampler is the pre-existing behaviour: sample.
+            wanted: true,
+            published: None,
+            published_at: None,
+            force_publish: false,
+        }
+    }
 }
 
 impl Status {
     /// Which mounts, and which audio nodes' volumes, to sample on the next
-    /// ticks.
+    /// ticks, and whether the bar draws any of it.
     ///
-    /// Called from config application; `Status::default()` wants none of them,
-    /// which is a bar with no widgets and thus no reason to stat extra mounts
-    /// or spawn `wpctl` every two seconds.
-    pub fn configure(&mut self, mounts: Vec<String>, want_volume: bool, want_mic: bool) {
+    /// Called from config application; `Status::default()` wants no extra
+    /// mounts and no `wpctl`, which is a bar with no such widgets and thus no
+    /// reason to stat or spawn anything for them. `wanted` is the wider
+    /// question: a `bar_items` override with no status module and no
+    /// status-reading widget has nothing this sampler can change, and the
+    /// periodic tick returns without sampling at all.
+    pub fn configure(
+        &mut self,
+        mounts: Vec<String>,
+        want_volume: bool,
+        want_mic: bool,
+        wanted: bool,
+    ) {
         self.mounts = mounts;
         self.want_volume = want_volume;
         self.want_mic = want_mic;
+        self.wanted = wanted;
+        // A new widget set has to be told to the shell even when every value
+        // in it happens to match the last sample, and a shell that has just
+        // restarted has no baseline at all.
+        self.force_publish = true;
+    }
+
+    /// Whether the periodic tick has any reason to sample at all.
+    pub fn wanted(&self) -> bool {
+        self.wanted
+    }
+
+    /// Make the next periodic sample publish regardless of what changed.
+    ///
+    /// Used when a shell connects or restarts: its page starts with an empty
+    /// status object, and the change-driven tick could otherwise stay quiet
+    /// for the whole heartbeat.
+    pub fn force_publish(&mut self) {
+        self.force_publish = true;
+    }
+
+    /// Remember a sample that has just been sent, so a later change-driven
+    /// tick compares against what the shell actually has rather than against
+    /// the previous raw reading.
+    pub fn record_published(&mut self, sample: &Sample) {
+        self.published = Some(Displayed::of(sample));
+        self.published_at = Some(Instant::now());
+        self.force_publish = false;
+    }
+
+    /// Decide whether a freshly taken sample is worth publishing on the
+    /// periodic tick, recording it when it is.
+    ///
+    /// `now` is passed in so the heartbeat can be tested without sleeping.
+    pub fn should_publish_periodic(
+        &mut self,
+        sample: &Sample,
+        heartbeat: Duration,
+        now: Instant,
+    ) -> bool {
+        let displayed = Displayed::of(sample);
+        let changed = self.published.as_ref() != Some(&displayed);
+        let overdue = self
+            .published_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= heartbeat);
+        if !(self.force_publish || changed || overdue) {
+            return false;
+        }
+        self.published = Some(displayed);
+        self.published_at = Some(now);
+        self.force_publish = false;
+        true
     }
 
     /// Start the thread that does the waiting, and deliver its answers through
@@ -834,6 +1068,7 @@ Inter-|   Receive                                                |  Transmit
             vec!["/home".to_owned(), "/mnt/data".to_owned()],
             false,
             false,
+            true,
         );
         let sample = status.sample();
         let paths: Vec<&str> = sample.mounts.iter().map(|m| m.path.as_str()).collect();
@@ -841,6 +1076,143 @@ Inter-|   Receive                                                |  Transmit
         // Mounts that exist have a size; the default disk numbers still
         // describe the root mount regardless.
         assert!(sample.disk_total > 0.0);
+    }
+
+    #[test]
+    fn the_displayed_reduction_rounds_where_the_shell_rounds() {
+        // The signature has to be finer than the display in the same places
+        // and no coarser; otherwise a change the bar shows would be compared
+        // equal and never sent. These are the shell's own rules.
+        assert_eq!(display_percent(Some(12.4)), Some(12));
+        assert_eq!(display_percent(Some(-1.0)), None, "the absent sentinel");
+        assert_eq!(display_bytes(0.0), DisplayedBytes::Zero);
+        assert_eq!(
+            display_bytes(1024.0),
+            DisplayedBytes::Tenths {
+                unit: 1,
+                tenths: 10
+            },
+            "1.0K"
+        );
+        assert_eq!(
+            display_bytes(10.0 * 1024.0),
+            DisplayedBytes::Rounded {
+                unit: 1,
+                rounded: 10
+            },
+            "10K"
+        );
+        assert_eq!(
+            display_bytes(1.5 * 1024.0),
+            DisplayedBytes::Tenths {
+                unit: 1,
+                tenths: 15
+            },
+            "1.5K"
+        );
+        assert_ne!(
+            display_bytes(9.9 * 1024.0),
+            display_bytes(10.0 * 1024.0),
+            "9.9K and 10K are different widget text"
+        );
+        assert_eq!(display_audio(Some(0.444), Some(false)), Some((44, false)));
+        assert_eq!(display_audio(Some(-1.0), Some(true)), None);
+        assert_eq!(display_audio(Some(0.66), None), Some((66, false)));
+    }
+
+    #[test]
+    fn a_periodic_sample_only_goes_out_when_the_bar_would_change() {
+        let mut status = Status::default();
+        status.configure(Vec::new(), true, false, true);
+        let base = Sample {
+            cpu: Some(12.4),
+            memory: Some(33.2),
+            load: [1.234, 0.5, 0.25],
+            net_rx: 1024.4,
+            net_tx: 0.0,
+            disk_free: 1024.0 * 1024.0 * 1024.0,
+            volume: Some(0.444),
+            muted: Some(false),
+            ..Sample::default()
+        };
+        let now = Instant::now();
+
+        // Nothing published yet: the first sample always goes out.
+        assert!(status.should_publish_periodic(&base, Duration::from_secs(30), now));
+
+        // Every difference here is below what its widget draws.
+        let below = Sample {
+            cpu: Some(12.1),
+            load: [1.2344, 0.5, 0.25],
+            net_rx: 1024.1,
+            volume: Some(0.4441),
+            ..base.clone()
+        };
+        assert!(
+            !status.should_publish_periodic(&below, Duration::from_secs(30), now),
+            "rounding differences the bar cannot show are not an update"
+        );
+
+        // ... but a displayed percentage moving by one is.
+        let changed = Sample {
+            cpu: Some(12.6),
+            ..below.clone()
+        };
+        assert!(status.should_publish_periodic(&changed, Duration::from_secs(30), now));
+
+        // A mute glyph changing is a change even at the same percentage.
+        let muted = Sample {
+            muted: Some(true),
+            ..changed.clone()
+        };
+        assert!(status.should_publish_periodic(&muted, Duration::from_secs(30), now));
+
+        // Every published sample also refreshes the baseline, so repeating it
+        // is not an update.
+        assert!(!status.should_publish_periodic(&muted, Duration::from_secs(30), now));
+    }
+
+    #[test]
+    fn a_heartbeat_publishes_an_unchanged_sample_for_a_fresh_shell() {
+        let mut status = Status::default();
+        status.configure(Vec::new(), false, false, true);
+        let sample = Sample {
+            cpu: Some(10.0),
+            ..Sample::default()
+        };
+        let now = Instant::now();
+        let heartbeat = Duration::from_secs(30);
+
+        assert!(status.should_publish_periodic(&sample, heartbeat, now));
+        assert!(!status.should_publish_periodic(&sample, heartbeat, now + Duration::from_secs(29)));
+        assert!(status.should_publish_periodic(&sample, heartbeat, now + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn a_forced_publish_ignores_an_unchanged_sample() {
+        let mut status = Status::default();
+        status.configure(Vec::new(), false, false, true);
+        let sample = Sample {
+            cpu: Some(10.0),
+            ..Sample::default()
+        };
+        let now = Instant::now();
+        assert!(status.should_publish_periodic(&sample, Duration::from_secs(30), now));
+        status.force_publish();
+        assert!(
+            status.should_publish_periodic(&sample, Duration::from_secs(30), now),
+            "a shell that just connected has no state, changed or not"
+        );
+    }
+
+    #[test]
+    fn a_bar_with_no_status_widget_does_not_sample() {
+        // Only an explicit no-status bar turns this off; the default is the
+        // sampler that has always run.
+        assert!(Status::default().wanted());
+        let mut status = Status::default();
+        status.configure(Vec::new(), false, false, false);
+        assert!(!status.wanted());
     }
 
     #[test]
@@ -937,7 +1309,7 @@ Inter-|   Receive                                                |  Transmit
 
         let mut status = Status::default();
         status.start(sender).expect("the worker should start");
-        status.configure(vec!["/".to_owned()], false, false);
+        status.configure(vec!["/".to_owned()], false, false, true);
 
         // Nothing has come back yet, so this reports the seed — the root
         // filesystem, and no mounts.

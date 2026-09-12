@@ -2576,6 +2576,13 @@ impl ViewportState {
     /// the shell painted that was superseded before anything drew it still
     /// cost the engine what it cost.
     pub fn report_shell_rate(&mut self) {
+        // Nothing below can say anything: `shell_rate_verbose` is off and the
+        // debug line is filtered out. Return before reading the clock and
+        // moving the mark, which is the whole cost of a tick on a desktop
+        // nobody asked to measure.
+        if !self.shell_rate_verbose && !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
         let now = std::time::Instant::now();
         let Some((previous, at)) = self.shell_rate_mark else {
             // The first tick has nothing to compare against.
@@ -2642,17 +2649,66 @@ impl ViewportState {
         under
     }
 
-    /// Sample the machine and tell the shell.
+    /// Longest a shell may go without a sample when nothing it draws changed.
     ///
-    /// The page cannot do this for itself: it is loaded from file:// or
-    /// http://, and neither origin can read /proc. How the numbers are
-    /// *displayed* is still entirely the shell's business.
+    /// A page that starts or restarts has no state of its own, and on a quiet
+    /// desktop no change-driven tick would ever give it any; the heartbeat
+    /// bounds how long the bar can stay blank.
+    const STATUS_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// Sample the machine and tell the shell, because something asked for it.
+    ///
+    /// `Request::StatusRefresh` reaches here, so this always sends: an
+    /// explicit refresh is a page asking for state, and answering that
+    /// nothing changed with silence would leave a page that just reloaded
+    /// without any.
     pub fn status_tick(&mut self) {
-        self.status_tick_with_osd(None);
+        let sample = self.status.sample();
+        self.status.record_published(&sample);
+        self.publish_status(sample, None);
     }
 
+    /// The same, for a change the compositor already knows the shell must
+    /// hear: an OSD, or audio that moved. Always sends.
     pub fn status_tick_with_osd(&mut self, osd: Option<viewport_ipc::event::StatusOsd>) {
         let sample = self.status.sample();
+        self.status.record_published(&sample);
+        self.publish_status(sample, osd);
+    }
+
+    /// The periodic tick, which sends only what the bar would draw
+    /// differently.
+    ///
+    /// The page cannot sample `/proc` itself: it is loaded from file:// or
+    /// http://, and neither origin can read it. The numbers are rates, so they
+    /// still have to be read every two seconds; what no longer has to happen
+    /// is a message and a JS evaluation for every reading. Comparing the
+    /// displayed shape here keeps the wake-up for when there is something to
+    /// say, while the heartbeat keeps a shell that connected in between from
+    /// waiting for one.
+    pub fn status_tick_periodic(&mut self) {
+        // A bar with no status module and no widget that reads one has nothing
+        // this sampler could change, so it does not read /proc or queue the
+        // worker's `statvfs`/`wpctl` job at all.
+        if !self.status.wanted() {
+            return;
+        }
+        let sample = self.status.sample();
+        let now = std::time::Instant::now();
+        if self
+            .status
+            .should_publish_periodic(&sample, Self::STATUS_HEARTBEAT, now)
+        {
+            self.publish_status(sample, None);
+        }
+    }
+
+    /// Put one sample on the wire, in the shape the shell reads.
+    fn publish_status(
+        &mut self,
+        sample: crate::status::Sample,
+        osd: Option<viewport_ipc::event::StatusOsd>,
+    ) {
         let event = viewport_ipc::Event::StatusUpdate {
             // -1 rather than absent, which is what the bar tests for.
             cpu: sample.cpu.unwrap_or(-1.0),
@@ -2705,11 +2761,31 @@ impl ViewportState {
         self.idle_notifier_state.set_is_inhibited(inhibited);
     }
 
+    /// Whether `refresh_idle_inhibit` could answer differently than it did
+    /// last tick.
+    ///
+    /// With no idle policy the refresh still has a job: the idle-notifier
+    /// protocol reports whether something is holding idle off, and a client
+    /// that takes or releases an inhibitor changes that answer whether or not
+    /// this session blanks on a deadline. `idle.inhibited` is the previous
+    /// answer, so it keeps the refresh running until a hold that went away has
+    /// been cleared too.
+    fn idle_inhibit_refresh_needed(&self) -> bool {
+        self.idle_settings.wanted()
+            || self.idle.inhibited()
+            || !self.idle_inhibitors.is_empty()
+            || self.bus_inhibitors.inhibited()
+            || self.views.iter().any(|view| view.rule_idle_inhibit)
+    }
+
     /// One idle tick: lock and blank when their deadlines pass.
     pub fn idle_tick(&mut self) {
-        // Every tick, because a client holding one may have died since the
-        // last, and nothing else notices.
-        self.refresh_idle_inhibit();
+        // A dead Wayland inhibitor is the one thing nothing else notices, so
+        // this is still every tick while one exists — but not while there is
+        // no policy and nothing to hold it off.
+        if self.idle_inhibit_refresh_needed() {
+            self.refresh_idle_inhibit();
+        }
         if !self.idle_settings.wanted() {
             return;
         }
@@ -4320,6 +4396,11 @@ fn bar_widget_ipc(widget: &crate::config::BarWidgetConfig) -> viewport_ipc::even
 /// folds the same answer.
 #[derive(Default)]
 struct Sampling {
+    /// Whether anything drawn reads the `status.update` sample at all: one of
+    /// the shipped cpu/memory/load/disk/net modules, a disk/volume/mic widget,
+    /// or a custom widget whose script the compositor cannot see into. With
+    /// this false the periodic status tick samples nothing.
+    status: bool,
     /// Mounts to stat. A disk widget's own; several disks, several mounts.
     mounts: Vec<String>,
     /// The default sink, over `wpctl`.
@@ -4332,6 +4413,24 @@ struct Sampling {
     battery: bool,
 }
 
+/// The `bar_items` module names whose elements are filled from a status
+/// sample. `mode`, `clock` and an unknown name draw nothing from it.
+const STATUS_MODULES: [&str; 5] = ["cpu", "memory", "load", "disk", "net"];
+
+/// Whether an explicit `bar_items` override draws anything the status sampler
+/// fills.
+///
+/// With no override the shipped modules are always there, so the caller asks
+/// this only when one is present. `custom` conservatively counts: its script
+/// is handed the sample through its context and the compositor cannot see
+/// whether it reads it.
+fn bar_items_need_status(items: &[crate::config::BarItemConfig]) -> bool {
+    items.iter().any(|item| match item {
+        crate::config::BarItemConfig::Module(name) => STATUS_MODULES.contains(&name.as_str()),
+        crate::config::BarItemConfig::Widget(widget) => widget.sampling().status,
+    })
+}
+
 impl crate::config::BarWidgetConfig {
     /// What has to be sampled for this widget to have numbers to draw.
     ///
@@ -4340,18 +4439,23 @@ impl crate::config::BarWidgetConfig {
     fn sampling(&self) -> Sampling {
         match self {
             crate::config::BarWidgetConfig::Disk { path } => Sampling {
+                status: true,
                 mounts: vec![path.clone().unwrap_or_else(|| "/".to_owned())],
                 ..Sampling::default()
             },
             crate::config::BarWidgetConfig::Weather { .. } => Sampling::default(),
             crate::config::BarWidgetConfig::Volume => Sampling {
+                status: true,
                 volume: true,
                 ..Sampling::default()
             },
             crate::config::BarWidgetConfig::Mic => Sampling {
+                status: true,
                 mic: true,
                 ..Sampling::default()
             },
+            // The player and battery widgets are fed by their own workers and
+            // draw nothing out of a status sample.
             crate::config::BarWidgetConfig::Mpris => Sampling {
                 players: true,
                 ..Sampling::default()
@@ -4361,7 +4465,13 @@ impl crate::config::BarWidgetConfig {
                 ..Sampling::default()
             },
             crate::config::BarWidgetConfig::Ai { .. } => Sampling::default(),
-            crate::config::BarWidgetConfig::Custom { .. } => Sampling::default(),
+            // A user script reads `status` out of its context, but the
+            // compositor has no way to see whether it does; keep the sample
+            // running rather than let a widget go stale.
+            crate::config::BarWidgetConfig::Custom { .. } => Sampling {
+                status: true,
+                ..Sampling::default()
+            },
         }
     }
 }
@@ -4533,6 +4643,37 @@ mod tests {
 
     fn at(x: f64, y: f64) -> Point<f64, Logical> {
         (x, y).into()
+    }
+
+    #[test]
+    fn a_bar_override_with_no_status_widget_skips_the_sampler() {
+        use crate::config::{BarItemConfig, BarWidgetConfig};
+
+        assert!(
+            !bar_items_need_status(&[]),
+            "an empty override draws nothing"
+        );
+        assert!(!bar_items_need_status(&[BarItemConfig::Module(
+            "clock".to_owned()
+        )]));
+        assert!(bar_items_need_status(&[BarItemConfig::Module(
+            "cpu".to_owned()
+        )]));
+        assert!(bar_items_need_status(&[BarItemConfig::Widget(
+            BarWidgetConfig::Volume
+        )]));
+        // A custom script is handed the status sample and may read anything
+        // out of it, so it counts even though the compositor cannot tell.
+        assert!(bar_items_need_status(&[BarItemConfig::Widget(
+            BarWidgetConfig::Custom {
+                name: "graph".to_owned(),
+                options: None,
+            }
+        )]));
+        // A player is fed by its own worker, not by a status sample.
+        assert!(!bar_items_need_status(&[BarItemConfig::Widget(
+            BarWidgetConfig::Mpris
+        )]));
     }
 
     /// A stand-in for whatever a renderer composites into, which is a DMA-BUF
