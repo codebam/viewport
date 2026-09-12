@@ -1264,6 +1264,12 @@ fn run() -> Result<()> {
             }
         }
 
+        // A live gesture coalesced during this turn is sent once, now that
+        // the turn is over, instead of once per libinput report. Anything the
+        // dispatch itself notified already carried its own update ahead of
+        // it.
+        state.flush_pending_gesture();
+
         // Before the frame: a buffer destroyed on this turn's dispatch is one
         // whose image the renderer is still holding, and the renderer is about
         // to be moved out to draw with.

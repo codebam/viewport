@@ -15,6 +15,30 @@ impl ViewportState {
     /// clients (see `Ipc::broadcast`); the in-process pages posted to below
     /// are part of this process and always receive everything.
     pub fn notify(&mut self, event: &Event) {
+        // A gesture update is cumulative, so anything already waiting is
+        // older than this event and has to arrive first: a button press must
+        // not overtake the motion it followed, and a `gesture.end` must not
+        // overtake the last update of the sequence it ends. The end of a loop
+        // turn flushes whatever is left without another event to carry it.
+        self.flush_pending_gesture();
+        self.post(event);
+    }
+
+    /// Send the newest coalesced gesture update, if one is waiting.
+    ///
+    /// Live touchpad gestures replace one IPC event per libinput report with
+    /// one per event-loop turn; only the last cumulative sample before a frame
+    /// can be observed, so this is lossless. Called by the main loop after
+    /// each dispatch; [`Self::notify`] calls it too, ahead of any other event.
+    pub(crate) fn flush_pending_gesture(&mut self) {
+        let Some(event) = self.pending_gesture.take() else {
+            return;
+        };
+        self.post(&event);
+    }
+
+    /// Send one event to every listener, without draining the coalescer first.
+    fn post(&mut self, event: &Event) {
         // A shell connection is trusted at accept, when its kernel-reported
         // pid is matched against `shell_clients`. Re-affirm that here for a
         // connection that raced the shell's registration, so the broadcast
